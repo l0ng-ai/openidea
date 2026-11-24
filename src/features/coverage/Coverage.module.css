@@ -1,8 +1,16 @@
 .view {
+  --coverage-metrics: 2;
+  --coverage-tracks: minmax(0, 1fr) var(--coverage-lines-width) var(--coverage-branches-width);
+  --coverage-column-gap: var(--space-2);
+  container-type: inline-size;
   height: 100%;
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+.noBranches {
+  --coverage-metrics: 1;
+  --coverage-tracks: minmax(0, 1fr) var(--coverage-lines-width);
 }
 .tabs {
   min-width: 0;
@@ -18,30 +26,41 @@
 .header,
 .row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 170px 170px;
+  grid-template-columns: var(--coverage-tracks);
   align-items: center;
-  column-gap: var(--space-2);
-}
-.header.noBranches,
-.row.noBranches {
-  grid-template-columns: minmax(120px, 1fr) 170px;
+  column-gap: var(--coverage-column-gap);
+  font-size: var(--fs-ui);
 }
 .header {
   flex: none;
   height: 24px;
-  padding: 0 10px 0 28px;
+  padding-inline: 30px 14px;
   border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+.header,
+.tree [role="tree"] {
+  scrollbar-gutter: stable;
+}
+.header::-webkit-scrollbar {
+  width: 10px;
+}
+.heading {
+  position: relative;
+  min-width: 0;
+  height: 100%;
 }
 .headerCell {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  width: 100%;
+  height: 100%;
   gap: var(--space-0-5);
   min-width: 0;
   padding: 0;
   border: 0;
   background: none;
   font: inherit;
-  font-size: var(--fs-small);
   color: var(--fg-secondary);
   text-align: left;
   cursor: default;
@@ -49,15 +68,41 @@
 .headerCell:hover {
   color: var(--fg-strong);
 }
+.headerCell svg {
+  flex: none;
+}
+.divider {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(-1 * var(--coverage-column-gap));
+  width: var(--coverage-column-gap);
+  cursor: col-resize;
+  touch-action: none;
+}
+.divider::after {
+  position: absolute;
+  inset: var(--space-1) 50% var(--space-1) auto;
+  width: 1px;
+  background: var(--border);
+  content: "";
+}
+.divider:hover::after,
+.divider:focus-visible::after,
+.divider:active::after {
+  background: var(--accent);
+}
 .tree {
   flex: 1;
   min-height: 0;
+  /* Keep the chevron and icon in the name column at deeper levels. */
+  --coverage-max-row-inset: max(
+    4px,
+    calc(100% - var(--coverage-stats-width) - var(--coverage-metrics) * var(--coverage-column-gap) - 72px)
+  );
 }
 .row {
   flex: 1;
   min-width: 0;
-  padding-right: 10px;
-  white-space: nowrap;
 }
 .name {
   display: flex;
@@ -68,34 +113,29 @@
 .icon {
   flex: none;
 }
-.label {
+.label,
+.value {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.cell {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  min-width: 0;
-}
-.bar {
-  flex: none;
-  width: 48px;
-  height: 6px;
-  border-radius: 1px;
-  background: var(--coverage-uncovered);
-  opacity: 0.85;
-  overflow: hidden;
-}
-.barFill {
-  display: block;
-  height: 100%;
-  background: var(--coverage-covered);
+  white-space: nowrap;
 }
 .value {
-  font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
   color: var(--fg-secondary);
+}
+@container (width < 360px) {
+  .header,
+  .tree {
+    --coverage-column-gap: var(--space-1);
+  }
+}
+.compactCount {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 .link {
   padding: 0;

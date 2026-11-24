@@ -104,6 +104,8 @@
     "--fg-deprecated": "#8c8f95",
     "--bg-identifier-under-caret": "#2e353f",
     "--bg-identifier-under-caret-write": "#402f33",
+    "--fg-identifier-under-caret": "inherit",
+    "--fg-identifier-under-caret-write": "inherit",
     "--fg-inlay": "#75869d",
     "--bg-inlay": "#303944",
     "--wave-typo": "#59a869",

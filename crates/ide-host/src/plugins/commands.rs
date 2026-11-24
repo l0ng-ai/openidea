@@ -1,8 +1,8 @@
 //! Plugin window commands shared by local IPC and remote RPC.
 
 use super::{
-    CommandAnswer, CommitAnswer, DecorationSet, EventKind, PluginContextKey, PluginEditor, PluginHost, PluginInfo,
-    PluginStatusItem, WorkbenchEvent,
+    ClipboardAnswer, CommandAnswer, CommitAnswer, DecorationSet, EventKind, PluginContextKey, PluginEditor, PluginHost,
+    PluginInfo, PluginStatusItem, WorkbenchEvent,
 };
 use crate::Host;
 use ide_command::command;
@@ -110,10 +110,16 @@ pub fn plugin_answer_commit(plugins: &Arc<PluginHost>, request_id: String, answe
     plugins.answer_commit(&request_id, answer)
 }
 
-/// The UI reports the focused editor's file (`editor-focused` events).
+/// The UI reports the focused editor's file (`editor-focused` events), with its
+/// caret so plugins can scope line labels without re-reading the document.
 #[command(trust = always)]
-pub fn plugin_set_active_file(plugins: &Arc<PluginHost>, window: &str, path: Option<String>) {
-    plugins.set_active_file(window, path);
+pub fn plugin_set_active_file(
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    path: Option<String>,
+    #[default] editor: Option<PluginEditor>,
+) {
+    plugins.set_active_file(window, path, editor);
 }
 
 /// The invoking window's reply to a plugin command request.
@@ -125,6 +131,18 @@ pub fn plugin_answer_command(
     answer: CommandAnswer,
 ) -> IdeResult<bool> {
     Ok(plugins.answer_command(window, &request_id, answer))
+}
+
+/// This window's clipboard for a plugin's `clipboardRequested`; false when the call no
+/// longer waits or asked another window.
+#[command(trust = trusted)]
+pub fn plugin_answer_clipboard(
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    request_id: String,
+    answer: ClipboardAnswer,
+) -> IdeResult<bool> {
+    Ok(plugins.answer_clipboard(window, &request_id, answer))
 }
 
 /// The project root a `scope` setting applies to (`None`: global).
@@ -170,6 +188,12 @@ pub async fn plugin_program(
 #[command(trust = trusted)]
 pub fn plugin_decoration_sets(plugins: &Arc<PluginHost>) -> BTreeMap<String, Vec<DecorationSet>> {
     plugins.decoration_sets()
+}
+
+/// Every plugin's console highlight rules (later changes arrive as `consoleRulesChanged`).
+#[command(trust = trusted)]
+pub fn plugin_console_rules(plugins: &Arc<PluginHost>) -> BTreeMap<String, Vec<ide_plugin::ConsoleRule>> {
+    plugins.console_rules()
 }
 
 /// Reports exactly one completion from the operation's launching window.
@@ -278,11 +302,13 @@ pub async fn plugin_debug_attach_target(
 
 ide_command::domain!(
     plugins_commands:
+    plugin_answer_clipboard,
     plugin_answer_command,
     plugin_answer_commit,
     plugin_answer_prompt,
     plugin_cancel_task,
     plugin_choose_program,
+    plugin_console_rules,
     plugin_content_tab_action,
     plugin_context_keys,
     plugin_debug_attach_target,

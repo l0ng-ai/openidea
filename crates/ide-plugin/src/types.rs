@@ -70,6 +70,44 @@ pub struct StatusItem {
     pub tooltip: Option<String>,
     /// One of the plugin's commands, run on click.
     pub command: Option<String>,
+    /// Opened on click instead of running `command` when not empty (API 1.14).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(optional)]
+    pub menu: Vec<StatusMenuEntry>,
+}
+
+/// An entry of a plugin status bar item's menu (API 1.14, `ui.set-status-item-menu`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StatusMenuEntry {
+    /// Runs one of the plugin's commands with `argument`.
+    #[serde(rename_all = "camelCase")]
+    Action {
+        label: String,
+        description: Option<String>,
+        command: String,
+        argument: Option<String>,
+    },
+    Separator,
+    Header {
+        label: String,
+    },
+}
+
+/// A plugin's highlight rule for Run and Debug console output (API 1.12, `ui.set-console-rules`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsoleRule {
+    pub pattern: String,
+    pub ignore_case: bool,
+    /// A console palette colour (`red`, `bright-blue`); `None` keeps the text's own.
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    /// `bold`, `italic`, `underline`, `strikethrough`, `dim`.
+    pub styles: Vec<String>,
+    /// The whole line, or only the matched text.
+    pub whole_line: bool,
+    pub enabled: bool,
 }
 
 /// An entry of a plugin's `pick` or `pick-many`.
@@ -117,6 +155,7 @@ pub enum EventKind {
     FileSaved,
     FilesChanged,
     EditorFocused,
+    CaretMoved,
     ActionPerformed,
     VcsChanged,
     /// Problems of the window's files changed (a language server or a report).
@@ -125,7 +164,7 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::DocumentChanged,
         Self::WebsocketReady,
         Self::FileClosed,
@@ -139,6 +178,7 @@ impl EventKind {
         Self::FileSaved,
         Self::FilesChanged,
         Self::EditorFocused,
+        Self::CaretMoved,
         Self::ActionPerformed,
         Self::VcsChanged,
         Self::ProblemsChanged,
@@ -160,6 +200,7 @@ impl EventKind {
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
+            Self::CaretMoved => "caret-moved",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
             Self::ProblemsChanged => "problems-changed",
@@ -237,6 +278,19 @@ pub struct InputMode {
     pub sub: Option<String>,
 }
 
+/// The caret moved in the focused editor. Positions are 0-based; `col` counts
+/// UTF-16 code units, as everywhere in the plugin API.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CaretMoved {
+    pub path: String,
+    pub line: u32,
+    pub col: u32,
+    /// The caret came to rest at this position; plugins may load what a hover needs.
+    #[serde(default)]
+    pub settled: bool,
+}
+
 /// One UTF-16 replacement in a locally edited editor document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct DocumentTextChange {
@@ -250,6 +304,9 @@ pub struct DocumentTextChange {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentChanged {
     pub path: String,
+    /// The open project `path` is relative to, set when the event is handed to a plugin
+    /// (the editor posts the absolute path and `null`).
+    pub project: Option<String>,
     pub base_version: u64,
     pub version: u64,
     pub changes: Vec<DocumentTextChange>,
@@ -296,6 +353,7 @@ pub enum WorkbenchEvent {
     FileSaved(String),
     FilesChanged(FilesChanged),
     EditorFocused(Option<String>),
+    CaretMoved(CaretMoved),
     ActionPerformed(ActionPerformed),
     VcsChanged(String),
     /// Problems of the window's files changed; plugins re-read `problems`.
@@ -319,6 +377,7 @@ impl WorkbenchEvent {
             Self::FileSaved(_) => EventKind::FileSaved,
             Self::FilesChanged(_) => EventKind::FilesChanged,
             Self::EditorFocused(_) => EventKind::EditorFocused,
+            Self::CaretMoved(_) => EventKind::CaretMoved,
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,
             Self::ProblemsChanged => EventKind::ProblemsChanged,
@@ -499,6 +558,15 @@ pub struct ProcessChunk {
     pub stdout: String,
     pub stderr: String,
     pub status: Option<i32>,
+}
+
+/// Options for process execution and streaming (API 1.15; WIT `process.process-options`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessOptions {
+    /// Maximum bytes captured per stream before returning an error (up to 128 MiB; default 16 MiB).
+    pub max_output_bytes: Option<u32>,
+    /// In-flight buffer size per stream for streaming backpressure (default 256 KiB, max 4 MiB).
+    pub buffer_bytes: Option<u32>,
 }
 
 /// Where `net:` requests may go: the URL's host when it is `https`, or
@@ -864,6 +932,14 @@ pub struct Endpoint {
     pub framework: String,
     pub handler: Option<String>,
     pub location: Location,
+}
+
+/// The clipboard as `ui.read-clipboard` returns it (API 1.11): `None` for a kind it doesn't
+/// hold; `image` is PNG bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardContent {
+    pub text: Option<String>,
+    pub image: Option<Vec<u8>>,
 }
 
 /// A notification button that runs one of the publishing plugin's commands.

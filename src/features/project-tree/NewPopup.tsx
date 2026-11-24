@@ -53,7 +53,7 @@ function NewPopup({ at, items }: { at: { x: number; y: number }; items: MenuItem
       className={styles.popup}
     >
       <div className={styles.search}>
-        <Icon name="search" size={14} className={styles.searchIcon} />
+        <Icon name="search" size={16} className={styles.searchIcon} />
         <Input
           variant="bare"
           data-autofocus
@@ -79,7 +79,6 @@ function NewPopup({ at, items }: { at: { x: number; y: number }; items: MenuItem
         onActivate={(r) => pick(r)}
         focusable={false}
         hoverSelects
-        rowHeight={24}
         className={styles.list}
         aria-label="File types"
         empty={

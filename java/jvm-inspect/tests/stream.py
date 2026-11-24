@@ -100,6 +100,9 @@ public class Real {
             case "inl": inLambda(); break;
             case "abort": abort(); break;
             case "twice": abortAfterTrace(); break;
+            case "U": uncaught(true); break;
+            case "Ux": uncaught(false); break;
+            case "Ua": abortUncaught(); break;
             case "exit": exit(); break;
             case "mid": mid(); break;
             case "fn": functionAndData(); break;
@@ -242,6 +245,23 @@ public class Real {
         } catch (RuntimeException e) {
             System.out.println("TWICE caught " + e.getMessage());
         }
+    }
+
+    /** Keeps the VM alive once main has died of an exception. */
+    static void keeper() {
+        new Thread(() -> LockSupport.parkNanos(60_000_000_000L), "keeper").start();
+    }
+
+    static void uncaught(boolean keep) {
+        if (keep) keeper();
+        List<Integer> u = nums.stream().map(x -> 10 / (x - 4)).collect(Collectors.toList()); // @U
+        System.out.println("U " + u);
+    }
+
+    static void abortUncaught() {
+        keeper();
+        long never = Stream.iterate(1L, x -> x + 1).filter(x -> x < 0).count(); // @Ua
+        System.out.println("UA none " + never);
     }
 
     static void exit() {
@@ -1021,6 +1041,132 @@ def real_run_abort_after_a_trace():
         resume(dbg)
         out = output_line(dbg, 'TWICE caught')
         check('abort-after-trace: the program caught oi-cancel', out is not None and out.startswith('TWICE caught oi-cancel:'), out)
+    finally:
+        dbg.end()
+
+
+def uncaught_stop(dbg, name, trace, exception):
+    """After a terminal that threw what the program does not catch: the step-out ends in one stop at that
+    throw, the records can be read there, and Resume lets the exception end the thread. False when no
+    stop came."""
+    try:
+        stop = step_out(dbg, 15)
+    except (TimeoutError, AssertionError) as e:
+        check(f'{name}: the uncaught throw stops the traced thread', False, repr(e))
+        return False
+    check(f'{name}: the uncaught throw stops the traced thread', stop.get('reason') == 'exception', stop)
+    check(f'{name}: one stop for the throw', no_stop(dbg, 2))
+    c = ok(stream('collect', dbg, traceId=trace))
+    t = c['terminal']
+    check(f'{name}: the terminal threw {exception}', t['kind'] == 'threw' and t['exception'].get('typeName') == exception, t)
+    check(f'{name}: release keeps the stop', 'ok' in stream('release', dbg, traceId=trace) and top(dbg) is not None)
+    resume(dbg)
+    out = output_line(dbg, 'Exception in thread "main" ' + exception)
+    check(f'{name}: the exception ends the thread as without the trace', out is not None, ''.join(dbg.dap.output)[-300:])
+    check(f'{name}: no stop after Resume', no_stop(dbg, 2))
+    return c
+
+
+@case
+def real_run_uncaught_throw():
+    # `U` keeps the VM alive with another thread; `Ux` exits with main.
+    for name in ('U', 'Ux'):
+        dbg = real(name, 'U')
+        try:
+            trace, state, _ = run_until_parked(dbg, 'U', steps=(spec('map', 1),), step_kinds=('sync',))
+            check(f'{name}: parked after the lambda threw', state['state'] == 'parked', state)
+            c = uncaught_stop(dbg, name, trace, 'java.lang.ArithmeticException')
+            if c:
+                collected_ok(name, c, records=['0=5', '1=10', '0=3', '1=-10', '0=8', '1=2', '0=1', '1=-3', '0=4'])
+        finally:
+            dbg.end()
+
+
+@case
+def real_run_uncaught_throw_user_filter():
+    # java-debug's own uncaught-exception request is on: the throw must stop once, not once per request.
+    dbg = real('U')
+    try:
+        dbg.dap.request('setExceptionBreakpoints', {'filters': ['uncaught']})
+        trace, state, _ = run_until_parked(dbg, 'U', steps=(spec('map', 1),), step_kinds=('sync',))
+        check('U-filter: parked after the lambda threw', state['state'] == 'parked', state)
+        uncaught_stop(dbg, 'U-filter', trace, 'java.lang.ArithmeticException')
+    finally:
+        dbg.end()
+
+
+def exception_breakpoints(dbg, *breakpoints):
+    """`openidea.jvm.exceptions.set`; returns breakpoint id → state."""
+    return {s['id']: s['state'] for s in ok(lsp.command('openidea.jvm.exceptions.set', dbg.target, {'breakpoints': list(breakpoints)}))}
+
+
+def exception_breakpoint(id, class_name, exclude=()):
+    return {'id': id, 'className': class_name, 'caught': True, 'uncaught': True, 'enabled': True,
+            'classFilters': [], 'classExclusionFilters': list(exclude)}
+
+
+@case
+def real_run_uncaught_throw_exception_breakpoint():
+    # A caught+uncaught breakpoint on the thrown class: silenced while the terminal runs (a stop inside
+    # its invoke would hang the trace), then the uncaught throw stops once, not once per request.
+    dbg = real('U')
+    try:
+        states = exception_breakpoints(dbg, exception_breakpoint('ae', 'java.lang.ArithmeticException'))
+        check('U-class: armed or pending', states['ae'] in ('armed', 'pending'), states)
+        trace, state, _ = run_until_parked(dbg, 'U', steps=(spec('map', 1),), step_kinds=('sync',))
+        check('U-class: parked after the lambda threw', state['state'] == 'parked', state)
+        uncaught_stop(dbg, 'U-class', trace, 'java.lang.ArithmeticException')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_uncaught_throw_filtered_exception_breakpoint():
+    # The breakpoint's class filter leaves out where the lambda throws: the trace still watches the throw.
+    dbg = real('U')
+    try:
+        exception_breakpoints(dbg, exception_breakpoint('ae', 'java.lang.ArithmeticException', exclude=['Real']))
+        trace, state, _ = run_until_parked(dbg, 'U', steps=(spec('map', 1),), step_kinds=('sync',))
+        check('U-class-filtered: parked after the lambda threw', state['state'] == 'parked', state)
+        uncaught_stop(dbg, 'U-class-filtered', trace, 'java.lang.ArithmeticException')
+    finally:
+        dbg.end()
+
+
+@case
+def exception_breakpoints_set_during_a_trace_wait_for_its_end():
+    # Set while the trace silences breakpoints: nothing is armed inside it; the list is applied once the
+    # breakpoints are back on, before the trace decides whether to watch the uncaught throw itself.
+    dbg = real('U')
+    try:
+        trace = ok(arm(dbg, at='U', steps=(spec('map', 1),), step_kinds=('sync',)))['traceId']
+        states = exception_breakpoints(dbg, exception_breakpoint('ae', 'java.lang.ArithmeticException'))
+        check('U-deferred: deferred while the trace silences', states == {'ae': 'deferred'}, states)
+        resume(dbg)
+        state = wait_until_done(dbg, trace)
+        check('U-deferred: parked after the lambda threw', state['state'] == 'parked', state)
+        uncaught_stop(dbg, 'U-deferred', trace, 'java.lang.ArithmeticException')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_uncaught_abort():
+    dbg = real('Ua')
+    try:
+        trace = ok(arm(dbg, at='Ua', root=spec('iterate', 2), steps=(spec('filter', 1),), terminal=spec('count'),
+                       class_filters=('java.util.stream.*',), step_kinds=('sync',)))['traceId']
+        resume(dbg)
+        first = ok(stream('wait', dbg, traceId=trace, ms=500))
+        check('Ua: the endless terminal is running', first['state'] == 'running', first)
+        r = ok(stream('abort', dbg, traceId=trace, timeout=30))
+        check('Ua: interrupted or stopped', r.get('state') in ('interrupted', 'stopped'), r)
+        state = wait_until_done(dbg, trace, 20)
+        check('Ua: parked after the cancel', state['state'] == 'parked', state)
+        if state['state'] == 'parked':
+            c = uncaught_stop(dbg, 'Ua', trace, 'java.lang.RuntimeException')
+            if c:
+                check('Ua: the records up to the abort', len(c['records']) > 0, len(c['records']))
     finally:
         dbg.end()
 

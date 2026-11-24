@@ -1,0 +1,13 @@
+{
+  "name": "openidea-fixture-pricing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenIDEA QA fixture: Mocha specs for a small pricing module",
+  "type": "module",
+  "scripts": {
+    "test": "mocha"
+  },
+  "devDependencies": {
+    "mocha": "^10.8.0"
+  }
+}

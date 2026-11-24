@@ -6,7 +6,9 @@ export {
   closeAll,
   detachTab,
   newTab,
+  newTabRunning,
   pluginSession,
+  rememberTerminals,
   syncTerminalProject,
   tabTitle,
   unbindTerminals,
@@ -30,6 +32,7 @@ export {
   disposeAllClis,
   disposeCli,
   isCliSession,
+  reattachCli,
   startCli,
 } from "./cliSessions";
 export { CliEditor } from "./CliEditor";

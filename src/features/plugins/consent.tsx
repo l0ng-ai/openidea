@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { create } from "zustand";
 import type { CapabilityInfo, Consent } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { Badge, Checkbox, Dialog, T } from "@/ui";
 import { setConsentPrompt, type ConsentRequest } from "./store";
 import styles from "./PluginsPage.module.css";
@@ -30,8 +30,17 @@ export function sortByRisk(caps: readonly CapabilityInfo[]): CapabilityInfo[] {
   return [...caps].sort((a, b) => RISK_ORDER[a.risk] - RISK_ORDER[b.risk] || a.id.localeCompare(b.id));
 }
 
+const JVM_OPTIONS = "; JVM options: ";
+
 /** Parameterised permission text, translated independently of the granted host/path. */
 export function capabilityDescription(cap: CapabilityInfo): string {
+  // The host appends the agent's contributed JVM flags (`…; JVM options: -XX:…`).
+  const flagsAt = cap.id === "java.agent" ? cap.description.indexOf(JVM_OPTIONS) : -1;
+  if (flagsAt >= 0) {
+    const description = txPart(cap.description.slice(0, flagsAt));
+    const flags = cap.description.slice(flagsAt + JVM_OPTIONS.length);
+    return tx`${description}; JVM options: ${flags}`;
+  }
   if (cap.id === "database.sources")
     return tx("Manage its own database sources and store their passwords in trusted projects");
   if (cap.id === "ide.commands") {

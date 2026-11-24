@@ -17,6 +17,19 @@ pub enum DirectoryCompareStatus {
     Equal,
 }
 
+/// What makes two files equal (IDEA's "Compare by").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DirectoryCompareMode {
+    /// Identical bytes.
+    #[default]
+    Content,
+    /// The same text once decoded, whatever the encoding, BOM or line separators.
+    Text,
+    Size,
+    SizeAndTimestamp,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryCompareEntry {
@@ -28,6 +41,16 @@ pub struct DirectoryCompareEntry {
     pub left_link: Option<String>,
     #[specta(optional)]
     pub right_link: Option<String>,
+    /// File sizes in bytes; directories and symlinks have none.
+    #[specta(optional)]
+    pub left_size: Option<f64>,
+    #[specta(optional)]
+    pub right_size: Option<f64>,
+    /// Last modification, milliseconds since the Unix epoch.
+    #[specta(optional)]
+    pub left_modified: Option<f64>,
+    #[specta(optional)]
+    pub right_modified: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
@@ -40,10 +63,53 @@ pub struct DirectoryCompareProgress {
     pub path: String,
 }
 
+/// One row's synchronisation, applied by [`DirectorySyncOperation`] batches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DirectorySyncAction {
+    CopyToLeft,
+    CopyToRight,
+    DeleteLeft,
+    DeleteRight,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectorySyncOperation {
+    /// Relative to both comparison roots.
+    pub path: String,
+    pub action: DirectorySyncAction,
+    /// A copy may replace what is already at the destination (confirmed by the user).
+    pub overwrite: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectorySyncFailure {
+    pub path: String,
+    pub action: DirectorySyncAction,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectorySyncProgress {
+    pub done: u32,
+    pub total: u32,
+    pub path: String,
+}
+
 struct Entry {
     kind: EntryKind,
     size: u64,
+    modified: Option<f64>,
     link: Option<PathBuf>,
+}
+
+impl Entry {
+    fn file_size(&self) -> Option<f64> {
+        (self.kind == EntryKind::File).then_some(self.size as f64)
+    }
 }
 
 fn check(cancel: &CancellationToken) -> IdeResult<()> {
@@ -106,7 +172,12 @@ fn scan(
             let rel = path.strip_prefix(root).map_err(|e| IdeError::internal(e.to_string()))?;
             let rel = ide_core::ipc_path::to_ipc(rel);
             let link = if kind == EntryKind::Symlink { Some(fs::read_link(&path)?) } else { None };
-            result.insert(rel.clone(), Entry { kind, size: meta.len(), link });
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as f64);
+            result.insert(rel.clone(), Entry { kind, size: meta.len(), modified, link });
             progress.scanned += 1;
             progress.path = rel;
             emit(progress.clone());
@@ -137,11 +208,31 @@ fn hash(
     hash.try_finalize().map_err(|e| IdeError::internal(e.to_string()))
 }
 
-/// Size checks avoid reading unequal files. Equal-sized files are hashed in bounded,
-/// cancellable chunks; symlinks compare their link text and are never traversed.
+/// Modification times this close count as equal: FAT and some network filesystems store
+/// them to the second or two, and copies may round them.
+const TIMESTAMP_TOLERANCE_MS: f64 = 2000.0;
+
+/// Text mode decodes both files; larger ones are compared by their bytes only.
+const TEXT_COMPARE_LIMIT: u64 = crate::encoding::LARGE_FILE_THRESHOLD;
+
+fn same_text(a: &Path, b: &Path, cancel: &CancellationToken) -> IdeResult<bool> {
+    let decode = |path: &Path| -> IdeResult<Option<String>> {
+        check(cancel)?;
+        let (text, _, _, binary) = crate::encoding::decode_owned(fs::read(path)?);
+        Ok((!binary).then(|| text.replace("\r\n", "\n").replace('\r', "\n")))
+    };
+    Ok(match decode(a)? {
+        Some(a) => decode(b)?.is_some_and(|b| a == b),
+        None => false,
+    })
+}
+
+/// Content checks compare sizes before reading anything, then hash equal-sized files in
+/// bounded, cancellable chunks; symlinks compare their link text and are never traversed.
 pub fn compare_directories(
     left: &Path,
     right: &Path,
+    mode: DirectoryCompareMode,
     project: Option<&Path>,
     excludes: &[String],
     cancel: &CancellationToken,
@@ -169,24 +260,47 @@ pub fn compare_directories(
                         EntryKind::Dir => true,
                         EntryKind::Symlink => a.link == b.link,
                         EntryKind::File => {
-                            a.size == b.size
-                                && hash(&left.join(&path), cancel, &mut progress, &emit)?
-                                    == hash(&right.join(&path), cancel, &mut progress, &emit)?
+                            let (l, r) = (left.join(&path), right.join(&path));
+                            let same_bytes = |progress: &mut DirectoryCompareProgress| -> IdeResult<bool> {
+                                Ok(a.size == b.size
+                                    && hash(&l, cancel, progress, &emit)? == hash(&r, cancel, progress, &emit)?)
+                            };
+                            match mode {
+                                DirectoryCompareMode::Content => same_bytes(&mut progress)?,
+                                DirectoryCompareMode::Size => a.size == b.size,
+                                DirectoryCompareMode::SizeAndTimestamp => {
+                                    a.size == b.size
+                                        && match (a.modified, b.modified) {
+                                            (Some(x), Some(y)) => (x - y).abs() <= TIMESTAMP_TOLERANCE_MS,
+                                            _ => false,
+                                        }
+                                }
+                                DirectoryCompareMode::Text => {
+                                    same_bytes(&mut progress)?
+                                        || a.size.max(b.size) <= TEXT_COMPARE_LIMIT && same_text(&l, &r, cancel)?
+                                }
+                            }
                         }
                     };
                 if equal { DirectoryCompareStatus::Equal } else { DirectoryCompareStatus::Different }
             }
             _ => unreachable!(),
         };
+        let (a, b) = (l.get(&path), r.get(&path));
+        let link = |e: Option<&Entry>| e.and_then(|e| e.link.as_ref()).map(|p| p.to_string_lossy().into_owned());
         rows.insert(
             path.clone(),
             DirectoryCompareEntry {
                 path: path.clone(),
                 status,
-                left_kind: l.get(&path).map(|e| e.kind),
-                right_kind: r.get(&path).map(|e| e.kind),
-                left_link: l.get(&path).and_then(|e| e.link.as_ref()).map(|p| p.to_string_lossy().into_owned()),
-                right_link: r.get(&path).and_then(|e| e.link.as_ref()).map(|p| p.to_string_lossy().into_owned()),
+                left_kind: a.map(|e| e.kind),
+                right_kind: b.map(|e| e.kind),
+                left_link: link(a),
+                right_link: link(b),
+                left_size: a.and_then(Entry::file_size),
+                right_size: b.and_then(Entry::file_size),
+                left_modified: a.and_then(|e| e.modified),
+                right_modified: b.and_then(|e| e.modified),
             },
         );
         progress.compared += 1;
@@ -249,6 +363,25 @@ pub fn copy_merge(
     let target_base = project.filter(|p| to.starts_with(p)).or(Some(roots.1));
     let rules = Rules::new(from, source_base, excludes);
     let target_rules = Rules::new(to, target_base, excludes);
+    // Find a conflict before writing anything, so declining to overwrite leaves the
+    // destination untouched. Nothing below a missing destination can conflict.
+    if !overwrite {
+        let mut pending = vec![(from.to_path_buf(), to.to_path_buf())];
+        while let Some((src, dst)) = pending.pop() {
+            let meta = fs::symlink_metadata(&src)?;
+            if rules.excluded(&src, meta.is_dir()) || target_rules.excluded(&dst, meta.is_dir()) {
+                continue;
+            }
+            let Ok(existing) = fs::symlink_metadata(&dst) else { continue };
+            if !(meta.is_dir() && existing.is_dir()) {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, dst.display().to_string()).into());
+            }
+            for entry in fs::read_dir(&src)? {
+                let entry = entry?;
+                pending.push((entry.path(), dst.join(entry.file_name())));
+            }
+        }
+    }
     let mut pending = vec![(from.to_path_buf(), to.to_path_buf())];
     while let Some((src, dst)) = pending.pop() {
         let meta = fs::symlink_metadata(&src)?;
@@ -350,7 +483,16 @@ mod tests {
         }
         fs::create_dir(left.join("empty")).unwrap();
         fs::create_dir(right.join("empty")).unwrap();
-        let rows = compare_directories(&left, &right, None, &[], &CancellationToken::new(), |_| {}).unwrap();
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            None,
+            &[],
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .unwrap();
         let status = |path| rows.iter().find(|r| r.path == path).unwrap().status;
         assert_eq!(status("same"), DirectoryCompareStatus::Equal);
         assert_eq!(status("empty"), DirectoryCompareStatus::Equal);
@@ -360,6 +502,33 @@ mod tests {
         assert_eq!(status("子目录/仅左.txt"), DirectoryCompareStatus::LeftOnly);
         assert_eq!(status("only-right"), DirectoryCompareStatus::RightOnly);
         assert_eq!(status("conflict/child"), DirectoryCompareStatus::RightOnly);
+    }
+
+    #[test]
+    fn reports_file_sizes_and_modification_times_per_side() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (left, right) = (tmp.path().join("left"), tmp.path().join("right"));
+        put(&left, "dir/file", b"four");
+        put(&right, "dir/file", b"sixsix");
+        put(&right, "only-right", b"");
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            None,
+            &[],
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .unwrap();
+        let row = |path| rows.iter().find(|r| r.path == path).unwrap();
+        assert_eq!((row("dir/file").left_size, row("dir/file").right_size), (Some(4.0), Some(6.0)));
+        assert_eq!((row("only-right").left_size, row("only-right").right_size), (None, Some(0.0)));
+        assert_eq!((row("dir").left_size, row("dir").right_size), (None, None));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as f64;
+        let modified = row("dir/file").left_modified.unwrap();
+        assert!((now - 60_000.0..=now + 60_000.0).contains(&modified), "{modified} vs {now}");
+        assert!(row("only-right").left_modified.is_none() && row("only-right").right_modified.is_some());
     }
 
     #[test]
@@ -377,8 +546,16 @@ mod tests {
             put(root, "kept", b"kept");
         }
         let excludes = ["**/node_modules", "**/target", "/left/generated", "/right/generated"].map(String::from);
-        let rows =
-            compare_directories(&left, &right, Some(tmp.path()), &excludes, &CancellationToken::new(), |_| {}).unwrap();
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            Some(tmp.path()),
+            &excludes,
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .unwrap();
         assert!(
             rows.iter()
                 .all(|r| !["node_modules", "target", ".git/", "generated", ".log"].iter().any(|p| r.path.contains(p)))
@@ -398,7 +575,7 @@ mod tests {
             if phase == 0 {
                 cancel.cancel();
             }
-            let result = compare_directories(&left, &right, None, &[], &cancel, |p| {
+            let result = compare_directories(&left, &right, DirectoryCompareMode::Content, None, &[], &cancel, |p| {
                 if phase == 1 && p.scanned > 0 || phase == 2 && p.bytes_read > 0.0 {
                     cancel.cancel();
                 }
@@ -415,11 +592,47 @@ mod tests {
         put(&left, "nested/file", b"a");
         put(&right, "nested/file", b"ab");
         let bytes = std::cell::Cell::new(0.0);
-        let rows =
-            compare_directories(&left, &right, None, &[], &CancellationToken::new(), |p| bytes.set(p.bytes_read))
-                .unwrap();
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            None,
+            &[],
+            &CancellationToken::new(),
+            |p| bytes.set(p.bytes_read),
+        )
+        .unwrap();
         assert_eq!(bytes.get(), 0.0);
         assert!(rows.iter().all(|r| r.status == DirectoryCompareStatus::Different));
+    }
+
+    #[test]
+    fn compare_modes_decide_which_files_are_equal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (left, right) = (tmp.path().join("left"), tmp.path().join("right"));
+        put(&left, "same-size", b"abc");
+        put(&right, "same-size", b"xyz");
+        put(&left, "nested/line-endings.txt", b"a\r\nb\r\n");
+        put(&right, "nested/line-endings.txt", b"a\nb\n");
+        put(&left, "bom.txt", "\u{feff}文本".as_bytes());
+        put(&right, "bom.txt", "文本".as_bytes());
+        put(&left, "binary", &[0, 1, 2, 0]);
+        put(&right, "binary", &[0, 1, 3, 0]);
+        put(&left, "only-left", b"x");
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        fs::File::options().write(true).open(right.join("same-size")).unwrap().set_modified(old).unwrap();
+        let statuses = |mode| {
+            let rows = compare_directories(&left, &right, mode, None, &[], &CancellationToken::new(), |_| {}).unwrap();
+            ["same-size", "nested/line-endings.txt", "nested", "bom.txt", "binary", "only-left"]
+                .map(|path| rows.iter().find(|r| r.path == path).unwrap().status)
+        };
+        use DirectoryCompareStatus::{Different as D, Equal as E, LeftOnly as L};
+        assert_eq!(statuses(DirectoryCompareMode::Content), [D, D, D, D, D, L]);
+        assert_eq!(statuses(DirectoryCompareMode::Text), [D, E, E, E, D, L]);
+        assert_eq!(statuses(DirectoryCompareMode::Size), [E, D, D, D, E, L]);
+        assert_eq!(statuses(DirectoryCompareMode::SizeAndTimestamp), [D, D, D, D, E, L]);
+        let mode: DirectoryCompareMode = serde_json::from_str("\"sizeAndTimestamp\"").unwrap();
+        assert_eq!(mode, DirectoryCompareMode::SizeAndTimestamp);
     }
 
     #[test]
@@ -446,6 +659,23 @@ mod tests {
                 ErrorKind::InvalidInput
             );
         }
+    }
+
+    #[test]
+    fn a_declined_overwrite_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left");
+        let right = tmp.path().join("right");
+        put(&left, "merge/a-clash.txt", b"source");
+        put(&left, "merge/z-new.txt", b"source only");
+        put(&left, "merge/deep/new.txt", b"new");
+        put(&right, "merge/a-clash.txt", b"destination");
+        let error =
+            copy_merge(&left.join("merge"), &right.join("merge"), false, None, &[], (&left, &right)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(right.join("merge/a-clash.txt")).unwrap(), b"destination");
+        assert!(!right.join("merge/z-new.txt").exists());
+        assert!(!right.join("merge/deep").exists());
     }
 
     #[test]
@@ -489,7 +719,16 @@ mod tests {
         fs::create_dir(&right).unwrap();
         symlink(".", left.join("loop")).unwrap();
         symlink("missing", right.join("loop")).unwrap();
-        let rows = compare_directories(&left, &right, None, &[], &CancellationToken::new(), |_| {}).unwrap();
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            None,
+            &[],
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, DirectoryCompareStatus::Different);
         copy_merge(&left.join("loop"), &right.join("copied"), false, None, &[], (&left, &right)).unwrap();

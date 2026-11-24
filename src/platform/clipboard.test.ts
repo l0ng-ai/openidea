@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands } from "./ipc";
-import { pasteClipboardFiles, readClipboardText, writeClipboardText } from "./clipboard";
+import { pasteClipboardFiles, readClipboardPng, readClipboardText, writeClipboardText } from "./clipboard";
 
 beforeEach(() => vi.stubGlobal("__TAURI_INTERNALS__", {}));
 afterEach(() => {
@@ -98,5 +98,24 @@ describe("clipboard writes", () => {
     await writeClipboardText("web preview");
     expect(browser).toHaveBeenCalledExactlyOnceWith("web preview");
     expect(native).not.toHaveBeenCalled();
+  });
+});
+
+describe("clipboard image", () => {
+  it("is the PNG's base64, without the data URL prefix", async () => {
+    const image = vi.spyOn(commands, "clipboardImage");
+    image.mockResolvedValue({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" });
+    expect(await readClipboardPng()).toBe("iVBORw0KGgo=");
+    image.mockResolvedValue({ status: "ok", data: null });
+    expect(await readClipboardPng()).toBeNull();
+    image.mockRejectedValue(new Error("busy"));
+    await expect(readClipboardPng()).rejects.toThrow("busy");
+  });
+
+  it("is none outside the desktop app", async () => {
+    vi.unstubAllGlobals();
+    const image = vi.spyOn(commands, "clipboardImage");
+    expect(await readClipboardPng()).toBeNull();
+    expect(image).not.toHaveBeenCalled();
   });
 });

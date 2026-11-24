@@ -5,6 +5,7 @@ import { Tree, type TreeHandle } from "./Tree";
 import { getContext } from "@/platform/context";
 import { registerAction } from "@/platform/actions";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { usePlatform } from "@/platform/platformInfo";
 
 interface N {
   id: string;
@@ -47,6 +48,35 @@ const labels = (tree: HTMLElement) =>
   within(tree)
     .queryAllByRole("treeitem")
     .map((el) => el.textContent);
+
+describe("Tree context-menu selection", () => {
+  it.each([
+    { os: "windows", gesture: { button: 2 } },
+    { os: "macos", gesture: { button: 0, ctrlKey: true } },
+  ])("marks $os context-menu selection without changing ordinary activation", ({ os, gesture }) => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os });
+    try {
+      const selection = vi.fn();
+      const menu = vi.fn();
+      const { tree, key, onActivate } = setup({ onSelectionChange: selection, onContextMenu: menu });
+      const readme = within(tree).getByRole("treeitem", { name: "README.md" });
+      fireEvent.mouseDown(readme, gesture);
+      fireEvent.contextMenu(readme, gesture);
+      expect(selection).toHaveBeenLastCalledWith(new Set(["README.md"]), data[1], "contextMenu");
+      expect(menu).toHaveBeenCalledWith(data[1], new Set(["README.md"]), expect.anything());
+      expect(onActivate).not.toHaveBeenCalled();
+      key("Home");
+      expect(selection).toHaveBeenLastCalledWith(new Set(["src"]), data[0]);
+      fireEvent.mouseDown(readme, { button: 0 });
+      expect(selection).toHaveBeenLastCalledWith(new Set(["README.md"]), data[1]);
+      key("Enter");
+      expect(onActivate).toHaveBeenCalledWith(data[1], expect.anything());
+    } finally {
+      usePlatform.setState({ os: previousOs });
+    }
+  });
+});
 
 describe("Tree directory context", () => {
   it("does not contribute virtual document URIs as filesystem directories", () => {
@@ -289,6 +319,71 @@ describe("Tree speed search", () => {
     }
   });
 
+  it.each([
+    { os: "macos", preset: "intellij-macos", binding: "Meta+V", key: "v", modifiers: { metaKey: true } },
+    { os: "windows", preset: "intellij-windows", binding: "Ctrl+V", key: "v", modifiers: { ctrlKey: true } },
+    {
+      os: "windows",
+      preset: "intellij-windows",
+      binding: "Shift+Insert",
+      key: "Insert",
+      modifiers: { shiftKey: true },
+    },
+  ])("$binding routes clipboard text to speed search", ({ os, preset, binding, key, modifiers }) => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os });
+    const pasteFiles = vi.fn();
+    useKeymap.setState({ preset, overrides: { "test.paste": [binding] } });
+    const find = os === "macos" ? { metaKey: true } : { ctrlKey: true };
+    const dispose = [
+      registerAction({ id: "test.paste", title: "Paste", run: pasteFiles }),
+      installKeyboardDispatcher(),
+    ];
+    try {
+      const view = setup({
+        defaultExpanded: ["src", "main"],
+        roots: [...data, { id: "notes v1" }, { id: "notes  v1" }],
+      });
+      const tree = view.tree;
+      const paste = (text: string) =>
+        fireEvent.paste(tree, { clipboardData: { getData: () => text } } as unknown as ClipboardEventInit);
+      view.key("ArrowDown");
+      // Find arms the search with an empty query; the clipboard text becomes the query.
+      view.key("f", find);
+      expect(screen.getByRole("status").textContent).toBe("");
+      paste("index.t");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.t$/);
+      expect(view.lead()).toBe("index.ts");
+      // A line of pasted text joins the query as typing it would; a wrapped name stays one line.
+      paste("s");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.ts$/);
+      // Paste is the query's, not the view's file Paste, while the search is active.
+      view.key(key, modifiers);
+      expect(pasteFiles).not.toHaveBeenCalled();
+      // A blank clipboard changes nothing.
+      paste("   ");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.ts$/);
+      // Closed, the view's Paste owns the shortcut again.
+      view.key("Escape");
+      view.key(key, modifiers);
+      expect(pasteFiles).toHaveBeenCalledOnce();
+      expect(view.tree).toHaveFocus();
+      // A multi-line clipboard is flattened into the one-line query.
+      view.key("f", find);
+      paste("App\n.tsx");
+      expect(screen.getByRole("status")).toHaveTextContent(/^App \.tsx$/);
+      view.key("Escape");
+      view.key("f", find);
+      paste("notes  v1");
+      expect(screen.getByRole("status").textContent).toBe("notes  v1");
+      expect(view.lead()).toBe("notes  v1");
+    } finally {
+      dispose.forEach((d) => d());
+      useKeymap.setState({ overrides: {} });
+      usePlatform.setState({ os: previousOs });
+    }
+  });
+
   it("filter mode hides non-matching rows but keeps ancestors", () => {
     const { tree, key } = setup({ defaultExpanded: ["src", "main"], speedSearchMode: "filter" });
     key("ArrowDown");
@@ -307,6 +402,29 @@ describe("Tree speed search", () => {
     expect(labels(tree)).toEqual(["src", "main", "App.tsx"]);
     fireEvent.click(toggle);
     expect(labels(tree)).toHaveLength(6);
+  });
+
+  it("⌘F / Ctrl+F opens the field before anything is typed, and Escape closes it", () => {
+    const os = usePlatform.getState().os;
+    try {
+      for (const [platform, init] of [
+        ["macos", { metaKey: true }],
+        ["windows", { ctrlKey: true }],
+      ] as const) {
+        usePlatform.setState({ os: platform });
+        const { key, unmount } = setup({ speedSearchField: true });
+        expect(screen.queryByRole("status")).toBeNull();
+        key("f", init);
+        expect(screen.getByRole("status")).toHaveTextContent("");
+        key("u");
+        expect(screen.getByRole("status")).toHaveTextContent("u");
+        key("Escape");
+        expect(screen.queryByRole("status")).toBeNull();
+        unmount();
+      }
+    } finally {
+      usePlatform.setState({ os });
+    }
   });
 });
 

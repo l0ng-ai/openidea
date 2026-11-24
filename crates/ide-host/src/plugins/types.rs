@@ -4,7 +4,8 @@ use super::theme::ThemeDef;
 use ide_extension::package::PluginIcon;
 use ide_extension::{CapabilityInfo, ContributionInfo, UiContribution};
 pub use ide_plugin::{
-    ActionPerformed, ActionSource, EventKind, NotificationLevel, PickItem, Prompt, StatusItem, WorkbenchEvent,
+    ActionPerformed, ActionSource, CaretMoved, EventKind, NotificationLevel, PickItem, Prompt, StatusItem,
+    WorkbenchEvent,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -63,6 +64,10 @@ pub struct PluginJavaAgent {
     pub file_name: String,
     /// The optional argument passed after `=`.
     pub args: Option<String>,
+    /// Extra JVM flags from `vmOptions` (API 1.14).
+    pub vm_options: Vec<String>,
+    /// When `Some("jetbrains")`, those VM options apply only on JetBrains Runtime.
+    pub jdk: Option<String>,
     /// The jar still has the hash recorded when `java.agent` was granted.
     pub approved: bool,
 }
@@ -241,6 +246,9 @@ pub enum PluginEvent {
     /// Complete replacement of one plugin's project-scoped decorations.
     #[serde(rename_all = "camelCase")]
     DecorationsChanged { plugin_id: String, sets: Vec<DecorationSet> },
+    /// Complete replacement of one plugin's console highlight rules (empty: none).
+    #[serde(rename_all = "camelCase")]
+    ConsoleRulesChanged { plugin_id: String, rules: Vec<ide_plugin::ConsoleRule> },
     /// Open a file in the invoking window.
     EditorOpen { path: ide_core::IpcPath, selection: Option<ide_core::Range> },
     /// Change selection or scrolling only in this window's already open editor.
@@ -352,6 +360,10 @@ pub enum PluginEvent {
     /// `plugin_answer_commit(request_id, …)`. Closed like a prompt (`PromptClosed`).
     #[serde(rename_all = "camelCase")]
     CommitRequested { plugin_id: String, request_id: String, request: CommitRequest },
+    /// A command the user ran reads the clipboard (`ui.read-clipboard`): answer with
+    /// `plugin_answer_clipboard(request_id, …)`. Closed like a prompt (`PromptClosed`).
+    #[serde(rename_all = "camelCase")]
+    ClipboardRequested { plugin_id: String, request_id: String },
 }
 
 /// What a plugin asks of a window's Commit view.
@@ -487,6 +499,18 @@ pub struct PluginCommitCheckResult {
     pub problems: Vec<ide_plugin::CommitProblem>,
     /// The check could not run (the plugin failed, timed out or lacks `vcs.read`).
     pub error: Option<String>,
+}
+
+/// A window's answer to `ClipboardRequested`: its machine's clipboard.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ClipboardAnswer {
+    /// `None` for a kind the clipboard doesn't hold; `png` is base64.
+    Content { text: Option<String>, png: Option<String> },
+    /// The user refused (a remote window asks first).
+    Refused,
+    /// The window could not read the clipboard.
+    Failed { message: String },
 }
 
 /// The invoking window's response to a command request.

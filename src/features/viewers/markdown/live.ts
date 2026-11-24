@@ -13,7 +13,6 @@ import { MAX_COUNT, findExcluded, findOpen, findScope } from "@/editor/core/cm/f
 import { fontZoom, resetConfiguredEditorsFontZoom, stepConfiguredEditorsFontZoom } from "@/editor/core/cm/prefs";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
-import { isMarkdownPath } from "../fileKinds";
 
 export interface LiveMarkdownFind {
   search: string;
@@ -237,6 +236,15 @@ function livePlugin(path: string) {
         }
 
         if (!u.docChanged) {
+          if (u.geometryChanged && u.view.scrollDOM.scrollTop > 0) {
+            u.view.requestMeasure({
+              key: this,
+              read: topLineOf,
+              write: (topLine) => {
+                if (topLine !== useLiveMarkdown.getState()[path]?.topLine) publish(path, { topLine });
+              },
+            });
+          }
           if (u.selectionSet) this.publishCaret();
           return;
         }
@@ -260,6 +268,7 @@ function livePlugin(path: string) {
 export function registerMarkdownLiveSource(): () => void {
   return registerEditorContribution({
     id: "viewers.markdownLive",
-    extensions: (ctx) => (!ctx.virtual && isMarkdownPath(ctx.path) ? [livePlugin(ctx.path)] : []),
+    // The document's language: contributions are rebuilt when File Types change it.
+    extensions: (ctx) => (!ctx.virtual && ctx.language === "markdown" ? [livePlugin(ctx.path)] : []),
   });
 }

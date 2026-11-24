@@ -5,6 +5,7 @@ import { dirKeys, type FileTreeNode } from "./fileTree";
 import styles from "./common.module.css";
 
 const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
+const defaultOpenDiff = (diff: DiffData) => void openVcsDiff(diff);
 
 /** Shared changes tree and on-demand diff surface for revisions and disk folders. */
 export function ComparisonTree<F>({
@@ -12,17 +13,20 @@ export function ComparisonTree<F>({
   current,
   onSelect,
   diffFor,
+  renderFileIcon,
   renderDetails,
   ariaLabel,
   openOnActivate = false,
   getColor,
   onOpen,
   inlineDiff = true,
+  openDiff = defaultOpenDiff,
 }: {
   tree: FileTreeNode<F>[];
   current: F | null;
   onSelect: (entry: F | null) => void;
   diffFor: (entry: F) => DiffData | null;
+  renderFileIcon?: (file: F) => ReactNode;
   renderDetails: (node: FileTreeNode<F>) => ReactNode;
   ariaLabel: string;
   openOnActivate?: boolean;
@@ -30,6 +34,8 @@ export function ComparisonTree<F>({
   onOpen?: () => void;
   /** Show the selected file's diff beside the tree; off where there is no room (a sidebar). */
   inlineDiff?: boolean;
+  /** With `openOnActivate`: where a double-clicked file's diff opens (default: an editor tab). */
+  openDiff?: (diff: DiffData) => void;
 }) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null);
@@ -56,7 +62,7 @@ export function ComparisonTree<F>({
           onSelect(entry);
           const diff = diffFor(entry);
           if (openOnActivate && diff) {
-            void openVcsDiff(diff);
+            openDiff(diff);
             onOpen?.();
           }
         }}
@@ -64,7 +70,7 @@ export function ComparisonTree<F>({
         className={styles.comparisonTree}
         renderNode={(n) => (
           <span className={styles.fileRow} style={{ flex: 1, padding: 0 }}>
-            <Icon name={n.file ? fileIconName(n.name) : "folder"} size={14} />
+            {(n.file && renderFileIcon?.(n.file)) ?? <Icon name={n.file ? fileIconName(n.name) : "folder"} size={14} />}
             <span className={styles.fileName} style={{ color: n.file ? getColor?.(n.file) : undefined }}>
               {n.name}
             </span>

@@ -7,14 +7,16 @@ Java code insight comes from the Eclipse JDT Language Server (jdtls), extended w
 
 ## Language servers
 
-| Language               | Server                                    | Fallback                                                           | Debugger                                |
-| ---------------------- | ----------------------------------------- | ------------------------------------------------------------------ | --------------------------------------- |
-| Java                   | Eclipse JDT Language Server (`jdtls`)     | `kmp-lsp`                                                          | Microsoft java-debug, loaded into jdtls |
-| Kotlin                 | Kotlin LSP (JetBrains, `kotlin-lsp`)      | Kotlin Language Server (fwcd, `kotlin-language-server`), `kmp-lsp` | Kotlin Debug Adapter (fwcd)             |
-| Groovy, Gradle scripts | `groovy-language-server` (you provide it) |                                                                    |                                         |
-| JSP                    | none (highlighting only)                  |                                                                    |                                         |
+| Language               | Server                                    | Fallback                                                           | Debugger                                                                        |
+| ---------------------- | ----------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| Java                   | Eclipse JDT Language Server (`jdtls`)     | `java-analyzer`, `kmp-lsp`                                         | Microsoft java-debug, loaded into jdtls; `java-analyzer dap` with java-analyzer |
+| Kotlin                 | Kotlin LSP (JetBrains, `kotlin-lsp`)      | Kotlin Language Server (fwcd, `kotlin-language-server`), `kmp-lsp` | Kotlin Debug Adapter (fwcd)                                                     |
+| Groovy, Gradle scripts | `groovy-language-server` (you provide it) |                                                                    |                                                                                 |
+| JSP                    | none (highlighting only)                  |                                                                    |                                                                                 |
 
 A fallback starts only while the server listed before it is not installed. To pick one explicitly, open **Settings › Languages & Frameworks › Language Servers**, select either server and use **Language server for Java** (or Kotlin): **Automatic** uses the first one available, **None** turns code insight off. The choice can be global or for the current project.
+
+`java-analyzer` is a native Java language server that needs no JVM to run. It imports Maven and Gradle projects itself (or a `java-analyzer.toml`), and also serves Run and Debug: Application configurations take their classpath from it, and debugging uses its own adapter (`java-analyzer dap`). OpenIDEA passes it the project JDK and the Maven local repository when they are set; otherwise it finds them itself.
 
 `kmp-lsp` gives syntax-based Java code insight without running a JVM. It has no JDT compiler analysis, no Lombok support and none of the JDT refactorings. Building and running Java Application configurations, classpath discovery and the Java debugger need jdtls.
 
@@ -43,6 +45,7 @@ When you open a Java or Kotlin file and its server is missing, a notification of
 | Kotlin LSP (JetBrains)               | GitHub release of `Kotlin/kotlin-lsp`                       |
 | Kotlin Language Server (fwcd)        | GitHub release of `fwcd/kotlin-language-server`; needs Java |
 | Kotlin Debug Adapter                 | GitHub release of `fwcd/kotlin-debug-adapter`; needs Java   |
+| java-analyzer                        | GitHub release of `l0ng-ai/java-analyzer`                   |
 | kmp-lsp                              | GitHub release of `Hessesian/kmp-lsp`                       |
 
 A `jdtls` already on your `PATH` (Homebrew, Scoop or a release archive) is used too. OpenIDEA starts it on the JVM directly instead of through its Python launcher script, so Python is not required. When you start a debug session without java-debug, the IDE offers to install it and restarts jdtls with the bundle.
@@ -140,7 +143,7 @@ Navigation between MyBatis mapper interfaces and their XML statements is availab
 ## Limitations
 
 - One jdtls runs per project window. With several large projects open at once, memory adds up. Lower `-Xmx` in **JVM options** or close windows you are not using. **Share JDT LS across builds** helps only within one window.
-- Without jdtls (for example with `kmp-lsp` only), Application configurations, classpath-based features and Java debugging are not available.
+- With `kmp-lsp` only (no jdtls or java-analyzer), Application configurations, classpath-based features and Java debugging are not available.
 - Java tests run through Maven or Gradle. A project without either build tool has no test runner.
 - The jdtls compiler (ECJ) is stricter than javac in some places. Known case: a generic method call used directly as an `if`, `while`, `for` or `do` condition or a ternary condition — for example `if (getCacheObject(key))` with a `<T> T getCacheObject(String key)` method — compiles with javac but ECJ reports `Type mismatch: cannot convert from Object to boolean`. Assigning the call to a `boolean` variable first compiles on both (see [#2624](https://github.com/l0ng-ai/openidea/issues/2624)).
 - The Kotlin bridge is Maven only and exposes compiled Kotlin classes to Java. It does not give Java-to-Kotlin source navigation or refactoring.

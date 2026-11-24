@@ -52,6 +52,61 @@ fn npm_scripts_with_lockfile_package_manager() {
 }
 
 #[test]
+fn playwright_scripts_and_configs() {
+    let dir = project(&[
+        ("package.json", r#"{"scripts":{"e2e":"cross-env CI=1 playwright test --project=chromium","test":"vitest"}}"#),
+        ("playwright.config.ts", ""),
+        ("site/package.json", r#"{"devDependencies":{"@playwright/test":"^1.56.0"}}"#),
+        ("site/playwright.config.ts", ""),
+    ]);
+    let c = detect(dir.path());
+    let e2e = find(&c, "npm:e2e");
+    assert!(e2e.is_test);
+    assert_eq!(e2e.extras.test_runner.as_deref(), Some("playwright"));
+    assert_eq!(find(&c, "npm:test").extras.test_runner, None);
+    // The root's script runs Playwright already; the nested package has none.
+    assert!(!ids(&c).contains(&"playwright"));
+    let site = find(&c, "playwright:site");
+    assert_eq!(cmdline(site), "npx playwright test");
+    assert_eq!(site.name, "site: playwright test");
+    assert!(site.is_test && site.detected);
+    assert_eq!(site.kind, "node");
+    assert_eq!(site.cwd.as_deref(), Some(Path::new("site")));
+    assert_eq!(site.extras.test_runner.as_deref(), Some("playwright"));
+    assert_eq!(site.debug_adapter.as_deref(), Some("js-debug"));
+}
+
+#[test]
+fn node_test_scripts() {
+    let dir = project(&[(
+        "package.json",
+        r#"{"scripts":{"test":"node --import tsx --test","check":"tsx --test src/","tap":"node --test --test-reporter=tap","start":"node server.js --test"}}"#,
+    )]);
+    let c = detect(dir.path());
+    assert_eq!(find(&c, "npm:test").extras.test_runner.as_deref(), Some("node-test"));
+    let check = find(&c, "npm:check");
+    assert!(check.is_test);
+    assert_eq!(check.extras.test_runner.as_deref(), Some("node-test"));
+    // A reporter of its own: run as written, without the IDE's.
+    assert_eq!(find(&c, "npm:tap").extras.test_runner, None);
+    assert_eq!(find(&c, "npm:start").extras.test_runner, None);
+}
+
+#[test]
+fn mocha_scripts() {
+    let dir = project(&[(
+        "package.json",
+        r#"{"scripts":{"spec":"mocha --recursive","test":"nyc ./node_modules/.bin/mocha","lint":"eslint mocha.config.js"}}"#,
+    )]);
+    let c = detect(dir.path());
+    let spec = find(&c, "npm:spec");
+    assert!(spec.is_test);
+    assert_eq!(spec.extras.test_runner.as_deref(), Some("mocha"));
+    assert_eq!(find(&c, "npm:test").extras.test_runner.as_deref(), Some("mocha"));
+    assert!(!find(&c, "npm:lint").is_test);
+}
+
+#[test]
 fn package_manager_selection() {
     for (lock, pm) in [("yarn.lock", "yarn"), ("bun.lockb", "bun"), ("bun.lock", "bun"), ("package-lock.json", "npm")] {
         let dir = project(&[("package.json", r#"{"scripts":{"start":"node ."}}"#), (lock, "")]);
@@ -354,6 +409,8 @@ fn nested_builds_of_every_kind_and_depth() {
         ide_build::compile::BuildKind::Build,
         Some(&dir.path().join("services/api/app/src/main/kotlin/com/acme/Api.kt")),
         None,
+        None,
+        &ide_core::CancellationToken::new(),
     )
     .unwrap();
     assert_eq!(plan.steps[0].cwd, dir.path().join("services/api"));
@@ -378,25 +435,57 @@ fn a_root_build_disables_the_nested_scan() {
 }
 
 #[test]
-fn spring_boot_applications_need_the_plugin_and_a_main() {
+fn spring_boot_applications_need_spring_boot_and_a_main() {
     let main =
         "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n";
-    // A library using Spring Boot without the plugin, a configuration class without `main`,
-    // the annotation in a comment, a parent POM.
+    // A module without Spring Boot in its build, a configuration class without `main`, the
+    // annotation in a comment, a parent POM.
     let dir = project(&[
-        ("lib/pom.xml", "<project><dependencies>spring-boot-starter</dependencies></project>"),
-        ("lib/src/main/java/demo/App.java", main),
+        ("plain/pom.xml", "<project><dependencies>commons-lang3</dependencies></project>"),
+        ("plain/src/main/java/demo/App.java", main),
         ("svc/pom.xml", BOOT_POM),
         ("svc/src/main/java/demo/Config.java", "package demo;\n@SpringBootApplication\npublic class Config {}\n"),
         (
             "svc/src/main/java/demo/Old.java",
             "package demo;\n// @SpringBootApplication\nclass Old { public static void main(String[] a) {} }\n",
         ),
-        ("gr/build.gradle", "dependencies { implementation 'org.springframework.boot:spring-boot-starter' }\n"),
+        ("gr/build.gradle", "dependencies { implementation 'com.google.guava:guava:33.0.0-jre' }\n"),
         ("gr/src/main/java/demo/App.java", main),
     ]);
     let c = detect(dir.path());
     assert!(!c.iter().any(|c| c.kind == "spring-boot"), "{:?}", ids(&c));
+}
+
+/// Spring Boot on the classpath is enough, as for IntelliJ IDEA: a module depending on a
+/// starter (directly or through its parent POM) without the packaging plugin, and Gradle's
+/// dependency on `org.springframework.boot:…`.
+#[test]
+fn spring_boot_applications_without_the_plugin() {
+    let main =
+        "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n";
+    let dir = project(&[
+        (
+            "lib/pom.xml",
+            "<project><dependencies><dependency><groupId>org.springframework.boot</groupId>\
+                         <artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>",
+        ),
+        ("lib/src/main/java/demo/App.java", main),
+        ("gr/build.gradle", "dependencies { implementation 'org.springframework.boot:spring-boot-starter' }\n"),
+        ("gr/src/main/java/demo/App.java", main),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(find(&c, "application:lib:demo.App").kind, "spring-boot");
+    assert_eq!(find(&c, "application:gr:demo.App").kind, "spring-boot");
+
+    let parent = "<project><packaging>pom</packaging><modules><module>job</module></modules>\
+                  <parent><groupId>org.springframework.boot</groupId>\
+                  <artifactId>spring-boot-starter-parent</artifactId></parent></project>";
+    let dir = project(&[
+        ("pom.xml", parent),
+        ("job/pom.xml", "<project><artifactId>job</artifactId></project>"),
+        ("job/src/main/java/demo/App.java", main),
+    ]);
+    assert_eq!(find(&detect(dir.path()), "application:job:demo.App").kind, "spring-boot");
 }
 
 #[test]
@@ -623,6 +712,20 @@ fn godot_projects_run_their_main_scene() {
     assert_eq!(demo.name, "Godot Project (demo)");
     assert_eq!(demo.cwd, Some(std::path::PathBuf::from("demo").into()));
     assert!(detect(project(&[("main.gd", "extends Node\n")]).path()).is_empty());
+}
+
+#[test]
+fn flutter_apps_run_their_entry_point() {
+    let pubspec = "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n";
+    let dir = project(&[("pubspec.yaml", pubspec), ("lib/main.dart", "void main() {}\n")]);
+    let c = detect(dir.path());
+    let app = find(&c, "flutter:run");
+    assert_eq!(app.kind, "flutter");
+    assert_eq!(cmdline(app), "flutter run -t lib/main.dart");
+    assert_eq!(app.debug_adapter.as_deref(), Some("dart"));
+    // A Flutter package has no app to start, and a Dart package no Flutter.
+    assert!(detect(project(&[("pubspec.yaml", pubspec), ("lib/widgets.dart", "")]).path()).is_empty());
+    assert!(detect(project(&[("pubspec.yaml", "name: tool\n"), ("lib/main.dart", "")]).path()).is_empty());
 }
 
 #[test]
@@ -907,7 +1010,7 @@ fn go_work_external_member_has_a_plain_absolute_working_directory() {
 
 #[test]
 fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
-    use ide_run::go::work_modules;
+    use ide_core::go::work_modules;
     assert_eq!(
         work_modules("replace use => ./not-a-member\n// use ./also-not\nuse ./real\n"),
         vec![std::path::PathBuf::from("./real")]
@@ -918,7 +1021,7 @@ fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
 
 #[test]
 fn go_work_paths_decode_go_string_escapes() {
-    use ide_run::go::work_modules;
+    use ide_core::go::work_modules;
     for path in [r#""./\u0061pp""#, r#""./\x61pp""#, r#""./\141pp""#, "`./app`"] {
         assert_eq!(work_modules(&format!("use {path}\n")), vec![std::path::PathBuf::from("./app")]);
     }

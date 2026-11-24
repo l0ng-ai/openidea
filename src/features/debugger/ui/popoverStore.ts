@@ -40,6 +40,8 @@ interface OverlayState {
   streamChooser: { session: DebugSessionId; frame: number; chains: StreamChainInfo[] } | null;
   /** The session whose stream trace "Abort Operation…" asks about. */
   streamAbort: DebugSessionId | null;
+  /** View as Table; it stays open across steps, so it lives here rather than in the Variables view. */
+  tableView: { expression: string; session: DebugSessionId } | null;
 }
 
 export const useOverlays = create<OverlayState>(() => ({
@@ -51,6 +53,7 @@ export const useOverlays = create<OverlayState>(() => ({
   smartStep: null,
   streamChooser: null,
   streamAbort: null,
+  tableView: null,
 }));
 
 export function openBreakpointPopover(path: string, id: string, at: { x: number; y: number }, focusLog = false) {
@@ -59,6 +62,10 @@ export function openBreakpointPopover(path: string, id: string, at: { x: number;
 
 export function closeBreakpointPopover() {
   useOverlays.setState({ popover: null });
+}
+
+export function openTableView(expression: string, session: DebugSessionId) {
+  useOverlays.setState({ tableView: { expression, session } });
 }
 
 export function openEvaluateDialog(expression = "") {

@@ -34,11 +34,14 @@ export interface IpcStub {
   send(channel: unknown, message: unknown): void;
   /** Emits an `IdeEvent` the way the backend does. */
   emit(event: { type: string } & Record<string, unknown>): void;
+  dispatch(event: string, payload: unknown): void;
 }
 
 declare global {
   interface Window {
     __ipc: IpcStub;
+    /** Releases a stubbed answer a test holds back on purpose (see the ⌥⏎ popup test). */
+    __releaseActions?: (() => void) | null;
   }
 }
 
@@ -69,8 +72,12 @@ export async function stubDesktop(page: Page) {
         callbacks.get(id)?.({ index, message });
       },
       emit(event) {
-        for (const l of listeners)
-          if (l.event === "ide://event") callbacks.get(l.handler)?.({ event: l.event, id: 0, payload: event });
+        ipc.dispatch("ide://event", event);
+      },
+      dispatch(event, payload) {
+        for (const l of listeners) {
+          if (l.event === event) callbacks.get(l.handler)?.({ event, id: 0, payload });
+        }
       },
     };
     window.__ipc = ipc;

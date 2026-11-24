@@ -12,13 +12,14 @@ mod actor;
 pub mod indexing;
 mod runtime;
 mod sandbox;
+pub mod search;
 mod types;
 mod wit_host;
 
 pub use actor::{Actor, ActorError, Pending};
 pub use runtime::{
-    API_VERSION, CANCELLED, CallCancel, CallError, GuestError, HostApi, PluginEngine, Runtime, RuntimeSetup, check_api,
-    component_api, host_api,
+    API_VERSION, CANCELLED, CallCancel, CallError, GuestError, HostApi, MAX_CLIPBOARD_BYTES, PluginEngine, Runtime,
+    RuntimeSetup, check_api, component_api, host_api,
 };
 pub use sandbox::{
     MAX_READ_BYTES, inside_root, inside_roots, read_text, resolve_in_root, resolve_in_roots, resolve_new_in_root,

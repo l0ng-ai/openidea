@@ -48,6 +48,65 @@ pub struct QueryResult {
     pub elapsed_ms: f64,
     /// Until the server's first answer; the rest of `elapsed_ms` is fetching.
     pub execution_ms: f64,
+    /// Cells of `rows` cut short by [`QueryResult::cap_cells`], in row order.
+    pub truncated: Vec<TruncatedCell>,
+}
+
+/// A cell of a [`QueryResult`] whose text was cut to a prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbTruncatedCell")]
+pub struct TruncatedCell {
+    pub row: u32,
+    pub column: u32,
+    /// Length of the whole value in UTF-16 code units (what a JavaScript string counts).
+    pub length: u32,
+    /// FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+    /// so a client that reads the value again can tell whether it is the one that was cut.
+    pub hash: u32,
+}
+
+/// FNV-1a over UTF-16 code units, one step per unit (the same on the client: see `cutCells.ts`).
+fn fnv1a_utf16(text: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    let mut pair = [0u16; 2];
+    for ch in text.chars() {
+        for unit in ch.encode_utf16(&mut pair) {
+            hash = (hash ^ u32::from(*unit)).wrapping_mul(0x0100_0193);
+        }
+    }
+    hash
+}
+
+impl QueryResult {
+    /// Cuts every cell longer than `limit` UTF-16 code units to its first `limit` (never inside a
+    /// surrogate pair) and lists it in `truncated`, so a page's size no longer depends on how
+    /// wide its values are. The full value is read again, one row at a time, when it is needed.
+    pub fn cap_cells(&mut self, limit: usize) {
+        for (r, row) in self.rows.iter_mut().enumerate() {
+            for (c, cell) in row.iter_mut().enumerate() {
+                let Some(text) = cell else { continue };
+                // A UTF-16 length never exceeds the UTF-8 one.
+                if text.len() <= limit {
+                    continue;
+                }
+                let mut units = 0;
+                let mut cut = text.len();
+                for (at, ch) in text.char_indices() {
+                    if units + ch.len_utf16() > limit && cut == text.len() {
+                        cut = at;
+                    }
+                    units += ch.len_utf16();
+                }
+                if units <= limit {
+                    continue;
+                }
+                let hash = fnv1a_utf16(text);
+                text.truncate(cut);
+                self.truncated.push(TruncatedCell { row: r as u32, column: c as u32, length: units as u32, hash });
+            }
+        }
+    }
 }
 
 /// Session context belongs to the physical connection, including across pool checkouts.
@@ -217,7 +276,8 @@ impl ManageConnection for MssqlConnectionManager {
         let row = client.simple_query("SELECT DB_NAME()").await?.into_row().await?;
         let default = row
             .and_then(|r| r.get::<&str, _>(0).map(str::to_owned))
-            .and_then(|db| crate::sql::use_schema(DbDriver::SqlServer, &db));
+            // Statements that `USE` another database must not move the pooled connection for good.
+            .map(|db| format!("USE {}", crate::sql::quote_ident(DbDriver::SqlServer, &db)));
         Ok(MssqlConnection(Some(client), Context::new(default)))
     }
 
@@ -237,6 +297,7 @@ pub enum Pool {
     Mysql(ServerPool<MysqlManager>),
     SqlServer(Bb8Pool<MssqlConnectionManager>),
     Clickhouse(crate::clickhouse::ClickhousePool),
+    Jdbc(Box<crate::jdbc::JdbcPool>),
     Oracle(crate::oracle::OraclePool),
     Snowflake(crate::snowflake::SnowflakePool),
 }
@@ -245,6 +306,17 @@ pub enum Pool {
 /// still end result sets with legacy EOF packets, which sqlx then fails to read as OK packets.
 fn legacy_eof(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Protocol(msg) if msg.starts_with("OK_Packet too short"))
+}
+
+/// A TLS handshake that failed, e.g. with a server limited to TLS 1.0/1.1. SSL mode Prefer means
+/// TLS when it works, else a plain connection, as libpq's `sslmode=prefer` and MySQL clients'
+/// PREFERRED do; sqlx only goes plain when the server offers no TLS, so such errors are retried.
+fn tls_failed(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Tls(_) => true,
+        sqlx::Error::Io(io) => io.get_ref().is_some_and(|inner| inner.is::<rustls::Error>()),
+        _ => false,
+    }
 }
 
 pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
@@ -473,6 +545,86 @@ fn result_columns<R: Row>(row: &R) -> Vec<ResultColumn> {
         .collect()
 }
 
+/// How far a statement's stream has been read: the columns seen so far, and the row that
+/// showed more were coming, which the next read starts with.
+pub(crate) struct Reader<R> {
+    columns: Vec<ResultColumn>,
+    carry: Option<R>,
+}
+
+impl<R> Default for Reader<R> {
+    fn default() -> Self {
+        Self { columns: Vec::new(), carry: None }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Rows pulled from statement streams on this thread (tests count what paging reads).
+    pub(crate) static ROWS_PULLED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Reads on from `stream`: past the next `skip` rows without decoding them, then keeping at
+/// most `max` rows with their cells read as `mode`. `rows_affected` reads a command's count.
+async fn drain<S, D, R>(
+    stream: &mut S,
+    reader: &mut Reader<R>,
+    skip: usize,
+    max: usize,
+    mode: Cells,
+    rows_affected: impl Fn(&D) -> u64,
+) -> IdeResult<Fetched>
+where
+    S: futures::Stream<Item = Result<sqlx::Either<D, R>, sqlx::Error>> + Unpin,
+    R: Row,
+    usize: ColumnIndex<R>,
+    String: sqlx::Type<R::Database>,
+    for<'r> String: Decode<'r, R::Database>,
+    for<'r> Vec<u8>: Decode<'r, R::Database>,
+{
+    let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+    let mut affected: Option<u64> = None;
+    let mut has_more = false;
+    let mut first: Option<Instant> = None;
+    let mut to_skip = skip;
+    loop {
+        let item = match reader.carry.take() {
+            Some(row) => Ok(sqlx::Either::Right(row)),
+            None => match stream.next().await {
+                Some(item) => {
+                    #[cfg(test)]
+                    if matches!(item, Ok(sqlx::Either::Right(_))) {
+                        ROWS_PULLED.with(|n| n.set(n.get() + 1));
+                    }
+                    item
+                }
+                None => break,
+            },
+        };
+        first.get_or_insert_with(Instant::now);
+        match item {
+            Ok(sqlx::Either::Left(done)) => affected = Some(affected.unwrap_or(0) + rows_affected(&done)),
+            Ok(sqlx::Either::Right(row)) => {
+                if reader.columns.is_empty() {
+                    reader.columns = result_columns(&row);
+                }
+                if to_skip > 0 {
+                    to_skip -= 1;
+                    continue;
+                }
+                if rows.len() >= max {
+                    reader.carry = Some(row);
+                    has_more = true;
+                    break;
+                }
+                rows.push((0..row.len()).map(|i| cell(&row, i, mode)).collect());
+            }
+            Err(e) => return Err(db_err(e)),
+        }
+    }
+    Ok((reader.columns.clone(), rows, affected, has_more, first))
+}
+
 /// Streams the results of `$sql` on executor `$exec`, reading past the first `$skip`
 /// rows without decoding them, then keeping at most `$max` rows with their cells read as `$mode`.
 macro_rules! fetch {
@@ -480,44 +632,8 @@ macro_rules! fetch {
         fetch!($exec, $sql, 0usize, $max, $mode)
     };
     ($exec:expr, $sql:expr, $skip:expr, $max:expr, $mode:expr) => {{
-        use futures::StreamExt;
         let mut stream = sqlx::raw_sql(sqlx::AssertSqlSafe($sql.to_owned())).fetch_many($exec);
-        let mut columns: Vec<ResultColumn> = Vec::new();
-        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
-        let mut affected: Option<u64> = None;
-        let mut has_more = false;
-        let mut failure = None;
-        let mut first: Option<Instant> = None;
-        let mut to_skip: usize = $skip;
-        while let Some(item) = stream.next().await {
-            first.get_or_insert_with(Instant::now);
-            match item {
-                Ok(sqlx::Either::Left(done)) => affected = Some(affected.unwrap_or(0) + done.rows_affected()),
-                Ok(sqlx::Either::Right(row)) => {
-                    if columns.is_empty() {
-                        columns = result_columns(&row);
-                    }
-                    if to_skip > 0 {
-                        to_skip -= 1;
-                        continue;
-                    }
-                    if rows.len() >= $max {
-                        has_more = true;
-                        break;
-                    }
-                    rows.push((0..row.len()).map(|i| cell(&row, i, $mode)).collect());
-                }
-                Err(e) => {
-                    failure = Some(db_err(e));
-                    break;
-                }
-            }
-        }
-        drop(stream);
-        match failure {
-            Some(e) => Err(e),
-            None => Ok((columns, rows, affected, has_more, first)),
-        }
+        drain(&mut stream, &mut Reader::default(), $skip, $max, $mode, |done| done.rows_affected()).await
     }};
 }
 
@@ -571,6 +687,31 @@ macro_rules! backend_id {
             .and_then(|r| r.into_iter().next().flatten())
             .filter(|id| id.chars().all(|c| c.is_ascii_digit()))
     }};
+}
+
+mod cursor;
+pub(crate) use cursor::{Cursors, Key as CursorKey};
+
+/// Whether the pages of `sql`'s result can be read by a cursor (see [`cursor`]): a query that
+/// leaves the session as it was.
+pub(crate) fn cursor_statement(sql: &str) -> bool {
+    looks_like_query(sql) && !context_may_change(sql)
+}
+
+/// A [`QueryResult`] of what `fetched` read of `sql`, run since `started`.
+pub(crate) fn query_result(sql: &str, fetched: Fetched, started: Instant) -> QueryResult {
+    let (columns, rows, affected, has_more, first) = fetched;
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    QueryResult {
+        statement: sql.to_owned(),
+        affected: if columns.is_empty() { Some(affected.unwrap_or(0) as f64) } else { None },
+        columns,
+        rows,
+        has_more,
+        elapsed_ms,
+        execution_ms: first.map_or(elapsed_ms, |t| t.duration_since(started).as_secs_f64() * 1000.0),
+        truncated: Vec::new(),
+    }
 }
 
 // Session control, scripts and PostgreSQL set_config can invalidate the tracked context.
@@ -729,12 +870,21 @@ impl Pool {
             Pool::Mysql(_) => DbDriver::Mysql,
             Pool::SqlServer(_) => DbDriver::SqlServer,
             Pool::Clickhouse(_) => DbDriver::Clickhouse,
+            Pool::Jdbc(_) => DbDriver::Jdbc,
             Pool::Oracle(_) => DbDriver::Oracle,
             Pool::Snowflake(_) => DbDriver::Snowflake,
         }
     }
 
     /// The keep-alive ping (Oracle needs a FROM clause).
+    /// Keep-alive: one cheap round trip on the session.
+    pub async fn ping(&self) -> IdeResult<()> {
+        match self {
+            Pool::Jdbc(p) => p.ping().await,
+            _ => self.rows(self.ping_sql(), 1).await.map(|_| ()),
+        }
+    }
+
     pub fn ping_sql(&self) -> &'static str {
         match self {
             Pool::Oracle(_) => "SELECT 1 FROM DUAL",
@@ -830,9 +980,17 @@ impl Pool {
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
-                let manager = PgManager { options: opts, init: init.clone(), timeout };
+                let mut manager = PgManager { options: opts, init: init.clone(), timeout };
                 // Open once directly so authentication failures retain their database error.
-                let first = manager.connect().await.map_err(db_err)?;
+                let first = match manager.connect().await {
+                    Err(e) if source.ssl == DbSslMode::Prefer && tls_failed(&e) => {
+                        tracing::info!("TLS handshake failed, connecting without TLS (SSL mode Prefer): {e}");
+                        manager.options = manager.options.clone().ssl_mode(PgSslMode::Disable);
+                        manager.connect().await
+                    }
+                    first => first,
+                }
+                .map_err(db_err)?;
                 let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
                 let _ = pool.add(first);
                 Ok(Pool::Postgres(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
@@ -881,14 +1039,19 @@ impl Pool {
                 }
                 let mut manager = MysqlManager { options: opts, init: init.clone(), timeout };
                 // Open once directly so authentication failures retain their database error.
-                let first = match manager.connect().await {
-                    Err(e) if legacy_eof(&e) => {
-                        manager.options = manager.options.clone().deprecate_eof(false);
-                        manager.connect().await
+                let mut first = manager.connect().await;
+                if source.ssl == DbSslMode::Prefer && first.as_ref().is_err_and(tls_failed) {
+                    if let Err(e) = &first {
+                        tracing::info!("TLS handshake failed, connecting without TLS (SSL mode Prefer): {e}");
                     }
-                    first => first,
+                    manager.options = manager.options.clone().ssl_mode(MySqlSslMode::Disabled);
+                    first = manager.connect().await;
                 }
-                .map_err(db_err)?;
+                if first.as_ref().is_err_and(legacy_eof) {
+                    manager.options = manager.options.clone().deprecate_eof(false);
+                    first = manager.connect().await;
+                }
+                let first = first.map_err(db_err)?;
                 let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
                 let _ = pool.add(first);
                 Ok(Pool::Mysql(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
@@ -919,6 +1082,7 @@ impl Pool {
                 conn.query("SELECT 1", &[]).await.map_err(mssql_err)?.into_results().await.map_err(mssql_err)?;
                 Ok(Pool::SqlServer(pool))
             }
+            DbDriver::Jdbc => Err(IdeError::invalid("An installed JDBC driver profile is required")),
             DbDriver::Clickhouse => unreachable!(),
             DbDriver::Oracle | DbDriver::Snowflake => unreachable!(),
         }
@@ -928,6 +1092,7 @@ impl Pool {
         match self {
             Pool::SqlServer(_) | Pool::Oracle(_) => {}
             Pool::Clickhouse(p) => p.close(),
+            Pool::Jdbc(p) => p.close().await,
             Pool::Snowflake(p) => p.close().await,
             Pool::Sqlite(p) => p.close().await,
             Pool::Postgres(p) => p.closed.store(true, Ordering::Relaxed),
@@ -940,6 +1105,7 @@ impl Pool {
             Pool::SqlServer(_) => false,
             Pool::Oracle(p) => p.is_closed(),
             Pool::Clickhouse(p) => p.is_closed(),
+            Pool::Jdbc(p) => p.is_closed(),
             Pool::Snowflake(p) => p.is_closed(),
             Pool::Sqlite(p) => p.is_closed(),
             Pool::Postgres(p) => p.closed.load(Ordering::Relaxed),
@@ -947,8 +1113,17 @@ impl Pool {
         }
     }
 
+    /// Whether a later page of a result can be read from a cursor instead of by running the statement
+    /// again: the drivers whose rows stream from one connection that can wait for the next page.
+    pub(crate) fn keeps_cursors(&self) -> bool {
+        matches!(self, Pool::Sqlite(_) | Pool::Postgres(_) | Pool::Mysql(_))
+    }
+
     /// Runs `sql` (no row limit beyond `max`), for introspection: cells are text (see [`Cells::Text`]).
     pub async fn rows(&self, sql: &str, max: usize) -> IdeResult<Vec<Vec<Option<String>>>> {
+        if let Pool::Jdbc(p) = self {
+            return Ok(p.query(sql, 0, max, &CancellationToken::new()).await?.rows);
+        }
         if let Pool::Clickhouse(p) = self {
             return Ok(p.execute(sql, max, &CancellationToken::new()).await?.rows);
         }
@@ -976,6 +1151,9 @@ impl Pool {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
+        if let Pool::Jdbc(p) = self {
+            return p.query(sql, skip, max_rows, cancel).await;
+        }
         if let Pool::Clickhouse(p) = self {
             return p.execute_from(sql, skip, max_rows, cancel).await;
         }
@@ -998,6 +1176,7 @@ impl Pool {
     /// row when flagged (table editor submits).
     pub async fn transaction(&self, statements: &[(String, bool)]) -> IdeResult<u64> {
         match self {
+            Pool::Jdbc(_) => Err(IdeError::invalid("Custom JDBC table editing is unsupported")),
             Pool::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
             Pool::Snowflake(p) => p.transaction(statements).await,
             Pool::SqlServer(_) => {
@@ -1088,6 +1267,7 @@ pub enum Held {
 impl Held {
     pub async fn acquire(pool: &Pool) -> IdeResult<Self> {
         Ok(match pool {
+            Pool::Jdbc(_) => return Err(IdeError::invalid("Custom JDBC manual transactions are unsupported")),
             Pool::Sqlite(p) => Held::Sqlite(p.acquire().await.map_err(db_err)?),
             Pool::Postgres(p) => Held::Postgres(Box::new(p.get().await?)),
             Pool::Mysql(p) => Held::Mysql(Box::new(p.get().await?)),
@@ -1357,17 +1537,7 @@ impl Held {
             Held::Clickhouse(_) | Held::Snowflake(..) => unreachable!(),
         };
         self.after_statement(sql);
-        let (columns, rows, affected, has_more, first) = fetched;
-        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        Ok(QueryResult {
-            statement: sql.to_owned(),
-            affected: if columns.is_empty() { Some(affected.unwrap_or(0) as f64) } else { None },
-            columns,
-            rows,
-            has_more,
-            elapsed_ms,
-            execution_ms: first.map_or(elapsed_ms, |t| t.duration_since(started).as_secs_f64() * 1000.0),
-        })
+        Ok(query_result(sql, fetched, started))
     }
 }
 
@@ -1377,7 +1547,7 @@ pub fn begin_statement(driver: DbDriver) -> &'static str {
         DbDriver::Mysql => "START TRANSACTION",
         DbDriver::SqlServer => "BEGIN TRAN",
         DbDriver::Oracle => "", // opens implicitly with autocommit off
-        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse | DbDriver::Snowflake => "BEGIN",
+        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse | DbDriver::Snowflake | DbDriver::Jdbc => "BEGIN",
     }
 }
 
@@ -1392,6 +1562,88 @@ fn statement_columns<S: sqlx::Statement>(s: &S) -> Vec<ResultColumn> {
 mod tests {
     use super::*;
     use crate::source::{DbOptions, DbProperty};
+
+    fn rows(cells: Vec<Vec<Option<String>>>) -> QueryResult {
+        query_result("select", (Vec::new(), cells, None, false, None), Instant::now())
+    }
+
+    #[test]
+    fn capping_cells_bounds_a_page_and_reports_the_whole_length() {
+        let wide = "x".repeat(1_000_000);
+        let mut r = rows(vec![vec![Some("short".into()), Some(wide.clone()), None], vec![Some(wide), None, None]]);
+        r.cap_cells(100);
+        let size: usize = r.rows.iter().flatten().flatten().map(String::len).sum();
+        assert_eq!(size, 5 + 100 + 100);
+        assert_eq!(
+            r.truncated,
+            [
+                TruncatedCell { row: 0, column: 1, length: 1_000_000, hash: fnv1a_utf16(&"x".repeat(1_000_000)) },
+                TruncatedCell { row: 1, column: 0, length: 1_000_000, hash: fnv1a_utf16(&"x".repeat(1_000_000)) }
+            ]
+        );
+        assert_eq!(r.rows[0][0].as_deref(), Some("short"));
+        assert_eq!(r.rows[0][2], None);
+    }
+
+    #[test]
+    fn a_cut_cell_is_hashed_by_its_utf16_units() {
+        // Fixed values: the client (`cutCells.ts`) computes the same hash to recognise a value it reads again.
+        assert_eq!(fnv1a_utf16(""), 2_166_136_261);
+        assert_eq!(fnv1a_utf16("a"), 3_826_002_220);
+        assert_eq!(fnv1a_utf16("a😀b"), 2_412_414_209);
+        assert_eq!(fnv1a_utf16("日本語日本語"), 2_778_669_755);
+        assert_ne!(fnv1a_utf16(&"x".repeat(100)), fnv1a_utf16(&format!("{}y", "x".repeat(99))));
+        let mut r = rows(vec![vec![Some("a😀b".into())]]);
+        r.cap_cells(2);
+        assert_eq!(r.truncated[0].hash, 2_412_414_209);
+    }
+
+    #[test]
+    fn capping_cells_keeps_values_at_or_under_the_limit_whole() {
+        let mut r = rows(vec![vec![Some("abcd".into()), Some("😀😀".into()), Some("ééé".into())]]);
+        // 4 units, 4 units (two pairs), 3 units in 6 bytes.
+        r.cap_cells(4);
+        assert!(r.truncated.is_empty());
+        assert_eq!(r.rows[0][1].as_deref(), Some("😀😀"));
+        r.cap_cells(3);
+        assert_eq!(
+            r.truncated,
+            [
+                TruncatedCell { row: 0, column: 0, length: 4, hash: fnv1a_utf16("abcd") },
+                TruncatedCell { row: 0, column: 1, length: 4, hash: fnv1a_utf16("😀😀") }
+            ]
+        );
+        assert_eq!(r.rows[0][2].as_deref(), Some("ééé"));
+    }
+
+    #[test]
+    fn capping_cells_never_splits_a_character_or_a_surrogate_pair() {
+        // "a😀b": units a=1, 😀=2, b=1. A cut inside the pair falls back to before it.
+        let mut r = rows(vec![vec![Some("a😀b".into()), Some("日本語日本語".into())]]);
+        r.cap_cells(2);
+        assert_eq!(r.rows[0][0].as_deref(), Some("a"));
+        assert_eq!(r.rows[0][1].as_deref(), Some("日本"));
+        assert_eq!(r.truncated[0].length, 4);
+        assert_eq!(r.truncated[1].length, 6);
+        // What is kept is a prefix of the whole value, measured in UTF-16 units.
+        for (cut, whole) in [(&r.rows[0][0], "a😀b"), (&r.rows[0][1], "日本語日本語")] {
+            assert!(whole.starts_with(cut.as_deref().unwrap()));
+            assert!(cut.as_deref().unwrap().encode_utf16().count() <= 2);
+        }
+    }
+
+    #[test]
+    fn prefer_retries_without_tls_only_after_a_failed_handshake() {
+        use std::io;
+        // What a server limited to old TLS versions gives: rustls's alert inside the I/O error.
+        let alert = rustls::Error::AlertReceived(rustls::AlertDescription::HandshakeFailure);
+        assert!(tls_failed(&sqlx::Error::Io(io::Error::new(io::ErrorKind::InvalidData, alert))));
+        assert!(tls_failed(&sqlx::Error::Tls("bad config".into())));
+        // Unreachable servers, protocol errors and wrong passwords keep their error.
+        assert!(!tls_failed(&sqlx::Error::Io(io::ErrorKind::ConnectionRefused.into())));
+        assert!(!tls_failed(&sqlx::Error::Io(io::Error::new(io::ErrorKind::InvalidData, "eof"))));
+        assert!(!tls_failed(&sqlx::Error::Protocol("OK_Packet too short".into())));
+    }
 
     fn sqlserver_debug(ssl: DbSslMode) -> String {
         let mut config = tiberius::Config::new();

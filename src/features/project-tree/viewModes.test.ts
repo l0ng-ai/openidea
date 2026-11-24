@@ -216,6 +216,25 @@ describe("project view modes", () => {
     ).toEqual(["README.md"]);
   });
 
+  it("shows a user scope's files as a pane", () => {
+    store.setScopeView("Changed for FTP");
+    expect(useProjectTree.getState()).toMatchObject({ mode: "scope", scope: "Changed for FTP" });
+    store.setScopeFiles(["/p/src/App.kt", "/p/README.md"]);
+    autoExpand(currentModel());
+    expect(
+      currentModel()
+        .children.get("/p")!
+        .map((n) => n.label),
+    ).toEqual(["src", "README.md"]);
+    expect(modeShows("/p/src/App.kt")).toBe(true);
+    expect(modeShows("/p/src/Other.kt")).toBe(false);
+    // Another scope starts from its own files.
+    store.setScopeView("Other");
+    expect(useProjectTree.getState()).toMatchObject({ mode: "scope", scope: "Other", scopeFiles: [] });
+    setViewMode("project");
+    expect(useProjectTree.getState().mode).toBe("project");
+  });
+
   it("reveals library files through their group nodes", async () => {
     await loadDir("/py/lib/python3.12");
     expect(revealPath("/py/lib/python3.12/os.py")).toBe(true);

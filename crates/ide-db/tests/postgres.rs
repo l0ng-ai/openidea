@@ -230,6 +230,44 @@ async fn opening_a_table_reads_multi_column_keys_in_order() -> IdeResult<()> {
 }
 
 /// Runs `job` with the newest installed copy of its tool, the way the dialogs do.
+#[tokio::test]
+async fn drops_a_database_the_ide_holds_connections_to() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    db.execute("p", "DROP DATABASE IF EXISTS oi_drop_me", 0, &c).await?;
+    db.execute("p", "CREATE DATABASE oi_drop_me TEMPLATE template0", 0, &c).await?;
+
+    // What the tree and a manual-commit console leave open on the database.
+    db.schemas("p:oi_drop_me").await?;
+    db.set_manual_commit("p:oi_drop_me", true).await?;
+    db.execute("p:oi_drop_me", "SELECT 1", 1, &c).await?;
+
+    db.drop_database("p", "oi_drop_me", "drop database oi_drop_me").await?;
+    assert!(!db.is_connected("p:oi_drop_me"));
+    assert!(!db.databases("p").await?.names.iter().any(|n| n == "oi_drop_me"));
+
+    let current = db.databases("p").await?.current;
+    let refused = db.drop_database("p", &current, &format!("drop database \"{current}\"")).await;
+    assert!(refused.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn creates_a_database_from_a_template_the_ide_holds_connections_to() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    db.execute("p", "DROP DATABASE IF EXISTS oi_from_template", 0, &c).await?;
+    db.schemas("p:template1").await?;
+
+    db.create_database("p", "template1", "create database oi_from_template").await?;
+    assert!(!db.is_connected("p:template1"));
+    assert!(db.databases("p").await?.names.iter().any(|n| n == "oi_from_template"));
+    db.execute("p", "DROP DATABASE oi_from_template", 0, &c).await?;
+    Ok(())
+}
+
 async fn run_tool(db: &DbManager, target: &str, job: ide_db::tools::DbToolJob) -> IdeResult<()> {
     let install = ide_db::tools::find_installs(job.tool()).into_iter().next().expect("installed");
     let mut lines = Vec::new();
@@ -302,5 +340,61 @@ async fn dumps_and_restores_with_the_client_tools() -> IdeResult<()> {
     assert_eq!(r.rows[0][0].as_deref(), Some("from a, from b"));
     db.disconnect("p:oi_restore").await;
     db.execute("p", "DROP DATABASE oi_restore", 1, &c).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn later_pages_continue_the_result_where_the_previous_page_stopped() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    let query = "SELECT g AS id, repeat('x', 10) AS pad FROM generate_series(1, 1000) g ORDER BY g";
+    // Forward, back, and jumping: every page holds its own rows whichever cursor served it.
+    for page in [0, 1, 2, 3, 1, 7, 8, 9, 4, 0] {
+        let r = db.execute_from("p", query, page * 100, 100, &c, None).await?;
+        let ids: Vec<_> = r.rows.iter().map(|row| row[0].clone().unwrap()).collect();
+        let want: Vec<_> = (page * 100 + 1..=page * 100 + 100).map(|n| n.to_string()).collect();
+        assert_eq!(ids, want, "page {page}");
+        assert_eq!(r.has_more, page < 9, "page {page}");
+    }
+    // A pool of 4 connections: cursors that were left open must not exhaust it.
+    for _ in 0..8 {
+        db.execute_from("p", query, 100, 100, &c, None).await?;
+        db.release_result("p", query, None);
+        assert_eq!(db.execute("p", "SELECT 1", 1, &c).await?.rows[0][0].as_deref(), Some("1"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_a_later_page_stops_its_statement_on_the_server() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let marker = "oi_cursor_cancel_marker";
+    let slow = format!("SELECT g, pg_sleep(0.05) AS {marker} FROM generate_series(1, 100000) g");
+    let cancel = CancellationToken::new();
+    let stop = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        stop.cancel();
+    });
+    let started = std::time::Instant::now();
+    let e = db.execute_from("p", &slow, 5, 10, &cancel, None).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let c = CancellationToken::new();
+    let active = format!(
+        "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE '%{marker}%' \
+         AND query NOT LIKE '%pg_stat_activity%'"
+    );
+    let mut running = 1;
+    for _ in 0..20 {
+        running = db.execute("p", &active, 1, &c).await?.rows[0][0].as_deref().unwrap().parse().unwrap();
+        if running == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(running, 0, "the cancelled statement still runs on the server");
     Ok(())
 }

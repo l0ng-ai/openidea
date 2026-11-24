@@ -292,8 +292,8 @@ describe("debug tool window", () => {
     expect(screen.getByRole("tab", { name: /main/ })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Threads & Variables" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Console" })).toBeTruthy();
-    expect(screen.getByText(", main.py:12")).toBeTruthy();
-    expect(screen.getByPlaceholderText("Evaluate expression (↩) or add a watch (⇧⌘↩)")).toBeTruthy();
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent("main:12, main.py");
+    expect(screen.getByRole("textbox", { name: "Evaluate expression" })).toBeTruthy();
     expect(await screen.findByText("{int}")).toBeTruthy();
     expect(screen.getByText("'hi'")).toBeTruthy();
     // A multi-line rendering stays on its row.
@@ -348,10 +348,10 @@ describe("debug tool window", () => {
 
 describe("variables the adapter computes after the stop", () => {
   const tick = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
-  const setup = () => {
+  const setup = (current = session) => {
     adapterData.library = "Collecting data…";
     adapterData.scopes.mockClear();
-    useDebug.setState({ sessions: { 1: session }, active: 1, stopSeq: 1, variablesEpoch: 0 });
+    useDebug.setState({ sessions: { 1: current }, active: 1, stopSeq: 1, variablesEpoch: 0 });
     return render(<DebugToolWindow />);
   };
 
@@ -392,6 +392,52 @@ describe("variables the adapter computes after the stop", () => {
         status: "ok" as const,
         data: { name: "result", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
       }));
+      useDebug.setState({ watches: [] });
+    }
+  });
+
+  it("groups variable and watch context menu actions", async () => {
+    useDebug.setState({ watches: ["count + 1", "label.upper()"] });
+    const menu = (text: string) => {
+      fireEvent.contextMenu(screen.getByText(text).closest("[role=treeitem]")!);
+      const items = useContextMenuStore.getState().menu?.items ?? [];
+      act(() => hideContextMenu());
+      return items;
+    };
+    const layout = (items: ReturnType<typeof menu>) =>
+      items.map((item) => (item.kind === "separator" ? "|" : item.label));
+    try {
+      setup({ ...session, caps: { dataBreakpoints: true } as DebugSession["caps"] });
+      await screen.findByText("label.upper()");
+      await screen.findByText("'hi'");
+      expect(layout(menu("label"))).toEqual([
+        "Set Value…",
+        "Copy Value",
+        "Copy Name",
+        "|",
+        "Add to Watches",
+        "Add Field Watchpoint",
+        "|",
+        "Jump to Source",
+      ]);
+      const items = menu("count + 1");
+      expect(layout(items)).toEqual([
+        "Remove Watch",
+        "Remove All Watches",
+        "|",
+        "Set Value…",
+        "Copy Value",
+        "Copy Name",
+        "|",
+        "Jump to Source",
+      ]);
+      const removeAll = items.find((i) => "label" in i && i.label === "Remove All Watches");
+      expect(removeAll).toBeTruthy();
+      act(() => (removeAll as { run: () => void }).run());
+      expect(useDebug.getState().watches).toEqual([]);
+      await waitFor(() => expect(screen.queryByText("label.upper()")).toBeNull());
+      expect(screen.getByText("'hi'")).toBeTruthy();
+    } finally {
       useDebug.setState({ watches: [] });
     }
   });

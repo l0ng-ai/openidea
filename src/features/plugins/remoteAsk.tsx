@@ -1,6 +1,6 @@
 /**
- * Plugin code of a remote window runs on its server. Opening a link or writing
- * the clipboard on this machine waits for the user, who sees exactly what.
+ * Plugin code of a remote window runs on its server. Opening a link, writing
+ * the clipboard or reading it on this machine waits for the user, who sees exactly what.
  */
 import { tx } from "@/platform/i18n";
 import { ask } from "@/workbench/messages";
@@ -47,6 +47,20 @@ export async function confirmRemoteCopy(pluginId: string, text: string): Promise
     buttons: [{ id: "copy", label: tx("Copy"), primary: true }],
   });
   return r.button === "copy";
+}
+
+/** Whether the user lets a remote plugin read this machine's clipboard (`ui.read-clipboard`). */
+export async function confirmRemoteClipboardRead(pluginId: string, signal: AbortSignal): Promise<boolean> {
+  const name = pluginName(pluginId);
+  const r = await ask({
+    title: tx`Let ${name} read the clipboard?`,
+    body: tx(
+      "A plugin running on the remote host wants to read the text and image on the clipboard of this computer and send them to the remote host.",
+    ),
+    buttons: [{ id: "allow", label: tx("Allow"), primary: true }],
+    signal,
+  });
+  return r.button === "allow";
 }
 
 /** The start of `text`, at most `PREVIEW_CHARS` characters on `PREVIEW_LINES` lines, marked when cut. */

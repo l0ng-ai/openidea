@@ -1,7 +1,8 @@
 //! Values of agents' environment variables live in the credential store; agent files keep only their names.
 
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig};
+mod common;
+
+use ide_host::Host;
 use ide_ssh::secrets::testing::{files_containing, use_memory_store};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -10,17 +11,7 @@ use std::sync::Arc;
 const VALUE: &str = "agent-env-value-5b2d81";
 
 fn host(dir: &Path) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: dir.join("config"),
-        data_dir: dir.join("data"),
-        local_data_dir: dir.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }))
+    Arc::new(Host::new(common::host_config(dir)))
 }
 
 fn open(host: &Host, tmp: &tempfile::TempDir) {
@@ -30,8 +21,8 @@ fn open(host: &Host, tmp: &tempfile::TempDir) {
     host.open_project("main", &root).unwrap();
 }
 
-fn env_of(host: &Host, id: &str) -> BTreeMap<String, String> {
-    let providers = ide_host::ops::agent::agent_providers(host, "main").unwrap();
+async fn env_of(host: &Host, id: &str) -> BTreeMap<String, String> {
+    let providers = ide_host::ops::agent::agent_providers(host, "main").await.unwrap();
     providers.into_iter().find(|p| p.id == id).unwrap_or_else(|| panic!("{id}")).env
 }
 
@@ -60,8 +51,8 @@ async fn agent_environment_values_stay_out_of_agent_files() {
 
     let host = self::host(tmp.path());
     open(&host, &tmp);
-    assert_eq!(env_of(&host, "claude"), env);
-    assert_eq!(env_of(&host, "mine"), env);
+    assert_eq!(env_of(&host, "claude").await, env);
+    assert_eq!(env_of(&host, "mine").await, env);
     ide_host::ops::agent::remove_custom_agent(&host, "main", "mine".into()).unwrap();
     ide_host::ops::agent::agent_set_env(&host, "main", "claude".into(), BTreeMap::new()).unwrap();
     assert_eq!(host.agent_secrets.keys("agent/"), Vec::<String>::new());
@@ -81,6 +72,6 @@ async fn values_in_agent_files_move_to_the_credential_store() {
     let host = host(tmp.path());
     open(&host, &tmp);
     assert_eq!(files_containing(tmp.path(), VALUE), Vec::<PathBuf>::new());
-    assert_eq!(env_of(&host, "mine"), BTreeMap::from([("TOKEN".to_owned(), VALUE.to_owned())]));
+    assert_eq!(env_of(&host, "mine").await, BTreeMap::from([("TOKEN".to_owned(), VALUE.to_owned())]));
     host.close_project("main");
 }

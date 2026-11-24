@@ -1,8 +1,10 @@
 import type { Commit } from "@/bindings";
 import { setContext } from "@/platform/context";
+import { registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { Scrollbar, Spinner, T, hideNativeScrollbar } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { useGitLogChecks } from "@/workbench/contributions";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
@@ -43,7 +45,7 @@ import { currentRepo, currentRepoRoot, useVcs } from "../store";
 import { ColumnHeaders } from "./ColumnHeaders";
 import { CommitSignature } from "./CommitMessage";
 import { CommitRow } from "./CommitRow";
-import { LANE, ROW, type LogColumn, type RowEvents } from "./shared";
+import { ROW, SUBJECT_COLUMN, type LogColumn, type RowEvents } from "./shared";
 
 const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
 
@@ -55,11 +57,12 @@ function rowRemoteNames(own: readonly string[] | undefined, shared: ReadonlySet<
   return set;
 }
 
-export function CommitList() {
+export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
   const scope = useContext(LogIdContext);
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
   const all = useGitLog((s) => s.commits);
+  const unmatchedByRepo = useGitLog((s) => s.cherryHighlight?.unmatched);
   const selection = useGitLog((s) => s.selection);
   const fileHistoryTarget = useGitLog((s) => {
     const id = scope ?? s.shownLog;
@@ -75,7 +78,12 @@ export function CommitList() {
       return (c.logPosition ?? 0) > 0;
     });
   }, [all]);
-  const opts = useLogOptions();
+  const options = useLogOptions();
+  const opts = useMemo(() => {
+    if (!fileHistory || options.columnOrder.includes(SUBJECT_COLUMN.id)) return options;
+    const extraColumns = options.columnOrder.filter((id) => id !== "author" && id !== "date");
+    return { ...options, columnOrder: ["author", "date", SUBJECT_COLUMN.id, ...extraColumns] };
+  }, [fileHistory, options]);
   const ChecksCell = useGitLogChecks((s) => s.cell);
   const bookmarks = useGitLog((s) => s.bookmarks);
   const fragments = useGitLog((s) => s.fragments);
@@ -150,12 +158,14 @@ export function CommitList() {
       ),
     [all, heads, headCommit],
   );
+  // Only these options shape the graph: resizing a column or toggling the author must not lay it out again.
+  const { collapseLinear, linearizeMerges, longEdges } = opts;
   const keep = useMemo(
     () =>
-      opts.collapseLinear || fragments.collapsed.size
+      collapseLinear || fragments.collapsed.size
         ? new Set([...headKeys, ...selection, ...Object.keys(bookmarks)])
         : null,
-    [opts.collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
+    [collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
   );
   const {
     commits,
@@ -163,7 +173,10 @@ export function CommitList() {
     linear,
     collapsed,
     graph: displayedGraph,
-  } = useMemo(() => presentLogGraph(all, opts, fragments, keep ?? new Set()), [all, opts, fragments, keep]);
+  } = useMemo(
+    () => presentLogGraph(all, { collapseLinear, linearizeMerges, longEdges }, fragments, keep ?? new Set()),
+    [all, collapseLinear, linearizeMerges, longEdges, fragments, keep],
+  );
   const { edges: highlighted, nodes: highlightedNodes } = useMemo(() => {
     const empty = { edges: new Set<string>(), nodes: new Set<string>() };
     if (!hoverColor) return empty;
@@ -197,15 +210,6 @@ export function CommitList() {
       ),
     };
   }, [hoverColor, linear, displayedGraph, headKeys]);
-  const minWidth = useMemo(
-    () =>
-      rows.reduce((width, row) => Math.max(width, row.width * LANE), 100) +
-      columns.reduce(
-        (width, column) => width + (opts.columnWidths[column.id] ?? column.width ?? 120),
-        opts.showRepository && useVcs.getState().roots.length > 1 ? 220 : 120,
-      ),
-    [rows, columns, opts.columnWidths, opts.showRepository],
-  );
   const filterBranches = useGitLog((s) => s.filters.branches);
   const currentBranch = useVcs((s) => s.branch?.head ?? null);
   // Nothing to tell apart when the log is filtered to the current branch.
@@ -228,6 +232,21 @@ export function CommitList() {
   const selectedSet = useMemo(() => new Set(selection), [selection]);
   const revealTick = useGitLog((s) => s.revealTick);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // While a speed search is active, F3 moves between its matches instead of toggling a bookmark.
+  const speedSearchRef = useRef(speedSearch);
+  speedSearchRef.current = speedSearch;
+  useEffect(
+    () =>
+      registerKeyClaim(
+        (e, stroke) =>
+          !!speedSearchRef.current &&
+          (stroke === "F3" || stroke === "Shift+F3") &&
+          !!scrollRef.current?.contains(e.target as Node | null),
+      ),
+    [],
+  );
+  // Commit rows shrink in compact mode; the column header (the scroll margin) keeps ROW.
+  const row = useRowHeight(ROW);
   const selectedIndex = useMemo(
     () => (selected ? commits.findIndex((c) => commitKey(c) === selected) : -1),
     [commits, selected],
@@ -241,23 +260,24 @@ export function CommitList() {
     const previous = previousRows.current;
     previousRows.current = commits;
     if (!element || previous === commits || (revealTick !== lastRevealed.current && selectedIndex >= 0)) return;
-    const top = Math.max(0, Math.floor((element.scrollTop - ROW) / ROW));
+    const top = Math.max(0, Math.floor((element.scrollTop - ROW) / row));
     // Preserve the first surviving visible commit and its pixel offset.
     for (let i = top; i < previous.length; i++) {
       const next = commits.findIndex((c) => commitKey(c) === commitKey(previous[i]!));
       if (next < 0) continue;
-      element.scrollTop += (next - i) * ROW;
+      element.scrollTop += (next - i) * row;
       break;
     }
-  }, [commits, revealTick, selectedIndex]);
+  }, [commits, revealTick, selectedIndex, row]);
   const finished = done;
   const virtualizer = useVirtualizer({
     count: commits.length + (finished ? 0 : 1),
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW,
+    estimateSize: () => row,
     overscan: 8,
     scrollMargin: ROW,
   });
+  useEffect(() => virtualizer.measure(), [virtualizer, row]);
   const items = virtualizer.getVirtualItems();
   const last = items[items.length - 1];
 
@@ -539,9 +559,14 @@ export function CommitList() {
         aria-multiselectable
         aria-activedescendant={selectedIndex >= 0 ? `commit-${scope ?? "log"}-${selectedIndex}` : undefined}
         tabIndex={0}
-        onFocusCapture={() => setContext("vcsLogRevisionFocus", !!active && !!fileHistoryTarget)}
+        onFocusCapture={() => {
+          setContext("vcsLogRevisionFocus", !!active && !!fileHistoryTarget);
+          setContext("vcsLogCommitsFocus", !!active);
+        }}
         onBlurCapture={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("vcsLogRevisionFocus", false);
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setContext("vcsLogRevisionFocus", false);
+          setContext("vcsLogCommitsFocus", false);
         }}
         onScroll={(e) => {
           if (!e.currentTarget.hasAttribute("data-hover-paused")) e.currentTarget.dataset.hoverPaused = "";
@@ -581,16 +606,16 @@ export function CommitList() {
           );
         }}
       >
-        {opts.showColumnHeaders && <ColumnHeaders columns={columns} options={opts} minWidth={minWidth} />}
+        {opts.showColumnHeaders && <ColumnHeaders columns={columns} options={opts} />}
         {!commits.length && !loading && finished && (
           <div className={styles.message}>{headCommit ? tx("No commits match the filters") : tx("No commits yet")}</div>
         )}
-        <div style={{ height: virtualizer.getTotalSize(), position: "relative", minWidth }}>
+        <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {items.map((v) => {
             const c = commits[v.index];
             if (!c)
               return (
-                <div key="loading" className={styles.row} style={{ top: v.start - ROW }}>
+                <div key="loading" className={styles.row} style={{ top: v.start - ROW, height: row }}>
                   <Spinner size={12} />{" "}
                   <span className={styles.muted}>
                     <T>Loading…</T>
@@ -607,10 +632,12 @@ export function CommitList() {
                 fileHistoryTarget={fileHistoryTarget}
                 graph={rows[v.index]}
                 top={v.start - ROW}
+                height={row}
                 selected={selectedSet.has(commitKey(c))}
                 head={headKeys.has(commitKey(c))}
                 mine={opts.highlightMine && isMine(c, user)}
                 onBranch={!!onBranch?.has(commitKey(c))}
+                outsideUnpicked={unmatchedByRepo?.get(commitRepo(c) ?? null)?.has(c.id) === false}
                 opts={opts}
                 remoteNames={rowRemoteNames((c as RepoCommit).remoteNames, remoteNames)}
                 onPick={pick}

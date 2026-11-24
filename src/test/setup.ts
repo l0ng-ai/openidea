@@ -39,6 +39,21 @@ if (typeof window !== "undefined") {
       }) as MediaQueryList;
   }
   Element.prototype.scrollIntoView ??= function () {};
+  // xterm 6.1 measures glyph widths on a 2D canvas; jsdom has none, and its renderer
+  // throws without a context. Every glyph counts as one 8px cell, which is all the
+  // tests read (they assert markup and classes, not pixels).
+  const context2d = {
+    font: "",
+    fillRect() {},
+    fillText() {},
+    measureText: (text: string) => ({
+      width: text.length * 8,
+      fontBoundingBoxAscent: 8,
+      fontBoundingBoxDescent: 2,
+    }),
+  } as unknown as CanvasRenderingContext2D;
+  HTMLCanvasElement.prototype.getContext = ((contextId: string) =>
+    contextId === "2d" ? context2d : null) as HTMLCanvasElement["getContext"];
   // No layout either: CodeMirror measures text ranges when it positions the caret,
   // tooltips and line heights, sometimes in an animation frame after a test ends.
   Range.prototype.getClientRects ??= () => Object.assign([], { item: () => null }) as unknown as DOMRectList;

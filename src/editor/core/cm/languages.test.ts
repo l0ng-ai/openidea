@@ -1,4 +1,6 @@
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { insertNewlineAndIndent } from "@codemirror/commands";
 import { LanguageDescription, type Language } from "@codemirror/language";
 import { describe, expect, it } from "vitest";
 import { getIndentation } from "@codemirror/language";
@@ -7,6 +9,58 @@ import { logWarning } from "./highlight";
 import { fencedCodeMode, findLanguageDescription, loadSupport } from "./languages";
 
 describe("language modes", () => {
+  it("highlights Julia declarations, calls, types, macros and literals without semantic tokens", async () => {
+    const description = findLanguageDescription("Julia", "/tmp/palette.jl");
+    expect(description?.name).toBe("Julia");
+    const support = await loadSupport(description!);
+    const source = [
+      "struct Point end",
+      "function distance(p::Point)",
+      '  label = "point"',
+      "  norm(p)",
+      "  return 3, 3.5",
+      "end",
+      "@show distance(Point())",
+      "# comment",
+    ].join("\n");
+    const found: Array<[string, string]> = [];
+    highlightTree(
+      support!.language.parser.parse(source),
+      tagHighlighter([
+        { tag: t.keyword, class: "keyword" },
+        { tag: t.function(t.definition(t.variableName)), class: "function-definition" },
+        { tag: t.function(t.variableName), class: "function-call" },
+        { tag: t.definition(t.typeName), class: "type-definition" },
+        { tag: t.typeName, class: "type-reference" },
+        { tag: t.macroName, class: "macro" },
+        { tag: t.integer, class: "integer" },
+        { tag: t.float, class: "float" },
+        { tag: t.string, class: "string" },
+        { tag: t.lineComment, class: "comment" },
+      ]),
+      (from, to, style) => found.push([source.slice(from, to), style]),
+    );
+
+    expect(found).toEqual([
+      ["struct", "keyword"],
+      ["Point", "type-definition"],
+      ["end", "keyword"],
+      ["function", "keyword"],
+      ["distance", "function-definition"],
+      ["Point", "type-reference"],
+      ['"point"', "string"],
+      ["norm", "function-call"],
+      ["return", "keyword"],
+      ["3", "integer"],
+      ["3.5", "float"],
+      ["end", "keyword"],
+      ["@show", "macro"],
+      ["distance", "function-call"],
+      ["Point", "function-call"],
+      ["# comment", "comment"],
+    ]);
+  });
+
   it("distinguishes PHP classes, method declarations and fields for imported schemes", async () => {
     const support = await loadSupport(findLanguageDescription("PHP", "/tmp/palette.php")!);
     const source = "<?php class Palette extends BasePalette { var $name; function example() {} }";
@@ -256,6 +310,82 @@ describe("language modes", () => {
     expect(headings).toEqual([]);
   });
 
+  it.each(["js", "mjs", "cjs", "jsx", "tsx"])("highlights JSX inside .%s files", async (extension) => {
+    const support = await loadSupport(findLanguageDescription(null, `/p/preview.${extension}`)!);
+    const source = [
+      "const previews = [",
+      "  { render: (enabled, card) => {",
+      "    return <Indicator active={Boolean(card.ready) && enabled}",
+      "      onToggle={async (next) => { await updatePreview(card, next); }} />;",
+      "  } },",
+      "  { render: (enabled, card) => {",
+      "    return <section className={palette.toolbar}>",
+      "      <button onClick={() => updatePreview(card, !enabled)}>Preview</button>",
+      "    </section>;",
+      "  } },",
+      "];",
+    ].join("\n");
+    const tree = support!.language.parser.parse(source);
+    const errors: number[] = [];
+    tree.iterate({
+      enter(node) {
+        if (node.type.isError) errors.push(node.from);
+      },
+    });
+    expect(errors).toEqual([]);
+    const found: Array<[string, string]> = [];
+    highlightTree(
+      tree,
+      tagHighlighter([
+        { tag: t.tagName, class: "tag" },
+        { tag: t.attributeName, class: "attribute" },
+      ]),
+      (from, to, style) => found.push([source.slice(from, to), style]),
+    );
+    expect(found).toEqual([
+      ["Indicator", "tag"],
+      ["active", "attribute"],
+      ["onToggle", "attribute"],
+      ["section", "tag"],
+      ["className", "attribute"],
+      ["button", "tag"],
+      ["onClick", "attribute"],
+      ["button", "tag"],
+      ["section", "tag"],
+    ]);
+  });
+
+  it.each(["js", "mjs", "cjs"])("keeps ordinary .%s syntax distinct from JSX", async (extension) => {
+    const support = await loadSupport(findLanguageDescription("JavaScript", `/p/compare.${extension}`)!);
+    const source = [
+      "const less = (left, right) => left < right && right > 0;",
+      "const shifted = count << 2;",
+      "const value = item?.value ?? 0;",
+      "const label = `value: ${value}`;",
+      "const literal = '<Indicator active />';",
+      "// <section className='example'>",
+    ].join("\n");
+    const unexpected: string[] = [];
+    support!.language.parser.parse(source).iterate({
+      enter(node) {
+        if (node.type.isError || node.name.startsWith("JSX")) unexpected.push(node.name);
+      },
+    });
+    expect(unexpected).toEqual([]);
+  });
+
+  it("preserves TypeScript angle assertions and generic arrow functions", async () => {
+    const support = await loadSupport(findLanguageDescription("TypeScript", "/p/example.ts")!);
+    const source = "const item = <Item>value; const identity = <T>(value: T): T => value;";
+    const unexpected: string[] = [];
+    support!.language.parser.parse(source).iterate({
+      enter(node) {
+        if (node.type.isError || node.name.startsWith("JSX")) unexpected.push(node.name);
+      },
+    });
+    expect(unexpected).toEqual([]);
+  });
+
   it("styles `?.` like `.` in JavaScript and TypeScript", async () => {
     const highlighter = tagHighlighter([{ tag: t.derefOperator, class: "deref" }]);
     for (const [mode, path] of [
@@ -294,6 +424,43 @@ describe("language modes", () => {
     expect([2, 3, 4, 5, 6, 7, 9, 10, 12, 13].map(indent)).toEqual([0, 2, 0, 0, 0, 2, 0, 0, 0, 0]);
   });
 
+  it("keeps an annotation above a declaration on its own indentation after Enter", async () => {
+    const support = await loadSupport(findLanguageDescription("Java", "/p/A.java")!);
+    const enter = (doc: string, at = doc.length) => {
+      const view = new EditorView({
+        state: EditorState.create({
+          doc,
+          selection: EditorSelection.cursor(at),
+          extensions: [support!],
+        }),
+        parent: document.body,
+      });
+      insertNewlineAndIndent(view);
+      const out = view.state.doc.toString();
+      view.destroy();
+      return out;
+    };
+    // An annotation ends the declaration it annotates: the next line keeps its indentation.
+    expect(enter("@RestController")).toBe("@RestController\n");
+    expect(enter("@RestController\npublic class A {}", 15)).toBe("@RestController\n\npublic class A {}");
+    expect(enter('@RequestMapping("/zhyz/zhyzposition")')).toBe('@RequestMapping("/zhyz/zhyzposition")\n');
+    expect(enter('@Api(value = "PositionController", tags = "职位")')).toBe(
+      '@Api(value = "PositionController", tags = "职位")\n',
+    );
+    expect(enter('@Api(\n    value = "x"\n)')).toBe('@Api(\n    value = "x"\n)\n');
+    expect(enter("class A {\n    @Override")).toBe("class A {\n    @Override\n    ");
+    expect(enter("class A {\n    @Override\n    void f() {}\n}", 23)).toBe(
+      "class A {\n    @Override\n    \n    void f() {}\n}",
+    );
+    expect(enter('class A {\n    void f() {\n        @SuppressWarnings("x")')).toBe(
+      'class A {\n    void f() {\n        @SuppressWarnings("x")\n        ',
+    );
+    // An incomplete annotation still continues onto an indented line, and code indents as usual.
+    expect(enter("@Api(")).toBe("@Api(\n  ");
+    expect(enter("class A {\n  void f() {\n    if (x) {")).toBe("class A {\n  void f() {\n    if (x) {\n      ");
+    expect(enter("@interface Foo {")).toBe("@interface Foo {\n  ");
+  });
+
   it("colours `this`, `super` and Rust's `self` as keywords", async () => {
     const highlighter = tagHighlighter([
       { tag: t.keyword, class: "keyword" },
@@ -320,6 +487,45 @@ describe("language modes", () => {
     }
   });
 
+  it("leaves Java statement labels uncoloured, unlike JavaScript's", async () => {
+    const highlighter = tagHighlighter([
+      { tag: t.labelName, class: "label" },
+      { tag: t.variableName, class: "variable" },
+    ]);
+    const labels = async (mode: string, path: string, doc: string) => {
+      const support = await loadSupport(findLanguageDescription(mode, path)!);
+      const found: string[] = [];
+      highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) =>
+        found.push(`${doc.slice(from, to)}:${style}`),
+      );
+      return found.filter((s) => s.startsWith("outer"));
+    };
+    expect(await labels("Java", "/p/A.java", "class A { void f() { outer: for (;;) { break outer; } } }")).toEqual([
+      "outer:variable",
+      "outer:variable",
+    ]);
+    expect(await labels("JavaScript", "/p/a.js", "outer: for (;;) { break outer; }")).toEqual([
+      "outer:label",
+      "outer:label",
+    ]);
+  });
+
+  it("colours Java primitive types as keywords", async () => {
+    const highlighter = tagHighlighter([
+      { tag: t.keyword, class: "keyword" },
+      { tag: t.standard(t.typeName), class: "builtin-type" },
+    ]);
+    const primitives = ["int", "long", "double", "float", "boolean", "char", "byte", "short"];
+    const doc = `class A { ${primitives.map((p, i) => `${p} f${i};`).join(" ")} void m() { int[] a = new int[1]; } }`;
+    const support = await loadSupport(findLanguageDescription("Java", "/p/A.java")!);
+    const styles = new Map<string, Set<string>>();
+    highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) => {
+      const text = doc.slice(from, to);
+      styles.set(text, (styles.get(text) ?? new Set()).add(style));
+    });
+    for (const word of [...primitives, "void"]) expect([...(styles.get(word) ?? [])], word).toEqual(["keyword"]);
+  });
+
   it("recognizes go.mod and go.work files by mode and filename", async () => {
     for (const [mode, path] of [
       ["GoMod", "/project/go.mod"],
@@ -341,6 +547,11 @@ describe("language modes", () => {
     highlightTree(language.parser.parse(source), keywordHighlighter, (from, to) => found.push(source.slice(from, to)));
     return found;
   }
+
+  it("colours Go's `default` branch like the other keywords", async () => {
+    const support = await loadSupport(findLanguageDescription("Go", "/p/main.go")!);
+    expect(keywords(support!.language, "switch x {\ncase 1:\ndefault:\n}")).toEqual(["switch", "case", "default"]);
+  });
 
   it("colours TOML keys as keywords in files, lock files and ```toml code blocks", async () => {
     for (const path of ["/p/Cargo.toml", "/p/uv.lock"]) {

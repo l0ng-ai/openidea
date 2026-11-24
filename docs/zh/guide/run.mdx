@@ -19,6 +19,7 @@ description: "创建、编辑和启动运行配置，从装订区运行代码，
 | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `package.json`                                                                                  | 每个 `scripts` 条目一个，使用锁文件对应的包管理器（npm、pnpm、yarn 或 bun）。`test`、`test:*`、`jest`、`vitest` 脚本会标记为测试。 |
 | `deno.json` / `deno.jsonc`                                                                      | Deno task                                                                                                                          |
+| `playwright.config.*`                                                                           | 运行 `playwright test` 的脚本是测试配置；没有这样的脚本时为 `npx playwright test`                                                  |
 | `Cargo.toml`                                                                                    | 每个二进制一个 `cargo run`，以及 `cargo test`、`cargo build`；包含 workspace 成员                                                  |
 | `build.gradle(.kts)` / `pom.xml`                                                                | Gradle、Maven 运行配置                                                                                                             |
 | `go.mod` / `go.work`                                                                            | Go 程序和测试                                                                                                                      |
@@ -93,6 +94,7 @@ description: "创建、编辑和启动运行配置，从装订区运行代码，
 | **Gradle** / **Maven**                                | Gradle 任务或 Maven 目标，可选择通过 wrapper 运行               |
 | **应用程序** / **JAR 应用程序** / **Spring Boot**     | Java 主类、可执行 JAR、Spring Boot 应用                         |
 | **Tomcat 服务器**                                     | 在本地 Tomcat 里运行 WAR 应用                                   |
+| **Python**                                            | Python 脚本或 `-m` 模块                                         |
 | **pytest** / **Django 测试**                          | pytest 测试、`manage.py test`                                   |
 | **Ruby 语言** / **Rake 任务** / **RSpec 测试**        | Ruby 脚本、Rake 任务、RSpec 用例                                |
 | **PHPUnit**                                           | PHPUnit 测试                                                    |
@@ -107,7 +109,7 @@ description: "创建、编辑和启动运行配置，从装订区运行代码，
 ### 通用字段
 
 - **运行于**：本地计算机，或在 **设置 › 构建、执行、部署 › 运行目标** 中添加的 SSH 主机。运行目标上不支持调试。参见 [SSH](/zh/guide/remote/ssh)。
-- **工作目录**：相对于项目根目录，留空即项目根目录。
+- **工作目录**：相对于项目根目录，留空即项目根目录。可以使用路径宏 `$PROJECT_DIR$`、`$ContentRoot$`、`$MODULE_DIR$`、`$MODULE_WORKING_DIR$` 和 `$USER_HOME$`，在配置启动时展开，因此共享的配置在每台机器上都能用。
 - **环境变量**：`VAR=value` 形式，用 `;` 分隔。点旁边的列表按钮打开“环境变量”对话框，可以关闭 **包括系统环境变量**。
 - **调试适配器**：按“调试”时这个配置使用哪个调试器（如 `debugpy`、`js-debug`、`codelldb`、`delve`）。
 
@@ -116,6 +118,10 @@ description: "创建、编辑和启动运行配置，从装订区运行代码，
 打开 **修改选项 › ".env" 文件路径** 后，可以加载一个或多个 `.env` 文件（相对项目根目录，用 `;` 分隔）。支持 `KEY=value`、`export` 前缀、`#` 注释、带引号的值以及 `${VAR}` 引用。配置里直接写的变量优先级高于 `.env` 文件。
 
 开启 **包括系统环境变量** 时，进程还会继承 IDE 的环境变量和登录 shell 里的变量。
+
+### direnv 和 Nix flake
+
+受信任的项目根目录下有 `.envrc` 时，IDE 会在那里运行 `direnv export json`（需要安装 `direnv`），并把导出的变量交给在项目里启动的终端、运行配置、语言服务器、构建工具和调试器。语言服务器会等它加载完成；`.envrc` 里写了 `use flake` 时，flake 的 devshell 也会这样加载，第一次可能需要一些时间。IDE 不会替你运行 `direnv allow`：`.envrc` 被阻止时会有通知提示。修改 `.envrc`、`flake.nix` 或 `flake.lock` 后，通知会提供**重新加载环境**。
 
 ### 修改选项
 
@@ -151,7 +157,7 @@ Maven 模块在 **自动** 和 **构建（Make）** 时由 jdtls（ECJ）构建�
 每次启动都会在底部的 **运行** 工具窗口里开一个标签页。工具栏有 **重新运行**、**调试**、**重新运行失败的测试**（测试运行时）、**更新应用**、**查找…**、**滚动到末尾**、**软换行**、**全部清除** 和 **编辑配置…**。
 
 - 输出里的文件路径和堆栈帧都可以点击跳转。
-- 重复的行可以折叠。折叠规则、缓冲区大小和控制台编码在 **设置 › 构建、执行、部署 › 控制台** 中配置。
+- 重复的行可以折叠。折叠规则、缓冲区大小和控制台编码在 **设置 › 构建、执行、部署 › 控制台** 中配置。控制台右键菜单中的 **折叠与此类似的行** 会打开该页面，并把选中的文本（或右键所在的行）添加为折叠规则。
 - 日志行可按级别着色（`ERROR`、`WARN`、`INFO`、`DEBUG`、`TRACE`）；程序自行输出的颜色保持不变。默认关闭，可在 **设置 › 构建、执行、部署 › 控制台** 开启并修改颜色。
 - 测试运行时，标签页会在输出旁显示测试树，参见[测试](/zh/guide/testing)。
 
@@ -161,8 +167,8 @@ Maven 模块在 **自动** 和 **构建（Make）** 时由 jdtls（ECJ）构建�
 
 “查找操作”里有两个导入操作（对话框里也有入口）：
 
-- **从 .vscode/launch.json 导入运行配置**：导入 Python 和 Node.js 的 launch / attach 配置以及 compounds。`${workspaceFolder}`、`${env:NAME}` 这类含义固定的变量会被替换；用到 `${file}`、`${input:…}`、`${command:…}` 的条目会被跳过。
-- **从 JetBrains 导入运行配置（.run、.idea）**：读取 `.run/*.run.xml`、`.idea/runConfigurations/*.xml` 和 `.idea/workspace.xml`。Python、Django、pytest、npm、Jest、Vitest、Node.js、Shell Script、Application、JAR Application、Spring Boot、Go 和复合配置会被转换，其他类型跳过。
+- **从 .vscode/launch.json 导入运行配置**：导入 Python 和 Node.js 的 launch / attach 配置、Dart 的 launch 配置（Flutter 应用导入为 Flutter 配置）以及 compounds。`${workspaceFolder}`、`${env:NAME}` 这类含义固定的变量会被替换；用到 `${file}`、`${input:…}`、`${command:…}` 的条目会被跳过。
+- **从 JetBrains 导入运行配置（.run、.idea）**：读取 `.run/*.run.xml`、`.idea/runConfigurations/*.xml` 和 `.idea/workspace.xml`。Python、Django、pytest、npm、Jest、Vitest、Node.js、Shell Script、Application、JAR Application、Spring Boot、Go、Flutter 和复合配置会被转换，其他类型跳过。和已有配置（例如自动检测出的 `flutter run`）命令相同的条目会被跳过。
 
 导入完成后会有通知告诉你导入了多少、哪些被跳过以及原因。
 

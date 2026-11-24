@@ -11,22 +11,29 @@ use std::path::PathBuf;
 
 /// The installer, reporting the executables chosen in the window's settings.
 fn tools(host: &Host, window: &str) -> IdeResult<Tools> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let data = host.local_data_dir.clone();
     let (settings, root) = match host.project(window) {
         Ok(project) => (project.settings.effective(), project.root.clone()),
         Err(_) => (host.global_settings.effective(), Default::default()),
     };
-    let custom = settings
+    let mut custom: std::collections::BTreeMap<_, _> = settings
         .tools
         .iter()
         .filter_map(|(command, t)| Some((command.clone(), ide_sdk::apply::setting_path(&root, &t.path)?)))
         .collect();
+    let langs = host.languages.all();
+    custom.extend(ide_sdk::apply::server_command_paths(
+        langs.iter().flat_map(|l| &l.language_servers),
+        &root,
+        &settings,
+    ));
     // Godot is usually an app bundle / Flatpak outside the search path.
     let found = ide_sdk::godot::find(None).map(|p| (ide_sdk::godot::COMMAND.to_owned(), p));
     let runtime = ide_sdk::apply::tool_install_environment(&root, &settings);
     let work_dir = (!root.as_os_str().is_empty()).then_some(root);
     Ok(Tools::new(&data)
+        .with_downloads(settings.tool_downloads.clone())
         .with_runtime(runtime.commands, runtime.env)
         .with_custom_paths(custom)
         .with_found_paths(found.into_iter().collect())
@@ -56,7 +63,7 @@ fn reconfigure_servers(host: &Host) {
 }
 
 /// Status of every known language server / debug adapter and the languages using it.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn tools_list(host: &Host, window: &str) -> IdeResult<Vec<ToolInfo>> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);
@@ -65,7 +72,7 @@ pub async fn tools_list(host: &Host, window: &str) -> IdeResult<Vec<ToolInfo>> {
 
 /// Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
 /// `on_event`. Cancel with `cancel_request(request)`.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn tools_install(
     host: &Host,
     window: &str,
@@ -93,7 +100,7 @@ pub async fn tools_install(
 
 /// Newer versions of the tools the IDE installed (release downloads and npm packages).
 /// Cancel with `cancel_request(request)`.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> IdeResult<Vec<ToolUpdate>> {
     let tools = tools(host, window)?;
     let cancel = host.begin_request(request);
@@ -103,7 +110,7 @@ pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> Ide
 }
 
 /// Removes a tool the IDE installed.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn tools_uninstall(host: &Host, window: &str, name: String) -> IdeResult<ToolInfo> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);

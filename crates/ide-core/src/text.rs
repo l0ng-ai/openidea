@@ -110,6 +110,17 @@ pub struct WorkspaceEditPrecondition {
 }
 
 impl WorkspaceEdit {
+    /// The files and folders the edit renames, in order.
+    pub fn moves(&self) -> Vec<FileMove> {
+        self.files
+            .iter()
+            .filter_map(|f| match f {
+                FileEdit::Rename { from, to } => Some(FileMove { from: from.clone(), to: to.clone() }),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Coalesces aliases of the same file before applying edits against its original text.
     /// Resource operations separate batches because later edits may use the new contents.
     pub fn deduplicate(&mut self) {
@@ -184,6 +195,14 @@ pub enum FileEdit {
     },
 }
 
+/// One file or folder move.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FileMove {
+    pub from: crate::IpcPath,
+    pub to: crate::IpcPath,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum Severity {
@@ -239,6 +258,8 @@ pub enum SymbolKind {
     Event,
     Operator,
     Key,
+    /// A Flutter widget built in the code (Flutter outline only).
+    Widget,
     Unknown,
 }
 

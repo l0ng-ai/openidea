@@ -1,11 +1,21 @@
 import { useFilePresentation } from "@/ui/filePresentation";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { flushSync } from "react-dom";
 import clsx from "clsx";
 import { editorsFor, getNavigationHistory } from "@/editor/api";
 import { call, commands, type OutlineItem } from "@/platform/ipc";
+import { monoFontFamily } from "@/platform/fonts";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
+import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
 import {
   Checkbox,
   Dialog,
@@ -25,12 +35,13 @@ import {
   maybeEditorService,
   toolWindowService,
   useContributions,
+  useProjectViewRoots,
   useFileDecoration,
   type OpenEditorTab,
   type ToolWindowContribution,
 } from "@/workbench/contributions";
 import { highlightTokens, languageForPath, type CodeToken } from "@/editor/lsp/markdown";
-import { basename, openInListOrder, openLocation } from "../common/open";
+import { basename, openInListOrder, openLocation, relDir } from "../common/open";
 import { outlinePathAt } from "../structure/outline";
 import { fromNavigationHistory, isDismissed, mergeLocations, type RecentLocation } from "../common/locations";
 import { dismissLocation, useTracking } from "../common/tracking";
@@ -51,6 +62,13 @@ import { showSearchEverywhere } from "../everywhere/store";
 import { cycleSwitcher, hideRecentPopup, showRecentPopup, useRecentPopup } from "./store";
 import styles from "./RecentPopups.module.css";
 import { tx } from "@/platform/i18n";
+
+/** Whether Delete in `target` (a filter field) has text to delete: a selection or text after the caret. */
+function textAfterCaret(target: EventTarget): boolean {
+  if (!(target instanceof HTMLInputElement)) return false;
+  const { selectionStart, selectionEnd, value } = target;
+  return selectionStart !== selectionEnd || (selectionEnd ?? value.length) < value.length;
+}
 
 export function RecentPopupsOverlay() {
   const open = useRecentPopup((s) => s.open);
@@ -91,6 +109,14 @@ function RecentFilesDialog() {
   const step = useRecentPopup((s) => s.step);
   const edited = useTracking((s) => s.edited);
   const root = useProject((s) => s.project?.root ?? null);
+  const viewRoots = useProjectViewRoots((s) => s.roots);
+  const labelled = useMemo(
+    () =>
+      [...viewRoots.values()].flatMap((r) =>
+        r.scope === "scratches" && r.path ? [{ path: r.path, label: r.label }] : [],
+      ),
+    [viewRoots],
+  );
   const toolWindows = useContributions((s) => s.toolWindows);
   const [paths, setPaths] = useState<string[] | null>(null);
   // Switcher: the open editor tabs (files and others), when the editor service lists them.
@@ -135,13 +161,13 @@ function RecentFilesDialog() {
   const files = useMemo(
     () =>
       tabs
-        ? switcherItems(paths ?? [], tabs, query, root).filter((f) => !removed.has(f.path))
+        ? switcherItems(paths ?? [], tabs, query, root, labelled).filter((f) => !removed.has(f.path))
         : filterRecentFiles(
             (paths ?? []).filter((p) => !removed.has(p)),
             query,
-            { root, edited, editedOnly },
+            { root, labelled, edited, editedOnly },
           ),
-    [paths, tabs, removed, query, root, edited, editedOnly],
+    [paths, tabs, removed, query, root, labelled, edited, editedOnly],
   );
   const fileRows = useMemo(() => files.map((f) => ({ ...f, key: f.path })), [files]);
   const tools = useMemo(() => switcherToolWindows(toolWindows.values(), !!root, query), [toolWindows, root, query]);
@@ -258,8 +284,9 @@ function RecentFilesDialog() {
       cycleSwitcher(e.shiftKey ? -1 : 1);
       return;
     }
-    // In Recent Files Backspace edits the speed search text first.
-    if (e.key === "Delete" || (e.key === "Backspace" && !query)) {
+    // In Recent Files Backspace edits the speed search text first, and so does Delete while
+    // the filter has text after the caret.
+    if ((e.key === "Delete" && !textAfterCaret(e.target)) || (e.key === "Backspace" && !query)) {
       e.preventDefault();
       void removeSelected();
       return;
@@ -299,9 +326,9 @@ function RecentFilesDialog() {
       open
       onClose={hideRecentPopup}
       restoreFocus={keepFocus}
-      width={720}
+      width={switcher ? 560 : 720}
       aria-label={title}
-      className={styles.dialog}
+      className={clsx(styles.dialog, switcher && styles.switcher)}
     >
       <header className={styles.header}>
         <span className={styles.title}>
@@ -361,7 +388,6 @@ function RecentFilesDialog() {
             }}
             onActivate={(t) => openTool(t.tw)}
             focusable={false}
-            rowHeight={24}
             aria-label="Tool windows"
             renderItem={(t) => <ToolRow tw={t.tw} title={t.title} indices={t.indices} />}
           />
@@ -388,7 +414,6 @@ function RecentFilesDialog() {
             isSelected={(f) => effectiveColumn === "files" && !!fileSelection.keys?.has(f.path)}
             onActivate={(f, _i, e) => openFile(f, e.shiftKey)}
             focusable={false}
-            rowHeight={24}
             aria-label={switcher ? "Open files" : "Recent files"}
             empty={
               paths && (
@@ -434,12 +459,12 @@ function RecentFileRow({ item, current }: { item: RecentFileItem; current: boole
     <>
       <Icon name={item.editor?.icon ?? icon} size={16} className={styles.icon} />
       <span
-        className={clsx(styles.name, current && styles.current)}
+        className={clsx(styles.name, styles.fileName, current && styles.current)}
         style={deco.color ? { color: deco.color } : undefined}
       >
         <HighlightedText text={item.name} indices={item.indices} tone="strong" />
       </span>
-      <span className={styles.dir}>{item.dir}</span>
+      {item.dir && <span className={styles.dir}>{item.dir}</span>}
     </>
   );
 }
@@ -471,8 +496,6 @@ function withSnippets(list: RecentLocation[], recorded: readonly RecentLocation[
     return near ? { ...l, snippet: near.snippet, snippetStart: near.snippetStart } : l;
   });
 }
-
-const LOCATION_ROW = 78;
 
 function breadcrumbOf(outline: readonly OutlineItem[] | undefined, l: RecentLocation): string {
   return outline ? locationBreadcrumb(outlinePathAt(outline, { line: l.line, col: l.col })) : "";
@@ -511,11 +534,13 @@ function SnippetCode({
   lines,
   first,
   caret,
+  style,
 }: {
   path: string;
   lines: readonly string[];
   first: number;
   caret: number;
+  style: CSSProperties;
 }) {
   const language = useMemo(() => languageForPath(path), [path]);
   const text = lines.join("\n");
@@ -535,15 +560,17 @@ function SnippetCode({
     };
   }, [key, language, text, tokens]);
   const segments = useMemo(() => lineSegments(lines, tokens ?? []), [lines, tokens]);
+  const rows = segments.map((segs, i) => ({ segs, no: first + i }));
   return (
-    <pre className={styles.snippet}>
-      {segments.map((segs, i) => (
-        <div key={i} className={clsx(styles.snippetLine, first + i === caret && styles.caretLine)}>
-          <span className={styles.lineNo}>{first + i + 1}</span>
+    <pre className={styles.snippet} style={style}>
+      {rows.map(({ segs, no }) => (
+        <div key={no} className={clsx(styles.snippetLine, no === caret && styles.caretLine)}>
+          <span className={styles.lineNo}>{no + 1}</span>
           <span className={styles.code}>
             {segs.length
               ? segs.map((seg, j) =>
                   seg.cls ? (
+                    // oxlint-disable-next-line react/no-array-index-key -- highlighted segments repeat; position is the identity
                     <span key={j} className={seg.cls}>
                       {seg.text}
                     </span>
@@ -564,6 +591,14 @@ function RecentLocationsDialog() {
   const recorded = useTracking((s) => s.locations);
   const dismissed = useTracking((s) => s.dismissed);
   const root = useProject((s) => s.project?.root ?? null);
+  const editor = useProject((s) => s.settings?.editor);
+  const lineHeight = Math.max(editor?.fontSize ?? 13, editor?.lineHeight ?? 22);
+  const rowHeight = 30 + 3 * lineHeight;
+  const snippetStyle: CSSProperties = {
+    fontFamily: monoFontFamily(editor?.fontFamily ?? undefined, editor?.fallbackFont, "var(--font-mono)"),
+    fontSize: editor?.fontSize ?? undefined,
+    lineHeight: `${lineHeight}px`,
+  };
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -592,8 +627,9 @@ function RecentLocationsDialog() {
       open(items[active], e.shiftKey);
       return;
     }
-    // IDEA: Delete removes the selected place (Backspace too while there is no filter text).
-    if ((e.key === "Delete" || (e.key === "Backspace" && !query)) && items[active]) {
+    // IDEA: Delete removes the selected place (Backspace too while there is no filter text), unless
+    // the filter has text after the caret to delete.
+    if (((e.key === "Delete" && !textAfterCaret(e.target)) || (e.key === "Backspace" && !query)) && items[active]) {
       e.preventDefault();
       dismissLocation(items[active]!);
       return;
@@ -641,6 +677,7 @@ function RecentLocationsDialog() {
       </header>
       <div className={styles.locations}>
         <List
+          key={rowHeight}
           items={items}
           getKey={(l) => `${l.path}:${l.line}:${l.time}`}
           activeIndex={active}
@@ -651,30 +688,42 @@ function RecentLocationsDialog() {
             open(l, e.shiftKey);
           }}
           focusable={false}
-          rowHeight={LOCATION_ROW}
+          rowHeight={rowHeight}
           aria-label="Recent locations"
           empty={<span>{changedOnly ? tx("No changed locations") : tx("No recent locations")}</span>}
-          renderItem={(l) => (
-            <div className={styles.location}>
-              <div className={styles.locationHeader}>
-                <Icon name={fileIconName(basename(l.rel), l.rel)} size={14} className={styles.icon} />
-                <HighlightedText
-                  className={styles.locationName}
-                  text={basename(l.rel)}
-                  indices={l.nameIndices}
-                  tone="strong"
+          renderItem={(l) => {
+            const name = basename(l.rel);
+            const breadcrumb = breadcrumbOf(outlines.get(l.path), l);
+            const directory = isVirtualUri(l.path) ? virtualContainer(l.path) : relDir(l.rel);
+            const context = breadcrumb && breadcrumb !== name ? breadcrumb : directory;
+            return (
+              <div className={styles.location}>
+                <div className={styles.locationHeader} title={l.rel}>
+                  <Icon name={fileIconName(name, l.rel)} size={14} className={styles.icon} />
+                  <HighlightedText
+                    className={clsx(styles.name, styles.locationName)}
+                    text={name}
+                    indices={l.nameIndices}
+                    tone="strong"
+                  />
+                  {context && <span className={styles.dir}>{context}</span>}
+                  {l.changed && (
+                    <span className={styles.changed}>
+                      <T>changed</T>
+                    </span>
+                  )}
+                  <span className={styles.time}>{locationTime(l.time, now)}</span>
+                </div>
+                <SnippetCode
+                  path={l.path}
+                  lines={dedent(l.snippet)}
+                  first={l.snippetStart}
+                  caret={l.line}
+                  style={snippetStyle}
                 />
-                <span className={styles.dir}>{breadcrumbOf(outlines.get(l.path), l) || l.rel}</span>
-                {l.changed && (
-                  <span className={styles.changed}>
-                    <T>changed</T>
-                  </span>
-                )}
-                <span className={styles.time}>{locationTime(l.time, now)}</span>
               </div>
-              <SnippetCode path={l.path} lines={dedent(l.snippet)} first={l.snippetStart} caret={l.line} />
-            </div>
-          )}
+            );
+          }}
         />
       </div>
     </Dialog>

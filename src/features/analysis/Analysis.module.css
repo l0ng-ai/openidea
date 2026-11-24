@@ -161,12 +161,17 @@
   padding: 14px;
 }
 .scope {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-0-5);
+  container: analysis-scope / inline-size;
+  min-inline-size: 0;
   margin: 0;
   padding: 0;
   border: 0;
+}
+.scopeOptions {
+  display: grid;
+  grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-0-5) var(--space-2);
 }
 .fieldLabel {
   padding: 0 0 4px;
@@ -174,21 +179,33 @@
   font-size: var(--fs-small);
 }
 .radioRow {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-block: var(--space-0-5);
+  overflow-wrap: anywhere;
+}
+.scopeWithField {
+  grid-column: 1;
+}
+.scopeControl {
+  grid-column: 2;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 3px 0;
-  color: var(--fg);
-  cursor: default;
-}
-.radioRow input {
-  margin: 0;
-  accent-color: var(--accent);
-}
-.dirRow {
-  display: flex;
   gap: var(--space-1-5);
-  padding: 4px 0 0 22px;
+  min-width: 0;
+}
+.scopeControl > button:last-child {
+  flex: none;
+}
+@container analysis-scope (max-width: 336px) {
+  .scopeOptions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .scopeControl {
+    grid-column: 1;
+    padding-inline-start: calc(16px + var(--space-2));
+    margin-block-end: var(--space-1);
+  }
 }
 .grow {
   flex: 1;
@@ -199,21 +216,54 @@
   align-items: center;
   gap: var(--space-2);
 }
+.reformatSubject {
+  overflow-wrap: anywhere;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+.reformatMask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.reformatMaskInput {
+  flex: 1 1 12ch;
+  min-width: 0;
+}
+.templateSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+.templateHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
 .languageSelect {
-  min-width: 180px;
+  max-width: 50%;
 }
 .template {
   width: 100%;
-  min-height: 96px;
+  height: clamp(96px, 24vh, 150px);
+  min-height: 50px;
   resize: vertical;
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
-  background: var(--bg-input);
+  background: var(--bg-editor);
   color: var(--fg-editor);
   font-family: var(--font-mono);
   font-size: var(--fs-code);
-  line-height: 1.5;
+  line-height: var(--lh-code);
+}
+.replaceForm .template {
+  /* Leave room for the scope and dialog controls when both templates are shown. */
+  height: clamp(96px, calc(50vh - 205px), 150px);
 }
 .template:focus {
   outline: none;
@@ -285,10 +335,26 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  font-size: var(--fs-ui);
 }
 .panel > * {
   flex: 1;
   min-height: 0;
+}
+.resultLabel,
+.resultDirectory {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.resultMeta {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.resultDirectory {
+  flex-shrink: 1;
+  max-width: 35%;
 }
 .excluded .message,
 .excluded .strong {
@@ -298,22 +364,38 @@
 .details {
   display: flex;
   flex-direction: column;
+}
+.detailsBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   gap: var(--space-2);
-  padding: 10px 12px;
+  padding: var(--space-2) var(--space-3);
   overflow: auto;
-  border-left: 1px solid var(--border);
-  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
 }
 .detailsEmpty {
+  flex: 1;
+  display: flex;
   align-items: center;
   justify-content: center;
+  padding: var(--space-3);
   color: var(--fg-faint);
+  text-align: center;
 }
 .detailsTitle {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-1-5);
   color: var(--fg-strong);
+}
+.detailsLocation {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.detailsCoordinates {
+  white-space: nowrap;
 }
 .detailsMessage {
   margin: 0;
@@ -321,6 +403,18 @@
   color: var(--fg);
 }
 .detailsActions {
+  flex: none;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-1-5);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.detailAction {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--h-control);
+  white-space: normal;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }

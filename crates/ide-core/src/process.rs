@@ -1,9 +1,14 @@
 //! Child-process helpers shared by every crate that spawns tools.
 
 use std::ffi::{OsStr, OsString};
+use std::path::Path;
 #[cfg(windows)]
 use std::process::Stdio;
 use std::process::{Child, Command};
+
+pub const ASKPASS_PORT_ENV: &str = "OPENIDEA_ASKPASS_PORT";
+/// The IDE's askpass helper may answer with saved credentials only.
+pub const ASKPASS_SILENT_ENV: &str = "OPENIDEA_ASKPASS_SILENT";
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -15,17 +20,55 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// For a `tokio::process::Command`, pass `cmd.as_std_mut()`.
 ///
 /// - Windows: release builds use the GUI subsystem, so without `CREATE_NO_WINDOW` every
-///   console child flashes a `cmd` window.
+///   console child flashes a `cmd` window. Batch files also need a PATH small enough for cmd.
 /// - Linux AppImage, reloaded and project variables: see [`host_env`].
 ///
-/// Variables the call site has already set are kept; call it before `env_clear`.
+/// Explicit variables take precedence over the host environment. Call after setting
+/// `current_dir` and any explicit `PATH`, and before `env_clear`.
 pub fn prepare(cmd: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    host_env(cmd)
+    host_env(cmd);
+    #[cfg(windows)]
+    compact_batch_path(cmd);
+    cmd
+}
+
+#[cfg(windows)]
+fn compact_batch_path(cmd: &mut Command) {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+
+    // Rust runs these files through cmd.exe, which drops inherited variables over this limit.
+    const CMD_ENV_LIMIT: usize = 8191;
+    let extension = Path::new(cmd.get_program()).extension();
+    if !extension.is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat")) {
+        return;
+    }
+    let path = match cmd.get_envs().find(|(key, _)| key.eq_ignore_ascii_case("PATH")) {
+        Some((_, path)) => path.map(OsStr::to_owned),
+        None => std::env::var_os("PATH"),
+    };
+    let Some(path) = path.filter(|p| p.encode_wide().count() > CMD_ENV_LIMIT) else { return };
+
+    // The IDE includes possible locations of as-yet uninstalled tools. Prune paths that are
+    // missing now, keeping search precedence and leaving UNC and relative paths alone.
+    let dirs = std::env::split_paths(&path).filter(|dir| {
+        let local = dir.is_absolute()
+            && matches!(dir.components().next(), Some(Component::Prefix(p))
+                if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)));
+        !local
+            || !std::fs::symlink_metadata(dir)
+                .is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory))
+    });
+    if let Ok(compact) = std::env::join_paths(dirs)
+        && compact.encode_wide().count() <= CMD_ENV_LIMIT
+    {
+        cmd.env("PATH", compact);
+    }
 }
 
 /// Starts the child as the leader of its own process group on Unix, so [`kill_tree`] and
@@ -516,10 +559,13 @@ mod windows_job {
 /// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]),
 /// and the login shell's variables this process lacks ([`shell_env`]: an app started from
 /// Finder/Dock doesn't have what rc files export, such as `GOPATH`, `JAVA_HOME` or
-/// `MAVEN_OPTS`). Variables the call site has already set are kept.
+/// `MAVEN_OPTS`). A child whose `current_dir` is inside a project also gets the project's
+/// environment ([`crate::project_env`]), so set it first. Variables the call site has
+/// already set are kept.
 pub fn host_env(cmd: &mut Command) -> &mut Command {
-    let fixes = child_env_changes();
-    let shell: Vec<_> = shell_env().collect();
+    let dir = cmd.get_current_dir().map(Path::to_path_buf);
+    let fixes = child_env_changes(dir.as_deref());
+    let shell: Vec<_> = shell_env_for(dir.as_deref()).collect();
     if fixes.is_empty() && shell.is_empty() {
         return cmd;
     }
@@ -540,22 +586,40 @@ pub fn host_env(cmd: &mut Command) -> &mut Command {
 /// that are not a `std::process::Command` (a PTY `CommandBuilder`). Apply before the call
 /// site's own variables. Empty outside an AppImage without an overlay.
 pub fn host_env_fixes() -> Vec<(OsString, Option<OsString>)> {
-    child_env_changes()
+    child_env_changes(None)
+}
+
+/// [`host_env_fixes`] for a child started in `dir`, the environment of the project holding it included.
+pub fn host_env_fixes_in(dir: &Path) -> Vec<(OsString, Option<OsString>)> {
+    child_env_changes(Some(dir))
 }
 
 /// This process's environment as a child should inherit it (see [`host_env`]), for call
 /// sites that build a child's environment from the IDE's own instead of inheriting it.
 pub fn host_vars() -> impl Iterator<Item = (OsString, OsString)> {
-    apply_changes(std::env::vars_os().collect(), &child_env_changes()).into_iter()
+    apply_changes(std::env::vars_os().collect(), &child_env_changes(None)).into_iter()
+}
+
+/// [`host_vars`] for a child started in `dir`.
+pub fn host_vars_in(dir: &Path) -> impl Iterator<Item = (OsString, OsString)> {
+    apply_changes(std::env::vars_os().collect(), &child_env_changes(Some(dir))).into_iter()
 }
 
 /// [`std::env::var_os`] as a child should see it (see [`host_env`]), the login shell's value
 /// included when this process lacks the variable.
 pub fn host_var_os(key: impl AsRef<OsStr>) -> Option<OsString> {
-    let key = key.as_ref();
-    match child_env_changes().into_iter().find(|(k, _)| k == key) {
+    host_var_os_for(None, key.as_ref())
+}
+
+/// [`host_var_os`] for a child started in `dir`.
+pub fn host_var_os_in(dir: &Path, key: impl AsRef<OsStr>) -> Option<OsString> {
+    host_var_os_for(Some(dir), key.as_ref())
+}
+
+fn host_var_os_for(dir: Option<&Path>, key: &OsStr) -> Option<OsString> {
+    match child_env_changes(dir).into_iter().find(|(k, _)| k == key) {
         Some((_, fixed)) => fixed,
-        None => std::env::var_os(key).or_else(|| shell_env().find(|(k, _)| k == key).map(|(_, v)| v)),
+        None => std::env::var_os(key).or_else(|| shell_env_for(dir).find(|(k, _)| k == key).map(|(_, v)| v)),
     }
 }
 
@@ -578,8 +642,9 @@ fn apply_changes(
     vars
 }
 
-/// The AppImage fixes, the overlay, then the manual proxy's (a later one wins); one entry per name.
-fn child_env_changes() -> Vec<(OsString, Option<OsString>)> {
+/// The AppImage fixes, the overlay, the manual proxy's, then those of the project holding
+/// `dir` (a later one wins); one entry per name.
+fn child_env_changes(dir: Option<&Path>) -> Vec<(OsString, Option<OsString>)> {
     let mut changes = appimage_fixes();
     let overlay = env_overlay();
     changes.retain(|(k, _)| !overlay.iter().any(|(o, _)| o == k));
@@ -588,6 +653,11 @@ fn child_env_changes() -> Vec<(OsString, Option<OsString>)> {
     let proxy = crate::proxy_settings::proxy().child_env();
     changes.retain(|(k, _)| !proxy.iter().any(|(p, _)| p == k));
     changes.extend(proxy);
+    if let Some(dir) = dir {
+        let project = crate::project_env::for_dir(dir);
+        changes.retain(|(k, _)| !project.iter().any(|(p, _)| p == k));
+        changes.extend(project.iter().cloned());
+    }
     changes
 }
 
@@ -667,11 +737,26 @@ pub fn login_env() -> Option<Vars> {
 /// Apply before a call site's own variables so those win. Empty until the shell has been read.
 /// Names the overlay sets are left out: [`host_env`] gives them their value.
 pub fn shell_env() -> impl Iterator<Item = (OsString, OsString)> {
+    shell_env_for(None)
+}
+
+/// [`shell_env`] for a child started in `dir`: names the environment of the project holding
+/// it sets are left out too.
+pub fn shell_env_in(dir: &Path) -> impl Iterator<Item = (OsString, OsString)> {
+    shell_env_for(Some(dir))
+}
+
+fn shell_env_for(dir: Option<&Path>) -> impl Iterator<Item = (OsString, OsString)> {
     let overlay = env_overlay();
+    let project = dir.map(crate::project_env::for_dir).unwrap_or_default();
     let vars = login_env().unwrap_or_default();
     let lacking: Vec<_> = vars
         .iter()
-        .filter(|(k, _)| std::env::var_os(k).is_none() && !overlay.iter().any(|(o, _)| o == k))
+        .filter(|(k, _)| {
+            std::env::var_os(k).is_none()
+                && !overlay.iter().any(|(o, _)| o == k)
+                && !project.iter().any(|(p, _)| p == k)
+        })
         .cloned()
         .collect();
     lacking.into_iter()
@@ -724,6 +809,27 @@ pub fn find_executable_in(
     std::env::split_paths(search)
         .filter(|d| !d.as_os_str().is_empty())
         .find_map(|dir| names.iter().map(|n| dir.join(n)).find(|p| p.is_file()))
+}
+
+/// Whether `program` is a script to start as `/bin/sh <program>`: on Unix, a `#!` script
+/// without the execute bit — a `mvnw` / `gradlew` committed from Windows or unpacked from a
+/// zip — which `exec` refuses with `EACCES`. The file's mode is left alone, as other IDEs do.
+pub fn needs_sh(program: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        let mut magic = [0u8; 2];
+        program.is_absolute()
+            && std::fs::metadata(program).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 == 0)
+            && std::fs::File::open(program).and_then(|mut f| f.read_exact(&mut magic)).is_ok()
+            && &magic == b"#!"
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = program;
+        false
+    }
 }
 
 /// [`find_executable_in`] for this platform (`PATHEXT` from the environment).
@@ -839,6 +945,44 @@ mod tests {
         child.wait().unwrap();
         drop(child);
         assert!(!process_alive(pid));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn batch_launch_keeps_runtime_paths_when_cmd_would_drop_path() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("server.CMD");
+        std::fs::write(&script, "@echo off\r\nif not defined PATH exit /b 42\r\n").unwrap();
+        let selected = root.path().join("Selected Runtime");
+        let fallback = root.path().join("Fallback Runtime");
+        std::fs::create_dir(&selected).unwrap();
+        std::fs::create_dir(&fallback).unwrap();
+        let relative = Path::new("relative");
+        let unc = Path::new(r"\\openidea-test\share\bin");
+        let missing = root.path().join("uninstalled-".repeat(12));
+        let path = std::env::join_paths(
+            std::iter::once(selected.as_path()).chain(std::iter::repeat_n(missing.as_path(), 60)).chain([
+                unc,
+                relative,
+                fallback.as_path(),
+            ]),
+        )
+        .unwrap();
+        let compact = std::env::join_paths([selected.as_path(), unc, relative, fallback.as_path()]).unwrap();
+
+        let path_in = |cmd: &Command| {
+            cmd.get_envs()
+                .find_map(|(key, value)| key.eq_ignore_ascii_case("PATH").then(|| value.map(OsStr::to_owned)))
+                .flatten()
+        };
+        let mut cmd = Command::new(&script);
+        cmd.current_dir(root.path()).env("PATH", &path);
+        prepare(&mut cmd);
+        assert_eq!(path_in(&cmd), Some(compact));
+        assert!(cmd.status().unwrap().success());
+
+        let mut native = Command::new(root.path().join("server.exe"));
+        assert_eq!(path_in(prepare(native.env("PATH", &path))), Some(path));
     }
 
     #[cfg(unix)]
@@ -1016,6 +1160,47 @@ mod tests {
     }
 
     #[test]
+    fn a_child_inside_a_project_gets_its_environment() {
+        let root = std::path::Path::new("/openidea-test-process/project");
+        // Absolute on the platform: the search path drops relative entries.
+        let devshell = if cfg!(windows) { r"C:\nix\store\x-devshell\bin" } else { "/nix/store/x-devshell/bin" };
+        crate::project_env::set(
+            root,
+            vec![
+                ("OPENIDEA_PROJECT_VAR".into(), Some("devshell".into())),
+                ("PATH".into(), Some(devshell.into())),
+                ("OPENIDEA_PROJECT_UNSET".into(), None),
+            ],
+        );
+        let get = |cmd: &Command, k: &str| cmd.get_envs().find(|(n, _)| *n == k).map(|(_, v)| v.map(OsStr::to_owned));
+
+        let mut inside = Command::new("true");
+        inside.current_dir(root.join("src")).env("OPENIDEA_PROJECT_VAR", "call site");
+        host_env(&mut inside);
+        assert_eq!(get(&inside, "PATH"), Some(Some(devshell.into())));
+        assert_eq!(get(&inside, "OPENIDEA_PROJECT_UNSET"), Some(None));
+        assert_eq!(get(&inside, "OPENIDEA_PROJECT_VAR"), Some(Some("call site".into())), "the call site's value wins");
+
+        let mut outside = Command::new("true");
+        outside.current_dir("/openidea-test-process/other");
+        host_env(&mut outside);
+        assert_eq!(get(&outside, "OPENIDEA_PROJECT_VAR"), None);
+        let mut no_dir = Command::new("true");
+        host_env(&mut no_dir);
+        assert_eq!(get(&no_dir, "OPENIDEA_PROJECT_VAR"), None);
+
+        // Spawners that build the environment themselves (PTYs, runs) and `PATH` lookups.
+        assert!(host_env_fixes_in(root).iter().any(|(k, v)| k == "OPENIDEA_PROJECT_VAR" && v.is_some()));
+        assert!(host_vars_in(root).any(|(k, v)| k == "OPENIDEA_PROJECT_VAR" && v == "devshell"));
+        assert_eq!(host_var_os_in(root, "OPENIDEA_PROJECT_VAR"), Some("devshell".into()));
+        assert_eq!(host_var_os("OPENIDEA_PROJECT_VAR"), None);
+        let search = crate::tool_path::search_path_in(root);
+        assert_eq!(std::env::split_paths(&search).next(), Some(devshell.into()));
+        crate::project_env::remove(root);
+        assert!(host_vars_in(root).all(|(k, _)| k != "OPENIDEA_PROJECT_VAR"));
+    }
+
+    #[test]
     fn changes_apply_in_order() {
         let vars = apply_changes(
             env(&[("A", "1"), ("B", "2")]),
@@ -1147,6 +1332,45 @@ mod tests {
         cmd.env("PATH", "/custom");
         prepare(&mut cmd);
         assert_eq!(cmd.get_envs().find(|(k, _)| *k == "PATH").and_then(|(_, v)| v), Some(OsStr::new("/custom")));
+    }
+
+    #[test]
+    fn unix_uses_the_name_as_is() {
+        assert_eq!(executable_names("kotlinc", false, Some(".BAT")), ["kotlinc"]);
+    }
+
+    #[test]
+    fn windows_appends_pathext_extensions() {
+        assert_eq!(
+            executable_names("kotlinc", true, None),
+            ["kotlinc.com", "kotlinc.exe", "kotlinc.bat", "kotlinc.cmd"]
+        );
+        assert_eq!(executable_names("npx", true, Some(".EXE;.CMD;;")), ["npx.exe", "npx.cmd"]);
+        assert_eq!(executable_names("npx", true, Some("  ")), executable_names("npx", true, None));
+        // Already has an executable extension (any case): only that file.
+        assert_eq!(executable_names("rustc.EXE", true, None), ["rustc.EXE"]);
+        assert_eq!(executable_names("gradlew.bat", true, None), ["gradlew.bat"]);
+        // A dot that is not an executable extension (`clang++`, `python3.12`).
+        assert_eq!(executable_names("python3.12", true, Some(".EXE")), ["python3.12.exe"]);
+    }
+
+    #[test]
+    fn finds_batch_files_and_skips_extensionless_scripts_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        // `node_modules/.bin` style: a POSIX script next to its `.cmd` shim.
+        std::fs::write(a.join("tsx"), "#!/bin/sh\n").unwrap();
+        std::fs::write(b.join("tsx.cmd"), "@echo off\n").unwrap();
+        std::fs::write(b.join("kotlinc.bat"), "@echo off\n").unwrap();
+        let search = std::env::join_paths([&a, &b]).unwrap();
+        assert_eq!(find_executable_in("tsx", &search, true, None), Some(b.join("tsx.cmd")));
+        assert_eq!(find_executable_in("kotlinc", &search, true, None), Some(b.join("kotlinc.bat")));
+        assert_eq!(find_executable_in("tsx", &search, false, None), Some(a.join("tsx")));
+        assert_eq!(find_executable_in("kotlinc", &search, false, None), None);
+        assert_eq!(find_executable_in("nope", &search, true, None), None);
     }
 
     #[test]

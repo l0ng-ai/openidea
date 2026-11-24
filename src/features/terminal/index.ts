@@ -5,8 +5,9 @@
  */
 import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
-import { onIdeEvent } from "@/platform/ipc";
+import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow, parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { useSystemFontStore } from "@/platform/systemFonts";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import {
@@ -21,6 +22,7 @@ import { CLI_KIND, CliDoneMark, cliData, moveTerminalToEditor } from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
+import { notifyTerminalVisibility } from "./outputGate";
 import type { SessionOptions } from "./session";
 
 const WINDOW = "terminal";
@@ -121,8 +123,15 @@ export function activate(): () => void {
       icon: "toolwindow-terminal",
       anchor: "bottom",
       order: 10,
-      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView)),
+      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView), { prefetch: true }),
       headerContent: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalTabs)),
+      plainTitle: true,
+      headerMenu: [
+        { kind: "action", action: "terminal.splitRight" },
+        { kind: "action", action: "terminal.splitDown" },
+        { kind: "separator" },
+        { kind: "action", action: "file.settings", arg: "tools.terminal", label: "Settings", icon: "settings" },
+      ],
     }),
     // Terminal sessions moved to the editor (#2202): saved with the editor session, kept alive while hidden.
     registerEditorKind({
@@ -194,6 +203,25 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           const rt = await loadTerminalRuntime();
           await rt.pluginSession(arg as Parameters<typeof rt.pluginSession>[0]);
+          toolWindowService().show(WINDOW, true);
+          focusActiveSoon();
+        },
+      },
+      {
+        id: "terminal.runLines",
+        title: "Run Lines in Terminal",
+        description: "Opens a shell tab and types `{ lines, name?, cwd? }` into it.",
+        category: "Terminal",
+        icon: "terminal",
+        when: "projectOpen",
+        hidden: true,
+        run: async ({ arg }) => {
+          const a = arg as { lines?: unknown; name?: unknown; cwd?: unknown } | undefined;
+          const lines = Array.isArray(a?.lines) ? a.lines.filter((x): x is string => typeof x === "string") : [];
+          const cwd = (typeof a?.cwd === "string" && a.cwd) || projectRoot();
+          if (!lines.length || !cwd) return;
+          const rt = await loadTerminalRuntime();
+          rt.newTabRunning(cwd, typeof a?.name === "string" && a.name ? a.name : undefined, lines);
           toolWindowService().show(WINDOW, true);
           focusActiveSoon();
         },
@@ -333,16 +361,50 @@ export function activate(): () => void {
       const rt = terminalRuntime();
       (rt?.sessionForTerminalId(e.terminal) ?? rt?.cliSessionForTerminalId(e.terminal))?.exited(e.code);
     }),
+    (() => {
+      if (typeof document === "undefined") return () => {};
+      const onVisibility = () => notifyTerminalVisibility();
+      document.addEventListener("visibilitychange", onVisibility);
+      return () => document.removeEventListener("visibilitychange", onVisibility);
+    })(),
     // Sessions belong to the project. Remember this project's tabs, then open the next one's.
-    useProject.subscribe((s, prev) => {
-      const rt = terminalRuntime();
-      if (rt && s.project?.root !== prev.project?.root) {
-        if (rt.useTerminalFind.getState().open) rt.closeTerminalFind();
-        rt.syncTerminalProject(s.project?.root ?? null);
-        // The editor drops the old project's tabs without `onClose`; their CLIs end with it.
-        rt.disposeAllClis();
-      }
-    }),
+    (() => {
+      let prevLocation = projectLocation(useProject.getState().project?.root);
+      return useProject.subscribe((s) => {
+        const nextLocation = projectLocation(s.project?.root);
+        if (nextLocation === prevLocation) return;
+        const wasRemote = !!prevLocation && parseRemoteLocation(prevLocation) !== null;
+        prevLocation = nextLocation;
+        const rt = terminalRuntime();
+        if (rt) {
+          if (rt.useTerminalFind.getState().open) rt.closeTerminalFind();
+          rt.syncTerminalProject(s.project?.root ?? null, nextLocation);
+          // The editor drops the old project's tabs without `onClose`; their CLIs end with it locally,
+          // or detach without killing the remote daemon's PTYs.
+          rt.disposeAllClis(!wasRemote);
+        } else if (s.project?.root && isRemoteWindow() && isTauri()) {
+          const root = s.project.root;
+          void commands
+            .termList()
+            .then(async (list) => {
+              if (list.length > 0 && useProject.getState().project?.root === root) {
+                await loadTerminalRuntime();
+              }
+            })
+            .catch(() => {});
+        }
+      });
+    })(),
+    (() => {
+      if (typeof window === "undefined") return () => {};
+      const flush = () => terminalRuntime()?.rememberTerminals();
+      window.addEventListener("pagehide", flush);
+      window.addEventListener("beforeunload", flush);
+      return () => {
+        window.removeEventListener("pagehide", flush);
+        window.removeEventListener("beforeunload", flush);
+      };
+    })(),
   ];
 
   if (typeof MutationObserver !== "undefined" && typeof document !== "undefined") {

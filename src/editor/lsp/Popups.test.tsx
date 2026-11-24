@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { Location } from "@/bindings";
 
 const openFile = vi.fn(async () => undefined);
@@ -15,11 +15,10 @@ vi.mock("@/workbench/contributions", async (orig) => {
 });
 
 const { LspPopups, DocumentationWindow } = await import("./Popups");
-const { closePopup, openPopup, useLspPopup } = await import("./popupStore");
+const { closePopup, openPopup, updatePopup, useLspPopup } = await import("./popupStore");
 const { useDocWindow, hoverDoc, pushHistory, stepHistory, hoverCandidates } = await import("./docs");
 const { mountHoverDoc } = await import("./DocView");
 const { hoverSource } = await import("./hover");
-import popupStyles from "./Popups.module.css";
 import { registerImportsOnPasteActions } from "./importsOnPaste";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -140,6 +139,31 @@ describe("list popup", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it("keeps the chosen intention when a quick-fix section arrives ahead of it", () => {
+    const local = ["Extract variable", "Inline value"].map((label) => ({
+      id: label,
+      label,
+      section: { id: "intentions" },
+      run: vi.fn(),
+    }));
+    openPopup({ kind: "list", title: "Intentions", anchor: { x: 0, y: 0 }, items: local, busy: true });
+    render(<LspPopups />);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: "Inline value", selected: true })).toBeVisible();
+
+    const runFix = vi.fn();
+    act(() =>
+      updatePopup("list", {
+        busy: false,
+        items: [{ id: "fix", label: "Correct type", section: { id: "quick-fixes" }, run: runFix }, ...local],
+      }),
+    );
+    expect(screen.getByRole("option", { name: "Inline value", selected: true })).toBeVisible();
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Enter" });
+    expect(local[1]!.run).toHaveBeenCalledOnce();
+    expect(runFix).not.toHaveBeenCalled();
+  });
+
   it("focuses the rows, not the header's pin button, when it opens", () => {
     openPopup({
       kind: "list",
@@ -236,12 +260,15 @@ describe("documentation", () => {
     expect(container).toBeTruthy();
   });
 
-  it("moves the popup to the Documentation tool window", () => {
+  it("navigates the popup history from More Actions and moves it to the Documentation tool window", () => {
     openPopup({
       kind: "doc",
       anchor: { x: 0, y: 0 },
-      entries: [{ markup: { kind: "plaintext", value: "docs" }, language: null }],
-      index: 0,
+      entries: [
+        { markup: { kind: "plaintext", value: "First document" }, language: null },
+        { markup: { kind: "plaintext", value: "Second document" }, language: null },
+      ],
+      index: 1,
       themeClasses: "",
     });
     render(
@@ -250,10 +277,17 @@ describe("documentation", () => {
         <DocumentationWindow />
       </>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Show in Documentation Tool Window" }));
+    const more = screen.getByRole("button", { name: "More Actions" });
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Back/ }));
+    expect(screen.getByText("First document")).toBeVisible();
+    fireEvent.click(more);
+    expect(screen.getByRole("menuitem", { name: /^Forward/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Show in Documentation Tool Window/ }));
     expect(useLspPopup.getState().popup).toBeNull();
     expect(show).toHaveBeenCalledWith("documentation", true);
-    expect(useDocWindow.getState().entries).toHaveLength(1);
+    expect(useDocWindow.getState().entries).toHaveLength(2);
+    expect(useDocWindow.getState().index).toBe(0);
   });
 });
 
@@ -262,7 +296,7 @@ describe("hover documentation", () => {
   const frame = (el: Element) => el.querySelector<HTMLElement>('[data-lsp-doc="hover"]')!;
   afterEach(() => document.body.replaceChildren());
 
-  it("shows the hovered documentation in the same view as F1's", async () => {
+  it("shows the hovered documentation in the same view as F1's, laid out when create() returns", async () => {
     const docHover: ContributedHover = (state, pos) => {
       const w = state.wordAt(pos);
       return w ? { from: w.from, to: w.to, markdown: "hovered docs" } : null;
@@ -276,11 +310,13 @@ describe("hover documentation", () => {
     });
     const tooltip = await hoverSource(view, 2);
     let created!: { dom: HTMLElement; destroy: () => void };
-    await act(async () => {
+    // Asserted inside a synchronous act(): `create()` has to leave a laid-out popup behind, since
+    // CodeMirror places the tooltip in the measure pass that follows it.
+    act(() => {
       created = tooltip!.create() as typeof created;
-      document.body.appendChild(created.dom);
+      expect(frame(created.dom).textContent).toContain("hovered docs");
     });
-    expect(frame(created.dom).textContent).toContain("hovered docs");
+    await act(async () => void document.body.appendChild(created.dom));
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
     created.destroy();
     view.destroy();
@@ -339,6 +375,7 @@ describe("quick definition popup", () => {
       ],
       index: 0,
       themeClasses: "",
+      codeStyle: { fontSize: "16px", lineHeight: "24px" },
     });
     render(<LspPopups />);
     const frame = () => screen.getByRole("dialog", { name: "Definition" }).firstElementChild as HTMLElement;
@@ -352,7 +389,7 @@ describe("quick definition popup", () => {
 });
 
 describe("reformat dialog", () => {
-  it("wraps its content in the padded body", () => {
+  it("offers only whole-file formatting when the editor has no selection", () => {
     const onRun = vi.fn();
     openPopup({
       kind: "reformat",
@@ -363,9 +400,10 @@ describe("reformat dialog", () => {
       onRun,
     });
     render(<LspPopups />);
-    const body = screen.getByRole("dialog", { name: "Reformat File" }).querySelector("[data-dialog-body]")!;
-    expect(body.firstElementChild).toHaveClass(popupStyles.reformatBody!);
-    expect(body.firstElementChild!.querySelectorAll("fieldset")).toHaveLength(2);
+    const scope = within(screen.getByRole("group", { name: "Scope" }));
+    expect(scope.getByRole("radio", { name: "Selected text" })).toBeDisabled();
+    expect(scope.getByRole("radio", { name: "Whole file" })).toBeChecked();
+    expect(within(screen.getByRole("group", { name: "Options" })).getByRole("checkbox")).not.toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(onRun).toHaveBeenCalledWith({ selectionOnly: false, optimizeImports: false });
   });

@@ -16,7 +16,6 @@ import {
   moveCompletionSelection,
   pickedCompletion,
   selectedCompletion,
-  snippet,
   startCompletion,
   type Completion,
   type CompletionContext,
@@ -25,7 +24,16 @@ import {
   type CompletionSource,
 } from "@codemirror/autocomplete";
 import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
-import { EditorView, ViewPlugin, keymap, type Rect, type ViewUpdate } from "@codemirror/view";
+import {
+  EditorView,
+  ViewPlugin,
+  getTooltip,
+  keymap,
+  repositionTooltips,
+  showTooltip,
+  type Rect,
+  type ViewUpdate,
+} from "@codemirror/view";
 import {
   call,
   commands,
@@ -44,6 +52,7 @@ import {
   typeColumnText,
   withoutDuplicates,
 } from "./completionItems";
+import { applySnippet } from "@/editor/core/cm/linkedSnippet";
 import { lspSnippetToCm, lspSnippetToPlainWithCaret, snippetVariables } from "./snippet";
 import { docOf, isUnavailable, lspDoc, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, posToOffset, textEditsToChanges } from "./positions";
@@ -59,6 +68,10 @@ import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
 import { languageSemantics } from "./semantic";
 import { remoteChange } from "@/editor/api";
+import { tooltipBounds } from "@/editor/core/cm/setup";
+import { completionLabelOffset } from "./theme";
+import { expectedFromSignature, expectedFromText, mentionedNames, smartItems } from "./smartCompletion";
+import { pythonInheritanceGraph } from "@/editor/navigation/inheritanceGraph";
 
 interface RequestContext {
   doc: number;
@@ -285,7 +298,8 @@ export function applyLspCompletion(
       start = tr.changes.mapPos(start, 1);
       end = tr.changes.mapPos(end, 1);
     }
-    snippet(lspSnippetToCm(item.insertText, snippetVariables(req.path)))(view, completion, start, end);
+    const source = lspSnippetToCm(item.insertText, snippetVariables(req.path));
+    applySnippet(view, [{ from: start, to: end, snippet: source }], completion);
     // A call snippet without a stop (`ArrayList<>()`): the caret goes inside until
     // signature help says there is nothing to pass.
     const head = view.state.selection.main.head;
@@ -451,6 +465,8 @@ async function applyLateEdits(view: EditorView, c: LspCompletion, insertedAt: nu
 interface ServerInsert {
   at: number;
   others: readonly number[];
+  /** The item is a call that takes arguments: the caret goes inside an inserted `()`. */
+  inside?: boolean;
 }
 const awaitServerInsert = StateEffect.define<ServerInsert | null>();
 const serverInsertAt = StateField.define<ServerInsert | null>({
@@ -459,7 +475,11 @@ const serverInsertAt = StateField.define<ServerInsert | null>({
     for (const e of tr.effects) if (e.is(awaitServerInsert)) return e.value;
     // The edit landed, or the caret moved on before it did.
     if (value === null || tr.annotation(remoteChange) || tr.selection) return null;
-    return { at: tr.changes.mapPos(value.at, -1), others: value.others.map((p) => tr.changes.mapPos(p, -1)) };
+    return {
+      at: tr.changes.mapPos(value.at, -1),
+      others: value.others.map((p) => tr.changes.mapPos(p, -1)),
+      inside: value.inside,
+    };
   },
 });
 
@@ -530,7 +550,9 @@ const caretAfterServerInsert = EditorState.transactionFilter.of((tr) => {
     if (tr.changes.touchesRange(from, to)) continue;
     others.push({ from: tr.changes.mapPos(from, 1), to: tr.changes.mapPos(to, -1) });
   }
-  const selection = EditorSelection.cursor(mainAfter);
+  const inside =
+    pending.inside && /\(\)$/.test(landed.insert) && tr.newDoc.sliceString(mainAfter - 2, mainAfter) === "()";
+  const selection = EditorSelection.cursor(inside ? mainAfter - 1 : mainAfter);
   if (!others.length) return [tr, { selection, sequential: true }];
   // Not part of this transaction: a remote one is not sent back to the document model.
   const changes = others
@@ -541,6 +563,12 @@ const caretAfterServerInsert = EditorState.transactionFilter.of((tr) => {
 
 /** Client-side commands handled by the editor itself (VS Code ids servers commonly send). */
 const CLIENT_COMMANDS = new Set(["editor.action.triggerParameterHints", "editor.action.triggerSuggest"]);
+
+/** A function or method whose signature lists parameters (`(name: String)`), as far as the item tells. */
+function takesArguments(item: Pick<CompletionItem, "kind" | "labelDetail" | "detail">): boolean {
+  if (item.kind && !CALLABLE.has(item.kind)) return false;
+  return /^\s*\(\s*[^)\s]/.test(item.labelDetail ?? item.detail ?? "");
+}
 
 /** kotlin-lsp inserts the item itself (`jetbrains.kotlin.completion.apply`): nothing goes in here. */
 function serverInserts(item: CompletionItem): boolean {
@@ -553,7 +581,10 @@ function runCommand(view: EditorView, item: CompletionItem, others: readonly num
   if (!command?.command) return;
   const cmd = command.command;
   const serverInserted = serverInserts(item);
-  if (serverInserted) view.dispatch({ effects: awaitServerInsert.of({ at: view.state.selection.main.head, others }) });
+  if (serverInserted)
+    view.dispatch({
+      effects: awaitServerInsert.of({ at: view.state.selection.main.head, others, inside: takesArguments(item) }),
+    });
   if (cmd === "editor.action.triggerParameterHints") setTimeout(() => triggerSignatureHelp(view), 0);
   else if (cmd === "editor.action.triggerSuggest") setTimeout(() => startCompletion(view), 0);
   else if (!CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.")) {
@@ -666,7 +697,8 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos));
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
-  if (!ctx.explicit && completionBackoff.active(doc.doc)) return fallback(ctx);
+  const smart = ctx.state.field(smartLookup, false) ?? false;
+  if (!ctx.explicit && completionBackoff.active(doc.doc)) return smart ? null : fallback(ctx);
   cancelInflight();
   const id = nextRequestId();
   inflight = id;
@@ -683,13 +715,40 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   } catch (e) {
     if (isUnavailable(e)) {
       completionBackoff.mark(doc.doc);
-      return fallback(ctx);
+      return smart ? null : fallback(ctx);
     }
     return null;
   } finally {
     if (inflight === id) inflight = null;
   }
-  if (ctx.aborted || !list.items.length) return list.items.length ? null : fallback(ctx);
+  if (ctx.aborted || !list.items.length) return list.items.length || smart ? null : fallback(ctx);
+  let lower: ReadonlySet<CompletionItem> = new Set();
+  if (smart) {
+    const expected = await expectedType(ctx, doc.doc, word?.from ?? ctx.pos);
+    if (ctx.aborted) return null;
+    if (!expected) {
+      smartHint(ctx, tx("No expected type at the caret"));
+      return null;
+    }
+    const from = word?.from ?? ctx.pos;
+    const graph = doc.language === "python" ? await pythonInheritanceGraph().catch(() => []) : [];
+    const bases = new Map<string, string[]>();
+    for (const c of graph) bases.set(c.name, [...(bases.get(c.name) ?? []), ...c.bases]);
+    const smartResult = await smartItems(list.items, expected, (item) => resolveItem(doc.doc, item), {
+      typed: word?.text ?? "",
+      member: ctx.state.sliceDoc(from - 1, from) === ".",
+      mentioned: mentionedNames(ctx.state.doc.toString()),
+      bases: (name) => bases.get(name) ?? [],
+      aborted: () => ctx.aborted,
+    });
+    if (ctx.aborted) return null;
+    list = { ...list, items: smartResult.items };
+    lower = smartResult.lower;
+    if (!list.items.length) {
+      smartHint(ctx, tx`No suggestions of type ${expected}`);
+      return null;
+    }
+  }
   const req: RequestContext = { doc: doc.doc, path: doc.path, language: doc.uiMode, pos: ctx.pos, text: ctx.state.doc };
   const prefs = editorPrefs().completion;
   const typed = word?.text ?? "";
@@ -707,9 +766,17 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   }
   return {
     from: word ? word.from : ctx.pos,
-    options: items.map((item) => makeCompletion(item, req)),
-    // "All letters" must re-check case on every keystroke.
-    validFor: list.isIncomplete || (prefs.matchCase && prefs.caseSensitivity === "all") ? undefined : VALID_FOR,
+    options: items.map((item) => {
+      const option = makeCompletion(item, req);
+      // Smart Type: an item that may fit (`Any`) follows the ones that do.
+      if (lower.has(item)) option.boost = -10;
+      return option;
+    }),
+    // "All letters" must re-check case on every keystroke; Smart Type resolved only what matched the typed letters.
+    validFor:
+      list.isIncomplete || (prefs.matchCase && prefs.caseSensitivity === "all") || (smart && typed)
+        ? undefined
+        : VALID_FOR,
     filter: true,
   };
 }
@@ -795,9 +862,62 @@ function exclusiveSource(ctx: CompletionContext): CompletionSource | null {
   return null;
 }
 
+/**
+ * Smart Type completion: while its lookup is open, the language server's items are narrowed to
+ * the caret's expected type and the other sources stay out.
+ */
+const setSmartLookup = StateEffect.define<boolean>();
+const smartLookup = StateField.define<boolean>({
+  create: () => false,
+  update: (value, tr) => tr.effects.reduce((v, e) => (e.is(setSmartLookup) ? e.value : v), value),
+});
+
+/** Ends Smart Type mode when its lookup closes or finds nothing. */
+const endSmartLookup = EditorView.updateListener.of((u) => {
+  if (!u.state.field(smartLookup) || completionStatus(u.startState) === null || completionStatus(u.state) !== null)
+    return;
+  queueMicrotask(() => {
+    if (u.view.state.field(smartLookup) && completionStatus(u.view.state) === null)
+      u.view.dispatch({ effects: setSmartLookup.of(false) });
+  });
+});
+
+/** The type expected at `from`: an annotated assignment, a `return`, else the active parameter's. */
+async function expectedType(ctx: CompletionContext, doc: number, from: number): Promise<string | null> {
+  const fromText = expectedFromText(ctx.state, from);
+  if (fromText) return fromText;
+  const help = await lspRequest(() => commands.lspSignatureHelp(doc, offsetToPos(ctx.state.doc, from))).catch(
+    () => null,
+  );
+  return expectedFromSignature(help);
+}
+
+/** Says why the Smart Type lookup is empty, in place of the generic "No suggestions". */
+function smartHint(ctx: CompletionContext, text: string) {
+  if (!ctx.view) return;
+  explicitPending.delete(ctx.view);
+  showHint(ctx.view, text, { timeout: 2000 });
+}
+
+/** ⌃Space: Basic completion, leaving Smart Type mode as IDEA does. */
+export function basicCompletion(view: EditorView): boolean {
+  if (view.state.field(smartLookup, false)) view.dispatch({ effects: setSmartLookup.of(false) });
+  return explicitCompletion(view);
+}
+
+/** ⌃⇧Space: the lookup lists only what fits the expected type at the caret. */
+export function smartTypeCompletion(view: EditorView): boolean {
+  closeCompletion(view);
+  view.dispatch({ effects: setSmartLookup.of(true) });
+  const started = explicitCompletion(view);
+  if (!started) view.dispatch({ effects: setSmartLookup.of(false) });
+  return started;
+}
+
 /** Show suggestions as you type: sources only answer explicit requests when it is off. */
 function gated(source: CompletionSource): CompletionSource {
   return (ctx) => {
+    if (ctx.state.field(smartLookup, false) && source !== claimingLspSource) return null;
     const only = exclusiveSource(ctx);
     if (only) return source === contributedSource ? only(ctx) : null;
     if (!ctx.explicit && (!editorPrefs().completion.autoPopup || inplaceRenameActive(ctx.state))) return null;
@@ -899,12 +1019,18 @@ const lookupTracker = ViewPlugin.fromClass(
         if (options.length === 1 && editorPrefs().completion.autoInsertSingle) {
           const doc = u.state.doc;
           setTimeout(() => {
-            const now = currentCompletions(view.state);
+            const state = view.state;
+            const now = currentCompletions(state);
+            const { head } = state.selection.main;
+            const line = state.doc.lineAt(head);
+            const column = head - line.from;
+            // Keep the lookup open so Tab can replace the remaining identifier.
             if (
-              view.state.doc === doc &&
-              completionStatus(view.state) === "active" &&
+              state.doc === doc &&
+              completionStatus(state) === "active" &&
               now.length === 1 &&
-              now[0] === options[0]
+              now[0] === options[0] &&
+              identifierEnd(line.text, column) === column
             )
               acceptCompletion(view);
           }, AUTO_INSERT_DELAY);
@@ -914,7 +1040,7 @@ const lookupTracker = ViewPlugin.fromClass(
   },
 );
 
-/** ⌃Space: explicit completion (a focused lookup; a sole candidate is inserted at once). */
+/** ⌃Space: explicit completion with a focused lookup. */
 export function explicitCompletion(view: EditorView): boolean {
   explicitPending.add(view);
   const started = startCompletion(view);
@@ -977,36 +1103,49 @@ function sortToggle(view: EditorView): HTMLElement {
   return button;
 }
 
-/** IDEA's advertiser bar under the list (one tip: "Press ↵ to insert, ⇥ to replace") and its Sort by Name toggle. */
-const completionFooter = ViewPlugin.fromClass(
+const completionPopup = ViewPlugin.fromClass(
   class {
     constructor(private view: EditorView) {}
     update(u: ViewUpdate) {
-      if (completionStatus(u.state) !== "active") return;
+      // The lookup can show partial results while another source is still pending.
+      const popup = u.state
+        .facet(showTooltip)
+        .map((tooltip) => tooltip && getTooltip(this.view, tooltip))
+        .find((tooltip) => tooltip?.dom.classList.contains("cm-lsp-completion"));
+      if (!popup) return;
+      popup.offset ??= { x: -completionLabelOffset, y: 0 };
+      const t = popup.dom;
       this.view.requestMeasure({
-        read: () => null,
-        write: () => {
-          const scope = this.view.dom.ownerDocument;
-          const tooltips = [
-            ...this.view.dom.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
-            ...scope.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
-          ];
-          for (const t of tooltips) {
-            let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
-            if (footer) {
-              // CodeMirror rebuilds the option list by appending a fresh <ul>,
-              // which would leave an existing footer above the list.
-              const list = t.querySelector(":scope > ul");
-              if (list && list.nextElementSibling !== footer) list.after(footer);
-              continue;
-            }
+        key: this,
+        read: () => {
+          const { left, right } = tooltipBounds(this.view);
+          return {
+            width: `${Math.max(0, Math.floor(right - left))}px`,
+            fontSize: getComputedStyle(this.view.contentDOM).fontSize,
+          };
+        },
+        write: ({ width, fontSize }) => {
+          if (!t.isConnected) return;
+          const widthChanged = t.style.getPropertyValue("--cm-completion-max-width") !== width;
+          if (widthChanged) t.style.setProperty("--cm-completion-max-width", width);
+          // The body-level tooltip does not inherit the editor's temporary font zoom.
+          const fontChanged = t.style.getPropertyValue("--openidea-editor-font-size") !== fontSize;
+          if (fontChanged) t.style.setProperty("--openidea-editor-font-size", fontSize);
+          let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
+          if (!footer) {
             footer = document.createElement("div");
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");
+            tip.title = tip.textContent;
             footer.append(tip, sortToggle(this.view));
-            t.appendChild(footer);
           }
+          // CodeMirror appends a fresh list when the candidates change.
+          const list = t.querySelector(":scope > ul");
+          const footerMoved = list && list.nextElementSibling !== footer;
+          if (footerMoved) list.after(footer);
+          // CodeMirror has already measured the lookup. Reposition it before this frame paints.
+          if (widthChanged || fontChanged || footerMoved) repositionTooltips(this.view);
         },
       });
     }
@@ -1044,6 +1183,8 @@ export function completionExtension() {
   return [
     lookupKeys,
     prefetchResolve,
+    smartLookup,
+    endSmartLookup,
     autocompletion({
       override: [gated(claimingLspSource), gated(contributedSource), gated(pathFallbackSource)],
       icons: false,
@@ -1061,7 +1202,7 @@ export function completionExtension() {
       tooltipClass: () => "cm-lsp-completion",
       positionInfo: positionCompletionInfo,
     }),
-    completionFooter,
+    completionPopup,
     lookupTracker,
     serverInsertAt,
     caretAfterServerInsert,

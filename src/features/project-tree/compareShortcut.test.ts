@@ -28,7 +28,7 @@ beforeEach(async () => {
         id: "vcs.showDiff",
         title: "Show Diff",
         when: "vcsAvailable",
-        keyWhen: "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
+        keyWhen: "!editorTextFocus && !diffEditorFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
         run: showDiff,
       },
       {

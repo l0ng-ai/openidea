@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useProject } from "@/platform/project";
 import { LogPane, type LogLine } from "./LogPane";
 
 type Push = (l: LogLine) => void;
@@ -42,6 +43,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  useProject.setState({ settings: null });
 });
 
 describe("LogPane", () => {
@@ -104,5 +106,36 @@ describe("LogPane", () => {
     const { unmount } = render(<LogPane start={s.start} sourceKey="a" live ariaLabel="Log" />);
     unmount();
     expect(s.stops.at(0)).toHaveBeenCalled();
+  });
+  it("shows ANSI colours and log level colours instead of escape codes", () => {
+    useProject.setState({ settings: { console: { logColors: { enabled: true } } } as never });
+    const s = source();
+    render(<LogPane start={s.start} sourceKey="a" live ariaLabel="Log" />);
+    s.push("\x1b[32mstarted\x1b[0m on port 8080");
+    s.push("2026-11-21 ERROR boom");
+    runFrames();
+    const log = screen.getByRole("log", { name: "Log" });
+    expect(log.textContent).not.toContain("\x1b");
+    expect(screen.getByText("started")).toHaveStyle({ color: "var(--ansi-green)" });
+    expect(screen.getByText("2026-11-21 ERROR boom").closest("div")!.style.color).not.toBe("");
+  });
+
+  it("stops following when scrolled up and follows again from Scroll to End", () => {
+    const s = source();
+    render(<LogPane start={s.start} sourceKey="a" live ariaLabel="Log" />);
+    const end = screen.getByRole("button", { name: "Scroll to End" });
+    expect(end).toHaveAttribute("aria-pressed", "true");
+    const log = screen.getByRole("log", { name: "Log" });
+    Object.defineProperty(log, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(log, "clientHeight", { configurable: true, value: 100 });
+    log.scrollTop = 200;
+    fireEvent.scroll(log);
+    expect(end).toHaveAttribute("aria-pressed", "false");
+    s.push("more");
+    runFrames();
+    expect(log.scrollTop).toBe(200);
+    fireEvent.click(end);
+    expect(end).toHaveAttribute("aria-pressed", "true");
+    expect(log.scrollTop).toBe(1000);
   });
 });

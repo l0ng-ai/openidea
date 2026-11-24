@@ -69,6 +69,14 @@ describe("markdown rendering", () => {
     expect(md.markupToHtml({ kind: "markdown", value: "`x`" })).toBe("<p><code>x</code></p>\n");
     expect(md.markupToHtml({ kind: "plaintext", value: "<b>" })).toBe('<p class="cm-lsp-plain">&#60;b&#62;</p>');
   });
+
+  it("renders LaTeX math in LSP / documentation markdown", async () => {
+    const md = await freshMarkdown();
+    await md.loadMarkdown();
+    const root = document.createElement("div");
+    root.innerHTML = md.markupToHtml({ kind: "markdown", value: "Complexity $O(n \\log n)$" });
+    expect(root.querySelector(".katex")).not.toBeNull();
+  });
 });
 
 // On Windows, opening `//server/share` signs in to that server with the user's credentials.

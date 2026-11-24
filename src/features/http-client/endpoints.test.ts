@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CompletionContext } from "@codemirror/autocomplete";
 import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { useProject } from "@/platform/project";
 import { registerEndpointProvider, searchEndpoints, type EndpointEntry } from "@/workbench/contributions";
-import { completionTarget, endpointCompletion, renderEndpoint } from "./endpoints";
+import { completionTarget, endpointCompletion, endpointEditorExtension, renderEndpoint } from "./endpoints";
 
 const route: EndpointEntry = {
   method: "GET",
@@ -68,6 +69,35 @@ describe("shared HTTP endpoints", () => {
       dispose();
       broken();
       useProject.setState(previous);
+    }
+  });
+
+  it("asks only plugin providers for editor icons, once typing pauses", async () => {
+    vi.useFakeTimers();
+    const previous = useProject.getState();
+    useProject.setState({ project: { root: "/p" } as NonNullable<typeof previous.project> });
+    const scan = vi.fn(async () => [route]);
+    const plugin = vi.fn(async () => [{ ...route, pluginId: "demo", path: "/p/Users.java" }]);
+    const disposeScan = registerEndpointProvider({ id: "http.spring", endpoints: scan });
+    const disposePlugin = registerEndpointProvider({ id: "plugin:demo", endpoints: plugin });
+    const ctx = { doc: 1, path: "/p/Users.java", language: "java", uiMode: null, readOnly: false };
+    const view = new EditorView({
+      state: EditorState.create({ doc: "class Users {}", extensions: endpointEditorExtension(ctx) }),
+    });
+    try {
+      await vi.runAllTimersAsync();
+      plugin.mockClear();
+      for (const ch of "abc") view.dispatch({ changes: { from: 0, insert: ch } });
+      expect(plugin).not.toHaveBeenCalled();
+      await vi.runAllTimersAsync();
+      expect(plugin).toHaveBeenCalledTimes(1);
+      expect(scan).not.toHaveBeenCalled();
+    } finally {
+      view.destroy();
+      disposeScan();
+      disposePlugin();
+      useProject.setState(previous);
+      vi.useRealTimers();
     }
   });
 });

@@ -1,5 +1,6 @@
 /** POSIX path helpers for backend paths (the backend always reports `/`-separated absolute paths). */
-import { isSameOrInside } from "@/platform/paths";
+import { tx } from "@/platform/i18n";
+import { ipcPath, isSameOrInside } from "@/platform/paths";
 export { isSameOrInside } from "@/platform/paths";
 
 export function joinPath(dir: string, name: string): string {
@@ -19,6 +20,27 @@ export function nameOf(path: string): string {
 
 export function isInside(path: string, ancestor: string): boolean {
   return path !== ancestor && isSameOrInside(path, ancestor);
+}
+
+/**
+ * `path => ancestors.some((a) => isSameOrInside(path, a))`, answered by looking up the path and each
+ * of its parent folders in a set instead of comparing against every ancestor.
+ */
+export function insideAnyOf(ancestors: readonly string[]): (path: string) => boolean {
+  if (!ancestors.length) return () => false;
+  const same = new Set<string>();
+  const below = new Set<string>();
+  for (const a of ancestors) {
+    const n = ipcPath(a);
+    same.add(n);
+    below.add(n.endsWith("/") ? n : `${n}/`);
+  }
+  return (path) => {
+    const n = ipcPath(path);
+    if (same.has(n)) return true;
+    for (let i = n.indexOf("/"); i >= 0; i = n.indexOf("/", i + 1)) if (below.has(n.slice(0, i + 1))) return true;
+    return false;
+  };
 }
 
 /** Path relative to `root` (`""` for the root itself); `path` unchanged when outside. */
@@ -79,7 +101,7 @@ export interface ValidateOptions {
   current?: string;
   /** Compare names case-insensitively (macOS / Windows default file systems). */
   caseInsensitive?: boolean;
-  /** Windows' reserved characters are rejected. */
+  /** Apply Windows naming rules. */
   windows?: boolean;
 }
 
@@ -99,6 +121,8 @@ export function validateName(raw: string, opts: ValidateOptions): NameCheck {
     if (seg === "." || seg === "..") return { error: `'${seg}' is not a valid name` };
     if (opts.windows && (WINDOWS_INVALID.test(seg) || WINDOWS_RESERVED.test(seg)))
       return { error: `'${seg}' is not a valid file name` };
+    if (opts.windows && (seg.endsWith(".") || seg.endsWith(" ")))
+      return { error: tx("Windows file and folder names cannot end with a period or space") };
     if (seg.length > 255) return { error: "Name is too long" };
   }
   const fold = (s: string) => (opts.caseInsensitive ? s.toLowerCase() : s);

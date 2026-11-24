@@ -25,12 +25,12 @@ description: "Rust 与 TypeScript 的格式化、lint 和死代码检查，以�
 
 ## TypeScript 与 React
 
-| 工具     | 命令                                     | 配置                                                      |
-| -------- | ---------------------------------------- | --------------------------------------------------------- |
-| oxfmt    | `pnpm format`（CI：`pnpm format:check`） | `.oxfmtrc.json`：行宽 120、双引号、分号、处处尾逗号       |
-| oxlint   | `pnpm lint`                              | `.oxlintrc.json`：TypeScript 和 React 插件                |
-| 类型检查 | `pnpm typecheck`                         | `tsconfig.json` 以及 `perf/`、`scripts/`、`smoke/` 的配置 |
-| knip     | `pnpm knip`                              | `knip.ts`：未使用的文件、导出和依赖                       |
+| 工具     | 命令                                     | 配置                                                                        |
+| -------- | ---------------------------------------- | --------------------------------------------------------------------------- |
+| oxfmt    | `pnpm format`（CI：`pnpm format:check`） | `.oxfmtrc.json`：行宽 120、双引号、处处尾逗号                               |
+| oxlint   | `pnpm lint`                              | `.oxlintrc.json`：TypeScript 和 React 插件                                  |
+| 类型检查 | `pnpm typecheck`                         | `tsconfig.json` 以及 `e2e/`、`evals/`、`perf/`、`scripts/`、`smoke/` 的配置 |
+| knip     | `pnpm knip`                              | `knip.ts`：未使用的文件、导出和依赖                                         |
 
 `pnpm knip` 发现没人 import 的导出、没人引用的文件或没人用的依赖时会失败。请删掉死代码，而不是屏蔽检查；只在本文件内使用的导出是允许的。
 

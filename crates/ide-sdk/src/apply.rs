@@ -31,7 +31,8 @@ pub fn setting_path(root: &Path, s: &str) -> Option<PathBuf> {
     Some(if p.is_absolute() { p } else { root.join(p) })
 }
 
-fn toml_has_table(file: &Path, table: &str) -> bool {
+/// Whether the TOML `file` has the dotted `table` (`tool.ruff`).
+pub fn toml_has_table(file: &Path, table: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(file) else { return false };
     let Ok(value) = toml::from_str::<toml::Value>(&text) else { return false };
     table.split('.').try_fold(&value, |value, key| value.get(key)).is_some_and(toml::Value::is_table)
@@ -66,9 +67,10 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 
 /// The project interpreter: the configured one, else a project virtualenv
 /// (`.venv`, `venv`, …) or pixi environment (`.pixi/envs/<env>`) in the project
-/// root, else the Python the project pins for mise / asdf. A configured
-/// interpreter whose executable is gone (uninstalled, moved) is skipped like
-/// PyCharm's "Invalid" SDKs, so runs fall back instead of failing on a dead path.
+/// root, else the project's Pipenv environment, else its `default` Hatch environment,
+/// else the Python the project pins for mise / asdf. A configured interpreter whose executable is gone (uninstalled,
+/// moved) is skipped like PyCharm's "Invalid" SDKs, so runs fall back instead of
+/// failing on a dead path.
 /// `None` when the project interpreter is a run target's (see [`crate::container_python`]).
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
     if s.languages.python.run_target().is_some() {
@@ -78,6 +80,72 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
         .filter(|p| p.is_file())
         .or_else(|| project_venv_python(root))
         .or_else(|| pinned::pinned_python(root))
+}
+
+/// An absolute or `~/` path from the settings; `None` for anything else.
+pub fn absolute_setting_path(s: &str) -> Option<PathBuf> {
+    setting_path(Path::new(""), s).filter(|p| p.is_absolute())
+}
+
+/// Why a folder added to an interpreter's paths stays off the import path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum UserPathProblem {
+    /// Not an existing folder.
+    Missing,
+    /// Not absolute or `~/`, or it holds the separator of `PYTHONPATH`.
+    Invalid,
+}
+
+/// A folder added to an interpreter's paths (All Interpreters › Show Paths), as it goes on the
+/// import path.
+pub fn user_path(s: &str) -> Result<PathBuf, UserPathProblem> {
+    let path = absolute_setting_path(s).ok_or(UserPathProblem::Invalid)?;
+    // `PYTHONPATH` cannot hold a path with its separator in it: joining would fail every launch.
+    if std::env::join_paths([&path]).is_err() {
+        return Err(UserPathProblem::Invalid);
+    }
+    if !path.is_dir() {
+        return Err(UserPathProblem::Missing);
+    }
+    Ok(path)
+}
+
+/// Whether the settings key `key` names the interpreter `python`. Paths are compared as
+/// written, not through symlinks: a virtualenv's `python` links to its base interpreter, and
+/// the two are different interpreters.
+fn names_interpreter(key: &str, python: &Path) -> bool {
+    let Some(key) = absolute_setting_path(key) else { return false };
+    if cfg!(windows) {
+        let fold = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+        fold(&key) == fold(python)
+    } else {
+        key == python
+    }
+}
+
+/// The folders the user added to `python`'s paths that can be imported from.
+pub fn interpreter_user_paths(python: &Path, s: &Settings) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for (interpreter, paths) in &s.languages.python.interpreter_paths {
+        if !names_interpreter(interpreter, python) {
+            continue;
+        }
+        for path in paths.iter().filter_map(|p| user_path(p).ok()) {
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// The interpreter a Python language server started for `server_root` analyses with: that
+/// folder's own virtualenv unless an interpreter is configured, else the project interpreter.
+pub fn python_server_interpreter(root: &Path, server_root: &Path, s: &Settings) -> Option<PathBuf> {
+    project_venv_python(server_root)
+        .filter(|_| non_empty(&s.languages.python.interpreter).is_none())
+        .or_else(|| python_interpreter(root, s))
 }
 
 /// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
@@ -537,8 +605,57 @@ pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, bui
     merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"import": {"gradle": gradle}}}));
 }
 
+/// Gradle's Eclipse model, which jdtls imports the build through, leaves out project dependencies
+/// a source set only compiles against (`compileOnly(project(":a"))`) and marks some as test-only,
+/// so their classes don't resolve in the editor although Gradle compiles. jdtls's Gradle import
+/// runs an init script that adds them, written to the first of `dirs` whose path has no
+/// whitespace: Buildship stores the import's arguments joined by spaces and splits them again,
+/// so `Application Support` would break the path. The name carries the script's hash, so
+/// releases running side by side never overwrite each other's script.
+pub fn configure_gradle_classpath(cfg: &mut LanguageServerConfig, dirs: &[PathBuf]) {
+    const SCRIPT: &str = include_str!("gradle-classpath.init.gradle");
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in SCRIPT.bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    let name = format!("openidea-classpath-{hash:016x}.init.gradle");
+    let Some(script) = dirs
+        .iter()
+        .map(|dir| dir.join(&name))
+        .filter(|script| !script.to_string_lossy().contains(char::is_whitespace))
+        .find(|script| {
+            std::fs::read(script).ok().as_deref() == Some(SCRIPT.as_bytes())
+                || script.parent().is_some_and(|dir| std::fs::create_dir_all(dir).is_ok())
+                    && std::fs::write(script, SCRIPT).is_ok()
+        })
+    else {
+        tracing::warn!("no directory without spaces for the Gradle classpath init script: {dirs:?}");
+        return;
+    };
+    merge(
+        cfg.settings.get_or_insert_with(|| json!({})),
+        json!({"java": {"import": {"gradle": {"arguments": ["--init-script", script.to_string_lossy()]}}}}),
+    );
+}
+
+/// Settings › Build Tools › Maven › Automatically download sources and Always update
+/// snapshots → jdtls `java.maven.downloadSources` / `java.maven.updateSnapshots`.
+pub fn configure_maven_sources(cfg: &mut LanguageServerConfig, s: &Settings) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let m = &s.languages.java.maven;
+    merge(
+        cfg.settings.get_or_insert_with(|| json!({})),
+        json!({"java": {"maven": {"downloadSources": m.download_sources, "updateSnapshots": m.update_snapshots}}}),
+    );
+}
+
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`,
-/// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>` and `-P <profiles>`.
+/// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>`, `-P <profiles>` and `-U`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     let m = &s.languages.java.maven;
     let mut out = Vec::new();
@@ -556,6 +673,9 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     }
     if let Some(profiles) = non_empty(&m.active_profiles) {
         out.extend(["-P".to_owned(), profiles.to_owned()]);
+    }
+    if m.update_snapshots {
+        out.push("-U".to_owned());
     }
     out
 }
@@ -670,17 +790,50 @@ fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// Inserts `<localRepository>` right after the `<settings>` open tag.
-fn inject_local_repository(settings_xml: &str, repo: &str) -> Option<String> {
-    let start = settings_xml.find("<settings")?;
-    let end = settings_xml[start..].find('>')? + start;
-    let mut out = String::with_capacity(settings_xml.len() + repo.len() + 40);
-    out.push_str(&settings_xml[..=end]);
-    out.push_str("<localRepository>");
-    out.push_str(&xml_escape(repo));
-    out.push_str("</localRepository>");
-    out.push_str(&settings_xml[end + 1..]);
-    Some(out)
+/// `settings_xml` with `<localRepository>` set to `repo`: an existing one is replaced, else
+/// one goes right after the `<settings>` open tag. `None` without a `<settings>` element.
+pub(crate) fn with_local_repository(settings_xml: &str, repo: &str) -> Option<String> {
+    use crate::maven_profiles::{find_tag, mask_comments};
+    let masked = mask_comments(settings_xml);
+    let element = format!("<localRepository>{}</localRepository>", xml_escape(repo));
+    if let Some(start) = find_tag(&masked, "<localRepository", 0) {
+        let open_end = start + masked[start..].find('>')?;
+        let end = if masked[..open_end].ends_with('/') {
+            open_end + 1
+        } else {
+            let close = open_end + masked[open_end..].find("</localRepository")?;
+            close + masked[close..].find('>')? + 1
+        };
+        return Some(format!("{}{element}{}", &settings_xml[..start], &settings_xml[end..]));
+    }
+    let start = find_tag(&masked, "<settings", 0)?;
+    let end = start + masked[start..].find('>')?;
+    if masked[..end].ends_with('/') {
+        return None;
+    }
+    Some(format!("{}{element}{}", &settings_xml[..=end], &settings_xml[end + 1..]))
+}
+
+/// The user settings m2e (the JDTLS Maven import) reads, as a file and its text: the
+/// configured `settings.xml`, else `~/.m2/settings.xml`, with the configured local
+/// repository as its `<localRepository>`. m2e reads mirrors, servers and the local
+/// repository from this file only, never from `-Dmaven.repo.local`, which is how the IDE's
+/// own `mvn` runs get the configured repository (#1739). The file is `None` when there is none.
+pub(crate) fn m2e_user_settings(root: &Path, s: &Settings, home: &Path) -> (Option<PathBuf>, String) {
+    let m = &s.languages.java.maven;
+    let file = setting_path(root, &m.user_settings)
+        .or_else(|| Some(home.join(".m2").join("settings.xml")).filter(|f| f.is_file()));
+    let text = file
+        .as_ref()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .unwrap_or_else(|| "<settings>\n</settings>\n".into());
+    match setting_path(root, &m.local_repository) {
+        Some(repo) => {
+            let merged = with_local_repository(&text, &repo.to_string_lossy());
+            (file, merged.unwrap_or(text))
+        }
+        None => (file, text),
+    }
 }
 
 fn write_m2e_settings(root: &Path, text: &str) -> Option<PathBuf> {
@@ -695,32 +848,36 @@ fn write_m2e_settings(root: &Path, text: &str) -> Option<PathBuf> {
     Some(file)
 }
 
-/// The user settings file m2e (the JDTLS Maven import) should read: the
-/// configured `settings.xml` when it already declares `<localRepository>`,
-/// else a derived copy under `<root>/.openidea/` with the configured local
-/// repository injected. m2e resolves the local repository from the settings
-/// XML, not from `-Dmaven.repo.local`, so without this the import downloads
-/// into `~/.m2/repository` even when the IDE's own `mvn` runs honor the
-/// configured path (#1739). `None` = m2e's default applies.
+/// The user settings file m2e should read (see [`m2e_user_settings`]): the configured
+/// `settings.xml` as it is when no local repository is configured or it already names that
+/// one, else a derived copy under `<root>/.openidea/`. `None` = m2e's default applies.
 pub fn maven_user_settings_for_m2e(root: &Path, s: &Settings) -> Option<PathBuf> {
+    maven_user_settings_for_m2e_in(root, s, &crate::home_dir().unwrap_or_default())
+}
+
+pub(crate) fn maven_user_settings_for_m2e_in(root: &Path, s: &Settings, home: &Path) -> Option<PathBuf> {
     let m = &s.languages.java.maven;
-    if let Some(file) = setting_path(root, &m.user_settings) {
-        let text = std::fs::read_to_string(&file).ok()?;
-        if crate::java::xml_value(&crate::lombok::strip_xml_comments(&text), "localRepository").is_some() {
-            return Some(file);
-        }
-        if let Some(repo) = setting_path(root, &m.local_repository) {
-            let merged = inject_local_repository(&text, &repo.to_string_lossy())?;
-            if let Some(derived) = write_m2e_settings(root, &merged) {
-                return Some(derived);
-            }
-        }
-        return Some(file);
+    let configured = setting_path(root, &m.user_settings);
+    setting_path(root, &m.local_repository)?;
+    let (file, text) = m2e_user_settings(root, s, home);
+    if file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|original| original == text) {
+        return file;
     }
-    let repo = setting_path(root, &m.local_repository)?;
-    let minimal =
-        format!("<settings><localRepository>{}</localRepository></settings>", xml_escape(&repo.to_string_lossy()));
-    write_m2e_settings(root, &minimal)
+    write_m2e_settings(root, &text).or(configured)
+}
+
+/// `conf/settings.xml` of the Maven installation the IDE's `mvn` runs use (Settings ›
+/// Maven home, a version manager's pin, else `mvn` on `PATH`; none with a project wrapper):
+/// `mvn` reads its mirrors and repositories as global settings, m2e only when told to.
+pub fn maven_global_settings(root: &Path, s: &Settings) -> Option<PathBuf> {
+    let mvn = match maven_command(root, s) {
+        Some(mvn) => mvn,
+        None if root.join("mvnw").is_file() || root.join("mvnw.cmd").is_file() => return None,
+        None => crate::exec::which("mvn")?,
+    };
+    let mvn = dunce::canonicalize(&mvn).unwrap_or(mvn);
+    let file = mvn.parent()?.parent()?.join("conf").join("settings.xml");
+    file.is_file().then_some(file)
 }
 
 /// TypeScript `lib` directory for the selected version; `None` = the server's bundled one.
@@ -871,6 +1028,66 @@ pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     }
 }
 
+/// The settings section a Python type checker reads its analysis settings from:
+/// basedpyright uses its own section, Pyright the `python` one. `None` for servers
+/// that have no `analysis.extraPaths` (ty, pyrefly, Ruff, pylsp, …).
+fn python_analysis_section(name: &str) -> Option<&'static str> {
+    match name {
+        "basedpyright" => Some("basedpyright"),
+        "pyright" => Some("python"),
+        _ => None,
+    }
+}
+
+/// Adds attached dependency roots to basedpyright/Pyright's `analysis.extraPaths`, so
+/// imports into projects configured in Project Structure › Dependencies resolve in the
+/// editor too — not just in the IDE's own index/navigation.
+///
+/// Existing paths (from the user's `pyrightconfig.json` / `[tool.basedpyright]`, or a
+/// container run target) are kept first and de-duplicated: `merge` replaces arrays
+/// wholesale, so it cannot be used here. Paths are IPC-style (`/`-separated) to match
+/// the container snapshot's `extraPaths`.
+pub fn configure_python_extra_paths(cfg: &mut LanguageServerConfig, roots: &[PathBuf]) {
+    let Some(section) = python_analysis_section(&cfg.name) else { return };
+    if roots.is_empty() {
+        return;
+    }
+    let mut current =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    let mut node = &mut current;
+    for key in ["settings", section, "analysis"] {
+        node = object_entry(node, key);
+    }
+    let analysis = node.as_object_mut().expect("made an object above").entry("extraPaths").or_insert_with(|| json!([]));
+    let mut paths: Vec<String> = analysis
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    for root in roots {
+        let path = ide_core::ipc_path::to_ipc(root);
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    *analysis = json!(paths);
+    match toml::Value::try_from(current) {
+        Ok(v) => cfg.initialization_options = Some(v),
+        Err(e) => tracing::warn!("{}: cannot add extraPaths to initialization options: {e}", cfg.name),
+    }
+}
+
+/// `value[key]`, made an empty object when it is missing or not an object; `value` too.
+fn object_entry<'a>(value: &'a mut Value, key: &str) -> &'a mut Value {
+    if !value.is_object() {
+        *value = json!({});
+    }
+    let entry = value.as_object_mut().expect("made an object above").entry(key).or_insert_with(|| json!({}));
+    if !entry.is_object() {
+        *entry = json!({});
+    }
+    entry
+}
+
 /// Editor › Inspections › Java: "Serializable class without 'serialVersionUID'" (off by default,
 /// as in IntelliJ IDEA). ECJ reports it, so it is a compiler option rather than a filter.
 pub const SERIAL_VERSION_INSPECTION: &str = "java:missing-serial-version";
@@ -1000,13 +1217,18 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         }
         cfg.command = custom.to_string_lossy().into_owned();
     }
+    // `java -jar` servers run on the project JDK when there is one, like JAR Application runs.
+    if cfg.command == "java"
+        && let Some(java) =
+            project_jdk(root, s).map(|jdk| crate::java::java_executable(&jdk.home)).filter(|j| j.is_file())
+    {
+        cfg.command = java.to_string_lossy().into_owned();
+    }
     let name = cfg.name.clone();
     let name = name.as_str();
 
     if PYTHON_SERVERS.contains(&name) {
-        let python = project_venv_python(server_root)
-            .filter(|_| non_empty(&s.languages.python.interpreter).is_none())
-            .or_else(|| python_interpreter(root, s));
+        let python = python_server_interpreter(root, server_root, s);
         if let Some(python) = python {
             let p = python.to_string_lossy().into_owned();
             match name {
@@ -1117,13 +1339,19 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         for (key, value) in module_env {
             build["env"][key] = json!(value);
         }
+        if s.languages.go.gofumpt {
+            build["gofumpt"] = json!(true);
+        }
         let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
         // gopls retains omitted keys on reconfiguration. Explicit empty values
         // restore defaults when the last project constraint is cleared.
+        // Settings › Language Servers options are merged later, so look at them too.
         let init = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok());
-        for (key, default) in [("buildFlags", json!([])), ("env", json!({}))] {
+        let user_init = s.language_servers.get(&cfg.name).and_then(|ls| ls.initialization_options.as_ref());
+        for (key, default) in [("buildFlags", json!([])), ("env", json!({})), ("gofumpt", json!(false))] {
             if settings.get(key).is_none() {
-                settings[key] = init.as_ref().and_then(|v| v.get(key)).cloned().unwrap_or(default);
+                let explicit = user_init.and_then(|v| v.get(key)).or_else(|| init.as_ref()?.get(key));
+                settings[key] = explicit.cloned().unwrap_or(default);
             }
         }
         merge(&mut settings, build);
@@ -1154,6 +1382,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
                 json!({ "settings": { "java": { "configuration": { "maven": { "userSettings": file } } } } }),
             );
         }
+        if let Some(file) = maven_global_settings(root, s) {
+            let file = file.to_string_lossy();
+            merge_init_options(
+                cfg,
+                json!({ "settings": { "java": { "configuration": { "maven": { "globalSettings": file } } } } }),
+            );
+        }
         // The JVM system property is still forwarded for JVM-level consumers,
         // but it is the settings file above that m2e honors. A
         // `-Dmaven.repo.local` the user put in their own jdtls VM options wins.
@@ -1171,6 +1406,21 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         }
     }
 
+    if name == "java-analyzer" {
+        // Unset, java-analyzer finds a JDK and the Maven local repository the way Maven does;
+        // the server's own `initializationOptions` in settings are merged later and win.
+        let mut layer = serde_json::Map::new();
+        if let Some(jdk) = project_jdk(root, s) {
+            layer.insert("jdkHome".into(), json!(jdk.home.to_string_lossy()));
+        }
+        if let Some(repo) = maven_local_repository(root, s) {
+            layer.insert("maven".into(), json!({ "localRepository": repo.to_string_lossy() }));
+        }
+        if !layer.is_empty() {
+            merge_init_options(cfg, Value::Object(layer));
+        }
+    }
+
     if let Some(lib) = tsdk(server_root, s).or_else(|| tsdk(root, s)) {
         let lib_s = lib.to_string_lossy().into_owned();
         match name {
@@ -1181,21 +1431,30 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
             _ => {}
         }
     }
-    // TypeScript 7 serves LSP itself: it replaces the tsserver-based server.
+    let vue_command = s.tool_path(vue::SERVER).and_then(|p| setting_path(root, p));
+    let vue_command = vue_command.as_deref().map_or(vue::SERVER.into(), Path::to_string_lossy);
+    let vue_pkg = vue::server_package(&vue_command, &search_path());
+    // TypeScript 7 serves LSP itself: it replaces the tsserver-based server, whose plugin
+    // host goes away with it. The Vue language server's `@vue/typescript-plugin` loads into
+    // that host, so a Vue project that has the server keeps the vtsls route and its `.vue`
+    // support; elsewhere the native server still wins.
     if matches!(name, "vtsls" | "typescript-language-server")
+        && !(name == "vtsls" && vue_pkg.is_some() && (vue::vue_project(server_root) || vue::vue_project(root)))
         && let Some(native) = native_tsdk(server_root, s).or_else(|| native_tsdk(root, s))
     {
         cfg.command = native.to_string_lossy().into_owned();
         cfg.args = vec!["--lsp".into(), "--stdio".into()];
         cfg.display_name = Some("TypeScript 7".into());
         cfg.initialization_options = None;
+        // Completing a JSX prop adds `=""` or `={}` by its type, as vtsls does by default;
+        // TypeScript 7 adds no value unless asked.
+        let jsx = json!({ "preferences": { "jsxAttributeCompletionStyle": "auto" } });
+        merge_init_options(cfg, json!({ "typescript": jsx, "javascript": jsx }));
         cfg.tsserver_project = false;
         return;
     }
-    let vue_command = s.tool_path(vue::SERVER).and_then(|p| setting_path(root, p));
-    let vue_command = vue_command.as_deref().map_or(vue::SERVER.into(), Path::to_string_lossy);
     if name == "vtsls"
-        && let Some(vue) = vue::server_package(&vue_command, &search_path())
+        && let Some(vue) = vue_pkg
     {
         let plugin = vue::tsserver_plugin(&vue);
         merge_init_options(cfg, json!({ "vtsls": { "tsserver": { "globalPlugins": [plugin] } } }));
@@ -1272,6 +1531,14 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if name == astro::SERVER {
         astro::configure(cfg, root, server_root, s);
     }
+    // Biome lints with the project's own version (its configuration follows that version's
+    // schema); an explicit executable setting still wins.
+    if name == "biome"
+        && cfg.command == "biome"
+        && let Some(bin) = crate::npm::project_bin("biome", root, server_root)
+    {
+        cfg.command = bin.to_string_lossy().into_owned();
+    }
     if name == crate::arduino::SERVER {
         crate::arduino::configure(cfg, root, server_root, s);
     }
@@ -1329,6 +1596,23 @@ pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Se
     out
 }
 
+/// Built-in servers given an executable path in Settings › Language Servers, as
+/// (definition's command, path): they run that executable (see [`server_launch_overrides`]).
+pub fn server_command_paths<'a>(
+    servers: impl IntoIterator<Item = &'a LanguageServerConfig>,
+    root: &Path,
+    s: &Settings,
+) -> Vec<(String, PathBuf)> {
+    servers
+        .into_iter()
+        .filter_map(|server| {
+            let command = s.language_servers.get(&server.name)?.command.trim();
+            let path = command.contains(['/', '\\']).then(|| setting_path(root, command))??;
+            Some((server.command.clone(), path))
+        })
+        .collect()
+}
+
 /// Adds the servers defined in settings to the languages they serve (to list
 /// them with the tools); disabled ones stay so they can be turned back on.
 pub fn with_custom_servers(langs: &mut [LanguageConfig], s: &Settings) {
@@ -1382,6 +1666,12 @@ pub fn server_launch_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
     }
     if let Some(args) = &ls.args {
         cfg.args = args.clone();
+    }
+    // A server shipped as a runnable jar (groovy-language-server-all.jar) runs on `java -jar`;
+    // `configure_server` then picks the project JDK's `java`.
+    if Path::new(&cfg.command).extension().is_some_and(|e| e.eq_ignore_ascii_case("jar")) {
+        let jar = std::mem::replace(&mut cfg.command, "java".to_owned());
+        cfg.args.splice(0..0, ["-jar".to_owned(), jar]);
     }
 }
 
@@ -1464,7 +1754,8 @@ fn configure_angular(cfg: &mut LanguageServerConfig, root: &Path, server_root: &
     }
 }
 
-fn is_python_command(cmd: &str) -> bool {
+/// Whether `cmd` is a Python executable by its name (`python`, `python3.12`, `python.exe`).
+pub fn is_python_command(cmd: &str) -> bool {
     let name = Path::new(cmd).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
     name == "python"
@@ -1481,6 +1772,9 @@ fn maven_option_flag(arg: &str) -> Option<&'static str> {
         if arg.starts_with(short) || arg == long || arg.starts_with(&format!("{long}=")) {
             return Some(short);
         }
+    }
+    if arg == "-U" || arg == "--update-snapshots" {
+        return Some("-U");
     }
     arg.starts_with("-Dmaven.repo.local=").then_some("-Dmaven.repo.local")
 }
@@ -1674,10 +1968,17 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
             "python" | "pytest" | "django-test" => {
-                let python = toolchain("python", &owner);
+                let command = Path::new(&c.command);
+                let own = !c.detected && command.components().count() > 1 && is_python_command(&c.command);
+                let python = if own {
+                    let cwd = root.join(c.cwd.as_deref().unwrap_or(Path::new("")));
+                    Some(ide_core::project_roots::resolve(&cwd, command))
+                } else {
+                    toolchain("python", &owner)
+                };
                 // The member's explicit interpreter, else the inherited one, else the
                 // member's own venv / pin.
-                if let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
+                if !own && let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
                     if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
@@ -2023,6 +2324,81 @@ fn conda_activation(python: &Path, name: &str, conda_exe: Option<PathBuf>, on_pa
 }
 
 #[cfg(test)]
+mod python_user_path_tests {
+    use super::*;
+
+    fn venv(dir: &Path) -> PathBuf {
+        let python = dir.join(".venv").join(crate::bin_dir()).join(crate::exe("python"));
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(dir.join(".venv/pyvenv.cfg"), "").unwrap();
+        python
+    }
+
+    fn text(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn user_paths_follow_the_interpreter_and_skip_what_cannot_be_imported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (lib, other) = (root.join("shared"), root.join("other"));
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let python = venv(&root);
+        let other_python = root.join("other-python");
+
+        let mut s = Settings::default();
+        s.languages.python.interpreter_paths = [
+            // Gone, duplicated, relative and a file: none of them reach the import path.
+            (text(&python), vec![text(&lib), text(&root.join("gone")), text(&lib), "relative".into(), text(&python)]),
+            (text(&other_python), vec![text(&other)]),
+        ]
+        .into();
+        assert_eq!(interpreter_user_paths(&python, &s), std::slice::from_ref(&lib));
+        assert_eq!(interpreter_user_paths(&other_python, &s), [other]);
+        assert!(interpreter_user_paths(&root.join("unknown-python"), &s).is_empty());
+    }
+
+    #[test]
+    fn a_folder_that_stays_off_the_import_path_says_why() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        assert_eq!(user_path(&text(&root)), Ok(root.clone()));
+        assert_eq!(user_path(&text(&root.join("gone"))), Err(UserPathProblem::Missing));
+        assert_eq!(user_path("relative/dir"), Err(UserPathProblem::Invalid));
+        assert_eq!(user_path(" "), Err(UserPathProblem::Invalid));
+        // One entry with the separator in it would make `PYTHONPATH` impossible to build.
+        #[cfg(unix)]
+        {
+            let odd = root.join("libs:v2");
+            std::fs::create_dir(&odd).unwrap();
+            assert_eq!(user_path(&text(&odd)), Err(UserPathProblem::Invalid));
+            let mut s = Settings::default();
+            s.languages.python.interpreter_paths = [("/bin/python".into(), vec![text(&odd), text(&root)])].into();
+            assert_eq!(interpreter_user_paths(Path::new("/bin/python"), &s), [root]);
+        }
+    }
+
+    #[test]
+    fn a_language_server_takes_the_interpreter_of_its_own_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let sub = root.join("services/api");
+        let (python, sub_python) = (venv(&root), venv(&sub));
+        let mut s = Settings::default();
+        assert_eq!(python_server_interpreter(&root, &root, &s), Some(python.clone()));
+        assert_eq!(python_server_interpreter(&root, &sub, &s), Some(sub_python));
+        // A configured interpreter is the one every server of the project uses.
+        s.languages.python.interpreter = text(&python);
+        assert_eq!(python_server_interpreter(&root, &sub, &s), Some(python));
+        s.languages.python.interpreter = "target:docker".into();
+        assert_eq!(python_server_interpreter(&root, &root, &s), None);
+    }
+}
+
+#[cfg(test)]
 mod java_compiler_tests {
     use super::*;
 
@@ -2232,6 +2608,56 @@ mod maven_linkage_tests {
     }
 
     #[test]
+    fn typescript_7_keeps_vtsls_when_the_vue_server_is_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The Vue server, as the hybrid block finds it through the tool's package dir.
+        let bin = root.join("tools/node_modules/.bin/vue-language-server");
+        let pkg = root.join("tools/node_modules/@vue/language-server/package.json");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pkg.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::write(&pkg, "{}").unwrap();
+        let mut s = Settings::default();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: bin.to_string_lossy().into_owned() });
+        // A Vue project whose TypeScript is 7: the native executable would take over.
+        std::fs::write(root.join("package.json"), r#"{"dependencies":{"vue":"^3.0.0"}}"#).unwrap();
+        let modules = root.join("node_modules");
+        let os = match std::env::consts::OS {
+            "macos" => "darwin",
+            "windows" => "win32",
+            os => os,
+        };
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86_64" => "x64",
+            arch => arch,
+        };
+        std::fs::create_dir_all(modules.join("typescript/lib")).unwrap();
+        std::fs::write(modules.join("typescript/package.json"), r#"{"name":"typescript","version":"7.0.2"}"#).unwrap();
+        let native = modules.join(format!("@typescript/typescript-{os}-{arch}/lib")).join(crate::exe("tsc"));
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        std::fs::write(&native, "").unwrap();
+        s.languages.typescript.version = "workspace".into();
+
+        // vtsls hosts the Vue plugin's tsserver; the native server cannot, so it loses.
+        let mut cfg = crate::tests::server("vtsls");
+        configure_server(&mut cfg, root, root, &s);
+        assert_eq!(cfg.command, "vtsls");
+        assert_eq!(
+            serde_json::to_value(cfg.initialization_options).unwrap().pointer("/vtsls/tsserver/globalPlugins/0/name"),
+            Some(&json!("@vue/typescript-plugin"))
+        );
+        assert_eq!(cfg.tsserver_project_extras.extensions, [vue::EXTENSION.to_string()]);
+
+        // typescript-language-server gets no plugin route: the native server still applies.
+        let mut cfg = crate::tests::server("typescript-language-server");
+        configure_server(&mut cfg, root, root, &s);
+        assert_eq!(Path::new(&cfg.command), native);
+    }
+
+    #[test]
     fn hybrid_without_a_config_keeps_type_acquisition_and_plain_vtsls_stays_default() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -2291,6 +2717,26 @@ mod maven_linkage_tests {
     }
 
     #[test]
+    fn maven_sources_download_follows_the_setting() {
+        let mut settings = Settings::default();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.settings = Some(json!({"java": {"maven": {"downloadSources": true, "updateSnapshots": false}}}));
+        configure_maven_sources(&mut cfg, &settings);
+        assert_eq!(
+            cfg.settings,
+            Some(json!({"java": {"maven": {"downloadSources": false, "updateSnapshots": false}}}))
+        );
+        settings.languages.java.maven.download_sources = true;
+        settings.languages.java.maven.update_snapshots = true;
+        configure_maven_sources(&mut cfg, &settings);
+        assert_eq!(cfg.settings.unwrap()["java"]["maven"], json!({"downloadSources": true, "updateSnapshots": true}));
+
+        let mut other = custom_server("kotlin", &LanguageServerSettings::default());
+        configure_maven_sources(&mut other, &settings);
+        assert_eq!(other.settings, None);
+    }
+
+    #[test]
     fn gradle_import_runs_the_gradle_the_ide_builds_with() {
         let root = Path::new("/p");
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
@@ -2321,6 +2767,33 @@ mod maven_linkage_tests {
         let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
         assert!(gradle.get("home").is_none() && gradle.get("wrapper").is_none());
         assert_eq!(gradle["user"]["home"], resolved("/caches/gradle"));
+    }
+
+    #[test]
+    fn gradle_import_adds_the_projects_a_source_set_compiles_against() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaced = temp.path().join("Application Support").join("gradle");
+        let plain = temp.path().join("cache").join("gradle");
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.settings = Some(json!({"java": {"import": {"gradle": {"enabled": true}}}}));
+        configure_gradle_classpath(&mut cfg, &[spaced.clone(), plain.clone()]);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        assert_eq!(gradle["enabled"], json!(true), "merged, not replaced");
+        let args = gradle["arguments"].as_array().unwrap();
+        assert_eq!(args[0], json!("--init-script"));
+        let script = PathBuf::from(args[1].as_str().unwrap());
+        assert_eq!(script.parent(), Some(plain.as_path()), "Buildship splits arguments at spaces");
+        assert!(!spaced.exists());
+        let text = std::fs::read_to_string(&script).unwrap();
+        assert!(text.contains("compileClasspath") && text.contains("whenMerged"));
+
+        let mut other = custom_server("pyright", &LanguageServerSettings::default());
+        configure_gradle_classpath(&mut other, &[plain]);
+        assert!(other.settings.is_none(), "only jdtls imports Gradle builds");
+
+        let mut nowhere = custom_server("jdtls", &LanguageServerSettings::default());
+        configure_gradle_classpath(&mut nowhere, &[spaced]);
+        assert!(nowhere.settings.is_none(), "no usable directory: the import runs without it");
     }
 
     #[test]
@@ -2543,5 +3016,44 @@ mod conda_activation_tests {
         let plain = tmp.path().join("python");
         touch(&plain.join("bin").join("python"));
         assert_eq!(conda_activation(&plain.join("bin").join("python"), "bash", Some(conda), None), None);
+    }
+}
+
+#[cfg(test)]
+mod biome_tests {
+    use super::*;
+
+    fn binary(dir: &Path) -> PathBuf {
+        let bin = dir.join(if cfg!(windows) { "biome.cmd" } else { "biome" });
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(&bin, "").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    #[test]
+    fn biome_runs_the_projects_own_biome_unless_an_executable_is_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let web = root.join("apps/web");
+        let configured = |s: &Settings, server_root: &Path| {
+            let mut cfg = custom_server("biome", &LanguageServerSettings::default());
+            cfg.command = "biome".into();
+            configure_server(&mut cfg, &root, server_root, s);
+            PathBuf::from(cfg.command)
+        };
+        let workspace = binary(&root.join("node_modules/.bin"));
+        assert_eq!(configured(&Settings::default(), &web), workspace);
+        let member = binary(&web.join("node_modules/.bin"));
+        assert_eq!(configured(&Settings::default(), &web), member);
+        // Outside the project: not the project's installation.
+        binary(&tmp.path().join("node_modules/.bin"));
+        assert_eq!(configured(&Settings::default(), &tmp.path().join("other")), PathBuf::from("biome"));
+        let custom = binary(&tmp.path().join("custom"));
+        let mut s = Settings::default();
+        s.tools
+            .insert("biome".into(), ide_core::settings::ToolSettings { path: custom.to_string_lossy().into_owned() });
+        assert_eq!(configured(&s, &web), custom);
     }
 }

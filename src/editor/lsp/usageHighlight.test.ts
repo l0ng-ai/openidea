@@ -72,6 +72,26 @@ describe("highlights of the element at the caret", () => {
     expect(lines(v)[4]!.className).not.toContain("cm-lsp-occurrence");
   });
 
+  it.each([
+    ["text", ""],
+    ["write", "-write"],
+  ] as const)(
+    "marks exactly the text of a %s highlight over several lines for its foreground",
+    async (kind, suffix) => {
+      cmd.lspDocumentHighlights.mockImplementation(() => ok([{ range: range(1, 4, 3, 13), kind }]));
+      const v = editor(at(1, 4));
+      highlightUsages(v);
+      await vi.waitFor(() => expect(v.contentDOM.querySelector(".cm-lsp-occurrence-text")).not.toBeNull());
+      const text = (line: number) =>
+        [...lines(v)[line]!.querySelectorAll(`.cm-lsp-occurrence-text${suffix}`)].map((e) => e.textContent).join("");
+      // Not the indent before the start column; the last line is the highlight's own mark.
+      expect(text(1)).toBe("return a");
+      expect(text(2)).toBe("        .b()");
+      expect(text(3)).toBe("");
+      expect(lines(v)[3]!.querySelector(`span.cm-lsp-occurrence${suffix}`)?.textContent).toBe("        .c();");
+    },
+  );
+
   it("keeps a single-line highlight on its text", async () => {
     cmd.lspDocumentHighlights.mockImplementation(() => ok([{ range: range(6, 11, 6, 12), kind: "read" }]));
     const v = editor(at(6, 11));

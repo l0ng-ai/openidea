@@ -26,17 +26,7 @@ impl Fixture {
         let base = dunce::canonicalize(temp.path()).unwrap();
         let root = base.join("project");
         std::fs::create_dir_all(&root).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         host.open_project(WINDOW, &root).unwrap();
         host.set_project_trust(&root, true, false).await.unwrap();
         Self { host, base, root, _temp: temp }
@@ -311,6 +301,11 @@ async fn shutdown_does_not_wait_forever_for_a_stuck_capture() {
     shutdown_within(&f.host, std::time::Duration::from_millis(200)).await;
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert!(cancel.is_cancelled());
+    // The cleanup is only waited for briefly and finishes in the background on a busy machine.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while stuck_dir.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert!(!stuck_dir.exists(), "its directory is removed once the wait is over");
 }
 

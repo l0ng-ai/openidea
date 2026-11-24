@@ -57,6 +57,15 @@ fn files(idx: &ProjectIndex, q: &str) -> Vec<String> {
     idx.find_files(q, 20).into_iter().map(|m| m.rel_path).collect()
 }
 
+fn assert_filename_only(idx: &ProjectIndex, path: &str) {
+    assert!(files(idx, path).iter().any(|found| found == path), "{path} must be findable");
+    let data = idx.shared.data.read();
+    let entry = data.files.iter().flatten().find(|entry| entry.rel.as_ref() == path).unwrap();
+    assert!(entry.ignored, "{path} must remain classified as ignored");
+    assert_eq!(entry.hash, [0; 32], "{path} must not be content-hashed");
+    assert_eq!(entry.sym_len, 0, "{path} must not have symbols");
+}
+
 #[test]
 fn exact_file_names_keep_all_source_candidates() {
     let f = Fixture::new(&[
@@ -182,6 +191,19 @@ fn file_ranking_is_idea_like() {
 }
 
 #[test]
+fn a_pasted_absolute_path_finds_the_indexed_file() {
+    let fx = sample();
+    let idx = fx.open();
+    let abs = fx.root.join("src/ui/Button.tsx");
+    let abs = abs.to_string_lossy().into_owned();
+    assert_eq!(files(&idx, &abs)[0], "src/ui/Button.tsx");
+    // A trailing `:line:col`, and a path outside the project that names no file.
+    assert_eq!(files(&idx, &format!("{abs}:12:4"))[0], "src/ui/Button.tsx");
+    let outside = fx.root.parent().unwrap().join("elsewhere/Button.tsx");
+    assert!(files(&idx, &outside.to_string_lossy()).is_empty());
+}
+
+#[test]
 fn find_dirs_ranks_folder_names() {
     let f = sample();
     let idx = f.open();
@@ -249,6 +271,26 @@ fn recent_files_skip_deleted_files_but_keep_virtual_documents() {
     assert_eq!(idx.recent_files(), vec![virt.clone(), app.clone()]);
     std::fs::remove_file(&app).unwrap();
     assert_eq!(idx.recent_files(), vec![virt]);
+}
+
+#[test]
+fn recent_files_keep_files_outside_the_project() {
+    let fx = sample();
+    let scratches = tempfile::tempdir().unwrap();
+    let scratch = dunce::canonicalize(scratches.path()).unwrap().join("generated-requests.http");
+    std::fs::write(&scratch, "GET http://localhost\n").unwrap();
+    let app = fx.root.join("web/app.py");
+    {
+        let idx = fx.open();
+        idx.mark_recent(&app);
+        idx.mark_recent(&scratch);
+        assert_eq!(idx.recent_files(), vec![scratch.clone(), app.clone()]);
+        assert!(idx.wait_idle(WAIT));
+    }
+    let idx = fx.open();
+    assert_eq!(idx.recent_files(), vec![scratch.clone(), app.clone()], "persisted by absolute path");
+    idx.remove_recent(&scratch);
+    assert_eq!(idx.recent_files(), vec![app]);
 }
 
 #[test]
@@ -348,7 +390,7 @@ fn go_to_file_finds_ignored_files_but_not_their_symbols() {
     let idx = fx.open();
     assert_eq!(files(&idx, ".env"), vec![".env"], "the reported case: a git-ignored root file");
     assert_eq!(files(&idx, "config.local"), vec!["src/config.local.ts"]);
-    assert!(files(&idx, "bundle").is_empty(), "ignored directories stay out");
+    assert_eq!(files(&idx, "bundle"), ["dist/bundle.js"]);
     assert!(symbols(&idx, "localOnly", SymbolFilter::All).is_empty(), "ignored files are listed by name only");
     assert_eq!(symbols(&idx, "app", SymbolFilter::All), vec!["app"]);
 
@@ -359,7 +401,8 @@ fn go_to_file_finds_ignored_files_but_not_their_symbols() {
     assert!(idx.wait_idle(WAIT));
     assert_eq!(files(&idx, "fresh.local"), vec!["src/fresh.local.ts"]);
     assert!(symbols(&idx, "freshLocal", SymbolFilter::All).is_empty());
-    assert!(files(&idx, "more.js").is_empty());
+    assert_eq!(files(&idx, "more.js"), ["dist/more.js"]);
+    assert!(symbols(&idx, "more", SymbolFilter::All).is_empty());
 
     // Nested ignore files apply to watcher updates as they do to the scan.
     fx.write("pkg/.gitignore", "gen.ts\n");
@@ -384,6 +427,93 @@ fn go_to_file_finds_ignored_files_but_not_their_symbols() {
     let idx = fx.open();
     assert!(symbols(&idx, "localOnly", SymbolFilter::All).is_empty());
     assert_eq!(files(&idx, "bundle"), vec!["dist/bundle.js"]);
+}
+
+#[test]
+fn go_to_file_finds_files_in_ignored_folders() {
+    let fx = Fixture::new(&[
+        (".git/info/exclude", "/notes/\n"),
+        (".gitignore", "/local/\n"),
+        (".ignore", "/scratch/\n"),
+        ("pkg/.gitignore", "private/\n"),
+        ("notes/todo.ts", "export class IgnoredNote {}\n"),
+        ("notes/deep/other.ts", "export class IgnoredOther {}\n"),
+        ("local/config.ts", "export class IgnoredConfig {}\n"),
+        ("scratch/draft.ts", "export class IgnoredDraft {}\n"),
+        ("pkg/private/data.ts", "export class IgnoredData {}\n"),
+        ("pkg/public.ts", "export class PublicThing {}\n"),
+        ("node_modules/dep.ts", "export class Dependency {}\n"),
+        ("target/gen.ts", "export class Generated {}\n"),
+    ]);
+    std::fs::create_dir(fx.root.join("notes/empty")).unwrap();
+    let idx = fx.open();
+    for path in ["notes/todo.ts", "notes/deep/other.ts", "local/config.ts", "scratch/draft.ts", "pkg/private/data.ts"] {
+        assert_filename_only(&idx, path);
+    }
+    assert!(symbols(&idx, "Ignored", SymbolFilter::All).is_empty());
+    assert_eq!(symbols(&idx, "PublicThing", SymbolFilter::Types), ["PublicThing"]);
+    assert!(files(&idx, "node_modules/dep.ts").is_empty());
+    assert!(files(&idx, "target/gen.ts").is_empty());
+
+    let fresh = fx.write("pkg/private/new.ts", "export class IgnoredFresh {}\n");
+    fx.write("notes/new/deep.ts", "export class IgnoredDeep {}\n");
+    let dependency = fx.write("node_modules/new.ts", "export class DependencyFresh {}\n");
+    idx.update(&[fresh.clone(), fx.root.join("notes/new"), dependency], &[]);
+    assert!(idx.wait_idle(WAIT));
+    assert_filename_only(&idx, "pkg/private/new.ts");
+    assert_filename_only(&idx, "notes/new/deep.ts");
+    assert!(files(&idx, "node_modules/new.ts").is_empty());
+    assert!(symbols(&idx, "Ignored", SymbolFilter::All).is_empty());
+
+    std::fs::remove_file(&fresh).unwrap();
+    std::fs::remove_dir_all(fx.root.join("notes/deep")).unwrap();
+    idx.update(&[], &[fresh, fx.root.join("notes/deep")]);
+    assert!(idx.wait_idle(WAIT));
+    assert!(files(&idx, "pkg/private/new.ts").is_empty());
+    assert!(files(&idx, "notes/deep/other.ts").is_empty());
+    drop(idx);
+
+    // New files in populated and previously empty ignored directories invalidate the manifest.
+    let idx = fx.open();
+    assert_eq!(files(&idx, "notes/todo.ts"), ["notes/todo.ts"]);
+    drop(idx);
+    fx.write("notes/offline.ts", "export class IgnoredOffline {}\n");
+    fx.write("notes/empty/offline.ts", "export class IgnoredEmptyOffline {}\n");
+    let idx = fx.open();
+    assert_filename_only(&idx, "notes/offline.ts");
+    assert_filename_only(&idx, "notes/empty/offline.ts");
+    assert!(symbols(&idx, "Ignored", SymbolFilter::All).is_empty());
+}
+
+#[test]
+fn explicit_content_roots_keep_their_own_ignored_files_filename_only() {
+    let fx = Fixture::new(&[("src/app.ts", "export class App {}\n")]);
+    let shared = fx._dir.path().join("shared");
+    std::fs::create_dir_all(shared.join("private")).unwrap();
+    std::fs::create_dir_all(shared.join("node_modules")).unwrap();
+    std::fs::write(shared.join(".ignore"), "private/\n").unwrap();
+    std::fs::write(shared.join("private/local.ts"), "export class SharedIgnored {}\n").unwrap();
+    std::fs::write(shared.join("public.ts"), "export class SharedPublic {}\n").unwrap();
+    std::fs::write(shared.join("node_modules/dep.ts"), "export class SharedDependency {}\n").unwrap();
+    let idx = fx.open();
+    idx.set_scope(vec![shared.clone()], vec!["**/node_modules".into(), "**/target".into()]);
+    assert!(idx.wait_idle(WAIT));
+    assert_filename_only(&idx, "shared/private/local.ts");
+    assert_eq!(symbols(&idx, "SharedPublic", SymbolFilter::Types), ["SharedPublic"]);
+    assert!(symbols(&idx, "SharedIgnored", SymbolFilter::All).is_empty());
+    assert!(files(&idx, "shared/node_modules/dep.ts").is_empty());
+
+    std::fs::create_dir(shared.join("private/new")).unwrap();
+    std::fs::write(shared.join("private/new/fresh.ts"), "export class SharedFresh {}\n").unwrap();
+    idx.update(&[shared.join("private/new")], &[]);
+    assert!(idx.wait_idle(WAIT));
+    assert_filename_only(&idx, "shared/private/new/fresh.ts");
+    assert!(symbols(&idx, "SharedFresh", SymbolFilter::All).is_empty());
+    std::fs::remove_dir_all(shared.join("private/new")).unwrap();
+    idx.update(&[], &[shared.join("private/new")]);
+    assert!(idx.wait_idle(WAIT));
+    assert!(files(&idx, "shared/private/new/fresh.ts").is_empty());
+    assert_filename_only(&idx, "shared/private/local.ts");
 }
 
 #[test]
@@ -695,7 +825,7 @@ fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
     let idx = ProjectIndex::open(
         &fx.root,
         &fx.cache,
-        crate::IndexRoots { include_root: false, folders: vec![member.clone()] },
+        crate::IndexRoots { include_root: false, folders: vec![member.clone()], ..Default::default() },
         Vec::new(),
         Arc::new(LanguageRegistry::load(None).unwrap()),
         Arc::new(Syntax::new()),
@@ -711,7 +841,7 @@ fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
     assert!(idx.wait_idle(WAIT));
     assert!(symbols(&idx, "hidden", SymbolFilter::All).is_empty());
     assert_eq!(symbols(&idx, "visible", SymbolFilter::All), ["visible"]);
-    idx.set_scope(crate::IndexRoots { include_root: false, folders: Vec::new() }, Vec::new());
+    idx.set_scope(crate::IndexRoots { include_root: false, folders: Vec::new(), ..Default::default() }, Vec::new());
     assert!(idx.wait_idle(WAIT));
     assert!(idx.find_files("", 100).is_empty());
 }
@@ -834,13 +964,19 @@ fn warm_start_detects_changed_ignore_rules() {
     let f = Fixture::new(&[("sub/generated/a.rs", "fn a() {}\n"), (".git/HEAD", "ref: refs/heads/main\n")]);
     f.write("sub/.gitignore", "");
     let idx = f.open();
-    assert_eq!(idx.status().files, 2, "generated/a.rs plus .gitignore itself");
+    assert_eq!(symbols(&idx, "a", SymbolFilter::All), ["a"]);
     drop(idx);
 
     std::thread::sleep(Duration::from_millis(20));
     f.write("sub/.gitignore", "generated/\n");
     let idx = f.open();
-    assert_eq!(idx.status().files, 1, "an updated ignore rule invalidates the warm snapshot");
+    assert_filename_only(&idx, "sub/generated/a.rs");
+    assert!(symbols(&idx, "a", SymbolFilter::All).is_empty(), "changed rules invalidate cached symbols");
+    drop(idx);
+
+    f.write("sub/.gitignore", "");
+    let idx = f.open();
+    assert_eq!(symbols(&idx, "a", SymbolFilter::All), ["a"], "unchanged contents are parsed after unignoring");
 }
 
 #[test]
@@ -851,20 +987,24 @@ fn warm_start_detects_changed_ignore_rules_above_the_project() {
     std::fs::create_dir_all(repo.join(".git/info")).unwrap();
     std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     let idx = f.open();
-    assert_eq!(idx.status().files, 2);
+    assert_eq!(symbols(&idx, "a", SymbolFilter::All), ["a"]);
+    assert_eq!(symbols(&idx, "b", SymbolFilter::All), ["b"]);
     drop(idx);
 
     std::fs::write(repo.join(".gitignore"), "proj/generated/\n").unwrap();
     let idx = f.open();
-    assert_eq!(idx.status().files, 1, "a new ignore file above the project invalidates the warm snapshot");
+    assert_filename_only(&idx, "generated/a.rs");
+    assert!(symbols(&idx, "a", SymbolFilter::All).is_empty(), "new ancestor rules invalidate cached symbols");
+    assert_eq!(symbols(&idx, "b", SymbolFilter::All), ["b"]);
     drop(idx);
 
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(repo.join(".gitignore"), "").unwrap();
     std::fs::write(repo.join(".git/info/exclude"), "proj/src/\n").unwrap();
     let idx = f.open();
-    assert_eq!(idx.status().files, 1, "so do the enclosing repository's changed rules");
-    assert!(!symbols(&idx, "a", SymbolFilter::All).is_empty());
+    assert_filename_only(&idx, "src/b.rs");
+    assert!(symbols(&idx, "b", SymbolFilter::All).is_empty());
+    assert_eq!(symbols(&idx, "a", SymbolFilter::All), ["a"], "unignored contents are re-parsed unchanged");
 }
 
 #[test]
@@ -881,12 +1021,20 @@ fn warm_start_detects_a_changed_exclude_file_of_a_linked_worktree() {
     std::fs::write(worktree.join("commondir"), "../..\n").unwrap();
     std::fs::write(f.root.join(".git"), format!("gitdir: {}\n", worktree.display())).unwrap();
     let idx = f.open();
-    assert_eq!(idx.status().files, 2);
+    assert_eq!(symbols(&idx, "a", SymbolFilter::All), ["a"]);
+    assert_eq!(symbols(&idx, "b", SymbolFilter::All), ["b"]);
     drop(idx);
 
     std::fs::write(main.join("info/exclude"), "generated/\n").unwrap();
     let idx = f.open();
-    assert_eq!(idx.status().files, 1, "the shared exclude file invalidates the warm snapshot");
+    assert_filename_only(&idx, "generated/a.rs");
+    assert!(symbols(&idx, "a", SymbolFilter::All).is_empty(), "shared exclude rules invalidate cached symbols");
+    assert_eq!(symbols(&idx, "b", SymbolFilter::All), ["b"]);
+    drop(idx);
+
+    std::fs::write(main.join("info/exclude"), "").unwrap();
+    let idx = f.open();
+    assert_eq!(symbols(&idx, "a", SymbolFilter::All), ["a"], "unignored contents are re-parsed unchanged");
 }
 
 #[test]
@@ -919,19 +1067,24 @@ fn rule_changes_refresh_only_the_affected_index_subtree() {
         fx.write(rule, "");
         let idx = fx.open();
         assert_eq!(files(&idx, "file.ts"), ["sub/generated/file.ts"]);
+        assert_eq!(symbols(&idx, "generated", SymbolFilter::All), ["generated"]);
+        assert_eq!(symbols(&idx, "localOnly", SymbolFilter::All), ["localOnly"]);
         fx.write(rule, "generated/\nlocal.ts\n");
         let dirs = [fx.root.join(subtree)];
         idx.ignore_rules_changed(&dirs);
         assert!(idx.wait_idle(WAIT));
-        assert!(files(&idx, "file.ts").is_empty(), "{rule}: ignored directory remained indexed");
-        assert_eq!(files(&idx, "local.ts"), ["sub/local.ts"]);
+        assert_filename_only(&idx, "sub/generated/file.ts");
+        assert!(symbols(&idx, "generated", SymbolFilter::All).is_empty(), "{rule}: ignored symbols remained indexed");
+        assert_filename_only(&idx, "sub/local.ts");
         assert!(symbols(&idx, "localOnly", SymbolFilter::All).is_empty());
         assert_eq!(files(&idx, "keep.ts"), ["other/keep.ts"]);
+        assert_eq!(symbols(&idx, "keep", SymbolFilter::All), ["keep"]);
 
         fx.write(rule, "");
         idx.ignore_rules_changed(&dirs);
         assert!(idx.wait_idle(WAIT));
         assert_eq!(files(&idx, "file.ts"), ["sub/generated/file.ts"]);
+        assert_eq!(symbols(&idx, "generated", SymbolFilter::All), ["generated"]);
         assert_eq!(symbols(&idx, "localOnly", SymbolFilter::All), ["localOnly"]);
         // The cached root matcher must also follow the rules for later watcher updates.
         let fresh = fx.write("sub/generated/new.ts", "export function fresh() {}\n");
@@ -946,12 +1099,12 @@ fn repository_rule_changes_refresh_members_of_an_unindexed_container() {
     let fx = Fixture::new(&[
         (".git/HEAD", "ref: refs/heads/main\n"),
         (".git/info/exclude", ""),
-        ("member/generated/item.txt", "x"),
+        ("member/generated/item.rs", "fn member_item() {}\n"),
     ]);
     let idx = ProjectIndex::open(
         &fx.root,
         &fx.cache,
-        IndexRoots { include_root: false, folders: vec![fx.root.join("member")] },
+        IndexRoots { include_root: false, folders: vec![fx.root.join("member")], ..Default::default() },
         vec![],
         Arc::new(LanguageRegistry::load(None).unwrap()),
         Arc::new(Syntax::new()),
@@ -959,15 +1112,18 @@ fn repository_rule_changes_refresh_members_of_an_unindexed_container() {
     )
     .unwrap();
     assert!(idx.wait_idle(WAIT));
-    assert_eq!(files(&idx, "item.txt"), ["member/generated/item.txt"]);
+    assert_eq!(files(&idx, "item.rs"), ["member/generated/item.rs"]);
+    assert_eq!(symbols(&idx, "member_item", SymbolFilter::All), ["member_item"]);
     fx.write(".git/info/exclude", "generated/\n");
     idx.ignore_rules_changed(std::slice::from_ref(&fx.root));
     assert!(idx.wait_idle(WAIT));
-    assert!(files(&idx, "item.txt").is_empty());
+    assert_filename_only(&idx, "member/generated/item.rs");
+    assert!(symbols(&idx, "member_item", SymbolFilter::All).is_empty());
     fx.write(".git/info/exclude", "");
     idx.ignore_rules_changed(std::slice::from_ref(&fx.root));
     assert!(idx.wait_idle(WAIT));
-    assert_eq!(files(&idx, "item.txt"), ["member/generated/item.txt"]);
+    assert_eq!(files(&idx, "item.rs"), ["member/generated/item.rs"]);
+    assert_eq!(symbols(&idx, "member_item", SymbolFilter::All), ["member_item"]);
 }
 
 #[test]

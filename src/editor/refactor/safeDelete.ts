@@ -22,11 +22,12 @@ import { structure } from "@/editor/structure";
 import { docOf, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { comparePos, offsetToPos, rangeContains, rangeToOffsets } from "@/editor/lsp/positions";
 import { showHint } from "@/editor/lsp/hint";
-import { ask, confirmChecked } from "@/workbench/messages";
+import { confirmChecked } from "@/workbench/messages";
 import { openPopup, type PreviewOccurrence } from "@/editor/lsp/popupStore";
 import { cannotPerform } from "./catalog";
 import { cancelled, languageName } from "./query";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
+import { askUsagesDetected } from "./SafeDeleteUsages";
 
 // ---------------------------------------------------------------------------
 // Deletion range (pure)
@@ -260,53 +261,6 @@ async function findUsages(ctx: EditorDocContext, target: SafeDeleteTarget): Prom
   return refs.filter((l) => outside(l.path, l.range));
 }
 
-// ---------------------------------------------------------------------------
-// Usages Detected dialog
-
-export type UsagesAnswer = "view" | "delete" | "cancel";
-
-/** `subject`: "Function 'foo'", "File 'a.ts'", "3 files" (`plural`). */
-export function usagesMessage(
-  subject: string,
-  usages: readonly Location[],
-  plural = false,
-): { message: string; detail: string } {
-  const n = usages.length;
-  const files = new Set(usages.map((u) => u.path)).size;
-  const where = files > 1 ? tx` (in ${files} files)` : "";
-  let detail: string;
-  if (plural)
-    detail =
-      n === 1
-        ? tx`${subject} have ${n} usage that is not safe to delete${where}.`
-        : tx`${subject} have ${n} usages that are not safe to delete${where}.`;
-  else
-    detail =
-      n === 1
-        ? tx`${subject} has ${n} usage that is not safe to delete${where}.`
-        : tx`${subject} has ${n} usages that are not safe to delete${where}.`;
-  return { message: n === 1 ? tx`${n} usage found` : tx`${n} usages found`, detail };
-}
-
-/** IDEA's "Usages Detected" question; resolves "cancel" when dismissed. */
-export async function askUsagesDetected(
-  subject: string,
-  usages: readonly Location[],
-  plural = false,
-): Promise<UsagesAnswer> {
-  const { message, detail } = usagesMessage(subject, usages, plural);
-  const { button } = await ask({
-    title: "Usages Detected",
-    icon: "warning",
-    body: `${message}\n${detail}`,
-    buttons: [
-      { id: "view", label: "View Usages", primary: true },
-      { id: "delete", label: "Delete Anyway" },
-    ],
-  });
-  return button === "view" || button === "delete" ? button : "cancel";
-}
-
 /** Opens the Find Usages tool window with `usages` (code-insight's `find.showUsageResults`). */
 export function viewUsages(symbol: string, usages: readonly Location[]) {
   void executeAction("find.showUsageResults", { symbol, locations: usages });
@@ -410,7 +364,7 @@ function previewTextOccurrences(
   });
   openPopup({
     kind: "preview",
-    title: tx`Safe Delete ${target.kind} '${target.name}'`,
+    title: tx`Safe Delete ${txPart(target.kind)} '${target.name}'`,
     summary: {
       files: 1,
       occurrences: occurrences.length,
@@ -455,7 +409,8 @@ export async function safeDelete(view: EditorView): Promise<void> {
     // IDEA always confirms first; usages are searched after OK.
     const confirmed = await confirmChecked({
       title: "Safe Delete",
-      message: tx`Delete ${target.kind} '${target.name}'?`,
+      message: tx`Delete ${txPart(target.kind)} '${target.name}'?`,
+      presentation: "form",
       ok: "OK",
       checkbox: "Search in comments and strings",
       checked: searchInComments,
@@ -472,7 +427,7 @@ export async function safeDelete(view: EditorView): Promise<void> {
     ]);
     if (view.state.doc !== docBefore) return;
     if (usages.length) {
-      const answer = await askUsagesDetected(tx`${target.kind} '${target.name}'`, usages);
+      const answer = await askUsagesDetected(tx`${txPart(target.kind)} '${target.name}'`, usages);
       if (answer === "view") viewUsages(target.name, usages);
       else if (answer === "delete") applyDeletion(view, docBefore, target, comments);
       else view.focus();

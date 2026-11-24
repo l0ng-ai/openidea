@@ -60,7 +60,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
     if (index < 0) return;
     session.selectedCell = reveal.cell;
     select(reveal.cell);
-    virtualizer.scrollToIndex(index, { align: "start" });
+    virtualizer.scrollToIndex(index, { align: reveal.align ?? "start" });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per request; the virtualizer is a new object each render
   }, [reveal, session]);
   useLayoutEffect(() => {
@@ -245,7 +245,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
               title="This notebook has no cells"
               actions={
                 <Button
-                  icon="add"
+                  icon="plus"
                   disabled={disabled}
                   onClick={() => session.edit({ type: "insertCell", after: null, cellType: "code" })}
                 >
@@ -285,7 +285,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
           <div className={styles.addBar}>
             <Button
               size="small"
-              icon="add"
+              icon="plus"
               disabled={disabled || state.running}
               onClick={() => session.edit({ type: "insertCell", after: cells.at(-1)?.id ?? null, cellType: "code" })}
             >
@@ -293,7 +293,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
             </Button>
             <Button
               size="small"
-              icon="add"
+              icon="plus"
               disabled={disabled || state.running}
               onClick={() =>
                 session.edit({ type: "insertCell", after: cells.at(-1)?.id ?? null, cellType: "markdown" })
@@ -419,14 +419,14 @@ function NotebookCellView({
           onClick={() => session.edit({ type: "moveCell", cell: cell.id, before: cells[index + 2]?.id ?? null })}
         />
         <IconButton
-          icon="add"
+          icon="plus"
           size="small"
           title="Insert Code Cell Below"
           disabled={structuralDisabled}
           onClick={() => session.edit({ type: "insertCell", after: cell.id, cellType: "code" })}
         />
         <IconButton
-          icon="delete"
+          icon="trash"
           size="small"
           title="Delete Cell"
           disabled={structuralDisabled}

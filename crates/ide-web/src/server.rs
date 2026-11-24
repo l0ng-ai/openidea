@@ -1,8 +1,8 @@
 use ide_core::{IdeError, IdeResult};
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -42,6 +42,9 @@ struct Root {
     dir: PathBuf,
     port: u16,
     serves: Serves,
+    /// Files handed out by [`WebServer::page_url_for`], as requested. They stay here until
+    /// the app quits, even if the file stops being HTML: only its content type depends on it.
+    pages: Mutex<HashSet<PathBuf>>,
 }
 
 /// What of its directory a root serves.
@@ -87,6 +90,18 @@ impl WebServer {
     /// A project that is the home folder, or holds it, is no boundary to serve whole: its
     /// files are served like files outside a project.
     pub async fn url_for(&self, root: Option<&Path>, file: &Path) -> IdeResult<String> {
+        Ok(self.locate(root, file).await?.1)
+    }
+
+    /// [`Self::url_for`] of a file that is an HTML page whatever its name (Settings › File
+    /// Types): it is served as HTML from now on.
+    pub async fn page_url_for(&self, root: Option<&Path>, file: &Path) -> IdeResult<String> {
+        let (served, url) = self.locate(root, file).await?;
+        served.pages.lock().unwrap_or_else(PoisonError::into_inner).insert(file.to_path_buf());
+        Ok(url)
+    }
+
+    async fn locate(&self, root: Option<&Path>, file: &Path) -> IdeResult<(Arc<Root>, String)> {
         let (base, serves) = match root {
             Some(r) if file.starts_with(r) && file != r && self.holds_home(r).await != Some(true) => (r, Serves::All),
             _ => {
@@ -102,7 +117,7 @@ impl WebServer {
             url.push('/');
             url.push_str(&enc(&c.as_os_str().to_string_lossy()));
         }
-        Ok(url)
+        Ok((root, url))
     }
 
     /// Whether `dir` is the home folder or lies above it; `None` when that cannot be told.
@@ -153,6 +168,7 @@ impl WebServer {
             dir: dir.to_path_buf(),
             port,
             serves,
+            pages: Mutex::default(),
         });
         tokio::spawn(accept(listener, root.clone()));
         tracing::info!("built-in web server on 127.0.0.1:{} for {}", root.port, dir.display());
@@ -320,7 +336,9 @@ async fn resolve(root: &Root, target: &str) -> Response {
             _ => NOT_FOUND,
         };
     }
-    Response::File { path: real, len: meta.len(), mime: content_type(&file) }
+    let page = root.pages.lock().unwrap_or_else(PoisonError::into_inner).contains(&file);
+    let mime = if page { HTML } else { content_type(&file) };
+    Response::File { path: real, len: meta.len(), mime }
 }
 
 /// `path` with every symlink resolved, if `root` serves it: it lies inside `real_root`
@@ -343,10 +361,12 @@ fn dec(s: &str) -> Option<String> {
     percent_decode_str(s).decode_utf8().ok().map(|s| s.into_owned())
 }
 
+const HTML: &str = "text/html; charset=utf-8";
+
 fn content_type(path: &Path) -> &'static str {
     let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     match ext.as_str() {
-        "html" | "htm" | "xhtml" => "text/html; charset=utf-8",
+        "html" | "htm" | "xhtml" | "shtml" => HTML,
         "css" => "text/css; charset=utf-8",
         "js" | "mjs" | "cjs" => "text/javascript; charset=utf-8",
         "json" | "map" | "webmanifest" => "application/json; charset=utf-8",
@@ -393,6 +413,30 @@ mod tests {
         let mut out = String::new();
         sock.read_to_string(&mut out).await.unwrap();
         out
+    }
+
+    #[test]
+    fn shtml_files_are_html_by_name() {
+        assert_eq!(content_type(Path::new("page.SHTML")), HTML);
+    }
+
+    #[tokio::test]
+    async fn a_page_is_html_whatever_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("site");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("page.foo"), "<h1>hi</h1>").unwrap();
+        std::fs::write(root.join("other.foo"), "<h1>no</h1>").unwrap();
+        let server = server();
+
+        let plain = server.url_for(Some(&root), &root.join("page.foo")).await.unwrap();
+        assert!(get(&plain, None).await.contains("application/octet-stream"));
+
+        let page = server.page_url_for(Some(&root), &root.join("page.foo")).await.unwrap();
+        assert_eq!(page, plain);
+        assert!(get(&page, None).await.contains("Content-Type: text/html"));
+        let other = page.replace("page.foo", "other.foo");
+        assert!(get(&other, None).await.contains("application/octet-stream"), "only the named file");
     }
 
     #[tokio::test]

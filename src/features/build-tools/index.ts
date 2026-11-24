@@ -25,6 +25,7 @@ import { pomCompletionExtension } from "./pomCompletion";
 import { pomNavigationExtension } from "./pomNavigation";
 import { buildToolsRunAnything } from "./runAnything";
 import { versionCatalogExtension } from "./versionCatalog";
+import { registerUnlinkedPom } from "./unlinkedPom";
 import {
   expandableKeys,
   gradleChildren,
@@ -216,6 +217,7 @@ export function activate(): () => void {
     registerEditorContribution({ id: "build-tools.pomNavigation", extensions: pomNavigationExtension }),
     registerEditorContribution({ id: "build-tools.pomCompletion", extensions: pomCompletionExtension }),
     registerRunAnythingProvider(buildToolsRunAnything),
+    registerUnlinkedPom(),
     registerEditorKind({
       kind: ANALYZER_KIND,
       component: lazyComponent(() => import("./DependencyAnalyzer").then((m) => m.DependencyAnalyzer)),

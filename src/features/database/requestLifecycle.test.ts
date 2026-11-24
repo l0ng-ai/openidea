@@ -67,6 +67,7 @@ import {
   useDatabase,
   withConnection,
 } from "./store";
+import { provideToolWindowService } from "@/workbench/contributions";
 
 const initial = useDatabase.getState();
 const initialProject = useProject.getState();
@@ -129,6 +130,8 @@ function switchProject(project: ProjectInfo) {
 }
 
 beforeEach(() => {
+  // `showServiceView` reaches the real service, not the mocked accessor above.
+  provideToolWindowService({ show: ui.show } as never);
   vi.resetAllMocks();
   useProject.setState({ project: projectA });
   savedSources = [pg, other];
@@ -274,6 +277,31 @@ describe("database metadata request lifetimes", () => {
     expect(useDatabase.getState().connected.has("pg:app")).toBe(false);
   });
 
+  it("collapses the tree nodes of what a disconnect forgets", async () => {
+    const tree = [
+      "pg",
+      "pg/@app",
+      "pg/public",
+      "pg/public/tables",
+      "pg:other/public",
+      "pg/@other",
+      "pg2",
+      "pg2/public",
+    ];
+    useDatabase.setState({ treeExpanded: new Set(tree) });
+    await disconnect("pg:other");
+    expect([...useDatabase.getState().treeExpanded]).toEqual([
+      "pg",
+      "pg/@app",
+      "pg/public",
+      "pg/public/tables",
+      "pg2",
+      "pg2/public",
+    ]);
+    await disconnect("pg");
+    expect([...useDatabase.getState().treeExpanded]).toEqual(["pg2", "pg2/public"]);
+  });
+
   it("disconnects one database without invalidating its sibling", async () => {
     const response = deferred();
     backend.schemas.mockReturnValueOnce(response.promise);
@@ -334,11 +362,14 @@ describe("database metadata request lifetimes", () => {
 });
 
 describe("connection and metadata continuations", () => {
-  it("reloads every level the tree had expanded after a data source is edited", async () => {
+  it.each([
+    ["edited", () => saveSource({ ...pg, host: "new-host" }, undefined)],
+    ["renamed", () => renameSource("pg", "Renamed")],
+  ])("reloads every level the tree had expanded after a data source is %s", async (_, change) => {
     await loadSchemas("pg");
     await loadTables("pg", "public");
     await loadDetails("pg", "public", "users");
-    await saveSource({ ...pg, host: "new-host" }, undefined);
+    await change();
     const st = useDatabase.getState();
     expect(st.schemas.pg).toEqual({ status: "ok", value: ["public"] });
     expect(st.tables["pg\u0000public"]?.status).toBe("ok");
@@ -416,6 +447,16 @@ describe("connection and metadata continuations", () => {
       expect(ui.notify).not.toHaveBeenCalled();
     });
   }
+
+  it("does not list sources after the project is closed", async () => {
+    // Closing the project resets `loaded`; a still-mounted SQL console then asks for sources again.
+    useProject.setState({ project: null });
+    backend.sources.mockRejectedValue(new Error("no project is open in this window"));
+    backend.connected.mockRejectedValue(new Error("no project is open in this window"));
+    await loadSources();
+    expect(ui.notify).not.toHaveBeenCalled();
+    expect(backend.sources).not.toHaveBeenCalled();
+  });
 
   it("can load metadata again after a disconnect fails", async () => {
     backend.disconnect.mockRejectedValueOnce(new Error("disconnect failed"));
@@ -599,6 +640,48 @@ describe("completion requests", () => {
     fresh.resolve(ok(completion));
     expect(await next).toEqual(completion);
     expect(backend.completion).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops only the edited JDBC completion model when its schema rules change", async () => {
+    const jdbc: DataSource = { ...pg, driver: "jdbc", introspection: { allSchemas: false, schemas: ["APP_*"] } };
+    savedSources = [jdbc, other];
+    await loadSources();
+    await loadSchemas("pg");
+    await loadCompletion("pg");
+    await loadCompletion("pg2");
+    const schemas = useDatabase.getState().schemas;
+
+    await saveSource({ ...jdbc, introspection: { allSchemas: false, schemas: ["REPORTS"] } }, undefined);
+
+    const state = useDatabase.getState();
+    expect(state.completion.pg).toBeUndefined();
+    expect(state.completion.pg2).toEqual(completion);
+    expect(state.schemas).toBe(schemas);
+    expect(state.connected.has("pg")).toBe(true);
+    expect(backend.schemas).toHaveBeenCalledOnce();
+    expect(backend.completion).toHaveBeenCalledTimes(2);
+    expect(await loadCompletion("pg")).toEqual(completion);
+    expect(backend.completion).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores an old JDBC completion response after its schema rules change", async () => {
+    const jdbc: DataSource = { ...pg, driver: "jdbc" };
+    savedSources = [jdbc, other];
+    await loadSources();
+    const old = deferred();
+    const fresh = deferred();
+    backend.completion.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+    const previous = loadCompletion("pg");
+
+    await saveSource({ ...jdbc, introspection: { allSchemas: false, schemas: ["APP"] } }, undefined);
+    const next = loadCompletion("pg");
+    expect(next).not.toBe(previous);
+    old.resolve(ok({ ...completion, defaultSchema: "old" }));
+    expect(await previous).toBeNull();
+    expect(useDatabase.getState().completion.pg).toBeUndefined();
+    expect(loadCompletion("pg")).toBe(next);
+    fresh.resolve(ok(completion));
+    expect(await next).toEqual(completion);
   });
 
   it("lets completion recover after failure", async () => {

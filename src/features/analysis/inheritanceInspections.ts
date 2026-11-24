@@ -10,7 +10,7 @@
  */
 import type { Extension } from "@codemirror/state";
 import { ViewPlugin, type EditorView } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { inspectionControlProviders, type EditorDocContext } from "@/editor/api";
 import { onServerSettled } from "@/editor/lsp/availability";
 import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { withDocument } from "@/editor/lsp/files";
@@ -52,6 +52,7 @@ import {
   type PythonMethodFacts,
   type Range,
 } from "@/platform/ipc";
+import { isSuppressed, suppressControls, type FactsOf } from "./pythonSuppression";
 
 /** The inspection producers, one per rule. */
 const PRODUCERS = [
@@ -94,7 +95,30 @@ class ProjectView {
   private outlines = new Map<string, Promise<readonly OutlineItem[]>>();
   private ancestry = new Map<string, Promise<AncestryResolution>>();
 
-  constructor(private readonly deps: InheritanceInspectionDeps) {}
+  /**
+   * The graph's declarations of this document paired with its live classes. An unsaved
+   * edit moves classes off the lines the graph indexed: while the classes still read the
+   * same names in the same order, they pair up in order; otherwise only by position.
+   */
+  private readonly declOf = new Map<PythonClassFacts, ClassInheritance>();
+  private readonly liveOf = new Map<string, PythonClassFacts>();
+
+  constructor(private readonly deps: InheritanceInspectionDeps) {
+    const indexed = [...deps.index.byName.values()]
+      .flat()
+      .filter((c) => c.path === deps.path)
+      .sort(byPosition);
+    const live = [...deps.facts.classes].sort((a, b) => byPosition(a.selection.start, b.selection.start));
+    const inOrder = indexed.length === live.length && indexed.every((c, i) => c.name === live[i]!.name);
+    for (const [i, facts] of live.entries()) {
+      const decl = inOrder
+        ? indexed[i]!
+        : indexed.find((c) => c.line === facts.selection.start.line && c.col === facts.selection.start.col);
+      if (!decl) continue;
+      this.declOf.set(facts, decl);
+      this.liveOf.set(declarationKey(decl), facts);
+    }
+  }
 
   /** The document's classes, in declaration order, skipping ones the graph does not match. */
   async classes(): Promise<ClassView[]> {
@@ -125,11 +149,16 @@ class ProjectView {
   }
 
   async methodsOf(decl: ClassInheritance): Promise<PythonMethodFacts[]> {
+    if (decl.path === this.deps.path) return this.liveOf.get(declarationKey(decl))?.methods ?? [];
     const facts = await this.factsOf(decl.path);
     return facts?.classes.find((c) => sameDeclaration(c, decl))?.methods ?? [];
   }
 
   async membersOf(decl: ClassInheritance): Promise<ReadonlySet<string>> {
+    if (decl.path === this.deps.path) {
+      const live = this.liveOf.get(declarationKey(decl));
+      return memberNames(live ? classItem(this.deps.outline, live) : null);
+    }
     const outline = await this.outlineOf(decl.path);
     const item = outline.find(
       (i) =>
@@ -139,13 +168,7 @@ class ProjectView {
   }
 
   private declarationOf(facts: PythonClassFacts): ClassInheritance | null {
-    const found = this.deps.index.byName.get(facts.name) ?? [];
-    return (
-      found.find(
-        (c) =>
-          c.path === this.deps.path && c.line === facts.selection.start.line && c.col === facts.selection.start.col,
-      ) ?? null
-    );
+    return this.declOf.get(facts) ?? null;
   }
 
   private factsOf(path: string): Promise<PythonFacts | null> {
@@ -160,6 +183,9 @@ class ProjectView {
     return memo(this.ancestry, declarationKey(decl), () => ancestryResolution(this.deps.index, decl));
   }
 }
+
+const byPosition = (a: { line: number; col: number }, b: { line: number; col: number }) =>
+  a.line - b.line || a.col - b.col;
 
 function memo<T>(cache: Map<string, Promise<T>>, key: string, read: () => Promise<T>): Promise<T> {
   let pending = cache.get(key);
@@ -414,6 +440,8 @@ function applyProfileTo(diagnostics: readonly Diagnostic[]): Diagnostic[] {
 }
 
 const viewers = new Map<string, number>();
+/** Each editor view's facts of the last run, for the ⌥↵ Suppress rows. */
+const latestFacts = new WeakMap<EditorView, FactsOf>();
 const hasClass = (items: readonly OutlineItem[]): boolean =>
   items.some((item) => item.kind === "class" || hasClass(item.children));
 
@@ -421,7 +449,8 @@ const hasClass = (items: readonly OutlineItem[]): boolean =>
 export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
   if (ctx.language !== "python" || ctx.virtual || ctx.doc < 0) return [];
   watchChanges();
-  return ViewPlugin.define((view: EditorView) => {
+  const suppress = inspectionControlProviders.of((view, id) => suppressControls(view, id, latestFacts.get(view)));
+  const plugin = ViewPlugin.define((view: EditorView) => {
     if (!isTauri()) return {};
     viewers.set(ctx.path, (viewers.get(ctx.path) ?? 0) + 1);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -440,6 +469,7 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
         const outline = await lspRequest(() => commands.docOutline(ctx.doc));
         // Every rule is about a class: no class, nothing to fetch the graph for.
         if (!hasClass(outline)) {
+          latestFacts.delete(view);
           setFileDiagnostics(ctx.path, SOURCE, []);
           return;
         }
@@ -458,8 +488,10 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
           outlineOf: (path) => withDocument(path, (doc) => lspRequest(() => commands.docOutline(doc))).catch(() => []),
         });
         if (disposed || mine !== sequence || view.state.doc !== text) return;
-        // The profile decides what is shown and how strongly.
-        setFileDiagnostics(ctx.path, SOURCE, applyProfileTo(found));
+        latestFacts.set(view, { facts, doc: text });
+        // `# noinspection` comments, then the profile, decide what is shown and how strongly.
+        const shown = found.filter((d) => !isSuppressed(d, facts.suppressions));
+        setFileDiagnostics(ctx.path, SOURCE, applyProfileTo(shown));
       } catch (e) {
         if (!isCancelled(e)) console.debug("[inheritanceInspections]", e);
       }
@@ -491,4 +523,5 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
       },
     };
   });
+  return [plugin, suppress];
 }

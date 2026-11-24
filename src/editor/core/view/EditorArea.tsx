@@ -1,12 +1,21 @@
 import { ContributedToolbar } from "@/workbench/ContributedToolbar";
-import { useFilePresentationIcons } from "@/ui/filePresentation";
+import { useFilePresentations } from "@/ui/filePresentation";
 /**
  * The editor area: split layout of panes, each with IDEA-style tabs (preview
  * tab in italics, pinned tabs, modified dot, file icons coloured by file
  * decorations, middle-click close, Alt+click close others, double-click to
  * keep a preview / maximize the editor, context menu) and the active editor.
  */
-import { Fragment, useEffect, useMemo, useRef, useState, type FocusEvent, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
 import { executeAction } from "@/platform/actions";
@@ -31,13 +40,13 @@ import {
   useTextEditorWrappers,
   type EditorInput,
   type EditorKindContribution,
+  type TextEditorWrapperContribution,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { useFileColors } from "@/workbench/fileColors";
 import { EmptyEditor } from "@/workbench/EditorArea";
 import {
   EmptyState,
-  Icon,
   IconButton,
   Menu,
   SplitGroup,
@@ -46,6 +55,7 @@ import {
   Tabs,
   showContextMenu,
   registerDropTarget,
+  useSelectionVisibility,
   FILES_DRAG,
   type TabItem,
   type TabsDnd,
@@ -161,7 +171,11 @@ function useTitleHints(): Map<string, string> {
       return out.sort();
     }),
   );
-  return useMemo(() => disambiguateTitles(paths), [paths]);
+  const labels = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabTitle ?? basename(p))));
+  return useMemo(() => {
+    const byPath = new Map(paths.map((p, i) => [p, labels[i]!]));
+    return disambiguateTitles(paths, (p) => byPath.get(p) ?? basename(p));
+  }, [paths, labels]);
 }
 
 const virtualData = (input: EditorInput) => input.data as VirtualInputData | undefined;
@@ -180,6 +194,9 @@ function PaneView({ paneId }: { paneId: string }) {
   const dirty = tabs.map((tab, i) => inputDirty(tab.input, kinds) ?? textDirty[i] ?? false);
   const colors = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.color ?? "") : ""))));
   const tints = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.tint ?? "") : ""))));
+  const tabLabels = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabTitle)));
+  const tabIcons = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabIcon)));
+  const errors = useFileDecorations(useShallow(() => paths.map((p) => !!p && !!getFileDecoration(p)?.error)));
   const fileColors = useFileColors("editorTabs");
 
   const hints = useTitleHints();
@@ -189,8 +206,8 @@ function PaneView({ paneId }: { paneId: string }) {
   const { showExtension, markModified, showCloseButton, showFileIcon, showDirectoryForNonUnique, showFullPathOnHover } =
     tabPrefs;
 
-  const fileIcons = useFilePresentationIcons(
-    showFileIcon ? tabs.flatMap((t) => (t.input.kind === "file" && t.input.path ? [t.input.path] : [])) : [],
+  const files = useFilePresentations(
+    tabs.flatMap((t) => (t.input.kind === "file" && t.input.path ? [t.input.path] : [])),
   );
   const items: TabItem[] = useMemo(() => {
     // A kind's title may change without the tab state (a renamed agent task).
@@ -199,7 +216,7 @@ function PaneView({ paneId }: { paneId: string }) {
     return tabs.map((t, i) => {
       const full = names[i]!;
       const dot = full.lastIndexOf(".");
-      const name = t.input.kind === "file" && !showExtension && dot > 0 ? full.slice(0, dot) : full;
+      const name = tabLabels[i] ?? (t.input.kind === "file" && !showExtension && dot > 0 ? full.slice(0, dot) : full);
       const dupe = !showDirectoryForNonUnique
         ? null
         : t.input.kind === "file" && t.input.path
@@ -208,22 +225,33 @@ function PaneView({ paneId }: { paneId: string }) {
             ? (gitRevisionOf(t.input.path)?.revision.slice(0, 8) ?? basename(dirname(t.input.path)))
             : null;
       const kindMark = tabTrailing(t.input, kinds);
-      const pin = t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : null;
+      const file = t.input.kind === "file" && t.input.path ? files.get(t.input.path) : undefined;
+      const title = markModified && dirty[i] ? `*${name}` : name;
+      const prefix = t.input.kind === "file" && dupe ? (dupe.endsWith("/") ? dupe : `${dupe}/`) : null;
       return {
         id: t.id,
-        label: (
+        label: prefix ? (
+          <span className={styles.tabPath}>
+            <span className={styles.tabDirectory}>
+              <span>{prefix}</span>
+            </span>
+            <span className={clsx(styles.tabFilename, file?.deprecated && styles.deprecated)}>{title}</span>
+          </span>
+        ) : (
           <>
-            {markModified && dirty[i] ? `*${name}` : name}
+            {file?.deprecated ? <span className={styles.deprecated}>{title}</span> : title}
             {dupe && <span className={styles.dupe}>{dupe}</span>}
           </>
         ),
-        text: dupe ? `${name} — ${dupe}` : name,
+        text: prefix ? `${prefix}${name}` : dupe ? `${name} — ${dupe}` : name,
         icon: showFileIcon
           ? t.input.kind === "file" && t.input.path
-            ? fileIcons.get(t.input.path)
+            ? (tabIcons[i] ?? file?.icon)
             : tabIcon(t.input, kinds)
           : undefined,
         italic: t.preview,
+        pinned: t.pinned,
+        error: t.input.kind === "file" && errors[i],
         modified: dirty[i],
         // IDEA: hiding the close button is visual only. Keep close gestures
         // (middle click, Shift+click, Delete) alive when its position is None.
@@ -233,23 +261,20 @@ function PaneView({ paneId }: { paneId: string }) {
           tints[i] || (fileColors && t.input.kind === "file" && t.input.path ? fileColors(t.input.path) : undefined),
         tintStrength: tints[i] ? undefined : "var(--file-tint-strength)",
         tooltip: virtualTooltip(t.input) ?? (showFullPathOnHover ? (t.input.path ?? name) : undefined),
-        trailing:
-          kindMark || pin ? (
-            <>
-              {kindMark}
-              {pin}
-            </>
-          ) : undefined,
+        trailing: kindMark,
       };
     });
   }, [
-    fileIcons,
+    files,
     tabs,
     kinds,
     titleRevision,
     dirty,
     colors,
+    errors,
     tints,
+    tabLabels,
+    tabIcons,
     fileColors,
     hints,
     showExtension,
@@ -342,10 +367,12 @@ function PaneView({ paneId }: { paneId: string }) {
       panelIdPrefix={`editor-${paneId}`}
       dnd={stripDnd}
       layout={tabPrefs.multipleRows ? "wrap" : tabPrefs.oneRowOverflow === "squeeze" ? "squeeze" : "scroll"}
+      hiddenTabsOnly
       closePosition={tabPrefs.closeButtonPosition === "left" ? "left" : "right"}
       onSelect={(id) => ctrl.activate(paneId, id)}
       onClose={(id) => void ctrl.closeTab(paneId, id)}
       onCloseOthers={(id) => void ctrl.closeOthers(paneId, id)}
+      onTogglePin={(id) => ctrl.togglePin(paneId, id)}
       closeOnShiftClick
       onDoubleClick={(id) => {
         // IDEA: a preview tab becomes a regular one; any other tab maximizes the editor.
@@ -444,6 +471,26 @@ function virtualTooltip(input: EditorInput): string | null {
   return [d?.description, input.path].filter(Boolean).join("\n");
 }
 
+const sourceShown = () => false;
+
+/** Code breadcrumbs of a text editor, unless its wrapper hides the source (Markdown Preview Only). */
+function PaneBreadcrumbs({
+  wrapper,
+  path,
+  tabId,
+  position,
+}: {
+  wrapper: TextEditorWrapperContribution | undefined;
+  path: string;
+  tabId: string;
+  position: "top" | "bottom";
+}) {
+  // Keyed by the wrapper id, so the hook stays the same for the component's life.
+  const useSourceHidden = wrapper?.useSourceHidden ?? sourceShown;
+  if (useSourceHidden(tabId)) return null;
+  return <CodeBreadcrumbs path={path} tabId={tabId} position={position} />;
+}
+
 function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; tabsVisible: boolean }) {
   const crumbs = !useDistractionFree((s) => s.active);
   const wrappers = useTextEditorWrappers((s) => s.wrappers);
@@ -459,7 +506,15 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
           <EditorBanners path={tab.input.path} />
         )}
         <FindBar paneId={paneId} />
-        {crumbs && <CodeBreadcrumbs path={tab.input.path!} tabId={tab.id} position="top" />}
+        {crumbs && (
+          <PaneBreadcrumbs
+            key={`top:${wrapper?.id}`}
+            wrapper={wrapper}
+            path={tab.input.path!}
+            tabId={tab.id}
+            position="top"
+          />
+        )}
         {wrapper ? (
           <wrapper.component
             key={tab.id}
@@ -472,7 +527,15 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
         ) : (
           host
         )}
-        {crumbs && <CodeBreadcrumbs path={tab.input.path!} tabId={tab.id} position="bottom" />}
+        {crumbs && (
+          <PaneBreadcrumbs
+            key={`bottom:${wrapper?.id}`}
+            wrapper={wrapper}
+            path={tab.input.path!}
+            tabId={tab.id}
+            position="bottom"
+          />
+        )}
       </>
     );
   }
@@ -497,12 +560,24 @@ function keptTabs(tabs: Tab[], mru: string[], kinds: Map<string, EditorKindContr
  * its content can't be focused or hit while skipped.
  */
 function KindEditor({ tab, shown, kept = false }: { tab: Tab; shown: boolean; kept?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useSelectionVisibility(ref, kept);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!kept || shown || !el) return;
+    const sel = el.ownerDocument.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(el)) {
+      el.setAttribute("data-selection", "");
+      sel.removeAllRanges();
+    }
+  }, [kept, shown]);
   const kinds = useContributions((s) => s.editorKinds);
   const kind = kinds.get(tab.input.kind);
   if (!kind) return <EmptyState icon="file" title={tx`No editor for “${tab.input.kind}”`} />;
   const Component = kind.component;
   return (
     <div
+      ref={ref}
       className={clsx(styles.kind, kept && styles.kept, !shown && styles.keptHidden)}
       data-editor-focus={shown ? "" : undefined}
       tabIndex={-1}
@@ -555,7 +630,8 @@ function EditorTabActions({ paneId, tab }: { paneId: string; tab: Tab }) {
         anchor={moreRef}
         placement="bottom-end"
         aria-label="Tab actions"
-        items={ctrl.tabMenu(paneId, tab)}
+        // Built when shown: every tab render (each open and switch) would otherwise assemble the whole menu.
+        items={open ? ctrl.tabMenu(paneId, tab) : []}
       />
     </div>
   );

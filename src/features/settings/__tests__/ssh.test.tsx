@@ -1,12 +1,13 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SSH_CONFIG, type SshAuthValid } from "@/platform/remoteSettings";
 import { useProject } from "@/platform/project";
 import { PageContext } from "../components/context";
 import { validateSettings } from "../model/schema";
 import { applySettings, closeSettings, openSettings, resetPage, useSettingsDialog } from "../model/staging";
 import { SettingsFooter } from "../dialog/SettingsDialog";
+import { preloadBuiltinPage } from "../pages/lazyPage";
 import { SSH_PAGES } from "../pages/ssh";
 
 const mocks = vi.hoisted(() => ({ store: vi.fn(), test: vi.fn(), needsSecret: vi.fn(), trust: vi.fn() }));
@@ -30,8 +31,10 @@ if (option.kind !== "custom") throw new Error("SSH editor missing");
 const Editor = option.component;
 const savedDialog = useSettingsDialog.getState();
 const savedProject = useProject.getState();
+const SSH_CONTEXT = { pageId: "tools.sshConfigurations", scope: "global" } as const;
 let typed: string;
 
+beforeAll(() => preloadBuiltinPage("tools.sshConfigurations"));
 beforeEach(() => {
   vi.resetAllMocks();
   typed = crypto.randomUUID();
@@ -52,7 +55,7 @@ function mount(auth: SshAuthValid = "password", saveSecret = false) {
   useProject.setState({ settings, project: null });
   openSettings("tools.sshConfigurations");
   return render(
-    <PageContext.Provider value={{ pageId: "tools.sshConfigurations", scope: "global" }}>
+    <PageContext.Provider value={SSH_CONTEXT}>
       <Editor />
     </PageContext.Provider>,
   );

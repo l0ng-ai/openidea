@@ -8,8 +8,8 @@
 import { activeEditor, registerEditorContribution, registerLanguageMode } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { call, commands, emitLocalIdeEvent, IpcError, isTauri } from "@/platform/ipc";
-import { appDataDir } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
+import { scratchesDir } from "@/platform/scratchesDir";
 import {
   editorService,
   notifications,
@@ -18,6 +18,7 @@ import {
   showServiceView,
 } from "@/workbench/contributions";
 import { registerFileNavigation } from "./fileNavigation";
+import { registerUrlNavigation } from "./urlNavigation";
 import { registerVariableNavigation } from "./variableNavigation";
 import { HTTP_LANGUAGE, httpEditorExtension, refreshRequests, requestAtCaret } from "./editor";
 import { HttpClientHeaderActions, HttpClientView } from "./HttpClientView";
@@ -36,8 +37,9 @@ import { registerSpringEndpointProvider } from "./spring/routeIndex";
 import {
   feignEditorExtension,
   feignMenuItems,
+  FIND_FEIGN_CLIENTS,
   GO_TO_FEIGN_ENDPOINT,
-  goToFeignEndpoint,
+  navigateFeign,
   registerFeignNavigation,
 } from "./spring/feignNavigation";
 
@@ -114,11 +116,13 @@ function directoryArg(arg: unknown): string | null {
 /** New HTTP Request: `requests[_n].http` in `directory`, else a scratch, with an example request. */
 async function newRequest(directory?: string) {
   try {
-    const dir = directory ?? `${await appDataDir()}/scratches`;
-    try {
-      await call(commands.fsCreateDir(dir));
-    } catch (e) {
-      if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
+    const dir = directory ?? (await scratchesDir());
+    if (directory) {
+      try {
+        await call(commands.fsCreateDir(dir));
+      } catch (e) {
+        if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
+      }
     }
     const names = new Set((await call(commands.fsReadDir(dir))).map((e) => e.name.toLowerCase()));
     let name = "requests.http";
@@ -143,6 +147,7 @@ export function activate(): () => void {
     registerSpringEndpointProvider(),
     registerFeignNavigation(),
     registerVariableNavigation(),
+    registerUrlNavigation(),
     registerFileNavigation(),
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root) resetHttpClient();
@@ -182,7 +187,16 @@ export function activate(): () => void {
         icon: "arrow-right",
         keywords: ["spring", "feign", "microservice", "endpoint"],
         when: SPRING_WHEN,
-        run: ({ arg }) => goToFeignEndpoint(arg),
+        run: ({ arg }) => navigateFeign("endpoint", arg),
+      },
+      {
+        id: FIND_FEIGN_CLIENTS,
+        title: "Find Feign Clients",
+        category: "Navigate",
+        icon: "search",
+        keywords: ["spring", "feign", "client", "endpoint", "caller"],
+        when: SPRING_WHEN,
+        run: ({ arg }) => navigateFeign("clients", arg),
       },
       {
         id: OPEN_ENDPOINT,

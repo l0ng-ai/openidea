@@ -15,16 +15,35 @@ export const commands = {
 	/**  Answers a non-blocking question, without cancelling the current turn. */
 	agentAnswerQuestion: (task: string, question: string, answer: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_answer_question", { task, question, answer })),
 	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
-	/**  Content of `path` when the task started (left side of its diff). */
-	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
+	/**  Content of `path` as `view` compares it (without: when the task started), the left side of its diff. */
+	agentBaseText: (task: string, path: IpcPath, view: 
+/**  Everything since the commit the task started from. */
+"sinceStart" | 
+/**  The uncommitted files against `HEAD`; commits made since the start stay. */
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn" | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path, view })),
 	/**  Stops the task's current turn, or with `subagent` only that subagent's work. */
 	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
-	agentChanges: (task: string) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task })),
+	/**  The task's changed files as `view` compares them (without: since it started). */
+	agentChanges: (task: string, view: 
+/**  Everything since the commit the task started from. */
+"sinceStart" | 
+/**  The uncommitted files against `HEAD`; commits made since the start stay. */
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn" | null) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task, view })),
+	/**  Installs the exact version offered if the selected installation still matches. */
+	agentCliUpdate: (provider: string, offer: AgentCliOffer, request: RequestId) => typedError<AgentCliUpdateResult, IdeError>(__TAURI_INVOKE("agent_cli_update", { provider, offer, request })),
+	/**  Checks the selected installation without modifying it. */
+	agentCliUpdateCheck: (provider: string, request: RequestId) => typedError<AgentCliUpdateResult, IdeError>(__TAURI_INVOKE("agent_cli_update_check", { provider, request })),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
 	 */
 	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
+	/**  Reads the running session's context categories without sending a prompt. */
+	agentContextUsage: (task: string) => typedError<AgentContextUsage, IdeError>(__TAURI_INVOKE("agent_context_usage", { task })),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents. */
 	agentCustomImport: (text: string) => typedError<AcpImportOutcome[], IdeError>(__TAURI_INVOKE("agent_custom_import", { text })),
@@ -36,7 +55,10 @@ export const commands = {
 	 */
 	agentCustomSave: (input: CustomAgentInput) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_save", { input })),
 	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
-	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
+	/**
+	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. Async so a long
+	 *  conversation is cloned and serialised off the main thread.
+	 */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	/**  Sessions of the project on this machine that no task holds yet, newest first. */
 	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
@@ -44,6 +66,8 @@ export const commands = {
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
+	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
+	agentHermesProfiles: () => typedError<HermesProfile[], IdeError>(__TAURI_INVOKE("agent_hermes_profiles")),
 	/**  Imports an external session as a task: its first turn loads and replays it. */
 	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
 	/**  Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`). */
@@ -74,6 +98,10 @@ export const commands = {
 	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
 	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
+	/**
+	 *  Reads the ACP registry's install state for every provider from disk, so it runs on the
+	 *  blocking pool.
+	 */
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
 	agentRefreshModels: (provider: string, force: boolean, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force, model })),
@@ -103,7 +131,9 @@ export const commands = {
 /**  Everything since the commit the task started from. */
 "sinceStart" | 
 /**  The uncommitted files against `HEAD`; commits made since the start stay. */
-"group" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
 	/**  Sends a queued message now, interrupting the current turn. */
 	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
 	/**
@@ -120,13 +150,41 @@ export const commands = {
 	agentSetEnv: (id: string, env: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_env", { id, env })),
 	/**  Updates per-session MCP server enable/disable overrides on `task`. */
 	agentSetMcpOverrides: (task: string, overrides: { [key in string]: boolean }) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_set_mcp_overrides", { task, overrides })),
+	/**  Updates per-session skill modes on `task`. */
+	agentSetSkillOverrides: (task: string, overrides: { [key in string]: AgentSkillMode }) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_set_skill_overrides", { task, overrides })),
+	/**
+	 *  Runs a `!` line of the composer in the task's folder with the user's shell, without
+	 *  starting a turn; its output goes to the agent with the next message.
+	 */
+	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
+	/**  Resolves a GitHub `owner/repo[/path][@ref]` source and lists the `SKILL.md` skills in it. */
+	agentSkillsBrowse: (source: string, request: RequestId) => typedError<RemoteSkillBrowseResult, IdeError>(__TAURI_INVOKE("agent_skills_browse", { source, request })),
+	/**  Installs the selected skill subtree into `~/.agents/skills` (User) or `<workspace>/.agents/skills` (Workspace). */
+	agentSkillsInstall: (input: InstallRemoteSkillRequest, request: RequestId) => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_install", { input, request })),
+	/**
+	 *  Every skill discovered in the project, the user's folders and enabled plugins, with
+	 *  the mode a session runs it with (without any session's own overrides).
+	 */
+	agentSkillsList: () => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
+	/**  Fetches one skill's `SKILL.md`, file list, and static security scan warnings before installation. */
+	agentSkillsPreview: (owner: string, repo: string, gitRef: string, subpath: string, request: RequestId) => typedError<RemoteSkillPreview, IdeError>(__TAURI_INVOKE("agent_skills_preview", { owner, repo, gitRef, subpath, request })),
+	/**
+	 *  Sets how `name` may run in `scope`, in the settings file of that scope, and returns the
+	 *  updated list. `SKILL.md` files are never touched; the default `auto` removes the entry.
+	 */
+	agentSkillsSetMode: (name: string, scope: McpScope, mode: AgentSkillMode) => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_set_mode", { name, scope, mode })),
 	/**  Stops one of the task's background tasks. */
 	agentStopBackground: (task: string, background: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_stop_background", { task, background })),
-	/**  Streams the project's agent events to this window; returns every task. */
-	agentSubscribe: (onEvent: Channel<AgentEvent_Deserialize>) => typedError<AgentTask_Serialize[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
+	/**
+	 *  Streams the project's agent events to `subscriber`, one of the project's windows (a remote
+	 *  host sees them all as one `window`); returns every task.
+	 */
+	agentSubscribe: (onEvent: Channel<AgentEvent_Deserialize>, subscriber: string) => typedError<AgentTask_Serialize[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent, subscriber })),
 	agentUnarchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unarchive", { task })),
 	/**  Drops a queued message and returns it (to edit it). */
 	agentUnqueue: (task: string, queued: string) => typedError<AgentQueued, IdeError>(__TAURI_INVOKE("agent_unqueue", { task, queued })),
+	/**  Stops the events of a window that closed. */
+	agentUnsubscribe: (subscriber: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unsubscribe", { subscriber })),
 	/**  Locate Duplicates over the files of `scope`. */
 	analysisLocateDuplicates: (request: RequestId, scope: SearchScope, options: DuplicateOptions) => typedError<DuplicatesReport, IdeError>(__TAURI_INVOKE("analysis_locate_duplicates", { request, scope, options })),
 	/**  Devices `adb` knows about, online ones first. */
@@ -266,19 +324,23 @@ export const commands = {
 	/**  Cucumber feature files and step definition files, for step navigation. */
 	cucumberSources: () => typedError<StepSource[], IdeError>(__TAURI_INVOKE("cucumber_sources")),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
+	dbApproveJdbcSource: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_jdbc_source", { source })),
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
 	/**  The query consoles of data source `id`; `create` adds the next one first. */
 	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
+	dbCreateDatabase: (id: string, template: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_create_database", { id, template, statement })),
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
+	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -288,14 +350,26 @@ export const commands = {
 	dbExportFile: (path: string, text: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_export_file", { path, text })),
 	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
 	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError>(__TAURI_INVOKE("db_history", { id })),
+	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
+	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
+	/**  Closes what the pages of a result keep open on the server (its result tab was closed). */
+	dbReleaseResult: (id: string, statement: string, schema: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_result", { id, statement, schema })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
+	dbRemoveJdbcDriver: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_jdbc_driver", { id })),
+	/**
+	 *  Row `row` (from 0) of the result of `statement`, whole: what a page of a run with a
+	 *  `cell_limit` shows cut short.
+	 */
+	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema })),
 	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	/**
 	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
 	 *  in the desktop shell like [`db_export_file`]: the paths in `job` are local.
 	 */
 	dbRunTool: (request: RequestId, id: string, executable: string, job: DbToolJob, onOutput: Channel<DbToolLine[]>) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_run_tool", { request, id, executable, job, onOutput })),
+	dbSaveJdbcDriver: (driver: DbJdbcDriver_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_jdbc_driver", { driver })),
+	dbSaveSourceVisibility: (id: string, available: string[], change: DbVisibilityChange) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_source_visibility", { id, available, change })),
 	dbSaveSources: (sources: DataSource_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
 	dbSavedCatalog: (id: string) => typedError<{
 	databases?: DbCatalogDatabase[],
@@ -333,9 +407,9 @@ export const commands = {
 	/**  Completions for an expression typed in Evaluate (`line` / `column` 0-based, UTF-16). */
 	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
-	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
+	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
 	/**  Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`. */
-	debugEvaluateIn: (session: DebugSessionId, frameId: number | null, expression: string, context: string | null) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate_in", { session, frameId, expression, context })),
+	debugEvaluateIn: (session: DebugSessionId, frameId: number | null, expression: string, context: string | null) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_evaluate_in", { session, frameId, expression, context })),
 	debugExceptionFilters: () => typedError<SessionExceptionFilters[], IdeError>(__TAURI_INVOKE("debug_exception_filters")),
 	/**  Force Step Over: step over with every breakpoint suspended until the step ends. */
 	debugForceStepOver: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_force_step_over", { session, threadId })),
@@ -359,7 +433,7 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("debug_heap_path", { snapshot, object })),
 	/**  Copies the snapshot's dump to `path`, replacing a file there. */
 	debugHeapSave: (snapshot: HeapSnapshotId, path: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_save", { snapshot, path })),
-	debugHotReload: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_reload", { session })),
+	debugHotReload: (session: DebugSessionId, reason: HotReloadReason) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_reload", { session, reason })),
 	debugHotRestart: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_restart", { session })),
 	/**  Breakpoints of a debugged page on DOM events and on requests (js-debug). */
 	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
@@ -390,6 +464,7 @@ export const commands = {
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
+	debugResolveVariable: (session: DebugSessionId, variable: Variable_Deserialize) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_resolve_variable", { session, variable })),
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
@@ -403,9 +478,11 @@ export const commands = {
 	/**  Field watchpoints; states aligned with `breakpoints`. */
 	debugSetDataBreakpoints: (breakpoints: DataBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_data_breakpoints", { breakpoints })),
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
+	/**  Exception breakpoints on chosen classes (all sessions that take them, and later ones). */
+	debugSetExceptionClassBreakpoints: (breakpoints: ExceptionClassBreakpoint[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_class_breakpoints", { breakpoints })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
-	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
+	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
 	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
 	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
@@ -431,7 +508,7 @@ export const commands = {
 { kind: "finished" } | null, IdeError>(__TAURI_INVOKE("debug_stream_trace_abort", { session })),
 	debugThreads: (session: DebugSessionId) => typedError<ThreadInfo[], IdeError>(__TAURI_INVOKE("debug_threads", { session })),
 	debugUnityProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_unity_processes")),
-	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable[], IdeError>(__TAURI_INVOKE("debug_variables", { session, reference })),
+	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable_Serialize[], IdeError>(__TAURI_INVOKE("debug_variables", { session, reference })),
 	dependencyVersions: (doc: DocId, offset: number | null, request: RequestId) => typedError<DependencyVersions[], IdeError>(__TAURI_INVOKE("dependency_versions", { doc, offset, request })),
 	deployCompare: (path: IpcPath, server: string | null, request: RequestId) => typedError<SyncEntry[], IdeError>(__TAURI_INVOKE("deploy_compare", { path, server, request })),
 	deployCoverage: (paths: IpcPath[]) => typedError<DeploymentCoverage[], IdeError>(__TAURI_INVOKE("deploy_coverage", { paths })),
@@ -452,12 +529,22 @@ export const commands = {
 	 *  (a remote window passes the sides as text).
 	 */
 	diffExternalTool: (left: ExternalDiffSide, right: ExternalDiffSide, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("diff_external_tool", { left, right, title })),
+	/**
+	 *  An automatic save: `false` (nothing written) when the file changed on disk after the
+	 *  buffer was edited, which only an explicit save overwrites.
+	 */
+	docAutosave: (doc: DocId) => typedError<boolean, IdeError>(__TAURI_INVOKE("doc_autosave", { doc })),
 	docClose: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_close", { doc })),
 	/**
 	 *  Applies a CodeMirror change set; returns the new version. Rejects with
 	 *  `outOfSync` when `base_version` is stale; the UI then calls `doc_snapshot`.
 	 */
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
+	/**
+	 *  Structure view of a Flutter file: its declarations with the widgets they build. `None`
+	 *  when the Dart server published no widgets for it; `doc_outline` then applies.
+	 */
+	docFlutterOutline: (doc: DocId) => typedError<OutlineItem[] | null, IdeError>(__TAURI_INVOKE("doc_flutter_outline", { doc })),
 	docFolding: (doc: DocId) => typedError<FoldRange[], IdeError>(__TAURI_INVOKE("doc_folding", { doc })),
 	/**
 	 *  Tree-sitter highlighting for languages the UI has no CodeMirror mode for;
@@ -487,13 +574,20 @@ export const commands = {
 	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_virtual", { uri })),
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
-	 *  visibility), tree-sitter otherwise.
+	 *  visibility and type-alias kinds), tree-sitter otherwise.
 	 *  Tree-sitter answers come from the per-document tree cache (incremental
 	 *  re-parse); large documents get no syntax structure.
 	 */
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
 	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
+	/**
+	 *  Rearrange Code: the edits that put the document's class members in arrangement order (Python
+	 *  for now); none when they already are or the language has no arrangement.
+	 */
+	docRearrange: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("doc_rearrange", { doc })),
+	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
+	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	/**
@@ -519,14 +613,19 @@ export const commands = {
 	dockerContainerStats: (endpoint: DockerEndpoint, id: string) => typedError<DockerContainerStats, IdeError>(__TAURI_INVOKE("docker_container_stats", { endpoint, id })),
 	/**  Processes running inside a container (`docker top`). */
 	dockerContainerTop: (endpoint: DockerEndpoint, id: string) => typedError<DockerProcessList, IdeError>(__TAURI_INVOKE("docker_container_top", { endpoint, id })),
+	/**
+	 *  Closes the connection's SSH tunnel and, when nothing else uses it, its SSH connection
+	 *  (Services › Disconnect); other endpoints keep nothing open.
+	 */
+	dockerDisconnect: (endpoint: DockerEndpoint) => typedError<null, IdeError>(__TAURI_INVOKE("docker_disconnect", { endpoint })),
 	/**  Follows `docker events` until the daemon goes away or the request is cancelled. */
 	dockerEvents: (request: RequestId, endpoint: DockerEndpoint, onEvent: Channel<DockerEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_events", { request, endpoint, onEvent })),
 	/**  Layers of an image (`docker image history`). */
 	dockerImageHistory: (endpoint: DockerEndpoint, id: string) => typedError<DockerImageLayer[], IdeError>(__TAURI_INVOKE("docker_image_history", { endpoint, id })),
 	/**  Pretty-printed `docker inspect` JSON. */
 	dockerInspect: (endpoint: DockerEndpoint, object: DockerObject, id: string) => typedError<string, IdeError>(__TAURI_INVOKE("docker_inspect", { endpoint, object, id })),
-	/**  Streams a container's log lines until it stops or the request is cancelled. */
-	dockerLogs: (request: RequestId, endpoint: DockerEndpoint, id: string, tail: number, follow: boolean, timestamps: boolean, onLine: Channel<DockerLogLine>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_logs", { request, endpoint, id, tail, follow, timestamps, onLine })),
+	/**  Streams a container's log lines, in batches, until it stops or the request is cancelled. */
+	dockerLogs: (request: RequestId, endpoint: DockerEndpoint, id: string, tail: number, follow: boolean, timestamps: boolean, onLines: Channel<DockerLogLine[]>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_logs", { request, endpoint, id, tail, follow, timestamps, onLines })),
 	dockerPrune: (request: RequestId, endpoint: DockerEndpoint, target: PruneTarget, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_prune", { request, endpoint, target, onOutput })),
 	/**  `docker pull`, logging in first when a saved registry with a password serves the image. */
 	dockerPull: (request: RequestId, endpoint: DockerEndpoint, reference: string, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_pull", { request, endpoint, reference, onOutput })),
@@ -545,6 +644,8 @@ export const commands = {
 	dockerSettings: () => typedError<DockerSettings, IdeError>(__TAURI_INVOKE("docker_settings")),
 	/**  Availability plus containers, images, volumes and networks. */
 	dockerSnapshot: (endpoint: DockerEndpoint) => typedError<DockerSnapshot, IdeError>(__TAURI_INVOKE("docker_snapshot", { endpoint })),
+	/**  Disk usage per volume name (`docker system df -v`). */
+	dockerVolumeSizes: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_volume_sizes", { endpoint })),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
@@ -570,7 +671,21 @@ export const commands = {
 	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
 	/**  Index symbols named exactly one of `names` inside `within` (an agent task's folder). */
 	findSymbolsNamed: (names: string[], within: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols_named", { names, within })),
-	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
+	/**  Replaces the project's `flutter daemon`, after a failure or an SDK change. */
+	flutterDaemonRestart: () => typedError<FlutterDeviceList, IdeError>(__TAURI_INVOKE("flutter_daemon_restart")),
+	/**
+	 *  The project's Flutter devices, starting its `flutter daemon` on first use. Changes arrive as
+	 *  `IdeEvent::FlutterDevices`.
+	 */
+	flutterDevices: () => typedError<FlutterDeviceList, IdeError>(__TAURI_INVOKE("flutter_devices")),
+	/**  Looks at adb again, for Android devices Flutter doesn't report (awaiting authorization, offline). */
+	flutterDevicesRefresh: () => typedError<null, IdeError>(__TAURI_INVOKE("flutter_devices_refresh")),
+	/**
+	 *  The address of the project's DevTools server, started on first use. A server that failed or
+	 *  exited is only started again by the next request.
+	 */
+	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
+	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
 	fsCreateDir: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_dir", { path })),
@@ -579,9 +694,11 @@ export const commands = {
 	 *  `charset` (writes the BOM for `utf-8-bom` / UTF-16).
 	 */
 	fsCreateFile: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file", { path })),
-	fsCreateFileBytes: (path: string, data: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
+	fsCreateFileBytes: (path: string, data: IpcBytes) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
 	/**  Moving to the trash can take a while (large trees): kept off the main thread. */
 	fsDelete: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_delete", { path })),
+	/**  Moves an item to the Trash and returns the snapshot for Project View Undo. */
+	fsDeleteWithUndo: (path: string) => typedError<DeletionUndo, IdeError>(__TAURI_INVOKE("fs_delete_with_undo", { path })),
 	fsEntryKind: (path: string) => typedError<EntryKind, IdeError>(__TAURI_INVOKE("fs_entry_kind", { path })),
 	/**
 	 *  Opens a project file with its default application (Office, PDF readers). The checks run here,
@@ -605,10 +722,21 @@ export const commands = {
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
 	/**
+	 *  The scratch files' folder of this host (`<data dir>/scratches`), created. A remote window
+	 *  keeps its scratches on the server, where its file commands run.
+	 */
+	fsScratchesDir: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("fs_scratches_dir")),
+	/**
 	 *  Toggle Read-only Attribute: sets the writable bit (and the open document's
 	 *  state). Returns whether the file is read-only now.
 	 */
 	fsSetWritable: (path: string, writable: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("fs_set_writable", { path, writable })),
+	/**
+	 *  Runs Compare Directories' synchronisation operations in order. A failed operation is
+	 *  reported and the rest still run; cancellation stops before the next one.
+	 */
+	fsSynchronizeDirectories: (left: string, right: string, operations: DirectorySyncOperation[], request: RequestId, onProgress: Channel<DirectorySyncProgress>) => typedError<DirectorySyncFailure[], IdeError>(__TAURI_INVOKE("fs_synchronize_directories", { left, right, operations, request, onProgress })),
+	fsUndoDelete: (undo: DeletionUndo) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("fs_undo_delete", { undo })),
 	/**  The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project. */
 	ghAccountRepos: () => typedError<GhAccountRepos, IdeError>(__TAURI_INVOKE("gh_account_repos")),
 	/**  A GitHub GraphQL / REST call through `gh api`; returns the response body. */
@@ -640,9 +768,9 @@ export const commands = {
 	/**  Shows a GTK file chooser attached to `window`. `None` when the user cancels. */
 	gtkPickPaths: (options: GtkPickOptions) => typedError<IpcPath[] | null, IdeError>(__TAURI_INVOKE("gtk_pick_paths", { options })),
 	historyContent: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("history_content", { id })),
-	historyList: (path: string) => typedError<HistoryEntry[], IdeError>(__TAURI_INVOKE("history_list", { path })),
+	historyList: (path: string) => typedError<HistoryEntry_Serialize[], IdeError>(__TAURI_INVOKE("history_list", { path })),
 	/**  Show History on a folder: snapshots of the files under it (deleted ones included) and labels. */
-	historyListDir: (path: string) => typedError<DirectoryHistory, IdeError>(__TAURI_INVOKE("history_list_dir", { path })),
+	historyListDir: (path: string) => typedError<DirectoryHistory_Serialize, IdeError>(__TAURI_INVOKE("history_list_dir", { path })),
 	/**  Local History › Put Label…: a named point in the history of every file. */
 	historyPutLabel: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("history_put_label", { label })),
 	/**
@@ -688,6 +816,11 @@ export const commands = {
 	inspectCode: (request: RequestId, scope: SearchScope, onEvent: Channel<InspectEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("inspect_code", { request, scope, onEvent })),
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
 	javaBuildWorkspace: (module: string, request: number | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
+	/**
+	 *  The debug adapter for the JVMs of `module`: `java-debug` inside jdtls, or `java-analyzer`
+	 *  (`java-analyzer dap`) when jdtls doesn't serve the module and java-analyzer does.
+	 */
+	javaDebugAdapter: (module: string) => typedError<string, IdeError>(__TAURI_INVOKE("java_debug_adapter", { module })),
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**
@@ -735,10 +868,21 @@ export const commands = {
 	lspCodeActionQuery: (request: RequestId, doc: DocId, range: Range, only: string[]) => typedError<CodeActionQuery, IdeError>(__TAURI_INVOKE("lsp_code_action_query", { request, doc, range, only })),
 	lspCodeActions: (doc: DocId, range: Range, only: string[]) => typedError<CodeAction[], IdeError>(__TAURI_INVOKE("lsp_code_actions", { doc, range, only })),
 	lspCodeLens: (doc: DocId) => typedError<CodeLens[], IdeError>(__TAURI_INVOKE("lsp_code_lens", { doc })),
+	/**  How the server that reported `color` writes it with new components. */
+	lspColorPresentations: (doc: DocId, color: DocumentColor) => typedError<ColorPresentation[], IdeError>(__TAURI_INVOKE("lsp_color_presentations", { doc, color })),
 	lspCompletion: (request: RequestId, doc: DocId, pos: Pos, trigger: string | null) => typedError<CompletionList, IdeError>(__TAURI_INVOKE("lsp_completion", { request, doc, pos, trigger })),
+	/**  Colors in a document from its language servers (Tailwind classes, CSS values…). */
+	lspDocumentColors: (doc: DocId) => typedError<DocumentColor[], IdeError>(__TAURI_INVOKE("lsp_document_colors", { doc })),
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
+	/**  The Throwable class the caret at `pos` names, for the exception breakpoint intention. */
+	lspExceptionClassAt: (request: RequestId, doc: DocId, pos: Pos) => typedError<{
+	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
+	qualifiedName: string,
+	/**  The simple name (`Failure`). */
+	displayName: string,
+} | null, IdeError>(__TAURI_INVOKE("lsp_exception_class_at", { request, doc, pos })),
 	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**
 	 *  Runs a server command (`workspace/executeCommand`), e.g. a completion item's
@@ -751,6 +895,7 @@ export const commands = {
 	start: Pos,
 	end: Pos,
 } | null, options: FormatOptions) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_format", { doc, range, options })),
+	lspFormatText: (path: string, text: string, options: FormatOptions) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_format_text", { path, text, options })),
 	lspGoto: (doc: DocId, pos: Pos, kind: GotoKind) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_goto", { doc, pos, kind })),
 	/**
 	 *  Go to Implementation of the symbol at `pos`. Implementations found before a
@@ -859,6 +1004,8 @@ export const commands = {
 	activeParameter: number,
 } | null, IdeError>(__TAURI_INVOKE("lsp_signature_help", { doc, pos })),
 	lspSignatureInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<MethodSignature, IdeError>(__TAURI_INVOKE("lsp_signature_info", { request, doc, pos })),
+	lspSnapshotDiagnostics: (path: string, text: string, request: RequestId) => typedError<Diagnostic[], IdeError>(__TAURI_INVOKE("lsp_snapshot_diagnostics", { path, text, request })),
+	lspSourceActionText: (path: string, text: string, kind: string, request: RequestId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_source_action_text", { path, text, kind, request })),
 	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
 	/**
 	 *  Contents of a read-only language-server document, including JDT library
@@ -894,8 +1041,9 @@ export const commands = {
 	mavenExcludeDependency: (pom: string, dependency: ArtifactKey, exclusion: ArtifactKey) => typedError<Location, IdeError>(__TAURI_INVOKE("maven_exclude_dependency", { pom, dependency, exclusion })),
 	/**
 	 *  The go-to-declaration target at `pos` of a Maven POM: the definition of the
-	 *  `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
-	 *  entry providing the dependency's / plugin's version, along the parent chain.
+	 *  `${property}` at the caret, the parent POM, or the dependency / plugin's own POM
+	 *  (a project module first, then the local repository). A dependency without a
+	 *  resolvable artifact POM falls back to its management entry.
 	 */
 	mavenGotoDeclaration: (pom: string, pos: Pos) => typedError<{
 	/**
@@ -909,10 +1057,21 @@ export const commands = {
 	/**  The declaration as named for the user (`example.version`, `com.example:example-lib`). */
 	label: string,
 } | null, IdeError>(__TAURI_INVOKE("maven_goto_declaration", { pom, pos })),
+	/**
+	 *  Gutter targets of the unversioned dependencies and plugins in a Maven POM:
+	 *  the management declarations that actually supply their versions, including
+	 *  parent POMs and imported BOMs. Cancel with `cancel_request(request)`.
+	 */
+	mavenManagedDeclarations: (pom: string, request: RequestId) => typedError<PomManagedDeclaration[], IdeError>(__TAURI_INVOKE("maven_managed_declarations", { pom, request })),
 	/**  The user closed the Run tool window tab of an agent command (`run_command`). */
 	mcpAgentRunClosed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_agent_run_closed", { name })),
 	/**
-	 *  Settings › Agents › MCP Server › Regenerate Token: forgets the kept token, and restarts the
+	 *  Settings › Agents › IDE MCP Server › Background projects: the projects this host's server
+	 *  keeps loaded without a window.
+	 */
+	mcpBackgroundProjects: () => typedError<McpBackgroundProject_Serialize[], IdeError>(__TAURI_INVOKE("mcp_background_projects")),
+	/**
+	 *  Settings › Agents › IDE MCP Server › Regenerate Token: forgets the kept token, and restarts the
 	 *  server with a new one. Clients configured with the old token stop working.
 	 */
 	mcpRegenerateToken: () => typedError<null, IdeError>(__TAURI_INVOKE("mcp_regenerate_token")),
@@ -927,6 +1086,8 @@ export const commands = {
 } | null, focused: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_focused_editor", { editor, focused })),
 	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
 	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
+	/**  Unloads one background project; a root that is not loaded is already unloaded. */
+	mcpUnloadBackgroundProject: (root: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_unload_background_project", { root })),
 	/**
 	 *  Sets the menu's labels / accelerators and updates the menu when the visible
 	 *  items changed. Accelerators of actions that are not on the menu must not call
@@ -934,7 +1095,7 @@ export const commands = {
 	 */
 	menuConfigure: (config: MenuConfig) => __TAURI_INVOKE<void>("menu_configure", { config }),
 	/**  The menu bar for a title bar drawn by the frontend (Windows). */
-	menuModel: () => __TAURI_INVOKE<MenuNode[]>("menu_model"),
+	menuModel: () => __TAURI_INVOKE<MenuNode_Serialize[]>("menu_model"),
 	/**
 	 *  Updates the menu after the recent-projects list changed. Only the Open Recent
 	 *  submenu is rewritten when the rest of the menu is unchanged.
@@ -955,6 +1116,11 @@ export const commands = {
 	 *  for native inheritance gutter markers.
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
+	/**
+	 *  The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
+	 *  functions and classes declared in both: PyCharm's stub gutter markers.
+	 */
+	navPythonStubs: (doc: DocId) => typedError<PythonStubLinks, IdeError>(__TAURI_INVOKE("nav_python_stubs", { doc })),
 	/**
 	 *  The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
 	 *  no project or content root has it.
@@ -977,13 +1143,18 @@ export const commands = {
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
 	/**  An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`. */
 	pluginActivationEvent: (kind: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_activation_event", { kind, value })),
+	/**
+	 *  This window's clipboard for a plugin's `clipboardRequested`; false when the call no
+	 *  longer waits or asked another window.
+	 */
+	pluginAnswerClipboard: (requestId: string, answer: ClipboardAnswer) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_answer_clipboard", { requestId, answer })),
 	/**  The invoking window's reply to a plugin command request. */
 	pluginAnswerCommand: (requestId: string, answer: CommandAnswer) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_answer_command", { requestId, answer })),
 	/**
 	 *  A window's answer to a plugin's `commitRequested`; false when the call no
 	 *  longer waits.
 	 */
-	pluginAnswerCommit: (requestId: string, answer: CommitAnswer) => __TAURI_INVOKE<boolean>("plugin_answer_commit", { requestId, answer }),
+	pluginAnswerCommit: (requestId: string, answer: CommitAnswer_Deserialize) => __TAURI_INVOKE<boolean>("plugin_answer_commit", { requestId, answer }),
 	/**
 	 *  Reports the user's answer to a plugin's `promptRequested`: the chosen keys
 	 *  (pick), `[text]` (input), anything (confirm: OK), or `None` when dismissed.
@@ -1006,7 +1177,9 @@ export const commands = {
 	 *  Runs plugins' before-commit checks on what `selection` commits, until
 	 *  `request` is cancelled.
 	 */
-	pluginCommitChecks: (selection: CommitSelection, checks: PluginCommitCheckRef[], request: RequestId) => typedError<PluginCommitCheckResult[], IdeError>(__TAURI_INVOKE("plugin_commit_checks", { selection, checks, request })),
+	pluginCommitChecks: (selection: CommitSelection_Deserialize, checks: PluginCommitCheckRef[], request: RequestId) => typedError<PluginCommitCheckResult[], IdeError>(__TAURI_INVOKE("plugin_commit_checks", { selection, checks, request })),
+	/**  Every plugin's console highlight rules (later changes arrive as `consoleRulesChanged`). */
+	pluginConsoleRules: () => __TAURI_INVOKE<{ [key in string]: ConsoleRule[] }>("plugin_console_rules"),
 	/**  Dispatches a wasm content editor action through the owning plugin's event handler. */
 	pluginContentTabAction: (pluginId: string, action: ContentTabAction) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_content_tab_action", { pluginId, action })),
 	/**  Plugin context keys in effect for this window (later changes arrive as `contextChanged`). */
@@ -1088,6 +1261,11 @@ export const commands = {
 	selections: Range[],
 } | null, paths: string[] | null, settingsScope: "global" | "project" | null, commandChain: string[] | null, request: number | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain, request })),
 	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
+	/**
+	 *  One page of `plugin_id`'s results for its search `category`. Cancellable with
+	 *  `cancel_request(request)`.
+	 */
+	pluginSearch: (pluginId: string, category: string, query: string, limit: number, request: RequestId) => typedError<PluginSearchPage, IdeError>(__TAURI_INVOKE("plugin_search", { pluginId, category, query, limit, request })),
 	pluginSecrets: (pluginId: string) => typedError<PluginSecretState[], IdeError>(__TAURI_INVOKE("plugin_secrets", { pluginId })),
 	/**  Selects test-tree paths in an owned plugin test configuration. */
 	pluginSelectTests: (config: string, tests: string[][]) => typedError<string[] | null, IdeError>(__TAURI_INVOKE("plugin_select_tests", { config, tests })),
@@ -1099,14 +1277,24 @@ export const commands = {
 	 *  cancelled; returns the exit code.
 	 */
 	pluginServiceLog: (request: RequestId, pluginId: string, view: string, key: string, tab: string, on: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_service_log", { request, pluginId, view, key, tab, on, onLine })),
-	/**  The UI reports the focused editor's file (`editor-focused` events). */
-	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
+	/**
+	 *  The UI reports the focused editor's file (`editor-focused` events), with its
+	 *  caret so plugins can scope line labels without re-reading the document.
+	 */
+	pluginSetActiveFile: (path: string | null, editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path, editor }),
 	/**  Grants or revokes one declared capability. */
 	pluginSetCapability: (id: string, capability: string, granted: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_set_capability", { id, capability, granted })),
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
 	/**  Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for the default). */
 	pluginSetMarketUrl: (url: string | null) => __TAURI_INVOKE<void>("plugin_set_market_url", { url }),
-	/**  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin. */
+	/**
+	 *  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin.
+	 *  The keychain call takes up to hundreds of milliseconds, so it runs on the blocking pool.
+	 */
 	pluginSetSecret: (pluginId: string, name: string, value: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_secret", { pluginId, name, value })),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
 	pluginSetTheme: (pluginId: string | null, themeId: string | null) => typedError<{
@@ -1123,7 +1311,7 @@ export const commands = {
 	/**  Writes a package the UI generated (an imported theme); returns the folder for the install page. */
 	pluginStagePackage: (name: string, files: PackageFile[]) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_stage_package", { name, files })),
 	/**  Every plugin status bar item (later changes arrive as `statusItemChanged`). */
-	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem[]>("plugin_status_items"),
+	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem_Serialize[]>("plugin_status_items"),
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent_Deserialize>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**  Marks a keyed tab closed before ending its process. */
@@ -1203,10 +1391,42 @@ export const commands = {
 	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
 	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
 	/**
+	 *  Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
+	 *  project (Mark Directory as there). Every open window holding that project follows.
+	 *  Like `project_workspace_members`, its `for_project` settings re-parse runs off the IPC thread.
+	 */
+	projectWorkspaceMemberSet: (root: string, key: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_workspace_member_set", { root, key, value })),
+	/**
+	 *  The workspace projects outside the window's project folder, for Mark Directory as there.
+	 *  Each member's `for_project().layer(Project)` re-parses both settings layers and validates the
+	 *  merged tree against `Settings`; that stack-hungry work must not run on the IPC (main) thread,
+	 *  whose 1 MiB stack overflows on project open (STATUS_STACK_OVERFLOW).
+	 */
+	projectWorkspaceMembers: () => typedError<WorkspaceMember[], IdeError>(__TAURI_INVOKE("project_workspace_members")),
+	/**
 	 *  System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**  A project on pypi.org by its exact name; `None` when PyPI has no such project. */
+	pypiPackage: (name: string, request: RequestId) => typedError<{
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+} | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
+	/**
+	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
+	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
+	 */
+	pythonRequirements: (doc: DocId, request: RequestId) => typedError<{
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
+} | null, IdeError>(__TAURI_INVOKE("python_requirements", { doc, request })),
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
 	/**  The welcome screen's project groups. */
@@ -1245,10 +1465,18 @@ export const commands = {
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 } | null>("remote_current"),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
 	remoteDownloadInto: (connection: FsConnection, paths: string[], target: IpcPath, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_into", { connection, paths, target, request })),
+	/**
+	 *  The project view's Download to…: remote files and folders of this window's project into the
+	 *  local folder `target`, each under its own name. Like Remote Host › Download to…, nothing is
+	 *  written outside `target`, even through a local symlink inside it.
+	 */
+	remoteDownloadLocal: (paths: string[], target: string, request: RequestId, onProgress: Channel<DownloadProgress>) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_local", { paths, target, request, onProgress })),
 	/**
 	 *  Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
 	 *  else to a free one. Nothing needs to listen there yet; connections are opened per use.
@@ -1256,6 +1484,11 @@ export const commands = {
 	remoteForwardPort: (remotePort: number) => typedError<ForwardedPort, IdeError>(__TAURI_INVOKE("remote_forward_port", { remotePort })),
 	/**  The remote ports this window forwards to this machine. */
 	remoteForwardedPorts: () => __TAURI_INVOKE<ForwardedPort[]>("remote_forwarded_ports"),
+	/**
+	 *  Read the same host-wide value for the close dialog and the idle timer: another project's
+	 *  daemon may have edited the file since this host loaded its settings.
+	 */
+	remoteIdleTimeoutMinutes: () => typedError<number, IdeError>(__TAURI_INVOKE("remote_idle_timeout_minutes")),
 	/**  A client OS file belongs to this machine even when its destination is remote. */
 	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
 	/**
@@ -1269,6 +1502,11 @@ export const commands = {
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
+	/**
+	 *  Stops the persistent `openidea-server` daemon for this window's remote project,
+	 *  terminating its terminals, runs, language servers and agent sessions, then disconnects.
+	 */
+	remoteStopBackend: () => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_backend")),
 	/**  Stops forwarding `remote_port` of `host` (`None`: the remote host itself). */
 	remoteStopForwarding: (remotePort: number, host: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort, host })),
 	/**  Records the user's trust decision for the window's remote project on this machine. */
@@ -1283,16 +1521,25 @@ export const commands = {
 	 * 
 	 *  Edits go through the document layer as one patch per file, so open editors
 	 *  update live and undo the whole file's replacements in one step. Unsaved
-	 *  editor buffers are replaced in place and left unsaved; files that were not
-	 *  open are opened transiently, saved and closed.
+	 *  editor buffers are replaced in place and left unsaved; other open documents
+	 *  are saved, and files that were not open are opened transiently, saved and closed.
+	 * 
+	 *  With `all_in_scope` (Replace All after the search hit its match limit) the
+	 *  scope is searched again without the limit and every match in it is replaced,
+	 *  as IDEA does: `targets` then only carry the `skip` positions of their files.
 	 */
-	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, onEvent })),
+	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], allInScope: boolean, onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, allInScope, onEvent })),
 	/**  Before / after text of `path` for Replace › Preview (unsaved buffer included). */
 	replacePreview: (query: SearchQuery, replacement: string, preserveCase: boolean, path: string, only: Pos[] | null) => typedError<ReplacePreview, IdeError>(__TAURI_INVOKE("replace_preview", { query, replacement, preserveCase, path, only })),
 	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_application_build", { config, module })),
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
 	/**  Kept temporary configurations with the current settings applied. */
 	runApplySettings: (configs: RunConfig_Deserialize[]) => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_apply_settings", { configs })),
+	/**
+	 *  Reattaches to a running process `id` on this host, returning its buffered output
+	 *  and configuration while streaming subsequent chunks to `on_output`.
+	 */
+	runAttach: (id: RunId, onOutput: Channel<OutputChunk>) => typedError<RunAttach_Serialize, IdeError>(__TAURI_INVOKE("run_attach", { id, onOutput })),
 	runCloseStdin: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_close_stdin", { id })),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
@@ -1357,6 +1604,8 @@ export const commands = {
 	 *  trusted. Cancellable with `cancel_request(request)`; a failed or cancelled run leaves nothing.
 	 */
 	scaffoldCreate: (req: CreateRequest, request: RequestId, onEvent: Channel<ScaffoldEvent>) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("scaffold_create", { req, request, onEvent })),
+	/**  The first of `base`, `base1`, `base2`, … that names nothing in `location` yet. */
+	scaffoldFreeName: (location: string, base: string) => typedError<string, IdeError>(__TAURI_INVOKE("scaffold_free_name", { location, base })),
 	/**
 	 *  The fields a generator's project service adds for `values`; cancellable with
 	 *  `cancel_request(request)`.
@@ -1364,6 +1613,12 @@ export const commands = {
 	scaffoldOptions: (generator: string, values: { [key in string]: string }, request: RequestId) => typedError<Field[], IdeError>(__TAURI_INVOKE("scaffold_options", { generator, values, request })),
 	/**  The programs a generator needs for `values`, and whether they are installed. */
 	scaffoldRequirements: (generator: string, values: { [key in string]: string }) => typedError<Requirement[], IdeError>(__TAURI_INVOKE("scaffold_requirements", { generator, values })),
+	/**
+	 *  Whether a project named `name` cannot be created in `location`: something other than an
+	 *  empty folder is already there.
+	 */
+	scaffoldTargetTaken: (location: string, name: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("scaffold_target_taken", { location, name })),
+	scopeFiles: (pattern: string, limit: number) => typedError<ScopeFiles, IdeError>(__TAURI_INVOKE("scope_files", { pattern, limit })),
 	/**  The project interpreter when it is a Docker or Compose run target's, with its snapshot. */
 	sdkContainerPython: () => typedError<{
 	/**  The run target's id. */
@@ -1441,10 +1696,15 @@ export const commands = {
 	 *  with the Maven / Gradle dependency jars of the build model.
 	 */
 	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
-	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
-	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, request, onOutput })),
+	/**
+	 *  Creates a Python environment and streams its output through `on_output`.
+	 *  With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
+	 */
+	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, installPackages: boolean, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, installPackages, request, onOutput })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
+	/**  The environments the window's project defines for Hatch, `default` first (hatch must be on PATH). */
+	sdkPythonHatchEnvs: (request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("sdk_python_hatch_envs", { request })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -1465,11 +1725,20 @@ export const commands = {
 	/**  Rust standard library sources, Go default GOPATH. */
 	extra: IpcPath | null,
 } | null, IdeError>(__TAURI_INVOKE("sdk_python_interpreter", { path })),
-	sdkPythonPackages: (python: string, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, request })),
+	/**  A package index other than PyPI that installing from `python` uses; `None` for PyPI. */
+	sdkPythonPackageIndex: (python: string, request: RequestId) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_package_index", { python, request })),
+	sdkPythonPackages: (python: string, outdated: boolean, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, outdated, request })),
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
 	/**  The Python interpreters of the recently opened projects, each with its project. */
 	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
+	/**  `sys.path` of the interpreter `python`, for All Interpreters › Show Paths. */
+	sdkPythonSysPath: (python: string, request: RequestId) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("sdk_python_sys_path", { python, request })),
+	/**
+	 *  For each folder added to an interpreter's paths, why it stays off the import path
+	 *  (`None`: it is used). The folders may not be saved yet.
+	 */
+	sdkPythonUserPathProblems: (paths: string[]) => typedError<(UserPathProblem | null)[], IdeError>(__TAURI_INVOKE("sdk_python_user_path_problems", { paths })),
 	/**
 	 *  Find in Files. Results stream through `on_event`; ends with `Done`.
 	 *  Cancel with `cancel_request(request)`.
@@ -1523,6 +1792,14 @@ export const commands = {
 	 *  `cancel_request(request)`.
 	 */
 	spellCheck: (doc: DocId, scope: SpellScope, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, scope, request })),
+	/**
+	 *  Appends `word` to the custom dictionary `dictionary` (a
+	 *  `spelling.customDictionaries` entry: `~/…` from home, relative from the
+	 *  project root) and reports which file was written, creating it when missing.
+	 *  A Hunspell `.dic` with a `.aff` beside it keeps its word count line current;
+	 *  the speller picks the change up through its own mtime cache.
+	 */
+	spellSaveToDictionary: (dictionary: string, word: string) => typedError<string, IdeError>(__TAURI_INVOKE("spell_save_to_dictionary", { dictionary, word })),
 	/**  Replacements for a misspelt `word`, best first (Typo › Change to…). */
 	spellSuggest: (word: string) => typedError<string[], IdeError>(__TAURI_INVOKE("spell_suggest", { word })),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
@@ -1602,6 +1879,11 @@ export const commands = {
 	 *  already registered to another app. Empty everywhere but Windows.
 	 */
 	systemProbeHotkeys: (combos: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("system_probe_hotkeys", { combos })),
+	/**
+	 *  Reattaches to an existing terminal session `id`, returning its buffered output
+	 *  and streaming subsequent chunks to `on_output`.
+	 */
+	termAttach: (id: TerminalId, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalAttach, IdeError>(__TAURI_INVOKE("term_attach", { id, cols, rows, onOutput })),
 	/**  Installed shells for the Terminal's "New Predefined Session" menu. */
 	termAvailableShells: () => __TAURI_INVOKE<string[]>("term_available_shells"),
 	/**  Shell used when Settings › Terminal › Shell path is empty. */
@@ -1612,13 +1894,15 @@ export const commands = {
 	 */
 	termIsBusy: (id: TerminalId) => typedError<boolean, IdeError>(__TAURI_INVOKE("term_is_busy", { id })),
 	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),
+	/**  Live terminal sessions of this window, for reattaching after a reconnect. */
+	termList: () => __TAURI_INVOKE<TerminalSessionInfo[]>("term_list"),
 	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
 	/**
 	 *  Async to stay off the main thread: forking the IDE (its whole address space)
 	 *  to start the shell takes tens of milliseconds, a frozen UI if run there.
 	 */
 	termSpawn: (options: TerminalOptions, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("term_spawn", { options, onOutput })),
-	termStoreImage: (id: TerminalId, data: number[], mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
+	termStoreImage: (id: TerminalId, data: IpcBytes, mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
 	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("term_write", { id, data })),
 	/**
 	 *  Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
@@ -1635,47 +1919,79 @@ export const commands = {
 	 */
 	toolsUpdates: (request: RequestId) => typedError<ToolUpdate[], IdeError>(__TAURI_INVOKE("tools_updates", { request })),
 	undoWorkspaceEdit: (id: number) => typedError<null, IdeError>(__TAURI_INVOKE("undo_workspace_edit", { id })),
+	vcsAcceptConflictSide: (paths: string[], side: ConflictSide) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_accept_conflict_side", { paths, side })),
 	vcsAddToIgnore: (paths: string[], destination: IgnoreDestination) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("vcs_add_to_ignore", { paths, destination })),
-	vcsAddWorktree: (repo: string | null, path: string, commitish: string, newBranch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_add_worktree", { repo, path, commitish, newBranch })),
-	vcsApplyPatch: (repo: string | null, patch: string) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_patch", { repo, patch })),
-	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
+	vcsAddWorktree: (repo: string | null, path: string, commitish: string, newBranch: string | null, copyConfig: boolean | null, setup: {
+	script: string,
+	request: RequestId,
+} | null) => typedError<WorktreeCreation, IdeError>(__TAURI_INVOKE("vcs_add_worktree", { repo, path, commitish, newBranch, copyConfig, setup })),
+	vcsApplyMappedPatch: (repo: string | null, base: string | null, patch: string, paths: string[] | null, mappings: PatchPathMapping[]) => typedError<ProjectPatchOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_mapped_patch", { repo, base, patch, paths, mappings })),
+	vcsApplyPatch: (repo: string | null, patch: string, paths: string[] | null) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_patch", { repo, patch, paths })),
+	vcsApplyProjectPatch: (base: string, patch: string, paths: string[] | null) => typedError<ProjectPatchOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_project_patch", { base, patch, paths })),
+	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine_Serialize[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	/**
 	 *  History for Selection: commits that changed `lines` (0-based, inclusive) of `path`'s
 	 *  editor text. Cancellable with `cancel_request(request)`.
 	 */
 	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
-	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
+	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo_Serialize, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
 	vcsBranches: (repo: string | null) => typedError<Branch[], IdeError>(__TAURI_INVOKE("vcs_branches", { repo })),
 	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError>(__TAURI_INVOKE("vcs_changelists_load")),
 	vcsChangelistsSave: (changelists: ChangelistState) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_changelists_save", { changelists })),
+	vcsCheckIncoming: (repo: string, request: RequestId) => typedError<IncomingRefsReport, IdeError>(__TAURI_INVOKE("vcs_check_incoming", { repo, request })),
 	vcsCheckout: (repo: string | null, branch: string, create: boolean, options: {
 	mode?: CheckoutMode,
 	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
 	diverged?: DivergedLocal | null,
 	/**  Check the branch out even though another worktree has it checked out. */
 	ignoreOtherWorktrees?: boolean,
-} | null) => typedError<CheckoutOutcome, IdeError>(__TAURI_INVOKE("vcs_checkout", { repo, branch, create, options })),
+} | null, shelfBatch: string | null) => typedError<CheckoutOutcome, IdeError>(__TAURI_INVOKE("vcs_checkout", { repo, branch, create, options, shelfBatch })),
+	vcsCheckoutAffectedFiles: (repositories: IpcPath[], branch: string) => typedError<([IpcPath, string[]])[], IdeError>(__TAURI_INVOKE("vcs_checkout_affected_files", { repositories, branch })),
 	/**  Clones a repository (Get from VCS). Works without an open project. */
 	vcsClone: (request: RequestId, url: string, dest: string, depth: number | null, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, depth, onOutput })),
-	vcsCommit: (repo: string | null, message: string, options: CommitOptions) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_commit", { repo, message, options })),
+	vcsCommit: (repo: string | null, message: string, options: CommitOptions_Deserialize) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_commit", { repo, message, options })),
+	vcsCommitCrlfPaths: (repo: string, paths: string[], options: CommitOptions_Deserialize, request: RequestId) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("vcs_commit_crlf_paths", { repo, paths, options, request })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
+	vcsCommitLargeFiles: (repo: string, paths: string[], options: CommitOptions_Deserialize, limit: number, request: RequestId) => typedError<LargeCommitFile[], IdeError>(__TAURI_INVOKE("vcs_commit_large_files", { repo, paths, options, limit, request })),
+	/**  Chooses the source branch and configured destination for a single Git Log commit. */
+	vcsCommitPushTarget: (repo: string | null, request: RequestId, revision: string) => typedError<CommitPushTarget, IdeError>(__TAURI_INVOKE("vcs_commit_push_target", { repo, request, revision })),
+	vcsCommitSelectionChanges: (repo: string | null, commits: string[], request: RequestId) => typedError<RevisionChange[], IdeError>(__TAURI_INVOKE("vcs_commit_selection_changes", { repo, commits, request })),
 	/**  Combined changes of several commits, `commits` oldest first. */
 	vcsCommitsChanges: (repo: string | null, commits: string[]) => typedError<RevisionChange[], IdeError>(__TAURI_INVOKE("vcs_commits_changes", { repo, commits })),
 	vcsComparePaths: (paths: string[], revision: string, repositories: string[] | null, request: RequestId) => typedError<CompareResult, IdeError>(__TAURI_INVOKE("vcs_compare_paths", { paths, revision, repositories, request })),
 	vcsCompareScope: (paths: string[]) => typedError<CompareScope, IdeError>(__TAURI_INVOKE("vcs_compare_scope", { paths })),
 	/**  `git config --get <key>` in the project repository; `None` when unset. */
 	vcsConfigGet: (repo: string | null, key: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_config_get", { repo, key })),
+	vcsConfigGetBool: (repo: string | null, key: string) => typedError<boolean | null, IdeError>(__TAURI_INVOKE("vcs_config_get_bool", { repo, key })),
 	/**  The user's side is `ours` (sides swapped during a rebase, as in IDEA). */
 	vcsConflictVersions: (path: string) => typedError<MergeVersions, IdeError>(__TAURI_INVOKE("vcs_conflict_versions", { path })),
 	/**  New Branch: creates `name` at `start` (HEAD when absent), optionally checking it out. */
-	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean, overwrite: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout, overwrite })),
-	vcsCreatePatch: (repo: string | null, source: PatchSource) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source })),
+	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean, overwrite: boolean | null, expectedTip: string | null, options: {
+	mode?: CheckoutMode,
+	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
+	diverged?: DivergedLocal | null,
+	/**  Check the branch out even though another worktree has it checked out. */
+	ignoreOtherWorktrees?: boolean,
+} | null, shelfBatch: string | null) => typedError<BranchCreationOutcome, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout, overwrite, expectedTip, options, shelfBatch })),
+	vcsCreatePatch: (repo: string | null, source: PatchSource, base: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source, base })),
 	vcsCreateTag: (repo: string | null, name: string, commit: string, message: string | null, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_tag", { repo, name, commit, message, force })),
-	vcsDeleteBranch: (repo: string | null, branch: string) => typedError<DeletedBranch, IdeError>(__TAURI_INVOKE("vcs_delete_branch", { repo, branch })),
+	/**  Chooses the destination of a local branch or the current HEAD. */
+	vcsDefaultPushTarget: (repo: string | null, branch: string | null) => typedError<{
+	selection: PushSelection,
+	setUpstream: boolean,
+} | null, IdeError>(__TAURI_INVOKE("vcs_default_push_target", { repo, branch })),
+	vcsDeleteBranch: (repo: string | null, branch: string) => typedError<DeletedBranch_Serialize, IdeError>(__TAURI_INVOKE("vcs_delete_branch", { repo, branch })),
+	/**  Deletes a branch offered for cleanup by a successful merge. */
+	vcsDeleteMergedBranch: (repo: string, branch: string, expectedTip: string) => typedError<DeletedBranch_Serialize, IdeError>(__TAURI_INVOKE("vcs_delete_merged_branch", { repo, branch, expectedTip })),
 	/**  Tag › Delete: the result is what "Restore" needs. */
 	vcsDeleteTag: (repo: string | null, name: string) => typedError<DeletedTag, IdeError>(__TAURI_INVOKE("vcs_delete_tag", { repo, name })),
+	/**  Deletes a local tracking branch the user selected along with its remote branch. */
+	vcsDeleteTrackingBranch: (repo: string | null, branch: string, expectedTip: string, expectedUpstream: string) => typedError<DeletedBranch_Serialize, IdeError>(__TAURI_INVOKE("vcs_delete_tracking_branch", { repo, branch, expectedTip, expectedUpstream })),
 	/**  The auto-detected git executable (shown as the field's placeholder). */
 	vcsDetectedGit: () => __TAURI_INVOKE<string | null>("vcs_detected_git"),
+	/**  Directory Mappings: the repository roots detection finds, before any are excluded or added. */
+	vcsDetectedRoots: () => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_detected_roots")),
+	vcsDiffEntries: (entries: DiffEntryRequest[]) => typedError<(DiffEntry | null)[], IdeError>(__TAURI_INVOKE("vcs_diff_entries", { entries })),
 	/**  Line hunks between two arbitrary texts (diff viewer, commit dialog). */
 	vcsDiffHunks: (oldText: string, newText: string) => __TAURI_INVOKE<LineHunk[]>("vcs_diff_hunks", { oldText, newText }),
 	/**
@@ -1690,22 +2006,42 @@ export const commands = {
 	vcsDiffWithWorktree: (repo: string | null, rev: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_with_worktree", { repo, rev })),
 	vcsDiscard: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_discard", { paths })),
 	vcsEditRemote: (repo: string | null, edit: RemoteEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_edit_remote", { repo, edit })),
+	/**  Updates the selected repository's Git config. */
+	vcsEditSigning: (repo: string, edit: GitSigningEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_edit_signing", { repo, edit })),
+	vcsExtractCommitChanges: (repo: string | null, commit: string, expectedHead: HistoryTip, paths: string[], message: string) => typedError<RewrittenCommit, IdeError>(__TAURI_INVOKE("vcs_extract_commit_changes", { repo, commit, expectedHead, paths, message })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
 	/**
 	 *  The file's git mode at `rev` (`100644`, `100755`, `120000`…), `"WT"` for the
 	 *  worktree; `None` when absent there. Lets the diff viewer report a mode-only change.
 	 */
 	vcsFileMode: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_mode", { path, rev })),
+	/**  Restores the batch's ready repositories. A repository with an operation in progress keeps its Shelf. */
+	vcsFinishShelfBatch: (batch: string, repositories: (string | null)[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_finish_shelf_batch", { batch, repositories })),
+	vcsFormatApplyCommit: (repo: string | null, checkpoint: string, edits: StagedTextEdit[], request: RequestId) => typedError<ApplyCommitReview, IdeError>(__TAURI_INVOKE("vcs_format_apply_commit", { repo, checkpoint, edits, request })),
 	/**
 	 *  Settings › Git › Test: runs `git --version` on `path`, or on the auto-detected
 	 *  executable when `path` is empty.
 	 */
 	vcsGitVersion: (path: string) => typedError<GitExecutableInfo, IdeError>(__TAURI_INVOKE("vcs_git_version", { path })),
+	/**  Lists OpenPGP key metadata using the signer Git uses for this repository. */
+	vcsGpgSigningKeys: (repo: string, request: RequestId) => typedError<GpgSigningKey[], IdeError>(__TAURI_INVOKE("vcs_gpg_signing_keys", { repo, request })),
+	/**  Whether a revision resolves to an existing Git commit. */
+	vcsHasCommit: (repo: string | null, revision: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("vcs_has_commit", { repo, revision })),
 	/**  Whether the repository has the executable Git hook `name` (Push dialog › Run Git hooks). */
 	vcsHasHook: (repo: string | null, name: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("vcs_has_hook", { repo, name })),
 	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
-	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
+	vcsIgnoredFiles: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_ignored_files")),
+	/**
+	 *  `git init` in `dir` (VCS › Create Git Repository…): with the git of the window's project when
+	 *  it is trusted, the default one in a window without a project.
+	 */
 	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
+	/**  Reads the selected push target without prompting for remote credentials. */
+	vcsInspectPush: (repo: string | null, request: RequestId, selection: PushSelection, live: boolean) => typedError<PushInspection, IdeError>(__TAURI_INVOKE("vcs_inspect_push", { repo, request, selection, live })),
+	/**  Clears cached verification results before refreshing the Git Log. */
+	vcsInvalidateLogSignatures: (repo: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_invalidate_log_signatures", { repo })),
+	/**  Keeps the prepared amend commit after a conflicting history replay. */
+	vcsKeepAmendCommit: (repo: string, commit: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_keep_amend_commit", { repo, commit })),
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit_Serialize[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
@@ -1713,34 +2049,68 @@ export const commands = {
 	vcsLogDetailsBatch: (repo: string | null, revisions: string[], request: RequestId) => typedError<LogDetails[], IdeError>(__TAURI_INVOKE("vcs_log_details_batch", { repo, revisions, request })),
 	vcsLogRefs: (repo: string | null) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("vcs_log_refs", { repo })),
 	vcsLogUsers: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_log_users", { repo })),
-	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
+	vcsMerge: (repo: string | null, branch: string, shelfBatch: string | null, smart: boolean) => typedError<MergeOutcome, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch, shelfBatch, smart })),
+	vcsMergeAffectedFiles: (repositories: IpcPath[], branch: string) => typedError<([IpcPath, string[]])[], IdeError>(__TAURI_INVOKE("vcs_merge_affected_files", { repositories, branch })),
 	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
 	vcsMergeBase: (repo: string | null, a: string, b: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_merge_base", { repo, a, b })),
 	/**  Merge dialog: merges `branches` into the current branch. */
-	vcsMergeWith: (repo: string | null, branches: string[], options: MergeOptions) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge_with", { repo, branches, options })),
+	vcsMergeWith: (repo: string | null, branches: string[], options: MergeOptions) => typedError<MergeOutcome, IdeError>(__TAURI_INVOKE("vcs_merge_with", { repo, branches, options })),
 	vcsMoveWorktree: (repo: string | null, path: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_move_worktree", { repo, path, to })),
+	vcsNotCherryPicked: (repo: string | null, source: string, target: string, request: RequestId) => typedError<string[] | null, IdeError>(__TAURI_INVOKE("vcs_not_cherry_picked", { repo, source, target, request })),
 	vcsOpenExternalLog: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("vcs_open_external_log", { path })),
 	/**
 	 *  Local history operation that may take a while (hooks, large checkouts); git's
 	 *  output streams through `on_output`. Cancellable.
 	 */
-	vcsOperation: (repo: string | null, request: RequestId, op: GitOperation, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_operation", { repo, request, op, onOutput })),
-	vcsPatchPreview: (repo: string | null, patch: string) => typedError<PatchFile[], IdeError>(__TAURI_INVOKE("vcs_patch_preview", { repo, patch })),
-	vcsPendingPatch: (repo: string | null, options: CommitOptions) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_pending_patch", { repo, options })),
-	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
-	/**  Rebase dialog: rebases the current branch onto `upstream` (or `--onto`). */
-	vcsRebaseWith: (repo: string | null, upstream: string, options: RebaseOptions) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase_with", { repo, upstream, options })),
+	vcsOperation: (repo: string | null, request: RequestId, op: GitOperation_Deserialize, onOutput: Channel<string>) => typedError<RewrittenCommit | ({ rebased: HistoryTip }) & { action?: never; emptyCherryPicks?: never } | ({ emptyCherryPicks: number; action: EmptyCherryPickAction }) & { rebased?: never } | null, IdeError>(__TAURI_INVOKE("vcs_operation", { repo, request, op, onOutput })),
+	vcsPatchFileDiff: (repo: string | null, base: string | null, patch: string, path: string, mappings: PatchPathMapping[] | null) => typedError<PatchFileDiff, IdeError>(__TAURI_INVOKE("vcs_patch_file_diff", { repo, base, patch, path, mappings })),
+	vcsPatchPreview: (repo: string | null, patch: string, target: "project" | "repository" | null, mappings: PatchPathMapping[] | null) => typedError<PatchPreview, IdeError>(__TAURI_INVOKE("vcs_patch_preview", { repo, patch, target, mappings })),
+	vcsPendingPatch: (repo: string | null, options: CommitOptions_Deserialize) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_pending_patch", { repo, options })),
+	vcsPreviewPartialCommit: (file: PartialCommitFile_Deserialize) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_preview_partial_commit", { file })),
 	/**  Network operation; progress lines stream through `on_output`. Cancellable. */
-	vcsRemote: (repo: string | null, request: RequestId, op: RemoteOp, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_remote", { repo, request, op, onOutput })),
+	vcsProjectUpdatePlan: (roots: (string | null)[]) => typedError<ProjectUpdateTarget[], IdeError>(__TAURI_INVOKE("vcs_project_update_plan", { roots })),
+	vcsPruneWorktrees: (repo: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_prune_worktrees", { repo })),
+	/**  Resolves the push source and the configured destination for each remote. */
+	vcsPushTargetChoices: (repo: string | null, request: RequestId, branch: string | null, revision: string | null) => typedError<PushTargetChoices, IdeError>(__TAURI_INVOKE("vcs_push_target_choices", { repo, request, branch, revision })),
+	/**  Reads a patch without normalizing its hunk line endings. */
+	vcsReadPatch: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_read_patch", { path })),
+	vcsRebase: (repo: string | null, onto: string, shelfBatch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto, shelfBatch })),
+	vcsRebaseEditorReply: (request: RequestId, index: number, reply: {
+	text: string,
+	rewords?: { [key in string]: string },
+} | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase_editor_reply", { request, index, reply })),
+	/**  Rebase dialog: rebases a branch onto an upstream, or replays it from the root. */
+	vcsRebaseWith: (repo: string | null, upstream: string | null, options: RebaseOptions) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase_with", { repo, upstream, options })),
+	vcsRebaseWithEditor: (repo: string | null, operation: RebaseEditorOperation, request: RequestId, onOutput: Channel<string>, onEdit: Channel<RebaseEditorPrompt_Deserialize>, expectedRebase: {
+	original: HistoryTip,
+	onto: string,
+} | null) => typedError<{
+	branch: string | null,
+	commit: string,
+} | null, IdeError>(__TAURI_INVOKE("vcs_rebase_with_editor", { repo, operation, request, onOutput, onEdit, expectedRebase })),
+	vcsRemote: (repo: string | null, request: RequestId, op: RemoteOp, onOutput: Channel<string>, shelfBatch: string | null) => typedError<PushReport | FetchReport | null, IdeError>(__TAURI_INVOKE("vcs_remote", { repo, request, op, onOutput, shelfBatch })),
 	vcsRemotes: (repo: string | null) => typedError<Remote[], IdeError>(__TAURI_INVOKE("vcs_remotes", { repo })),
 	vcsRemoveWorktree: (repo: string | null, path: string, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_remove_worktree", { repo, path, force })),
 	vcsRenameBranch: (repo: string | null, from: string, to: string, unsetUpstream: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to, unsetUpstream })),
 	/**  "Restore" of the branch-deleted notification. */
-	vcsRestoreBranch: (repo: string | null, deleted: DeletedBranch) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_branch", { repo, deleted })),
+	vcsRestoreBranch: (repo: string | null, deleted: DeletedBranch_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_branch", { repo, deleted })),
 	/**  Undo of a history rewrite (Edit Commit Message, Drop, Squash). */
-	vcsRestoreHead: (repo: string | null, before: string, after: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_head", { repo, before, after })),
+	vcsRestoreHead: (repo: string | null, before: string, after: string, branch: string | null, checkout: {
+	branch: string | null,
+	commit: string,
+} | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_head", { repo, before, after, branch, checkout })),
 	/**  "Restore" of the tag-deleted notification. */
 	vcsRestoreTag: (repo: string | null, deleted: DeletedTag) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_tag", { repo, deleted })),
+	vcsRestoreUnstaged: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_unstaged", { paths })),
+	vcsRevertResolved: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_revert_resolved", { paths })),
+	vcsReviewApplyCommit: (repo: string | null, request: RequestId) => typedError<{
+	kind: CommitApplyKind,
+	checkpoint: string,
+	message: string,
+	paths: IpcPath[],
+	author?: string | null,
+	authorDate?: string | null,
+} | null, IdeError>(__TAURI_INVOKE("vcs_review_apply_commit", { repo, request })),
 	vcsRevisionChildren: (repo: string | null, revision: string, directory: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_children", { repo, revision, directory })),
 	vcsRevisionFiles: (repo: string | null, revision: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_files", { repo, revision })),
 	/**
@@ -1748,32 +2118,58 @@ export const commands = {
 	 *  working tree.
 	 */
 	vcsReword: (repo: string | null, commit: string, message: string) => typedError<HeadChange, IdeError>(__TAURI_INVOKE("vcs_reword", { repo, commit, message })),
+	vcsRollbackSubmodules: (paths: string[], source: SubmoduleRollbackSource, restoreCheckout: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rollback_submodules", { paths, source, restoreCheckout })),
 	/**  The project's repositories, the primary one first. */
 	vcsRoots: () => typedError<VcsRoot[], IdeError>(__TAURI_INVOKE("vcs_roots")),
+	vcsSaveStagedText: (path: string, version: string, text: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_save_staged_text", { path, version, text })),
+	/**
+	 *  Git User Name Is Not Defined: sets `user.name` / `user.email` for commits in the
+	 *  repository, or globally.
+	 */
+	vcsSetUserIdentity: (repo: string | null, name: string, email: string, global: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_set_user_identity", { repo, name, email, global })),
+	vcsSetWorktreeLocked: (repo: string | null, path: string, locked: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_set_worktree_locked", { repo, path, locked })),
 	vcsShelfDelete: (id: string, path: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_delete", { id, path })),
 	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
 	vcsShelfImport: (repo: string | null, name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { repo, name, patch })),
-	vcsShelfPatch: (id: string, path: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path })),
+	vcsShelfPatch: (id: string, path: string | null, base: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path, base })),
 	vcsShelfRename: (id: string, name: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_rename", { id, name })),
 	/**  Shelve Changes: saves the changes of `paths` as a patch on the shelf and reverts them. */
 	vcsShelve: (name: string, paths: string[]) => typedError<ShelvedChangeList, IdeError>(__TAURI_INVOKE("vcs_shelve", { name, paths })),
 	vcsShelves: () => typedError<ShelvedChangeList[], IdeError>(__TAURI_INVOKE("vcs_shelves")),
+	/**  The effective signing settings for one registered Git repository. */
+	vcsSigningConfig: (repo: string) => typedError<GitSigningConfig, IdeError>(__TAURI_INVOKE("vcs_signing_config", { repo })),
 	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
+	vcsStageFormattedText: (path: string, before: string, after: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_formatted_text", { path, before, after })),
 	/**
 	 *  Stages only the selected hunks of a file's working-tree changes.
 	 *  Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
 	 */
 	vcsStageHunks: (path: string, hunks: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_hunks", { path, hunks })),
 	vcsStagePatch: (patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_patch", { patch })),
-	vcsStashApply: (repo: string | null, index: number, pop: boolean, reinstateIndex: boolean, branch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_apply", { repo, index, pop, reinstateIndex, branch })),
-	vcsStashDrop: (repo: string | null, index: number) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_drop", { repo, index })),
+	vcsStageWithoutContent: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_without_content", { paths })),
+	vcsStagedText: (path: string) => typedError<{
+	text: string,
+	/**  Identifies the index entry, including its mode, when this text was read. */
+	version: string,
+} | null, IdeError>(__TAURI_INVOKE("vcs_staged_text", { path })),
+	vcsStagingLineHunks: (path: string, headPath: string | null) => typedError<{
+	indexVersion: string,
+	hunks: StagingLineHunk[],
+} | null, IdeError>(__TAURI_INVOKE("vcs_staging_line_hunks", { path, headPath })),
+	vcsStashApply: (repo: string | null, stash: Stash_Deserialize, pop: boolean, reinstateIndex: boolean, branch: string | null) => typedError<StashApplyResult, IdeError>(__TAURI_INVOKE("vcs_stash_apply", { repo, stash, pop, reinstateIndex, branch })),
+	vcsStashClear: (repo: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_clear", { repo })),
+	vcsStashDrop: (repo: string | null, stash: Stash_Deserialize) => typedError<number, IdeError>(__TAURI_INVOKE("vcs_stash_drop", { repo, stash })),
 	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean, paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex, paths })),
-	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
+	vcsStashes: (repo: string | null) => typedError<Stash_Serialize[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
 	/**  Changes of every repository of the project. */
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
 	/**  Changes of `paths` only: the dirty-scope refresh after a watcher batch. */
 	vcsStatusPaths: (paths: string[]) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status_paths", { paths })),
 	vcsTags: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_tags", { repo })),
+	vcsUndoBranchCreation: (repo: string | null, name: string, created: BranchCreation, previousHead: {
+	branch: string | null,
+	commit: string,
+} | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_undo_branch_creation", { repo, name, created, previousHead })),
 	/**
 	 *  Undo Commit: moves HEAD back to the commit's parent, keeping its changes staged.
 	 *  Returns the undone commit's message.
@@ -1785,9 +2181,17 @@ export const commands = {
 	 */
 	vcsUnshelve: (id: string, remove: boolean, path: string | null) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_unshelve", { id, remove, path })),
 	vcsUnstage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_unstage", { paths })),
+	/**
+	 *  Branches › Update Selected: fast-forwards local `branches` to their upstreams, one
+	 *  fetch per remote; the result says what happened to each. Cancellable.
+	 */
+	vcsUpdateBranches: (repo: string | null, request: RequestId, branches: string[], onOutput: Channel<string>, shelfBatch: string | null) => typedError<BranchUpdate_Serialize[], IdeError>(__TAURI_INVOKE("vcs_update_branches", { repo, request, branches, onOutput, shelfBatch })),
+	/**  Streams Git's prepared commit message and template for the selected worktree. */
+	vcsWatchCommitMessages: (repo: string | null, request: RequestId, onMessages: Channel<CommitMessages>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_watch_commit_messages", { repo, request, onMessages })),
+	vcsWorktreeInclude: (repo: string | null) => typedError<WorktreeInclude, IdeError>(__TAURI_INVOKE("vcs_worktree_include", { repo })),
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	/**  Create Patch › Save to file. */
-	vcsWritePatch: (path: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch })),
+	vcsWritePatch: (path: string, patch: string, encoding: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch, encoding })),
 	/**  The browsers installed on this machine. */
 	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
@@ -1801,13 +2205,22 @@ export const commands = {
 	webServesPage: (url: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("web_serves_page", { url })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
 	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
-	/**  The built-in server's URL for `path` (started on first use). */
+	/**
+	 *  The built-in server's URL for `path` (started on first use). A file whose language is
+	 *  HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
+	 */
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
 	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
+	/**
+	 *  Drags `paths` (local files and folders) out of `window` while the primary mouse button is
+	 *  still down, so the app they are dropped on copies them (#2867). Resolves when the drag ends,
+	 *  with whether a target took the files.
+	 */
+	windowDragFiles: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_drag_files", { paths })),
 	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
@@ -1822,6 +2235,11 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
+	/**
+	 *  Adds window `label` to this window's group as a new project tab and selects it. Unlike
+	 *  [`window_group_merge`], unrelated windows keep their own group.
+	 */
+	windowGroupJoin: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_join", { label })),
 	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
@@ -1845,6 +2263,11 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints it until its page has loaded.
 	 */
 	windowOpenDiff: (diff: DiffLaunch_Deserialize, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_diff", { diff, background })),
+	/**
+	 *  Opens a lightweight editor window for `editor` next to this project window ("Open in New Window").
+	 *  `background` (`#rrggbb`) paints it until its page has loaded.
+	 */
+	windowOpenEditor: (editor: EditorLaunch_Deserialize, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_editor", { editor, background })),
 	/**
 	 *  Detaches an editor tab: opens `file` in a forced new window (`project`, None
 	 *  for LightEdit, decided by the caller), bypassing the focus-an-existing-window
@@ -1877,6 +2300,8 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**  Appearance › Smooth scrolling for this window's web view (Linux only) */
+	windowSetSmoothScrolling: (enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_smooth_scrolling", { enabled })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
 	/**
@@ -1913,7 +2338,14 @@ export const commands = {
 	diffBeforeFiles: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment: DeploymentLaunch | null,
+	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
+	editor: EditorLaunch_Serialize | null,
 } | null>("window_take_launch"),
+	/**
+	 *  Local bootstrap snapshot for a `settings-<parent>` window, avoiding a sequential
+	 *  startup IPC waterfall and any blocking SSH `project_current` round-trip before first paint.
+	 */
+	windowTakeSettingsInit: () => __TAURI_INVOKE<SettingsWindowInit_Serialize>("window_take_settings_init"),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
 	/**  Fills the work area without the platform zoom animation. Returns whether it is filled now. */
 	windowToggleZoom: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_zoom")),
@@ -2020,6 +2452,8 @@ export type AgentCapabilities = {
 	steer?: boolean,
 	/**  It reports its background tasks and stops them one by one. */
 	backgroundTasks?: boolean,
+	/**  The connected agent can report a breakdown of its context window. */
+	contextUsage?: boolean,
 };
 
 /**
@@ -2034,6 +2468,8 @@ export type AgentChange = {
 	removed: number,
 	/**  Path before a rename; the left side of its diff reads this path. */
 	oldPath: string | null,
+	/**  The repository the file is in, when the task's project holds nested repositories. */
+	repo: IpcPath | null,
 };
 
 /**  A task's uncommitted files and the commits made since it started. */
@@ -2052,7 +2488,21 @@ export type AgentChangesView =
 /**  Everything since the commit the task started from. */
 "sinceStart" | 
 /**  The uncommitted files against `HEAD`; commits made since the start stay. */
-"group";
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn";
+
+export type AgentCliOffer = {
+	current: string,
+	latest: string,
+	prefix: string,
+};
+
+export type AgentCliUpdateResult = {
+	status: "available",
+} & AgentCliOffer | {
+	status: "permission",
+} & AgentCliOffer | ({ status: "current"; current: string }) & { code?: never } | ({ status: "channel"; current: string }) & { code?: never } | ({ status: "updated"; current: string }) & { code?: never } | ({ status: "unmanaged" }) & { code?: never; current?: never } | ({ status: "error"; code: string }) & { current?: never };
 
 export type AgentCommand = {
 	/**  Without the leading `/`. */
@@ -2122,6 +2572,21 @@ export type AgentConfigVia =
 /**  `session/set_model` (agents that report `models` instead of a model config option). */
 "model";
 
+export type AgentContextCategory = {
+	name: string,
+	tokens: number,
+	kind: string | null,
+};
+
+export type AgentContextUsage = {
+	categories: AgentContextCategory[],
+	totalTokens: number,
+	maxTokens: number,
+	model: string,
+	isAutoCompactEnabled: boolean | null,
+	autoCompactThreshold: number | null,
+};
+
 export type AgentCost = {
 	amount: number | null,
 	/**  ISO 4217 code, e.g. `USD`. */
@@ -2143,11 +2608,17 @@ steered?: boolean } | { type: "agent"; text: string } |
 /**  A question that can be answered while the agent keeps working, or after the turn ends. */
 { type: "question"; id: string; title: string; questions: AgentQuestion[]; 
 /**  The submitted answers, or `Skipped`; `None` while unanswered. */
-chosen: string | null } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
+chosen: string | null } | { type: "thought"; text: string; 
+/**  When the reasoning started (ms since the epoch); `None` in tasks saved before. */
+startedMs?: number | null } | { type: "tool"; id: string; title: string; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
+/**  Images returned by the tool, kept separately from its truncated text. */
+images?: AgentImage[]; 
 /**  Text the tool reported (command output…), truncated. */
-output: string | null; diffs: AgentToolDiff[] } | { type: "plan"; items: AgentPlanItem[] } | 
+output: string | null; diffs: AgentToolDiff[]; 
+/**  When the call started and ended (ms since the epoch); `None` in tasks saved before. */
+startedMs?: number | null; endedMs?: number | null } | { type: "plan"; items: AgentPlanItem[] } | 
 /**  A subagent the agent started: its own session, whose entries are listed separately. */
 { type: "subagent"; 
 /**  The subagent's session id. */
@@ -2184,10 +2655,10 @@ form?: AgentForm | null;
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Deserialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Deserialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -2200,6 +2671,12 @@ export type AgentEvent_Deserialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2209,7 +2686,7 @@ export type AgentEvent_Deserialize =
 /**  The task needs attention once (finished turn, explicit input, or failure). */
 ({ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason }) & { catalog?: never; entry?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; subagent?: never; text?: never };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Serialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Serialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -2222,6 +2699,12 @@ export type AgentEvent_Serialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2391,6 +2874,8 @@ export type AgentProvider = {
 	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
+	/**  The built-in command can be owned by a global npm package. */
+	canCheckCliUpdate?: boolean,
 	/**  Environment variables it starts with (from its agent file). */
 	env: { [key in string]: string },
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
@@ -2446,6 +2931,13 @@ export type AgentSecuritySettings = {
 	blockedCommands?: string[],
 };
 
+export type AgentSessionStats = {
+	/**  The last turn's tokens (`session/prompt` result `usage`). */
+	tokens?: AgentTokens | null,
+	/**  How many times the agent compressed the conversation (Hermes `compressionDepth`). */
+	compressions?: number,
+};
+
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
 export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
 
@@ -2465,18 +2957,6 @@ export type AgentSettings_Deserialize = {
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
 	fitWindowWidth?: boolean,
-	/**  While the agent works, playful words fill the pauses in what it reports. */
-	playfulStatus?: boolean,
-	/**
-	 *  Seconds the agent reports nothing new before the playful words take over; 0 shows them
-	 *  from the start.
-	 */
-	playfulAfterSeconds?: number,
-	/**
-	 *  The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
-	 *  the built-in ones of that activity; an empty list keeps its status factual.
-	 */
-	playfulWords?: { [key in string]: string[] },
 	thinking?: ThinkingDisplay,
 	toolCalls?: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2499,6 +2979,11 @@ export type AgentSettings_Deserialize = {
 	 *  keyed by server name (`[agents.mcpServers.<name>]`).
 	 */
 	mcpServers?: { [key in string]: AgentMcpServer_Deserialize },
+	/**
+	 *  How agent skills may run, keyed by skill name (`[agents.skills.<name>]`); `SKILL.md`
+	 *  files on disk are never modified.
+	 */
+	skills?: { [key in string]: AgentSkillPolicy_Deserialize },
 };
 
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
@@ -2517,18 +3002,6 @@ export type AgentSettings_Serialize = {
 	smoothText: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
 	fitWindowWidth: boolean,
-	/**  While the agent works, playful words fill the pauses in what it reports. */
-	playfulStatus: boolean,
-	/**
-	 *  Seconds the agent reports nothing new before the playful words take over; 0 shows them
-	 *  from the start.
-	 */
-	playfulAfterSeconds: number,
-	/**
-	 *  The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
-	 *  the built-in ones of that activity; an empty list keeps its status factual.
-	 */
-	playfulWords: { [key in string]: string[] },
 	thinking: ThinkingDisplay,
 	toolCalls: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2551,6 +3024,152 @@ export type AgentSettings_Serialize = {
 	 *  keyed by server name (`[agents.mcpServers.<name>]`).
 	 */
 	mcpServers: { [key in string]: AgentMcpServer_Serialize },
+	/**
+	 *  How agent skills may run, keyed by skill name (`[agents.skills.<name>]`); `SKILL.md`
+	 *  files on disk are never modified.
+	 */
+	skills: { [key in string]: AgentSkillPolicy_Serialize },
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill = AgentSkill_Serialize | AgentSkill_Deserialize;
+
+/**  How an agent skill may run (`[agents.skills.<name>] mode = …`). */
+export type AgentSkillMode = 
+/**  The model decides when to use it. */
+"auto" | 
+/**  Only when the user invokes it with `/name`. */
+"slashOnly" | 
+/**  Never. */
+"off";
+
+/**  Which layer decided a skill's [`AgentSkillState::mode`]. */
+export type AgentSkillOrigin = "none" | "session" | "workspace" | "user" | 
+/**  An untrusted workspace's skills and policies may only turn skills off. */
+"trust";
+
+/**  A skill's policy in Settings › Agents › Skills, stored without touching its `SKILL.md`. */
+export type AgentSkillPolicy = AgentSkillPolicy_Serialize | AgentSkillPolicy_Deserialize;
+
+/**  A skill's policy in Settings › Agents › Skills, stored without touching its `SKILL.md`. */
+export type AgentSkillPolicy_Deserialize = {
+	mode?: AgentSkillMode,
+};
+
+/**  A skill's policy in Settings › Agents › Skills, stored without touching its `SKILL.md`. */
+export type AgentSkillPolicy_Serialize = {
+	mode: AgentSkillMode,
+};
+
+/**  Which CLI's own folders a skill was discovered in (Settings › Agents › Skills groups by it). */
+export type AgentSkillSource = 
+/**  The project's `.agents/skills` and `.openidea/skills`. */
+"workspace" | 
+/**  The user's `~/.agents/skills` (what `npx skills add` fills). */
+"user" | 
+/**  Contributed by an enabled OpenIDEA plugin (`[[contributes.skills]]`). */
+"plugin" | 
+/**  The project's `.claude/skills`. */
+"claudeWorkspace" | 
+/**  `~/.claude/skills`. */
+"claudeUser" | 
+/**  The project's `.github/skills` (Copilot's repository skills). */
+"githubWorkspace" | 
+/**  `~/.copilot/skills` and `~/.copilot/installed-plugins/*`. */
+"copilotUser" | 
+/**  The project's `.codex/skills`. */
+"codexWorkspace" | 
+/**  `~/.codex/skills`. */
+"codexUser" | 
+/**  The project's `.cursor/skills`. */
+"cursorWorkspace" | 
+/**  `~/.cursor/skills`. */
+"cursorUser";
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState = AgentSkillState_Serialize | AgentSkillState_Deserialize;
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState_Deserialize = {
+	skill: AgentSkill_Deserialize,
+	mode: AgentSkillMode,
+	/**
+	 *  What set `mode`: a session override, the workspace, the user's settings, workspace
+	 *  trust, or nothing (the default `auto`).
+	 */
+	origin: AgentSkillOrigin,
+};
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState_Serialize = {
+	skill: AgentSkill_Serialize,
+	mode: AgentSkillMode,
+	/**
+	 *  What set `mode`: a session override, the workspace, the user's settings, workspace
+	 *  trust, or nothing (the default `auto`).
+	 */
+	origin: AgentSkillOrigin,
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill_Deserialize = {
+	/**  The frontmatter `name`, else the folder's name. */
+	name: string,
+	description: string,
+	/**  Optional `argument-hint` from frontmatter, completed in the `/` menu. */
+	hint?: string | null,
+	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
+	path: IpcPath,
+	source: AgentSkillSource,
+	/**  Other skill roots whose symlinked entry resolved to this same canonical `path`. */
+	alsoIn?: AgentSkillSource[],
+	/**  False when frontmatter sets `user-invocable: false` (omitted from `/` completion). */
+	userInvocable?: boolean,
+	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
+	disableModelInvocation?: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork?: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
+	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
+	valid: boolean,
+	/**  What validation found (`name` mismatch, missing or over-long description…). */
+	warnings: string[],
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill_Serialize = {
+	/**  The frontmatter `name`, else the folder's name. */
+	name: string,
+	description: string,
+	/**  Optional `argument-hint` from frontmatter, completed in the `/` menu. */
+	hint?: string | null,
+	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
+	path: IpcPath,
+	source: AgentSkillSource,
+	/**  Other skill roots whose symlinked entry resolved to this same canonical `path`. */
+	alsoIn?: AgentSkillSource[],
+	/**  False when frontmatter sets `user-invocable: false` (omitted from `/` completion). */
+	userInvocable: boolean,
+	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
+	disableModelInvocation: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
+	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
+	valid: boolean,
+	/**  What validation found (`name` mismatch, missing or over-long description…). */
+	warnings: string[],
 };
 
 /**  Where an agent comes from. */
@@ -2625,6 +3244,10 @@ export type AgentTask_Deserialize = {
 	background?: AgentBackgroundTask[],
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
 	mcpOverrides?: { [key in string]: boolean },
+	/**  Per-session skill modes (`skill name` -> mode), on top of the settings' policies. */
+	skillOverrides?: { [key in string]: AgentSkillMode },
+	/**  Token counts of the last turn and context compressions, when the agent reports them. */
+	stats?: AgentSessionStats,
 };
 
 export type AgentTask_Serialize = {
@@ -2673,6 +3296,10 @@ export type AgentTask_Serialize = {
 	background: AgentBackgroundTask[],
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
 	mcpOverrides?: { [key in string]: boolean },
+	/**  Per-session skill modes (`skill name` -> mode), on top of the settings' policies. */
+	skillOverrides?: { [key in string]: AgentSkillMode },
+	/**  Token counts of the last turn and context compressions, when the agent reports them. */
+	stats: AgentSessionStats,
 };
 
 /**  Token pricing (Credits per 1M tokens) and context window capacity for one tier. */
@@ -2682,6 +3309,12 @@ export type AgentTokenPricing = {
 	cacheRead?: number | null,
 	cacheWrite?: number | null,
 	contextTokens?: number | null,
+};
+
+export type AgentTokens = {
+	input: number,
+	cached: number,
+	output: number,
 };
 
 export type AgentToolDiff = {
@@ -2699,6 +3332,13 @@ export type AgentUsage = {
 	size: number,
 	/**  What the session has cost so far (ACP `usage_update.cost`), when the agent reports it. */
 	cost?: AgentCost | null,
+};
+
+export type AmendTarget = {
+	commit: string,
+	head: HistoryTip,
+	/**  Remote-tracking branch names protected from history rewrites. */
+	protectedBranches?: string[],
 };
 
 /**  One entry of `adb devices -l`. */
@@ -2788,6 +3428,8 @@ export type AppearanceSettings_Deserialize = {
 	compactMode?: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
 	smallTreeIndents?: boolean,
+	/**  Linux: WebKit animates each mouse wheel step */
+	smoothScrolling?: boolean,
 	fullPathInTitle?: boolean,
 	projectColorsInToolbar?: boolean,
 	dndWithAltOnly?: boolean,
@@ -2808,6 +3450,8 @@ export type AppearanceSettings_Deserialize = {
 	showToolWindowNames?: boolean,
 	showToolWindowBadges?: boolean,
 	widescreenToolWindows?: boolean,
+	/**  Each tool window keeps its own size; off, the windows of a side share one. */
+	rememberToolWindowSizes?: boolean,
 	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
 	showMainToolbar?: boolean,
 	showStatusBar?: boolean,
@@ -2859,6 +3503,8 @@ export type AppearanceSettings_Serialize = {
 	compactMode: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
 	smallTreeIndents: boolean,
+	/**  Linux: WebKit animates each mouse wheel step */
+	smoothScrolling: boolean,
 	fullPathInTitle: boolean,
 	projectColorsInToolbar: boolean,
 	dndWithAltOnly: boolean,
@@ -2879,6 +3525,8 @@ export type AppearanceSettings_Serialize = {
 	showToolWindowNames: boolean,
 	showToolWindowBadges: boolean,
 	widescreenToolWindows: boolean,
+	/**  Each tool window keeps its own size; off, the windows of a side share one. */
+	rememberToolWindowSizes: boolean,
 	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
 	showMainToolbar: boolean,
 	showStatusBar: boolean,
@@ -2898,6 +3546,22 @@ export type AppearanceSettings_Serialize = {
 	backgroundImage: BackgroundImageSettings,
 	/**  Appearance › Presentation Assistant: the name and shortcut of each action run. */
 	presentationAssistant: PresentationAssistantSettings,
+};
+
+export type ApplyCommitOptions = {
+	author?: string | null,
+	authorDate?: string | null,
+	signOff?: boolean,
+	runHooks?: boolean,
+};
+
+export type ApplyCommitReview = {
+	kind: CommitApplyKind,
+	checkpoint: string,
+	message: string,
+	paths: IpcPath[],
+	author?: string | null,
+	authorDate?: string | null,
 };
 
 export type ApplyOutcome = {
@@ -3002,11 +3666,24 @@ export type BeforeLaunchTask = {
 	target?: string,
 };
 
-export type BlameLine = {
+export type BlameLine = BlameLine_Serialize | BlameLine_Deserialize;
+
+export type BlameLine_Deserialize = {
 	commit: string,
 	author: string,
 	timeMs: number | null,
 	summary: string,
+	/**  The file blamed for this line when it had another path in the attributed commit. */
+	originPath?: IpcPath | null,
+};
+
+export type BlameLine_Serialize = {
+	commit: string,
+	author: string,
+	timeMs: number | null,
+	summary: string,
+	/**  The file blamed for this line when it had another path in the attributed commit. */
+	originPath?: IpcPath | null,
 };
 
 /**  History for Selection: the commits that changed a block of lines, newest first. */
@@ -3039,22 +3716,92 @@ export type Branch = {
 	remote: boolean,
 	current: boolean,
 	upstream: string | null,
+	trackedTip?: TrackedTip | null,
 	ahead: number,
 	behind: number,
+	outgoing?: OutgoingCommits | null,
 	lastCommitMs: number | null,
 	/**  Tip commit id. */
 	commit?: string,
 };
 
-export type BranchInfo = {
+/**  The branch tip before and after creation, used to roll back a partially successful operation. */
+export type BranchCreation = {
+	tip: string,
+	previousTip: string | null,
+};
+
+export type BranchCreationOutcome = {
+	checkout: CheckoutOutcome,
+	/**  Present once the branch was created, even if restoring local changes needs attention. */
+	created: BranchCreation | null,
+};
+
+export type BranchInfo = BranchInfo_Serialize | BranchInfo_Deserialize;
+
+export type BranchInfo_Deserialize = {
 	/**  `None` when HEAD is detached. */
 	head: string | null,
 	headCommit: string | null,
 	upstream: string | null,
+	/**  The upstream as configured on the current branch, even before its tracking ref is fetched. */
+	upstreamTracking?: UpstreamTracking | null,
+	trackedTip?: TrackedTip | null,
 	ahead: number,
 	behind: number,
+	/**  Outgoing commits to the default Push destination, when it has a local tracking ref. */
+	outgoing?: OutgoingCommits | null,
 	/**  Merge / rebase / cherry-pick in progress. */
 	operation: string | null,
+	rebase?: RebaseState | null,
+};
+
+export type BranchInfo_Serialize = {
+	/**  `None` when HEAD is detached. */
+	head: string | null,
+	headCommit: string | null,
+	upstream: string | null,
+	/**  The upstream as configured on the current branch, even before its tracking ref is fetched. */
+	upstreamTracking?: UpstreamTracking | null,
+	trackedTip?: TrackedTip | null,
+	ahead: number,
+	behind: number,
+	/**  Outgoing commits to the default Push destination, when it has a local tracking ref. */
+	outgoing?: OutgoingCommits | null,
+	/**  Merge / rebase / cherry-pick in progress. */
+	operation: string | null,
+	rebase?: RebaseState | null,
+};
+
+export type BranchRebasePlan = {
+	head: HistoryTip,
+	target: string,
+	onto: string,
+};
+
+export type BranchUpdate = BranchUpdate_Serialize | BranchUpdate_Deserialize;
+
+/**  What Update Selected did to one local branch. */
+export type BranchUpdateStatus = "updated" | "upToDate" | 
+/**  Diverged from its upstream: left as it is. */
+"notFastForward" | "noUpstream" | "failed";
+
+export type BranchUpdate_Deserialize = {
+	branch: string,
+	status: BranchUpdateStatus,
+	/**  Why it failed. */
+	message: string | null,
+	/**  Linked worktree where the update was attempted. */
+	worktree?: IpcPath | null,
+};
+
+export type BranchUpdate_Serialize = {
+	branch: string,
+	status: BranchUpdateStatus,
+	/**  Why it failed. */
+	message: string | null,
+	/**  Linked worktree where the update was attempted. */
+	worktree?: IpcPath | null,
 };
 
 /**  Editor › General › Breadcrumbs. */
@@ -3162,6 +3909,14 @@ export type BuildResult = {
 	messages: BuildMessage[],
 };
 
+/**  Build, Execution, Deployment › Compiler (Build tool window behaviour). */
+export type BuildSettings = {
+	/**  When to open the Build tool window: `always` | `onError` | `never`. */
+	openToolWindow?: string,
+	/**  When to focus the Build tool window: `always` | `onError` | `never`. */
+	focusToolWindow?: string,
+};
+
 export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake" | "dotnet" | 
 /**  A Java project without a build tool, compiled from its Project Structure. */
 "javac";
@@ -3219,6 +3974,18 @@ export type CapabilityInfo = {
 };
 
 /**
+ *  The caret moved in the focused editor. Positions are 0-based; `col` counts
+ *  UTF-16 code units, as everywhere in the plugin API.
+ */
+export type CaretMoved = {
+	path: string,
+	line: number,
+	col: number,
+	/**  The caret came to rest at this position; plugins may load what a hover needs. */
+	settled?: boolean,
+};
+
+/**
  *  A plugin package available for installation from a local catalog
  *  directory (the samples shipped with the IDE). Not installed by listing it.
  */
@@ -3266,6 +4033,7 @@ export type Changelist = {
 	id: string,
 	name: string,
 	comment?: string,
+	appliedCommit?: CommitApplySource | null,
 };
 
 /**  User change lists of a project and which list each changed file belongs to. */
@@ -3305,10 +4073,7 @@ export type CheckoutOptions = {
 	ignoreOtherWorktrees?: boolean,
 };
 
-/**
- *  Result of [`Repo::checkout_with`]; the non-`Done` variants other than `Conflicts`
- *  left the repository untouched.
- */
+/**  Result of [`Repo::checkout_with`]. */
 export type CheckoutOutcome = { kind: "done" } | 
 /**  These local changes (repository-relative paths) would be overwritten. */
 { kind: "localChanges"; files: string[] } | 
@@ -3325,11 +4090,27 @@ export type CheckoutOutcome = { kind: "done" } |
  *  on conflicts in these files.
  */
 { kind: "conflicts"; files: string[] } | 
+/**  Switched, but the saved changes could not be restored. */
+{ kind: "restoreFailed"; message: string } | 
 /**
  *  Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
  *  changed; the branch can be worked on there.
  */
 { kind: "checkedOutInWorktree"; branch: string; path: string };
+
+/**  The refs shown before checking out and rebasing a branch onto the current branch. */
+export type CheckoutRebasePlan = {
+	base: HistoryTip,
+	branch: string,
+	branchTip: string | null,
+	remote: CheckoutRebaseRemote | null,
+};
+
+export type CheckoutRebaseRemote = {
+	name: string,
+	commit: string,
+	dropLocalCommits: boolean,
+};
 
 export type ChoiceOption = {
 	value: string,
@@ -3375,6 +4156,15 @@ export type CliInstallation = {
 	path: IpcPath,
 	pathDirectory: IpcPath | null,
 };
+
+/**  A window's answer to `ClipboardRequested`: its machine's clipboard. */
+export type ClipboardAnswer = 
+/**  `None` for a kind the clipboard doesn't hold; `png` is base64. */
+{ kind: "content"; text: string | null; png: string | null } | 
+/**  The user refused (a remote window asks first). */
+{ kind: "refused" } | 
+/**  The window could not read the clipboard. */
+{ kind: "failed"; message: string };
 
 export type CloseContext = {
 	/**  Quit is in progress (exit was already confirmed). */
@@ -3490,6 +4280,15 @@ export type ColorInfo = {
 	alpha: number | null,
 };
 
+/**
+ *  One way to write a picked color (`textDocument/colorPresentation`): `edits` replace the
+ *  color's range (with `label` unless the server gave its own edit), then any extra edits.
+ */
+export type ColorPresentation = {
+	label: string,
+	edits: TextEdit[],
+};
+
 export type Command = {
 	title: string,
 	command: string,
@@ -3508,20 +4307,56 @@ export type CommandForm = {
 export type Commit = Commit_Serialize | Commit_Deserialize;
 
 /**  A window's answer to a [`CommitRequest`]. */
-export type CommitAnswer = 
+export type CommitAnswer = CommitAnswer_Serialize | CommitAnswer_Deserialize;
+
+/**  A window's answer to a [`CommitRequest`]. */
+export type CommitAnswer_Deserialize = 
 /**  The window's project has no repository. */
-{ kind: "noRepository" } | { kind: "selection"; selection: CommitSelection } | 
+({ kind: "noRepository" }) & { selection?: never } | { kind: "selection"; selection: CommitSelection_Deserialize } | 
 /**  The message was replaced. */
-{ kind: "done" } | 
+({ kind: "done" }) & { selection?: never } | 
 /**  The draft is no longer at the revision. */
-{ kind: "stale" };
+({ kind: "stale" }) & { selection?: never };
+
+/**  A window's answer to a [`CommitRequest`]. */
+export type CommitAnswer_Serialize = 
+/**  The window's project has no repository. */
+({ kind: "noRepository" }) & { selection?: never } | { kind: "selection"; selection: CommitSelection_Serialize } | 
+/**  The message was replaced. */
+({ kind: "done" }) & { selection?: never } | 
+/**  The draft is no longer at the revision. */
+({ kind: "stale" }) & { selection?: never };
+
+export type CommitApplyKind = "cherry-pick" | "revert";
+
+export type CommitApplySource = {
+	kind?: CommitApplyKind,
+	repo: IpcPath,
+	commit: string,
+	base: string,
+	author: string | null,
+	authorDate: string | null,
+};
+
+export type CommitMessages = {
+	template: string | null,
+	prepared: string | null,
+	pendingApply?: PendingCommitApply | null,
+};
 
 /**  Commit Options (IDEA's commit options popup). */
-export type CommitOptions = {
+export type CommitOptions = CommitOptions_Serialize | CommitOptions_Deserialize;
+
+/**  Commit Options (IDEA's commit options popup). */
+export type CommitOptions_Deserialize = {
 	amend: boolean,
+	/**  Amend this older commit instead of HEAD, with the history snapshot selected in the UI. */
+	amendTarget?: AmendTarget | null,
 	signOff: boolean,
 	/**  `--author`, e.g. `Name <mail@example.com>`; `None` or blank uses the configured user. */
 	author: string | null,
+	/**  Explicit Git author date, e.g. an ISO 8601 timestamp with a time zone. */
+	authorDate?: string | null,
 	/**  False skips the pre-commit and commit-msg hooks (`--no-verify`). */
 	runHooks: boolean,
 	/**
@@ -3529,11 +4364,35 @@ export type CommitOptions = {
 	 *  committed through a temporary index, so neither the working tree nor the other
 	 *  entries of the index change; afterwards their index entries match the new commit.
 	 */
-	partial?: PartialCommitFile[],
+	partial?: PartialCommitFile_Deserialize[],
 	/**  Files committed with their working-tree content, staged or not. */
 	stage?: IpcPath[],
 	/**  Staged files left out of the commit; they stay staged afterwards. */
 	exclude?: IpcPath[],
+};
+
+/**  Commit Options (IDEA's commit options popup). */
+export type CommitOptions_Serialize = {
+	amend: boolean,
+	/**  Amend this older commit instead of HEAD, with the history snapshot selected in the UI. */
+	amendTarget: AmendTarget | null,
+	signOff: boolean,
+	/**  `--author`, e.g. `Name <mail@example.com>`; `None` or blank uses the configured user. */
+	author: string | null,
+	/**  Explicit Git author date, e.g. an ISO 8601 timestamp with a time zone. */
+	authorDate: string | null,
+	/**  False skips the pre-commit and commit-msg hooks (`--no-verify`). */
+	runHooks: boolean,
+	/**
+	 *  Files committed with only some of their changes (IDEA's partial commit). They are
+	 *  committed through a temporary index, so neither the working tree nor the other
+	 *  entries of the index change; afterwards their index entries match the new commit.
+	 */
+	partial: PartialCommitFile_Serialize[],
+	/**  Files committed with their working-tree content, staged or not. */
+	stage: IpcPath[],
+	/**  Staged files left out of the commit; they stay staged afterwards. */
+	exclude: IpcPath[],
 };
 
 /**  A problem a plugin's before-commit check reported (WIT `commit-checker.commit-problem`). */
@@ -3542,6 +4401,11 @@ export type CommitProblem = {
 	/**  Absolute path of the file it is in, if any (IPC form). */
 	path: string | null,
 	range: Range | null,
+};
+
+export type CommitPushTarget = {
+	branch: string | null,
+	destination: DefaultPushTarget | null,
 };
 
 /**  What a plugin asks of a window's Commit view. */
@@ -3558,17 +4422,42 @@ export type CommitRequest =
  *  What a window's Commit view would commit: per repository, the options
  *  `vcs_commit` would get.
  */
-export type CommitSelection = {
+export type CommitSelection = CommitSelection_Serialize | CommitSelection_Deserialize;
+
+export type CommitSelectionRepo = CommitSelectionRepo_Serialize | CommitSelectionRepo_Deserialize;
+
+export type CommitSelectionRepo_Deserialize = {
+	root: IpcPath,
+	options: CommitOptions_Deserialize,
+};
+
+export type CommitSelectionRepo_Serialize = {
+	root: IpcPath,
+	options: CommitOptions_Serialize,
+};
+
+/**
+ *  What a window's Commit view would commit: per repository, the options
+ *  `vcs_commit` would get.
+ */
+export type CommitSelection_Deserialize = {
 	/**  Changes whenever the message, the included changes or Amend do. */
 	revision: number,
 	message: string,
 	amend: boolean,
-	repositories: CommitSelectionRepo[],
+	repositories: CommitSelectionRepo_Deserialize[],
 };
 
-export type CommitSelectionRepo = {
-	root: IpcPath,
-	options: CommitOptions,
+/**
+ *  What a window's Commit view would commit: per repository, the options
+ *  `vcs_commit` would get.
+ */
+export type CommitSelection_Serialize = {
+	/**  Changes whenever the message, the included changes or Amend do. */
+	revision: number,
+	message: string,
+	amend: boolean,
+	repositories: CommitSelectionRepo_Serialize[],
 };
 
 /**  Version Control › Commit: commit checks and commit-message inspections. */
@@ -3578,9 +4467,12 @@ export type CommitSettings = {
 	 *  window and a Commit dialog.
 	 */
 	nonModal?: boolean,
+	includeChangesByDefault?: boolean,
+	commitAllWhenNothingStaged?: boolean,
 	/**  Start with an empty message instead of the last one / the changelist's. */
 	clearInitialMessage?: boolean,
 	analyzeCode?: boolean,
+	postponeSlowChecks?: boolean,
 	checkTodo?: boolean,
 	reformat?: boolean,
 	optimizeImports?: boolean,
@@ -3604,6 +4496,14 @@ export type CommitSettings = {
 	doubleClickOpensDiff?: boolean | null,
 	/**  Team conventions for Generate Commit Message with Agent, added to its prompt. */
 	agentInstructions?: string,
+	/**  The coding agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+	agent?: string,
+	/**  That agent's model for commit messages; empty keeps the model the agent would use. */
+	agentModel?: string,
+	/**  That model's thinking level for commit messages; empty keeps the agent's. */
+	agentEffort?: string,
+	/**  Show the Generate Commit Message with Agent button above the commit message. */
+	agentButton?: boolean,
 };
 
 export type Commit_Deserialize = {
@@ -3617,6 +4517,8 @@ export type Commit_Deserialize = {
 	historyPath?: string | null,
 	logPosition?: number | null,
 	logTotal?: number | null,
+	/**  Newest committer time at or after this row if newer than the row's commit. */
+	logMergeTimeMs?: number | null,
 	graphBoundaryParents?: string[],
 	/**  Reachability from HEAD, computed independently of the visible filters. */
 	onCurrentBranch?: boolean | null,
@@ -3646,6 +4548,8 @@ export type Commit_Serialize = {
 	historyPath?: string | null,
 	logPosition?: number | null,
 	logTotal?: number | null,
+	/**  Newest committer time at or after this row if newer than the row's commit. */
+	logMergeTimeMs?: number | null,
 	graphBoundaryParents?: string[],
 	/**  Reachability from HEAD, computed independently of the visible filters. */
 	onCurrentBranch?: boolean | null,
@@ -3778,6 +4682,9 @@ export type ComposerInstallState = {
 	reason: ComposerInstall,
 };
 
+/**  Which version the user accepts, relative to the merge editor's labels. */
+export type ConflictSide = "ours" | "theirs";
+
 /**  The user's answer on an install or consent page. */
 export type Consent = {
 	/**
@@ -3790,6 +4697,20 @@ export type Consent = {
 	 *  copy ([`InstallPreview::signer_changed`]).
 	 */
 	signerChange?: boolean,
+};
+
+/**  A plugin's highlight rule for Run and Debug console output (API 1.12, `ui.set-console-rules`). */
+export type ConsoleRule = {
+	pattern: string,
+	ignoreCase: boolean,
+	/**  A console palette colour (`red`, `bright-blue`); `None` keeps the text's own. */
+	foreground: string | null,
+	background: string | null,
+	/**  `bold`, `italic`, `underline`, `strikethrough`, `dim`. */
+	styles: string[],
+	/**  The whole line, or only the matched text. */
+	wholeLine: boolean,
+	enabled: boolean,
 };
 
 /**  Build, Execution, Deployment › Console. */
@@ -4004,6 +4925,8 @@ export type DataSource_Deserialize = {
 	id?: string,
 	name?: string,
 	driver?: DbDriver,
+	/**  An app-wide driver profile id; classpaths never come from a project. */
+	jdbcDriver?: string,
 	host?: string,
 	port?: number | null,
 	database?: string,
@@ -4029,7 +4952,7 @@ export type DataSource_Deserialize = {
 	sslCertFile?: string,
 	sslKeyFile?: string,
 	options?: DbOptions,
-	introspection?: DbIntrospection,
+	introspection?: DbIntrospection_Deserialize,
 	properties?: DbProperty[],
 	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
 	snowflake?: DbSnowflake | null,
@@ -4048,6 +4971,8 @@ export type DataSource_Serialize = {
 	id: string,
 	name: string,
 	driver: DbDriver,
+	/**  An app-wide driver profile id; classpaths never come from a project. */
+	jdbcDriver?: string,
 	host: string,
 	port: number | null,
 	database: string,
@@ -4073,7 +4998,7 @@ export type DataSource_Serialize = {
 	sslCertFile: string,
 	sslKeyFile: string,
 	options: DbOptions,
-	introspection: DbIntrospection,
+	introspection: DbIntrospection_Serialize,
 	properties: DbProperty[],
 	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
 	snowflake: DbSnowflake | null,
@@ -4179,7 +5104,7 @@ export type DbDriver = "sqlite" | "postgres" |
 /**  Microsoft SQL Server. */
 "sqlServer" | "clickhouse" | 
 /**  Oracle Database (pure-Rust thin driver, no client library). */
-"oracle" | "snowflake";
+"oracle" | "snowflake" | "jdbc";
 
 export type DbDumpContent = "all" | "schemaOnly" | "dataOnly";
 
@@ -4233,11 +5158,16 @@ export type DbIndexInfo = {
 };
 
 /**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
-export type DbIntrospection = {
+export type DbIntrospection = DbIntrospection_Serialize | DbIntrospection_Deserialize;
+
+/**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
+export type DbIntrospection_Deserialize = {
 	allDatabases?: boolean,
 	databases?: string[],
 	allSchemas?: boolean,
 	schemas?: string[],
+	/**  A database can replace the source's schema rules with all schemas or a list of exact names. */
+	schemasByDatabase?: { [key in string]: DbSchemaSelection },
 	/**  `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…). */
 	showSystem?: boolean,
 	/**  PostgreSQL template databases (`template0`, `template1`). */
@@ -4247,6 +5177,47 @@ export type DbIntrospection = {
 	 *  one of these patterns (`*`, `?`; separated by commas or spaces). Empty: all.
 	 */
 	objectFilter?: string,
+};
+
+/**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
+export type DbIntrospection_Serialize = {
+	allDatabases: boolean,
+	databases: string[],
+	allSchemas: boolean,
+	schemas: string[],
+	/**  A database can replace the source's schema rules with all schemas or a list of exact names. */
+	schemasByDatabase?: { [key in string]: DbSchemaSelection },
+	/**  `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…). */
+	showSystem: boolean,
+	/**  PostgreSQL template databases (`template0`, `template1`). */
+	showTemplates: boolean,
+	/**
+	 *  Object filter: the tree lists only tables, views, routines and sequences matching
+	 *  one of these patterns (`*`, `?`; separated by commas or spaces). Empty: all.
+	 */
+	objectFilter: string,
+};
+
+export type DbJdbcDriver = DbJdbcDriver_Serialize | DbJdbcDriver_Deserialize;
+
+export type DbJdbcDriver_Deserialize = {
+	id: string,
+	name: string,
+	/**  Data source preset id; absent for a generic JDBC profile. */
+	vendor?: string | null,
+	jars: string[],
+	className: string,
+	urlTemplate: string,
+};
+
+export type DbJdbcDriver_Serialize = {
+	id: string,
+	name: string,
+	/**  Data source preset id; absent for a generic JDBC profile. */
+	vendor?: string | null,
+	jars: string[],
+	className: string,
+	urlTemplate: string,
 };
 
 export type DbMysqlOptions = {
@@ -4379,6 +5350,8 @@ export type DbQueryResult = {
 	elapsedMs: number | null,
 	/**  Until the server's first answer; the rest of `elapsed_ms` is fetching. */
 	executionMs: number | null,
+	/**  Cells of `rows` cut short by [`QueryResult::cap_cells`], in row order. */
+	truncated: DbTruncatedCell[],
 };
 
 export type DbResultColumn = {
@@ -4417,6 +5390,11 @@ export type DbSchemaObjects = {
 	sequences: DbSequenceInfo[],
 	/**  Objects of kinds only some databases have (Snowflake stages, streams, tasks…). */
 	others?: DbSchemaObject[],
+};
+
+export type DbSchemaSelection = {
+	all?: boolean,
+	names?: string[],
 };
 
 export type DbSequenceInfo = {
@@ -4553,8 +5531,23 @@ export type DbTriggerInfo = {
 	events: string,
 };
 
+/**  A cell of a [`QueryResult`] whose text was cut to a prefix. */
+export type DbTruncatedCell = {
+	row: number,
+	column: number,
+	/**  Length of the whole value in UTF-16 code units (what a JavaScript string counts). */
+	length: number,
+	/**
+	 *  FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+	 *  so a client that reads the value again can tell whether it is the one that was cut.
+	 */
+	hash: number,
+};
+
 /**  Transaction control of the data source's consoles. */
 export type DbTxMode = "auto" | "manual";
+
+export type DbVisibilityChange = { kind: "databases"; selection: DbSchemaSelection } | { kind: "schemas"; selection: DbSchemaSelection } | { kind: "databaseSchemas"; database: string; selection: DbSchemaSelection | null };
 
 /**  What a session's adapter supports, for enabling actions. */
 export type DebugCapabilities = {
@@ -4622,6 +5615,17 @@ export type DebugEvent =
  *  changed and can be reloaded), `STARTING`, `END`, `WARNING` or `ERROR`.
  */
 { kind: "hotCodeReplace"; changeType: string; message: string } | 
+/**
+ *  `flutter debug_adapter`'s `flutter.appStarted` event (launch and attach): the session is
+ *  a Flutter app that can take a hot reload now. The plain Dart adapter never sends it.
+ */
+{ kind: "flutterAppStarted" } | 
+/**  The VM Service of a Flutter session's app, which DevTools connects to. */
+{ kind: "flutterVmService"; uri: string; 
+/**  The Flutter device the app runs on. */
+device: string | null } | 
+/**  Flutter's inspector selected a widget: its source, 0-based. */
+{ kind: "flutterNavigate"; path: IpcPath; line: number; column: number } | 
 /**  The session's capabilities changed after it started: fetch them again. */
 { kind: "capabilities" } | 
 /**
@@ -4660,6 +5664,8 @@ export type DebuggerSettings = {
 	skipLibraryCode?: boolean,
 	/**  JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session. */
 	debugServerPage?: boolean,
+	/**  Flutter: saving a Dart file of a running debug session hot reloads the app. */
+	flutterHotReloadOnSave?: boolean,
 	python?: PythonDebuggerSettings,
 };
 
@@ -4681,15 +5687,47 @@ export type DecorationSet = {
 	file: FileDecoration | null,
 };
 
+export type DefaultPushTarget = {
+	selection: PushSelection,
+	setUpstream: boolean,
+};
+
 /**  A deleted local branch, enough to restore it (IDEA's "Restore" notification action). */
-export type DeletedBranch = {
+export type DeletedBranch = DeletedBranch_Serialize | DeletedBranch_Deserialize;
+
+/**  A deleted local branch, enough to restore it (IDEA's "Restore" notification action). */
+export type DeletedBranch_Deserialize = {
 	name: string,
 	/**  The commit the branch pointed at. */
 	tip: string,
 	/**  Its upstream (`origin/x`), restored with it. */
 	upstream: string | null,
-	/**  It was not fully merged: its own commits are now unreachable from any branch. */
+	/**  Configured remote and source branch, if the upstream is remote. */
+	remoteUpstream?: UpstreamTracking | null,
+	/**  Tip that Git compared the deleted branch with when deciding it was unmerged. */
+	unmergedBase?: string | null,
+	/**  Git required a force delete because the branch was not fully merged. */
 	unmerged: boolean,
+};
+
+/**  A deleted local branch, enough to restore it (IDEA's "Restore" notification action). */
+export type DeletedBranch_Serialize = {
+	name: string,
+	/**  The commit the branch pointed at. */
+	tip: string,
+	/**  Its upstream (`origin/x`), restored with it. */
+	upstream: string | null,
+	/**  Configured remote and source branch, if the upstream is remote. */
+	remoteUpstream?: UpstreamTracking | null,
+	/**  Tip that Git compared the deleted branch with when deciding it was unmerged. */
+	unmergedBase?: string | null,
+	/**  Git required a force delete because the branch was not fully merged. */
+	unmerged: boolean,
+};
+
+export type DeletedFile = {
+	path: IpcPath,
+	id: string,
 };
 
 /**  A deleted tag, enough to restore it (Restore in the tag-deleted notification). */
@@ -4697,6 +5735,16 @@ export type DeletedTag = {
 	name: string,
 	/**  What the tag pointed at: its tag object (annotated tags) or commit. */
 	target: string,
+};
+
+/**
+ *  Paths and contents captured for one delete operation. Directory history is
+ *  intentionally broader and can contain paths deleted in an earlier operation.
+ */
+export type DeletionUndo = {
+	directories: IpcPath[],
+	files: DeletedFile[],
+	skipped: IpcPath[],
 };
 
 export type Dependency = {
@@ -4851,6 +5899,17 @@ export type Diagnostic = {
 	server?: string | null,
 };
 
+export type DiffEntry = {
+	mode: string,
+	/**  The recorded commit for a gitlink, independent of the parent's object database. */
+	gitlink: string | null,
+};
+
+export type DiffEntryRequest = {
+	path: IpcPath,
+	rev: string,
+};
+
 /**  The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable. */
 export type DiffFilesLaunch = {
 	left: IpcPath,
@@ -4865,9 +5924,13 @@ export type DiffLaunch_Deserialize = {
 	/**  Absolute path of the file (the right side's path). */
 	path: string,
 	left: DiffSide_Deserialize,
+	middle?: DiffSide_Deserialize | null,
 	right: DiffSide_Deserialize,
-	/**  0-based line of the right side to reveal. */
+	/**  0-based line to reveal. */
 	line?: number | null,
+	lineSide?: DiffLineSide | null,
+	col?: number | null,
+	chain?: DiffLaunch_Deserialize[] | null,
 };
 
 /**  The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`. */
@@ -4875,10 +5938,16 @@ export type DiffLaunch_Serialize = {
 	/**  Absolute path of the file (the right side's path). */
 	path: string,
 	left: DiffSide_Serialize,
+	middle?: DiffSide_Serialize | null,
 	right: DiffSide_Serialize,
-	/**  0-based line of the right side to reveal. */
+	/**  0-based line to reveal. */
 	line?: number | null,
+	lineSide?: DiffLineSide | null,
+	col?: number | null,
+	chain?: DiffLaunch_Serialize[] | null,
 };
+
+export type DiffLineSide = "left" | "middle" | "right";
 
 /**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
 export type DiffSide = DiffSide_Serialize | DiffSide_Deserialize;
@@ -4886,28 +5955,28 @@ export type DiffSide = DiffSide_Serialize | DiffSide_Deserialize;
 /**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
 export type DiffSide_Deserialize = 
 /**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
-({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; labelDetail?: never; text?: never } | 
 /**  The working file (unsaved editor buffer included). */
-({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+({ type: "worktree"; label?: string | null; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
 /**  Another file (Compare With…, Compare Files). */
-({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
-/**  Literal text: a side that does not exist. */
-({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+({ type: "file"; path: string; label?: string | null }) & { id?: never; labelDetail?: never; rev?: never; text?: never } | 
+/**  Literal text, such as clipboard contents or an editor selection. */
+({ type: "text"; text: string; label: string; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never } | 
 /**  A Local History revision. */
-({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+({ type: "history"; id: string; label: string }) & { labelDetail?: never; path?: never; rev?: never; text?: never };
 
 /**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
 export type DiffSide_Serialize = 
 /**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
-({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; labelDetail?: never; text?: never } | 
 /**  The working file (unsaved editor buffer included). */
-({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+({ type: "worktree"; label?: string | null; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
 /**  Another file (Compare With…, Compare Files). */
-({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
-/**  Literal text: a side that does not exist. */
-({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+({ type: "file"; path: string; label?: string | null }) & { id?: never; labelDetail?: never; rev?: never; text?: never } | 
+/**  Literal text, such as clipboard contents or an editor selection. */
+({ type: "text"; text: string; label: string; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never } | 
 /**  A Local History revision. */
-({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+({ type: "history"; id: string; label: string }) & { labelDetail?: never; path?: never; rev?: never; text?: never };
 
 export type DirectoryCompareEntry = {
 	path: string,
@@ -4916,7 +5985,20 @@ export type DirectoryCompareEntry = {
 	rightKind: EntryKind | null,
 	leftLink?: string | null,
 	rightLink?: string | null,
+	/**  File sizes in bytes; directories and symlinks have none. */
+	leftSize?: number | null,
+	rightSize?: number | null,
+	/**  Last modification, milliseconds since the Unix epoch. */
+	leftModified?: number | null,
+	rightModified?: number | null,
 };
+
+/**  What makes two files equal (IDEA's "Compare by"). */
+export type DirectoryCompareMode = 
+/**  Identical bytes. */
+"content" | 
+/**  The same text once decoded, whatever the encoding, BOM or line separators. */
+"text" | "size" | "sizeAndTimestamp";
 
 export type DirectoryCompareProgress = {
 	scanned: number,
@@ -4929,12 +6011,57 @@ export type DirectoryCompareProgress = {
 export type DirectoryCompareStatus = "leftOnly" | "rightOnly" | "different" | "equal";
 
 /**  Changes under a folder (Show History on a directory). */
-export type DirectoryHistory = {
+export type DirectoryHistory = DirectoryHistory_Serialize | DirectoryHistory_Deserialize;
+
+/**  Changes under a folder (Show History on a directory). */
+export type DirectoryHistory_Deserialize = {
 	/**  Snapshots of files under the folder and labels, newest first. */
-	entries: HistoryEntry[],
+	entries: HistoryEntry_Deserialize[],
 	/**  Files with history that no longer exist on disk. */
 	deleted: IpcPath[],
 };
+
+/**  Changes under a folder (Show History on a directory). */
+export type DirectoryHistory_Serialize = {
+	/**  Snapshots of files under the folder and labels, newest first. */
+	entries: HistoryEntry_Serialize[],
+	/**  Files with history that no longer exist on disk. */
+	deleted: IpcPath[],
+};
+
+/**  One row's synchronisation, applied by [`DirectorySyncOperation`] batches. */
+export type DirectorySyncAction = "copyToLeft" | "copyToRight" | "deleteLeft" | "deleteRight";
+
+export type DirectorySyncFailure = {
+	path: string,
+	action: DirectorySyncAction,
+	message: string,
+};
+
+export type DirectorySyncOperation = {
+	/**  Relative to both comparison roots. */
+	path: string,
+	action: DirectorySyncAction,
+	/**  A copy may replace what is already at the destination (confirmed by the user). */
+	overwrite: boolean,
+};
+
+export type DirectorySyncProgress = {
+	done: number,
+	total: number,
+	path: string,
+};
+
+/**  See [`IdeEvent::Direnv`]. */
+export type DirenvStatus = 
+/**  `direnv` is not installed (on the search path). */
+{ kind: "notInstalled" } | 
+/**  direnv refuses the `.envrc` until the user approves it with `direnv allow`. */
+{ kind: "blocked" } | 
+/**  `direnv export` failed or took too long: what it printed last. */
+{ kind: "failed"; message: string } | 
+/**  `.envrc`, `flake.nix` or `flake.lock` (a file name in the project root) changed. */
+{ kind: "changed"; file: string };
 
 export type DiscoveredProject = {
 	path: IpcPath,
@@ -4965,6 +6092,8 @@ export type DockerConnection = {
 	id: string,
 	name: string,
 	endpoint: DockerEndpoint,
+	/**  Whether the user explicitly disconnected this connection in Services. */
+	disconnected?: boolean,
 };
 
 export type DockerContainer = {
@@ -5119,9 +6248,24 @@ export type DockerVolume = {
 /**  Local changes accepted by the editor's shared document model. */
 export type DocumentChanged = {
 	path: string,
+	/**
+	 *  The open project `path` is relative to, set when the event is handed to a plugin
+	 *  (the editor posts the absolute path and `null`).
+	 */
+	project: string | null,
 	baseVersion: number,
 	version: number,
 	changes: DocumentTextChange[],
+};
+
+/**  A color a server found in a document (`textDocument/documentColor`); components are 0–1. */
+export type DocumentColor = {
+	range: Range,
+	red: number | null,
+	green: number | null,
+	blue: number | null,
+	alpha: number | null,
+	server: ServerId,
 };
 
 /**  Encoding and BOM currently applied to an open document. */
@@ -5195,6 +6339,13 @@ export type DocumentTextChange = {
 	from: number,
 	to: number,
 	insert: string,
+};
+
+/**  One file of a [`remote_download_local`] transfer starting: `done` of `total` files are finished. */
+export type DownloadProgress = {
+	path: string,
+	done: number,
+	total: number,
 };
 
 export type DuplicateGroup = {
@@ -5312,6 +6463,40 @@ export type EditorGeneralSettings = {
 	removeTrailingBlankLines?: boolean,
 	/**  Copy as rich text (HTML with syntax colours) by default. */
 	richTextCopy?: boolean,
+};
+
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
+export type EditorLaunch = EditorLaunch_Serialize | EditorLaunch_Deserialize;
+
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
+export type EditorLaunch_Deserialize = {
+	path?: IpcPath | null,
+	/**  The tab's editor input, as JSON. */
+	input?: string | null,
+	line?: number | null,
+	column?: number | null,
+	endLine?: number | null,
+	endColumn?: number | null,
+};
+
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
+export type EditorLaunch_Serialize = {
+	path?: IpcPath | null,
+	/**  The tab's editor input, as JSON. */
+	input?: string | null,
+	line?: number | null,
+	column?: number | null,
+	endLine?: number | null,
+	endColumn?: number | null,
 };
 
 export type EditorSettings = EditorSettings_Serialize | EditorSettings_Deserialize;
@@ -5463,6 +6648,8 @@ export type EditorTabsSettings = {
 	activateOnClose?: string,
 };
 
+export type EmptyCherryPickAction = "skip" | "createEmpty";
+
 /**  Editor › File Encodings. */
 export type EncodingSettings = {
 	/**  Fallback for files outside the project that are not valid UTF-8 (WHATWG label). */
@@ -5489,18 +6676,61 @@ export type EnvReloaded = {
 	shellRead: boolean,
 };
 
-export type ErrorData = { type: "tool"; tool: string; missing: boolean };
+export type ErrorData = { type: "tool"; tool: string; missing: boolean } | 
+/**  A non-fast-forward push from the current branch to its configured upstream. */
+{ type: "pushRejected"; source: string; upstream: string; divergence: PushDivergence | null; 
+/**  Other refs may already have been published in the same push. */
+report?: PushReport | null } | 
+/**  Git updated some refs before a later ref or push URL failed. */
+{ type: "pushPartiallyApplied"; report: PushReport } | 
+/**  A conflicted history replay left an amend commit ready to keep separately. */
+{ type: "amendConflict"; commit: string } | 
+/**
+ *  jdtls could not set a module up as a Java project: the errors on its build files and
+ *  the builds enclosing it (`path: message`, the path relative to the project), nearest first.
+ */
+{ type: "javaBuildProblems"; problems: string[] };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
-/**  Document version mismatch; the UI must resync the full text. */
+/**  The requested state is stale; the UI must use the current snapshot. */
 "outOfSync" | "cancelled" | "timedOut" | 
 /**  A required external tool (language server, git, debugger) is unavailable. */
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | 
+export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "caret-moved" | "action-performed" | "vcs-changed" | 
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | "scheduled";
+
+export type ExceptionClassBreakpoint = {
+	id: string,
+	/**  Fully qualified binary name (`com.acme.Outer$Inner`); its subclasses stop too. */
+	className: string,
+	caught: boolean,
+	uncaught: boolean,
+	enabled: boolean,
+	/**  Patterns (`com.acme.*`, `*Test`, a full name) for the class whose code throws. */
+	classFilters: string[],
+	classExclusionFilters: string[],
+};
+
+/**  The exception class a caret names: a reference to it, its declaration, or a throw of it. */
+export type ExceptionClassRef = {
+	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
+	qualifiedName: string,
+	/**  The simple name (`Failure`). */
+	displayName: string,
+};
+
+/**  What a session's exception class breakpoints can do. */
+export type ExceptionClassSupport = {
+	/**  Whose class names the session takes: `java`. */
+	family: string,
+	condition: boolean,
+	classFilters: boolean,
+	/**  Filters on the class whose code catches the exception. */
+	catchFilters: boolean,
+};
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -5511,6 +6741,8 @@ export type ExceptionFilter = {
 	default: boolean,
 	supportsCondition: boolean,
 };
+
+export type ExecutionEvent = { type: "started"; index: number } | { type: "completed"; index: number; outcome: DbStatementOutcome } | { type: "done"; error: IdeError | null };
 
 /**  Result of `expression_at` (Extract Variable / Introduce … fallback). */
 export type ExpressionAt = {
@@ -5577,11 +6809,11 @@ export type ExternalDiffSide = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt" | "ruff";
+export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff" | "black";
 
-/**  An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
 export type ExternalFormatterSettings = {
-	/**  Empty path: project node_modules (Prettier/oxfmt), managed installation, then PATH. */
+	/**  Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH. */
 	path?: string,
 	/**  Ruff only: directory containing its configuration, or a configuration file. */
 	configurationDirectory?: string,
@@ -5641,6 +6873,18 @@ export type FacetConfig = {
 	webRoot?: string,
 };
 
+export type FetchRemoteResult = {
+	remote: string,
+	pruned: string[],
+	error: IdeError | null,
+};
+
+export type FetchReport = {
+	remotes: FetchRemoteResult[],
+};
+
+export type FetchTagsMode = "auto" | "sync" | "always" | "never";
+
 export type Field = {
 	id: string,
 	label: string,
@@ -5656,8 +6900,11 @@ export type Field = {
 };
 
 export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
-/**  An installed SDK of this kind (`jdk`); the value is its home, empty = automatic. */
-{ type: "sdk"; sdk: string } | 
+/**
+ *  An installed SDK of this kind (`jdk`); the value is its home (its version when
+ *  `version`), empty = automatic. SDKs older than `min` are not offered.
+ */
+{ type: "sdk"; sdk: string; version: boolean; min: string | null } | 
 /**  Several ids out of grouped items; the value is comma-separated. */
 { type: "dependencies"; groups: DependencyGroup[] };
 
@@ -5904,6 +7151,34 @@ export type FilesChanged = {
 	removed: string[],
 };
 
+/**  See [`FlutterDeviceList`]. */
+export type FlutterDaemonStatus = { kind: "stopped" } | 
+/**  Started; the first device discovery has not finished. */
+{ kind: "starting" } | { kind: "ready" } | 
+/**  No `flutter` executable on the search path. */
+{ kind: "notInstalled" } | 
+/**  The daemon could not start or exited: what it printed last. It is not restarted on its own. */
+{ kind: "failed"; message: string };
+
+/**  A target `flutter run -d <id>` can name, or an Android device adb sees but Flutter can't use yet. */
+export type FlutterDevice = {
+	id: string,
+	name: string,
+	/**  `android`, `ios`, `macos`, `web`, … */
+	platformType: string | null,
+	/**  `mobile`, `desktop` or `web`. */
+	category: string | null,
+	emulator: boolean,
+	/**  The adb state keeping it from being used (`unauthorized`, `offline`, …). */
+	unavailable: string | null,
+};
+
+/**  The project's Flutter devices, best default first. */
+export type FlutterDeviceList = {
+	status: FlutterDaemonStatus,
+	devices: FlutterDevice[],
+};
+
 export type FocusedEditor = {
 	path: IpcPath,
 	/**  Zero-based lines and UTF-16 columns, end exclusive. */
@@ -5919,9 +7194,12 @@ export type FoldRange = {
 	kind: FoldKind,
 };
 
+export type FoldingOutlineVisibility = "hover" | "always";
+
 /**  Editor › General › Code Folding. */
 export type FoldingSettings = {
 	showOutline?: boolean,
+	outlineVisibility?: FoldingOutlineVisibility,
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
@@ -6118,6 +7396,13 @@ export type GhRepo = {
 	viewerPermission: string,
 };
 
+export type GitAnnotateMovement = "none" | "withinFile" | "acrossFiles";
+
+export type GitAnnotateSettings = {
+	ignoreWhitespace?: boolean,
+	movement?: GitAnnotateMovement,
+};
+
 export type GitExecutableInfo = {
 	/**  `git version …` output. */
 	version: string,
@@ -6125,19 +7410,38 @@ export type GitExecutableInfo = {
 	path: string,
 };
 
-export type GitOperation = 
+export type GitOperation = GitOperation_Serialize | GitOperation_Deserialize;
+
+export type GitOperationResult = RewrittenCommit | ({ rebased: HistoryTip }) & { action?: never; emptyCherryPicks?: never } | ({ emptyCherryPicks: number; action: EmptyCherryPickAction }) & { rebased?: never };
+
+export type GitOperation_Deserialize = 
 /**  Continue the merge / rebase / cherry-pick / revert in progress. */
-{ op: "continue" } | 
+({ op: "continue" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "continueReviewedApply"; checkpoint: string; message: string; options?: ApplyCommitOptions }) & { base?: never; branch?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; mode?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "finishMerge"; branch: string | null; head: string; target: string }) & { base?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never } | 
 /**  Stage and Retry: stage the changes of tracked files, then continue. */
-{ op: "stageAndContinue" } | { op: "abort" } | { op: "skip" } | 
-/**  Commits oldest first; `record_origin` adds "(cherry picked from commit …)". */
-{ op: "cherryPick"; commits: string[]; recordOrigin?: boolean } | 
+({ op: "stageAndContinue" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "abort"; expected?: string | null; expectedRebase?: RebaseState | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expectedHead?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "skip" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | 
+/**  Commits oldest first; add the origin for all commits or the specified subset. */
+({ op: "cherryPick"; commits: string[]; recordOrigin?: boolean; recordOriginFor?: string[] }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; shelfBatch?: never; target?: never } | 
 /**  Commits newest first. */
-{ op: "revert"; commits: string[] } | { op: "reset"; commit: string; mode: ResetMode } | 
+({ op: "revert"; commits: string[] }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "reset"; commit: string; mode: ResetMode }) & { base?: never; branch?: never; checkpoint?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | 
 /**  Rebases `base..HEAD` (`base: None` = from the root) following `entries`, oldest first. */
-{ op: "interactiveRebase"; base: string | null; entries: RebaseEntry[] };
+({ op: "interactiveRebase"; base: string | null; entries: RebaseEntry[] }) & { branch?: never; checkpoint?: never; commit?: never; commits?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "checkoutRebase"; plan: CheckoutRebasePlan; shelfBatch: string | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; recordOrigin?: never; recordOriginFor?: never; target?: never } | ({ op: "rebaseBranch"; plan: BranchRebasePlan; shelfBatch: string | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; recordOrigin?: never; recordOriginFor?: never; target?: never } | ({ op: "dropCommitChanges"; commit: string; expectedHead: HistoryTip; paths: string[] }) & { base?: never; branch?: never; checkpoint?: never; commits?: never; entries?: never; expected?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never };
+
+export type GitOperation_Serialize = 
+/**  Continue the merge / rebase / cherry-pick / revert in progress. */
+({ op: "continue" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "continueReviewedApply"; checkpoint: string; message: string; options: ApplyCommitOptions }) & { base?: never; branch?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; mode?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "finishMerge"; branch: string | null; head: string; target: string }) & { base?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never } | 
+/**  Stage and Retry: stage the changes of tracked files, then continue. */
+({ op: "stageAndContinue" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "abort"; expected: string | null; expectedRebase?: RebaseState | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expectedHead?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "skip" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | 
+/**  Commits oldest first; add the origin for all commits or the specified subset. */
+({ op: "cherryPick"; commits: string[]; recordOrigin: boolean; recordOriginFor: string[] }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; shelfBatch?: never; target?: never } | 
+/**  Commits newest first. */
+({ op: "revert"; commits: string[] }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "reset"; commit: string; mode: ResetMode }) & { base?: never; branch?: never; checkpoint?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | 
+/**  Rebases `base..HEAD` (`base: None` = from the root) following `entries`, oldest first. */
+({ op: "interactiveRebase"; base: string | null; entries: RebaseEntry[] }) & { branch?: never; checkpoint?: never; commit?: never; commits?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "checkoutRebase"; plan: CheckoutRebasePlan; shelfBatch: string | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; recordOrigin?: never; recordOriginFor?: never; target?: never } | ({ op: "rebaseBranch"; plan: BranchRebasePlan; shelfBatch: string | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; recordOrigin?: never; recordOriginFor?: never; target?: never } | ({ op: "dropCommitChanges"; commit: string; expectedHead: HistoryTip; paths: string[] }) & { base?: never; branch?: never; checkpoint?: never; commits?: never; entries?: never; expected?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never };
+
+export type GitSaveChangesPolicy = "shelve" | "stash";
 
 export type GitSettings = {
+	annotate?: GitAnnotateSettings,
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
 	/**
@@ -6146,22 +7450,33 @@ export type GitSettings = {
 	 */
 	inlineBlameClickable?: boolean,
 	showBranchInProjectView?: boolean,
+	/**  Branch operations from the branches popup act on every repository of the project. */
+	syncBranchOperations?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
+	/**  Clone all submodules along with the root repository. */
+	cloneSubmodules?: boolean,
 	/**  Default of Update Project: `merge` | `rebase`. */
 	updateMethod?: string,
+	/**  Where Git operations keep local changes temporarily. */
+	saveChangesPolicy?: GitSaveChangesPolicy,
 	/**  Push rejected (non-fast-forward): update the branch and push again. */
 	autoUpdateOnPushRejected?: boolean,
 	warnCrlf?: boolean,
 	warnDetachedHead?: boolean,
-	/**  Background check for incoming commits: `auto` | `always` | `never`. */
+	/**  Background check for incoming commits: `auto` | `always` | `check` | `never`. */
 	incomingCheck?: string,
 	/**  Minutes between background checks for incoming commits. */
 	incomingCheckInterval?: number,
+	/**  How an explicit fetch or project update handles remote tags. */
+	fetchTagsMode?: FetchTagsMode,
 	/**  Branch name globs, `;`/`,`-separated; force push to them is prohibited. */
 	protectedBranches?: string,
 	/**  Initial state of Commit Options › Sign-off Commit. */
 	signOff?: boolean,
+	/**  Add Git's origin line when cherry-picking commits from protected remote branches. */
+	addCherryPickOrigin?: boolean,
+	emptyCherryPick?: EmptyCherryPickAction,
 	/**  Ask before committing files larger than `large_file_mb`. */
 	warnLargeFiles?: boolean,
 	largeFileMb?: number,
@@ -6173,11 +7488,29 @@ export type GitSettings = {
 	pushDialogOnlyProtected?: boolean,
 	/**  Stashes and shelves share one tab. */
 	combineStashAndShelf?: boolean,
+	/**  What the stash browser compares its saved files against. */
+	stashDiffTarget?: StashDiffTarget,
 	/**
 	 *  The non-modal Commit tool window works on the index: Staged / Unstaged groups,
 	 *  stage and unstage instead of inclusion checkboxes, and no change lists.
 	 */
 	stagingArea?: boolean,
+	/**
+	 *  Scan the working tree with `git status` (for file systems whose metadata only
+	 *  the system git reads correctly) instead of in process.
+	 */
+	cliStatus?: boolean,
+};
+
+export type GitSigningConfig = {
+	format: string,
+	enabled: boolean,
+	key: string | null,
+};
+
+export type GitSigningEdit = {
+	enabled: boolean | null,
+	key: string | null,
 };
 
 export type GoBuildTags = {
@@ -6202,11 +7535,18 @@ export type GoSettings = {
 	goroot?: string,
 	/**  Empty = `go env GOPATH`. */
 	gopath?: string,
+	/**  Format with gofumpt, a stricter gofmt (gopls `gofumpt`). */
+	gofumpt?: boolean,
 	buildTags?: GoBuildTags,
 	modules?: GoModules,
 };
 
 export type GotoKind = "definition" | "declaration" | "typeDefinition" | "implementation";
+
+export type GpgSigningKey = {
+	fingerprint: string,
+	userId: string | null,
+};
 
 /**  One line of the report: an occurrence of a dependency where it is requested. */
 export type GradleDependency = {
@@ -6259,6 +7599,8 @@ export type GradleProject = {
 	/**  Project-relative build script, if any. */
 	buildFile: string | null,
 	tasks: GradleTask[],
+	/**  Configurations Gradle can resolve, or null before Gradle reports the project. */
+	resolvableConfigurations?: string[] | null,
 	/**
 	 *  Identity path of the nested build holding the project (`:lib` for `includeBuild`,
 	 *  `:buildSrc`); null for the opened build.
@@ -6448,6 +7790,14 @@ export type HeapSummary = {
 	analysisMs: number,
 };
 
+/**  A profile and the name Hermes shows for it (`hermes profile list`). */
+export type HermesProfile = {
+	/**  What `hermes -p` takes; `default` is the Hermes home itself. */
+	name: string,
+	/**  `display_name` from the profile's `profile.yaml`, else the name. */
+	label: string,
+};
+
 export type HierarchyChoice = {
 	id: string,
 	makeAbstract: boolean,
@@ -6525,7 +7875,9 @@ export type Highlight = {
 
 export type HighlightKind = "text" | "read" | "write";
 
-export type HistoryEntry = {
+export type HistoryEntry = HistoryEntry_Serialize | HistoryEntry_Deserialize;
+
+export type HistoryEntry_Deserialize = {
 	/**  Content hash (blake3 hex); identifies the stored blob. Empty for labels. */
 	id: string,
 	path: IpcPath,
@@ -6534,6 +7886,17 @@ export type HistoryEntry = {
 	label: string,
 	size: number,
 	kind?: HistoryKind,
+};
+
+export type HistoryEntry_Serialize = {
+	/**  Content hash (blake3 hex); identifies the stored blob. Empty for labels. */
+	id: string,
+	path: IpcPath,
+	timestampMs: number | null,
+	/**  e.g. "Saved", "External change", "Deleted", "Before refactoring: Move". */
+	label: string,
+	size: number,
+	kind: HistoryKind,
 };
 
 export type HistoryKind = 
@@ -6545,6 +7908,15 @@ export type HistoryKind =
  */
 "label";
 
+/**  Branch and tip confirmed in the UI before editing history. */
+export type HistoryTip = {
+	branch: string | null,
+	commit: string,
+};
+
+/**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
+export type HotReloadReason = "manual" | "save";
+
 /**  Result of [`DebugManager::redefine_classes`]. */
 export type HotSwapResult = {
 	/**  Fully qualified names of the classes reloaded (empty: nothing had changed). */
@@ -6555,6 +7927,21 @@ export type HotSwapResult = {
 export type Hover = {
 	contents: Markup,
 	range: Range | null,
+};
+
+/**  An action rendered at the left edge of a line and revealed by hover. */
+export type HoverAction = {
+	/**  The line the button is drawn on; normally the declaration line. */
+	line: number,
+	/**  First line whose leftmost strip reveals this action, inclusive. */
+	startLine: number,
+	/**  Last line whose leftmost strip reveals this action, inclusive. */
+	endLine: number,
+	icon: string | null,
+	label: string,
+	tooltip: string | null,
+	command: string,
+	argument: string | null,
 };
 
 /**  One request with its outcome. */
@@ -6600,6 +7987,8 @@ export type HttpResponse = {
 	version: string,
 	headers: ([string, string])[],
 	contentType: string | null,
+	/**  Followed redirects, first hop first; empty when not redirected. */
+	redirects?: RedirectHop[],
 	/**  Body as text (lossy UTF-8); `None` for binary bodies. */
 	body: string | null,
 	/**  Size in bytes as received (after decompression). */
@@ -6639,13 +8028,19 @@ export type IdeEvent =
 { type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
+/**  A project was loaded or unloaded for the MCP server without a window of its own. */
+{ type: "mcpBackgroundProjectsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
+/**  This remote window's connection ended or another window took over the session. */
+{ type: "remoteConnectionLost"; host: string; takenOver?: boolean } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**
- *  This remote window's connection to its host ended on its own (network loss, the host or
- *  its server went away); the window's project is unreachable until it reconnects.
+ *  The project's direnv environment (`.envrc`) could not be loaded, or a file it is read
+ *  from changed and it can be reloaded.
  */
-{ type: "remoteConnectionLost"; host: string } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+{ type: "direnv"; root: IpcPath; status: DirenvStatus } | 
+/**  The project's `flutter daemon` changed state, or a device came or went. */
+{ type: "flutterDevices"; list: FlutterDeviceList } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[]; 
 /**  Subtrees whose ignore rules changed, after the matchers were rebuilt. */
@@ -6660,9 +8055,18 @@ ignoreRules?: IpcPath[] } |
 /**  Part of a grouped transaction; the editor must not record a file-local undo. */
 workspaceEdit?: boolean } | 
 /**  A document's dirty flag changed (saved / modified externally). */
-{ type: "docDirty"; doc: DocId; dirty: boolean } | 
+{ type: "docDirty"; doc: DocId; dirty: boolean; 
+/**  Text version when this transition occurred, including when it was saved. */
+version: number } | 
+/**
+ *  An open document's file changed on disk while the buffer had unsaved changes. The buffer
+ *  keeps them (autosave leaves the file alone); the UI offers to load the disk version.
+ */
+{ type: "docDiskConflict"; doc: DocId; path: string } | 
 /**  A complete workspace edit can be undone as one operation. */
 { type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
+/**  Files the edit renamed, as the edit named them: editors open on them follow. */
+moves: FileMove[]; 
 /**
  *  Made by an agent through the MCP server's tools: undoable like a refactoring, but
  *  not announced as one.
@@ -6761,6 +8165,16 @@ export type ImportedRunConfig_Serialize = {
 
 export type ImportsOnPaste = "ask" | "always" | "never";
 
+export type IncomingRefsReport = {
+	branches: UnfetchedBranch[],
+	errors: IncomingRemoteError[],
+};
+
+export type IncomingRemoteError = {
+	remote: string,
+	error: IdeError,
+};
+
 export type IndentConfig = IndentConfig_Serialize | IndentConfig_Deserialize;
 
 export type IndentConfig_Deserialize = {
@@ -6848,6 +8262,8 @@ export type InlayHint = {
 	 *  their values concatenate to `label`.
 	 */
 	parts: InlayLabelPart[],
+	/**  The edits that turn the hint into code (an annotation and any import it needs). */
+	textEdits: TextEdit[],
 };
 
 /**  Editor › Inlay Hints. */
@@ -7014,6 +8430,18 @@ export type InstallPreview = {
 	needsConsent: boolean,
 };
 
+export type InstallRemoteSkillRequest = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	subpath: string,
+	scope: McpScope,
+	/**  Must be `true` when the static security scan produces any warnings. */
+	confirmWarnings?: boolean,
+	/**  Must be `true` to replace an existing folder of the same name in `scope`. */
+	overwrite?: boolean,
+};
+
 /**  The settings folder of a JetBrains IDE (or Android Studio) of this user. */
 export type InstalledIdeSettings = {
 	/**  The IDE and its version: `IntelliJ IDEA 2025.2`. */
@@ -7076,6 +8504,9 @@ export type InvalidateCachesOptions = {
 	/**  Build tool sync results (Maven / Gradle) and other per-project caches. */
 	buildCaches?: boolean,
 };
+
+/**  A binary argument or result of an IPC command. */
+export type IpcBytes = string;
 
 /**  A path field of an IPC type. */
 export type IpcPath = string;
@@ -7344,6 +8775,8 @@ export type JvmPresentation = {
 	kind: JvmTypeKind | null,
 	springBoot: boolean,
 	runnable: boolean,
+	/**  `@Deprecated`, or a Java `@deprecated` Javadoc tag. */
+	deprecated: boolean,
 };
 
 export type JvmReferrer = {
@@ -7377,6 +8810,10 @@ export type LanguageCodeStyle_Deserialize = {
 	lineCommentAtFirstColumn?: boolean | null,
 	/**  Comment Code › Add a space at line comment start. */
 	lineCommentAddSpace?: boolean | null,
+	/**  PHP: align `=>` in multi-line arrays after formatting (other languages ignore it). */
+	alignKeyValuePairs?: boolean | null,
+	/**  PHP: align `=` of consecutive assignment statements after formatting. */
+	alignConsecutiveAssignments?: boolean | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -7393,6 +8830,10 @@ export type LanguageCodeStyle_Serialize = {
 	lineCommentAtFirstColumn?: boolean | null,
 	/**  Comment Code › Add a space at line comment start. */
 	lineCommentAddSpace?: boolean | null,
+	/**  PHP: align `=>` in multi-line arrays after formatting (other languages ignore it). */
+	alignKeyValuePairs?: boolean | null,
+	/**  PHP: align `=` of consecutive assignment statements after formatting. */
+	alignConsecutiveAssignments?: boolean | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -7536,12 +8977,19 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: ExternalFormatterSettings,
 	oxfmt?: ExternalFormatterSettings,
+	biome?: ExternalFormatterSettings,
 	ruff?: ExternalFormatterSettings,
+	black?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
 	zig?: ZigSettings,
+};
+
+export type LargeCommitFile = {
+	path: IpcPath,
+	size: number,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -7595,6 +9043,8 @@ export type Launch_Deserialize = {
 	diffBeforeFiles?: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
+	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
+	editor?: EditorLaunch_Deserialize | null,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -7624,6 +9074,8 @@ export type Launch_Serialize = {
 	diffBeforeFiles: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment: DeploymentLaunch | null,
+	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
+	editor: EditorLaunch_Serialize | null,
 };
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
@@ -7684,7 +9136,10 @@ export type LineMarkerInfo = {
 export type LineMatch = {
 	/**  0-based line. */
 	line: number,
-	/**  Line text, truncated around the match for very long lines. */
+	/**
+	 *  Line text, truncated around the matches for very long lines: such a line comes as one
+	 *  `LineMatch` per window, so the same `line` can repeat.
+	 */
 	text: string,
 	/**  UTF-16 column ranges within `text`. */
 	ranges: ([number, number])[],
@@ -7884,7 +9339,11 @@ export type LogcatLine = {
 	message: string,
 };
 
-export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens";
+export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" | 
+/**  An import or classpath update may have changed inheritance search results. */
+"inheritance" | 
+/**  The Dart server published a document's Flutter outline. */
+"flutterOutline";
 
 export type MainToolbarSettings = {
 	left?: string[],
@@ -7901,10 +9360,26 @@ export type ManifestDependency = {
 	to: number,
 };
 
+export type MarkdownCommandDirectory = 
+/**  The project's root folder. */
+"project" | 
+/**  The Markdown file's parent folder. */
+"file";
+
+export type MarkdownPreviewLayout = "sideBySide" | "stacked";
+
 /**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
 export type MarkdownSettings = {
+	previewLayout?: MarkdownPreviewLayout,
 	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
 	previewFontSize?: number | null,
+	/**
+	 *  "Detect commands that can be run right from Markdown files": gutter run icons on
+	 *  shell code blocks and on command lines in code blocks.
+	 */
+	runCommands?: boolean,
+	/**  Where those commands run; unset asks when the project and the file's folder differ. */
+	commandDirectory?: MarkdownCommandDirectory | null,
 };
 
 /**  A marketplace entry with what is installed. */
@@ -8047,7 +9522,66 @@ export type MavenSettings = {
 	activeProfiles?: string,
 	/**  Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ). */
 	delegateBuild?: boolean,
+	/**
+	 *  Download `-sources.jar` of dependencies when the Java language server imports the
+	 *  project (jdtls `java.maven.downloadSources`). Off: sources are fetched on demand
+	 *  from a library class's Download Sources banner.
+	 */
+	downloadSources?: boolean,
+	/**
+	 *  Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
+	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
+	 */
+	updateSnapshots?: boolean,
 };
+
+/**  What keeps an idle background project loaded. */
+export type McpBackgroundHold = 
+/**  A tool call is in flight. */
+{ kind: "request" } | 
+/**  A run it started is alive; `name` is the first one's. */
+{ kind: "run"; name: string };
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject = McpBackgroundProject_Serialize | McpBackgroundProject_Deserialize;
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject_Deserialize = {
+	root: IpcPath,
+	/**  Seconds since its last tool call began or ended. */
+	idleSeconds: number,
+	/**
+	 *  Seconds until it is unloaded for being idle. Absent while something keeps it open
+	 *  and when idle projects are never unloaded.
+	 */
+	unloadsInSeconds?: number | null,
+	keptOpenBy?: McpBackgroundHold | null,
+};
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject_Serialize = {
+	root: IpcPath,
+	/**  Seconds since its last tool call began or ended. */
+	idleSeconds: number,
+	/**
+	 *  Seconds until it is unloaded for being idle. Absent while something keeps it open
+	 *  and when idle projects are never unloaded.
+	 */
+	unloadsInSeconds?: number | null,
+	keptOpenBy?: McpBackgroundHold | null,
+};
+
+/**  Which folders without an open window the MCP server still serves tools for. */
+export type McpBackgroundProjects = 
+/**  Only projects open in a window. */
+"off" | 
+/**
+ *  Also folders the user trusts: trusted projects, recent projects and the repositories inside
+ *  trusted locations.
+ */
+"trusted" | 
+/**  Only the folders in [`McpServerSettings::background_project_paths`] (and below them). */
+"listed";
 
 /**  Summary of one server discovered inside an external MCP configuration file. */
 export type McpDiscoveredServer = {
@@ -8140,7 +9674,10 @@ export type McpServerInput = {
 };
 
 /**  Agents › MCP Server: agents use the IDE's built-in tools. */
-export type McpServerSettings = {
+export type McpServerSettings = McpServerSettings_Serialize | McpServerSettings_Deserialize;
+
+/**  Agents › MCP Server: agents use the IDE's built-in tools. */
+export type McpServerSettings_Deserialize = {
 	/**  Serve the tools on [`Self::address`] while the IDE runs. */
 	enabled?: boolean,
 	/**
@@ -8169,9 +9706,75 @@ export type McpServerSettings = {
 	 *  make a new one each run.
 	 */
 	fixedToken?: boolean,
+	/**
+	 *  Serve tools for folders that have no open window (see [`McpBackgroundProjects`]); the
+	 *  project loads when an agent first asks for it.
+	 */
+	backgroundProjects?: McpBackgroundProjects,
+	/**
+	 *  The folders [`McpBackgroundProjects::Listed`] serves, and the ones `Trusted` serves even
+	 *  when untrusted.
+	 */
+	backgroundProjectPaths?: string[],
+	/**
+	 *  Minutes a background project may go without a tool call before it is unloaded, at most
+	 *  1440; 0 keeps it until the IDE quits.
+	 */
+	backgroundIdleMinutes?: number,
+	/**  Background projects loaded at once, 1 to 32; the least recently used one makes room. */
+	backgroundProjectLimit?: number,
 };
 
-/**  What Settings › Agents › MCP Server shows. */
+/**  Agents › MCP Server: agents use the IDE's built-in tools. */
+export type McpServerSettings_Serialize = {
+	/**  Serve the tools on [`Self::address`] while the IDE runs. */
+	enabled: boolean,
+	/**
+	 *  Run the tools that change the project or start processes without asking first
+	 *  (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+	 */
+	runWithoutConfirmation: boolean,
+	/**  Finished agent tabs (`run_command`) the Run tool window shows; older ones are archived. */
+	agentTabLimit: number,
+	/**  Archived agent tabs kept; older ones are closed. */
+	agentArchiveLimit: number,
+	/**
+	 *  The IP address to listen on: `127.0.0.1` (this computer only, the default), another
+	 *  address of this computer, or `0.0.0.0` / `::` for every address.
+	 */
+	address: string,
+	/**
+	 *  Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
+	 *  port forwards keep working after a restart.
+	 */
+	fixedPort: boolean,
+	/**  The port of [`Self::fixed_port`]. */
+	port: number,
+	/**
+	 *  Keep the bearer token across runs (in the app data, readable by this user only) rather than
+	 *  make a new one each run.
+	 */
+	fixedToken: boolean,
+	/**
+	 *  Serve tools for folders that have no open window (see [`McpBackgroundProjects`]); the
+	 *  project loads when an agent first asks for it.
+	 */
+	backgroundProjects: McpBackgroundProjects,
+	/**
+	 *  The folders [`McpBackgroundProjects::Listed`] serves, and the ones `Trusted` serves even
+	 *  when untrusted.
+	 */
+	backgroundProjectPaths: string[],
+	/**
+	 *  Minutes a background project may go without a tool call before it is unloaded, at most
+	 *  1440; 0 keeps it until the IDE quits.
+	 */
+	backgroundIdleMinutes: number,
+	/**  Background projects loaded at once, 1 to 32; the least recently used one makes room. */
+	backgroundProjectLimit: number,
+};
+
+/**  What Settings › Agents › IDE MCP Server shows. */
 export type McpServerStatus = {
 	running: boolean,
 	/**  Why it isn't running though turned on. */
@@ -8184,13 +9787,13 @@ export type McpServerStatus = {
 	 *  reserved, so a free port was taken for this run.
 	 */
 	portUnavailable: string | null,
-	/**  The window's local project, which the URL and command below are for. */
+	/**  The window's project, which the URL and command below are for. */
 	project: IpcPath | null,
 	/**  `http://<address>:<port>/mcp?project=<root>`, with loopback for every address. */
 	url: string | null,
 	/**  Bearer token of `url` (changes with every run unless `mcpServer.fixedToken` is on). */
 	token: string | null,
-	/**  The stdio bridge: this executable and its arguments. */
+	/**  The stdio bridge: this host's executable and its arguments. */
 	stdioCommand: string[],
 };
 
@@ -8236,16 +9839,41 @@ export type MenuConfig = {
  *  A menu entry for a menu bar drawn by the frontend (Windows title bar).
  *  Labels are the English defaults; the frontend localises them like the native menu.
  */
-export type MenuNode = { kind: "submenu"; id: string; label: string; children: MenuNode[] } | 
+export type MenuNode = MenuNode_Serialize | MenuNode_Deserialize;
+
+/**
+ *  A menu entry for a menu bar drawn by the frontend (Windows title bar).
+ *  Labels are the English defaults; the frontend localises them like the native menu.
+ */
+export type MenuNode_Deserialize = ({ kind: "submenu"; id: string; label: string; 
+/**  Saved layout selection, unset for ordinary submenus. */
+current: boolean | null; children: MenuNode_Deserialize[] }) & { arg?: never; checked?: never; hint?: never } | 
 /**
  *  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
  *  `checked` is the state of a frontend-listed toggle (Status Bar Widgets). Spec toggles
  *  leave it unset: the frontend menu reads their state from the action (`toggled`), the
  *  source [`MenuConfig::checked`] is built from for the native menu.
  */
-{ kind: "action"; id: string; label: string; hint: string | null; arg: string | null; checked: boolean | null } | 
+({ kind: "action"; id: string; label: string; hint: string | null; arg: string | null; checked: boolean | null }) & { children?: never; current?: never } | 
 /**  A disabled placeholder such as "No Recent Projects". */
-{ kind: "placeholder"; id: string; label: string } | { kind: "separator" };
+({ kind: "placeholder"; id: string; label: string }) & { arg?: never; checked?: never; children?: never; current?: never; hint?: never } | ({ kind: "separator" }) & { arg?: never; checked?: never; children?: never; current?: never; hint?: never; id?: never; label?: never };
+
+/**
+ *  A menu entry for a menu bar drawn by the frontend (Windows title bar).
+ *  Labels are the English defaults; the frontend localises them like the native menu.
+ */
+export type MenuNode_Serialize = ({ kind: "submenu"; id: string; label: string; 
+/**  Saved layout selection, unset for ordinary submenus. */
+current?: boolean | null; children: MenuNode_Serialize[] }) & { arg?: never; checked?: never; hint?: never } | 
+/**
+ *  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
+ *  `checked` is the state of a frontend-listed toggle (Status Bar Widgets). Spec toggles
+ *  leave it unset: the frontend menu reads their state from the action (`toggled`), the
+ *  source [`MenuConfig::checked`] is built from for the native menu.
+ */
+({ kind: "action"; id: string; label: string; hint: string | null; arg: string | null; checked: boolean | null }) & { children?: never; current?: never } | 
+/**  A disabled placeholder such as "No Recent Projects". */
+({ kind: "placeholder"; id: string; label: string }) & { arg?: never; checked?: never; children?: never; current?: never; hint?: never } | ({ kind: "separator" }) & { arg?: never; checked?: never; children?: never; current?: never; hint?: never; id?: never; label?: never };
 
 /**  Merge dialog › Modify options (shared by the Pull dialog). */
 export type MergeOptions = {
@@ -8253,9 +9881,14 @@ export type MergeOptions = {
 	ffOnly?: boolean,
 	squash?: boolean,
 	noCommit?: boolean,
+	noVerify?: boolean,
+	/**  Merge histories whose commits have no common ancestor. */
+	allowUnrelatedHistories?: boolean,
 	/**  `-m`: message of the merge commit (Merge dialog only). */
 	message?: string | null,
 };
+
+export type MergeOutcome = { kind: "done" } | { kind: "localChanges"; files: string[] } | { kind: "conflicts" } | { kind: "alreadyUpToDate" } | { kind: "readyToCommit" } | { kind: "squashed" };
 
 /**
  *  Who stands on each side of the conflicts of the operation in progress (merge editor
@@ -8283,6 +9916,8 @@ export type MergeSides = {
 
 /**  The versions of a conflicted file as the merge editor shows them. */
 export type MergeVersions = {
+	/**  Binary versions are available for whole-file acceptance, without decoding their data. */
+	binary?: boolean,
 	base: string | null,
 	/**  The user's side ("Accept Yours"): git's stage 2, or stage 3 when `sides.reversed`. */
 	ours: string | null,
@@ -8394,6 +10029,13 @@ export type NewAgentTask = {
 	base: string | null,
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`). */
 	mcpOverrides?: { [key in string]: boolean },
+	/**  Per-session skill modes (`skill name` -> mode). */
+	skillOverrides?: { [key in string]: AgentSkillMode },
+	/**
+	 *  Creates the task without sending `prompt` (it only names the task): the composer's
+	 *  `!` command runs in it first.
+	 */
+	idle?: boolean,
 };
 
 /**  The approvals new agent tasks start with. */
@@ -8543,6 +10185,14 @@ export type OpenProject = {
 	remote: RemoteTarget | null,
 };
 
+export type OutgoingCommits = {
+	remote: string,
+	branch: string,
+	/**  Full local tracking ref, which may use a custom fetch refspec. */
+	reference: string,
+	count: number,
+};
+
 /**  A node of a document outline (Structure tool window, breadcrumbs). */
 export type OutlineItem = {
 	name: string,
@@ -8568,10 +10218,52 @@ export type PackageFile = {
 };
 
 /**  A file of a partial commit: which of its changes against HEAD to commit. */
-export type PartialCommitFile = {
+export type PartialCommitFile = PartialCommitFile_Serialize | PartialCommitFile_Deserialize;
+
+/**  A file of a partial commit: which of its changes against HEAD to commit. */
+export type PartialCommitFile_Deserialize = {
 	path: IpcPath,
 	/**  The hunks to commit, as [`diff_hunks`] of the HEAD and on-disk texts reports them. */
 	hunks: HunkRange[],
+	/**  Hunks whose added and removed lines have individual inclusion. */
+	lineHunks?: PartialCommitHunk[],
+	/**  Before-commit edits against the exact text selected by these hunks. */
+	prepared?: PreparedPartialCommit | null,
+};
+
+/**  A file of a partial commit: which of its changes against HEAD to commit. */
+export type PartialCommitFile_Serialize = {
+	path: IpcPath,
+	/**  The hunks to commit, as [`diff_hunks`] of the HEAD and on-disk texts reports them. */
+	hunks: HunkRange[],
+	/**  Hunks whose added and removed lines have individual inclusion. */
+	lineHunks?: PartialCommitHunk[],
+	/**  Before-commit edits against the exact text selected by these hunks. */
+	prepared?: PreparedPartialCommit | null,
+};
+
+export type PartialCommitHunk = {
+	range: HunkRange,
+	/**  The normalised texts that the user selected from, used to detect stale selections. */
+	oldText: string,
+	newText: string,
+	/**  Included deletions and additions, 0-based offsets within their respective sides. */
+	deletions: number[],
+	additions: number[],
+};
+
+export type PatchDiffContent = { kind: "text"; before: string | null; after: string | null } | { kind: "conflict"; local: string | null; base: string | null; patched: string | null } | { kind: "raw"; local: string | null; patch: string; applies: boolean } | { kind: "binary" };
+
+export type PatchDirectoryCandidate = {
+	directory: IpcPath,
+	source: IpcPath,
+	strip: number,
+	applies: boolean | null,
+};
+
+export type PatchDirectoryMatches = {
+	path: string,
+	candidates: PatchDirectoryCandidate[],
 };
 
 /**  One file of a patch (Apply Patch preview). */
@@ -8585,18 +10277,57 @@ export type PatchFile = {
 	binary: boolean,
 	/**  Applies cleanly to the working tree (otherwise a 3-way merge is attempted). */
 	applies: boolean,
+	missingBase?: boolean,
+};
+
+export type PatchFileDiff = {
+	path: IpcPath,
+	oldPath: IpcPath | null,
+	content: PatchDiffContent,
+};
+
+export type PatchPathMapping = {
+	path: string,
+	directory: IpcPath | null,
+	strip: number,
+	file: IpcPath | null,
+};
+
+export type PatchPlacement = {
+	path: string,
+	target: IpcPath | null,
+	error: string | null,
+};
+
+export type PatchPreview = {
+	files: PatchFile[],
+	base: IpcPath | null,
+	placements: PatchPlacement[] | null,
+	directoryMatches: PatchDirectoryMatches[],
+	automaticMappings: PatchPathMapping[],
 };
 
 export type PatchSource = 
 /**  Local changes of these files (absolute paths). */
 { from: "changes"; paths: IpcPath[]; reverse: boolean } | 
+/**  Changes selected on either side of the index in the staging tree. */
+{ from: "staging"; entries: StagingPatchEntry[]; reverse: boolean } | 
 /**  Changes made by these commits (oldest first). */
-{ from: "commits"; commits: string[]; reverse: boolean };
+{ from: "commits"; commits: string[]; reverse: boolean } | 
+/**  Selected files between two revisions, including both paths of a rename. */
+{ from: "revisions"; before: string; after: string; paths: string[] };
+
+export type PatchTarget = "project" | "repository";
 
 /**  An entry offered when completing a path. */
 export type PathCompletion = {
 	name: string,
 	dir: boolean,
+};
+
+export type PendingCommitApply = {
+	source: CommitApplySource,
+	paths: IpcPath[],
 };
 
 /**  A PHP version and where it comes from. */
@@ -8732,208 +10463,222 @@ export type PluginEvent = PluginEvent_Serialize | PluginEvent_Deserialize;
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent_Deserialize = 
 /**  Project target registrations or remembered prompt answers changed. */
-({ type: "runTargetsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "runTargetsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A window-owned operation; an empty request id queues an asynchronous run. */
-({ type: "windowRequest"; pluginId: string; requestId: string; request: WindowRequest_Deserialize }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "windowRequest"; pluginId: string; requestId: string; request: WindowRequest_Deserialize }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Reply to a content action in this window. */
-({ type: "contentTabReply"; pluginId: string; requestId: string; reply: ContentTabReply }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; request?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "contentTabReply"; pluginId: string; requestId: string; reply: ContentTabReply }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Open two texts in this window's diff viewer. */
-({ type: "openDiff"; pluginId: string; diff: FileDiff; fileName: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "openDiff"; pluginId: string; diff: FileDiff; fileName: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
-({ type: "commandsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "commandsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Complete replacement of one plugin's project-scoped decorations. */
-({ type: "decorationsChanged"; pluginId: string; sets: DecorationSet[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "decorationsChanged"; pluginId: string; sets: DecorationSet[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+/**  Complete replacement of one plugin's console highlight rules (empty: none). */
+({ type: "consoleRulesChanged"; pluginId: string; rules: ConsoleRule[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Open a file in the invoking window. */
-({ type: "editorOpen"; path: IpcPath; selection: Range | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "editorOpen"; path: IpcPath; selection: Range | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Change selection or scrolling only in this window's already open editor. */
-({ type: "editorRanges"; path: IpcPath; ranges: Range[]; reveal: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; reply?: never; request?: never; requestId?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "editorRanges"; path: IpcPath; ranges: Range[]; reveal: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; reply?: never; request?: never; requestId?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A bounded output channel snapshot, or withdrawal when the plugin stops. */
-({ type: "outputChanged"; pluginId: string; channel: string; text: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "outputChanged"; pluginId: string; channel: string; text: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Reveal a read-only Output tab in the receiving window. */
-({ type: "revealOutput"; pluginId: string; channel: string; text: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "revealOutput"; pluginId: string; channel: string; text: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Execute an action through the receiving window and answer over IPC. */
-({ type: "executeCommand"; requestId: string; id: string; arg: string | null; chain: string[] }) & { actions?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "executeCommand"; requestId: string; id: string; arg: string | null; chain: string[] }) & { actions?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Cached document associations were disposed (reload, disable or failure). */
-({ type: "documentIndexesChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "documentIndexesChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  The routes `plugin_id` reports for the project `root` may have changed:
  *  ask `plugin_endpoints` again.
  */
-({ type: "endpointsChanged"; pluginId: string; root: IpcPath }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "endpointsChanged"; pluginId: string; root: IpcPath }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  The marketplace offers newer versions of installed plugins (announced
  *  once per set of versions).
  */
-({ type: "updatesAvailable"; updates: PluginUpdate[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; url?: never; value?: never; view?: never } | ({ type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string; 
+({ type: "updatesAvailable"; updates: PluginUpdate[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; url?: never; value?: never; view?: never } | ({ type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string; 
 /**  Buttons running the plugin's own commands (`ui.notify`). */
-actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
-({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem_Deserialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  An override in the receiving window; removal exposes the global item. */
-({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem_Deserialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A plugin's context key was set (`value`: JSON text) or removed, in the
  *  emitted window (every window when the client is `None`).
  */
-({ type: "contextChanged"; pluginId: string; key: string; value: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; view?: never } | 
+({ type: "contextChanged"; pluginId: string; key: string; value: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; view?: never } | 
 /**  A plugin began a task: show it with the background tasks. */
-({ type: "taskStarted"; pluginId: string; taskId: string; title: string; cancellable: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "taskProgress"; pluginId: string; taskId: string; done: number; total: number | null; message: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; text?: never; theme?: never; title?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "taskEnded"; pluginId: string; taskId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "taskStarted"; pluginId: string; taskId: string; title: string; cancellable: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "taskProgress"; pluginId: string; taskId: string; done: number; total: number | null; message: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; text?: never; theme?: never; title?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "taskEnded"; pluginId: string; taskId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  The kinds of workbench events plugins want changed: re-fetch
  *  `plugin_event_kinds` (the UI reports only those).
  */
-({ type: "subscriptionsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "subscriptionsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A background WebSocket has messages ready for its owning plugin. */
-({ type: "websocketReady"; pluginId: string; connection: number }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "themeChanged"; theme: ActiveTheme | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "websocketReady"; pluginId: string; connection: number }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "themeChanged"; theme: ActiveTheme | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A plugin needs capabilities the user has not granted yet (first use
  *  after migrating from 0.1): show its consent dialog.
  */
-({ type: "consentRequested"; pluginId: string; capabilities: CapabilityInfo[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "consentRequested"; pluginId: string; capabilities: CapabilityInfo[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A view (or the custom editors) of a plugin must be rendered again. */
-({ type: "viewChanged"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
+({ type: "viewChanged"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
 /**  For the script of a view's `html` body. */
-({ type: "viewMessage"; pluginId: string; view: string; message: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
+({ type: "viewMessage"; pluginId: string; view: string; message: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
 /**  Open a terminal running `program` (already approved and verified). */
-({ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath }) & { actions?: never; arg?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; log?: never; message?: never; newWindow?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath }) & { actions?: never; arg?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; log?: never; message?: never; newWindow?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  Open (or focus) the log tab `key` following `log` (`views.open-log-tab`);
  *  it starts the program with `plugin_log_tab_spawn`.
  */
-({ type: "openLogTab"; pluginId: string; key: string; title: string; log: ServiceLog }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; level?: never; line?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "openLogTab"; pluginId: string; key: string; title: string; log: ServiceLog }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; level?: never; line?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
  */
-({ type: "languagesChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "languagesChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Copy `text` to the system clipboard. */
-({ type: "copyToClipboard"; pluginId: string; text: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "copyToClipboard"; pluginId: string; text: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Open `url` (`http(s)://`) in the system browser. */
-({ type: "openUrl"; pluginId: string; url: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; value?: never; view?: never } | 
+({ type: "openUrl"; pluginId: string; url: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; value?: never; view?: never } | 
 /**  A window command/event requests the normal File > Open flow. */
-({ type: "openProject"; pluginId: string; path: string; newWindow: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "openProject"; pluginId: string; path: string; newWindow: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A command waits for the user's answer: show `prompt`, then report it with
  *  `plugin_answer_prompt(prompt_id, …)`.
  */
-({ type: "promptRequested"; pluginId: string; promptId: string; prompt: Prompt }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "promptRequested"; pluginId: string; promptId: string; prompt: Prompt }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  The call that asked gave up (cancelled, or its plugin stopped): close the prompt. */
-({ type: "promptClosed"; promptId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "promptClosed"; promptId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A command of this window's prompting plugin was run from another window and refused
  *  while the plugin waits for the answer here: bring this window to the front.
  */
-({ type: "promptWaiting"; pluginId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "promptWaiting"; pluginId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Bring the tool window of the plugin's view `view` to the front. */
-({ type: "revealView"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
+({ type: "revealView"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
 /**
  *  A command needs the window's Commit view: answer with
  *  `plugin_answer_commit(request_id, …)`. Closed like a prompt (`PromptClosed`).
  */
-({ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
+({ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+/**
+ *  A command the user ran reads the clipboard (`ui.read-clipboard`): answer with
+ *  `plugin_answer_clipboard(request_id, …)`. Closed like a prompt (`PromptClosed`).
+ */
+({ type: "clipboardRequested"; pluginId: string; requestId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
 
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent_Serialize = 
 /**  Project target registrations or remembered prompt answers changed. */
-({ type: "runTargetsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "runTargetsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A window-owned operation; an empty request id queues an asynchronous run. */
-({ type: "windowRequest"; pluginId: string; requestId: string; request: WindowRequest_Serialize }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "windowRequest"; pluginId: string; requestId: string; request: WindowRequest_Serialize }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Reply to a content action in this window. */
-({ type: "contentTabReply"; pluginId: string; requestId: string; reply: ContentTabReply }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; request?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "contentTabReply"; pluginId: string; requestId: string; reply: ContentTabReply }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Open two texts in this window's diff viewer. */
-({ type: "openDiff"; pluginId: string; diff: FileDiff; fileName: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "openDiff"; pluginId: string; diff: FileDiff; fileName: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
-({ type: "commandsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "commandsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Complete replacement of one plugin's project-scoped decorations. */
-({ type: "decorationsChanged"; pluginId: string; sets: DecorationSet[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "decorationsChanged"; pluginId: string; sets: DecorationSet[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+/**  Complete replacement of one plugin's console highlight rules (empty: none). */
+({ type: "consoleRulesChanged"; pluginId: string; rules: ConsoleRule[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Open a file in the invoking window. */
-({ type: "editorOpen"; path: IpcPath; selection: Range | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "editorOpen"; path: IpcPath; selection: Range | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Change selection or scrolling only in this window's already open editor. */
-({ type: "editorRanges"; path: IpcPath; ranges: Range[]; reveal: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; reply?: never; request?: never; requestId?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "editorRanges"; path: IpcPath; ranges: Range[]; reveal: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; reply?: never; request?: never; requestId?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A bounded output channel snapshot, or withdrawal when the plugin stops. */
-({ type: "outputChanged"; pluginId: string; channel: string; text: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "outputChanged"; pluginId: string; channel: string; text: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Reveal a read-only Output tab in the receiving window. */
-({ type: "revealOutput"; pluginId: string; channel: string; text: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "revealOutput"; pluginId: string; channel: string; text: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Execute an action through the receiving window and answer over IPC. */
-({ type: "executeCommand"; requestId: string; id: string; arg: string | null; chain: string[] }) & { actions?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "executeCommand"; requestId: string; id: string; arg: string | null; chain: string[] }) & { actions?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Cached document associations were disposed (reload, disable or failure). */
-({ type: "documentIndexesChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "documentIndexesChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  The routes `plugin_id` reports for the project `root` may have changed:
  *  ask `plugin_endpoints` again.
  */
-({ type: "endpointsChanged"; pluginId: string; root: IpcPath }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "endpointsChanged"; pluginId: string; root: IpcPath }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  The marketplace offers newer versions of installed plugins (announced
  *  once per set of versions).
  */
-({ type: "updatesAvailable"; updates: PluginUpdate[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; url?: never; value?: never; view?: never } | ({ type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string; 
+({ type: "updatesAvailable"; updates: PluginUpdate[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; url?: never; value?: never; view?: never } | ({ type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string; 
 /**  Buttons running the plugin's own commands (`ui.notify`). */
-actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
-({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem_Serialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  An override in the receiving window; removal exposes the global item. */
-({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem_Serialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A plugin's context key was set (`value`: JSON text) or removed, in the
  *  emitted window (every window when the client is `None`).
  */
-({ type: "contextChanged"; pluginId: string; key: string; value: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; view?: never } | 
+({ type: "contextChanged"; pluginId: string; key: string; value: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; view?: never } | 
 /**  A plugin began a task: show it with the background tasks. */
-({ type: "taskStarted"; pluginId: string; taskId: string; title: string; cancellable: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "taskProgress"; pluginId: string; taskId: string; done: number; total: number | null; message: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; text?: never; theme?: never; title?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "taskEnded"; pluginId: string; taskId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "taskStarted"; pluginId: string; taskId: string; title: string; cancellable: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "taskProgress"; pluginId: string; taskId: string; done: number; total: number | null; message: string | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; text?: never; theme?: never; title?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "taskEnded"; pluginId: string; taskId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  The kinds of workbench events plugins want changed: re-fetch
  *  `plugin_event_kinds` (the UI reports only those).
  */
-({ type: "subscriptionsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "subscriptionsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A background WebSocket has messages ready for its owning plugin. */
-({ type: "websocketReady"; pluginId: string; connection: number }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "themeChanged"; theme: ActiveTheme | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "websocketReady"; pluginId: string; connection: number }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "themeChanged"; theme: ActiveTheme | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A plugin needs capabilities the user has not granted yet (first use
  *  after migrating from 0.1): show its consent dialog.
  */
-({ type: "consentRequested"; pluginId: string; capabilities: CapabilityInfo[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "consentRequested"; pluginId: string; capabilities: CapabilityInfo[] }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A view (or the custom editors) of a plugin must be rendered again. */
-({ type: "viewChanged"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
+({ type: "viewChanged"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
 /**  For the script of a view's `html` body. */
-({ type: "viewMessage"; pluginId: string; view: string; message: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
+({ type: "viewMessage"; pluginId: string; view: string; message: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
 /**  Open a terminal running `program` (already approved and verified). */
-({ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath }) & { actions?: never; arg?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; log?: never; message?: never; newWindow?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath }) & { actions?: never; arg?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | ({ type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; log?: never; message?: never; newWindow?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  Open (or focus) the log tab `key` following `log` (`views.open-log-tab`);
  *  it starts the program with `plugin_log_tab_spawn`.
  */
-({ type: "openLogTab"; pluginId: string; key: string; title: string; log: ServiceLog }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; level?: never; line?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "openLogTab"; pluginId: string; key: string; title: string; log: ServiceLog }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; level?: never; line?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
  */
-({ type: "languagesChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "languagesChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Copy `text` to the system clipboard. */
-({ type: "copyToClipboard"; pluginId: string; text: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "copyToClipboard"; pluginId: string; text: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Open `url` (`http(s)://`) in the system browser. */
-({ type: "openUrl"; pluginId: string; url: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; value?: never; view?: never } | 
+({ type: "openUrl"; pluginId: string; url: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; value?: never; view?: never } | 
 /**  A window command/event requests the normal File > Open flow. */
-({ type: "openProject"; pluginId: string; path: string; newWindow: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "openProject"; pluginId: string; path: string; newWindow: boolean }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A command waits for the user's answer: show `prompt`, then report it with
  *  `plugin_answer_prompt(prompt_id, …)`.
  */
-({ type: "promptRequested"; pluginId: string; promptId: string; prompt: Prompt }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "promptRequested"; pluginId: string; promptId: string; prompt: Prompt }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  The call that asked gave up (cancelled, or its plugin stopped): close the prompt. */
-({ type: "promptClosed"; promptId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "promptClosed"; promptId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A command of this window's prompting plugin was run from another window and refused
  *  while the plugin waits for the answer here: bring this window to the front.
  */
-({ type: "promptWaiting"; pluginId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "promptWaiting"; pluginId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Bring the tool window of the plugin's view `view` to the front. */
-({ type: "revealView"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
+({ type: "revealView"; pluginId: string; view: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never } | 
 /**
  *  A command needs the window's Commit view: answer with
  *  `plugin_answer_commit(request_id, …)`. Closed like a prompt (`PromptClosed`).
  */
-({ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
+({ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+/**
+ *  A command the user ran reads the clipboard (`ui.read-clipboard`): answer with
+ *  `plugin_answer_clipboard(request_id, …)`. Closed like a prompt (`PromptClosed`).
+ */
+({ type: "clipboardRequested"; pluginId: string; requestId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
 
 /**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
 export type PluginIcon = {
@@ -8992,6 +10737,10 @@ export type PluginJavaAgent = {
 	fileName: string,
 	/**  The optional argument passed after `=`. */
 	args: string | null,
+	/**  Extra JVM flags from `vmOptions` (API 1.14). */
+	vmOptions: string[],
+	/**  When `Some("jetbrains")`, those VM options apply only on JetBrains Runtime. */
+	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
 };
@@ -9005,6 +10754,7 @@ export type PluginLanguageVisuals = {
 	injections: Injection[],
 	colors: ([string, ColorInfo])[],
 	gutterActions: ([string, GutterAction])[],
+	hoverActions: ([string, HoverAction])[],
 };
 
 export type PluginLocation = {
@@ -9028,6 +10778,23 @@ export type PluginRunTarget = {
 	containerRoot: string | null,
 	commands: PluginCommandOverride[],
 };
+
+export type PluginSearchItem = {
+	id: string,
+	title: string,
+	description: string | null,
+	target: PluginSearchTarget,
+};
+
+export type PluginSearchPage = {
+	items: PluginSearchItem[],
+	hasMore: boolean,
+};
+
+export type PluginSearchTarget = { kind: "location"; value: Location } | { kind: "command"; value: {
+	id: string,
+	arg: string | null,
+} };
 
 /**  A secret a plugin declares, and whether the user stored it. */
 export type PluginSecretState = {
@@ -9079,12 +10846,24 @@ export type PluginStatus =
 "blocked";
 
 /**  A plugin's status bar item. */
-export type PluginStatusItem = {
+export type PluginStatusItem = PluginStatusItem_Serialize | PluginStatusItem_Deserialize;
+
+/**  A plugin's status bar item. */
+export type PluginStatusItem_Deserialize = {
 	/**  Whether this item overrides the global item in the requesting window. */
 	window: boolean,
 	pluginId: string,
 	id: string,
-	item: StatusItem,
+	item: StatusItem_Deserialize,
+};
+
+/**  A plugin's status bar item. */
+export type PluginStatusItem_Serialize = {
+	/**  Whether this item overrides the global item in the requesting window. */
+	window: boolean,
+	pluginId: string,
+	id: string,
+	item: StatusItem_Serialize,
 };
 
 /**  A test update, carried by the optional test-results export. */
@@ -9178,6 +10957,16 @@ export type PomGotoKind =
 /**  The POM of the artifact itself: a project module's, else the local repository's. */
 "artifactPom";
 
+/**  A dependency or plugin whose version comes from a management declaration. */
+export type PomManagedDeclaration = {
+	/**  0-based line of the `<dependency>` or `<plugin>` declaration. */
+	line: number,
+	/**  The interpolated version the management entry provides, when it has one. */
+	version: string | null,
+	/**  The management entry, possibly in a parent POM or an imported BOM. */
+	target: PomGoto,
+};
+
 /**  A 0-based line / UTF-16 column position. */
 export type Pos = {
 	line: number,
@@ -9270,6 +11059,12 @@ export type PrTimelineItem = {
 	/**  `None` for comments; the review state for reviews. */
 	reviewState: string | null,
 	url: string | null,
+};
+
+export type PreparedPartialCommit = {
+	/**  LF version of the selected text before running the language server. */
+	before: string,
+	text: string,
 };
 
 /**  A request ready to send: variables substituted, includes read. */
@@ -9452,6 +11247,17 @@ export type ProjectLibrary = {
 	scope?: DependencyScope,
 };
 
+export type ProjectPatchFailure = {
+	root: IpcPath,
+	error: IdeError,
+};
+
+export type ProjectPatchOutcome = {
+	outcome: ApplyOutcome,
+	conflictedRepositories: IpcPath[],
+	failures: ProjectPatchFailure[],
+};
+
 export type ProjectRoots = {
 	/**  Effective roots, sorted by path. */
 	roots: SourceFolder[],
@@ -9490,6 +11296,12 @@ export type ProjectStructureSettings = {
 	facets?: FacetConfig[],
 	/**  Packaging artifacts (`jar`, `war`, `warExploded`). */
 	artifacts?: ArtifactConfig[],
+};
+
+export type ProjectUpdateTarget = {
+	root: IpcPath,
+	parent: IpcPath | null,
+	detachedSubmodule: boolean,
 };
 
 /**
@@ -9574,14 +11386,84 @@ export type PullRequestSummary = {
 	deletions: number,
 };
 
+/**
+ *  The two tips shown in the rejected-push dialog. A retry must use this lease
+ *  even if a fetch advances the remote-tracking branch while the dialog is open.
+ */
+export type PushDivergence = {
+	source: string,
+	remote: string,
+	target: string,
+	localTip: string,
+	remoteTip: string,
+	remoteCommits: number,
+};
+
+export type PushInspection = {
+	state: PushTargetState,
+	localTip: string,
+	/**  An empty value expects the branch to be absent. Null means no tip was available. */
+	remoteTip: string | null,
+	remoteCommits: number,
+	remoteChecked: boolean,
+};
+
+export type PushRefResult = {
+	reference: string,
+	status: PushRefStatus,
+	/**  The number of commits between the tips Git reports for a fast-forward. */
+	commits: number | null,
+};
+
+export type PushRefStatus = "fastForward" | "forced" | "created" | "upToDate" | "deleted";
+
+/**
+ *  Git's reported result for each destination ref. A remote with several push URLs can
+ *  report more than one result for the same ref.
+ */
+export type PushReport = {
+	remote: string | null,
+	refs: PushRefResult[],
+};
+
+export type PushSelection = {
+	/**  A local branch. A detached source has no branch and requires a commit ID. */
+	branch: string | null,
+	revision: string | null,
+	remote: string,
+	target: string,
+	/**  A configured non-branch destination, for example a Gerrit review ref. */
+	specialRef?: boolean,
+};
+
 /**  Push dialog › Push tags: every tag, or only annotated tags on the pushed commits. */
 export type PushTags = "all" | "currentBranch";
+
+export type PushTargetChoices = {
+	branch: string | null,
+	destination: DefaultPushTarget | null,
+	destinations: DefaultPushTarget[],
+};
+
+export type PushTargetState = "ready" | "diverged" | "fetchRequired";
+
+export type PypiPackage = {
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+};
 
 /**  A class definition and the methods it declares. */
 export type PythonClassFacts = {
 	name: string,
 	/**  The class name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**  Base names as written, a qualified name reduced to its last segment. */
 	bases: string[],
 	methods: PythonMethodFacts[],
@@ -9596,6 +11478,8 @@ export type PythonDebuggerSettings = {
 /**  One Python module's classes, in source order. */
 export type PythonFacts = {
 	classes: PythonClassFacts[],
+	/**  `# noinspection` comments, in source order. */
+	suppressions: PythonSuppression[],
 };
 
 /**  A method definition the inspections can reason about. */
@@ -9603,6 +11487,8 @@ export type PythonMethodFacts = {
 	name: string,
 	/**  The method name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**
 	 *  Parameter names in order; `None` for a form whose forwarding cannot be compared
 	 *  (`*args`, `**kwargs`, keyword-only, positional-only).
@@ -9618,6 +11504,14 @@ export type PythonMethodFacts = {
 export type PythonPackage = {
 	name: string,
 	version: string,
+	/**  The newest release the interpreter can install; only [`list_packages`] with `outdated` sets it. */
+	latestVersion?: string | null,
+};
+
+export type PythonRequirements = {
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
 };
 
 export type PythonSettings = {
@@ -9642,6 +11536,29 @@ export type PythonSettings = {
 	hideOtherProjectInterpreters?: boolean,
 	/**  Show each interpreter's path under its name on the interpreters page. */
 	showInterpreterPaths?: boolean,
+	/**
+	 *  Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
+	 *  by interpreter executable; absolute or `~/`.
+	 */
+	interpreterPaths?: { [key in string]: string[] },
+};
+
+export type PythonStubLinks = {
+	/**  The stub of a `.py` document, the implementation of a `.pyi` one. */
+	counterpart: IpcPath | null,
+	links: StubLink[],
+	/**  Every place the counterpart was looked for: a change to one of them may change the answer. */
+	candidates: IpcPath[],
+};
+
+/**
+ *  A `# noinspection Id1,Id2` comment (PyCharm's) and the code it covers: the statement
+ *  right below it (a whole `def` / `class` with its decorators), or the whole file when it
+ *  sits among the file's leading comments, followed by a blank line.
+ */
+export type PythonSuppression = {
+	ids: string[],
+	range: Range,
 };
 
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */
@@ -9682,6 +11599,41 @@ export type RebaseAction = "pick" |
 /**  Meld into the previous commit, keeping the previous message. */
 "fixup" | "drop";
 
+export type RebaseEdit = RebaseEdit_Serialize | RebaseEdit_Deserialize;
+
+export type RebaseEditKind = "plan" | "message";
+
+export type RebaseEdit_Deserialize = {
+	kind: RebaseEditKind,
+	text: string,
+	plan: RebaseTodoRow_Deserialize[] | null,
+};
+
+export type RebaseEdit_Serialize = {
+	kind: RebaseEditKind,
+	text: string,
+	plan: RebaseTodoRow_Serialize[] | null,
+};
+
+export type RebaseEditorOperation = { kind: "start"; upstream: string | null; options: RebaseOptions } | { kind: "continue"; stage: boolean } | { kind: "skip" };
+
+export type RebaseEditorPrompt = RebaseEditorPrompt_Serialize | RebaseEditorPrompt_Deserialize;
+
+export type RebaseEditorPrompt_Deserialize = {
+	index: number,
+	edit: RebaseEdit_Deserialize,
+};
+
+export type RebaseEditorPrompt_Serialize = {
+	index: number,
+	edit: RebaseEdit_Serialize,
+};
+
+export type RebaseEditorReply = {
+	text: string,
+	rewords?: { [key in string]: string },
+};
+
 /**  One line of an interactive rebase plan. */
 export type RebaseEntry = {
 	commit: string,
@@ -9690,13 +11642,30 @@ export type RebaseEntry = {
 	message?: string | null,
 };
 
+export type RebaseFixupMessage = "replace" | "edit";
+
 /**  Rebase dialog options. */
 export type RebaseOptions = {
-	/**  `--onto <newbase>`: replay `upstream..HEAD` onto this revision instead. */
+	/**  Replay the selected commits onto this revision instead. */
 	onto?: string | null,
+	/**  Switch to this local branch before rebasing it. */
+	branch?: string | null,
 	rebaseMerges?: boolean,
 	keepEmpty?: boolean,
+	updateRefs?: boolean,
+	autosquash?: boolean | null,
 };
+
+export type RebaseState = {
+	original: HistoryTip,
+	onto: string,
+};
+
+export type RebaseTodoRow = RebaseTodoRow_Serialize | RebaseTodoRow_Deserialize;
+
+export type RebaseTodoRow_Deserialize = ({ kind: "commit"; line: number; action: RebaseAction; fixupMessage: RebaseFixupMessage | null; id: string; revision: string; author: string; summary: string; message: string }) & { reference?: never } | ({ kind: "updateRef"; line: number; reference: string }) & { action?: never; author?: never; fixupMessage?: never; id?: never; message?: never; revision?: never; summary?: never };
+
+export type RebaseTodoRow_Serialize = ({ kind: "commit"; line: number; action: RebaseAction; fixupMessage?: RebaseFixupMessage | null; id: string; revision: string; author: string; summary: string; message: string }) & { reference?: never } | ({ kind: "updateRef"; line: number; reference: string }) & { action?: never; author?: never; fixupMessage?: never; id?: never; message?: never; revision?: never; summary?: never };
 
 export type RecentProject = {
 	path: IpcPath,
@@ -9720,6 +11689,13 @@ export type RecentProjectGroup = {
 	/**  Its projects, in the order they were added. */
 	paths: IpcPath[],
 	expanded?: boolean,
+};
+
+/**  One followed redirect: the response and the `Location` it pointed to. */
+export type RedirectHop = {
+	status: number,
+	statusText: string,
+	location: string,
 };
 
 export type RefactoringProblem = {
@@ -9805,6 +11781,12 @@ export type Remote = {
 	resolvedUrl?: string | null,
 };
 
+/**  Tools › Remote Development. This is a user setting on the remote host. */
+export type RemoteDevelopmentSettings = {
+	/**  Zero disables idle shutdown. Positive values from older configurations keep their meaning. */
+	idleTimeoutMinutes?: number,
+};
+
 /**  Manage Remotes edits. */
 export type RemoteEdit = { op: "add"; name: string; url: string } | { op: "remove"; name: string } | 
 /**  Renames `name` to `new_name` (when different) and sets its URL. */
@@ -9824,13 +11806,20 @@ export type RemoteEntry = {
 	permissions: string,
 };
 
+/**  Advertised only by a persistent backend with an editable idle timeout. */
+export type RemoteIdlePolicy = {
+	overrideSeconds: number | null,
+};
+
 /**  A project folder on an SSH host, in a WSL distribution or in a dev container. */
 export type RemoteLaunch = {
 	target: RemoteTarget,
 	path: string,
 };
 
-export type RemoteOp = { op: "fetch" } | { op: "pull"; rebase: boolean } | 
+export type RemoteOp = { op: "fetch"; 
+/**  The incoming-commit poll keeps Git's tag handling and uses saved credentials only. */
+background?: boolean; report?: boolean; skipRemotes?: string[] } | { op: "fetchRemote"; remote: string; report?: boolean } | { op: "fetchPushTarget"; selection: PushSelection } | { op: "unshallow" } | { op: "pull"; rebase: boolean; expectedBranch?: string | null } | { op: "updateProjectBranch"; rebase: boolean } | { op: "updateSubmodule"; parent: string } | 
 /**  Update Project › Reset to the Remote Branch. */
 { op: "resetToUpstream" } | { op: "push"; force_with_lease: boolean; set_upstream: boolean; 
 /**  Push dialog › Push tags. */
@@ -9838,7 +11827,7 @@ tags?: PushTags | null;
 /**  Plain `--force` (Force push anyway). */
 force?: boolean; 
 /**  Push dialog › Run Git hooks unchecked (`--no-verify`). */
-no_verify?: boolean } | 
+no_verify?: boolean } | { op: "pushSelected"; selection: PushSelection; force_with_lease: boolean; set_upstream: boolean; tags: PushTags | null; no_verify: boolean; inspected?: PushInspection | null } | { op: "forcePushRejected"; divergence: PushDivergence; tags: PushTags | null; no_verify: boolean } | 
 /**  Deletes a remote branch; `branch` is the remote-tracking name (`origin/feature`). */
 { op: "deleteBranch"; branch: string } | 
 /**
@@ -9852,11 +11841,13 @@ set_upstream?: boolean; no_verify?: boolean } |
 /**  Push Tag › Push to `remote`. */
 { op: "pushTag"; tag: string; remote: string } | 
 /**  Deletes tag `tag` on `remote` (Delete on Remote). */
-{ op: "deleteRemoteTag"; tag: string; remote: string } | 
-/**  Fast-forwards local `branch` (not checked out) to its upstream. */
-{ op: "updateBranch"; branch: string } | 
+{ op: "deleteRemoteTag"; tag: string; remote: string } | { op: "deleteTagOnRemotes"; deleted: DeletedTag } | 
 /**  Pull dialog: `branches` of `remote` (none = the configured merge branch). */
-{ op: "pullFrom"; remote: string; branches: string[]; rebase: boolean; options: MergeOptions };
+{ op: "pullFrom"; remote: string; branches: string[]; 
+/**  Explicit rebase or merge. Null uses Git's configured pull behavior. */
+rebase: boolean | null; options: MergeOptions };
+
+export type RemoteOpReport = PushReport | FetchReport;
 
 export type RemoteProgress = {
 	stage: RemoteStage,
@@ -9872,6 +11863,7 @@ export type RemoteProject_Deserialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Deserialize,
@@ -9884,18 +11876,75 @@ export type RemoteProject_Serialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
 };
 
-export type RemoteSession = {
+export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;
+
+export type RemoteSession_Deserialize = {
 	target: RemoteTarget,
 	root: string,
 	host: string,
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
+};
+
+export type RemoteSession_Serialize = {
+	target: RemoteTarget,
+	root: string,
+	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
+	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
+};
+
+export type RemoteSkillBrowseResult = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	truncated: boolean,
+	skills: RemoteSkillCandidate[],
+};
+
+export type RemoteSkillCandidate = {
+	/**  Target folder name (`<name>` under `.agents/skills/<name>`). */
+	folderName: string,
+	/**  Repository-relative directory holding `SKILL.md` (`""` when at repository root). */
+	subpath: string,
+	fileCount: number,
+	totalBytes: number,
+};
+
+export type RemoteSkillFile = {
+	/**  Path relative to the skill folder (e.g. `"SKILL.md"`, `"scripts/check.sh"`). */
+	path: string,
+	size: number,
+	executable: boolean,
+	symlink: boolean,
+};
+
+export type RemoteSkillPreview = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	subpath: string,
+	skillName: string,
+	description: string,
+	skillMarkdown: string,
+	files: RemoteSkillFile[],
+	scanWarnings: SkillScanWarning[],
+	alreadyInstalledUser: boolean,
+	alreadyInstalledWorkspace: boolean,
 };
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
@@ -9951,6 +12000,11 @@ export type ReplaceTarget = {
 	 *  Positions where no match starts any more are skipped.
 	 */
 	only?: Pos[] | null,
+	/**
+	 *  Start positions of matches to leave as they are (excluded or already
+	 *  replaced usages) when every other match in the file is replaced.
+	 */
+	skip?: Pos[] | null,
 };
 
 export type RepositoryComparison = {
@@ -10002,6 +12056,11 @@ export type RevisionChange = {
 	link?: LinkTarget | null,
 };
 
+export type RewrittenCommit = {
+	head: HeadChange,
+	commit: string,
+};
+
 /**  How a grant is presented (plan 4.2). */
 export type Risk = 
 /**  Listed on the install page, one confirmation. */
@@ -10021,6 +12080,23 @@ export type RouteSource = {
 export type RubySettings = {
 	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
 	interpreter?: string,
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach = RunAttach_Serialize | RunAttach_Deserialize;
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Deserialize = {
+	info: RunInfo,
+	config: RunConfig_Deserialize,
+	buffered: OutputChunk[],
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Serialize = {
+	info: RunInfo,
+	config: RunConfig_Serialize,
+	buffered: OutputChunk[],
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
@@ -10117,6 +12193,12 @@ export type RunExtras_Deserialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -10161,6 +12243,12 @@ export type RunExtras_Serialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -10315,6 +12403,13 @@ export type Scope = {
 	expensive: boolean,
 };
 
+/**  The files of a custom scope (`file:src//*.ts`), for the Project view's scope panes. */
+export type ScopeFiles = {
+	paths: IpcPath[],
+	/**  More files than `limit` matched; `paths` holds the first ones. */
+	truncated: boolean,
+};
+
 /**  One installed interpreter / toolchain. */
 export type Sdk = {
 	/**
@@ -10347,7 +12442,9 @@ export type SdkKind = "python" | "node" |
 /**  Maven homes. */
 "maven" | "ruby" | 
 /**  Zig toolchain directories. */
-"zig";
+"zig" | 
+/**  .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins. */
+"dotnet";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -10373,6 +12470,11 @@ export type SearchQuery = {
 	maxMatches: number,
 	/**  Where in the code a match may lie (IDEA's search context filter). */
 	context?: SearchContext,
+	/**
+	 *  Also search what `.gitignore` / `.ignore` / `info/exclude` leave out (the caller then
+	 *  adds none of the project's exclusions either).
+	 */
+	includeExcluded?: boolean,
 };
 
 export type SearchScope = { kind: "project" } | { kind: "directory"; path: IpcPath } | { kind: "files"; paths: IpcPath[] } | 
@@ -10469,6 +12571,8 @@ export type SessionExceptionFilters = {
 	session: DebugSessionId,
 	adapter: string,
 	filters: ExceptionFilter[],
+	/**  Set when the session takes exception breakpoints on a chosen class. */
+	classes: ExceptionClassSupport | null,
 };
 
 /**  A live session, as listed by [`DebugManager::sessions`]. */
@@ -10500,6 +12604,24 @@ export type SettingsImport_Serialize = {
 
 export type SettingsScope = "global" | "project";
 
+export type SettingsWindowInit = SettingsWindowInit_Serialize | SettingsWindowInit_Deserialize;
+
+export type SettingsWindowInit_Deserialize = {
+	launch: Launch_Deserialize | null,
+	remote: RemoteSession_Deserialize | null,
+	project: ProjectInfo_Deserialize | null,
+	globalSettings: Settings_Deserialize,
+	updates: boolean,
+};
+
+export type SettingsWindowInit_Serialize = {
+	launch: Launch_Serialize | null,
+	remote: RemoteSession_Serialize | null,
+	project: ProjectInfo_Serialize | null,
+	globalSettings: Settings_Serialize,
+	updates: boolean,
+};
+
 export type Settings_Deserialize = {
 	general?: GeneralSettings,
 	appearance?: AppearanceSettings_Deserialize,
@@ -10525,6 +12647,8 @@ export type Settings_Deserialize = {
 	projectStructure?: ProjectStructureSettings,
 	/**  Version Control (Git, Commit, Confirmation, Issue Navigation). */
 	vcs?: VcsSettings,
+	/**  Build, Execution, Deployment › Compiler (Build tool window). */
+	build?: BuildSettings,
 	/**  Build, Execution, Deployment › Console. */
 	console?: ConsoleSettings,
 	debugger?: DebuggerSettings,
@@ -10545,12 +12669,15 @@ export type Settings_Deserialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers?: { [key in string]: LanguageServerSettings_Deserialize },
+	/**  Tools › Download sources: a mirror prefix for the release archives the installer fetches. */
+	toolDownloads?: ToolDownloadSettings,
 	/**  Editor › Inspections profiles. */
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
 	spelling?: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh?: SshSettings,
+	remoteDevelopment?: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -10559,7 +12686,7 @@ export type Settings_Deserialize = {
 	/**  Settings › Agents. */
 	agents?: AgentSettings_Deserialize,
 	/**  Agents › MCP Server (global only). */
-	mcpServer?: McpServerSettings,
+	mcpServer?: McpServerSettings_Deserialize,
 	/**  Tools › Agents: Command Execution Policy. */
 	agentSecurity?: AgentSecuritySettings,
 	/**  Appearance & Behavior › Scopes: named file sets other settings refer to. */
@@ -10597,6 +12724,8 @@ export type Settings_Serialize = {
 	projectStructure: ProjectStructureSettings,
 	/**  Version Control (Git, Commit, Confirmation, Issue Navigation). */
 	vcs: VcsSettings,
+	/**  Build, Execution, Deployment › Compiler (Build tool window). */
+	build: BuildSettings,
 	/**  Build, Execution, Deployment › Console. */
 	console: ConsoleSettings,
 	debugger: DebuggerSettings,
@@ -10617,12 +12746,15 @@ export type Settings_Serialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers: { [key in string]: LanguageServerSettings_Serialize },
+	/**  Tools › Download sources: a mirror prefix for the release archives the installer fetches. */
+	toolDownloads: ToolDownloadSettings,
 	/**  Editor › Inspections profiles. */
 	inspections: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
 	spelling: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh: SshSettings,
+	remoteDevelopment: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -10631,7 +12763,7 @@ export type Settings_Serialize = {
 	/**  Settings › Agents. */
 	agents: AgentSettings_Serialize,
 	/**  Agents › MCP Server (global only). */
-	mcpServer: McpServerSettings,
+	mcpServer: McpServerSettings_Serialize,
 	/**  Tools › Agents: Command Execution Policy. */
 	agentSecurity: AgentSecuritySettings,
 	/**  Appearance & Behavior › Scopes: named file sets other settings refer to. */
@@ -10667,9 +12799,9 @@ export type ShelvedChangeList = {
 	timeMs: number | null,
 	/**  Branch checked out when the changes were shelved. */
 	branch: string | null,
-	/**  Repository owning the patch; absent in legacy shelves. */
+	/**  Path base of the patch: the owning repository or a common directory for multiple repositories. */
 	repo?: IpcPath | null,
-	/**  Repository-relative paths. */
+	/**  Paths relative to the patch base. */
 	files: ChangedFile[],
 };
 
@@ -10721,9 +12853,19 @@ export type SizeSource =
  */
 "addressGaps" | "layout";
 
+export type SkillScanWarning = {
+	kind: SkillScanWarningKind,
+	file: string,
+	message: string,
+};
+
+export type SkillScanWarningKind = "hiddenUnicode" | "outOfRootSymlink" | "executableScript" | "allowedToolsShell";
+
 export type SkipReason = 
 /**  A configuration with this name already exists. */
 { kind: "nameTaken" } | 
+/**  An existing configuration (a detected one, say) runs the same command. */
+{ kind: "sameAs"; existing: string } | 
 /**  The configuration type has no equivalent here: a VS Code debugger (`cppdbg`), a JetBrains type (`Application`). */
 { kind: "unsupportedType"; type: string } | 
 /**  A `request` other than `launch` and `attach`. */
@@ -10762,6 +12904,8 @@ export type SmartKeysSettings = {
 	pairQuotes?: boolean,
 	surroundSelection?: boolean,
 	tabOutOfPair?: boolean,
+	/**  A `;` typed before the closing `)` of a statement goes to the end of the statement. */
+	semicolonAtStatementEnd?: boolean,
 	/**  Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag. */
 	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
@@ -10803,6 +12947,12 @@ export type SpellingSettings = {
 	projectWords?: string[],
 	/**  Custom dictionaries: plain word lists or Hunspell `.dic` files. */
 	customDictionaries?: string[],
+	/**
+	 *  Where "Save '…' to dictionary" writes: `project`, `application`, or a
+	 *  `spelling.customDictionaries` entry verbatim; empty (the default) is
+	 *  project when one is open, application otherwise.
+	 */
+	defaultDictionary?: string | null,
 };
 
 /**  One row of SQL Resolution Scopes. */
@@ -10862,6 +13012,45 @@ export type StackFrame = {
 	presentationHint: string | null,
 };
 
+export type StagedText = {
+	text: string,
+	/**  Identifies the index entry, including its mode, when this text was read. */
+	version: string,
+};
+
+export type StagedTextEdit = {
+	path: IpcPath,
+	version: string,
+	text: string,
+};
+
+export type StagingLineHunk = {
+	kind: HunkKind,
+	start: number,
+	lines: number,
+	headStart: number,
+	headLines: number,
+	headText: string,
+	indexStart: number,
+	indexLines: number,
+	indexText: string,
+	staged: boolean,
+	unstaged: boolean,
+};
+
+export type StagingLineHunks = {
+	indexVersion: string,
+	hunks: StagingLineHunk[],
+};
+
+export type StagingPatchEntry = {
+	path: IpcPath,
+	renamedFrom: IpcPath | null,
+	side: StagingPatchSide,
+};
+
+export type StagingPatchSide = "staged" | "unstaged" | "both";
+
 export type StartupMetrics = {
 	/**
 	 *  Process start → `main`: exec, code-signature scan (seconds for a freshly
@@ -10876,7 +13065,20 @@ export type StartupMetrics = {
 	firstIpcMs: number | null,
 };
 
-export type Stash = {
+export type Stash = Stash_Serialize | Stash_Deserialize;
+
+/**  Applying or popping a stash can leave the working tree with conflicts. */
+export type StashApplyOutcome = { kind: "done" } | { kind: "conflicts"; repository: IpcPath };
+
+export type StashApplyResult = {
+	/**  The entry's position when the operation started. */
+	index: number,
+	outcome: StashApplyOutcome,
+};
+
+export type StashDiffTarget = "local" | "parent";
+
+export type Stash_Deserialize = {
 	index: number,
 	message: string,
 	timeMs: number | null,
@@ -10884,15 +13086,49 @@ export type Stash = {
 	id: string,
 	/**  The commit the stash was made on (the stash commit's first parent). */
 	base: string | null,
+	/**  The stash's third parent, when untracked files were included. */
+	untracked?: string | null,
+};
+
+export type Stash_Serialize = {
+	index: number,
+	message: string,
+	timeMs: number | null,
+	/**  The stash commit; its changes are those against `base`. */
+	id: string,
+	/**  The commit the stash was made on (the stash commit's first parent). */
+	base: string | null,
+	/**  The stash's third parent, when untracked files were included. */
+	untracked?: string | null,
 };
 
 /**  A plugin's status bar item. */
-export type StatusItem = {
+export type StatusItem = StatusItem_Serialize | StatusItem_Deserialize;
+
+/**  A plugin's status bar item. */
+export type StatusItem_Deserialize = {
 	text: string,
 	tooltip: string | null,
 	/**  One of the plugin's commands, run on click. */
 	command: string | null,
+	/**  Opened on click instead of running `command` when not empty (API 1.14). */
+	menu?: StatusMenuEntry[],
 };
+
+/**  A plugin's status bar item. */
+export type StatusItem_Serialize = {
+	text: string,
+	tooltip: string | null,
+	/**  One of the plugin's commands, run on click. */
+	command: string | null,
+	/**  Opened on click instead of running `command` when not empty (API 1.14). */
+	menu?: StatusMenuEntry[],
+};
+
+/**  An entry of a plugin status bar item's menu (API 1.14, `ui.set-status-item-menu`). */
+export type StatusMenuEntry = 
+/**  Runs one of the plugin's commands with `argument`. */
+{ kind: "action"; label: string; description: string | null; command: string; argument: string | null } | { kind: "separator" } | { kind: "header"; label: string };
 
 /**  A call on the current line that Smart Step Into can enter (`stepInTargets`). */
 export type StepInTarget = {
@@ -11044,12 +13280,28 @@ export type StructureSupport = {
 	locals: boolean,
 };
 
+/**  A declaration of the document and its counterpart in the other file. */
+export type StubLink = {
+	/**  Qualified name, `Class.method`. */
+	name: string,
+	/**  The declaration's identifier in the document. */
+	range: Range,
+	/**  The declaration's whole extent in the document. */
+	extent: Range,
+	/**  The counterpart's identifier in `PythonStubLinks::counterpart`. */
+	target: Range,
+};
+
+export type SubmoduleRollbackSource = "head" | "index";
+
 export type SymbolFilter = "all" | 
 /**  Go to Class (⌘O): classes, interfaces, structs, enums, traits, type aliases. */
 "types";
 
 /**  Symbol kinds, a stable subset of LSP `SymbolKind`. */
-export type SymbolKind = "file" | "module" | "namespace" | "package" | "class" | "interface" | "struct" | "enum" | "enumMember" | "trait" | "function" | "method" | "constructor" | "field" | "property" | "variable" | "constant" | "typeParameter" | "typeAlias" | "macro" | "event" | "operator" | "key" | "unknown";
+export type SymbolKind = "file" | "module" | "namespace" | "package" | "class" | "interface" | "struct" | "enum" | "enumMember" | "trait" | "function" | "method" | "constructor" | "field" | "property" | "variable" | "constant" | "typeParameter" | "typeAlias" | "macro" | "event" | "operator" | "key" | 
+/**  A Flutter widget built in the code (Flutter outline only). */
+"widget" | "unknown";
 
 export type SymbolMatch = {
 	name: string,
@@ -11168,6 +13420,12 @@ export type TableSort = {
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
 
+/**  Snapshot and live binding returned when reattaching to an existing session. */
+export type TerminalAttach = {
+	session: TerminalSessionInfo,
+	buffered: string,
+};
+
 /**  TerminalExited data exchanged with the IDE. */
 export type TerminalExited = {
 	id: string,
@@ -11197,6 +13455,16 @@ export type TerminalOptions = {
 	shellIntegration?: boolean,
 };
 
+/**  Live terminal session state for reattaching across window reconnects. */
+export type TerminalSessionInfo = {
+	id: TerminalId,
+	title: string,
+	pid: number | null,
+	cwd: string,
+	appTitle: string | null,
+	commandRunning: boolean,
+};
+
 /**  Tools › Terminal. */
 export type TerminalSettings = {
 	/**  Empty = project root; relative paths resolve against it. */
@@ -11205,6 +13473,11 @@ export type TerminalSettings = {
 	/**  Shell command line; empty = the login shell. */
 	shellPath?: string,
 	tabName?: string,
+	/**
+	 *  Title a program sets (OSC 0/2) as the tab's name: `running` (while a command runs),
+	 *  `always`, or `off`.
+	 */
+	appTitleAsTabName?: string,
 	audibleBell?: boolean,
 	closeOnExit?: boolean,
 	mouseReporting?: boolean,
@@ -11220,6 +13493,8 @@ export type TerminalSettings = {
 	/**  `block` | `underline` | `bar`. */
 	cursorShape?: string,
 	cursorBlink?: boolean,
+	/**  Cap PTY→xterm paint rate: `unlimited` | `60` | `30` | `15` | `10`. */
+	maxFps?: string,
 	useEditorFont?: boolean,
 	fontFamily?: string,
 	fontSize?: number | null,
@@ -11298,6 +13573,8 @@ export type TextAttributesOverride_Deserialize = {
 	/**  `underline` | `wave` | `strikeout` | `none`. */
 	effect?: string | null,
 	effectColor?: string | null,
+	/**  IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type. */
+	errorStripeColor?: string | null,
 };
 
 /**  Editor › Color Scheme override of one text attribute. */
@@ -11309,6 +13586,8 @@ export type TextAttributesOverride_Serialize = {
 	/**  `underline` | `wave` | `strikeout` | `none`. */
 	effect?: string | null,
 	effectColor?: string | null,
+	/**  IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type. */
+	errorStripeColor?: string | null,
 };
 
 /**
@@ -11395,6 +13674,24 @@ export type ToolCallDisplay =
 "grouped" | 
 /**  Each call on its own line. */
 "each";
+
+/**
+ *  Tools › Download sources: a mirror the installer tries when `github.com` is slow or
+ *  unreachable.
+ * 
+ *  The mirror is a proxy prefix: the official URL is appended to it unchanged
+ *  (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
+ *  public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
+ *  hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
+ *  default, so every download stays on its official host until the user opts in.
+ */
+export type ToolDownloadSettings = {
+	/**
+	 *  Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
+	 *  every download on its official host.
+	 */
+	githubMirror?: string,
+};
 
 /**  UI-facing state of one tool. */
 export type ToolInfo = {
@@ -11499,6 +13796,11 @@ export type TraceUnavailable =
 /**  java-debug has no debug session for the JVM. */
 { kind: "noSession" } | { kind: "unsupported"; detail: string };
 
+export type TrackedTip = {
+	tracking: UpstreamTracking,
+	commit: string,
+};
+
 export type TransferError = {
 	path: string,
 	message: string,
@@ -11570,11 +13872,24 @@ export type UndoOutcome = {
 	conflicts: IpcPath[],
 };
 
+export type UnfetchedBranch = {
+	branch: string,
+	trackedTip: TrackedTip,
+	advertisedCommit: string,
+};
+
 export type UnityProjectInfo = {
 	editorVersion: string | null,
 	/**  File names relative to the Unity root, in stable order. */
 	solutions: string[],
 	projects: string[],
+};
+
+/**  A requirement the project's interpreter does not satisfy. */
+export type UnsatisfiedRequirement = {
+	dependency: ManifestDependency,
+	/**  The installed version that misses the specifier; `None` when not installed. */
+	installed: string | null,
 };
 
 export type UpdateCheck = {
@@ -11604,13 +13919,46 @@ export type UpdateStatus = {
 	checking: boolean,
 };
 
-export type Variable = {
+export type UpstreamTracking = {
+	remote: string,
+	branch: string,
+};
+
+/**  Why a folder added to an interpreter's paths stays off the import path. */
+export type UserPathProblem = 
+/**  Not an existing folder. */
+"missing" | 
+/**  Not absolute or `~/`, or it holds the separator of `PYTHONPATH`. */
+"invalid";
+
+export type Variable = Variable_Serialize | Variable_Deserialize;
+
+export type Variable_Deserialize = {
 	name: string,
 	value: string,
 	typeName: string | null,
 	/**  > 0 when expandable. */
 	variablesReference: number,
 	evaluateName: string | null,
+	/**
+	 *  `value` is not computed yet (DAP `presentationHint.lazy`): the single variable that
+	 *  `variables` returns for `variables_reference` holds the value and its children.
+	 */
+	lazy?: boolean,
+};
+
+export type Variable_Serialize = {
+	name: string,
+	value: string,
+	typeName: string | null,
+	/**  > 0 when expandable. */
+	variablesReference: number,
+	evaluateName: string | null,
+	/**
+	 *  `value` is not computed yet (DAP `presentationHint.lazy`): the single variable that
+	 *  `variables` returns for `variables_reference` holds the value and its children.
+	 */
+	lazy?: boolean,
 };
 
 /**  Version Control › Confirmation. */
@@ -11625,22 +13973,46 @@ export type VcsConfirmationSettings = {
 	onPatchCreated?: string,
 };
 
+/**
+ *  Directory Mappings on top of repository detection. Paths are relative to the project
+ *  root (`.` for the root itself) or absolute outside it.
+ */
+export type VcsMappings = {
+	/**  Detected repositories the IDE leaves alone: no Git or Commit integration, files stay. */
+	excluded?: string[],
+	/**  Repository roots detection does not reach (outside the project, or deeper). */
+	added?: string[],
+};
+
 /**  A repository of the project (IDEA's VCS root). */
 export type VcsRoot = {
 	/**  Worktree root. */
 	root: IpcPath,
+	/**  Root representing all mapped worktrees of the same Git repository in branch lists. */
+	branchRoot: IpcPath,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
+	/**  The current rebase uses Git's interactive mode. */
+	interactiveRebase?: boolean,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */
 	head: string | null,
 	/**  HEAD commit; `None` before the first commit. */
 	headCommit: string | null,
+	/**  The history ends at a shallow boundary rather than at the initial commit. */
+	shallow?: boolean,
+	/**  Remote availability is unknown in Restricted Mode or when config cannot be read. */
+	hasRemotes?: boolean | null,
+	/**  Conflicts staged during the current operation that can be reopened. */
+	resolvedConflicts?: IpcPath[],
 };
 
 /**  Version Control (main page) and its sub-pages. */
 export type VcsSettings = {
 	/**  Colour folders that contain changed files (project tree, tabs). */
 	showDirtyDirectories?: boolean,
+	createChangelistsAutomatically?: boolean,
+	/**  Diffs the user opens show in an editor tab; off, in a separate window. */
+	diffAsEditorTab?: boolean,
 	/**  Stop file history (Show History) after `history_limit` commits. */
 	limitHistory?: boolean,
 	historyLimit?: number,
@@ -11650,6 +14022,8 @@ export type VcsSettings = {
 	shelf?: ShelfSettings,
 	/**  Issue Navigation: commit-message patterns turned into links. */
 	issueNavigation?: IssueLink[],
+	/**  Directory Mappings: repository roots added to or excluded from the detected ones. */
+	mappings?: VcsMappings,
 };
 
 /**  The tool that creates a new Python environment in "Add Python Interpreter". */
@@ -11661,7 +14035,11 @@ export type VenvTool =
 /**  `poetry env use <base>` in the project, then `poetry env info --path`. */
 "poetry" | 
 /**  `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH). */
-"conda";
+"conda" | 
+/**  `pipenv --python <base>` in the project (pipenv must be on PATH). */
+"pipenv" | 
+/**  `hatch env create <env>` in the project (hatch must be on PATH). */
+"hatch";
 
 /**  What a view or custom editor shows. */
 export type View = {
@@ -11852,7 +14230,7 @@ export type WindowTab = {
 /**  A workbench event delivered to plugins. */
 export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged } | { kind: "websocketReady"; value: WebsocketReady } | { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
-{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
+{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "caretMoved"; value: CaretMoved } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
 /**  Problems of the window's files changed; plugins re-read `problems`. */
 { kind: "problemsChanged" } | { kind: "scheduled" };
 
@@ -11876,6 +14254,15 @@ export type WorkspaceEdit = {
 export type WorkspaceEditPrecondition = {
 	path: IpcPath,
 	hash: string,
+};
+
+/**  A project attached to the window's project, with its own Project Structure. */
+export type WorkspaceMember = {
+	root: IpcPath,
+	/**  Its project settings' Project Structure (not merged with the user settings). */
+	structure: ProjectStructureSettings,
+	/**  Roots detected from its build files. */
+	detected: SourceFolder[],
 };
 
 export type WorkspaceSymbol = {
@@ -11907,6 +14294,23 @@ export type Worktree = {
 	main: boolean,
 	locked: boolean,
 	prunable: boolean,
+	/**  This worktree belongs to a repository checked out as a submodule. */
+	submodule?: boolean,
+};
+
+export type WorktreeCreation = {
+	copyWarning: string | null,
+	setupWarning: string | null,
+};
+
+export type WorktreeInclude = {
+	path: IpcPath,
+	exists: boolean,
+};
+
+export type WorktreeSetup = {
+	script: string,
+	request: RequestId,
 };
 
 export type ZigSettings = {

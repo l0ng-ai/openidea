@@ -3,7 +3,7 @@
  * (plugins' default shortcuts count as the preset's), add / remove / reset,
  * conflict detection with `when` overlap, and shortcut search.
  */
-import type { Action } from "@/platform/actions";
+import { allActions, type Action } from "@/platform/actions";
 import { evaluateWhen, type ContextKeys } from "@/platform/context";
 import {
   customKeymapId,
@@ -12,12 +12,20 @@ import {
   presetBindings,
   PRESET_TITLES,
   PRESETS,
+  useKeymap,
   withBindings,
   type Keymap,
   type KeymapDraft,
 } from "@/platform/keymap";
 
 export { presetBindings, withBindings, type KeymapDraft };
+
+export function keymapSearchLabels(): string[] {
+  const draft = useKeymap.getState();
+  return allActions()
+    .filter((a) => isKeymapAction(a, draft))
+    .map((a) => a.title);
+}
 
 export function resolveBindings(draft: KeymapDraft, id: string): string[] {
   return draft.overrides[id]?.map(normalizeBinding) ?? presetBindings(draft.preset, id);
@@ -178,6 +186,113 @@ export function bindingMatches(bindings: readonly string[], strokes: string): bo
   if (!strokes) return true;
   const q = normalizeBinding(strokes);
   return bindings.some((b) => b === q || b.startsWith(q + " "));
+}
+
+const MODIFIER_ALIASES: Record<string, string> = {
+  ctrl: "Ctrl",
+  control: "Ctrl",
+  ctl: "Ctrl",
+  "⌃": "Ctrl",
+  alt: "Alt",
+  option: "Alt",
+  opt: "Alt",
+  "⌥": "Alt",
+  shift: "Shift",
+  "⇧": "Shift",
+  meta: "Meta",
+  cmd: "Meta",
+  command: "Meta",
+  super: "Meta",
+  win: "Meta",
+  "⌘": "Meta",
+};
+
+const KEY_ALIASES: Record<string, string> = {
+  esc: "escape",
+  return: "enter",
+  "↵": "enter",
+  del: "delete",
+  ins: "insert",
+  pgup: "pageup",
+  pgdn: "pagedown",
+  "↑": "up",
+  "↓": "down",
+  "←": "left",
+  "→": "right",
+};
+
+export interface QueryStroke {
+  mods: Set<string>;
+  key: string | null;
+}
+
+const MOD_SYMBOLS_RE = /[⌃⌥⇧⌘]/g;
+
+/**
+ * A search-field query read as typed shortcut text (`ctrl+shift+n`, `Ctrl+K, Ctrl+I`, `⇧⌘O`,
+ * `ctrl shift`), or null when it does not look like one. Needs a modifier, or a lone F-key.
+ */
+export function parseShortcutQuery(query: string): QueryStroke[] | null {
+  const text = query
+    .trim()
+    .replace(MOD_SYMBOLS_RE, (s) => ` ${s}+`)
+    .replace(/\s*\+\s*/g, "+")
+    .replace(/^\++|\++$/g, "");
+  if (!text) return null;
+  const strokes: QueryStroke[] = [];
+  let pending: QueryStroke | null = null;
+  for (const raw of text.split(/[\s,]+/).filter(Boolean)) {
+    const stroke: QueryStroke = pending ?? { mods: new Set(), key: null };
+    for (const token of raw.split("+").filter(Boolean)) {
+      const lower = token.toLowerCase();
+      const mod = MODIFIER_ALIASES[lower];
+      if (mod) stroke.mods.add(mod);
+      else if (stroke.key !== null) return null;
+      else stroke.key = KEY_ALIASES[lower] ?? lower;
+    }
+    // `ctrl shift n` spells one stroke: modifiers alone carry over to the next word.
+    if (stroke.key === null) pending = stroke;
+    else {
+      strokes.push(stroke);
+      pending = null;
+    }
+  }
+  if (pending) strokes.push(pending);
+  const hasModifier = strokes.some((s) => s.mods.size > 0);
+  const fKey = strokes.length === 1 && /^f\d{1,2}$/.test(strokes[0]!.key ?? "");
+  return hasModifier || fKey ? strokes : null;
+}
+
+const MODIFIER_NAMES: readonly string[] = ["Ctrl", "Alt", "Shift", "Meta"];
+
+function bindingStroke(stroke: string): QueryStroke {
+  const parts = stroke.split("+");
+  const last = parts.pop()!;
+  const mods = new Set(parts);
+  // Double-modifier gestures (`Shift Shift`, `Alt Alt+Up`) have strokes made of a bare modifier.
+  if (MODIFIER_NAMES.includes(last)) {
+    mods.add(last);
+    return { mods, key: null };
+  }
+  return { mods, key: last.toLowerCase() };
+}
+
+/**
+ * Text-search match on shortcuts: earlier query strokes must equal the binding's; the last one
+ * matches on its key with the same modifiers, or — while only modifiers are typed — on any
+ * stroke holding them all (`ctrl+shift` lists every Ctrl+Shift shortcut).
+ */
+export function shortcutQueryMatches(bindings: readonly string[], query: readonly QueryStroke[]): boolean {
+  return bindings.some((binding) => {
+    const strokes = normalizeBinding(binding).split(" ").map(bindingStroke);
+    if (query.length > strokes.length) return false;
+    return query.every((q, i) => {
+      const b = strokes[i]!;
+      const last = i === query.length - 1;
+      if (q.key === null && last) return [...q.mods].every((m) => b.mods.has(m));
+      return q.key === b.key && q.mods.size === b.mods.size && [...q.mods].every((m) => b.mods.has(m));
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

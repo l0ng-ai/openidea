@@ -5,11 +5,11 @@
  * follow the code. ⌘-click (Ctrl-click) in the gutter toggles a bookmark, as
  * in IDEA.
  */
-import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { RangeSet, StateEffect, StateField, type Extension, type Text, type Transaction } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import { emptyGutterSpacer } from "@/editor/api";
 import { hasPrimaryModifier } from "@/platform/keymap";
-import { marksOf, setFileLines, updateBookmarks, useBookmarks } from "./store";
+import { sortBookmarks, updateBookmarks, useBookmarks, type Bookmark } from "./store";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -53,31 +53,69 @@ class SpacerMarker extends GutterMarker {
 const plain = new BookmarkMarker(null);
 const spacer = new SpacerMarker();
 
-type Mark = { line: number; mnemonic: string | null };
+const setMarks = StateEffect.define<readonly Bookmark[]>();
 
-const setMarks = StateEffect.define<Mark[]>();
-
-function build(doc: EditorView["state"]["doc"], marks: readonly Mark[]): RangeSet<BookmarkMarker> {
+function build(doc: Text, bookmarks: readonly Bookmark[]) {
   const seen = new Set<number>();
-  const ranges = [...marks]
+  const ranges = bookmarks
     .filter((m) => m.line >= 0 && m.line < doc.lines && !seen.has(m.line) && seen.add(m.line))
     .sort((a, b) => a.line - b.line)
     .map((m) => (m.mnemonic ? new BookmarkMarker(m.mnemonic) : plain).range(doc.line(m.line + 1).from));
-  return RangeSet.of(ranges);
+  return { bookmarks, markers: RangeSet.of(ranges) };
 }
 
-function marksIn(view: EditorView, set: RangeSet<BookmarkMarker>): Mark[] {
-  const out: Mark[] = [];
-  const iter = set.iter();
-  while (iter.value) {
-    out.push({ line: view.state.doc.lineAt(iter.from).number - 1, mnemonic: iter.value.mnemonic });
-    iter.next();
+function moveBookmarks(bookmarks: readonly Bookmark[], tr: Transaction): readonly Bookmark[] {
+  if (bookmarks.length === 0) return bookmarks;
+  const { doc } = tr.startState;
+  const { changes, newDoc } = tr;
+  const removals: { from: number; to: number }[] = [];
+  changes.iterChanges((from, to, _fromB, _toB, insert) => {
+    if (from < to && insert.lines === 1) removals.push({ from, to });
+  });
+  const seen = new Set<number>();
+  const moved: Bookmark[] = [];
+  for (const bookmark of bookmarks) {
+    if (bookmark.line < 0 || bookmark.line >= doc.lines) {
+      moved.push(bookmark);
+      continue;
+    }
+    const line = doc.line(bookmark.line + 1);
+    // A line disappears when deletion covers its text and a line break.
+    // An empty line uses its following break, so deleting its predecessor leaves it intact.
+    if (
+      removals.some(
+        ({ from, to }) => from <= line.from && to >= line.to && (to > line.to || (line.length > 0 && from < line.from)),
+      )
+    )
+      continue;
+    const next = newDoc.lineAt(changes.mapPos(line.from, 1));
+    if (seen.has(next.number)) continue;
+    seen.add(next.number);
+    const number = next.number - 1;
+    moved.push(
+      number === bookmark.line ? bookmark : { ...bookmark, line: number, text: next.text.trim().slice(0, 200) },
+    );
   }
-  return out;
+  return moved;
 }
 
-const sameMarks = (a: readonly Mark[], b: readonly Mark[]) =>
-  a.length === b.length && a.every((v, i) => v.line === b[i]!.line && v.mnemonic === b[i]!.mnemonic);
+const sameBookmarks = (a: readonly Bookmark[], b: readonly Bookmark[]) =>
+  a.length === b.length &&
+  a.every((mark, i) => {
+    const other = b[i]!;
+    return (
+      mark === other ||
+      (mark.path === other.path &&
+        mark.line === other.line &&
+        mark.text === other.text &&
+        mark.mnemonic === other.mnemonic &&
+        mark.description === other.description &&
+        mark.list === other.list &&
+        mark.created === other.created)
+    );
+  });
+
+const fileBookmarks = (list: readonly Bookmark[], path: string) => list.filter((b) => b.path === path);
 
 /** The 0-based line of a click in the gutter, or null outside it. */
 function gutterLine(view: EditorView, e: MouseEvent): number | null {
@@ -88,12 +126,12 @@ function gutterLine(view: EditorView, e: MouseEvent): number | null {
 }
 
 export function bookmarkGutter(path: string, toggle: (line: number) => void): Extension {
-  const field = StateField.define<RangeSet<BookmarkMarker>>({
-    create: (state) => build(state.doc, marksOf(useBookmarks.getState().items, path)),
+  const field = StateField.define<ReturnType<typeof build>>({
+    create: (state) => build(state.doc, fileBookmarks(useBookmarks.getState().items, path)),
     update(value, tr) {
-      let next = tr.docChanged ? value.map(tr.changes) : value;
-      for (const e of tr.effects) if (e.is(setMarks)) next = build(tr.state.doc, e.value);
-      return next;
+      const effect = tr.effects.find((e) => e.is(setMarks));
+      if (effect) return build(tr.newDoc, effect.value);
+      return tr.docChanged ? build(tr.newDoc, moveBookmarks(value.bookmarks, tr)) : value;
     },
   });
 
@@ -104,15 +142,17 @@ export function bookmarkGutter(path: string, toggle: (line: number) => void): Ex
       constructor(private readonly view: EditorView) {
         this.unsub = useBookmarks.subscribe((s, prev) => {
           if (s.items === prev.items) return;
-          const want = marksOf(s.items, path);
-          if (!sameMarks(want, marksIn(this.view, this.view.state.field(field)))) {
+          const want = fileBookmarks(s.items, path);
+          if (sameBookmarks(want, fileBookmarks(prev.items, path))) return;
+          if (!sameBookmarks(want, this.view.state.field(field).bookmarks)) {
             this.view.dispatch({ effects: setMarks.of(want) });
           }
         });
         // Bookmarks may have changed while this editor was being created.
-        const want = marksOf(useBookmarks.getState().items, path);
-        if (!sameMarks(want, marksIn(view, view.state.field(field)))) {
-          queueMicrotask(() => view.dispatch({ effects: setMarks.of(want) }));
+        if (!sameBookmarks(fileBookmarks(useBookmarks.getState().items, path), view.state.field(field).bookmarks)) {
+          queueMicrotask(() =>
+            view.dispatch({ effects: setMarks.of(fileBookmarks(useBookmarks.getState().items, path)) }),
+          );
         }
         // Capture phase: runs before the breakpoint gutter's click handler, which ⌘-click must not reach.
         view.dom.addEventListener("mousedown", this.onMouseDown, true);
@@ -127,22 +167,16 @@ export function bookmarkGutter(path: string, toggle: (line: number) => void): Ex
       };
       update(u: ViewUpdate) {
         if (!u.docChanged || this.pending) return;
+        if (sameBookmarks(u.startState.field(field).bookmarks, u.state.field(field).bookmarks)) return;
         this.pending = true;
         // Write back after the update cycle (dispatching inside update is not allowed).
         queueMicrotask(() => {
           this.pending = false;
           const view = this.view;
           if (!view.dom.isConnected) return;
-          const marks = marksIn(view, view.state.field(field));
-          const stored = marksOf(useBookmarks.getState().items, path);
-          if (sameMarks(marks, stored)) return;
-          updateBookmarks((list) =>
-            setFileLines(
-              list,
-              path,
-              marks.map((m) => ({ line: m.line, text: view.state.doc.line(m.line + 1).text })),
-            ),
-          );
+          const marks = view.state.field(field).bookmarks;
+          if (sameBookmarks(marks, fileBookmarks(useBookmarks.getState().items, path))) return;
+          updateBookmarks((list) => sortBookmarks([...list.filter((b) => b.path !== path), ...marks]));
         });
       }
       destroy() {
@@ -157,10 +191,10 @@ export function bookmarkGutter(path: string, toggle: (line: number) => void): Ex
     sync,
     gutter({
       class: "cm-openidea-bookmarks",
-      markers: (v) => v.state.field(field),
+      markers: (v) => v.state.field(field).markers,
       // Reserve the bookmark's width only while this file has bookmarks.
       initialSpacer: () => emptyGutterSpacer,
-      updateSpacer: (_spacer, u) => (u.state.field(field).size ? spacer : emptyGutterSpacer),
+      updateSpacer: (_spacer, u) => (u.state.field(field).markers.size ? spacer : emptyGutterSpacer),
     }),
     theme,
   ];

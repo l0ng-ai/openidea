@@ -3,27 +3,37 @@
  * linear-branch actions and the changed-files pane (toolbar and context menu).
  */
 import { create } from "zustand";
-import type { Branch } from "@/bindings";
+import type { Branch, Commit } from "@/bindings";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { relativePath } from "@/platform/project";
 import { notifications, toolWindowService } from "@/workbench/contributions";
-import { deleteBranches, newBranch, toggleFavoriteBranch, updateBranch } from "./branchOps";
+import { deleteBranches, newBranch, newBranchInRepos, toggleFavoriteBranch, updateBranches } from "./branchOps";
 import {
+  applySelectedChanges,
   changesArg,
-  compareChangeWithLocal,
+  compareChangesWithLocal,
   getFromRevision,
   openChangeSource,
   revertSelectedChanges,
   showChangesDiff,
   useLogChanges,
+  type LogChange,
 } from "./logChanges";
 import { logOptions } from "./logOptions";
-import { goToRef, selectedCommits, updateLogOptions, useGitLog } from "./logStore";
+import { goToRef, selectedCommits, toggleCherryHighlight, updateLogOptions, useGitLog } from "./logStore";
 import { commitKey, commitRepo } from "./multiRoot";
+import { dropSelectedChanges, extractSelectedChanges } from "./rebase";
 import { currentRepoRoot, focusRepo } from "./store";
+import { showCompareBranches, type BranchComparisonTarget, type BranchComparisonData } from "./CompareBranches";
+import { showCompareRevisions } from "./operations";
 
 const VCS = "vcsAvailable";
 const LOG = "vcsAvailable || projectOpen || vcsLogFocus";
+
+function editSelectedFiles(arg: unknown, edit: (commit: Commit, changes: LogChange[]) => Promise<void>) {
+  const selection = arg as { commit?: Commit; changes?: unknown } | undefined;
+  if (selection?.commit) void edit(selection.commit, changesArg(selection.changes));
+}
 
 function showFocusedHistoryDiff() {
   const selected = selectedCommits();
@@ -88,13 +98,42 @@ const withBranch =
     if (b) void fn(b);
   };
 
-/** Update fast-forwards a local branch with an upstream (or updates the project for the current one). */
 export function canUpdateBranch(t: BranchTarget | null): boolean {
-  return !!t?.branch && !t.branch.remote && (t.branch.current || !!t.branch.upstream);
+  return !!t?.branch && !t.branch.remote && !!t.branch.upstream;
 }
 
 export function registerLogPaneActions(): () => void {
   return registerActions([
+    {
+      id: "vcs.log.highlightNotCherryPicked",
+      title: "Not Cherry-Picked Commits",
+      description: "Highlight commits that have not been cherry-picked to the current branch",
+      category: "Git Log",
+      when: LOG,
+      toggled: () => !!useGitLog.getState().cherryHighlight,
+      run: toggleCherryHighlight,
+    },
+    {
+      id: "vcs.log.compareBranches",
+      title: "Compare with Current",
+      category: "Git Log",
+      when: LOG,
+      hidden: true,
+      enabled: ({ arg }) => typeof (arg as BranchComparisonTarget | undefined)?.rev === "string",
+      run: ({ arg }) => showCompareBranches(arg as BranchComparisonTarget),
+    },
+    {
+      id: "vcs.log.compareBranchTrees",
+      title: "Show Branch Diff",
+      category: "Git Log",
+      when: LOG,
+      hidden: true,
+      enabled: ({ arg }) => typeof (arg as { repo?: string } | undefined)?.repo === "string",
+      run: ({ arg }) => {
+        const { branch, current, repo } = arg as BranchComparisonData & { repo: string };
+        showCompareRevisions(branch.rev, current.rev, branch.name, current.name, repo);
+      },
+    },
     {
       id: "vcs.log.showBranches",
       title: "Show Branches",
@@ -131,10 +170,19 @@ export function registerLogPaneActions(): () => void {
       icon: "plus",
       when: VCS,
       hidden: true,
-      run: async ({ arg }) => {
-        const t = branchArg(arg);
-        if (t?.repo) await focusRepo(t.repo);
-        void newBranch(t && t.ref !== "HEAD" && !t.branch?.current ? t.ref : undefined);
+      run: ({ arg }) => {
+        const targets = branchTargets(arg);
+        const target = targets[0];
+        const source = target?.branch ?? (target && target.ref !== "HEAD" ? { tag: target.ref } : undefined);
+        const roots = [
+          ...new Set(
+            targets.flatMap(({ ref, repo, branch }) =>
+              repo && ref === target?.ref && branch?.remote === target.branch?.remote ? [repo] : [],
+            ),
+          ),
+        ];
+        if (roots.length) void newBranchInRepos(roots, source);
+        else void newBranch(source);
       },
     },
     {
@@ -144,7 +192,7 @@ export function registerLogPaneActions(): () => void {
       icon: "git-pull",
       when: VCS,
       hidden: true,
-      run: withBranch((b) => updateBranch(b.name)),
+      run: ({ arg }) => updateBranches(branchTargets(arg)),
     },
     {
       id: "vcs.log.branches.delete",
@@ -188,6 +236,11 @@ export function registerLogPaneActions(): () => void {
       hidden: true,
       keyWhen: "vcsLogChangesFocus || vcsLogRevisionFocus",
       run: ({ arg, ctx }) => {
+        const selection = arg as { changes?: LogChange[]; chain?: LogChange[] } | undefined;
+        if (selection?.changes && selection.chain) {
+          void showChangesDiff(selection.changes, false, selection.chain);
+          return;
+        }
         if (ctx.vcsLogRevisionFocus) {
           showFocusedHistoryDiff();
           return;
@@ -201,10 +254,7 @@ export function registerLogPaneActions(): () => void {
       category: "Git Log",
       when: LOG,
       hidden: true,
-      run: ({ arg }) => {
-        const c = changesArg(arg)[0];
-        if (c) void compareChangeWithLocal(c, "after");
-      },
+      run: ({ arg }) => void compareChangesWithLocal(changesArg(arg), "after"),
     },
     {
       id: "vcs.log.changes.compareBeforeWithLocal",
@@ -212,10 +262,7 @@ export function registerLogPaneActions(): () => void {
       category: "Git Log",
       when: LOG,
       hidden: true,
-      run: ({ arg }) => {
-        const c = changesArg(arg)[0];
-        if (c) void compareChangeWithLocal(c, "before");
-      },
+      run: ({ arg }) => void compareChangesWithLocal(changesArg(arg), "before"),
     },
     {
       id: "vcs.log.changes.jumpToSource",
@@ -237,6 +284,31 @@ export function registerLogPaneActions(): () => void {
       run: ({ arg }) => void getFromRevision(changesArg(arg)),
     },
     {
+      id: "vcs.log.changes.apply",
+      title: "Apply Selected Changes",
+      category: "Git Log",
+      icon: "check",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => void applySelectedChanges(changesArg(arg)),
+    },
+    {
+      id: "vcs.log.changes.extract",
+      title: "Extract Selected Changes",
+      category: "Git Log",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => editSelectedFiles(arg, extractSelectedChanges),
+    },
+    {
+      id: "vcs.log.changes.drop",
+      title: "Drop Selected Changes",
+      category: "Git Log",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => editSelectedFiles(arg, dropSelectedChanges),
+    },
+    {
       id: "vcs.log.changes.revert",
       title: "Revert Selected Changes",
       category: "Git Log",
@@ -252,6 +324,15 @@ export function registerLogPaneActions(): () => void {
       when: LOG,
       toggled: () => logOptions().groupByDirectory,
       run: () => updateLogOptions({ groupByDirectory: !logOptions().groupByDirectory }),
+    },
+    {
+      id: "vcs.log.changes.showOnlyAffected",
+      title: "Show Only Affected Changes",
+      category: "Git Log",
+      when: LOG,
+      hidden: true,
+      toggled: () => logOptions().showOnlyAffected,
+      run: () => updateLogOptions({ showOnlyAffected: !logOptions().showOnlyAffected }),
     },
     {
       id: "vcs.log.changes.diffPreview",

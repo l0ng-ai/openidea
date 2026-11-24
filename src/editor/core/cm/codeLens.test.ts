@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Compartment, EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import { codeLenses } from "@/editor/api";
 import { codeLensExtension, codeLensPositions, declarationStart, groupLenses, indentColumns } from "./codeLens";
 
@@ -93,5 +93,52 @@ describe("code lens position", () => {
     expect(v.dom.querySelector(".cm-openidea-lensInline")).toBeNull();
     expect(texts(v.dom.querySelectorAll(".cm-openidea-lens"))).toEqual(["1 usageDenis"]);
     v.destroy();
+  });
+});
+
+describe("inline lens against a folded chip", () => {
+  const doc = "def f():\n    pass\n";
+  const lenses = [{ pos: 8, title: "1 usage", kind: "usages", order: 10 }];
+
+  class FakeChip extends WidgetType {
+    toDOM() {
+      const el = document.createElement("span");
+      el.className = "cm-foldPlaceholder";
+      el.getBoundingClientRect = () => ({ width: 18 }) as DOMRect;
+      return el;
+    }
+    override eq(other: WidgetType) {
+      return other instanceof FakeChip;
+    }
+  }
+
+  it("steps past a folded chip drawn after its anchor and back when it goes away", async () => {
+    vi.useFakeTimers();
+    const chip = new Compartment();
+    const chipDeco = () =>
+      EditorView.decorations.of(Decoration.set([Decoration.widget({ widget: new FakeChip(), side: 3 }).range(8)]));
+    const v = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [codeLensExtension, codeLenses.of(lenses), codeLensPositions.of({ usages: "right" }), chip.of([])],
+      }),
+      parent: document.body,
+    });
+    const inline = v.dom.querySelector<HTMLElement>(".cm-openidea-lensInline")!;
+    const inner = inline.firstElementChild as HTMLElement;
+    await vi.advanceTimersByTimeAsync(10);
+    expect(inner.style.left).toBe("");
+
+    // The fold appears after the lens mounted; side 3 mirrors the production DOM order, where
+    // CodeMirror draws the fold's replace widget after the side-1 line-end anchor.
+    v.dispatch({ effects: chip.reconfigure(chipDeco()) });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(inner.style.left).toBe("calc(var(--openidea-hint-offset) + 18px)");
+
+    v.dispatch({ effects: chip.reconfigure([]) });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(inner.style.left).toBe("");
+    v.destroy();
+    vi.useRealTimers();
   });
 });

@@ -99,6 +99,9 @@ pub(crate) struct Session {
     pub js_overrides: tokio::sync::Mutex<Option<tokio::sync::watch::Sender<Vec<crate::JsResponseRule>>>>,
     /// The file js-debug records the page's CPU profile into, while one is being recorded.
     pub js_profile: parking_lot::Mutex<Option<std::path::PathBuf>>,
+    /// The device of the app `flutter debug_adapter` announced, once it did: the Dart adapter
+    /// sends the same `dart.*` events.
+    pub flutter_app: std::sync::OnceLock<Option<String>>,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
     /// One inspector request per session at a time.
     pub inspect_lock: tokio::sync::Mutex<()>,
@@ -115,6 +118,11 @@ pub(crate) struct Session {
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
     pub stream_tracer: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::StreamTracer>>>,
+    /// Given at start: the class breakpoints must be armed before `configurationDone`.
+    pub(crate) exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
+    /// Held from `setExceptionBreakpoints`, which drops the class breakpoints, until they are
+    /// armed again, so that the last list armed is the manager's.
+    pub(crate) exception_turn: tokio::sync::Mutex<()>,
     pub(crate) stream_trace: parking_lot::Mutex<Option<crate::stream_trace::ActiveTrace>>,
     /// The last trace that finished, until the stop its records were read in ends.
     pub(crate) stream_trace_done: parking_lot::Mutex<Option<crate::stream_trace::DoneTrace>>,
@@ -152,18 +160,35 @@ impl Stops {
     }
 
     /// Ends the stops taken by ticket `upto` of `thread`, or of every thread.
-    fn release(&mut self, thread: Option<i64>, every: bool, upto: u64) {
+    /// Returns whether any stop was removed.
+    fn release(&mut self, thread: Option<i64>, every: bool, upto: u64) -> bool {
         let latest = self.latest();
+        let before = (self.all, self.threads.len());
         if every || thread.is_none() || self.all.is_some_and(|t| t <= upto) {
             self.all = self.all.filter(|&t| t > upto);
             self.threads.retain(|&(_, t)| t > upto);
         } else {
             self.threads.retain(|&(id, t)| Some(id) != thread || t > upto);
         }
+        let changed = (self.all, self.threads.len()) != before;
         // Back on an earlier thread's stop, as the JDWP link moves to it with a new generation.
         let now = self.latest();
         if now.is_some() && now != latest {
             self.ticket += 1;
+        }
+        changed
+    }
+
+    /// Whether a stop taken after `after` would be undone by a synthetic `continued` event for
+    /// `thread` (or for every thread when `every` is set).
+    fn superseded(&self, thread: i64, every: bool, after: u64) -> bool {
+        if self.all.is_some_and(|t| t > after) {
+            return true;
+        }
+        if every {
+            self.threads.iter().any(|&(_, t)| t > after)
+        } else {
+            self.threads.iter().any(|&(id, t)| id == thread && t > after)
         }
     }
 }
@@ -189,12 +214,27 @@ impl Suspension {
         }
     }
 
-    /// A `continued` event; `all`: its `allThreadsContinued`.
-    pub fn continued(&self, thread: Option<i64>, all: bool) {
-        self.0.lock().release(thread, all, u64::MAX);
+    /// Runs `emit` under the suspension lock so a synthetic `continued` from a resume reply cannot
+    /// be emitted after a `stopped` event once that stop has been recorded.
+    pub fn emit_synced(&self, emit: impl FnOnce()) {
+        let _stops = self.0.lock();
+        emit();
     }
 
-    /// Take before sending a resume-like request and pass to [`Self::resumed`].
+    /// A `continued` event; `all`: its `allThreadsContinued`. Runs `emit` under the same lock so
+    /// synthetic `continued` events from resume replies stay ordered against it.
+    pub fn continued_and_emit(&self, thread: Option<i64>, all: bool, emit: impl FnOnce()) {
+        let mut stops = self.0.lock();
+        stops.release(thread, all, u64::MAX);
+        emit();
+    }
+
+    #[cfg(test)]
+    pub fn continued(&self, thread: Option<i64>, all: bool) {
+        self.continued_and_emit(thread, all, || {});
+    }
+
+    /// Take before sending a resume-like request and pass to [`Self::resumed_and_emit`].
     pub fn ticket(&self) -> u64 {
         self.0.lock().ticket
     }
@@ -207,8 +247,19 @@ impl Suspension {
     }
 
     /// After a successful resume-like request for `thread`; `all`: every thread ran.
+    /// Runs `emit` under the lock only when a prior stop was ended and no newer stop superseded it.
+    pub fn resumed_and_emit(&self, ticket: u64, thread: i64, all: bool, emit: impl FnOnce()) {
+        let mut stops = self.0.lock();
+        let superseded = stops.superseded(thread, all, ticket);
+        let released = stops.release(Some(thread), all, ticket);
+        if released && !superseded {
+            emit();
+        }
+    }
+
+    #[cfg(test)]
     pub fn resumed(&self, ticket: u64, thread: i64, all: bool) {
-        self.0.lock().release(Some(thread), all, ticket);
+        self.resumed_and_emit(ticket, thread, all, || {});
     }
 }
 
@@ -274,6 +325,7 @@ impl Session {
             launch_type: std::sync::OnceLock::new(),
             js_overrides: tokio::sync::Mutex::new(None),
             js_profile: parking_lot::Mutex::new(None),
+            flutter_app: std::sync::OnceLock::new(),
             jvm_inspector: parking_lot::Mutex::new(None),
             inspect_lock: tokio::sync::Mutex::default(),
             ended: ide_core::CancellationToken::new(),
@@ -282,6 +334,8 @@ impl Session {
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
             stream_tracer: parking_lot::Mutex::new(None),
+            exception_classes: None,
+            exception_turn: tokio::sync::Mutex::default(),
             stream_trace: parking_lot::Mutex::new(None),
             stream_trace_done: parking_lot::Mutex::new(None),
             quirks: kotlin_lsp::Quirks::default(),
@@ -303,6 +357,16 @@ impl Session {
 
     pub fn emit(&self, event: DebugEvent) {
         self.owner.sink.emit(IdeEvent::Debug { session: self.id, event });
+    }
+
+    /// Completes a successful resume or step reply (`ticket` taken before the request): ends the
+    /// prior stops and emits a synthetic `continued` event unless an adapter event already ended
+    /// them or a newer `stopped` event superseded it.
+    pub(crate) fn finish_resume(&self, ticket: u64, thread_id: i64, all: bool) {
+        self.suspended.resumed_and_emit(ticket, thread_id, all, || {
+            self.emit(DebugEvent::Continued { thread_id, all_threads_continued: all });
+        });
+        crate::stream_trace::release_done(self);
     }
 
     /// `path` as sent to the adapter (resolved for [`RESOLVES_PATHS`] adapters).
@@ -504,6 +568,9 @@ impl Session {
 
 /// How long Stop waits for a launched program to exit before reporting the session ended.
 pub(crate) const DEBUGGEE_EXIT_WAIT: Duration = Duration::from_secs(10);
+/// How long a stop waits for a killed program to be gone (Windows ends processes asynchronously).
+#[cfg(windows)]
+const DEBUGGEE_KILL_WAIT: Duration = Duration::from_secs(5);
 
 pub(crate) async fn remember_debuggee(s: &Arc<Session>) {
     #[cfg(windows)]
@@ -643,14 +710,24 @@ pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
     }
     #[cfg(windows)]
     {
+        use std::time::Instant;
         remember_debuggee(s).await;
-        let deadline = std::time::Instant::now() + DEBUGGEE_EXIT_WAIT;
+        let deadline = Instant::now() + DEBUGGEE_EXIT_WAIT;
+        let mut killed: Option<Instant> = None;
         // The captured tree is the oracle when it was captured; otherwise the job (every
         // process the launch started) is, so a failed capture can no longer end the wait
         // while the program still holds its port.
         while launch_running(s) {
-            if s.stop_force.swap(false, Ordering::AcqRel) || std::time::Instant::now() >= deadline {
+            let now = Instant::now();
+            if s.stop_force.swap(false, Ordering::AcqRel) || (killed.is_none() && now >= deadline) {
                 signal_debuggee(s, true).await;
+                killed.get_or_insert(now);
+            }
+            // Termination is asynchronous, and a process TerminateProcess can't end (stuck in
+            // the kernel) would hold the stop forever: give up on it, as on Unix.
+            if killed.is_some_and(|at| now.duration_since(at) >= DEBUGGEE_KILL_WAIT) {
+                tracing::warn!(session = s.id.0, pid, "stop: the debugged program did not exit after it was killed");
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -765,23 +842,26 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
                 reason = quirks.stop_reason(reason);
             }
             mgr.restore_breakpoints(s).await;
-            s.emit(DebugEvent::Stopped {
-                thread_id: int("threadId").unwrap_or(0),
-                reason,
-                description: str_("description").or_else(|| str_("text")),
-                all_threads_stopped: all,
+            s.suspended.emit_synced(|| {
+                s.emit(DebugEvent::Stopped {
+                    thread_id: int("threadId").unwrap_or(0),
+                    reason,
+                    description: str_("description").or_else(|| str_("text")),
+                    all_threads_stopped: all,
+                });
             });
         }
         "continued" => {
             let all = body.get("allThreadsContinued").and_then(Value::as_bool);
             // DAP: an event without the flag continues its thread alone. The UI keeps treating
             // it as all threads; the suspension, which holds only threads that stopped, need not.
-            s.suspended.continued(int("threadId"), all.unwrap_or(false));
-            crate::stream_trace::release_done(s);
-            s.emit(DebugEvent::Continued {
-                thread_id: int("threadId").unwrap_or(0),
-                all_threads_continued: all.unwrap_or(true),
+            s.suspended.continued_and_emit(int("threadId"), all.unwrap_or(false), || {
+                s.emit(DebugEvent::Continued {
+                    thread_id: int("threadId").unwrap_or(0),
+                    all_threads_continued: all.unwrap_or(true),
+                });
             });
+            crate::stream_trace::release_done(s);
         }
         "output" => {
             let category = str_("category").unwrap_or_else(|| "console".into());
@@ -866,6 +946,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             change_type: crate::hot_code_replace_type(body.get("changeType")),
             message: str_("message").unwrap_or_default(),
         }),
+        "flutter.appStarted" => s.emit(DebugEvent::FlutterAppStarted),
         // Sent only by adapters told `supportsInvalidatedEvent` (kotlin-lsp).
         "invalidated" => s.emit(DebugEvent::Invalidated {
             areas: body
@@ -884,6 +965,20 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         "profileStarted" => {
             *s.js_profile.lock() = str_("file").map(std::path::PathBuf::from);
         }
+        // Sent before `dart.debuggerUris`, for `launch` and `attach` alike.
+        "flutter.appStart" => {
+            let _ = s.flutter_app.set(str_("deviceId"));
+        }
+        "dart.debuggerUris" => {
+            if let (Some(device), Some(uri)) = (s.flutter_app.get(), str_("vmServiceUri")) {
+                s.emit(DebugEvent::FlutterVmService { uri, device: device.clone() });
+            }
+        }
+        "dart.toolEvent" if s.flutter_app.get().is_some() => {
+            if let Some(event) = crate::flutter_navigation(&body) {
+                s.emit(event);
+            }
+        }
         _ => tracing::trace!("dap: ignored event {event}"),
     }
 }
@@ -892,7 +987,11 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
     match command {
         "runInTerminal" => {
             let result = run_in_terminal(s, &args);
-            let _ = s.conn.respond(seq, command, result);
+            let conn = s.conn.clone();
+            let command = command.to_owned();
+            tokio::spawn(async move {
+                let _ = conn.respond(seq, &command, result).await;
+            });
         }
         "startDebugging" => {
             let mgr = mgr.clone();
@@ -901,18 +1000,22 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
                 let request = args.get("request").and_then(Value::as_str).unwrap_or("launch").to_owned();
                 let configuration = args.get("configuration").cloned().unwrap_or_else(|| json!({}));
                 let result = mgr.start_child(&s, request, configuration).await;
-                let _ = s.conn.respond(seq, "startDebugging", result.map(|_| Value::Null).map_err(|e| e.message));
+                let _ = s.conn.respond(seq, "startDebugging", result.map(|_| Value::Null).map_err(|e| e.message)).await;
             });
         }
         _ => {
-            let _ = s.conn.respond(seq, command, Err(format!("unsupported reverse request {command}")));
+            let conn = s.conn.clone();
+            let command = command.to_owned();
+            tokio::spawn(async move {
+                let _ = conn.respond(seq, &command, Err(format!("unsupported reverse request {command}"))).await;
+            });
         }
     }
 }
 
 /// A `runInTerminal` program and the pseudo-terminal it runs in.
 pub(crate) struct ProgramTerminal {
-    writer: ide_core::input::InputWriter,
+    writer: Arc<ide_core::input::InputWriter>,
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
     #[cfg_attr(not(unix), allow(dead_code))]
     pid: Option<u32>,
@@ -979,20 +1082,18 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
     let mut cmd = CommandBuilder::new(program);
     // CodeLLDB's launcher clears the terminal first; the console keeps the session's earlier output.
     cmd.args(rest.iter().filter(|a| *a != "--clear-screen"));
-    for (k, v) in ide_core::process::host_env_fixes() {
+    let cwd = args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()).map_or(s.spec.cwd.as_path(), Path::new);
+    for (k, v) in ide_core::process::host_env_fixes_in(cwd) {
         match v {
             Some(v) => cmd.env(k, v),
             None => cmd.env_remove(k),
         }
     }
-    for (k, v) in ide_core::process::shell_env() {
+    for (k, v) in ide_core::process::shell_env_in(cwd) {
         cmd.env(k, v);
     }
     cmd.env("TERM", "xterm-256color");
-    match args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
-        Some(cwd) => cmd.cwd(cwd),
-        None => cmd.cwd(&s.spec.cwd),
-    }
+    cmd.cwd(cwd);
     if let Some(env) = args.get("env").and_then(Value::as_object) {
         for (k, v) in env {
             match v.as_str() {
@@ -1027,10 +1128,12 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
         let _ = child.wait();
     })
     .map_err(|e| format!("terminal input worker: {e}"))?;
+    let writer = Arc::new(writer);
     let pid = child.process_id();
     forward_terminal_output(
         s,
         reader,
+        writer.clone(),
         #[cfg(unix)]
         wait_readable,
     );
@@ -1045,10 +1148,35 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
     Ok(json!({ "processId": pid }))
 }
 
-/// The program's terminal output, as stdout lines (`\r\n` as `\n`; colours are kept).
+/// A terminal's cursor position query (DSR). ConPTY sends one when it starts and runs the program
+/// only once the terminal answers; programs that lay out a prompt ask it too.
+const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+
+/// `chunk` without its cursor position queries, and how many there were.
+pub(crate) fn take_cursor_queries(chunk: &[u8]) -> (Vec<u8>, usize) {
+    let mut out = Vec::with_capacity(chunk.len());
+    let mut queries = 0;
+    let mut rest = chunk;
+    while let Some(at) = rest.windows(CURSOR_QUERY.len()).position(|w| w == CURSOR_QUERY) {
+        out.extend_from_slice(&rest[..at]);
+        rest = &rest[at + CURSOR_QUERY.len()..];
+        queries += 1;
+    }
+    out.extend_from_slice(rest);
+    (out, queries)
+}
+
+/// Length of the end of `pending` that may begin a cursor position query the next read completes.
+pub(crate) fn partial_cursor_query(pending: &[u8]) -> usize {
+    (1..CURSOR_QUERY.len()).rev().find(|&n| pending.ends_with(&CURSOR_QUERY[..n])).unwrap_or(0)
+}
+
+/// The program's terminal output, as stdout lines (`\r\n` as `\n`; colours are kept). The debug
+/// console is no terminal, so cursor position queries are answered here (top-left corner).
 fn forward_terminal_output(
     s: &Session,
     mut reader: Box<dyn std::io::Read + Send>,
+    answer: Arc<ide_core::input::InputWriter>,
     #[cfg(unix)] mut wait_readable: impl FnMut() -> std::io::Result<()> + Send + 'static,
 ) {
     let session = s.id;
@@ -1080,11 +1208,20 @@ fn forward_terminal_output(
                     break;
                 }
             }
-            // Keep incomplete UTF-8 sequences, and a `\r` that may start a `\r\n`, for the next chunk.
-            let mut valid = match std::str::from_utf8(&pending) {
-                Ok(_) => pending.len(),
+            let (rest, queries) = take_cursor_queries(&pending);
+            pending = rest;
+            for _ in 0..queries {
+                if let Err(e) = answer.write(b"\x1b[1;1R") {
+                    tracing::warn!(%session, "debug terminal cursor position: {e}");
+                }
+            }
+            // Keep incomplete UTF-8 sequences, a `\r` that may start a `\r\n`, and the start of
+            // a cursor position query for the next chunk.
+            let keep = partial_cursor_query(&pending);
+            let mut valid = match std::str::from_utf8(&pending[..pending.len() - keep]) {
+                Ok(_) => pending.len() - keep,
                 Err(e) if e.error_len().is_none() => e.valid_up_to(),
-                Err(_) => pending.len(),
+                Err(_) => pending.len() - keep,
             };
             if valid > 0 && pending[valid - 1] == b'\r' {
                 valid -= 1;
@@ -1163,6 +1300,7 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     let classpath =
         std::env::join_paths(strings("classPaths")).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
     let mut cmd = tokio::process::Command::new(java);
+    cmd.current_dir(&s.spec.cwd);
     ide_core::process::prepare(cmd.as_std_mut());
     cmd.args(kotlin_jvm_args(strings("vmArguments"), cfg!(windows)))
         // Let the JVM pick its own port (`:0`) and report it below: pre-picking a free
@@ -1181,8 +1319,7 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
             .ok_or_else(|| ide_core::IdeError::invalid("Missing Kotlin main class"))?,
     )
     .args(strings("programArgs"))
-    .current_dir(&s.spec.cwd)
-    .envs(ide_core::process::shell_env())
+    .envs(ide_core::process::shell_env_in(&s.spec.cwd))
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
@@ -1382,6 +1519,71 @@ mod tests {
         s.stopped(None, false);
         s.resumed(s.ticket(), 5, false);
         assert!(!s.get());
+    }
+
+    #[test]
+    fn synthetic_continued_is_suppressed_when_a_newer_stop_or_continued_already_landed() {
+        let emit_if_resumed = |s: &Suspension, ticket, thread, all| {
+            let mut emitted = false;
+            s.resumed_and_emit(ticket, thread, all, || emitted = true);
+            emitted
+        };
+
+        // Normal step without an adapter `continued` event emits a synthetic one.
+        let s = Suspension::default();
+        s.stopped(Some(1), true);
+        assert!(emit_if_resumed(&s, s.ticket(), 1, false));
+
+        // Next `stopped` (all-threads or single-thread) overtakes the reply: no synthetic `continued`.
+        for next_all in [true, false] {
+            let s = Suspension::default();
+            s.stopped(Some(1), true);
+            let ticket = s.ticket();
+            s.stopped(Some(1), next_all);
+            assert!(!emit_if_resumed(&s, ticket, 1, false), "next_all={next_all}");
+            assert!(s.get());
+        }
+
+        // Adapter's own `continued` event already ended the stop: no duplicate synthetic `continued`.
+        let s = Suspension::default();
+        s.stopped(Some(1), true);
+        let ticket = s.ticket();
+        s.continued(Some(1), true);
+        assert!(!emit_if_resumed(&s, ticket, 1, true));
+
+        // Multi-thread: thread 7 steps while thread 9 stops alone -> thread 7 still emits `continued(all=false)`.
+        let s = two_threads_stopped();
+        let ticket = s.ticket();
+        s.stopped(Some(9), false);
+        assert!(emit_if_resumed(&s, ticket, 7, false));
+        assert!(s.get());
+
+        // Multi-thread: `continue(all=true)` while thread 9 stops alone -> suppressed so thread 9 stays paused.
+        let s = two_threads_stopped();
+        let ticket = s.ticket();
+        s.stopped(Some(9), false);
+        assert!(!emit_if_resumed(&s, ticket, 7, true));
+        assert!(s.get());
+    }
+
+    #[test]
+    fn concurrent_stop_and_resume_never_emit_continued_after_the_new_stop() {
+        for _ in 0..200 {
+            let s = std::sync::Arc::new(Suspension::default());
+            let log = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<&'static str>::new()));
+            s.stopped(Some(1), true);
+            let ticket = s.ticket();
+            let s2 = s.clone();
+            let log2 = log.clone();
+            let stop = std::thread::spawn(move || {
+                s2.stopped(Some(1), false);
+                s2.emit_synced(|| log2.lock().push("stopped"));
+            });
+            s.resumed_and_emit(ticket, 1, false, || log.lock().push("continued"));
+            stop.join().unwrap();
+            let events = log.lock().clone();
+            assert!(events == ["continued", "stopped"] || events == ["stopped"], "unexpected order: {events:?}");
+        }
     }
 
     #[test]

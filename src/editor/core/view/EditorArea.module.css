@@ -64,6 +64,11 @@
   content-visibility: hidden;
   z-index: -1;
 }
+/* WebKit leaves a stale selection highlight on a subtree whose rendering was skipped when the selection cleared. */
+.keptHidden[data-selection] {
+  content-visibility: visible;
+  opacity: 0;
+}
 .host {
   flex: 1;
   min-height: 0;
@@ -71,9 +76,55 @@
   position: relative;
   overflow: hidden;
 }
-.host > :global(.cm-editor) {
+.editorMount,
+.editorMount > :global(.cm-editor) {
   position: absolute;
   inset: 0;
+}
+.fontZoomIndicator {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: var(--space-3);
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - var(--space-4));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-0-5) var(--space-2);
+  background: var(--bg-floating-toolbar);
+  color: var(--fg-strong);
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-floating-toolbar);
+  box-shadow: var(--shadow-popup);
+  font: var(--fs-ui) / 1.4 var(--font-ui);
+}
+.fontZoomSize {
+  font-variant-numeric: tabular-nums;
+}
+.fontZoomActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+.fontZoomReset {
+  min-width: 0;
+  padding: var(--space-1);
+  border-radius: var(--radius-small);
+  color: var(--link);
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+.fontZoomReset:not(:disabled):hover {
+  text-decoration: underline;
+}
+.fontZoomReset:disabled {
+  color: var(--fg-faint);
 }
 .loading {
   flex: 1;
@@ -97,9 +148,30 @@
   gap: var(--space-0-5);
   padding: 0 6px 0 8px;
 }
-.pin {
-  color: var(--fg-muted);
-  margin-left: -2px;
+.deprecated {
+  text-decoration-line: line-through;
+}
+.tabPath {
+  --tab-directory-min: min(5ch, 25%);
+  display: flex;
+}
+.tabDirectory > span,
+.tabFilename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tabDirectory {
+  flex: 0 1000 max-content;
+  /* Leave space for a short prefix without stretching one that already fits. */
+  width: var(--tab-directory-min);
+  color: var(--fg-subtle);
+}
+.tabDirectory > span {
+  display: block;
+}
+.tabFilename {
+  flex: none;
+  max-width: calc(100% - var(--tab-directory-min));
 }
 .dupe {
   color: var(--fg-faint);
@@ -108,102 +180,192 @@
 .banner {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  min-height: 36px;
-  padding: 0 12px;
+  gap: var(--space-1-5) var(--space-4);
+  padding: 10px var(--space-3);
   background: var(--bg-editor-banner, color-mix(in srgb, var(--accent) 7%, var(--bg-editor, var(--bg-elev))));
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
+  font-size: var(--fs-ui);
   color: var(--fg-strong);
 }
-.bannerIcon {
-  color: var(--fg-muted);
+:global(:root[data-compact]) .banner {
+  padding-block: var(--space-1-5);
 }
-/* Library class notice (IDEA's yellowish decompiled-file bar). */
-.libraryBanner {
-  flex-wrap: wrap;
+.warningBanner {
   background: var(--bg-feedback-warning);
   border-bottom-color: var(--border-feedback-warning);
 }
-.virtualBannerText {
-  flex: none;
+.bannerMessage {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  gap: var(--space-2);
   min-width: 0;
-  padding: 8px 0;
-  white-space: nowrap;
 }
-.bannerText {
+.bannerIcon {
   flex: none;
-  white-space: nowrap;
-}
-.bannerDetail {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  margin-block-start: 1px;
   color: var(--fg-muted);
 }
-.bannerSpacer {
-  flex: 1;
+.bannerText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.bannerDetail {
+  color: var(--fg-muted);
+}
+.bannerActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1) var(--space-4);
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+.bannerLink {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.bannerLink:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
 }
 
 /* Find / replace bar */
-.find {
+.findContainer {
   flex: none;
-  display: grid;
-  grid-template-columns: minmax(220px, 420px) auto 1fr;
-  align-items: center;
-  column-gap: var(--space-1-5);
-  row-gap: var(--space-1-5);
-  padding: 6px 8px 6px 10px;
+  min-width: 0;
+  container: editor-find / inline-size;
   background: var(--bg-editor-inline, var(--bg-elev));
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
 }
-.findExpandable {
-  grid-template-columns: auto minmax(220px, 420px) auto 1fr;
+.find {
+  display: grid;
+  grid-template-columns: [mode] auto [field] minmax(0, max(240px, 33%)) [actions] fit-content(50%) minmax(0, 1fr);
+  align-items: start;
+  row-gap: var(--space-1);
+  padding: var(--space-1-5) var(--space-2);
 }
 .findExpand {
-  grid-column: 1;
-  grid-row: 1;
-}
-.findExpandable .findField {
-  grid-column: 2;
+  grid-area: 1 / mode;
+  margin-block-start: var(--space-1);
+  margin-inline-end: var(--space-1);
 }
 .findField {
+  grid-area: 1 / field;
+}
+.replaceField {
+  grid-area: 2 / field;
+}
+.findField,
+.replaceField {
   min-width: 0;
 }
-.findButtons {
+.findButtons,
+.replaceButtons {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
+  min-height: var(--h-field);
+  margin-inline-start: var(--space-1-5);
+}
+.findButtons {
+  grid-area: 1 / actions;
   gap: var(--space-0-5);
 }
+.replaceButtons {
+  grid-area: 2 / actions;
+  gap: var(--space-1);
+}
 .findCount {
-  font-size: var(--fs-ui);
+  min-inline-size: 5ch;
+  padding-inline: var(--space-1);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
-  padding: 0 8px 0 4px;
-  min-width: 56px;
   white-space: nowrap;
 }
 .findCountNone {
   color: var(--danger);
 }
-.findClose {
-  justify-self: end;
+
+@container editor-find (width < 500px) {
+  .find {
+    grid-template-columns: [mode] auto [field] minmax(0, 1fr);
+  }
+  .findButtons,
+  .replaceButtons {
+    grid-column: field / -1;
+    min-height: 0;
+    margin-inline-start: 0;
+  }
+  .findButtons {
+    grid-row: 2;
+  }
+  .replaceField {
+    grid-row: 3;
+  }
+  .replaceButtons {
+    grid-row: 4;
+  }
+  .replaceButtons > button {
+    max-width: 100%;
+    height: auto;
+    min-height: var(--h-control);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
-.replaceButtons {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
+
+@container editor-find (width < 224px) {
+  .findField,
+  .replaceField,
+  .replaceButtons {
+    grid-column: mode / -1;
+  }
+  .findExpand {
+    grid-row: 2;
+    margin-block-start: 0;
+  }
+  .findButtons {
+    grid-column: field;
+  }
+  .findInput {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(20px, 1fr));
+    height: auto;
+    padding-block: var(--space-1);
+  }
+  .findInput textarea {
+    grid-column: 2 / -1;
+  }
 }
 
 /* Go to line */
 .gotoBody {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: 8px 16px 0;
+  display: grid;
+  grid-template-columns: fit-content(50%) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-4) 0;
+}
+.gotoLabel {
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  font-size: var(--fs-ui);
 }
 .gotoHint {
+  grid-column: 2;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
@@ -215,15 +377,44 @@
   min-width: 0;
   overflow: hidden;
 }
-.crumbButton {
-  flex: none;
-  max-width: 240px;
-  gap: 5px;
-  color: var(--fg);
-}
-.crumbButton:last-child {
-  flex: 0 1 auto;
+.crumbStrip {
+  display: flex;
+  align-items: center;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.crumbStrip::-webkit-scrollbar {
+  display: none;
+}
+.crumbStrip:is([data-crumbs-before], [data-crumbs-after]) {
+  --crumb-mask: linear-gradient(
+    to right,
+    var(--crumb-start, black),
+    black var(--space-3),
+    black calc(100% - var(--space-3)),
+    var(--crumb-end, black)
+  );
+  -webkit-mask-image: var(--crumb-mask);
+  mask-image: var(--crumb-mask);
+}
+.crumbStrip[data-crumbs-before] {
+  --crumb-start: transparent;
+}
+.crumbStrip[data-crumbs-after] {
+  --crumb-end: transparent;
+}
+.crumbStrip .crumbButton {
+  flex: none;
+  max-width: min(240px, 100%);
+  margin: 0;
+  padding: 0 var(--space-1);
+  font: inherit;
+  color: inherit;
+}
+.crumbStrip .crumbButton[aria-current="location"] {
+  color: var(--fg);
 }
 .crumbIcon {
   flex: none;
@@ -237,11 +428,36 @@
 .statusSep {
   flex: none;
   color: var(--fg-faint);
-  margin: 0 2px;
 }
 .lock {
   display: inline-flex;
   align-items: center;
+}
+
+.encodingPopup {
+  width: 264px;
+  padding-block: var(--space-1);
+}
+.encodingHeading {
+  padding: var(--space-1) var(--space-3) 0;
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+.encodingCommands {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-1);
+  padding: var(--space-1) var(--space-1-5) 0;
+  border-top: 1px solid var(--border-popup);
+}
+.encodingCommands button {
+  justify-content: flex-start;
+  height: auto;
+  min-height: var(--h-list-row);
+  padding-block: var(--space-1);
+  text-align: left;
+  white-space: normal;
 }
 
 /* tab drag & drop target on the editor */
@@ -308,7 +524,7 @@
   content: "";
   position: absolute;
   inset: 0 -3px;
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .sideTabsResizer:focus-visible::after {
   background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
@@ -336,32 +552,27 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-0-5);
-  height: 26px;
-  padding: 0 8px;
+  height: max(24px, calc(1em + var(--space-2)));
+  padding: 0 var(--space-2);
   overflow: hidden;
   background: var(--bg-editor, var(--bg-island));
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.codeCrumbs .crumbStrip {
+  gap: var(--space-0-5);
+}
+.codeCrumbs .crumbButton {
+  height: max(20px, calc(1em + var(--space-1)));
+  max-width: 100%;
+}
+.codeCrumbs .crumbButton[aria-current="location"] {
+  background: var(--bg-tree-selected-inactive);
 }
 .codeCrumbsTop {
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
 }
 .codeCrumbsBottom {
   border-top: 1px solid var(--border-editor-tabs, var(--border));
-}
-
-/* Contributed editor banners (registerEditorBanner): text, then right-aligned links. */
-.bannerLink {
-  flex: none;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  cursor: pointer;
-}
-.bannerLink:hover {
-  color: var(--link-hover);
-  text-decoration: underline;
 }

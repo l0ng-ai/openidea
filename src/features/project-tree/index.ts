@@ -1,8 +1,15 @@
 /** Project view: the "project" tool window, its file operations and actions. */
 import { onEditorEvent, openEditorPaths } from "@/editor/api";
-import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
+import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
+import { userScopes } from "@/platform/scopes";
 import { useBuildModel } from "@/platform/buildModel";
-import { effectiveContentRoots, validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
+import {
+  effectiveContentRoots,
+  effectiveRoots,
+  validateProjectStructure,
+  type RootFolder,
+} from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
 import { initProjectRoots, useProjectRoots } from "@/platform/projectRoots";
 import { folderIconName } from "@/ui";
@@ -12,6 +19,7 @@ import {
   registerOverlay,
   registerProjectViewRoot,
   registerToolWindow,
+  notifications,
   registerUndoHandler,
   setProjectViewLead,
   useLocalChanges,
@@ -38,9 +46,13 @@ import {
   reloadLoadedDirs,
   setChangedFiles,
   setOpenFiles,
+  setScopeFiles,
   setViewMode,
   useProjectTree,
 } from "./store";
+
+/** Files a scope pane lists at most. */
+const SCOPE_FILES_LIMIT = 20000;
 
 export function activate(): () => void {
   loadHomeDir();
@@ -103,10 +115,16 @@ export function activate(): () => void {
       ]);
     if (s.settings !== prev.settings && prev.settings && ex(s.settings) !== ex(prev.settings)) void reloadAll();
   });
-  // …and so do excluded roots detected from build files (`target`, `node_modules`, …).
+  // …and so do excluded roots detected from build files (`target`, `node_modules`, …) and
+  // the excluded folders of attached projects.
   const disposeRoots = initProjectRoots();
-  const detectedExcluded = (s: { root: string | null; detected: readonly RootFolder[] }) =>
-    JSON.stringify([s.root, s.detected.filter((r) => r.kind === "excluded").map((r) => r.path)]);
+  const excludedOf = (roots: readonly RootFolder[]) => roots.filter((r) => r.kind === "excluded").map((r) => r.path);
+  const detectedExcluded = (s: ReturnType<typeof useProjectRoots.getState>) =>
+    JSON.stringify([
+      s.root,
+      excludedOf(s.detected),
+      s.attached.map((p) => [p.root, excludedOf(effectiveRoots(p.detected, p.structure))]),
+    ]);
   const unsubRoots = useProjectRoots.subscribe((s, prev) => {
     if (s.root && s.root === prev.root && detectedExcluded(s) !== detectedExcluded(prev)) void reloadAll();
   });
@@ -194,6 +212,53 @@ export function activate(): () => void {
     if (s.lists !== prev.lists) syncChanged();
   });
 
+  // Scope panes: the files of the chosen user scope, again as files come and go.
+  let scopeTimer: ReturnType<typeof setTimeout> | undefined;
+  let scopeGeneration = 0;
+  const syncScope = () => {
+    clearTimeout(scopeTimer);
+    scopeTimer = setTimeout(() => void loadScopeFiles(++scopeGeneration), 150);
+  };
+  const loadScopeFiles = async (gen: number) => {
+    const { mode, scope } = useProjectTree.getState();
+    if (mode !== "scope" || !scope || !isTauri()) return;
+    const pattern = userScopes().find((s) => s.name === scope)?.pattern;
+    if (!pattern?.trim()) return setScopeFiles([]);
+    try {
+      const found = await call(commands.scopeFiles(pattern, SCOPE_FILES_LIMIT));
+      if (gen !== scopeGeneration) return;
+      setScopeFiles(found.paths);
+      if (found.truncated)
+        notifications().notify({
+          level: "info",
+          group: "project",
+          key: "project.scopeTruncated",
+          title: tx`The scope ${scope} has more than ${SCOPE_FILES_LIMIT} files; the Project view shows the first ones`,
+        });
+    } catch (e) {
+      if (gen !== scopeGeneration) return;
+      setScopeFiles([]);
+      notifications().notify({
+        level: "warning",
+        group: "project",
+        key: "project.scopeError",
+        title: tx`Cannot show the scope ${scope}`,
+        body: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+  syncScope();
+  const unsubScopeMode = useProjectTree.subscribe((s, prev) => {
+    if (s.mode !== prev.mode || s.scope !== prev.scope) syncScope();
+  });
+  const unsubScopeSettings = useProject.subscribe((s, prev) => {
+    const scopes = (x: typeof s) => (x.settings as { scopes?: unknown } | null)?.scopes;
+    if (scopes(s) !== scopes(prev)) syncScope();
+  });
+  const unsubScopeFs = onIdeEvent("fsChanged", (e) => {
+    if (e.created.length || e.removed.length) syncScope();
+  });
+
   // IDEA's navigation bar shows the tree's current node while the tree is the
   // user's context; the editor hands it back on focus or on a tab switch.
   const publishLead = () => setProjectViewLead(leadSelection());
@@ -211,6 +276,10 @@ export function activate(): () => void {
     () => clearTimeout(openTimer),
     unsubEditor,
     unsubDecorations,
+    () => clearTimeout(scopeTimer),
+    unsubScopeMode,
+    unsubScopeSettings,
+    unsubScopeFs,
     () => {
       unsubLead();
       setProjectViewLead(null);

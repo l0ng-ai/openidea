@@ -7,28 +7,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { HistoryEntry } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { relativePath, useProject } from "@/platform/project";
-import { Button, Icon, List, Spinner, T } from "@/ui";
+import { Button, Icon, List, Spinner, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { notifications, type EditorInput } from "@/workbench/contributions";
 import { DiffEditor } from "./DiffEditor";
 import { confirmDialog } from "./dialogs";
 import { diffInput } from "./diffInput";
-import { baseName, formatTime } from "./model";
+import { baseName, formatSize, formatTime } from "./model";
 import { errorMessage, runOp } from "./ops";
 import styles from "./LocalHistory.module.css";
 import { tx } from "@/platform/i18n";
 
 export { LOCAL_HISTORY_KIND, localHistoryInput, openLocalHistory } from "./localHistoryKind";
 
-function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
 const isLabel = (e: HistoryEntry) => e.kind === "label";
 const time = (e: HistoryEntry) => e.timestampMs ?? 0;
 
 /** Per file, the newest snapshot recorded before `at` (the state at a label). */
+/** The backend's label of the snapshot taken when a file is deleted (`ide-workspace::history::DELETED`). */
+const DELETED = "Deleted";
+
 export function snapshotsBefore(entries: readonly HistoryEntry[], at: number): Map<string, HistoryEntry> {
   const out = new Map<string, HistoryEntry>();
   for (const e of entries) {
@@ -73,6 +70,19 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
   const anchor = useRef(0);
   const previous = useRef(0);
   const pointer = useRef(false);
+  const container = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+
+  useEffect(() => {
+    const el = container.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry?.contentRect.width;
+      if (width) setStacked(width < 620);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const load = useCallback(() => {
     call(commands.historyListDir(path))
@@ -119,7 +129,17 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
       );
       return;
     }
-    const targets = view.folder ? [...(atLabel?.values() ?? [])] : fileAtLabel ? [fileAtLabel] : [];
+    // A file whose last revision before the label is its deletion was absent then: nothing to restore.
+    const recorded = view.folder ? [...(atLabel?.values() ?? [])] : fileAtLabel ? [fileAtLabel] : [];
+    const targets = recorded.filter((e) => e.label !== DELETED);
+    if (!view.folder && fileAtLabel?.label === DELETED) {
+      notifications().notify({
+        level: "info",
+        title: tx`${baseName(path)} did not exist at label '${current.label}'`,
+        key: "localHistory.revert",
+      });
+      return;
+    }
     if (!targets.length) {
       notifications().notify({
         level: "info",
@@ -190,9 +210,17 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
   const revertLabel = current && !isLabel(current) && view?.deleted.has(current.path) ? "Restore" : "Revert";
 
   return (
-    <div className={styles.root}>
-      <div
-        className={styles.sidebar}
+    <SplitGroup
+      elementRef={container}
+      className={`${styles.root} ${styles.resizable}`}
+      orientation={stacked ? "vertical" : "horizontal"}
+      storageKey="openidea.localHistory.layout"
+    >
+      <SplitPanel
+        id="revisions"
+        defaultSize="28%"
+        minSize={stacked ? "24%" : "160px"}
+        maxSize="52%"
         onMouseDownCapture={(e) => {
           pointer.current = e.button === 0 && !!(e.target as Element).closest('[role="option"]');
         }}
@@ -246,7 +274,7 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
                 setExtra(new Set());
               }
             }}
-            rowHeight={view.folder ? 52 : 38}
+            rowHeight={view.folder ? 56 : 44}
             aria-label="Revisions"
             className={styles.list}
             empty={
@@ -254,33 +282,36 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
                 {view.folder ? tx`No local history for this folder yet` : tx`No local history for this path yet`}
               </span>
             }
-            renderItem={(e) =>
-              isLabel(e) ? (
+            renderItem={(e) => {
+              const label = isLabel(e);
+              const pathText = !label && view.folder ? relativePath(root, e.path) || baseName(e.path) : null;
+              return (
                 <span className={styles.entry}>
-                  <span className={styles.time}>{formatTime(e.timestampMs)}</span>
-                  <span className={styles.labelRow}>
-                    <Icon name="bookmark" size={12} />
-                    <span className={styles.labelName}>{e.label}</span>
+                  <span className={styles.primaryRow}>
+                    {label && <Icon name="bookmark" size={12} />}
+                    <span className={styles.primary} title={e.label}>
+                      {e.label}
+                    </span>
                   </span>
-                </span>
-              ) : (
-                <span className={styles.entry}>
-                  <span className={styles.time}>{formatTime(e.timestampMs)}</span>
-                  {view.folder && (
-                    <span className={view.deleted.has(e.path) ? styles.deletedPath : styles.path}>
-                      {relativePath(root, e.path) || baseName(e.path)}
+                  {pathText && (
+                    <span className={view.deleted.has(e.path) ? styles.deletedPath : styles.path} title={pathText}>
+                      {pathText}
                     </span>
                   )}
-                  <span className={styles.label}>
-                    {e.label} · {formatSize(e.size)}
+                  <span className={styles.meta}>
+                    {formatTime(e.timestampMs)}
+                    {!label && ` · ${formatSize(e.size)}`}
                   </span>
                 </span>
-              )
-            }
+              );
+            }}
           />
         )}
-      </div>
-      <div className={styles.diff}>{detail}</div>
-    </div>
+      </SplitPanel>
+      <SplitHandle aria-label={tx("Revisions")} />
+      <SplitPanel id="preview" defaultSize="72%">
+        {detail}
+      </SplitPanel>
+    </SplitGroup>
   );
 }

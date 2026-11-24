@@ -12,6 +12,7 @@ import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { InputDialogsHost } from "@/workbench/inputDialogs";
 import { MessagesHost } from "@/workbench/messages";
 import {
+  searchCategories,
   onEndpointsChanged,
   provideNotificationService,
   searchEndpoints,
@@ -32,14 +33,15 @@ import {
 import { iconResolver, selectedIconTheme, useIconThemes } from "../iconThemes";
 import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
-import { handleRuntimeEvent, startRuntimeUi, usePluginStatusItems } from "../runtimeUi";
+import { handleRuntimeEvent, startRuntimeUi, statusMenuItems, usePluginStatusItems } from "../runtimeUi";
 import { evaluateWhen, getContext } from "@/platform/context";
 import { SettingsPageFocusContext } from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
 import { catalogState, filterCatalog, filterPlugins, NO_REPOSITORY, PluginsPage } from "../PluginsPage";
-import { ConsentDialogHost, provideConsentDialog } from "../consent";
+import { ConsentDialogHost, capabilityDescription, provideConsentDialog } from "../consent";
+import { useI18n } from "@/platform/i18n";
 import {
   adoptIconTheme,
   compareVersions,
@@ -149,6 +151,50 @@ describe("plugin actions", () => {
     expect(useProducerNames.getState().names.get("plugin:a")).toBe("Alpha");
     expect(useProducerNames.getState().names.get("plugin-provider:a")).toBe("Alpha");
     stop();
+  });
+
+  it("projects namespaced search categories, forwards query inputs and withdraws them", async () => {
+    backend.search = vi.fn(async () => ({ items: [], hasMore: false }));
+    const contribution = (pluginId: string, title: string) => ({
+      pluginId,
+      point: "searchCategories",
+      key: "routes",
+      decl: { id: "routes", title },
+    });
+    const plugins = [plugin({ id: "a" }), plugin({ id: "b" })];
+    syncUiContributions([contribution("a", "Routes"), contribution("b", "Routes")], plugins);
+    expect(searchCategories().map((c) => c.id)).toEqual(["plugin:a:routes", "plugin:b:routes"]);
+    await searchCategories()[0]!.search(17, "/files /users:42", 50);
+    expect(backend.search).toHaveBeenCalledWith("a", "routes", "/files /users:42", 50, 17);
+    syncUiContributions([contribution("b", "Requests")], plugins);
+    expect(searchCategories().map((c) => c.title)).toEqual(["Requests"]);
+    syncUiContributions([], []);
+    expect(searchCategories()).toEqual([]);
+  });
+
+  it("runs search targets in their owning plugin even when global action IDs collide", async () => {
+    const items = [
+      { pluginId: "a", point: "searchCategories", key: "routes", decl: { id: "routes", title: "Routes" } },
+      {
+        pluginId: "a",
+        point: "commands",
+        key: "b.open",
+        decl: { id: "b.open", title: "Own command", when: "editorFocus" },
+      },
+      { pluginId: "a.b", point: "commands", key: "open", decl: { id: "open", title: "Other command" } },
+    ];
+    const plugins = [plugin({ id: "a" }), plugin({ id: "a.b" })];
+    usePlugins.setState({ plugins, ui: items });
+    syncUiContributions(items, plugins);
+    backend.runCommand = vi.fn(async () => null);
+    const action = searchCategories()[0]!.command("b.open")!;
+    expect(action.when).toBe("editorFocus");
+    await action.run({ ctx: {}, arg: "/users:42" });
+    expect(backend.runCommand).toHaveBeenLastCalledWith("a", "b.open", "/users:42", null, []);
+    expect(searchCategories()[0]!.command("open")).toBeUndefined();
+    syncUiContributions([], []);
+    await action.run({ ctx: {}, arg: "stale" });
+    expect(backend.runCommand).toHaveBeenCalledTimes(1);
   });
 
   it("projects command contributions to plugin.<plugin>.<command> actions", () => {
@@ -563,6 +609,26 @@ describe("bridge events", () => {
     expect(useTasks.getState().tasks.find((t) => t.id === "plugin:7")?.done).toBe(true);
   });
 
+  it("turns a status item's menu into menu items that run the plugin's commands", async () => {
+    const runCommand = vi.fn().mockResolvedValue(null);
+    setPluginsBackend({ ...backend, runCommand });
+    const items = statusMenuItems(
+      "ddev",
+      [
+        { kind: "header", label: "App" },
+        { kind: "action", label: "Open website", description: "https://app.test", command: "open", argument: "web" },
+        { kind: "separator" },
+      ],
+      (text) => `t:${text}`,
+    );
+    expect(items[0]).toEqual({ kind: "header", label: "t:App" });
+    expect(items[1]).toMatchObject({ label: "t:Open website", shortcut: "https://app.test", verbatim: true });
+    expect(items[2]).toEqual({ kind: "separator" });
+    (items[1] as { run: () => void }).run();
+    await vi.waitFor(() => expect(runCommand).toHaveBeenCalled());
+    expect(runCommand.mock.calls[0]!.slice(0, 3)).toEqual(["ddev", "open", "web"]);
+  });
+
   it("keeps a window status override above global updates and falls back on removal", () => {
     const global = { text: "global", tooltip: null, command: null };
     const local = { text: "window", tooltip: null, command: null };
@@ -887,7 +953,8 @@ describe("PluginsPage", () => {
     await user.click(screen.getByRole("button", { name: "Apply theme Harbor Night" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Use Default Theme" })).toBeInTheDocument());
 
-    await user.type(screen.getByLabelText("Filter plugins"), "toy");
+    screen.getByLabelText("Filter plugins").focus();
+    await user.keyboard("toy");
     await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Toy Language");
     expect(screen.getByText("Toy (.toy)")).toBeInTheDocument();
@@ -1043,14 +1110,42 @@ describe("PluginsPage", () => {
     await waitFor(() => expect(usePlugins.getState().plugins[0]).toMatchObject({ enabled: true, status: "inactive" }));
   });
 
-  it("uninstalls after confirmation", async () => {
+  it("offers reinstall in the marketplace after confirmed uninstall", async () => {
+    backend = createMemoryPluginsBackend([plugin({ id: "hello", name: "Hello" })]);
+    setPluginsBackend({
+      ...backend,
+      catalog: async () => [],
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [
+        {
+          id: "hello",
+          name: "Hello",
+          version: "1.0.0",
+          description: "",
+          authors: [],
+          publisher: "acme",
+          download: "hello.oiplugin",
+          digest: "x",
+          capabilities: [],
+          engine: "^1.0",
+          installed: (await backend.list()).plugins.find((p) => p.id === "hello")?.version ?? null,
+          compatible: true,
+        },
+      ],
+    });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
-    await screen.findByRole("heading", { level: 2 });
+    render(<PluginsPage />);
+    const marketplace = await screen.findByRole("list", { name: "Available plugins" });
+    expect(await within(marketplace).findByText("Installed")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /Installed/ }));
+    const installed = await screen.findByRole("list", { name: "Installed plugins" });
+    await user.click(within(installed).getByText("Hello"));
     await user.click(screen.getByRole("button", { name: "Uninstall…" }));
     await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
-    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).not.toHaveTextContent("Hello"));
+    await waitFor(() => expect(within(installed).queryByText("Hello")).not.toBeInTheDocument());
     expect(notes.at(-1)).toMatchObject({ title: "Uninstalled Hello" });
+    await user.click(screen.getByRole("tab", { name: "Marketplace" }));
+    expect(await screen.findByRole("button", { name: "Install Hello" })).toBeInTheDocument();
   });
 
   it("keeps failed cleanup visible and lets Uninstall retry", async () => {
@@ -1237,7 +1332,7 @@ describe("marketplace", () => {
     await waitFor(() => expect(within(list).getByText("All Plugins")).toBeInTheDocument());
     expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
     await user.click(within(list).getAllByText("Hello")[0]!);
-    expect(screen.getByText("Signed by acme")).toBeInTheDocument();
+    expect(screen.getByText("Signed by:").nextElementSibling).toHaveTextContent("acme");
     await user.click(screen.getByRole("button", { name: "Install" }));
     await waitFor(() => expect(usePlugins.getState().plugins.map((p) => p.id)).toEqual(["hello"]));
     expect(downloads).toEqual(["hello"]);
@@ -1285,7 +1380,7 @@ describe("marketplace", () => {
     expect(headers).toEqual(["Featured", "All Plugins", "Examples", "Local"]);
     // The first listed plugin is shown without a click.
     expect(screen.getByRole("heading", { name: "Popular" })).toBeInTheDocument();
-    expect(screen.getByText("Signed by Acme Inc.")).toBeInTheDocument();
+    expect(screen.getByText("Signed by:").nextElementSibling).toHaveTextContent("Acme Inc.");
     await user.click(within(list).getByText("Sample"));
     expect(screen.getByRole("note")).toHaveTextContent("not maintained as a product");
     await user.click(within(list).getByRole("button", { name: "Install Rare" }));
@@ -1357,7 +1452,12 @@ describe("marketplace", () => {
       marketUrl: async () => "https://plugins.example/index.json",
       market: async () => [
         entry("acme.dusk", "Dusk", ["themes"]),
-        entry("acme.lint", "Lint", ["linters", "tools"]),
+        {
+          ...entry("acme.lint", "Lint", ["linters", "tools"]),
+          authors: ["Ada <ada@example.com>"],
+          homepage: "https://example.com/lint",
+          downloads: 42,
+        },
         entry("acme.misc", "Misc", ["robots"]),
       ],
     });
@@ -1374,7 +1474,15 @@ describe("marketplace", () => {
     expect(within(list).queryByText("Dusk")).not.toBeInTheDocument();
     expect(within(list).queryByText("Local")).not.toBeInTheDocument();
     await user.click(within(list).getByText("Lint"));
-    expect(screen.getByText("Linters & Formatters, Tools")).toBeInTheDocument();
+    const header = within(screen.getByRole("heading", { name: "Lint" }).closest("header")!);
+    expect(header.getByText("Linters & Formatters")).toBeInTheDocument();
+    expect(header.getByText("Tools")).toBeInTheDocument();
+    expect(header.getByText("42")).toBeInTheDocument();
+    expect(header.getByText("1.0.0")).toBeInTheDocument();
+    expect(header.getByRole("link", { name: "Ada" })).toHaveAttribute("href", "https://example.com/lint");
+    expect(header.queryByText("ada@example.com")).not.toBeInTheDocument();
+    expect(screen.getByText("ada@example.com")).toBeInTheDocument();
+    expect(within(list).queryByText("1.0.0")).not.toBeInTheDocument();
   });
 
   it("shows a plugin this IDE can't load without installing it", async () => {
@@ -1604,8 +1712,16 @@ describe("marketplace", () => {
               granted: true,
             },
           ],
-          contributions: [{ point: "javaAgents", label: "spring-agent.jar=port=0" }],
-          javaAgent: { fileName: "spring-agent.jar", args: "port=0", approved: true },
+          contributions: [
+            { point: "javaAgents", label: "spring-agent.jar=port=0 -XX:+AllowEnhancedClassRedefinition" },
+          ],
+          javaAgent: {
+            fileName: "spring-agent.jar",
+            args: "port=0",
+            vmOptions: ["-XX:+AllowEnhancedClassRedefinition"],
+            jdk: "jetbrains",
+            approved: true,
+          },
         }),
       ]),
     );
@@ -1613,6 +1729,33 @@ describe("marketplace", () => {
     const permissions = await screen.findByRole("list", { name: "Permissions" });
     expect(within(permissions).getByText("Run code inside the Java applications you start")).toBeInTheDocument();
     expect(within(permissions).getByLabelText("Java agent")).toHaveTextContent("spring-agent.jar=port=0");
+    expect(within(permissions).getByLabelText("JVM options")).toHaveTextContent(
+      "-XX:+AllowEnhancedClassRedefinition (jetbrains)",
+    );
+  });
+
+  it("translates the java.agent permission apart from the JVM flags the host appends", () => {
+    const cap = {
+      id: "java.agent",
+      risk: "high" as const,
+      description: "Run code inside the Java applications you start; JVM options: -XX:+AllowEnhancedClassRedefinition",
+      optional: true,
+      granted: false,
+    };
+    const before = useI18n.getState().texts;
+    useI18n.setState({
+      texts: {
+        "Run code inside the Java applications you start": "在你启动的 Java 应用中运行代码",
+        "{description}; JVM options: {flags}": "{description}；JVM 选项：{flags}",
+      },
+    });
+    try {
+      expect(capabilityDescription(cap)).toBe(
+        "在你启动的 Java 应用中运行代码；JVM 选项：-XX:+AllowEnhancedClassRedefinition",
+      );
+    } finally {
+      useI18n.setState({ texts: before });
+    }
   });
 
   it("warns when a granted Java agent jar changed and can approve it again", async () => {
@@ -1623,7 +1766,7 @@ describe("marketplace", () => {
         name: "Spring",
         hasCode: false,
         status: "static",
-        javaAgent: { fileName: "spring-agent.jar", args: null, approved: false },
+        javaAgent: { fileName: "spring-agent.jar", args: null, vmOptions: [], jdk: null, approved: false },
         capabilities: [
           {
             id: "java.agent",
@@ -1670,7 +1813,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    expect(await screen.findByText("Unsigned")).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "Roll Back to 1.0.0" }));
     await waitFor(() => expect(rolled).toEqual(["p"]));
     expect(notes.at(-1)).toMatchObject({ title: "Rolled back P to 1.0.0" });

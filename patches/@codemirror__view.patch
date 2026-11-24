@@ -1,0 +1,30 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index b20aa9d84be6ff4b85b126bdd930065277668a26..e677ab06ca9668407e202979e14b75ab7641d6b1 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -9675,7 +9675,9 @@ const hideNativeSelection = state.Prec.highest(EditorView.theme({
+         "& :focus": {
+             caretColor: "initial !important",
+             ...drawMainRange ? {
+-                "&::selection, & ::selection": {
++                // Not `& ::selection` too: a pseudo-class with a universal descendant restyles the
++                // whole subtree of every element that gains or loses focus.
++                "&::selection": {
+                     backgroundColor: "Highlight !important"
+                 }
+             } : {}
+diff --git a/dist/index.js b/dist/index.js
+index 216f754db06f65f7f17f056b47d8f6fab45067bf..22282993239d836ea1da19af10ccfc61b6480cc5 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -9670,7 +9670,9 @@ const hideNativeSelection = /*@__PURE__*/Prec.highest(/*@__PURE__*/EditorView.th
+         "& :focus": {
+             caretColor: "initial !important",
+             ...drawMainRange ? {
+-                "&::selection, & ::selection": {
++                // Not `& ::selection` too: a pseudo-class with a universal descendant restyles the
++                // whole subtree of every element that gains or loses focus.
++                "&::selection": {
+                     backgroundColor: "Highlight !important"
+                 }
+             } : {}

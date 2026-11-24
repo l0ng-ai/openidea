@@ -73,6 +73,8 @@ pub struct SkippedRunConfig {
 pub enum SkipReason {
     /// A configuration with this name already exists.
     NameTaken,
+    /// An existing configuration (a detected one, say) runs the same command.
+    SameAs { existing: String },
     /// The configuration type has no equivalent here: a VS Code debugger (`cppdbg`), a JetBrains type (`Application`).
     UnsupportedType {
         #[serde(rename = "type")]
@@ -174,6 +176,13 @@ pub(crate) fn finish(source: RunImportSource, entries: Vec<Entry>, existing: &[R
                 compounds.push((i, e.name, found));
             }
             Ok(mut found) => {
+                // ponytail: only against the project's configurations; entries of one file may differ in ignored keys.
+                if let Some(same) = existing.iter().find(|c| same_run(c, &found.config)) {
+                    // A compound naming it starts the one there is.
+                    by_name.insert(e.name.clone(), same.id.clone());
+                    skipped.push((i, skip(e.name, SkipReason::SameAs { existing: same.name.clone() })));
+                    continue;
+                }
                 found.config.id = unique_id(&e.name, &mut ids);
                 by_name.insert(e.name.clone(), found.config.id.clone());
                 imported.push((i, ImportedRunConfig { config: found.config, ignored: found.ignored }));
@@ -205,7 +214,39 @@ pub(crate) fn finish(source: RunImportSource, entries: Vec<Entry>, existing: &[R
     }
 }
 
+/// `a` and `b` start the same process (`flutter run -t lib/main.dart` detected and imported as `main.dart`).
+fn same_run(a: &RunConfig, b: &RunConfig) -> bool {
+    a.kind == b.kind
+        && a.command == b.command
+        && a.args == b.args
+        && a.cwd == b.cwd
+        && a.is_test == b.is_test
+        && a.debug_adapter == b.debug_adapter
+        && a.env == b.env
+        && a.extras.params == b.extras.params
+        && a.extras.env_files == b.extras.env_files
+}
+
 // ------------------------------------------------------------- shared by the sources
+
+/// The Dart package `file` belongs to (the closest directory with a `pubspec.yaml`, inside the
+/// project) and whether it is a Flutter app.
+pub(crate) fn dart_package(root: &Path, file: &Path) -> Option<(PathBuf, bool)> {
+    let dir =
+        file.ancestors().skip(1).take_while(|d| d.starts_with(root)).find(|d| d.join("pubspec.yaml").is_file())?;
+    let flutter = std::fs::read_to_string(dir.join("pubspec.yaml")).is_ok_and(|p| p.contains("sdk: flutter"));
+    Some((dir.to_path_buf(), flutter))
+}
+
+/// `flutter run -t <entry>` in `package` (absolute), as detection writes it; `extra` after the entry.
+pub(crate) fn flutter_run(name: &str, root: &Path, package: &Path, entry: &Path, extra: Vec<String>) -> RunConfig {
+    let entry = relative_to(entry, package).unwrap_or_else(|| entry.to_string_lossy().into_owned());
+    let mut args = vec!["run".to_owned(), "-t".to_owned(), entry];
+    args.extend(extra);
+    let mut c = config(name, "flutter", "flutter".into(), args, Some("dart"));
+    c.cwd = working_dir(root, &package.to_string_lossy()).1.map(Into::into);
+    c
+}
 
 /// The variable `name` of `env`; Windows names ignore case (`${env:PATH}` finds `Path`).
 pub(crate) fn env_var(env: &BTreeMap<String, String>, name: &str, windows: bool) -> Option<String> {

@@ -10,6 +10,8 @@ import {
 } from "./colorScheme";
 import { isBuiltinTheme, themeKind } from "./themes";
 import type { CustomColorScheme, CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
+import { iclsColor } from "./iclsColor";
+import { DARCULA_ATTRIBUTES } from "./iclsDarcula";
 
 // Many language keys share the editor's language-default tokens.
 const ATTRIBUTE_NAMES: Record<string, string> = {
@@ -49,6 +51,7 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   TODO_DEFAULT_ATTRIBUTES: "todo",
   SEARCH_RESULT_ATTRIBUTES: "searchResult",
   TEXT_SEARCH_RESULT_ATTRIBUTES: "searchResultCurrent",
+  WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: "identifierUnderCaretWrite",
   WRITE_SEARCH_RESULT_ATTRIBUTES: "identifierUnderCaretWrite",
   IDENTIFIER_UNDER_CARET_ATTRIBUTES: "identifierUnderCaret",
   MATCHED_BRACE_ATTRIBUTES: "matchedBrace",
@@ -114,7 +117,9 @@ Object.assign(ATTRIBUTE_NAMES, {
   KOTLIN_MUTABLE_VARIABLE: "kotlin.identifier",
   KOTLIN_PACKAGE_PROPERTY: "kotlin.field",
   KOTLIN_SYNTHETIC_EXTENSION_PROPERTY: "kotlin.field",
-  KOTLIN_EXTENSION_FUNCTION_CALL: "kotlin.functionCall",
+  KOTLIN_EXTENSION_FUNCTION_CALL: "kotlin.extensionCall",
+  KOTLIN_PACKAGE_FUNCTION_CALL: "kotlin.packageCall",
+  KOTLIN_ENUM_ENTRY: "kotlin.enumEntry",
   KOTLIN_NAMED_ARGUMENT: "kotlin.parameter",
   KOTLIN_OBJECT: "kotlin.className",
   JAVA_DOC_TAG: "java.docCommentTag",
@@ -123,6 +128,12 @@ Object.assign(ATTRIBUTE_NAMES, {
   KDOC_TAG_NAME: "kotlin.docCommentTag",
   KDOC_LINK: "kotlin.docCommentTagValue",
   CLASS_NAME_ATTRIBUTES: "className",
+  // IDEA DiffColors (Diff & Merge page): Import/export the four change types by their
+  // exchange names, so a scheme exported here carries the same keys IDEA reads.
+  DIFF_MODIFIED: "diffChanged",
+  DIFF_INSERTED: "diffInserted",
+  DIFF_DELETED: "diffDeleted",
+  DIFF_CONFLICT: "diffConflict",
   PHP_KEYWORD: "php.keyword",
   PHP_VAR: "php.identifier",
   PHP_PARAMETER: "php.parameter",
@@ -163,7 +174,16 @@ Object.assign(ATTRIBUTE_NAMES, {
   "PY.STRING.U": "pyString",
   "PY.FUNC_DEFINITION": "pyFunctionDeclaration",
   "PY.NESTED_FUNC_DEFINITION": "pyNestedFunction",
+  "PY.FUNCTION_CALL": "pyFunctionCall",
   "PY.METHOD_CALL": "pyMethodCall",
+  "PY.CLASS_DEFINITION": "pyClassDefinition",
+  "PY.PARAMETER": "pyParameter",
+  "PY.LOCAL_VARIABLE": "pyLocalVariable",
+  "PY.TYPE_PARAMETER": "pyTypeParameter",
+  "PY.INVALID_STRING_ESCAPE": "pyInvalidEscape",
+  // PyCharm's own f-string keys come first, so exports use them; PY.STRING.F is still read.
+  "PY.FSTRING_FRAGMENT_BRACES": "pyFString",
+  "PY.FSTRING_FORMAT_SPEC_NUMBER": "pyFormat",
   "PY.DOC_COMMENT": "pyDocstring",
   "PY.BUILTIN_NAME": "pyBuiltin",
   "PY.DECORATOR": "pyDecorator",
@@ -177,7 +197,8 @@ Object.assign(ATTRIBUTE_NAMES, {
   "PY.OPERATION_SIGN": "pyOperationSign",
 });
 
-// WebStorm's JavaScript keys; TypeScript repeats them with a TS. prefix. Language Defaults serve both.
+// WebStorm's JavaScript keys; TypeScript repeats them with a TS. prefix. Both colour the JavaScript and
+// TypeScript page.
 const SCRIPT_KEYS: Record<string, string> = {
   KEYWORD: "keyword",
   NUMBER: "number",
@@ -199,7 +220,7 @@ const SCRIPT_KEYS: Record<string, string> = {
   "EXPORTED.VARIABLE": "globalVariable",
   INSTANCE_MEMBER_VARIABLE: "field",
   STATIC_MEMBER_VARIABLE: "constant",
-  GLOBAL_FUNCTION: "functionDeclaration",
+  GLOBAL_FUNCTION: "globalFunction",
   LOCAL_FUNCTION: "functionDeclaration",
   EXPORTED_FUNCTION: "functionDeclaration",
   INSTANCE_MEMBER_FUNCTION: "functionDeclaration",
@@ -209,14 +230,15 @@ const SCRIPT_KEYS: Record<string, string> = {
   INTERFACE: "className",
   "TYPE.ALIAS": "className",
   TYPE_PARAMETER: "className",
-  DECORATOR: "metadata",
+  DECORATOR: "decorator",
   OPERATION_SIGN: "operator",
 };
 // WebStorm colours a function's calls with its declaration's key.
 const ALSO_CALLS = new Set<string>();
 for (const prefix of ["JS.", "TS."])
   for (const [name, id] of Object.entries(SCRIPT_KEYS)) {
-    ATTRIBUTE_NAMES[prefix + name] = id;
+    // Bad character and RegExp have no page of their own here.
+    ATTRIBUTE_NAMES[prefix + name] = ATTRIBUTES.some((a) => a.id === `javascript.${id}`) ? `javascript.${id}` : id;
     if (id === "functionDeclaration") ALSO_CALLS.add(prefix + name);
   }
 
@@ -234,6 +256,7 @@ const COLOR_NAMES: Record<string, [string, "foreground" | "background"]> = {
   RIGHT_MARGIN_COLOR: ["rightMargin", "foreground"],
   METHOD_SEPARATORS_COLOR: ["methodSeparator", "foreground"],
   CONSOLE_BACKGROUND_KEY: ["consoleBackground", "background"],
+  DIFF_SEPARATOR_WAVE: ["diffSeparatorWave", "foreground"],
 };
 
 Object.assign(ATTRIBUTE_NAMES, {
@@ -258,6 +281,17 @@ Object.assign(ATTRIBUTE_NAMES, {
 // Preserve editor attributes without a standard exchange name on our own round trip.
 for (const attr of ATTRIBUTES)
   if (!Object.values(ATTRIBUTE_NAMES).includes(attr.id)) ATTRIBUTE_NAMES[`OPENIDEA_${attr.id}`] = attr.id;
+// Earlier versions exported these under OPENIDEA_ names, before their PyCharm keys were mapped.
+for (const id of [
+  "pyFunctionCall",
+  "pyClassDefinition",
+  "pyParameter",
+  "pyLocalVariable",
+  "pyTypeParameter",
+  "pyInvalidEscape",
+  "pyFormat",
+])
+  ATTRIBUTE_NAMES[`OPENIDEA_${id}`] ??= id;
 
 // One key colours an attribute, as IntelliJ shows it in the file the user sees: an explicit value replaces
 // its fallback's. TypeScript keys win over JavaScript (TS.* falls back to JS.*), then Python, then the
@@ -272,7 +306,7 @@ const precedence = (name: string) => {
 const targets = (name: string): string[] =>
   Object.hasOwn(ATTRIBUTE_NAMES, name)
     ? ALSO_CALLS.has(name)
-      ? [ATTRIBUTE_NAMES[name]!, "functionCall"]
+      ? [ATTRIBUTE_NAMES[name]!, "javascript.functionCall"]
       : [ATTRIBUTE_NAMES[name]!]
     : [];
 
@@ -291,8 +325,11 @@ const EFFECT_CODES: Partial<Record<NonNullable<TextAttributesOverride["effect"]>
   strikeout: "3",
 };
 const children = (el: Element, tag: string) => Array.from(el.children).filter((e) => e.tagName === tag);
-const color = (v: string | null): string | undefined =>
-  v && /^[0-9a-f]{1,6}$/i.test(v) ? `#${v.padStart(6, "0").toLowerCase()}` : undefined;
+// Schemes here have no alpha: an RRGGBBAA value is left out, as before.
+const color = (v: string | null): string | undefined => {
+  const c = iclsColor(v);
+  return c?.length === 7 ? c : undefined;
+};
 
 function attributeEntries(section: Element): Element[] {
   const entries = children(section, "option");
@@ -410,13 +447,17 @@ export function parseIcls(
                   ? "background"
                   : name === "EFFECT_COLOR"
                     ? "effectColor"
-                    : undefined;
+                    : name === "ERROR_STRIPE_COLOR"
+                      ? "errorStripeColor"
+                      : undefined;
             const supported =
               field === "foreground"
                 ? !!attr.fg
                 : field === "background"
                   ? !!attr.bg || !!attr.token
-                  : !!attr.effect || !!attr.token;
+                  : field === "errorStripeColor"
+                    ? !!attr.stripe
+                    : !!attr.effect || !!attr.token;
             if (field && c && supported) {
               merge(id, { [field]: c });
               applied++;
@@ -438,6 +479,12 @@ export function parseIcls(
       }
   }
   const parentName = root.getAttribute("parent_scheme") ?? "";
+  // IntelliJ replaces a parent's attribute as a whole: any entry of the file, even an empty one or
+  // one only naming its baseAttributes, wins.
+  if (parentName === "Darcula") {
+    const own = new Set([...entries.keys()].flatMap((name) => (name ? targets(name) : [])));
+    for (const [id, value] of Object.entries(DARCULA_ATTRIBUTES)) if (!own.has(id)) attributes[id] ??= { ...value };
+  }
   const bg = attributes.text?.background;
   const rgb = bg ? [1, 3, 5].map((i) => parseInt(bg.slice(i, i + 2), 16)) : [255, 255, 255];
   const dark = rgb[0]! * 0.299 + rgb[1]! * 0.587 + rgb[2]! * 0.114 < 128;
@@ -517,6 +564,7 @@ export function exportIcls(
     ...(attr.fg && isHexColor(tokens.get(attr.fg)) ? { foreground: tokens.get(attr.fg) } : {}),
     ...(attr.bg && isHexColor(tokens.get(attr.bg)) ? { background: tokens.get(attr.bg) } : {}),
     ...(attr.effect && isHexColor(tokens.get(attr.effect)) ? { effectColor: tokens.get(attr.effect) } : {}),
+    ...(attr.stripe && isHexColor(tokens.get(attr.stripe)) ? { errorStripeColor: tokens.get(attr.stripe) } : {}),
     ...tokenEffect(attr),
     ...custom?.attributes[attr.id],
     ...overrides[attr.id],
@@ -530,7 +578,8 @@ export function exportIcls(
   }
   const text = values(ATTRIBUTES.find((a) => a.id === "text")!);
   for (const attr of ATTRIBUTES) {
-    if (attr.language && !custom?.attributes[attr.id] && !overrides[attr.id]) continue;
+    // Language and inheriting attributes left unset follow another key, as they do in IntelliJ.
+    if ((attr.language || attr.inherit) && !custom?.attributes[attr.id] && !overrides[attr.id]) continue;
     const key = Object.keys(ATTRIBUTE_NAMES).find((key) => ATTRIBUTE_NAMES[key] === attr.id);
     if (!key) continue;
     const v = values(attr);
@@ -542,11 +591,13 @@ export function exportIcls(
       ["FOREGROUND", "foreground"],
       ["BACKGROUND", "background"],
       ["EFFECT_COLOR", "effectColor"],
+      ["ERROR_STRIPE_COLOR", "errorStripeColor"],
     ] as const)
       if (isHexColor(v[field])) opts.push(`<option name="${key}" value="${exportColor(v[field]!)}" />`);
     if (attr.token) opts.push(`<option name="FONT_TYPE" value="${(v.bold ? 1 : 0) + (v.italic ? 2 : 0)}" />`);
     if (effect) opts.push(`<option name="EFFECT_TYPE" value="${effect}" />`);
-    if (opts.length) attributes.push(`    <option name="${key}"><value>${opts.join("")}</value></option>`);
+    // An empty value keeps the parent scheme's attribute from showing through.
+    attributes.push(`    <option name="${key}"><value>${opts.join("")}</value></option>`);
   }
   const parent = custom?.parent ?? (isBuiltinTheme(id) ? themeKind(id) : "dark");
   return `<scheme name="${escapeXml(name)}" version="142" parent_scheme="${parent === "dark" ? "Darcula" : "Default"}">\n  <colors>\n${colors.join("\n")}\n  </colors>\n  <attributes>\n${attributes.join("\n")}\n  </attributes>\n</scheme>\n`;

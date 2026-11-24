@@ -20,6 +20,7 @@ mod auth;
 mod build_graph;
 pub mod commands;
 pub mod commit;
+mod console_rules;
 mod database;
 mod dependencies;
 pub(crate) mod diagnostics;
@@ -50,7 +51,9 @@ pub mod remote;
 pub mod remote_host;
 mod run_detectors;
 pub mod run_targets;
+pub mod search;
 mod semantic_tokens;
+mod skills;
 mod snippets;
 mod theme;
 mod types;
@@ -383,6 +386,8 @@ pub struct PluginHost {
     run_detectors: Arc<run_detectors::RunDetectors>,
     /// `[[contributes.javaAgents]]` of enabled plugins.
     java_agents: Arc<java_agents::JavaAgents>,
+    /// `[[contributes.skills]]` of enabled plugins.
+    skills: Arc<skills::PluginSkills>,
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
@@ -409,6 +414,8 @@ pub struct PluginHost {
     announced_theme: Mutex<Option<ActiveTheme>>,
     /// [`PluginLanguages::revision`] last announced with `LanguagesChanged`.
     announced_languages: AtomicU64,
+    /// [`skills::PluginSkills::revision`] last announced to open projects.
+    announced_skills: AtomicU64,
     /// `PATH` used to resolve `process:` programs at grant time.
     path_var: RwLock<PathVar>,
     /// (plugin id, `process:` capability) → the approved program; read by the
@@ -438,6 +445,11 @@ impl PluginHost {
         self.shared.decoration_sets()
     }
 
+    /// Every plugin's console highlight rules, for windows opening after they were set.
+    pub fn console_rules(&self) -> std::collections::BTreeMap<String, Vec<ide_plugin::ConsoleRule>> {
+        self.shared.console_rules()
+    }
+
     /// Creates the host; call [`load_all`](Self::load_all) to load installed plugins.
     pub fn new(plugins_dir: PathBuf, sink: Arc<dyn PluginEventSink>, limits: Limits) -> IdeResult<Self> {
         std::fs::create_dir_all(&plugins_dir)?;
@@ -463,7 +475,8 @@ impl PluginHost {
         let run_detectors: Arc<run_detectors::RunDetectors> = Arc::default();
         let providers: Arc<providers::Providers> = Arc::default();
         let java_agents: Arc<java_agents::JavaAgents> = Arc::default();
-        register_builtin_points(&registry, &ui, &languages, &run_detectors, &java_agents, &providers)
+        let skills: Arc<skills::PluginSkills> = Arc::default();
+        register_builtin_points(&registry, &ui, &languages, &run_detectors, &java_agents, &providers, &skills)
             .map_err(IdeError::internal)?;
         let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
         let policy_pins = pins.clone();
@@ -499,6 +512,7 @@ impl PluginHost {
             languages,
             run_detectors,
             java_agents,
+            skills,
             providers,
             navigation: Mutex::default(),
             endpoints: Mutex::default(),
@@ -514,6 +528,7 @@ impl PluginHost {
             startup_finished: AtomicBool::new(false),
             announced_theme: Mutex::new(None),
             announced_languages: AtomicU64::new(0),
+            announced_skills: AtomicU64::new(0),
             path_var: RwLock::new(Arc::new(|| std::env::var_os("PATH"))),
             pins,
         };
@@ -918,6 +933,7 @@ impl PluginHost {
                 capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
+        annotate_java_agent_vm_options(&mut capabilities, m);
         capabilities.sort_by(|a, b| b.risk.cmp(&a.risk).then(a.id.cmp(&b.id)));
         let signer_changed = self.signer_changed(&m.id, src);
         let answered = |c: &CapabilityInfo| {
@@ -1721,8 +1737,9 @@ impl PluginHost {
     }
 
     /// The UI reports which file its focused editor shows (`editor-focused`).
-    pub fn set_active_file(&self, client: &str, path: Option<String>) {
-        self.post_events(Some(client), vec![WorkbenchEvent::EditorFocused(path)]);
+    /// The editor snapshot carries the caret so line-scoped features stay current.
+    pub fn set_active_file(&self, client: &str, path: Option<String>, editor: Option<PluginEditor>) {
+        self.post_window_events(client, vec![WorkbenchEvent::EditorFocused(path)], editor);
     }
 
     /// Where plugin secrets are kept (default: files under the plugins
@@ -1804,6 +1821,12 @@ impl PluginHost {
     /// longer waits.
     pub fn answer_command(&self, client: &str, request: &str, answer: CommandAnswer) -> bool {
         request.parse().is_ok_and(|id| self.shared.answer_command(client, id, answer))
+    }
+
+    /// A window answered a plugin's `ClipboardRequested`; false when the call no longer
+    /// waits or asked another window.
+    pub fn answer_clipboard(&self, client: &str, request_id: &str, answer: ClipboardAnswer) -> bool {
+        request_id.parse().is_ok_and(|id| self.shared.answer_clipboard(client, id, answer))
     }
 
     pub fn answer_commit(&self, request_id: &str, answer: CommitAnswer) -> bool {
@@ -2900,6 +2923,16 @@ impl PluginHost {
         if self.announced_languages.swap(languages, Ordering::AcqRel) != languages {
             self.emit(None, PluginEvent::LanguagesChanged);
         }
+        let skills = self.skills.revision();
+        if self.announced_skills.swap(skills, Ordering::AcqRel) != skills
+            && let Some(workspace) = self.shared.workspace.read().clone()
+            && let Some(host) = workspace.database_host()
+        {
+            for p in host.projects() {
+                p.agents.notify_mcp_servers_changed();
+                p.sink.emit(ide_core::IdeEvent::SettingsChanged { key: "agents.skills".into() });
+            }
+        }
         let active = self.active_theme();
         let mut announced = self.announced_theme.lock();
         if *announced != active {
@@ -3072,6 +3105,7 @@ impl PluginHost {
                 capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
+        annotate_java_agent_vm_options(&mut capabilities, m);
         // Hosts remembered through `net:ask` are grants of their own: listed
         // separately so the user can revoke them one by one.
         let net_hosts = grant
@@ -3105,6 +3139,8 @@ impl PluginHost {
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_else(|| agent.jar.display().to_string()),
                     args: agent.args,
+                    vm_options: agent.vm_options,
+                    jdk: agent.jdk,
                     approved,
                 }
             }),
@@ -3142,6 +3178,20 @@ fn agent_jar_grant(manifest: &Manifest, dir: &Path) -> Option<BinaryGrant> {
     let path = java_agents::declared_jar(manifest, dir)?;
     let hash = ledger::file_hash(&path).map_err(|e| tracing::info!("java.agent: {}: {e}", path.display())).ok()?;
     Some(BinaryGrant { path, hash })
+}
+
+/// Consent / Settings: surface exact contributed JVM flags on the `java.agent` permission.
+fn annotate_java_agent_vm_options(capabilities: &mut [CapabilityInfo], manifest: &Manifest) {
+    let opts = java_agents::declared_vm_options(manifest);
+    if opts.is_empty() {
+        return;
+    }
+    let flags = opts.join(" ");
+    for cap in capabilities.iter_mut() {
+        if cap.id == "java.agent" {
+            cap.description = format!("{}; JVM options: {flags}", cap.description);
+        }
+    }
 }
 
 fn request_for<'a>(subject: &Subject, m: &'a Manifest, hash: &'a str, declared: &[Capability]) -> Request<'a> {

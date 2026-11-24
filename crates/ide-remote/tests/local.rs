@@ -1,6 +1,6 @@
 //! Local deployment uses the service entry points used by SFTP and save hooks.
 use ide_core::CancellationToken;
-use ide_core::remote_settings::{AutoUpload, DeploymentMapping, DeploymentServer, DeploymentType};
+use ide_core::remote_settings::{AutoUpload, DeploymentGroup, DeploymentMapping, DeploymentServer, DeploymentType};
 use ide_core::settings::Settings;
 use ide_remote::{RemoteService, SyncAction, SyncStatus, SyncStep};
 use ide_ssh::{FsConnection, SshFiles, SshManager};
@@ -409,4 +409,41 @@ async fn download_into_copies_only_the_selected_items() {
         .await
         .unwrap();
     assert_eq!((report.files, report.errors.len()), (0, 1), "{report:?}");
+}
+
+#[tokio::test]
+async fn automatic_upload_to_a_default_group_reaches_each_of_its_servers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let (staging, live) = (tmp.path().join("staging"), tmp.path().join("live"));
+    for dir in [root.join("src"), staging.clone(), live.clone()] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(root.join("src/a.txt"), "v1").unwrap();
+    let mut settings = settings(&staging);
+    settings.deployment.servers.push(DeploymentServer {
+        id: "live".into(),
+        kind: DeploymentType::Local,
+        root_path: live.to_string_lossy().into_owned(),
+        mappings: vec![DeploymentMapping { deployment: "app".into(), ..Default::default() }],
+        ..Default::default()
+    });
+    settings.deployment.groups.push(DeploymentGroup {
+        id: "all".into(),
+        name: "All".into(),
+        servers: vec!["local".into(), "live".into(), "gone".into()],
+    });
+    settings.deployment.default_server = "all".into();
+    assert_eq!(ide_remote::default_targets(&settings), ["local", "live"]);
+
+    let service = service(tmp.path());
+    let saved = service.on_saved(&settings, &root, &root.join("src/a.txt")).await.unwrap().unwrap();
+    assert_eq!((saved.files, saved.errors.len()), (2, 0), "{saved:?}");
+    for target in [&staging, &live] {
+        assert_eq!(std::fs::read_to_string(target.join("app/src/a.txt")).unwrap(), "v1");
+    }
+    std::fs::remove_file(root.join("src/a.txt")).unwrap();
+    let deleted = service.on_deleted(&settings, &root, &[root.join("src/a.txt")]).await.unwrap().unwrap();
+    assert!(deleted.errors.is_empty(), "{deleted:?}");
+    assert!(!staging.join("app/src/a.txt").exists() && !live.join("app/src/a.txt").exists());
 }

@@ -1,22 +1,33 @@
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  color: var(--fg);
+  display: grid;
+  gap: var(--space-4);
   font-size: var(--fs-ui);
 }
-.section {
+
+.heading {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: var(--space-2);
-  margin-top: 6px;
+  min-height: var(--h-field);
+  margin: 0 0 var(--space-1);
+  color: var(--fg-strong);
+  font-size: inherit;
+  font-weight: 500;
 }
-.header {
-  color: var(--fg-muted);
+
+.heading::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
-.columns {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding-left: 18px;
+
+.options {
+  display: grid;
+  gap: var(--space-1);
+  padding-inline-start: var(--space-4);
+}
+
+.options > label {
+  min-height: var(--h-field);
 }

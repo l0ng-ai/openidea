@@ -3,16 +3,21 @@ import { call, commands, onIdeEvent, type ProjectInfo } from "@/platform/ipc";
 import { ipcPath, isSameOrInside } from "@/platform/paths";
 import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
+import { constantPool, resetConstantPool } from "./constants";
 import { controllersOf } from "./endpoints";
-import { controllerMethods, type ControllerMethod } from "./feign";
+import { controllerMethods, feignMethods, type HttpShape } from "./feign";
 import { parseSource } from "./source";
 
-export interface ControllerTarget extends ControllerMethod {
+interface ControllerTarget extends HttpShape {
   path: string;
+}
+interface ClientSource extends ControllerTarget {
+  service: string | null;
 }
 interface RouteIndex {
   routes: EndpointEntry[];
   controllers: ControllerTarget[];
+  clients: ClientSource[];
 }
 
 export function registerSpringEndpointProvider(): () => void {
@@ -38,6 +43,7 @@ export function isRouteSource(path: string): boolean {
 /** Forgets the index, so the next search rescans the project. */
 export function clearRouteIndex() {
   cached = null;
+  resetConstantPool();
 }
 
 /** The project's routes, scanned once per project and kept in memory. */
@@ -49,8 +55,12 @@ export function controllerIndex(root: string | null): Promise<ControllerTarget[]
   return index(root).then((result) => result.controllers);
 }
 
+export function feignClientIndex(root: string): Promise<ClientSource[]> {
+  return index(root).then((result) => result.clients);
+}
+
 function index(root: string | null): Promise<RouteIndex> {
-  if (!root) return Promise.resolve({ routes: [], controllers: [] });
+  if (!root) return Promise.resolve({ routes: [], controllers: [], clients: [] });
   const current = useProject.getState().project;
   const project = current?.root === root ? current : null;
   const key = JSON.stringify([root, project?.workspace?.projects ?? null]);
@@ -65,18 +75,27 @@ function index(root: string | null): Promise<RouteIndex> {
 
 async function scan(root: string, project: ProjectInfo | null): Promise<RouteIndex> {
   const sources = await call(commands.springRouteSources());
+  const clients: ClientSource[] = [];
   const routes: EndpointEntry[] = [];
   const controllers: ControllerTarget[] = [];
+  const parsed = [];
   for (const source of sources) {
     const path = ipcPath(source.path);
     const folder = project ? projectFolder(project, path)?.root : root;
     if (!folder) continue;
     const base = ipcPath(folder).replace(/\/$/, "");
     if (!isSameOrInside(path, base)) continue;
+    for (const { paths, methods, service } of feignMethods(source.text))
+      clients.push({ path, paths, methods, service });
     if (!source.text.includes("Controller")) continue;
-    const file = parseSource(source.text);
+    parsed.push({ source, path, base, file: parseSource(source.text) });
+  }
+  // Mapping paths built from other classes' constants need those classes first.
+  const pool = constantPool();
+  await pool.load(parsed.map((p) => p.file));
+  for (const { source, path, base, file } of parsed) {
     controllers.push(...controllerMethods(source.text, file).map((method) => ({ ...method, path })));
-    for (const controller of controllersOf(file)) {
+    for (const controller of controllersOf(file, pool.resolverFor(file))) {
       for (const endpoint of controller.endpoints) {
         const at = lineCol(source.text, endpoint.offset);
         // A mapping without a path answers nothing to look up by URL; the method
@@ -96,7 +115,7 @@ async function scan(root: string, project: ProjectInfo | null): Promise<RouteInd
       }
     }
   }
-  return { routes, controllers };
+  return { routes, controllers, clients };
 }
 
 function lineCol(text: string, offset: number): { line: number; col: number } {

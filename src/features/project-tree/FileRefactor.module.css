@@ -1,13 +1,79 @@
-.form {
+.renameForm {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+}
+
+.renameName {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.renameOptions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2) var(--space-4);
+  overflow-wrap: anywhere;
+}
+
+.renameOptions > label {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.refactorForm {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: 14px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
 }
 
 .subject {
   color: var(--fg-emphasis);
   font-size: var(--fs-ui);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.moveDestination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-1) var(--space-2);
+}
+
+.moveDestination > .fieldLabel {
+  line-height: var(--h-field);
+}
+
+.destinationControls {
+  display: flex;
+  flex: 1 1 244px;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.destinationField {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.destinationField input {
+  flex: 1 1 0;
+}
+
+.destinationField button {
+  flex: none;
+}
+
+.destinationPath {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .fieldLabel {
@@ -16,12 +82,17 @@
   overflow-wrap: anywhere;
 }
 
-.hint {
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.copyFields {
+  display: grid;
+  grid-template-columns: fit-content(42%) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+}
+
+.copyFields > .fieldLabel {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-field);
 }
 
 .error {
@@ -44,48 +115,65 @@
   font-size: var(--fs-ui);
 }
 
+.previewDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .previewSummary {
-  padding: 12px 14px 8px;
+  flex: none;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border);
   font-size: var(--fs-ui);
   color: var(--fg-muted);
 }
 
 .previewList {
+  flex: 1;
+  min-height: 0;
   list-style: none;
   margin: 0;
-  padding: 0;
   max-height: 420px;
   overflow: auto;
-  padding: 0 14px 10px;
+  padding: var(--space-2) var(--space-4);
 }
 
 .previewFile + .previewFile {
-  margin-top: 4px;
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
 }
 
 .previewFileRow {
-  height: var(--h-row);
+  min-height: var(--h-row);
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
   font-size: var(--fs-ui);
 }
 
+.previewFileRow > svg {
+  flex: none;
+}
+
 .previewName {
+  font-weight: 600;
   color: var(--fg-emphasis);
 }
 
+.previewName,
 .previewPath {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
 }
 
-.spacer {
-  flex: 1;
+.previewPath {
+  flex: 1 1 0;
+  direction: rtl;
+  color: var(--fg-subtle);
 }
 
 .previewCount {
@@ -94,22 +182,28 @@
   color: var(--fg-muted);
 }
 
+.previewFile[data-excluded] .previewName {
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
+
 .previewOccurrences {
   list-style: none;
   margin: 0;
-  padding: 0 0 0 28px;
+  padding: var(--space-1) 0 0 var(--space-4);
 }
 
 .previewLineRow {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-2);
-  height: var(--h-row);
+  min-height: var(--h-row);
+  padding-block: var(--space-0-5);
 }
 
 .previewLineNo {
   flex: none;
-  min-width: 28px;
+  min-width: 4ch;
   text-align: right;
   font-family: var(--font-mono);
   font-size: var(--fs-small);
@@ -118,11 +212,11 @@
 
 .previewCode {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--fs-code);
+  line-height: 1.4;
   color: var(--fg-editor);
 }
 

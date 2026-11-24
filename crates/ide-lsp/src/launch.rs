@@ -1,7 +1,7 @@
 //! Starting server processes: binary resolution and the [`Launcher`] seam.
 
 use ide_core::CancellationToken;
-use ide_core::tool_path::search_path;
+use ide_core::tool_path::search_path_in;
 use ide_jsonrpc::{Handler, Peer};
 use ide_language::LanguageServerConfig;
 use std::ffi::{OsStr, OsString};
@@ -95,10 +95,10 @@ impl Launcher for ProcessLauncher {
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
         cancel: &CancellationToken,
     ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
-        if !required_env_set(config) {
+        if !required_env_set(config, root) {
             return Err(LaunchError::Missing);
         }
-        let search = server_search_path(config);
+        let search = server_search_path(config, root);
         let binary = match &config.pinned {
             // A plugin's server: the approved program, unchanged since.
             Some(pin) => Some(pin.verify().map_err(LaunchError::Failed)?.to_path_buf()),
@@ -128,26 +128,27 @@ impl Launcher for ProcessLauncher {
     }
 
     fn available(&self, config: &LanguageServerConfig, root: &Path) -> bool {
-        if !required_env_set(config) {
+        if !required_env_set(config, root) {
             return false;
         }
         if let Some(pin) = &config.pinned {
             return pin.path.is_file();
         }
-        ide_core::tool_path::find_command(&config.command, &server_search_path(config), root).is_some()
+        ide_core::tool_path::find_command(&config.command, &server_search_path(config, root), root).is_some()
     }
 }
 
-fn required_env_set(config: &LanguageServerConfig) -> bool {
+fn required_env_set(config: &LanguageServerConfig, root: &Path) -> bool {
     config.requires_env.iter().all(|key| match config.env.get(key) {
         Some(value) => !value.is_empty(),
-        None => ide_core::process::host_var_os(key).is_some_and(|v| !v.is_empty()),
+        None => ide_core::process::host_var_os_in(root, key).is_some_and(|v| !v.is_empty()),
     })
 }
 
-/// A configured `PATH` (e.g. a selected toolchain prepended) also resolves the binary.
-pub(crate) fn server_search_path(config: &LanguageServerConfig) -> OsString {
-    config.env.get("PATH").map(OsString::from).unwrap_or_else(search_path)
+/// A configured `PATH` (e.g. a selected toolchain prepended) also resolves the binary; else
+/// the project's (a Nix devshell's language servers), then the IDE's.
+pub(crate) fn server_search_path(config: &LanguageServerConfig, root: &Path) -> OsString {
+    config.env.get("PATH").map(OsString::from).unwrap_or_else(|| search_path_in(root))
 }
 
 /// What a version manager's shim says when the active version has no such tool.
@@ -159,13 +160,13 @@ const DEAD_SHIM_MESSAGES: &[&str] =
 /// server that dies like that on every start is missing (an install hint), not crashing.
 /// Anything but a clear "not installed" answer from the shim counts as working.
 fn reject_dead_shim(binary: PathBuf, search: &OsStr, root: &Path) -> Option<PathBuf> {
-    if !binary.parent().is_some_and(|d| d.file_name().is_some_and(|n| n == "shims")) {
+    if binary.parent().and_then(Path::file_name) != Some(OsStr::new("shims")) {
         return Some(binary);
     }
-    let Ok(mut child) = ide_core::process::prepare(&mut std::process::Command::new(&binary))
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.current_dir(root).env("PATH", search);
+    let Ok(mut child) = ide_core::process::prepare(&mut cmd)
         .arg("--version")
-        .current_dir(root)
-        .env("PATH", search)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -235,9 +236,8 @@ fn resolve_rustup_proxy(command: &str, binary: PathBuf, root: &Path) -> Option<P
 /// Whether the proxy runs for the toolchain active in `root`. A probe that hangs or can't
 /// be waited for counts as working: the real start decides.
 fn proxy_works(binary: &Path, root: &Path) -> bool {
-    let Ok(mut child) = ide_core::process::prepare(&mut std::process::Command::new(binary))
+    let Ok(mut child) = ide_core::process::prepare(std::process::Command::new(binary).current_dir(root))
         .arg("--version")
-        .current_dir(root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -348,6 +348,35 @@ mod tests {
         assert_eq!(reject_dead_shim(plain.clone(), &search, tmp.path()), Some(plain));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn servers_from_the_project_environment_are_found() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let devshell = tmp.path().join("nix-store-devshell/bin");
+        std::fs::create_dir_all(&devshell).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let server = devshell.join("openidea-test-nil");
+        std::fs::write(&server, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut config: LanguageServerConfig =
+            toml::from_str("name = \"nil\"\ncommand = \"openidea-test-nil\"").unwrap();
+        config.requires_env = vec!["OPENIDEA_TEST_IN_DEVSHELL".into()];
+        assert!(!ProcessLauncher.available(&config, &root));
+        ide_core::project_env::set(
+            &root,
+            vec![
+                ("PATH".into(), Some(devshell.clone().into_os_string())),
+                ("OPENIDEA_TEST_IN_DEVSHELL".into(), Some("1".into())),
+            ],
+        );
+        assert!(ProcessLauncher.available(&config, &root));
+        assert_eq!(std::env::split_paths(&server_search_path(&config, &root)).next(), Some(devshell));
+        ide_core::project_env::remove(&root);
+        assert!(!ProcessLauncher.available(&config, &root));
+    }
+
     #[test]
     fn marked_root_needs_a_marker() {
         let tmp = tempfile::tempdir().unwrap();
@@ -381,7 +410,7 @@ mod tests {
 
     #[test]
     fn search_path_contains_env_path() {
-        let p = search_path();
+        let p = ide_core::tool_path::search_path();
         let dirs: Vec<PathBuf> = std::env::split_paths(&p).collect();
         // The process's own `PATH` starts the search, then per-user and system dirs.
         let first_env = std::env::split_paths(&std::env::var_os("PATH").unwrap()).find(|d| d.is_absolute()).unwrap();

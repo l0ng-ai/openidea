@@ -41,6 +41,8 @@ const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DIFF_SIZE: (f64, f64) = (1100.0, 720.0);
 const DIFF_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const EDITOR_SIZE: (f64, f64) = (1100.0, 720.0);
+const EDITOR_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
 
@@ -77,6 +79,29 @@ pub struct Launch {
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
+    /// Editor windows: the file to show (Open in New Window → lightweight aux editor).
+    #[serde(default)]
+    pub editor: Option<Box<EditorLaunch>>,
+}
+
+/// What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+/// the tab of another editor kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorLaunch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<ide_core::IpcPath>,
+    /// The tab's editor input, as JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
 }
 
 /// Local files to compare with a deployment server (Sync with Deployed).
@@ -112,7 +137,7 @@ pub struct ComparisonLaunch {
 
 /// One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DiffSide {
     /// File content at a Git revision (`HEAD`, `:0` = index, a commit id).
     Rev {
@@ -126,6 +151,8 @@ pub enum DiffSide {
     Worktree {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
     },
     /// Another file (Compare With…, Compare Files).
     File {
@@ -133,8 +160,13 @@ pub enum DiffSide {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
-    /// Literal text: a side that does not exist.
-    Text { text: String, label: String },
+    /// Literal text, such as clipboard contents or an editor selection.
+    Text {
+        text: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
+    },
     /// A Local History revision.
     History { id: String, label: String },
 }
@@ -146,10 +178,26 @@ pub struct DiffLaunch {
     /// Absolute path of the file (the right side's path).
     pub path: String,
     pub left: DiffSide,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub middle: Option<DiffSide>,
     pub right: DiffSide,
-    /// 0-based line of the right side to reveal.
+    /// 0-based line to reveal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_side: Option<DiffLineSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<Vec<DiffLaunch>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffLineSide {
+    Left,
+    Middle,
+    Right,
 }
 
 /// The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable.
@@ -189,6 +237,74 @@ pub struct RemoteLaunch {
 pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
     let w = ide_core::wsl::parse(path)?;
     Some(RemoteLaunch { target: RemoteTarget::Wsl { distro: w.distro }, path: w.path })
+}
+
+/// A saved project path that is a remote location: `ssh://`, `wsl://`, `devcontainer://`,
+/// or a `\\wsl.localhost` share remembered before those locations existed.
+pub(crate) fn saved_remote(path: &Path) -> Option<RemoteLaunch> {
+    if let Some(text) = path.to_str()
+        && let Some((target, root)) = crate::remote_dev::parse_remote_location(text)
+    {
+        return Some(RemoteLaunch { target, path: root });
+    }
+    wsl_launch(path)
+}
+
+/// What reopening `path` should launch. A remote location is recognised before any stat,
+/// so a WSL share that is down still comes back as a remote project.
+pub(crate) fn saved_project_launch(path: &Path) -> Option<Launch> {
+    if let Some(remote) = saved_remote(path) {
+        return Some(Launch { remote: Some(remote), ..Default::default() });
+    }
+    path.is_dir().then(|| Launch { project: Some(path.to_path_buf().into()), ..Default::default() })
+}
+
+/// The same project, including a WSL share and the `wsl://` location of that folder.
+pub(crate) fn same_saved_project(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (saved_remote(a), saved_remote(b)) {
+        (Some(left), Some(right)) => {
+            left.target == right.target && left.path.trim_end_matches('/') == right.path.trim_end_matches('/')
+        }
+        _ => false,
+    }
+}
+
+/// The project `label` has open: a remote location (`wsl://` and the rest), else its local root.
+pub(crate) fn window_project_path(app: &AppHandle, label: &str) -> Option<PathBuf> {
+    let state = app.try_state::<AppState>()?;
+    if let Some(c) = state.remote_dev.get(label) {
+        return Some(PathBuf::from(crate::remote_dev::remote_location(&c.target, &c.root)));
+    }
+    state.project(label).ok().filter(|p| !p.light).map(|p| p.root.clone())
+}
+
+/// Reopens a project saved at quit. Remote locations become a remote launch; a missing
+/// local folder is skipped. An already connected window is focused instead of duplicated.
+pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Option<WebviewWindow>> {
+    let Some(launch) = saved_project_launch(path) else {
+        return Ok(None);
+    };
+    if let Some(remote) = launch.remote.clone() {
+        let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(&remote.target, &remote.path));
+        if let Some(w) = open.and_then(|label| app.get_webview_window(&label)) {
+            return Ok(Some(w));
+        }
+        let title = remote
+            .path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|n| !n.is_empty() && *n != "~")
+            .map(str::to_owned);
+        return Ok(Some(create_window_for(app, title, launch, true)?));
+    }
+    if let Some(w) = find_project_window(app, path) {
+        return Ok(Some(w));
+    }
+    Ok(Some(create_restored_window(app, path.to_path_buf())?))
 }
 
 #[derive(Default)]
@@ -267,6 +383,12 @@ impl WindowsState {
 
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
         let mut launches = self.launches.lock();
+        // Lightweight windows need their launch again when their webview reloads.
+        if let Some(launch) = launches.get(label)
+            && launch.editor.is_some()
+        {
+            return Some(launch.clone());
+        }
         let launch = launches.remove(label)?;
         if launch.project.is_some() || launch.remote.is_some() || !launch.files.is_empty() || launch.diff.is_some() {
             self.opening.lock().insert(label.to_owned(), launch.clone());
@@ -352,11 +474,13 @@ pub enum AuxKind {
     Settings,
     Comparison,
     Diff,
+    Editor,
     Deployment,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 4] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Deployment];
+    const ALL: [AuxKind; 5] =
+        [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Editor, AuxKind::Deployment];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
@@ -364,13 +488,14 @@ impl AuxKind {
             AuxKind::Settings => "settings",
             AuxKind::Comparison => "comparison",
             AuxKind::Diff => "diff",
+            AuxKind::Editor => "editor",
             AuxKind::Deployment => "deployment",
         }
     }
 
     /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
     fn multiple(self) -> bool {
-        matches!(self, AuxKind::Comparison | AuxKind::Diff)
+        matches!(self, AuxKind::Comparison | AuxKind::Diff | AuxKind::Editor)
     }
 
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
@@ -394,6 +519,7 @@ impl AuxKind {
             AuxKind::Settings => SETTINGS_MIN_SIZE,
             AuxKind::Comparison => COMPARISON_MIN_SIZE,
             AuxKind::Diff => DIFF_MIN_SIZE,
+            AuxKind::Editor => EDITOR_MIN_SIZE,
             AuxKind::Deployment => DEPLOYMENT_MIN_SIZE,
         }
     }
@@ -403,6 +529,7 @@ impl AuxKind {
             AuxKind::Settings => SETTINGS_SIZE,
             AuxKind::Comparison => COMPARISON_SIZE,
             AuxKind::Diff => DIFF_SIZE,
+            AuxKind::Editor => EDITOR_SIZE,
             AuxKind::Deployment => DEPLOYMENT_SIZE,
         }
     }
@@ -724,7 +851,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).build())
+        .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -1495,8 +1622,8 @@ pub struct AuxWindow {
     pub background: Option<String>,
 }
 
-/// Opens an auxiliary window of `caller`'s project window, centred over it. A kind with one window
-/// per parent reuses it: the new launch is handed over ([`LAUNCH_EVENT`]) and the window focused.
+/// Opens an auxiliary window of `caller`'s project window, centred over it. A matching window
+/// receives the new launch ([`LAUNCH_EVENT`]) and is focused.
 pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWindow) -> IdeResult<()> {
     // Asked from an auxiliary window itself: open it for that window's parent.
     let parent_label = auxiliary_parent(caller.label()).unwrap_or(caller.label()).to_owned();
@@ -1515,7 +1642,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
         format!("{}-{parent_label}", aux.kind.name())
     };
     if let Some(existing) = app.get_webview_window(&label) {
-        if aux.kind != AuxKind::Diff && aux.launch != Launch::default() {
+        if aux.launch != Launch::default() {
             windows.set_launch(&label, aux.launch);
             let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
         }
@@ -1545,7 +1672,9 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     config.fullscreen = false;
     config.drag_drop_enabled = false;
     // Paint the theme's frame colour before the page loads.
-    if let Some(color) = aux.background.as_deref().and_then(hex_color) {
+    if let Some(color) =
+        aux.background.as_deref().and_then(hex_color).or_else(|| default_aux_frame_color(app, &parent, &parent_label))
+    {
         config.background_color = Some(color);
     }
     windows.set_launch(&label, aux.launch);
@@ -1587,6 +1716,76 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     }
     focus(&window);
     Ok(())
+}
+
+/// Effective appearance settings of project window `parent_label` (client layer on remote windows).
+fn effective_appearance(app: &AppHandle, parent_label: &str) -> Option<AppearanceSettings> {
+    let state = app.try_state::<AppState>()?;
+    if state.remote_dev.get(parent_label).is_some() {
+        return Some(state.global_settings.effective().appearance);
+    }
+    Some(match state.host.project(parent_label) {
+        Ok(p) => p.settings.effective().appearance,
+        Err(_) => state.global_settings.effective().appearance,
+    })
+}
+
+fn default_aux_frame_color(app: &AppHandle, parent: &WebviewWindow, parent_label: &str) -> Option<Color> {
+    let state = app.try_state::<AppState>()?;
+    if let Some(color) = state.plugins.startup_frame().and_then(|c| hex_color(&c)) {
+        return Some(color);
+    }
+    let appearance = effective_appearance(app, parent_label)?;
+    let os_dark =
+        (appearance.sync_with_os || appearance.theme == "system") && parent.theme().is_ok_and(|t| t == Theme::Dark);
+    Some(frame_color(&appearance, os_dark))
+}
+
+/// Whether `parent_label` opens Settings in its own native window.
+pub fn settings_in_separate_window(app: &AppHandle, parent_label: &str) -> bool {
+    effective_appearance(app, parent_label).is_none_or(|a| a.settings_in_separate_window)
+}
+
+fn menu_settings_launch<'a>(
+    target_label: &'a str,
+    has_pending_launch: bool,
+    separate_window: bool,
+    action: &str,
+    arg: Option<String>,
+) -> Option<(&'a str, Option<String>, bool)> {
+    let parent_label = auxiliary_parent(target_label).unwrap_or(target_label);
+    if has_pending_launch || !separate_window {
+        return None;
+    }
+    let (page, new_projects) = match action {
+        "file.settings" => (arg, false),
+        "file.newProjectsSettings" => (Some(arg.unwrap_or_else(|| "languages.java".into())), true),
+        _ => return None,
+    };
+    Some((parent_label, page, new_projects))
+}
+
+/// Opens Settings directly from a native menu click when separate-window mode is enabled,
+/// avoiding a round-trip through the parent window's JS thread.
+pub fn open_settings_from_menu(app: &AppHandle, target: &WebviewWindow, action: &str, arg: Option<String>) -> bool {
+    let parent_label = auxiliary_parent(target.label()).unwrap_or(target.label());
+    let has_pending = app.state::<WindowsState>().pending(parent_label).is_some();
+    let separate = settings_in_separate_window(app, parent_label);
+    let Some((parent_label, page, new_projects)) =
+        menu_settings_launch(target.label(), has_pending, separate, action, arg)
+    else {
+        return false;
+    };
+    let Some(parent) = app.get_webview_window(parent_label) else {
+        return false;
+    };
+    match open_settings_window(app, &parent, page, new_projects, None) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("settings window unavailable from menu, falling back to frontend: {e}");
+            false
+        }
+    }
 }
 
 /// Opens (or focuses) the settings window of `parent` showing `page`: a
@@ -1637,7 +1836,7 @@ pub fn open_comparison_window(
 fn diff_window_id(diff: &DiffLaunch) -> u64 {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut hasher = DefaultHasher::new();
-    (&diff.path, &diff.left, &diff.right).hash(&mut hasher);
+    (&diff.path, &diff.left, &diff.middle, &diff.right).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -1658,6 +1857,28 @@ pub fn open_diff_window(
             size: AuxKind::Diff.default_size(),
             min_size: AuxKind::Diff.min_size(),
             launch: Launch { diff_window: Some(Box::new(diff)), ..Default::default() },
+            background,
+        },
+    )
+}
+
+/// Opens a lightweight editor window for `editor.path` ("Open in New Window"), sharing the
+/// parent's project documents and language servers.
+pub fn open_editor_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    editor: EditorLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Editor,
+            title: "Editor",
+            size: AuxKind::Editor.default_size(),
+            min_size: AuxKind::Editor.min_size(),
+            launch: Launch { editor: Some(Box::new(editor)), ..Default::default() },
             background,
         },
     )
@@ -1961,6 +2182,20 @@ fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
 }
 
+/// A link in an embedded page that asks for a new window (Flutter DevTools' documentation links)
+/// opens in the system browser; the IDE itself never needs such a window.
+fn open_popup_in_browser<R: tauri::Runtime>(
+    url: tauri::Url,
+    _features: tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<R> {
+    if matches!(url.scheme(), "http" | "https")
+        && let Err(e) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+    {
+        tracing::warn!("cannot open {url}: {e}");
+    }
+    tauri::webview::NewWindowResponse::Deny
+}
+
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
 /// private selector and environment override are absent from release builds.
 #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -2003,16 +2238,35 @@ mod tests {
         let mut diff = DiffLaunch {
             path: "/p/a.txt".into(),
             left: DiffSide::Rev { rev: "HEAD".into(), path: None, label: None },
-            right: DiffSide::Worktree { label: None },
+            middle: None,
+            right: DiffSide::Worktree { label: None, label_detail: None },
             line: None,
+            line_side: None,
+            col: None,
+            chain: None,
         };
         let id = diff_window_id(&diff);
         diff.line = Some(12);
         assert_eq!(diff_window_id(&diff), id);
+        diff.middle = Some(DiffSide::Rev { rev: ":0".into(), path: None, label: None });
+        assert_ne!(diff_window_id(&diff), id);
+        diff.middle = None;
         diff.right = DiffSide::Rev { rev: ":0".into(), path: None, label: None };
         assert_ne!(diff_window_id(&diff), id);
         diff.path = "/p/b.txt".into();
         assert_ne!(diff_window_id(&diff), id);
+    }
+
+    #[test]
+    fn diff_window_keeps_file_and_selection_label_details() {
+        for side in [
+            serde_json::json!({"type": "worktree", "label": "file.rs", "labelDetail": "src"}),
+            serde_json::json!({"type": "text", "text": "let x = 1;", "label": "Selection from file.rs", "labelDetail": ""}),
+            serde_json::json!({"type": "text", "text": "let x = 2;", "label": "From Clipboard"}),
+        ] {
+            let parsed = serde_json::from_value::<DiffSide>(side.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), side);
+        }
     }
 
     #[test]
@@ -2313,9 +2567,39 @@ mod tests {
         let folder = launch_for(share.clone(), true);
         let remote =
             RemoteLaunch { target: RemoteTarget::Wsl { distro: "Ubuntu".into() }, path: "/home/me/app".into() };
-        assert_eq!((folder.remote, folder.project, folder.files.len()), (Some(remote), None, 0));
+        assert_eq!((folder.remote, folder.project, folder.files.len()), (Some(remote.clone()), None, 0));
         let file = launch_for(share.join("main.py"), false);
         assert_eq!((file.remote, file.project, file.files.len()), (None, None, 1));
+    }
+
+    #[test]
+    fn a_saved_wsl_project_reopens_as_a_remote_launch_without_the_share() {
+        let remote =
+            RemoteLaunch { target: RemoteTarget::Wsl { distro: "Ubuntu".into() }, path: "/home/me/app".into() };
+        for saved in [r"\\wsl.localhost\Ubuntu\home\me\app", "wsl://Ubuntu/home/me/app", "//wsl$/Ubuntu/home/me/app"] {
+            let launch = saved_project_launch(Path::new(saved)).expect(saved);
+            assert_eq!(launch.remote, Some(remote.clone()));
+            assert!(launch.project.is_none(), "{saved}");
+        }
+        assert!(same_saved_project(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\me\app"),
+            Path::new("wsl://Ubuntu/home/me/app/")
+        ));
+        let ssh = saved_project_launch(Path::new("ssh://box/srv/app")).unwrap();
+        assert_eq!(
+            ssh.remote,
+            Some(RemoteLaunch { target: RemoteTarget::Ssh { config: "box".into() }, path: "/srv/app".into() })
+        );
+        let container =
+            saved_project_launch(Path::new("devcontainer://%2Fwork%2Fapp:devcontainer.json/workspaces/app")).unwrap();
+        assert_eq!(
+            container.remote,
+            Some(RemoteLaunch {
+                target: RemoteTarget::DevContainer { folder: "/work/app".into(), config: "devcontainer.json".into() },
+                path: "/workspaces/app".into(),
+            })
+        );
+        assert!(saved_project_launch(Path::new("/no/such/local/project-openidea")).is_none());
     }
 
     fn p(s: &str) -> PathBuf {
@@ -2525,6 +2809,27 @@ mod tests {
     }
 
     #[test]
+    fn editor_launch_survives_webview_reload_until_window_closes() {
+        let st = WindowsState::default();
+        let launch = Launch {
+            editor: Some(Box::new(EditorLaunch {
+                path: None,
+                input: Some(r#"{"kind":"agent-session","key":"agent:running-task"}"#.into()),
+                line: None,
+                column: None,
+                end_line: None,
+                end_column: None,
+            })),
+            ..Default::default()
+        };
+        st.set_launch("editor-main-3", launch.clone());
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch.clone()));
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch));
+        st.forget("editor-main-3");
+        assert!(st.take_launch("editor-main-3").is_none());
+    }
+
+    #[test]
     fn a_taken_launch_owns_its_window_until_completion() {
         for launch in [
             path_launch_of(Some(p("/project")), vec![p("/project/a.cs")]),
@@ -2579,14 +2884,24 @@ mod tests {
         assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
         assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
         assert_eq!(auxiliary("diff-project-2-3"), Some((AuxKind::Diff, "project-2")));
+        assert_eq!(auxiliary("editor-project-2-3"), Some((AuxKind::Editor, "project-2")));
         assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
         assert_eq!(state_key("comparison-main-3"), "comparison");
         assert_eq!(state_key("diff-main-3"), "diff");
+        assert_eq!(state_key("editor-main-3"), "editor");
         assert_eq!(state_key("project-3"), "project-3");
-        let labels = ["comparison-main-0", "diff-main-1", "project-2", "main", "settings-main", "deployment-project-2"];
+        let labels = [
+            "comparison-main-0",
+            "diff-main-1",
+            "editor-main-2",
+            "project-2",
+            "main",
+            "settings-main",
+            "deployment-project-2",
+        ];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
     }
 
@@ -2721,5 +3036,22 @@ mod tests {
         assert_eq!(centered(100.0, 50.0, 1440.0, 900.0, 980.0, 720.0), (330.0, 140.0));
         // Taller than the parent: aligned with its top edge.
         assert_eq!(centered(0.0, 50.0, 800.0, 500.0, 600.0, 720.0), (100.0, 50.0));
+    }
+
+    #[test]
+    fn menu_settings_launch_routes_to_parent_and_respects_separate_window_and_pending_launch() {
+        assert_eq!(menu_settings_launch("main", false, true, "file.settings", None), Some(("main", None, false)),);
+        assert_eq!(
+            menu_settings_launch("diff-project-2-42", false, true, "file.settings", Some("keymap".into())),
+            Some(("project-2", Some("keymap".into()), false)),
+        );
+        assert_eq!(
+            menu_settings_launch("settings-main", false, true, "file.newProjectsSettings", None),
+            Some(("main", Some("languages.java".into()), true)),
+        );
+        // Separate-window off, pending cold launch, or unrelated menu actions fall back to frontend dispatch.
+        assert_eq!(menu_settings_launch("main", false, false, "file.settings", None), None);
+        assert_eq!(menu_settings_launch("main", true, true, "file.settings", None), None);
+        assert_eq!(menu_settings_launch("main", false, true, "file.openProject", None), None);
     }
 }

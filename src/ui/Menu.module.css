@@ -2,11 +2,31 @@
 .popup {
   padding: 6px 0;
   min-width: 180px;
+  overflow-x: hidden;
+}
+.popup:not(.anchorWidthPopup) .menu {
   max-width: 420px;
+}
+.titledPopup {
+  scroll-padding-block-start: calc(var(--h-list-row) + var(--space-1));
+}
+.menuHeading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: calc(var(--h-list-row) + var(--space-1));
+  padding-inline: var(--space-3);
+  background: var(--bg-popup);
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  font-weight: 600;
 }
 .menu {
   display: flex;
   flex-direction: column;
+  font-size: var(--fs-ui);
   outline: none;
 }
 .item {
@@ -35,6 +55,7 @@
 }
 .danger {
   color: var(--danger);
+  --icon-color: var(--danger);
 }
 .icon {
   width: 16px;
@@ -58,16 +79,36 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.splitLabel {
+  display: flex;
+}
+.labelStart,
+.labelEnd {
+  min-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+  text-overflow: ellipsis;
+}
+.labelEnd {
+  flex: none;
+  max-width: 50%;
+}
 .shortcut {
-  margin-left: 24px;
+  min-width: 0;
+  max-width: 50%;
+  margin-inline-start: var(--space-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-keys);
   font-size: var(--fs-ui);
   color: var(--fg-muted);
 }
 .subArrow {
+  flex: none;
+  width: 14px;
+  display: flex;
   color: var(--fg-muted);
-  margin-left: 8px;
-  margin-right: -2px;
+  margin-inline-start: var(--space-1);
 }
 .separator {
   height: 1px;
@@ -81,6 +122,15 @@
   padding: 0 14px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
+}
+.title {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-list-row);
+  margin-bottom: var(--space-1);
+  padding-inline: var(--space-3);
+  color: var(--fg-strong);
+  font-weight: 600;
 }
 
 /* Settings › Appearance › "Display icons in menu items" off: keep the column, drop the icon. */

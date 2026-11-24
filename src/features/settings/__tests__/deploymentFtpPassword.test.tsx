@@ -1,11 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_DEPLOYMENT_SERVER } from "@/platform/remoteSettings";
 import { useProject } from "@/platform/project";
 import { PageContext } from "../components/context";
 import { validateSettings } from "../model/schema";
 import { applySettings, openSettings, useSettingsDialog } from "../model/staging";
 import { DEPLOYMENT_PAGES } from "../pages/deployment";
+import { preloadBuiltinPage } from "../pages/lazyPage";
 
 const mocks = vi.hoisted(() => ({ store: vi.fn(), saved: vi.fn(), test: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
@@ -28,7 +29,9 @@ const Editor = option.component;
 const savedDialog = useSettingsDialog.getState();
 const savedProject = useProject.getState();
 const PAGE = DEPLOYMENT_PAGES[0]!.id;
+const DEPLOYMENT_CONTEXT = { pageId: PAGE, scope: "global" } as const;
 
+beforeAll(() => preloadBuiltinPage(PAGE));
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.store.mockResolvedValue(undefined);
@@ -53,7 +56,7 @@ function mount() {
   useProject.setState({ settings, project: null });
   openSettings(PAGE);
   return render(
-    <PageContext.Provider value={{ pageId: PAGE, scope: "global" }}>
+    <PageContext.Provider value={DEPLOYMENT_CONTEXT}>
       <Editor />
     </PageContext.Provider>,
   );

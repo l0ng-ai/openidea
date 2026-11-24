@@ -95,15 +95,14 @@ describe("Local History", () => {
     expect(list).toHaveTextContent("src/gone.ts");
     expect(screen.getByText(/Label 'Before Git checkout' · 2 files recorded before it/)).toBeInTheDocument();
 
-    // Revert at the label restores every file's last revision before it.
+    // Revert at the label restores every file's last revision before it; a file
+    // deleted before the label was absent then and stays absent.
     fireEvent.click(screen.getByRole("button", { name: "Revert" }));
     const confirm = await screen.findByRole("dialog", { name: "Revert" });
+    expect(confirm).toHaveTextContent("Revert 1 files under src to label 'Before Git checkout'?");
     fireEvent.click(within(confirm).getByRole("button", { name: "Revert" }));
-    await waitFor(() => expect(historyRestore).toHaveBeenCalledTimes(2));
-    expect(historyRestore.mock.calls.map((c) => c.join(" ")).sort()).toEqual([
-      `/p/src/a.ts ${id("e")}`,
-      `/p/src/gone.ts ${id("d")}`,
-    ]);
+    await waitFor(() => expect(historyRestore).toHaveBeenCalledTimes(1));
+    expect(historyRestore).toHaveBeenCalledWith("/p/src/a.ts", id("e"));
 
     // A deleted file's row offers Restore.
     fireEvent.click(within(list).getAllByRole("option")[1]!);

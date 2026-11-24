@@ -12,6 +12,9 @@
   gap: var(--space-0-5);
   padding: 0 6px;
 }
+.toolbarMore {
+  margin-left: auto;
+}
 .sep {
   width: 1px;
   height: 16px;
@@ -92,6 +95,18 @@
   color: var(--fg-subtle);
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.pluginText {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  overflow: hidden;
+}
+.pluginText > .label {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
 }
 .profile {
   min-width: 0;

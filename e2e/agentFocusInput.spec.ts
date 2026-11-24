@@ -26,7 +26,7 @@ const firstTask: AgentTask = {
 const secondTask: AgentTask = { ...firstTask, id: "focus-second", title: "Second focus task" };
 const draft = "draft keep this unsent";
 const reboundShortcut = "Control+Meta+Shift+J";
-const subagent: AgentEntry = {
+const subagent: Extract<AgentEntry, { type: "subagent" }> = {
   type: "subagent",
   id: "focus-child",
   title: "Inspect focus behavior",
@@ -335,7 +335,8 @@ for (const placement of ["editor", "toolWindow"] as const) {
     await seedTasks(page, placement);
     const box = messageBox(page);
     await box.fill(draft);
-    await page.getByRole("treeitem", { name: "README.md", exact: true }).click();
+    await page.getByRole("treeitem", { name: "src", exact: true }).click();
+    await expect(box).toBeVisible();
     await expect(box).not.toBeFocused();
     await page.keyboard.press("Meta+L");
     await expect(box).toBeFocused();
@@ -416,6 +417,7 @@ test("dragging the Changes pane's edge resizes it for the next session too", asy
 
   // The next session starts with the dragged width.
   await page.reload();
+  await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
   await seedTasks(page, "editor");
   await seedChanges(page);
   await expect.poll(async () => Math.round((await changes.boundingBox())!.width)).toBe(Math.round(widened));

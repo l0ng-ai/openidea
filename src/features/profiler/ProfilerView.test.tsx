@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { Profile, ProfileMode } from "@/platform/ipc";
 import { useI18n } from "@/platform/i18n";
 import { ProfilerTabs, ProfilerView } from "./ProfilerView";
@@ -46,6 +46,26 @@ describe("ProfilerView", () => {
     // The ordinary frame above it carries no mark.
     expect(within(screen.getByText("Main.run").parentElement!).queryByText("allocated")).toBeNull();
     expect(screen.getByText("async-profiler · 610.4 MB allocated")).toBeInTheDocument();
+  });
+
+  it("moves through the flame graph and zooms with the keyboard", () => {
+    addSnapshot("App", profile("cpu", 100));
+    render(<ProfilerView />);
+    const graph = screen.getByRole("tree", { name: "Flame graph" });
+    expect(graph.tabIndex).toBe(0);
+    const current = () =>
+      document.getElementById(graph.getAttribute("aria-activedescendant")!)?.getAttribute("aria-label");
+    expect(current()).toBe("all (100 ms)");
+    fireEvent.keyDown(graph, { key: "ArrowUp" });
+    expect(current()).toBe("Main.run");
+    fireEvent.keyDown(graph, { key: "Enter" });
+    expect(screen.getByText("Zoomed into Main.run")).toBeInTheDocument();
+    fireEvent.keyDown(graph, { key: "ArrowUp" });
+    expect(current()).toBe("Main.work");
+    fireEvent.keyDown(graph, { key: "ArrowDown" });
+    expect(current()).toBe("Main.run");
+    fireEvent.keyDown(graph, { key: "Escape" });
+    expect(screen.queryByText("Zoomed into Main.run")).toBeNull();
   });
 
   it("marks the allocated type in the flame graph and the method list", () => {

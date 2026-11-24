@@ -1,5 +1,6 @@
 /** Inspect Code, Locate Duplicates and Search / Replace Structurally dialogs. */
 import { useEffect, useMemo, useState } from "react";
+import clsx from "clsx";
 import {
   call,
   commands,
@@ -10,6 +11,8 @@ import {
   type WorkspaceEdit,
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
+import { editorPrefs } from "@/platform/editorSettings";
+import { monoFontFamily } from "@/platform/fonts";
 import { activeProfileId, listProfiles, validateInspections, type ProfileId } from "@/platform/inspections";
 import { basename, relativePath, useProject } from "@/platform/project";
 import { Button, Checkbox, Dialog, Input, Select, Spinner, T } from "@/ui";
@@ -29,6 +32,7 @@ import {
   type StructuralForm,
 } from "./structural";
 import styles from "./Analysis.module.css";
+import fieldsetStyles from "@/ui/DialogFieldset.module.css";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 
@@ -168,40 +172,50 @@ function ReformatCodeDialog({ targets, onClose }: { targets: readonly ReformatTa
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        <div className={styles.hint}>{subject}</div>
-        {targets.some((t) => t.dir) && (
+      <div className={fieldsetStyles.body}>
+        <div className={styles.reformatSubject}>{subject}</div>
+        <fieldset className={fieldsetStyles.group}>
+          <legend className={fieldsetStyles.legend}>
+            <T>Options</T>
+          </legend>
           <Checkbox
-            checked={options.recursive}
-            onChange={(recursive) => setOptions({ ...options, recursive })}
-            label="Include subdirectories"
+            checked={options.optimizeImports}
+            onChange={(optimizeImports) => setOptions({ ...options, optimizeImports })}
+            label="Optimize imports"
           />
-        )}
-        <Checkbox
-          checked={options.optimizeImports}
-          onChange={(optimizeImports) => setOptions({ ...options, optimizeImports })}
-          label="Optimize imports"
-        />
-        <Checkbox
-          checked={options.changedTextOnly}
-          onChange={(changedTextOnly) => setOptions({ ...options, changedTextOnly })}
-          label="Only VCS changed text"
-        />
-        <div className={styles.fieldRow}>
           <Checkbox
-            checked={options.useMask}
-            onChange={(useMask) => setOptions({ ...options, useMask })}
-            label="File mask:"
+            checked={options.changedTextOnly}
+            onChange={(changedTextOnly) => setOptions({ ...options, changedTextOnly })}
+            label="Only VCS changed text"
           />
-          <Input
-            className={styles.grow}
-            value={options.mask}
-            disabled={!options.useMask}
-            placeholder="*.sh, *.py"
-            onChange={(e) => setOptions({ ...options, mask: e.target.value })}
-            aria-label="File mask"
-          />
-        </div>
+          {targets.some((t) => t.dir) && (
+            <Checkbox
+              checked={options.recursive}
+              onChange={(recursive) => setOptions({ ...options, recursive })}
+              label="Include subdirectories"
+            />
+          )}
+        </fieldset>
+        <fieldset className={fieldsetStyles.group}>
+          <legend className={fieldsetStyles.legend}>
+            <T>Filters</T>
+          </legend>
+          <div className={styles.reformatMask}>
+            <Checkbox
+              checked={options.useMask}
+              onChange={(useMask) => setOptions({ ...options, useMask })}
+              label="File mask:"
+            />
+            <Input
+              className={styles.reformatMaskInput}
+              value={options.mask}
+              disabled={!options.useMask}
+              placeholder="*.sh, *.py"
+              onChange={(e) => setOptions({ ...options, mask: e.target.value })}
+              aria-label="File mask"
+            />
+          </div>
+        </fieldset>
         <div className={styles.hint}>
           <T>Files are reformatted by their language's formatter and saved; files without one are skipped.</T>
         </div>
@@ -308,6 +322,15 @@ function StructuralDialog({ replace, onClose }: { replace: boolean; onClose: () 
   const [form, setForm] = useState<StructuralForm>(loadStructuralForm);
   const [scope, setScope] = useState<ScopeChoice>(() => defaultScope());
   const [busy, setBusy] = useState(false);
+  const settings = useProject((s) => s.settings);
+  const font = settings?.editor;
+  const fallback = editorPrefs(settings).fallbackFont;
+  const templateFont = {
+    fontFamily:
+      font?.fontFamily || fallback ? monoFontFamily(font?.fontFamily, fallback, "var(--font-mono)") : undefined,
+    fontSize: font?.fontSize ?? undefined,
+    lineHeight: font?.lineHeight != null ? `${font.lineHeight}px` : undefined,
+  };
   const languages = useStructuralLanguages();
   // The editor's language when it has a grammar, else the first supported one.
   const language =
@@ -346,47 +369,49 @@ function StructuralDialog({ replace, onClose }: { replace: boolean; onClose: () 
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        <div className={styles.fieldRow}>
-          <span>
-            <T>Language</T>
-          </span>
-          <Select
-            value={language || null}
-            options={options}
-            onChange={(language) => setForm({ ...form, language })}
-            placeholder={languages ? "No languages" : "Loading…"}
-            className={styles.languageSelect}
-            aria-label="Language"
+      <div className={clsx(styles.form, replace && styles.replaceForm)}>
+        <div className={styles.templateSection}>
+          <div className={styles.templateHeader}>
+            <label htmlFor="ssr-template">
+              <T>Search template</T>
+            </label>
+            <Select
+              value={language || null}
+              options={options}
+              onChange={(language) => setForm({ ...form, language })}
+              placeholder={languages ? "No languages" : "Loading…"}
+              className={styles.languageSelect}
+              variant="ghost"
+              aria-label="Language"
+            />
+          </div>
+          <textarea
+            id="ssr-template"
+            className={styles.template}
+            style={templateFont}
+            spellCheck={false}
+            value={form.pattern}
+            placeholder="$a$.equals($b$)"
+            onChange={(e) => setForm({ ...form, pattern: e.target.value })}
+            data-autofocus=""
           />
+          {error && <div className={styles.error}>{error}</div>}
         </div>
-        <label className={styles.fieldLabel} htmlFor="ssr-template">
-          <T>Search template</T>
-        </label>
-        <textarea
-          id="ssr-template"
-          className={styles.template}
-          spellCheck={false}
-          value={form.pattern}
-          placeholder="$a$.equals($b$)"
-          onChange={(e) => setForm({ ...form, pattern: e.target.value })}
-          data-autofocus=""
-        />
-        {error && <div className={styles.error}>{error}</div>}
         {replace && (
-          <>
-            <label className={styles.fieldLabel} htmlFor="ssr-replacement">
+          <div className={styles.templateSection}>
+            <label htmlFor="ssr-replacement">
               <T>Replace template</T>
             </label>
             <textarea
               id="ssr-replacement"
               className={styles.template}
+              style={templateFont}
               spellCheck={false}
               value={form.replacement}
               placeholder="Objects.equals($a$, $b$)"
               onChange={(e) => setForm({ ...form, replacement: e.target.value })}
             />
-          </>
+          </div>
         )}
         <div className={styles.hint}>
           <T>Placeholders:</T> <code>$name$</code> or <code>$NAME</code> <T>match one node,</T> <code>$$$NAME</code>{" "}

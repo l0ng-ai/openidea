@@ -58,6 +58,27 @@ test("close waits for graceful EOF cleanup of a tool in its own group", options,
   await server.close();
 });
 
+test("initialize timeout cleans up the server and its independent tool", options, async () => {
+  const { home } = await fixture("no-initialize");
+  // Exercise the actual stdio deadline, rather than replacing the child's clock.
+  await assert.rejects(Server.start(home, { SMOKE_SERVER_MODE: "no-initialize" }, 500), /initialize timed out/);
+  const pids = JSON.parse(readFileSync(join(home, "pids.json"), "utf8"));
+  assertGone(pids.server);
+  assertGone(pids.tool);
+});
+
+test(
+  "malformed protocol rejects startup and cleans up instead of throwing out of an event callback",
+  options,
+  async () => {
+    const { home, start } = await fixture("bad-header");
+    await assert.rejects(start(), /bad header/);
+    const pids = JSON.parse(readFileSync(join(home, "pids.json"), "utf8"));
+    assertGone(pids.server);
+    assertGone(pids.tool);
+  },
+);
+
 test("failed initialize still runs graceful cleanup and preserves the error", options, async () => {
   const { home, start } = await fixture("reject");
   await assert.rejects(start(), { message: "initialize failed" });

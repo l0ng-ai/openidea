@@ -1,6 +1,6 @@
 use super::*;
 use crate::{HostConfig, Project};
-use ide_core::{IdeEvent, TextChange, event::NotifyLevel};
+use ide_core::{IdeEvent, TextChange};
 use parking_lot::Mutex;
 use std::{path::Path, sync::Arc};
 
@@ -28,18 +28,11 @@ impl Fixture {
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
         let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new(move |_| {
                 let events = captured.clone();
                 Arc::new(move |event| events.lock().push(event))
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..HostConfig::for_test(&base)
         });
         let project = host.open_project("main", &root).unwrap();
         Self { _temp: temp, host, project, events, path, outside }
@@ -57,7 +50,9 @@ impl Fixture {
         self.events
             .lock()
             .iter()
-            .filter(|e| matches!(e, IdeEvent::DocPatched { .. } | IdeEvent::DocDirty { .. } | IdeEvent::Notify { .. }))
+            .filter(|e| {
+                matches!(e, IdeEvent::DocPatched { .. } | IdeEvent::DocDirty { .. } | IdeEvent::DocDiskConflict { .. })
+            })
             .cloned()
             .collect()
     }
@@ -110,7 +105,7 @@ async fn dirty_document_keeps_edits_and_warns_once() {
     let loaded = f.project.documents.snapshot(original.id).unwrap();
     assert_eq!(loaded.text, "local original\n");
     assert!(loaded.dirty);
-    assert!(matches!(f.document_events().as_slice(), [IdeEvent::Notify { level: NotifyLevel::Warning, .. }]));
+    assert!(matches!(f.document_events().as_slice(), [IdeEvent::DocDiskConflict { .. }]));
     f.events.lock().clear();
     f.sync().await;
     assert!(f.document_events().is_empty());
@@ -202,4 +197,27 @@ async fn synchronization_only_changes_the_calling_windows_documents() {
     f.sync().await;
     assert_eq!(f.project.documents.snapshot(original.id).unwrap().text, "external change in shared file\n");
     assert_eq!(other.documents.snapshot(other_doc.id).unwrap().text, other_doc.text);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rearrange_returns_utf16_edits_that_put_methods_in_order() {
+    let f = Fixture::new();
+    let path = f.project.root.join("board.py");
+    let text = "class Board:\n    def 移动(self):\n        return '→'\n\n    def __init__(self):\n        self.名前 = 1  # 初始化\n";
+    std::fs::write(&path, text).unwrap();
+    let doc = f.open(&path).await.id;
+    let edits = doc_rearrange(&f.host, "main", doc).await.unwrap();
+    let mut rearranged = ide_text::Document::new(text);
+    rearranged.apply_edits(&edits).unwrap();
+    assert_eq!(
+        rearranged.text(),
+        "class Board:\n    def __init__(self):\n        self.名前 = 1  # 初始化\n\n    def 移动(self):\n        return '→'\n"
+    );
+    // Already in order, or broken: nothing to do.
+    std::fs::write(&path, rearranged.text()).unwrap();
+    f.sync().await;
+    assert!(doc_rearrange(&f.host, "main", doc).await.unwrap().is_empty());
+    std::fs::write(&path, "class A:\n    def b(self\n    def __init__(self): ...\n").unwrap();
+    f.sync().await;
+    assert!(doc_rearrange(&f.host, "main", doc).await.unwrap().is_empty());
 }

@@ -27,7 +27,19 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 3: binary arguments (`IpcBytes`) are base64 strings, not arrays of numbers.
+/// 4: a running tool's output arrives as `AgentEvent::ToolOutput` appends; a client that
+/// doesn't know the event would show stale output.
+pub const PROTOCOL_VERSION: u32 = 4;
+pub const SESSION_REPLACED: &str = "session_replaced";
+pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Advertised only by a persistent backend with an editable idle timeout.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIdlePolicy {
+    pub override_seconds: Option<u64>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +49,8 @@ pub struct ServerInfo {
     pub os: String,
     pub arch: String,
     pub home: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<RemoteIdlePolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,12 +73,71 @@ pub struct ChannelMessage {
     pub data: Value,
 }
 
+/// Holds the active client [`Peer`]: once for `--stdio` ([`OnceLock<Peer>`]) or
+/// rebound across client reconnects for a persistent daemon ([`PeerSlot`]).
+pub trait PeerHandle: Send + Sync + 'static {
+    fn current(&self) -> Option<Peer>;
+    fn install(&self, peer: Peer) -> (u64, Option<Peer>);
+    fn clear(&self, generation: u64) -> bool;
+}
+
+impl PeerHandle for OnceLock<Peer> {
+    fn current(&self) -> Option<Peer> {
+        self.get().cloned()
+    }
+
+    fn install(&self, peer: Peer) -> (u64, Option<Peer>) {
+        let _ = self.set(peer);
+        (1, None)
+    }
+
+    fn clear(&self, _: u64) -> bool {
+        true
+    }
+}
+
+/// Rebindable client connection slot for a persistent `openidea-server` daemon.
+#[derive(Default)]
+pub struct PeerSlot {
+    inner: parking_lot::RwLock<Option<(u64, Peer)>>,
+    seq: std::sync::atomic::AtomicU64,
+}
+
+impl PeerSlot {
+    #[cfg(unix)]
+    pub(crate) fn remove(&self) -> Option<Peer> {
+        self.inner.write().take().map(|(_, p)| p)
+    }
+}
+
+impl PeerHandle for PeerSlot {
+    fn current(&self) -> Option<Peer> {
+        self.inner.read().as_ref().map(|(_, p)| p.clone())
+    }
+
+    fn install(&self, peer: Peer) -> (u64, Option<Peer>) {
+        let id = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let previous = self.inner.write().replace((id, peer)).map(|(_, p)| p);
+        (id, previous)
+    }
+
+    fn clear(&self, generation: u64) -> bool {
+        let mut guard = self.inner.write();
+        if guard.as_ref().is_some_and(|(id, _)| *id == generation) {
+            *guard = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// One `invoke`: its arguments and a way to stream values back.
 pub struct Call {
     pub host: Arc<Host>,
     pub window: String,
     pub args: Value,
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
 }
 
 impl Call {
@@ -90,7 +163,7 @@ impl Call {
             .ok_or_else(|| IdeError::invalid(format!("argument {name}: expected a channel")))?;
         let peer = self.peer.clone();
         Ok(Arc::new(move |data: T| {
-            let Some(peer) = peer.get() else { return };
+            let Some(peer) = peer.current() else { return };
             match serde_json::to_value(&data) {
                 Ok(data) => {
                     let _ = peer.notify("channel", ChannelMessage { id, data });
@@ -150,44 +223,81 @@ impl Dispatcher {
 
 /// Serves `host` over `reader` / `writer` until the client disconnects.
 /// `peer` must be the one whose events `host` sends ([`event_sink`]).
-pub async fn serve<R, W>(host: Arc<Host>, dispatcher: Dispatcher, peer: Arc<OnceLock<Peer>>, reader: R, writer: W)
+pub async fn serve<R, W, P>(host: Arc<Host>, dispatcher: Dispatcher, peer: Arc<P>, reader: R, writer: W)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    P: PeerHandle,
+{
+    let slot: Arc<dyn PeerHandle> = peer;
+    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: slot.clone(), daemon: None });
+    let p = Peer::connect(reader, writer, handler);
+    let (generation, previous) = slot.install(p.clone());
+    if let Some(old) = previous {
+        old.kill();
+    }
+    p.closed().await;
+    if slot.clear(generation) {
+        // Reports belong to the disconnected desktop, even while the host shuts down.
+        for window in host.projects.read().keys() {
+            host.mcp_reports.forget_window(window);
+        }
+    }
+}
+
+/// The daemon owns the peer and handles replacement and disconnect serially.
+#[cfg(unix)]
+pub(crate) fn connect_persistent<R, W>(
+    host: Arc<Host>,
+    dispatcher: Dispatcher,
+    peer: Arc<PeerSlot>,
+    shutdown: ide_core::CancellationToken,
+    idle_policy: RemoteIdlePolicy,
+    reader: R,
+    writer: W,
+) -> Peer
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: peer.clone() });
+    // Streaming ids belong to the calling connection, not the next window to attach.
+    let connection = Arc::new(OnceLock::new());
+    let handler =
+        Arc::new(ServerHandler { host, dispatcher, peer: connection.clone(), daemon: Some((shutdown, idle_policy)) });
     let p = Peer::connect(reader, writer, handler);
-    let _ = peer.set(p.clone());
-    p.closed().await;
-    // Reports belong to the disconnected desktop, even while the host shuts down.
-    for window in host.projects.read().keys() {
-        host.mcp_reports.forget_window(window);
-    }
+    let _ = connection.set(p.clone());
+    let (_, previous) = peer.install(p.clone());
+    debug_assert!(previous.is_none());
+    p
 }
 
 /// Sends a window's events to the client as `event` notifications.
-pub fn event_sink(peer: Arc<OnceLock<Peer>>, window: Option<String>) -> ide_core::SharedSink {
+pub fn event_sink<P: PeerHandle>(peer: Arc<P>, window: Option<String>) -> ide_core::SharedSink {
     Arc::new(PeerSink { peer, window })
 }
 
 /// Whether a desktop shows an `event` notification of its server in the window. A server reports
-/// on its project; what this machine answers or owns itself (MCP approvals, app updates, window
-/// groups, its own connection to the server) never comes from it.
-pub fn client_accepts(event: &IdeEvent) -> bool {
+/// on its project; what this machine owns itself (app updates, window groups, its own connection
+/// to the server) never comes from it, and MCP UI requests are accepted only when this machine
+/// trusts the remote project (their answers route back to the server, never locally).
+pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
     match event {
-        IdeEvent::McpRequest { .. }
-        | IdeEvent::McpRequestClosed { .. }
-        | IdeEvent::WindowGroupsChanged
+        IdeEvent::WindowGroupsChanged
+        | IdeEvent::McpBackgroundProjectsChanged
         | IdeEvent::WindowFullscreenChanged
         | IdeEvent::RemoteConnectionLost { .. }
         | IdeEvent::UpdateStatusChanged { .. }
         | IdeEvent::UpdateAvailable { .. } => false,
+        IdeEvent::McpRequest { .. } | IdeEvent::McpRequestClosed { .. } => trusted,
         IdeEvent::DbSourcesChanged
         | IdeEvent::ProjectTrustChanged { .. }
+        | IdeEvent::Direnv { .. }
+        | IdeEvent::FlutterDevices { .. }
         | IdeEvent::FsChanged { .. }
         | IdeEvent::ExcludedDirsChanged { .. }
         | IdeEvent::DocPatched { .. }
         | IdeEvent::DocDirty { .. }
+        | IdeEvent::DocDiskConflict { .. }
         | IdeEvent::WorkspaceEditApplied { .. }
         | IdeEvent::DocLanguage { .. }
         | IdeEvent::Diagnostics { .. }
@@ -213,13 +323,13 @@ pub fn client_accepts(event: &IdeEvent) -> bool {
 }
 
 struct PeerSink {
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
     window: Option<String>,
 }
 
 impl ide_core::EventSink for PeerSink {
     fn emit(&self, event: IdeEvent) {
-        if let Some(peer) = self.peer.get() {
+        if let Some(peer) = self.peer.current() {
             let _ = peer.notify("event", EventMessage { window: self.window.clone(), event });
         }
     }
@@ -228,16 +338,18 @@ impl ide_core::EventSink for PeerSink {
 struct ServerHandler {
     host: Arc<Host>,
     dispatcher: Dispatcher,
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
+    daemon: Option<(ide_core::CancellationToken, RemoteIdlePolicy)>,
 }
 
-pub fn server_info() -> ServerInfo {
+fn server_info(idle_policy: Option<RemoteIdlePolicy>) -> ServerInfo {
     ServerInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: PROTOCOL_VERSION,
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
         home: dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default(),
+        idle_policy,
     }
 }
 
@@ -245,10 +357,16 @@ impl Handler for ServerHandler {
     fn on_notification(&self, _method: &str, _params: Value) {}
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        if self.daemon.as_ref().is_some_and(|(shutdown, _)| shutdown.is_cancelled()) {
+            return Err((codes::INTERNAL_ERROR, "remote backend is stopping".into()));
+        }
         let internal = |e: serde_json::Error| (codes::INTERNAL_ERROR, e.to_string());
         match method {
-            "initialize" => serde_json::to_value(server_info()).map_err(internal),
+            "initialize" => {
+                serde_json::to_value(server_info(self.daemon.as_ref().map(|(_, policy)| *policy))).map_err(internal)
+            }
             "commands" => serde_json::to_value(self.dispatcher.commands()).map_err(internal),
+            "shutdown" => Ok(Value::Null),
             "invoke" => {
                 let call: Invoke =
                     serde_json::from_value(params).map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
@@ -261,6 +379,14 @@ impl Handler for ServerHandler {
                 self.host.runtime.block_on(handler(c)).map_err(error_reply)
             }
             _ => Err((codes::METHOD_NOT_FOUND, format!("unknown method {method}"))),
+        }
+    }
+
+    fn after_response(&self, method: &str) {
+        if method == "shutdown"
+            && let Some((shutdown, _)) = &self.daemon
+        {
+            shutdown.cancel();
         }
     }
 }
@@ -300,16 +426,30 @@ mod tests {
             date: None,
         };
         for event in [
-            IdeEvent::McpRequest { id: 1, request: confirm },
+            IdeEvent::McpRequest { id: 1, request: confirm.clone() },
             IdeEvent::McpRequestClosed { id: 1 },
-            IdeEvent::UpdateAvailable { update },
+            IdeEvent::UpdateAvailable { update: update.clone() },
             IdeEvent::UpdateStatusChanged {
                 status: ide_core::updates::UpdateStatus { last_checked: None, checking: true },
             },
             IdeEvent::WindowGroupsChanged,
             IdeEvent::WindowFullscreenChanged,
         ] {
-            assert!(!client_accepts(&event), "{event:?}");
+            assert!(!client_accepts(&event, false), "{event:?}");
+        }
+        // Even for a trusted remote project, desktop-owned events stay blocked while remote MCP prompts pass.
+        assert!(client_accepts(&IdeEvent::McpRequest { id: 1, request: confirm }, true));
+        assert!(client_accepts(&IdeEvent::McpRequestClosed { id: 1 }, true));
+        for event in [
+            IdeEvent::UpdateAvailable { update },
+            IdeEvent::UpdateStatusChanged {
+                status: ide_core::updates::UpdateStatus { last_checked: None, checking: true },
+            },
+            IdeEvent::WindowGroupsChanged,
+            IdeEvent::WindowFullscreenChanged,
+            IdeEvent::McpBackgroundProjectsChanged,
+        ] {
+            assert!(!client_accepts(&event, true), "{event:?}");
         }
     }
 
@@ -327,7 +467,8 @@ mod tests {
             IdeEvent::Askpass { id: 1, prompt: "Password".into(), kind: AskpassKind::Secret, remember: false },
             IdeEvent::ProjectTrustChanged { root: "/srv/app".into(), trusted: true },
         ] {
-            assert!(client_accepts(&event), "{event:?}");
+            assert!(client_accepts(&event, false), "{event:?}");
+            assert!(client_accepts(&event, true), "{event:?}");
         }
     }
 }

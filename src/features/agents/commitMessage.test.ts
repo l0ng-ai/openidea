@@ -274,6 +274,73 @@ describe("pickAgent", () => {
   });
 });
 
+describe("pickAgent with an agent chosen for commit messages", () => {
+  const effort: AgentConfigOption = {
+    id: "effort",
+    name: "Effort",
+    description: null,
+    category: "thought_level",
+    current: "high",
+    values: ["low", "high"].map((value) => ({ value, name: value, description: null })),
+    via: "option",
+  };
+  const claude = { ...provider("claude", true, [modelOption("smart")]), thoughtLevels: { fast: [effort] } };
+  const tasks = [
+    task("a", "claude", { updatedMs: 1, config: [modelOption("smart")] }),
+    task("b", "codex", { updatedMs: 5 }),
+  ];
+  const prefer = (agent: string, model = "", level = "") => ({ agent, agentModel: model, agentEffort: level });
+
+  it("uses that agent over the latest task's, on the model of its own latest task", () => {
+    expect(pickAgent(tasks, [claude, provider("codex")], draft("codex"), prefer("claude"))).toEqual({
+      provider: "claude",
+      config: [{ id: "model", value: "smart" }],
+    });
+  });
+
+  it("runs the chosen model at the chosen effort", () => {
+    expect(pickAgent(tasks, [claude, provider("codex")], draft("codex"), prefer("claude", "fast", "low"))).toEqual({
+      provider: "claude",
+      config: [
+        { id: "model", value: "fast" },
+        { id: "effort", value: "low" },
+      ],
+    });
+  });
+
+  it("reads the models from the agent's refreshed catalog", () => {
+    const catalog = {
+      config: [{ ...modelOption("smart"), values: [{ value: "mini", name: "mini", description: null }] }],
+      thoughtLevels: { mini: [effort] },
+    };
+    expect(
+      pickAgent([], [claude], draft("claude"), prefer("claude", "mini", "low"), new Map([["claude", catalog]])),
+    ).toEqual({
+      provider: "claude",
+      config: [
+        { id: "model", value: "mini" },
+        { id: "effort", value: "low" },
+      ],
+    });
+  });
+
+  it("keeps the agent's model and effort for values it doesn't offer", () => {
+    expect(pickAgent([], [claude], draft("claude"), prefer("claude", "gone", "low"))).toEqual({
+      provider: "claude",
+      config: [{ id: "model", value: "smart" }],
+    });
+  });
+
+  it("follows the latest task when the chosen agent isn't installed", () => {
+    expect(
+      pickAgent(tasks, [provider("claude", false), provider("codex")], draft("codex"), prefer("claude", "fast")),
+    ).toEqual({
+      provider: "codex",
+      config: [],
+    });
+  });
+});
+
 describe("generateCommitMessage", () => {
   const changes = { revision: 3, roots: ["/p"], patch: PATCH };
   const notified = () => backend.notify.mock.calls.map(([n]) => n as { level: string; title: string; body?: string });

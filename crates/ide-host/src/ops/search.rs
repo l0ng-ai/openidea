@@ -22,6 +22,17 @@ pub fn literal_range(l: ide_language::Literal) -> ide_search::LiteralRange {
     ide_search::LiteralRange { start: l.start, end: l.end, kind }
 }
 
+/// Comments and string literals of `text`, for the search context of Find and Replace in Files.
+pub(crate) fn literals_of(
+    project: &crate::project::Project,
+    syntax: &ide_language::Syntax,
+    path: &Path,
+    text: &str,
+) -> Option<Vec<ide_search::LiteralRange>> {
+    let language = project.languages.detect(path, text.lines().next());
+    Some(syntax.literals(&language, text)?.into_iter().map(literal_range).collect())
+}
+
 /// Find in Files. Results stream through `on_event`; ends with `Done`.
 /// Cancel with `cancel_request(request)`.
 #[command(trust = always)]
@@ -34,8 +45,10 @@ pub async fn search_start(
 ) -> IdeResult<()> {
     let project = host.project(window)?;
     // Excluded roots (Project Structure marks and detected `target`, `node_modules`, …) and
-    // ignored names are never searched.
-    query.exclude.extend(project.search_excludes());
+    // ignored names are not searched, unless the query asks for them.
+    if !query.include_excluded {
+        query.exclude.extend(project.search_excludes());
+    }
     let cancel = host.begin_request(request);
     let events = on_event.clone();
     let syntax = host.syntax();
@@ -80,10 +93,15 @@ pub(crate) fn search_project(
                 query.scope,
                 ide_search::SearchScope::Directory { .. } | ide_search::SearchScope::Files { .. }
             ));
-    let content_roots = match query.scope {
+    let content_roots: Vec<std::path::PathBuf> = match query.scope {
         ide_search::SearchScope::Project
         | ide_search::SearchScope::FileSet { .. }
-        | ide_search::SearchScope::Pattern { .. } => project.content_roots(),
+        | ide_search::SearchScope::Pattern { .. } => project
+            .content_roots()
+            .into_iter()
+            // Kept out of the root's walk only by its ignore rules, which this search does not apply.
+            .filter(|r| !(query.include_excluded && include_root && r.starts_with(root)))
+            .collect(),
         _ => within.into_iter().collect(),
     };
     let filter = |rel: &str| match set {
@@ -91,12 +109,9 @@ pub(crate) fn search_project(
         Some(ProjectFileSet::Test) => roots.is_test(rel),
         _ => true,
     };
-    let literals = |path: &Path, text: &str| {
-        let language = project.languages.detect(path, text.lines().next());
-        Some(syntax.literals(&language, text)?.into_iter().map(literal_range).collect())
-    };
+    let literals = |path: &Path, text: &str| literals_of(project, syntax, path, text);
     let defaults = project.documents.file_defaults();
-    let decode = |path: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, defaults.fallback_for(path));
+    let fallback = |path: &Path| defaults.fallback_for(path).map(str::to_owned);
     let mut total = SearchSummary::default();
     for dir in std::iter::once(root).filter(|_| include_root).chain(&content_roots) {
         let mut remaining = query.clone();
@@ -108,6 +123,10 @@ pub(crate) fn search_project(
         if let Some(prefix) = &prefix {
             remaining.include = rebase_masks(&query.include, prefix);
             remaining.exclude = rebase_masks(&query.exclude, prefix);
+            // An attached project's own excluded folders: the project's were rebased away.
+            if !query.include_excluded && project.member_excludes.read().contains_key(dir) {
+                remaining.exclude.extend(project.search_excludes_in(dir));
+            }
             // Only paths elsewhere were asked for.
             if remaining.include.is_empty() && !query.include.is_empty() {
                 continue;
@@ -120,7 +139,7 @@ pub(crate) fn search_project(
             &remaining,
             Some(&filter),
             Some(&literals),
-            ide_search::TextSource { overlay: &|p| project.documents.search_text_of(p), decode: &decode },
+            ide_search::TextSource { overlay: &|p| project.documents.search_text_of(p), fallback: &fallback },
             cancel,
             &|mut file| {
                 if let Some(prefix) = &prefix {
@@ -144,7 +163,7 @@ pub(crate) fn search_project(
 /// Project-relative `masks` (each a comma-separated list) for a search from the content root
 /// shown as `prefix`: paths below it lose the prefix, other paths can match nothing there and
 /// are dropped, names and `**/` patterns (`*.rs`, `**/build/**`) stay as they are.
-fn rebase_masks(masks: &[String], prefix: &str) -> Vec<String> {
+pub(crate) fn rebase_masks(masks: &[String], prefix: &str) -> Vec<String> {
     let prefix = format!("{}/", prefix.trim_end_matches('/'));
     masks
         .iter()
@@ -169,6 +188,11 @@ fn rebase_masks(masks: &[String], prefix: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_leaves_unread_the_texts_the_parser_does_not_take() {
+        assert_eq!(ide_search::MAX_LITERALS_TEXT_BYTES, ide_language::MAX_PARSE_BYTES);
+    }
+
     #[test]
     fn masks_follow_the_root_they_search() {
         let masks = vec![".wt/a/src/**, src/**".into(), "*.rs".into(), "!.wt/a/out/**".into(), "**/build/**".into()];

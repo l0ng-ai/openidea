@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import clsx from "clsx";
+import type { GroupImperativeHandle, Layout } from "react-resizable-panels";
 import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
 import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
@@ -7,6 +9,7 @@ import {
   Icon,
   IconButton,
   Menu,
+  type MenuItem,
   SplitGroup,
   SplitHandle,
   SplitPanel,
@@ -45,17 +48,23 @@ import {
   pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
-import { nodeOutput } from "./testing";
-import { TestTreeView, formatDuration } from "./TestTreeView";
+import { formatDuration, nodeOutput } from "./testing";
+import { TestStatusBar, TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
+import { hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
 import { configIcon } from "./configs";
 import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+
+const TEST_SPLIT_DEFAULTS = {
+  horizontal: { tests: 34, console: 66 },
+  vertical: { tests: 48, console: 52 },
+};
 
 function failed(s: RunSession): boolean {
   return s.status === "failed" || (s.status === "finished" && s.exitCode !== 0 && !s.stopped);
@@ -91,6 +100,37 @@ export function SessionPanel({
   const softWrap = wrapOverride ?? defaultWrap;
   const [selectedTest, setSelectedTest] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [compactToolbar, setCompactToolbar] = useState(false);
+  const [stackedTests, setStackedTests] = useState(false);
+  const testSplit = useRef<GroupImperativeHandle>(null);
+  const testLayouts = useRef<Record<keyof typeof TEST_SPLIT_DEFAULTS, Layout>>({ ...TEST_SPLIT_DEFAULTS });
+  const testOrientation = stackedTests ? "vertical" : "horizontal";
+  const hasRuntime = !!rt;
+  const hasTests = !!rt?.tests;
+  const canUpdateApplication = isUpdatable(session.config);
+  const hasFlutterActions = supportsHotReload(session.config);
+  // Eight standard buttons with group spacing and insets, then 24 px plus gap per extra button.
+  const fullToolbarWidth = 228 + 26 * (Number(hasTests) + Number(canUpdateApplication) + 2 * Number(hasFlutterActions));
+  useLayoutEffect(() => {
+    const pane = body.current;
+    if (!hasRuntime || !pane || (!showLifecycle && !hasTests)) return;
+    const measure = () => {
+      const width = pane.clientWidth;
+      if (showLifecycle) setCompactToolbar(width < fullToolbarWidth);
+      if (hasTests) setStackedTests(width < 560);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const resize = new ResizeObserver(measure);
+    resize.observe(pane);
+    return () => resize.disconnect();
+  }, [hasRuntime, hasTests, showLifecycle, fullToolbarWidth]);
+  useLayoutEffect(() => {
+    if (hasTests) testSplit.current?.setLayout(testLayouts.current[testOrientation]);
+  }, [hasTests, testOrientation]);
   const running = isLive(session);
   const cwd = runDirectory(session.config.cwd);
   const baseConfig = useRun(() => baseConfigOf(session));
@@ -130,10 +170,28 @@ export function SessionPanel({
   }, [selectedTest, rt, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!rt) return null;
-  const toggleWrap = () => setWrapOverride(!softWrap);
+  const overflowConsoleToggles = showLifecycle && compactToolbar && !rt.terminal;
+  const consoleToggles = [
+    { label: "Scroll to End", icon: "scroll-to-end", checked: follow, run: () => setFollow((v) => !v) },
+    { label: "Soft-Wrap", icon: "soft-wrap", checked: softWrap, run: () => setWrapOverride(!softWrap) },
+  ];
+  const moreItems: MenuItem[] = [{ kind: "action", action: "run.editConfigs", arg: session.config.id }];
+  if (overflowConsoleToggles) {
+    moreItems.unshift(...consoleToggles, { kind: "separator" });
+  }
+  const stopButton = (
+    <IconButton
+      icon="stop"
+      title={session.status === "stopping" ? tx`Stopping… (click to kill)` : "Stop"}
+      tone={running ? "danger" : "default"}
+      disabled={!running}
+      onClick={() => void stopSession(session.id)}
+    />
+  );
 
   const consoleColumn = (
     <div className={styles.consoleColumn}>
+      {rt.tests && <TestStatusBar results={rt.tests} version={version} running={running} />}
       {rt.console.dropped > 0 && !testModel && (
         <div className={styles.notice}>{tx`${rt.console.dropped.toLocaleString()} earlier lines were discarded`}</div>
       )}
@@ -180,16 +238,22 @@ export function SessionPanel({
   );
 
   return (
-    <div className={styles.session}>
-      <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Run actions")}>
+    <div className={clsx(styles.session, showLifecycle && styles.topToolbarSession)}>
+      <div
+        className={styles.toolbar}
+        role="toolbar"
+        aria-orientation={showLifecycle ? "horizontal" : "vertical"}
+        aria-label={tx("Run actions")}
+      >
         {showLifecycle && (
-          <>
+          <div className={styles.toolbarGroup}>
             <IconButton
               icon="rerun"
               title="Rerun"
               shortcut={shortcutLabel("run.rerun")}
               onClick={() => rerunSession(session.id)}
             />
+            {!hasFlutterActions && stopButton}
             {/* Switch the launch mode: the same configuration started under the debugger. */}
             <IconButton
               icon="debug"
@@ -207,14 +271,7 @@ export function SessionPanel({
                 onClick={() => void rerunFailed(session.id)}
               />
             )}
-            <IconButton
-              icon="stop"
-              title={session.status === "stopping" ? tx`Stopping… (click to kill)` : "Stop"}
-              tone={running ? "danger" : "default"}
-              disabled={!running}
-              onClick={() => void stopSession(session.id)}
-            />
-            {isUpdatable(session.config) && (
+            {canUpdateApplication && (
               <IconButton
                 icon="refresh"
                 title="Update Application"
@@ -223,44 +280,93 @@ export function SessionPanel({
                 onClick={() => showApplicationUpdate(session.id)}
               />
             )}
-            <div className={styles.toolbarSep} />
-          </>
+            {hasFlutterActions && (
+              <>
+                {stopButton}
+                <IconButton
+                  icon="hot-reload"
+                  title="Hot Reload"
+                  shortcut={shortcutLabel("run.flutterHotReload")}
+                  disabled={!acceptsInput(session)}
+                  onClick={() => hotReload(session.id)}
+                />
+                <IconButton
+                  icon="refresh"
+                  title="Hot Restart"
+                  shortcut={shortcutLabel("run.flutterHotRestart")}
+                  disabled={!acceptsInput(session)}
+                  onClick={() => hotRestart(session.id)}
+                />
+              </>
+            )}
+          </div>
         )}
-        {!rt.terminal && (
-          <>
+        <div className={styles.toolbarGroup}>
+          {!rt.terminal && (
+            <>
+              <IconButton
+                icon="search"
+                title="Find…"
+                shortcut={formatBinding(hostBinding("Meta+F"))}
+                pressed={findOpen}
+                onClick={() => setFindOpen((v) => !v)}
+              />
+              {!overflowConsoleToggles &&
+                consoleToggles.map(({ label, icon, checked, run }) => (
+                  <IconButton key={label} icon={icon} title={label} pressed={checked} onClick={run} />
+                ))}
+            </>
+          )}
+          <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
+        </div>
+        <div className={styles.toolbarGroup}>
+          {showLifecycle ? (
+            <>
+              <IconButton
+                ref={moreButton}
+                icon="more-horizontal"
+                title="More Actions"
+                aria-haspopup="menu"
+                aria-expanded={moreOpen}
+                onClick={() => setMoreOpen((open) => !open)}
+              />
+              <Menu
+                open={moreOpen}
+                anchor={moreButton}
+                aria-label="More Actions"
+                placement="bottom-end"
+                items={moreItems}
+                onClose={() => setMoreOpen(false)}
+              />
+            </>
+          ) : (
             <IconButton
-              icon="search"
-              title="Find…"
-              shortcut={formatBinding(hostBinding("Meta+F"))}
-              pressed={findOpen}
-              onClick={() => setFindOpen((v) => !v)}
+              icon="settings"
+              title="Edit Configurations…"
+              onClick={() => void executeAction("run.editConfigs", session.config.id)}
             />
-            <IconButton
-              icon="scroll-to-end"
-              title="Scroll to End"
-              pressed={follow}
-              onClick={() => setFollow((v) => !v)}
-            />
-            <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
-          </>
-        )}
-        <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
-        <div className={styles.toolbarSep} />
-        <IconButton
-          icon="settings"
-          title="Edit Configurations…"
-          onClick={() => void executeAction("run.editConfigs", session.config.id)}
-        />
+          )}
+        </div>
       </div>
-      <div className={styles.sessionBody}>
+      <div ref={body} className={styles.sessionBody}>
         {rt.tests ? (
-          <SplitGroup orientation="horizontal" id={`run-tests-${session.id}`} className={styles.testSplit}>
-            <SplitPanel id="tests" defaultSize="32%" minSize="140px">
+          <SplitGroup
+            orientation={testOrientation}
+            id={`run-tests-${session.id}`}
+            className={styles.testSplit}
+            groupRef={testSplit}
+            defaultLayout={TEST_SPLIT_DEFAULTS[testOrientation]}
+            onLayoutChanged={(layout, meta) => {
+              if (meta.isUserInteraction) testLayouts.current[testOrientation] = meta.requestedLayout ?? layout;
+            }}
+          >
+            <SplitPanel id="tests" minSize={stackedTests ? "28%" : "140px"}>
               <TestTreeView
                 results={rt.tests}
                 version={version}
                 cwd={cwd}
                 running={running}
+                name={session.config.name}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
@@ -268,7 +374,7 @@ export function SessionPanel({
               />
             </SplitPanel>
             <SplitHandle />
-            <SplitPanel id="console" minSize="200px">
+            <SplitPanel id="console" minSize={stackedTests ? "28%" : "200px"}>
               {consoleColumn}
             </SplitPanel>
           </SplitGroup>
@@ -281,21 +387,25 @@ export function SessionPanel({
 }
 
 function sessionItems(sessions: readonly RunSession[], targets: readonly RunTargetValid[]): TabItem[] {
-  return sessions.map((s) => ({
-    id: s.id,
-    label: remoteLabel(s.config, targets),
-    text: remoteLabel(s.config, targets),
-    icon: sessionIcon(s),
-    color: failed(s) ? "var(--danger)" : undefined,
-    // An agent's command that ended, however it ended.
-    dimmed: agentName(s.config) !== null && !isLive(s),
-    closable: true,
-    pinned: s.pinned,
-    tooltip:
+  return sessions.map((s) => {
+    const label = remoteLabel(s.config, targets);
+    const outcome =
       s.status === "finished"
         ? tx`Finished in ${formatDuration((s.endedAt ?? s.startedAt) - s.startedAt)}, exit code ${s.exitCode ?? "?"}`
-        : undefined,
-  }));
+        : undefined;
+    return {
+      id: s.id,
+      label,
+      text: label,
+      icon: sessionIcon(s),
+      color: failed(s) ? "var(--danger)" : undefined,
+      // An agent's command that ended, however it ended.
+      dimmed: agentName(s.config) !== null && !isLive(s),
+      closable: true,
+      pinned: s.pinned,
+      tooltip: outcome ? `${label} · ${outcome}` : label,
+    };
+  });
 }
 
 /** The selected tab: a run session or an analyzed stack trace (IDEA shows both in Run). */
@@ -325,12 +435,13 @@ export function RunTabs() {
   const shown = archived.length ? sessions.filter((s) => !archived.includes(s)) : sessions;
   const items: TabItem[] = [
     ...sessionItems(shown, runTargets),
-    ...traces.map((t) => ({ id: t.id, label: t.title, text: t.title, closable: true })),
+    ...traces.map((t) => ({ id: t.id, label: t.title, text: t.title, closable: true, tooltip: t.title })),
   ];
   const activeId = "session" in current ? current.session.id : current.trace.id;
   return (
     <Tabs
       variant="compact"
+      layout="fit"
       className={styles.tabs}
       aria-label="Run sessions"
       items={items}

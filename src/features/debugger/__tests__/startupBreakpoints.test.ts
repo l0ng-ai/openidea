@@ -6,8 +6,16 @@ import {
   removeAllBreakpoints,
   useBreakpoints,
 } from "../breakpoints/store";
-import { handleDebugEvent, pinSession, rerunSession, startPreparedSession, startSession, useDebug } from "../state";
-import type { LaunchConfig } from "@/platform/ipc";
+import {
+  handleDebugEvent,
+  pinSession,
+  rerunSession,
+  startPreparedSession,
+  startSession,
+  tabOrderOf,
+  useDebug,
+} from "../state";
+import type { LaunchConfig, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
   provideNotificationService,
@@ -18,6 +26,7 @@ import {
 const ipc = vi.hoisted(() => ({
   debugSetBreakpoints: vi.fn(),
   debugStart: vi.fn(async () => ({ status: "ok", data: 42 })),
+  debugStop: vi.fn(async () => ({ status: "ok", data: null })),
   debugCapabilities: vi.fn(async () => ({ status: "ok", data: {} })),
   debugExceptionFilters: vi.fn(async () => ({ status: "ok", data: [] })),
   debugThreads: vi.fn(async () => ({ status: "ok", data: [] })),
@@ -37,6 +46,12 @@ const config = (request: string): LaunchConfig => ({
   env: {},
   extraJson: null,
 });
+const runConfig = (id: string): RunConfig =>
+  ({ id, name: "Same", kind: "shell", command: "true", args: [], cwd: null, env: {} }) as unknown as RunConfig;
+const tabIds = () =>
+  Object.values(useDebug.getState().sessions)
+    .sort((a, b) => tabOrderOf(a) - tabOrderOf(b) || a.id - b.id)
+    .map((s) => s.id);
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
@@ -70,18 +85,34 @@ it.each([undefined, true, false])(
 );
 
 it.each(["breakpoint", "function breakpoint", "exception", "pause"])(
-  "reveals an in-place session on suspend (%s)",
+  "reveals an in-place session in Services on suspend (%s)",
   async (reason) => {
     const show = vi.fn();
     provideToolWindowService({ show } as unknown as ToolWindowService);
     await startSession(config("launch"), { show: false });
     expect(show).not.toHaveBeenCalled();
     handleDebugEvent(42, { kind: "stopped", threadId: 1, reason, description: null, allThreadsStopped: true });
-    expect(show).toHaveBeenCalledWith("debug");
+    // Services shows the session's debugger in place (#4773).
+    expect(show).toHaveBeenCalledExactlyOnceWith("services");
     expect(useDebug.getState().active).toBe(42);
     expect(useDebug.getState().sessions[42]).toMatchObject({ status: "paused", selectedThread: 1 });
   },
 );
+
+it("reveals a session started elsewhere in the Debug tool window on suspend", async () => {
+  const show = vi.fn();
+  provideToolWindowService({ show } as unknown as ToolWindowService);
+  await startSession(config("launch"));
+  show.mockClear();
+  handleDebugEvent(42, {
+    kind: "stopped",
+    threadId: 1,
+    reason: "breakpoint",
+    description: null,
+    allThreadsStopped: true,
+  });
+  expect(show).toHaveBeenCalledExactlyOnceWith("debug");
+});
 
 it.each(["launch", "attach"])("awaits every file before %s can send configurationDone", async (request) => {
   const completed: string[] = [];
@@ -246,10 +277,7 @@ it("replaces only the finished tab of the same name; other finished tabs stay", 
   handleDebugEvent(2, { kind: "terminated" });
   ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 3 });
   await startSession({ ...config("launch"), name: "Server" });
-  expect(Object.values(useDebug.getState().sessions).map((s) => [s.name, s.status])).toEqual([
-    ["Client", "terminated"],
-    ["Server", "running"],
-  ]);
+  expect(tabIds().map((id) => useDebug.getState().sessions[id]!.name)).toEqual(["Server", "Client"]);
 
   ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 4 });
   const started = startPreparedSession({ id: "other", name: "Other" } as never, async () => ({
@@ -257,9 +285,9 @@ it("replaces only the finished tab of the same name; other finished tabs stay", 
     name: "Other",
   }));
   // No finished tab named "Other": the first finished one (Client) gives way.
-  expect(Object.values(useDebug.getState().sessions).map((s) => s.name)).toEqual(["Server", "Other"]);
+  expect(tabIds().map((id) => useDebug.getState().sessions[id]!.name)).toEqual(["Server", "Other"]);
   await started;
-  expect(Object.values(useDebug.getState().sessions).map((s) => s.name)).toEqual(["Server", "Other"]);
+  expect(tabIds().map((id) => useDebug.getState().sessions[id]!.name)).toEqual(["Server", "Other"]);
 });
 
 it("keeps a pinned finished tab; Rerun on it takes its place and keeps it pinned", async () => {
@@ -269,7 +297,11 @@ it("keeps a pinned finished tab; Rerun on it takes its place and keeps it pinned
   handleDebugEvent(1, { kind: "terminated" });
   ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 2 });
   await startSession({ ...config("launch"), name: "Server" });
-  const tabs = () => Object.values(useDebug.getState().sessions).map((s) => [s.id, s.status, !!s.pinned]);
+  const tabs = () =>
+    tabIds().map((id) => {
+      const s = useDebug.getState().sessions[id]!;
+      return [s.id, s.status, !!s.pinned];
+    });
   expect(tabs()).toEqual([
     [1, "terminated", true],
     [2, "running", false],
@@ -279,7 +311,83 @@ it("keeps a pinned finished tab; Rerun on it takes its place and keeps it pinned
   ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 3 });
   await rerunSession(1);
   expect(tabs()).toEqual([
-    [2, "terminated", false],
     [3, "running", true],
+    [2, "terminated", false],
   ]);
+});
+
+it("keeps the reused slot while a prepared start builds", async () => {
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 1 }).mockResolvedValueOnce({ status: "ok", data: 2 });
+  await startSession({ ...config("launch"), name: "Server" });
+  await startSession({ ...config("launch"), name: "Client" });
+  handleDebugEvent(2, { kind: "terminated" });
+
+  let finishBuild!: () => void;
+  const build = new Promise<void>((resolve) => (finishBuild = resolve));
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 3 });
+  const started = startPreparedSession({ id: "client", name: "Client" } as never, async () => {
+    await build;
+    return { ...config("launch"), name: "Client" };
+  });
+  expect(tabIds().map((id) => useDebug.getState().sessions[id]!.name)).toEqual(["Server", "Client"]);
+
+  finishBuild();
+  await expect(started).resolves.toBe(3);
+  expect(tabIds()).toEqual([1, 3]);
+});
+
+it("keeps a live tab in place when Rerun stops and replaces it", async () => {
+  ipc.debugStart
+    .mockResolvedValueOnce({ status: "ok", data: 1 })
+    .mockResolvedValueOnce({ status: "ok", data: 2 })
+    .mockResolvedValueOnce({ status: "ok", data: 3 })
+    .mockResolvedValueOnce({ status: "ok", data: 4 });
+  await startSession({ ...config("launch"), name: "First" });
+  await startSession({ ...config("launch"), name: "Second" });
+  await startSession({ ...config("launch"), name: "Third" });
+
+  await rerunSession(2);
+  expect(tabIds()).toEqual([1, 4, 3]);
+});
+
+it("prefers the same configuration over another selected tab with the same name", async () => {
+  ipc.debugStart
+    .mockResolvedValueOnce({ status: "ok", data: 1 })
+    .mockResolvedValueOnce({ status: "ok", data: 2 })
+    .mockResolvedValueOnce({ status: "ok", data: 3 });
+  await startSession({ ...config("launch"), name: "Same" }, { runConfig: runConfig("a") });
+  await startSession({ ...config("launch"), name: "Same" }, { runConfig: runConfig("b") });
+  handleDebugEvent(1, { kind: "terminated" });
+  handleDebugEvent(2, { kind: "terminated" });
+  useDebug.setState({ active: 1 });
+
+  await startSession({ ...config("launch"), name: "Same" }, { runConfig: runConfig("b") });
+  expect(tabIds()).toEqual([1, 3]);
+  expect(useDebug.getState().sessions[3]?.runConfig?.id).toBe("b");
+});
+
+it("keeps a rerun tab in place and selected while its adapter starts", async () => {
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 1 }).mockResolvedValueOnce({ status: "ok", data: 2 });
+  await startSession({ ...config("launch"), name: "main.c" });
+  await startSession({ ...config("launch"), name: "layout.c" });
+  useDebug.setState({ active: 1 });
+
+  let respond!: (r: { status: "ok"; data: number }) => void;
+  ipc.debugStart.mockImplementationOnce(() => new Promise((resolve) => (respond = resolve)) as never);
+  const rerun = rerunSession(1);
+  await vi.advanceTimersByTimeAsync(0);
+  handleDebugEvent(1, { kind: "terminated" });
+  // Stopped, the old tab still holds its place and the selection.
+  expect(tabIds()).toEqual([1, 2]);
+  expect(useDebug.getState().active).toBe(1);
+
+  // The adapter announces the new session before `debugStart` returns: it takes the tab at once.
+  handleDebugEvent(3, { kind: "started", name: "main.c", adapter: "lldb", parent: null } as never);
+  expect(tabIds()).toEqual([3, 2]);
+  expect(useDebug.getState().active).toBe(3);
+
+  respond({ status: "ok", data: 3 });
+  await rerun;
+  expect(tabIds()).toEqual([3, 2]);
+  expect(useDebug.getState().active).toBe(3);
 });

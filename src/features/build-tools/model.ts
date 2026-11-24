@@ -99,8 +99,8 @@ export function dependencyLabel(d: MavenDependency): string {
   return parts.join(":");
 }
 
-export function pluginLabel(p: MavenPlugin): string {
-  return `${p.prefix} (${p.groupId}:${p.artifactId}${p.version ? `:${p.version}` : ""})`;
+export function pluginCoordinates(p: MavenPlugin): string {
+  return `${p.groupId}:${p.artifactId}${p.version ? `:${p.version}` : ""}`;
 }
 
 /** Profile choices in different workspace members are independent. */
@@ -187,6 +187,11 @@ export function mavenChildren(
     case "profiles":
       return model.profiles
         .filter((p) => p.projectRoot === node.projectRoot)
+        .sort((a, b) => {
+          const aId = a.id.toLowerCase();
+          const bId = b.id.toLowerCase();
+          return aId < bId ? -1 : aId > bId ? 1 : 0;
+        })
         .map((profile) => ({ kind: "profile", key: `mvn:profile:${profileKey(profile)}`, profile }));
     case "mavenProject": {
       const p = node.project;
@@ -358,7 +363,7 @@ export function nodeLabel(node: BuildNode): string {
     case "plugins":
       return tx("Plugins");
     case "plugin":
-      return pluginLabel(node.plugin);
+      return `${node.plugin.prefix} (${pluginCoordinates(node.plugin)})`;
     case "goal":
       return `${node.plugin.prefix}:${node.goal}`;
     case "dependencies":

@@ -22,10 +22,12 @@ function CommitRowView({
   fileHistoryTarget,
   graph,
   top,
+  height,
   selected,
   head,
   mine,
   onBranch,
+  outsideUnpicked,
   opts,
   remoteNames,
   onPick,
@@ -45,10 +47,12 @@ function CommitRowView({
   fileHistoryTarget: string | null;
   graph: GraphRow | undefined;
   top: number;
+  height: number;
   selected: boolean;
   head: boolean;
   mine: boolean;
   onBranch: boolean;
+  outsideUnpicked: boolean;
   opts: LogOptions;
   remoteNames: ReadonlySet<string>;
   onPick: (id: string, e: ReactMouseEvent) => void;
@@ -119,21 +123,29 @@ function CommitRowView({
         />
       )}
       {bookmarked && <Icon name="bookmark" size={12} />}
-      {opts.refsOnLeft && refs}
-      <span
-        ref={subjectRef}
-        className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
-        onPointerEnter={enterTooltip}
-        onPointerMove={enterTooltip}
-        onPointerLeave={leaveTooltip}
-        onPointerDown={() => {
-          clearTimeout(tooltipTimer.current);
-          setTooltip(false);
-        }}
-      >
-        <IssueText text={c.summary} />
+      <span className={styles.commitText}>
+        {opts.refsOnLeft && refs}
+        <span
+          ref={subjectRef}
+          className={clsx(
+            styles.subject,
+            head && styles.headSubject,
+            (merge || outsideUnpicked) && styles.mergeSubject,
+          )}
+          onPointerEnter={enterTooltip}
+          onPointerMove={enterTooltip}
+          onPointerLeave={leaveTooltip}
+          onPointerDown={() => {
+            clearTimeout(tooltipTimer.current);
+            setTooltip(false);
+          }}
+        >
+          <span className={styles.subjectText}>
+            <IssueText text={c.summary} />
+          </span>
+        </span>
+        {!opts.refsOnLeft && refs}
       </span>
-      {!opts.refsOnLeft && refs}
       <Popup
         open={tooltip}
         anchor={subjectRef}
@@ -160,7 +172,7 @@ function CommitRowView({
         selected && styles.selected,
         opts.showColumnDividers && styles.showDividers,
       )}
-      style={{ top }}
+      style={{ top, height }}
       onMouseDown={(e) => {
         if (e.shiftKey) e.preventDefault(); // no text selection on range clicks
         onPick(commitKey(c), e);

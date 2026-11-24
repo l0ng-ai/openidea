@@ -8,10 +8,12 @@
 import { useEffect, useId, useState } from "react";
 import clsx from "clsx";
 import { commands, isTauri } from "@/platform/ipc";
-import { Checkbox } from "@/ui";
-import { SearchLabel, Select } from "../../components/Form";
-import { useLabelMatch, useSetting } from "../../components/context";
-import { editorPage, type Item } from "./kit";
+import { Checkbox, Icon, Radio, type IconName } from "@/ui";
+import { Row, SearchLabel, Select } from "../../components/Form";
+import { useLabelMatch, useSearchQuery, useSetting } from "../../components/context";
+import { labelMatches } from "../../model/pages";
+import { editorPage } from "./kit";
+import { InlayHintsPanel, inlayHintLabels } from "./InlayHintsPanel";
 import styles from "./Editor.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -88,6 +90,8 @@ function InlineCompletionLanguages() {
   );
 }
 
+const WHEEL_ZOOM_LABEL = "Change font size with Ctrl/Command+Mouse Wheel";
+
 const GENERAL = editorPage({
   id: "editor.general",
   title: "General",
@@ -118,31 +122,21 @@ const GENERAL = editorPage({
         {
           t: "check",
           key: `${P}.general.wheelZoom`,
-          label: "Change font size with Ctrl/Command+Mouse Wheel",
-          inline: {
-            kind: "select",
-            key: `${P}.general.wheelZoomScope`,
-            options: [
-              { value: "active", label: "Active editor" },
-              { value: "all", label: "All editors" },
-            ],
-          },
-        },
-        { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
-      ],
-    },
-    {
-      title: "Scrolling",
-      items: [
-        {
-          t: "radio",
-          key: `${P}.general.caretScroll`,
-          label: "When caret is moved",
-          options: [
-            { value: "center", label: "Prefer scrolling editor canvas to keep caret line centered" },
-            { value: "minimize", label: "Prefer moving caret line to minimize editor scrolling" },
+          label: WHEEL_ZOOM_LABEL,
+          children: [
+            {
+              t: "radio",
+              key: `${P}.general.wheelZoomScope`,
+              label: WHEEL_ZOOM_LABEL,
+              layout: "options-only",
+              options: [
+                { value: "active", label: "Active editor" },
+                { value: "all", label: "All editors" },
+              ],
+            },
           ],
         },
+        { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
       ],
     },
     {
@@ -152,14 +146,14 @@ const GENERAL = editorPage({
           t: "check",
           key: `${P}.softWrap`,
           label: "Soft-wrap files",
+          inline: {
+            kind: "text",
+            key: `${P}.general.softWrapFiles`,
+            label: "File patterns",
+            placeholder: "*.md; *.txt",
+            hint: "Use ; to separate patterns. * matches every file.",
+          },
           children: [
-            {
-              t: "text",
-              key: `${P}.general.softWrapFiles`,
-              label: "File patterns",
-              placeholder: "*.md; *.txt",
-              hint: "Use ; to separate patterns. * matches every file.",
-            },
             { t: "check", key: `${P}.general.softWrapIndent`, label: "Use original line's indent for wrapped parts" },
           ],
         },
@@ -168,6 +162,21 @@ const GENERAL = editorPage({
     {
       title: "Virtual Space",
       items: [{ t: "check", key: `${P}.general.scrollPastEnd`, label: "Show virtual space at file bottom" }],
+    },
+    {
+      title: "Scrolling",
+      items: [
+        {
+          t: "radio",
+          key: `${P}.general.caretScroll`,
+          label: "When caret is moved",
+          layout: "stacked",
+          options: [
+            { value: "center", label: "Prefer scrolling editor canvas to keep caret line centered" },
+            { value: "minimize", label: "Prefer moving caret line to minimize editor scrolling" },
+          ],
+        },
+      ],
     },
     {
       title: "Save Files",
@@ -247,6 +256,7 @@ const APPEARANCE = editorPage({
   keywords: ["caret", "line numbers", "whitespace", "indent guides", "distraction free", "zen"],
   sections: [
     {
+      title: "Caret",
       items: [
         {
           t: "check",
@@ -269,6 +279,11 @@ const APPEARANCE = editorPage({
             ],
           },
         },
+      ],
+    },
+    {
+      title: "Code Structure",
+      items: [
         {
           t: "check",
           key: `${P}.appearance.hardWrapGuides`,
@@ -291,6 +306,17 @@ const APPEARANCE = editorPage({
         { t: "check", key: `${P}.appearance.methodSeparators`, label: "Show method separators" },
         {
           t: "check",
+          key: `${P}.appearance.indentGuides`,
+          label: "Show indent guides",
+          children: [{ t: "check", key: `${P}.appearance.rainbowIndentGuides`, label: "Rainbow indent guides" }],
+        },
+      ],
+    },
+    {
+      title: "Presentation",
+      items: [
+        {
+          t: "check",
           key: `${P}.showWhitespace`,
           label: "Show whitespaces",
           children: [
@@ -299,13 +325,6 @@ const APPEARANCE = editorPage({
             { t: "check", key: `${P}.appearance.whitespaceTrailing`, label: "Trailing" },
           ],
         },
-        {
-          t: "check",
-          key: `${P}.appearance.indentGuides`,
-          label: "Show indent guides",
-          children: [{ t: "check", key: `${P}.appearance.rainbowIndentGuides`, label: "Rainbow indent guides" }],
-        },
-        { t: "check", key: `${P}.appearance.intentionBulb`, label: "Show intention bulb" },
         {
           t: "check",
           key: `${P}.appearance.renderDocComments`,
@@ -320,6 +339,10 @@ const APPEARANCE = editorPage({
           unit: "chars",
         },
       ],
+    },
+    {
+      title: "Code Assistance",
+      items: [{ t: "check", key: `${P}.appearance.intentionBulb`, label: "Show intention bulb" }],
     },
   ],
 });
@@ -354,6 +377,46 @@ const BREADCRUMBS = editorPage({
   ],
 });
 
+const COMPLETION_MATCH_CASE_LABEL = "Match case:";
+const COMPLETION_CASE_OPTIONS = [
+  { value: "first", label: "First letter only" },
+  { value: "all", label: "All letters" },
+] as const;
+
+function CompletionMatchCase() {
+  const [matchCase, setMatchCase] = useSetting<boolean>(`${P}.completion.matchCase`);
+  const [caseSensitivity, setCaseSensitivity] = useSetting<string>(`${P}.completion.caseSensitivity`);
+  const selected = caseSensitivity === "all" ? "all" : "first";
+  const name = useId();
+  const matched = useLabelMatch(COMPLETION_MATCH_CASE_LABEL);
+
+  return (
+    <div className={clsx(styles.check, matched && styles.matched)} data-search-match={matched || undefined}>
+      <Checkbox
+        checked={!!matchCase}
+        onChange={setMatchCase}
+        label={<SearchLabel text={COMPLETION_MATCH_CASE_LABEL} />}
+      />
+      <span
+        className={clsx(styles.inline, styles.inlineChoices)}
+        role="radiogroup"
+        aria-label={tx(COMPLETION_MATCH_CASE_LABEL)}
+      >
+        {COMPLETION_CASE_OPTIONS.map((option) => (
+          <Radio
+            key={option.value}
+            name={name}
+            checked={option.value === selected}
+            onChange={() => setCaseSensitivity(option.value)}
+            disabled={!matchCase}
+            label={<SearchLabel text={option.label} />}
+          />
+        ))}
+      </span>
+    </div>
+  );
+}
+
 const COMPLETION = editorPage({
   id: "editor.general.codeCompletion",
   title: "Code Completion",
@@ -363,17 +426,10 @@ const COMPLETION = editorPage({
     {
       items: [
         {
-          t: "check",
-          key: `${P}.completion.matchCase`,
-          label: "Match case:",
-          inline: {
-            kind: "select",
-            key: `${P}.completion.caseSensitivity`,
-            options: [
-              { value: "first", label: "First letter only" },
-              { value: "all", label: "All letters" },
-            ],
-          },
+          t: "custom",
+          label: COMPLETION_MATCH_CASE_LABEL,
+          keywords: COMPLETION_CASE_OPTIONS.map((option) => option.label),
+          component: CompletionMatchCase,
         },
         {
           t: "check",
@@ -433,20 +489,29 @@ const FOLDING = editorPage({
   order: 4,
   keywords: ["fold", "collapse"],
   sections: [
-    { items: [{ t: "check", key: `${P}.folding.showOutline`, label: "Show code folding outline" }] },
+    {
+      items: [
+        {
+          t: "check",
+          key: `${P}.folding.showOutline`,
+          label: "Show code folding outline",
+          inline: {
+            kind: "select",
+            key: `${P}.folding.outlineVisibility`,
+            options: [
+              { value: "hover", label: "On hover" },
+              { value: "always", label: "Always" },
+            ],
+          },
+        },
+      ],
+    },
     {
       title: "Fold by default:",
       items: [
-        {
-          t: "grid",
-          columns: [
-            [
-              { t: "check", key: `${P}.folding.fileHeader`, label: "File header" },
-              { t: "check", key: `${P}.folding.imports`, label: "Imports" },
-            ],
-            [{ t: "check", key: `${P}.folding.docComments`, label: "Documentation comments" }],
-          ],
-        },
+        { t: "check", key: `${P}.folding.fileHeader`, label: "File header" },
+        { t: "check", key: `${P}.folding.imports`, label: "Imports" },
+        { t: "check", key: `${P}.folding.docComments`, label: "Documentation comments" },
       ],
     },
   ],
@@ -516,6 +581,7 @@ const TABS = editorPage({
           t: "radio",
           key: `${P}.tabs.closingPolicy`,
           label: "When the tab limit is reached",
+          layout: "stacked",
           options: [
             { value: "unchanged", label: "Close non-modified files first" },
             { value: "lru", label: "Close least recently used files" },
@@ -525,6 +591,7 @@ const TABS = editorPage({
           t: "radio",
           key: `${P}.tabs.activateOnClose`,
           label: "When the current tab is closed, activate",
+          layout: "stacked",
           options: [
             { value: "left", label: "The tab on the left" },
             { value: "right", label: "The tab on the right" },
@@ -542,10 +609,11 @@ function TabRows() {
   const [overflow, setOverflow] = useSetting<string>(`${P}.tabs.oneRowOverflow`);
   const [placement] = useSetting<string>(`${P}.tabs.placement`);
   const matched = useLabelMatch("Show tabs in:");
-  const name = useId();
+  const rowsName = useId();
+  const overflowName = useId();
   // Vertical (left / right) tabs always scroll in one column.
   const disabled = placement === "none" || placement === "left" || placement === "right";
-  const radio = (label: string, checked: boolean, onChange: () => void, off = disabled) => (
+  const radio = (name: string, label: string, checked: boolean, onChange: () => void, off = disabled) => (
     <label className={clsx(styles.radio, off && styles.dim)}>
       <input type="radio" name={name} checked={checked} disabled={off} onChange={onChange} />
       <SearchLabel text={label} />
@@ -553,30 +621,36 @@ function TabRows() {
   );
   return (
     <div
-      className={clsx(styles.radioBlock, matched && styles.matched)}
+      className={clsx(styles.radioBlock, styles.stackedRadioBlock, matched && styles.matched)}
       role="radiogroup"
       aria-label={tx("Show tabs in")}
     >
       <div className={clsx(styles.radioLabel, disabled && styles.dim)}>
         <SearchLabel text="Show tabs in" />:
       </div>
-      <div className={styles.radios}>
-        {radio("One row, and if tabs don't fit:", !multiple, () => setMultiple(false))}
-        <div className={styles.children} role="radiogroup" aria-label={tx("If tabs don't fit")}>
+      <div className={clsx(styles.radios, styles.stackedRadios)}>
+        {radio(rowsName, "One row, and if tabs don't fit:", !multiple, () => setMultiple(false))}
+        <div
+          className={clsx(styles.children, styles.tabOverflowChoices)}
+          role="radiogroup"
+          aria-label={tx("If tabs don't fit")}
+        >
           {radio(
+            overflowName,
             "Scroll the tabs panel",
-            !multiple && overflow !== "squeeze",
+            overflow !== "squeeze",
             () => setOverflow("scroll"),
             disabled || multiple,
           )}
           {radio(
+            overflowName,
             "Squeeze tabs",
-            !multiple && overflow === "squeeze",
+            overflow === "squeeze",
             () => setOverflow("squeeze"),
             disabled || multiple,
           )}
         </div>
-        {radio("Multiple rows", multiple, () => setMultiple(true))}
+        {radio(rowsName, "Multiple rows", multiple, () => setMultiple(true))}
       </div>
     </div>
   );
@@ -592,12 +666,8 @@ const CLOSE_POSITIONS = [
 function CloseButtonPosition() {
   const [show, setShow] = useSetting<boolean>(`${P}.tabs.showCloseButton`);
   const [position, setPosition] = useSetting<string>(`${P}.tabs.closeButtonPosition`);
-  const matched = useLabelMatch("Close button position:");
   return (
-    <div className={clsx(styles.check, matched && styles.matched)}>
-      <span>
-        <SearchLabel text="Close button position:" />
-      </span>
+    <Row label="Close button position">
       <Select
         value={show ? (position === "left" ? "left" : "right") : "none"}
         options={CLOSE_POSITIONS}
@@ -607,9 +677,32 @@ function CloseButtonPosition() {
           if (v !== "none") setPosition(v);
         }}
       />
-    </div>
+    </Row>
   );
 }
+
+const GUTTER_OPTIONS: ReadonlyArray<{ id: string; label: string; icon?: IconName; keywords?: string[] }> = [
+  {
+    id: "run",
+    label: "Run configurations and tests",
+    icon: "gutter-run",
+    keywords: ["Run", "run configurations", "test"],
+  },
+  { id: "bookmarks", label: "Bookmarks", icon: "bookmark" },
+  {
+    id: "inheritors",
+    label: "Implemented and overridden declarations",
+    icon: "gutter-implemented",
+    keywords: ["Implemented and overridden", "implementations", "subclasses", "inheritors"],
+  },
+  {
+    id: "supers",
+    label: "Implementing and overriding methods",
+    icon: "gutter-implementing",
+    keywords: ["Implementing and overriding", "super method", "overrides", "implements"],
+  },
+  { id: "colors", label: "Color preview", keywords: ["color", "swatch", "colour"] },
+];
 
 const GUTTER = editorPage({
   id: "editor.general.gutterIcons",
@@ -618,56 +711,46 @@ const GUTTER = editorPage({
   sections: [
     {
       items: [
+        { t: "check", key: `${P}.showGutterIcons`, label: "Show gutter icons" },
         {
-          t: "check",
-          key: `${P}.showGutterIcons`,
-          label: "Show gutter icons",
-          children: [
-            {
-              t: "custom",
-              label: "Run",
-              keywords: ["run configurations", "test"],
-              component: () => <GutterGroup id="run" label="Run configurations and tests" />,
-            },
-            { t: "custom", label: "Bookmarks", component: () => <GutterGroup id="bookmarks" label="Bookmarks" /> },
-            {
-              t: "custom",
-              label: "Implemented and overridden",
-              keywords: ["implementations", "subclasses", "inheritors"],
-              component: () => <GutterGroup id="inheritors" label="Implemented and overridden declarations" />,
-            },
-            {
-              t: "custom",
-              label: "Implementing and overriding",
-              keywords: ["super method", "overrides", "implements"],
-              component: () => <GutterGroup id="supers" label="Implementing and overriding methods" />,
-            },
-            {
-              t: "custom",
-              label: "Color preview",
-              keywords: ["color", "swatch", "colour"],
-              component: () => <GutterGroup id="colors" label="Color preview" />,
-            },
-          ],
+          t: "custom",
+          label: "Gutter Icons",
+          keywords: GUTTER_OPTIONS.flatMap(({ label, keywords }) => [label, ...(keywords ?? [])]),
+          component: GutterIconList,
         },
       ],
     },
   ],
 });
 
-function GutterGroup({ id, label }: { id: string; label: string }) {
+function GutterIconList() {
   const [disabled, set] = useSetting<string[]>(`${P}.gutterIconsDisabled`);
   const [master] = useSetting<boolean>(`${P}.showGutterIcons`);
-  const matched = useLabelMatch(label);
+  const query = useSearchQuery();
   return (
-    <div className={matched ? `${styles.check} ${styles.matched}` : styles.check}>
-      <Checkbox
-        checked={!disabled.includes(id)}
-        disabled={!master}
-        label={<SearchLabel text={label} />}
-        onChange={(on) => set(on ? disabled.filter((x) => x !== id) : [...disabled, id])}
-      />
-    </div>
+    <ul role="list" aria-label={tx("Gutter Icons")} className={styles.gutterIconList}>
+      {GUTTER_OPTIONS.map(({ id, label, icon }) => {
+        const matched = labelMatches(label, query);
+        return (
+          <li
+            key={id}
+            className={clsx(styles.gutterIconRow, matched && styles.matched)}
+            data-search-match={matched || undefined}
+          >
+            <span className={styles.gutterIconPreview} aria-hidden>
+              {icon ? <Icon name={icon} size={16} /> : <span className={styles.gutterSwatch} />}
+            </span>
+            <Checkbox
+              className={styles.gutterIconChoice}
+              checked={!disabled.includes(id)}
+              disabled={!master}
+              label={<SearchLabel text={label} />}
+              onChange={(on) => set(on ? disabled.filter((x) => x !== id) : [...disabled, id])}
+            />
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -693,17 +776,11 @@ const SMART_KEYS = editorPage({
   id: "editor.general.smartKeys",
   title: "Smart Keys",
   order: 9,
-  keywords: ["brackets", "quotes", "home", "camel humps", "paste", "indent"],
+  keywords: ["brackets", "quotes", "home", "camel humps", "paste", "indent", "semicolon"],
   sections: [
     {
       items: [
         { t: "check", key: `${P}.smartKeys.smartHome`, label: "Home moves caret to first non-whitespace character" },
-        {
-          t: "check",
-          key: `${P}.smartKeys.camelHumps`,
-          label: 'Use "CamelHumps" words',
-          hint: "⌥← / ⌥→ and ⌥⌫ stop at humps of camelCase names.",
-        },
         {
           t: "check",
           key: `${P}.smartKeys.pairBrackets`,
@@ -711,9 +788,42 @@ const SMART_KEYS = editorPage({
           hint: "Also pairs <> for generics where the syntax says a type starts.",
         },
         { t: "check", key: `${P}.smartKeys.pairQuotes`, label: "Insert pair quote" },
+        {
+          t: "check",
+          key: `${P}.smartKeys.camelHumps`,
+          label: 'Use "CamelHumps" words',
+          hint: "⌥← / ⌥→ and ⌥⌫ stop at humps of camelCase names.",
+        },
         { t: "check", key: `${P}.smartKeys.surroundSelection`, label: "Surround selection on typing quote or brace" },
         { t: "check", key: `${P}.smartKeys.tabOutOfPair`, label: "Jump outside closing bracket/quote with Tab" },
+        {
+          t: "check",
+          key: `${P}.smartKeys.semicolonAtStatementEnd`,
+          label: "Move ';' typed before ')' to the end of the statement",
+          hint: "In foo(bar|), typing ; gives foo(bar);|. Only when nothing but ) follows the caret; not in for headers, strings or comments.",
+        },
         { t: "check", key: `${P}.smartKeys.simultaneousTagEditing`, label: "Simultaneous <tag></tag> editing" },
+      ],
+    },
+    {
+      title: "Enter",
+      items: [
+        { t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" },
+        { t: "check", key: `${P}.smartKeys.insertDocStub`, label: "Insert documentation comment stub" },
+      ],
+    },
+    {
+      items: [
+        {
+          t: "select",
+          key: `${P}.smartKeys.backspaceUnindent`,
+          label: "Unindent on Backspace",
+          options: [
+            { value: "autoindent", label: "To proper indent position" },
+            { value: "nearest", label: "To nearest indent position" },
+            { value: "none", label: "Disabled" },
+          ],
+        },
         {
           t: "select",
           key: `${P}.smartKeys.reformatOnPaste`,
@@ -728,28 +838,6 @@ const SMART_KEYS = editorPage({
           t: "check",
           key: `${P}.smartKeys.escapeOnPaste`,
           label: "Escape text on paste in string literals",
-        },
-      ],
-    },
-    {
-      title: "Enter",
-      items: [
-        { t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" },
-        { t: "check", key: `${P}.smartKeys.insertDocStub`, label: "Insert documentation comment stub" },
-      ],
-    },
-    {
-      title: "Backspace",
-      items: [
-        {
-          t: "select",
-          key: `${P}.smartKeys.backspaceUnindent`,
-          label: "Unindent",
-          options: [
-            { value: "autoindent", label: "To proper indent position" },
-            { value: "nearest", label: "To nearest indent position" },
-            { value: "none", label: "Disabled" },
-          ],
         },
       ],
     },
@@ -858,19 +946,6 @@ const CODE_EDITING = editorPage({
   ],
 });
 
-const INLAY: Item[] = [
-  {
-    t: "check",
-    key: `${P}.inlayHints`,
-    label: "Show inlay hints",
-    children: [
-      { t: "check", key: `${P}.inlay.types`, label: "Types" },
-      { t: "check", key: `${P}.inlay.parameters`, label: "Parameter names" },
-      { t: "check", key: `${P}.inlay.other`, label: "Other hints (chaining, closing labels…)" },
-    ],
-  },
-];
-
 const CODE_VISION_POSITIONS = [
   { value: "top", label: "Top" },
   { value: "right", label: "Right" },
@@ -882,7 +957,17 @@ const INLAY_HINTS = editorPage({
   order: 33,
   keywords: ["hints", "code vision", "code lens", "usages", "code author", "parameter hints", "type hints"],
   sections: [
-    { items: INLAY },
+    {
+      items: [
+        { t: "check", key: "editor.inlayHints", label: "Show inlay hints" },
+        {
+          t: "custom",
+          label: "Inlay hint preview",
+          keywords: inlayHintLabels,
+          component: InlayHintsPanel,
+        },
+      ],
+    },
     {
       title: "Code Vision",
       items: [

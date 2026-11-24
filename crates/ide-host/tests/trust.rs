@@ -1,4 +1,5 @@
-use ide_core::NullSink;
+mod common;
+
 #[cfg(unix)]
 use ide_host::ops;
 use ide_host::{Host, HostConfig, catalogue::TrustClass, trust::TrustStore};
@@ -8,17 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn host(base: &Path, environment: bool) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: environment,
-    }))
+    Arc::new(Host::new(HostConfig { project_environment: environment, ..common::host_config(base) }))
 }
 
 /// Each class against each window state: a trusted project, a Restricted one, and no project.
@@ -45,6 +36,9 @@ async fn a_commands_trust_class_decides_where_it_runs() {
         assert_eq!(allowed("main", class), in_restricted, "{class:?} in Restricted Mode");
         assert_eq!(allowed("welcome", class), without_project, "{class:?} without a project");
     }
+    // Toolchain detection runs from Settings opened on the Welcome screen, but not in Restricted Mode.
+    assert!(ide_host::ops::sdk::sdk_detect(&host, "welcome", ide_sdk::SdkKind::Zig).await.is_ok());
+    assert!(ide_host::ops::sdk::sdk_detect(&host, "main", ide_sdk::SdkKind::Zig).await.is_err());
     // These requests validate the vendor before any network access, independently of project trust.
     let error = ide_host::ops::tools::jdk_download_releases(&host, "unknown-vendor".into(), ide_core::RequestId(901))
         .await
@@ -349,7 +343,6 @@ async fn restricted_git_views_ignore_project_executables_and_mutations_cannot_ru
     project.with_repo(|repo| repo.commit("trusted", false, false)).unwrap();
     assert!(root.join("git-executable.marker").exists());
     assert!(root.join("git-hook.marker").exists());
-    ide_vcs::set_git_executable(None);
     host.shutdown().await;
 }
 

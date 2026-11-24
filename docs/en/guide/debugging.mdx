@@ -24,23 +24,23 @@ The Debug tool window (`⌘5` / `Alt+5`) opens with one tab per session. It has 
 
 ## Supported debuggers
 
-| Language                         | Debug adapter                             | How to get it                                                                           |
-| -------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
-| Java                             | Microsoft java-debug (runs inside JDT LS) | One-click install                                                                       |
-| Kotlin                           | kotlin-debug-adapter                      | One-click install                                                                       |
-| C, C++, Objective-C, Swift       | `lldb-dap`                                | Ships with LLVM, Xcode (`xcrun -f lldb-dap`) and Swift 6+ toolchains                    |
-| Rust, Zig                        | CodeLLDB                                  | One-click install                                                                       |
-| Go                               | Delve (`dlv`)                             | One-click install (runs `go install`, so Go must be installed)                          |
-| Python                           | debugpy                                   | One-click install of a private copy used by every interpreter, or `pip install debugpy` |
-| JavaScript, TypeScript (Node.js) | vscode-js-debug                           | One-click install                                                                       |
-| C#, F#                           | netcoredbg                                | One-click install                                                                       |
-| PHP                              | PHP Debug (Xdebug)                        | One-click install of the adapter; PHP itself needs the Xdebug 3 extension               |
-| Shell scripts                    | Bash Debug                                | One-click install                                                                       |
-| Ruby                             | rdbg                                      | `gem install debug`                                                                     |
-| Elixir                           | ElixirLS debugger                         | One-click install                                                                       |
-| Dart, Flutter                    | `dart debug_adapter`                      | Ships with the Dart / Flutter SDK                                                       |
-| OCaml                            | earlybird                                 | `opam install earlybird`                                                                |
-| GDScript                         | Godot editor                              | Godot 4                                                                                 |
+| Language                                       | Debug adapter                             | How to get it                                                                           |
+| ---------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| Java                                           | Microsoft java-debug (runs inside JDT LS) | One-click install                                                                       |
+| Kotlin                                         | kotlin-debug-adapter                      | One-click install                                                                       |
+| C, C++, Objective-C, Swift                     | `lldb-dap`                                | Ships with LLVM, Xcode (`xcrun -f lldb-dap`) and Swift 6+ toolchains                    |
+| Rust, Zig                                      | CodeLLDB                                  | One-click install                                                                       |
+| Go                                             | Delve (`dlv`)                             | One-click install (runs `go install`, so Go must be installed)                          |
+| Python                                         | debugpy                                   | One-click install of a private copy used by every interpreter, or `pip install debugpy` |
+| JavaScript, TypeScript (Node.js, Chrome, Edge) | vscode-js-debug                           | One-click install                                                                       |
+| C#, F#                                         | netcoredbg                                | One-click install                                                                       |
+| PHP                                            | PHP Debug (Xdebug)                        | One-click install of the adapter; PHP itself needs the Xdebug 3 extension               |
+| Shell scripts                                  | Bash Debug                                | One-click install                                                                       |
+| Ruby                                           | rdbg                                      | `gem install debug`                                                                     |
+| Elixir                                         | ElixirLS debugger                         | One-click install                                                                       |
+| Dart, Flutter                                  | `dart debug_adapter`                      | Ships with the Dart / Flutter SDK                                                       |
+| OCaml                                          | earlybird                                 | `opam install earlybird`                                                                |
+| GDScript                                       | Godot editor                              | Godot 4                                                                                 |
 
 A configuration can also use GDB 14 or newer (`gdb -i dap`) for C and C++: choose **GDB (C, C++)** in its **Debug adapter** field. GDB is never installed by the IDE (`apt install gdb`, `dnf install gdb`, `brew install gdb`).
 
@@ -123,7 +123,7 @@ These commands are in the **Run** menu and on the Debug tool window toolbar.
 While the program is suspended:
 
 - The **Variables** view shows the variables of the selected frame. Right-click a value for **Set Value…** (`F2`), **Copy Value**, **Copy Name**, **Jump to Source** (`F4`) and **Add to Watches**.
-- **Watches** appear at the top of the Variables view and are re-evaluated on every stop and frame change. Add one with **Add to Watches**; remove it with **Remove Watch**.
+- **Watches** appear at the top of the Variables view and are re-evaluated on every stop and frame change. Add one with **Add to Watches**; remove it with **Remove Watch**, or all of them with **Remove All Watches**.
 - Hovering a variable in the editor shows its value. `⌥`-click (`Alt`-click) or **Quick Evaluate Expression** (`⌘⌥F8` / `Ctrl+Alt+F8`) evaluates the expression under the mouse or the selection.
 - Values of local variables are shown inline after the lines that use them.
 - **Evaluate Expression…** (`⌥F8` / `Alt+F8`) opens a dialog that evaluates any expression in the selected frame, keeps a history, and can add the expression to watches.
@@ -162,8 +162,9 @@ Each form has **Host** and **Port** fields and shows the command to start the re
 ## Language-specific features
 
 - **Java HotSwap**: **Run › Debugging Actions › Reload Changed Classes** compiles your changes and reloads the changed classes into the running Java debug session. Active frames keep running the old code until they return. When JDT LS finishes a build after a save, the IDE offers the reload.
+- **JavaScript in the browser**: a **JavaScript Debug** configuration opens a URL in Chrome or Edge and debugs the page's scripts in their sources through source maps. See [JavaScript and TypeScript](/en/languages/javascript#debugging).
 - **Maven and Gradle**: debugging a Maven or Gradle configuration starts the JVM with a JDWP agent and attaches java-debug to it.
-- **Dart / Flutter**: **Hot Reload** and **Hot Restart** are available while a Dart session is running.
+- **Dart / Flutter**: **Hot Reload** and **Hot Restart** are available while a Dart session is running. In a Flutter project, the device selector next to the run configuration chooses where Run and Debug start the app; a run configuration's **Device** field pins it to one device. Saving a Dart file of a running Flutter debug session also hot reloads the app, unless the file has errors. Turn this off with **Hot reload on save** in **Settings › Build, Execution, Deployment › Debugger**.
 - **PHP**: if the PHP interpreter does not load Xdebug, breakpoints are skipped; the IDE warns about this when the session starts.
 - **Python**: **Settings › Build, Execution, Deployment › Python Debugger** has **Attach to subprocess automatically while debugging** and **Gevent compatible**.
 

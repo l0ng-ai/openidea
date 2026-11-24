@@ -78,16 +78,17 @@ afterEach(() => {
 });
 
 it.each([
-  ["windows", 19045, { backend: "conpty", buildNumber: 19045 }],
-  ["windows", 22631, { backend: "conpty", buildNumber: 22631 }],
-  ["windows", null, { backend: "conpty", buildNumber: undefined }],
-  ["macos", null, undefined],
-  ["linux", null, undefined],
-] as const)("configures embedded terminals for %s build %s", (os, windowsBuildNumber, expected) => {
+  ["windows", 19045, { backend: "conpty", buildNumber: 19045 }, false],
+  ["windows", 22631, { backend: "conpty", buildNumber: 22631 }, true],
+  ["windows", null, { backend: "conpty", buildNumber: undefined }, false],
+  ["macos", null, undefined, false],
+  ["linux", null, undefined, false],
+] as const)("configures embedded terminals for %s build %s", (os, windowsBuildNumber, expected, reflowCursorLine) => {
   usePlatform.setState({ os, windowsBuildNumber });
   const term = createEmbeddedTerminal(document.createElement("div"), { onData() {}, onResize() {} });
   try {
     expect(terminal.options.windowsPty).toEqual(expected);
+    expect(terminal.options.reflowCursorLine).toBe(reflowCursorLine);
   } finally {
     term.dispose();
   }
@@ -136,6 +137,21 @@ it("copies embedded Run terminal selections before xterm can send Ctrl+C", () =>
     disposeDispatcher();
     disposeKeys();
     disposeAction();
+    term.dispose();
+  }
+});
+
+it("leaves paste strokes in embedded Run terminals to the native paste", () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const term = createEmbeddedTerminal(host, { onData: vi.fn(), onResize: vi.fn() });
+  try {
+    for (const init of [{ ctrlKey: true }, { ctrlKey: true, shiftKey: true }]) {
+      const paste = new KeyboardEvent("keydown", { key: "v", code: "KeyV", cancelable: true, ...init });
+      expect(terminal.handler(paste)).toBe(false);
+      expect(paste.defaultPrevented).toBe(false);
+    }
+  } finally {
     term.dispose();
   }
 });

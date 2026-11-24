@@ -1,15 +1,15 @@
 /**
- * Open In › GitHub / GitLab / Bitbucket: the file (at the caret line) or directory on the web UI
+ * Open In › GitHub / GitLab / Bitbucket: the file (at the selected lines) or directory on the web UI
  * of its repository's remote, at the current branch's upstream (else the HEAD commit).
- * Copy Path/Reference… › <hosting> Link copies that page's address, with the selected lines.
+ * Copy Path/Reference… › <hosting> Link copies that page's address.
  */
-import { call, commands } from "@/platform/ipc";
 import { executeAction, type Action } from "@/platform/actions";
 import { writeClipboardText } from "@/platform/clipboard";
 import { tx } from "@/platform/i18n";
 import { notifications, registerMenuGroup } from "@/workbench/contributions";
 import { openUrl } from "./issueLinks";
 import { fileWebUrl, remoteHosting, rootOf } from "./model";
+import { remoteWebSource } from "./remoteUrl";
 import { useVcs } from "./store";
 
 interface Target {
@@ -30,9 +30,9 @@ function remoteName(root: string): string {
 }
 
 async function readRemoteUrl(root: string): Promise<string | null> {
-  const url = await call(commands.vcsConfigGet(root, `remote.${remoteName(root)}.url`)).catch(() => null);
-  remoteUrls.set(root, url || null);
-  return url || null;
+  const url = await remoteWebSource(root, remoteName(root));
+  remoteUrls.set(root, url);
+  return url;
 }
 
 function revision(root: string): string | null {
@@ -133,9 +133,9 @@ export function registerOpenOnRemote(): () => void {
       const url = root ? remoteUrls.get(root) : null;
       const hosting = url ? remoteHosting(url) : null;
       if (!root || !hosting) return [];
-      const target: Target = { path, dir: dirs?.[0] ?? false, line };
+      const target: Target = { path, dir: dirs?.[0] ?? false, line, endLine };
       if (menu === "copyPath") {
-        const page = pageFor({ ...target, endLine }, root, url);
+        const page = pageFor(target, root, url);
         if (!page) return [];
         return [
           {
@@ -143,7 +143,7 @@ export function registerOpenOnRemote(): () => void {
             label: tx`${hosting.name} Link`,
             verbatim: true,
             preview: page,
-            run: () => void executeAction("vcs.copyRemoteLink", { ...target, endLine }),
+            run: () => void executeAction("vcs.copyRemoteLink", target),
           },
         ];
       }

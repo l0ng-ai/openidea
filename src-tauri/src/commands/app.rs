@@ -43,9 +43,10 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         #[cfg(not(target_os = "linux"))]
         wayland: false,
         #[cfg(target_os = "linux")]
-        window_buttons: crate::linux_window_state::decoration_layout()
-            .and_then(|layout| ide_core::platform::WindowButtonLayout::from_gtk_decoration_layout(&layout))
-            .unwrap_or_default(),
+        window_buttons: ide_core::platform::WindowButtonLayout::for_linux(
+            crate::linux_window_state::decoration_layout().as_deref(),
+            |key| std::env::var(key).ok(),
+        ),
         #[cfg(not(target_os = "linux"))]
         window_buttons: Default::default(),
     }
@@ -214,15 +215,6 @@ pub(crate) fn settings_get(window: Window) -> Settings {
     ide_host::ops::project::settings_get(&state.host, window.label())
 }
 
-/// Defaults plus the global layer, without any project's values: what new
-/// projects (and projects without their own value) get.
-#[desktop_command(trust = always)]
-#[tauri::command]
-#[specta::specta]
-pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
-    state.host.with_proxy_password(state.global_settings.effective())
-}
-
 pub(crate) fn settings_removed_theme(window: Window) -> Option<String> {
     let state = window.state::<AppState>();
     state.note_ipc();
@@ -258,7 +250,7 @@ fn settings_set_now(
 ) -> IdeResult<Settings> {
     let applied = ide_host::ops::project::set_settings(&state.host, window, scope, key, value)?;
     if key == "mcpServer" || key.starts_with("mcpServer.") {
-        crate::commands::mcp::apply(state);
+        state.host.mcp.apply(&state.host);
     }
     if !applied.project_scope {
         state.updates.wake.notify_one();
@@ -319,8 +311,9 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
         tauri::async_runtime::spawn(async move { lsp.reconfigure().await });
     }
     crate::commands::ssh::apply_ssh_settings(&state);
-    crate::commands::mcp::apply(&state);
+    state.host.mcp.apply(&state.host);
     state.host.apply_proxy();
+    state.host.apply_git_executable();
     state.updates.wake.notify_one();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
     let settings = ide_host::ops::project::settings_get(&state.host, window.label());
@@ -351,6 +344,21 @@ pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::
 pub(crate) fn project_current(window: Window) -> Option<ProjectInfo> {
     let state = window.state::<AppState>();
     state.project(window.label()).ok().filter(|p| !p.light).map(|p| project_info(&p))
+}
+
+// Off the IPC thread: each member's `for_project().layer(Project)` re-parses both settings layers
+// and validates the merge against the whole `Settings` type, which a debug build's stack-heavy
+// recursion can overflow from the WebView2 callback (see the `settings_set` note above).
+pub(crate) fn project_workspace_members(window: Window) -> IdeResult<Vec<ide_host::ops::project::WorkspaceMember>> {
+    let state = window.state::<AppState>();
+    state.note_ipc();
+    ide_host::ops::project::project_workspace_members(&state.host, window.label())
+}
+
+pub(crate) fn project_workspace_member_set(window: Window, root: PathBuf, key: String, value: String) -> IdeResult<()> {
+    let state = window.state::<AppState>();
+    state.note_ipc();
+    ide_host::ops::project::project_workspace_member_set(&state.host, window.label(), root, key, value)
 }
 
 #[derive(Serialize, Deserialize, Type)]
@@ -415,7 +423,6 @@ ide_command::desktop_domain!(
     remove_recent_project,
     set_recent_project_groups,
     settings_export,
-    settings_get_global,
     settings_import,
     settings_list_jetbrains_ides,
     settings_read_jetbrains,

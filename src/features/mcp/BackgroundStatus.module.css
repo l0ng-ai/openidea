@@ -1,0 +1,119 @@
+/* Mirrors the title bar's project popup: two-line project rows, then action rows. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  width: 400px;
+  padding: var(--space-1-5) 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  color: var(--fg);
+  outline: none;
+}
+.header {
+  padding: var(--space-1) var(--space-4);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+.projects {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.project {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0 var(--space-1-5);
+  padding: var(--space-1-5) var(--space-2);
+  border-radius: var(--radius-selection);
+}
+.project:hover,
+.project:focus-within {
+  background: var(--bg-tree-selected);
+}
+.text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+.top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.name,
+.path,
+.state {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.name {
+  color: var(--fg-strong);
+}
+.path,
+.state {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.state {
+  flex: none;
+  max-width: 60%;
+}
+/* The row's actions take the place of its state while the row is hovered or focused. */
+.actions {
+  position: absolute;
+  top: 50%;
+  right: var(--space-2);
+  display: flex;
+  gap: var(--space-0-5);
+  transform: translateY(-50%);
+  opacity: 0;
+}
+.project:hover .actions,
+.project:focus-within .actions {
+  opacity: 1;
+}
+.project:hover .state,
+.project:focus-within .state {
+  visibility: hidden;
+}
+.project:hover .path,
+.project:focus-within .path {
+  padding-right: 52px;
+}
+.separator {
+  height: 1px;
+  margin: var(--space-1-5) var(--space-3);
+  background: var(--border);
+}
+.action {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-list-row);
+  margin: 0 var(--space-1-5);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-selection);
+  background: none;
+  color: var(--fg-strong);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.action:hover,
+.action:focus-visible {
+  background: var(--bg-tree-selected);
+  outline: none;
+}

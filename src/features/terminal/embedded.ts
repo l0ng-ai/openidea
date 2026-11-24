@@ -21,7 +21,7 @@ import { useProject } from "@/platform/project";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { fitScheduler, settledResize } from "./fit";
-import { watchWindowsPty, windowsPty } from "./windowsPty";
+import { watchWindowsPty, windowsPtyOptions } from "./windowsPty";
 import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
 import { MIN_CONTRAST_RATIO, readLinkColor, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
@@ -42,7 +42,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const settings = workflowSettings().terminal;
   const font = fontFor(settings);
   const term = new Terminal({
-    windowsPty: windowsPty(),
+    ...windowsPtyOptions(),
     linkHandler: LINK_HANDLER,
     fontFamily: font.family,
     fontSize: font.size,
@@ -74,6 +74,9 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
         noteCopySource(text, { kind: "terminal", title: "Terminal" });
         void writeClipboardText(text).catch(() => undefined);
       }
+    } else if (action.kind === "paste") {
+      // Keep xterm from sending Ctrl+V as ^V; the native paste reaches its textarea.
+      return false;
     } else {
       return true;
     }
@@ -121,9 +124,9 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   }
 
   const fitter = fitScheduler(() => {
-    if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return;
+    if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return false;
     const dims = fit.proposeDimensions();
-    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return false;
     if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
     processResize.resized(dims.cols, dims.rows);
   });

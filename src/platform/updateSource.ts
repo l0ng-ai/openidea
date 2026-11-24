@@ -7,5 +7,6 @@ export function updateSource(): UpdateSource {
   const { settings } = useProject.getState();
   const chosen = settings?.general?.updateSource;
   if (chosen === "github" || chosen === "cnb") return chosen;
-  return resolveLocale(settings?.appearance?.locale) === "zh" ? "cnb" : "github";
+  // Matches the backend's UpdateSource::resolve, which picks CNB for every `zh*` tag.
+  return resolveLocale(settings?.appearance?.locale).startsWith("zh") ? "cnb" : "github";
 }

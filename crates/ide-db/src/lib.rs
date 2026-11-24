@@ -4,6 +4,8 @@
 
 pub mod catalog;
 mod clickhouse;
+mod jdbc;
+pub use jdbc::{DbJdbcDriver, jdbc_driver_classes};
 pub mod conn;
 pub mod history;
 mod oracle;
@@ -19,12 +21,12 @@ mod watch;
 pub use watch::SourcesWatch;
 
 pub use catalog::{CatalogDatabase, CatalogSchema, SourceCatalog};
-pub use conn::{Held, Pool, QueryResult, ResultColumn};
+pub use conn::{Held, Pool, QueryResult, ResultColumn, TruncatedCell};
 pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
 pub use source::{
-    DataSource, DbColor, DbDriver, DbIntrospection, DbOptions, DbProperty, DbSnowflake, DbSnowflakeAuth, DbSsh,
-    DbSshAuth, DbSslMode, DbTxMode,
+    DataSource, DbColor, DbDriver, DbIntrospection, DbOptions, DbProperty, DbSchemaSelection, DbSnowflake,
+    DbSnowflakeAuth, DbSsh, DbSshAuth, DbSslMode, DbTxMode, DbVisibilityChange,
 };
 pub use sql::{CellValue, DbRowEdit, SortKey};
 
@@ -271,6 +273,8 @@ pub struct DbManager {
     /// Manual-commit data sources, each with the connection of its open
     /// transaction (taken by the first statement after a commit / rollback).
     sessions: Mutex<HashMap<String, Session>>,
+    /// Result pages read on from where the previous page stopped, not by running the statement again.
+    cursors: conn::Cursors,
     /// The data sources as last read from disk, for [`DbManager::reconcile_sources`]
     /// (`None` until [`DbManager::watch_sources`]).
     on_disk: Mutex<Option<Vec<DataSource>>>,
@@ -339,7 +343,7 @@ fn group_foreign_keys(rows: Vec<Vec<Option<String>>>, tables: &[CompletionTable]
 /// never contain `:`.
 /// Snowflake is HTTPS to a named host: a tunnel's local end cannot pass its certificate check.
 fn tunneled(driver: DbDriver) -> bool {
-    !matches!(driver, DbDriver::Sqlite | DbDriver::Snowflake)
+    !matches!(driver, DbDriver::Sqlite | DbDriver::Snowflake | DbDriver::Jdbc)
 }
 
 /// The database host and port the SSH host forwards to.
@@ -377,8 +381,8 @@ pub(crate) fn keep_alive(pool: &Arc<Pool>, every: Duration) {
         loop {
             tick.tick().await;
             let Some(p) = pool.upgrade().filter(|p| !p.is_closed()) else { break };
-            if let Err(e) = p.rows(p.ping_sql(), 1).await {
-                tracing::debug!("keep-alive: {}", e.message);
+            if let Err(e) = p.ping().await {
+                tracing::info!("keep-alive: {}", e.message);
             }
         }
     });
@@ -430,6 +434,7 @@ impl DbManager {
             session_passwords: Mutex::default(),
             on_disk: Mutex::default(),
             sessions: Mutex::default(),
+            cursors: conn::Cursors::default(),
         }
     }
 
@@ -473,6 +478,29 @@ impl DbManager {
         }
     }
 
+    fn non_password_snowflake(source: &DataSource) -> Option<DbSnowflake> {
+        let settings = match source.driver {
+            DbDriver::Snowflake => source.resolved().map(|source| source.snowflake()).unwrap_or_default(),
+            DbDriver::Jdbc => source.snowflake.clone()?,
+            _ => return None,
+        };
+        (settings.auth != DbSnowflakeAuth::Password).then_some(settings)
+    }
+
+    fn jdbc_password_isolated(&self, source: &DataSource) -> bool {
+        source.driver == DbDriver::Jdbc
+            && (Self::non_password_snowflake(source).is_some()
+                || self
+                    .sources()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|stored| stored.id == source.id && Self::non_password_snowflake(stored).is_some()))
+    }
+
+    fn password_key(&self, source: &DataSource) -> String {
+        if self.jdbc_password_isolated(source) { secrets::jdbc_key(&source.id) } else { source.id.clone() }
+    }
+
     /// The connection settings of target `target` ([`DataSource::resolved`]), with
     /// its database for `<id>:<database>`.
     pub fn source(&self, target: &str) -> IdeResult<DataSource> {
@@ -493,15 +521,21 @@ impl DbManager {
         Ok(source)
     }
 
-    /// Saves the data source list; connections of removed or changed sources are closed.
+    /// Saves the data source list, preserving connections when only visibility rules change.
     /// Global ones (`global`) go to the app-wide list, the others to the project's.
-    pub async fn save_sources(&self, sources: Vec<DataSource>) -> IdeResult<()> {
+    pub async fn save_sources(&self, mut sources: Vec<DataSource>) -> IdeResult<()> {
         if sources.iter().any(|s| s.global && s.plugin_owner.is_some()) {
             return Err(IdeError::invalid("plugin-owned data sources must stay project-scoped"));
         }
         let old = {
             let _guard = plugin::EDIT.lock();
             let old = self.sources().unwrap_or_default();
+            for source in sources.iter_mut().filter(|s| s.driver == DbDriver::Jdbc) {
+                // Retain the credential scope even when URL-only settings supplied the old authenticator.
+                if let Some(settings) = old.iter().find(|s| s.id == source.id).and_then(Self::non_password_snowflake) {
+                    source.snowflake = Some(settings);
+                }
+            }
             let (global, project): (Vec<_>, Vec<_>) = sources.iter().cloned().partition(|s| s.global);
             match &self.global {
                 // Rewritten only when it changes: other projects' windows edit the same file.
@@ -520,9 +554,10 @@ impl DbManager {
         };
         for o in old {
             match sources.iter().find(|s| s.id == o.id) {
-                Some(n) if *n == o => {}
+                Some(n) if o.same_except_visibility(n) => {}
                 gone_or_changed => {
-                    let keys = [o.id.clone(), secrets::ssh_key(&o.id), Self::sso_credential(&o.id)];
+                    let keys =
+                        [o.id.clone(), secrets::jdbc_key(&o.id), secrets::ssh_key(&o.id), Self::sso_credential(&o.id)];
                     match gone_or_changed {
                         None => {
                             self.catalogs.forget(&o.id);
@@ -553,6 +588,31 @@ impl DbManager {
         Ok(())
     }
 
+    /// Updates one scope of a source's visibility against its latest saved rules.
+    pub fn save_source_visibility(&self, id: &str, available: &[String], change: DbVisibilityChange) -> IdeResult<()> {
+        let _guard = plugin::EDIT.lock();
+        let mut sources = source::load(&self.root)?;
+        let scoped_global = self.global.as_ref().filter(|_| !sources.iter().any(|source| source.id == id));
+        if let Some((dir, _)) = scoped_global {
+            sources = source::load_global(dir)?;
+        }
+        let selected = sources
+            .iter_mut()
+            .find(|source| source.id == id)
+            .ok_or_else(|| IdeError::not_found(format!("no data source {id}")))?;
+        let previous = selected.introspection.clone();
+        change.apply(&mut selected.introspection, available);
+        if selected.introspection == previous {
+            return Ok(());
+        }
+        if let Some((dir, _)) = scoped_global {
+            source::save_global(dir, &sources)?;
+        } else {
+            source::save(&self.root, &sources)?;
+        }
+        Ok(())
+    }
+
     /// Watches the data source files (the project's and the global one) for edits made
     /// outside the IDE; `on_change` runs on a background thread once they settle, and
     /// should call [`DbManager::reconcile_sources`]. Stops when the result is dropped.
@@ -561,9 +621,9 @@ impl DbManager {
         SourcesWatch::start(&self.root, self.global.as_ref().map(|(dir, _)| dir.as_path()), on_change)
     }
 
-    /// Re-reads the data sources after their files changed on disk: connections of
-    /// removed or changed sources close, as on [`DbManager::save_sources`] (saved
-    /// passwords stay, the source may come back). Returns whether the list the tree
+    /// Re-reads the data sources after their files changed on disk and closes affected
+    /// connections as on [`DbManager::save_sources`] (saved passwords stay, the source
+    /// may come back). Returns whether the list the tree
     /// shows changed, or the files no longer parse (the tree reports the error).
     pub async fn reconcile_sources(&self) -> bool {
         let now = match self.sources() {
@@ -578,7 +638,7 @@ impl DbManager {
             return false;
         }
         for o in &before {
-            if now.iter().find(|s| s.id == o.id) != Some(o) {
+            if now.iter().find(|s| s.id == o.id).is_none_or(|n| !o.same_except_visibility(n)) {
                 self.disconnect_source(&o.id).await;
             }
         }
@@ -588,7 +648,12 @@ impl DbManager {
     /// Remembers `password` for the session, and in the saved passwords when
     /// the data source saves passwords (`None` forgets it).
     pub async fn set_password(&self, id: &str, password: Option<String>, save: bool) -> IdeResult<()> {
-        self.remember(id, id.to_owned(), password, save).await
+        let source = self.sources()?.into_iter().find(|s| s.id == id);
+        let (store, key) = match source.as_ref() {
+            Some(source) => (self.store_of(source), self.password_key(source)),
+            None => (&self.saved_passwords, id.to_owned()),
+        };
+        self.remember(store, key, password, save).await
     }
 
     /// [`DbManager::set_password`] for the SSH password / key passphrase.
@@ -600,10 +665,10 @@ impl DbManager {
             self.ssh.set_secret(&c, secret, save);
             return Ok(());
         }
-        self.remember(id, secrets::ssh_key(id), secret, save).await
+        self.remember(self.saved_for(id), secrets::ssh_key(id), secret, save).await
     }
 
-    async fn remember(&self, id: &str, key: String, secret: Option<String>, save: bool) -> IdeResult<()> {
+    async fn remember(&self, store: &SecretStore, key: String, secret: Option<String>, save: bool) -> IdeResult<()> {
         match &secret {
             Some(p) => {
                 self.session_passwords.lock().insert(key.clone(), p.clone());
@@ -612,7 +677,6 @@ impl DbManager {
                 self.session_passwords.lock().remove(&key);
             }
         }
-        let store = self.saved_for(id);
         let result = match (secret, save) {
             (Some(p), true) => store.set(&key, &p),
             _ => {
@@ -638,7 +702,10 @@ impl DbManager {
     }
 
     async fn password(&self, source: &DataSource) -> Option<String> {
-        match self.secret(source, source.id.clone(), source.driver != DbDriver::Sqlite && source.save_password).await {
+        match self
+            .secret(source, self.password_key(source), source.driver != DbDriver::Sqlite && source.save_password)
+            .await
+        {
             Some(p) => Some(p),
             None => source.url_password(),
         }
@@ -759,7 +826,7 @@ impl DbManager {
         };
         let (target, tunnel) = self.endpoint(source, ssh_secret, false).await?;
         self.restore_sso(source).await;
-        let connected = Pool::connect(&target, password.as_deref(), Some(&self.root)).await;
+        let connected = self.open_pool(&target, password.as_deref(), true).await;
         self.keep_sso(source).await;
         let pool = connected.map_err(|e| {
             through_tunnel(
@@ -768,7 +835,13 @@ impl DbManager {
                 tunnel.is_some().then(|| self.ssh_label(source.ssh.as_ref().expect("tunneled"))).as_deref(),
             )
         })?;
+        if let Pool::Jdbc(p) = &pool {
+            let version = p.version.clone();
+            pool.close().await;
+            return Ok(version);
+        }
         let version = match source.driver {
+            DbDriver::Jdbc => unreachable!("JDBC uses driver metadata"),
             DbDriver::Sqlite => "SELECT 'SQLite ' || sqlite_version()",
             DbDriver::Postgres | DbDriver::Clickhouse => "SELECT version()",
             DbDriver::Mysql => "SELECT CONCAT(@@version_comment, ' ', VERSION())",
@@ -839,12 +912,12 @@ impl DbManager {
     }
 
     pub fn is_connected(&self, id: &str) -> bool {
-        self.pools.lock().contains_key(id)
+        self.pools.lock().get(id).is_some_and(|p| !p.is_closed())
     }
 
     /// Connected targets (data source ids, `<id>:<database>`).
     pub fn connected(&self) -> Vec<String> {
-        self.pools.lock().keys().cloned().collect()
+        self.pools.lock().iter().filter(|(_, p)| !p.is_closed()).map(|(id, _)| id.clone()).collect()
     }
 
     /// The pool of target `id`, connecting first if needed.
@@ -854,14 +927,19 @@ impl DbManager {
         if self.tunnels.lock().get(source_id).is_some_and(|t| t.is_closed()) {
             self.disconnect_source(source_id).await;
         }
-        if let Some(p) = self.pools.lock().get(id) {
-            return Ok(p.clone());
+        let cached = self.pools.lock().get(id).cloned();
+        if let Some(p) = cached {
+            if !p.is_closed() {
+                return Ok(p);
+            }
+            // The connection broke (a custom JDBC session whose TCP connection was dropped): reconnect.
+            self.disconnect(id).await;
         }
         let source = self.source(id)?;
         let password = self.password(&source).await;
         let (target, tunnel) = self.endpoint(&source, None, true).await?;
         self.restore_sso(&source).await;
-        let connected = Pool::connect(&target, password.as_deref(), Some(&self.root)).await;
+        let connected = self.open_pool(&target, password.as_deref(), false).await;
         self.keep_sso(&source).await;
         let pool = match connected {
             Ok(p) => Arc::new(p),
@@ -900,6 +978,7 @@ impl DbManager {
         if let Some(s) = session {
             end_session(&s).await;
         }
+        self.cursors.release_target(id);
         let pool = self.pools.lock().remove(id);
         if let Some(p) = pool {
             p.close().await;
@@ -909,11 +988,42 @@ impl DbManager {
 
     /// Disconnects every database of data source `id`.
     pub async fn disconnect_source(&self, id: &str) {
-        let targets: Vec<String> = self.connected().into_iter().filter(|t| split_target(t).0 == id).collect();
+        let targets: Vec<String> = self.pools.lock().keys().filter(|t| split_target(t).0 == id).cloned().collect();
         for t in targets {
             self.disconnect(&t).await;
         }
         self.tunnels.lock().remove(id);
+    }
+
+    /// Creates a database on the server of data source `id` by running `statement` on the data
+    /// source's own database, after closing the IDE's connections to `template`, the database
+    /// the server copies (PostgreSQL and SQL Server refuse to copy one that has sessions).
+    pub async fn create_database(&self, id: &str, template: &str, statement: &str) -> IdeResult<()> {
+        let id = split_target(id).0;
+        if self.source(id)?.read_only {
+            return Err(IdeError::new(ErrorKind::PermissionDenied, "the data source is read-only"));
+        }
+        self.disconnect(&format!("{id}:{template}")).await;
+        self.pool(id).await?.execute(statement, 0, &CancellationToken::new()).await?;
+        self.remember_statement(id, statement);
+        Ok(())
+    }
+
+    /// Drops `database` of the server of data source `id` by running `statement` on the data
+    /// source's own database, after closing the IDE's connections to `database`.
+    /// Refuses the database the data source connects to and read-only data sources.
+    pub async fn drop_database(&self, id: &str, database: &str, statement: &str) -> IdeResult<()> {
+        let id = split_target(id).0;
+        if self.source(id)?.read_only {
+            return Err(IdeError::new(ErrorKind::PermissionDenied, "the data source is read-only"));
+        }
+        if self.databases(id).await?.current == database {
+            return Err(IdeError::invalid(format!("the data source connects to {database}; it cannot drop it")));
+        }
+        self.disconnect(&format!("{id}:{database}")).await;
+        self.pool(id).await?.execute(statement, 0, &CancellationToken::new()).await?;
+        self.remember_statement(id, statement);
+        Ok(())
     }
 
     /// The databases of the server of data source `id` (PostgreSQL), the connected one first.
@@ -1040,7 +1150,10 @@ impl DbManager {
         if let Pool::Snowflake(p) = &*pool {
             return snowflake::meta::schemas(p, system).await;
         }
-        let rows = pool.rows(sql::schemas(pool.driver(), system), MAX_META_ROWS).await?;
+        let rows = match &*pool {
+            Pool::Jdbc(p) => p.metadata(&["schemas"]).await?,
+            _ => pool.rows(sql::schemas(pool.driver(), system), MAX_META_ROWS).await?,
+        };
         Ok(rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect())
     }
 
@@ -1049,7 +1162,10 @@ impl DbManager {
         if let Pool::Snowflake(p) = &*pool {
             return snowflake::meta::tables(p, schema).await;
         }
-        let rows = pool.rows(&sql::tables(pool.driver(), schema), MAX_META_ROWS).await?;
+        let rows = match &*pool {
+            Pool::Jdbc(p) => p.metadata(&["tables", schema]).await?,
+            _ => pool.rows(&sql::tables(pool.driver(), schema), MAX_META_ROWS).await?,
+        };
         Ok(rows
             .into_iter()
             .filter_map(|r| {
@@ -1066,9 +1182,11 @@ impl DbManager {
             return snowflake::meta::table_details(p, schema, table).await;
         }
         let driver = pool.driver();
-        let columns = pool
-            .rows(&sql::columns(driver, schema, table), MAX_META_ROWS)
-            .await?
+        let rows = match &*pool {
+            Pool::Jdbc(p) => p.metadata(&["columns", schema, table]).await?,
+            _ => pool.rows(&sql::columns(driver, schema, table), MAX_META_ROWS).await?,
+        };
+        let columns = rows
             .into_iter()
             .filter_map(|r| {
                 let mut it = r.into_iter();
@@ -1080,6 +1198,9 @@ impl DbManager {
                 Some(ColumnInfo { name, data_type, nullable, default, primary_key })
             })
             .collect();
+        if driver == DbDriver::Jdbc {
+            return Ok(TableDetails { columns, indexes: vec![], foreign_keys: vec![], triggers: vec![] });
+        }
         let mut indexes: Vec<IndexInfo> = Vec::new();
         for r in pool.rows(&sql::indexes(driver, schema, table), MAX_META_ROWS).await? {
             let mut it = r.into_iter();
@@ -1240,6 +1361,7 @@ impl DbManager {
             rows.into_iter().filter_map(|r| r.into_iter().nth(i).flatten()).collect()
         };
         match driver {
+            DbDriver::Jdbc => Err(IdeError::invalid("Custom JDBC sources do not provide vendor-specific DDL")),
             DbDriver::Sqlite => {
                 let stmts = cells(pool.rows(&sql::sqlite_ddl(schema, name), MAX_META_ROWS).await?, 0);
                 if stmts.is_empty() {
@@ -1364,6 +1486,7 @@ impl DbManager {
         let driver = pool.driver();
         let mut tables: Vec<CompletionTable> = Vec::new();
         let rows = match &*pool {
+            Pool::Jdbc(p) => return self.jdbc_completion(id, p).await,
             Pool::Snowflake(p) => {
                 tables = snowflake::meta::completion(p).await?;
                 Vec::new()
@@ -1453,6 +1576,25 @@ impl DbManager {
         r
     }
 
+    /// Row number `row` (from 0) of the result of `statement`, whole: what a page shows cut
+    /// short. It leaves the cursor of the result's pages where it stands, and is not recorded
+    /// in the history (the statement already was).
+    pub async fn read_row(
+        &self,
+        id: &str,
+        statement: &str,
+        row: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+    ) -> IdeResult<QueryResult> {
+        self.run_paged(id, statement, row, 1, cancel, schema, false).await
+    }
+
+    /// Closes the cursor that reads the pages of `statement` on `id` (its result tab was closed).
+    pub fn release_result(&self, id: &str, statement: &str, schema: Option<&str>) {
+        self.cursors.release(&conn::CursorKey::new(id, statement, schema));
+    }
+
     fn remember_statement(&self, id: &str, statement: &str) {
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1484,6 +1626,9 @@ impl DbManager {
         schema: Option<&str>,
     ) -> IdeResult<Vec<PlanNode>> {
         let driver = self.pool(id).await?.driver();
+        if driver == DbDriver::Jdbc {
+            return Err(IdeError::invalid("Custom JDBC execution plans are unsupported"));
+        }
         if driver == DbDriver::Oracle {
             // EXPLAIN PLAN writes PLAN_TABLE; the plan is read (and cleaned up) separately.
             let plan_id = format!(
@@ -1522,8 +1667,43 @@ impl DbManager {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
+        self.run_paged(id, statement, skip, max_rows, cancel, schema, true).await
+    }
+
+    /// `paging`: whether the page may continue a cursor of `statement` (see `conn::cursor`).
+    #[allow(clippy::too_many_arguments)]
+    async fn run_paged(
+        &self,
+        id: &str,
+        statement: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+        paging: bool,
+    ) -> IdeResult<QueryResult> {
         let pool = self.pool(id).await?;
+        if let Pool::Jdbc(p) = &*pool {
+            return p.query_in_schema(statement, skip, max_rows, cancel, schema).await;
+        }
         let session = self.sessions.lock().get(id).cloned();
+        if !conn::cursor_statement(statement) {
+            // A cursor's open statement could keep this one waiting (a lock), and would show data from before it.
+            self.cursors.release_target(id);
+        }
+        if paging && session.is_none() && skip > 0 && pool.keeps_cursors() && conn::cursor_statement(statement) {
+            let key = conn::CursorKey::new(id, statement, schema);
+            let started = std::time::Instant::now();
+            let page = match self.cursors.resume(&key, skip, max_rows, cancel).await {
+                Some(page) => page,
+                None => {
+                    let mut held = Held::acquire(&pool).await?;
+                    held.apply_context(schema).await?;
+                    self.cursors.start(held, pool.clone(), key, skip, max_rows, cancel).await
+                }
+            };
+            return page.map(|fetched| conn::query_result(statement, fetched, started));
+        }
         let Some(session) = session else {
             if schema.is_none() {
                 return pool.execute_from(statement, skip, max_rows, cancel).await;
@@ -1564,6 +1744,9 @@ impl DbManager {
     /// Switches `id` between auto-commit and manual commit. Leaving manual
     /// mode rolls back what was not committed.
     pub async fn set_manual_commit(&self, id: &str, manual: bool) -> IdeResult<()> {
+        if manual && self.source(id)?.driver == DbDriver::Jdbc {
+            return Err(IdeError::invalid("Custom JDBC manual transactions are unsupported"));
+        }
         if manual {
             if self.source(id)?.driver == DbDriver::Clickhouse {
                 return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
@@ -1582,6 +1765,9 @@ impl DbManager {
     pub async fn finish_transaction(&self, id: &str, commit: bool) -> IdeResult<()> {
         if self.source(id).is_ok_and(|s| s.driver == DbDriver::Clickhouse) {
             return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
+        }
+        if self.source(id).is_ok_and(|s| s.driver == DbDriver::Jdbc) {
+            return Err(IdeError::invalid("Custom JDBC manual transactions are unsupported"));
         }
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else { return Ok(()) };
@@ -1618,8 +1804,22 @@ impl DbManager {
     ) -> IdeResult<TablePage> {
         let details = self.table_details(id, schema, table).await?;
         let pool = self.pool(id).await?;
-        let sql = sql::table_page(pool.driver(), schema, table, filter, sort, offset, limit);
-        let mut result = pool.execute(&sql, limit as usize, cancel).await?;
+        let mut result = if let Pool::Jdbc(p) = &*pool {
+            let q = &p.identifier_quote;
+            let names = [schema, table].into_iter().chain(sort.iter().map(|k| k.column.as_str()));
+            if q.is_empty()
+                && names.into_iter().any(|name| !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            {
+                return Err(IdeError::invalid("This JDBC driver cannot quote the selected identifier"));
+            }
+            let quote = |s: &str| format!("{q}{}{q}", s.replace(q, &format!("{q}{q}")));
+            let name = if schema.is_empty() { quote(table) } else { format!("{}.{}", quote(schema), quote(table)) };
+            let sql = sql::table_select(&name, filter, sort, quote);
+            p.page(&sql, offset, limit, cancel).await?
+        } else {
+            let sql = sql::table_page(pool.driver(), schema, table, filter, sort, offset, limit);
+            pool.execute(&sql, limit as usize, cancel).await?
+        };
         if result.columns.is_empty() {
             result.columns = details
                 .columns
@@ -1632,7 +1832,11 @@ impl DbManager {
 
     /// Applies the table editor's pending changes in one transaction.
     pub async fn apply_edits(&self, id: &str, schema: &str, table: &str, edits: &[DbRowEdit]) -> IdeResult<u64> {
-        if self.source(id)?.driver == DbDriver::Clickhouse {
+        let source = self.source(id)?;
+        if source.read_only {
+            return Err(IdeError::new(ErrorKind::PermissionDenied, "the data source is read-only"));
+        }
+        if source.driver == DbDriver::Clickhouse {
             return Err(IdeError::invalid("ClickHouse table editing is unsupported"));
         }
         let pool = self.pool(id).await?;
@@ -1674,6 +1878,78 @@ mod tests {
             reopened.secret(&DataSource::default(), secrets::ssh_key("s1"), true).await.as_deref(),
             Some("hunter2-tunnel")
         );
+    }
+
+    #[tokio::test]
+    async fn switching_from_snowflake_key_pair_keeps_the_jdbc_password_separate() -> IdeResult<()> {
+        let tmp = tempfile::tempdir()?;
+        let db = manager(tmp.path()).with_global_sources(tmp.path().join("global"));
+        let native = DataSource {
+            id: "snowflake".into(),
+            name: "Snowflake".into(),
+            driver: DbDriver::Snowflake,
+            save_password: true,
+            url_only: true,
+            url: "jdbc:snowflake://example.invalid/?authenticator=SNOWFLAKE_JWT".into(),
+            ..Default::default()
+        };
+        db.save_sources(vec![native.clone()]).await?;
+        db.set_password(&native.id, Some("native-passphrase".into()), true).await?;
+        let jdbc = DataSource { driver: DbDriver::Jdbc, url: "jdbc:fixture:".into(), ..native.clone() };
+
+        // Test Connection can use the JDBC draft before the user saves it.
+        assert_eq!(db.password(&jdbc).await, None);
+        assert_eq!(db.password(&native).await.as_deref(), Some("native-passphrase"));
+
+        db.approve_jdbc_source(&jdbc)?;
+        db.save_sources(vec![jdbc.clone()]).await?;
+        assert_eq!(db.password(&db.source(&jdbc.id)?).await, None);
+        db.set_password(&jdbc.id, Some("jdbc-password".into()), true).await?;
+        let reopened = manager(tmp.path()).with_global_sources(tmp.path().join("global"));
+        let saved = reopened.source(&jdbc.id)?;
+        assert_eq!(reopened.password(&saved).await.as_deref(), Some("jdbc-password"));
+        let err = reopened.pool(&jdbc.id).await.err().expect("no JDBC profile installed");
+        assert!(err.message.contains("Select an installed JDBC driver profile"));
+
+        source::save(&reopened.root, std::slice::from_ref(&jdbc))?;
+        let err = reopened.pool(&jdbc.id).await.err().expect("edited settings need approval");
+        assert!(err.message.contains("Review this project's JDBC URL and properties"));
+        source::save(&reopened.root, std::slice::from_ref(&saved))?;
+
+        let global = DataSource { global: true, ..saved };
+        reopened.save_sources(vec![global.clone()]).await?;
+        assert_eq!(reopened.password(&reopened.source(&jdbc.id)?).await.as_deref(), Some("jdbc-password"));
+
+        let native = DataSource { global: true, ..native };
+        reopened.save_sources(vec![native.clone()]).await?;
+        assert_eq!(reopened.password(&native).await.as_deref(), Some("native-passphrase"));
+        reopened.save_sources(Vec::new()).await?;
+        assert_eq!(reopened.password(&native).await, None);
+        assert_eq!(reopened.password(&global).await, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn switching_from_snowflake_password_keeps_the_password() -> IdeResult<()> {
+        let tmp = tempfile::tempdir()?;
+        let db = manager(tmp.path());
+        let native = DataSource {
+            id: "snowflake".into(),
+            name: "Snowflake".into(),
+            driver: DbDriver::Snowflake,
+            save_password: true,
+            url_only: true,
+            url: "jdbc:snowflake://example.invalid/?authenticator=snowflake".into(),
+            ..Default::default()
+        };
+        db.save_sources(vec![native.clone()]).await?;
+        db.set_password(&native.id, Some("existing-password".into()), true).await?;
+        let jdbc = DataSource { driver: DbDriver::Jdbc, url: "jdbc:fixture:".into(), ..native };
+        assert_eq!(db.password(&jdbc).await.as_deref(), Some("existing-password"));
+        db.save_sources(vec![jdbc.clone()]).await?;
+        let reopened = manager(tmp.path());
+        assert_eq!(reopened.password(&reopened.source(&jdbc.id)?).await.as_deref(), Some("existing-password"));
+        Ok(())
     }
 
     #[tokio::test]

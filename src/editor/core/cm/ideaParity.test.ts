@@ -66,6 +66,8 @@ function show(view: EditorView): string {
 }
 
 const javascript = await languages.find((l) => l.name === "JavaScript")!.load();
+const yaml = await languages.find((l) => l.name === "YAML")!.load();
+const goLang = await languages.find((l) => l.name === "Go")!.load();
 
 describe("Move Statement", () => {
   it("moves a multi-line statement as a whole, never one of its lines", () => {
@@ -91,6 +93,34 @@ describe("Move Statement", () => {
     expect(v.state.doc.toString()).toBe("function f() {\n  a();\n}\nb();");
     moveStatementDown(v);
     expect(v.state.doc.toString()).toBe("function f() {\n  a();\n}\nb();");
+  });
+
+  it("moves a Go switch case with its whole body past the neighbouring case", () => {
+    const go = make(
+      "func f(n int) int {\n\tswitch n {\n\tcase 0:\n\t\treturn 0\n\tca|se 1:\n\t\tv := 1\n\t\treturn v\n\tdefault:\n\t\treturn -1\n\t}\n}",
+      goLang,
+    );
+    moveStatementUp(go);
+    expect(show(go)).toBe(
+      "func f(n int) int {\n\tswitch n {\n\tca|se 1:\n\t\tv := 1\n\t\treturn v\n\tcase 0:\n\t\treturn 0\n\tdefault:\n\t\treturn -1\n\t}\n}",
+    );
+    moveStatementUp(go);
+    expect(go.state.doc.toString()).toContain("switch n {\n\tcase 1:\n\t\tv := 1");
+    moveStatementDown(go);
+    moveStatementDown(go);
+    expect(show(go)).toBe(
+      "func f(n int) int {\n\tswitch n {\n\tcase 0:\n\t\treturn 0\n\tdefault:\n\t\treturn -1\n\tca|se 1:\n\t\tv := 1\n\t\treturn v\n\t}\n}",
+    );
+    moveStatementDown(go);
+    expect(go.state.doc.toString()).toContain("\t\treturn v\n\t}\n}");
+  });
+
+  it("moves a JavaScript case with its stacked labels and blank line kept between branches", () => {
+    const v = make("switch (x) {\n  case 1:\n    a();\n    break;\n\n  case 2:\n  |case 3:\n    b();\n}", javascript);
+    moveStatementUp(v);
+    expect(v.state.doc.toString()).toBe(
+      "switch (x) {\n  case 2:\n  case 3:\n    b();\n\n  case 1:\n    a();\n    break;\n}",
+    );
   });
 
   it("passes a neighbouring function as a whole", () => {
@@ -203,6 +233,19 @@ describe("paste reformatting", () => {
     paste(v, "a();\n    b();\n  c();");
     expect(v.state.doc.toString()).toBe("if {\n  a();\n    b();\n  c();\n}");
   });
+
+  it("pastes onto a blank line at the previous line's indent when the language has no indent engine", () => {
+    const doc = "service:\n  database:\n    query-timeout: 30\n    pool:\n      validation-query: SELECT 1\n";
+    const v = make(doc + "|", [yaml, pasteReindentFilter("indentEachLine")]);
+    paste(v, "query-timeout: 30");
+    expect(v.state.doc.toString()).toBe(doc + "      query-timeout: 30");
+  });
+
+  it("pastes a block onto a blank line at the indent of the nearest non-empty line above", () => {
+    const v = make("outer:\n  key: 1\n\n|\ntrailing: 2", [yaml, pasteReindentFilter("indentBlock")]);
+    paste(v, "a: 1\n      b: 2");
+    expect(v.state.doc.toString()).toBe("outer:\n  key: 1\n\n  a: 1\n  b: 2\ntrailing: 2");
+  });
 });
 
 describe("closing quotes", () => {
@@ -294,6 +337,8 @@ describe("error stripe", () => {
   it("finds the scrollbar thumb the marks must let through", () => {
     // Nothing to scroll: no thumb.
     expect(scrollbarThumb(0, 400, 400)).toBeNull();
+    expect(scrollbarThumb(0, 401, 400)).toBeNull();
+    expect(scrollbarThumb(0, 402, 400)).not.toBeNull();
     // A quarter of the document visible: a 100px thumb, at the top, then at the bottom.
     expect(scrollbarThumb(0, 1600, 400)).toEqual({ top: 0, bottom: 100 });
     expect(scrollbarThumb(1200, 1600, 400)).toEqual({ top: 300, bottom: 400 });

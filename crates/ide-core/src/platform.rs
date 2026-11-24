@@ -72,6 +72,16 @@ impl WindowButtonLayout {
         let right = side(parts.next());
         (!left.is_empty() || !right.is_empty()).then_some(Self { left, right })
     }
+
+    /// The layout on Linux: the desktop's `gtk-decoration-layout` when a desktop session is running.
+    /// Without one (WSLg, a bare compositor) GTK reports its built-in fallback, close only, which
+    /// leaves no way to minimise or maximise the frameless window, so the default applies.
+    pub fn for_linux(gtk_layout: Option<&str>, var: impl Fn(&str) -> Option<String>) -> Self {
+        let desktop = ["XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION"]
+            .iter()
+            .any(|key| var(key).is_some_and(|value| !value.trim().is_empty()));
+        gtk_layout.filter(|_| desktop).and_then(Self::from_gtk_decoration_layout).unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +126,25 @@ mod tests {
         for (value, expected) in cases {
             assert_eq!(WindowButtonLayout::from_gtk_decoration_layout(value), expected, "{value:?}");
         }
+    }
+
+    #[test]
+    fn linux_layout_needs_a_desktop_session() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |key: &str| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| v.to_string())
+        };
+        let gnome = env(&[("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")]);
+        assert_eq!(WindowButtonLayout::for_linux(Some("appmenu:close"), gnome), layout(&[], &[Close]).unwrap());
+        let kde = env(&[("DESKTOP_SESSION", "plasma")]);
+        assert_eq!(
+            WindowButtonLayout::for_linux(Some("close,maximize,minimize:icon"), kde),
+            layout(&[Close, Maximize, Minimize], &[]).unwrap()
+        );
+        // WSLg: no desktop session, GTK's fallback layout.
+        let wslg = env(&[("WAYLAND_DISPLAY", "wayland-0"), ("XDG_CURRENT_DESKTOP", " ")]);
+        assert_eq!(WindowButtonLayout::for_linux(Some("menu:close"), wslg), WindowButtonLayout::default());
+        let gnome = env(&[("XDG_SESSION_DESKTOP", "gnome")]);
+        assert_eq!(WindowButtonLayout::for_linux(None, gnome), WindowButtonLayout::default());
     }
 
     #[test]

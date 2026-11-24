@@ -116,6 +116,16 @@ it("reruns and stops the selected configuration among several running sessions",
   expect(useRun.getState().sessions.map((s) => !!s.stopped)).toEqual([true, false]);
 });
 
+it("offers Run for another instance of a running configuration that allows multiple instances", () => {
+  const parallel = { ...app, allowParallel: true };
+  useRun.setState({ configs: [parallel, npm], sessions: [run(parallel)] });
+  render(<RunWidget />);
+  expect(screen.getByRole("button", { name: `Run '${app.name}'` })).toBeTruthy();
+  expect(screen.getByRole("button", { name: `Debug '${app.name}'` })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /Rerun/ })).toBeNull();
+  expect(screen.getByRole("button", { name: `Stop '${app.name}'` })).toBeTruthy();
+});
+
 it("offers Run/Debug for an idle selection and Stop for the other process", () => {
   useRun.setState({ sessions: [run(npm)] });
   render(<RunWidget />);

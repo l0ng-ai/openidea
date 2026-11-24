@@ -3,8 +3,8 @@
   align-items: center;
   gap: var(--space-1);
   max-width: 280px;
-  height: 30px;
-  border-radius: 6px;
+  height: var(--h-toolbar-widget);
+  border-radius: var(--radius-toolbar-dropdown);
 }
 .icon {
   flex: none;
@@ -20,6 +20,7 @@
 }
 .repo {
   flex: none;
+  --toolbar-label-max: 120px;
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -72,6 +73,25 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 0 10px;
+  color: var(--warning);
+  font-size: var(--fs-small);
+}
+.noticeLabel {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.noticeDetail {
+  overflow: hidden;
+  color: var(--fg-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .empty {
   color: var(--fg-faint);
 }
@@ -96,8 +116,13 @@
   text-overflow: ellipsis;
 }
 .branchName {
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  min-width: 0;
+}
+.branchName,
+.upstream,
+.repoHead {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
 }
 .current {
   color: var(--fg-strong);
@@ -111,15 +136,15 @@
   font-size: var(--fs-tiny);
   line-height: 15px;
 }
-.upstream {
+.upstream,
+.repoHead {
   flex: 0 4 auto;
   margin-left: auto;
-  min-width: 0;
+  min-width: min(3ch, 35%);
+  max-width: 35%;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--fg-faint);
-  font-family: var(--font-mono);
-  font-size: var(--fs-tiny);
+  color: var(--fg-muted);
 }
 .keys {
   margin-left: auto;
@@ -174,16 +199,6 @@
   height: 10px;
   margin: 0 2px;
   border-radius: 2px;
-}
-.repoHead {
-  flex: 0 4 auto;
-  margin-left: auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--fg-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
 }
 .subChevron {
   flex: none;

@@ -3,6 +3,7 @@
  * executed statement with its outcome, and a `Result N` tab per result set —
  * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
  */
+import { canModifyTable } from "./objects";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import {
   useCallback,
@@ -15,6 +16,8 @@ import {
   type MouseEvent,
 } from "react";
 import clsx from "clsx";
+import { useShallow } from "zustand/react/shallow";
+import { basename } from "@/platform/project";
 import { call, commands, type DbPlanNode, type DbQueryResult } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { setContext } from "@/platform/context";
@@ -23,6 +26,7 @@ import { notifications } from "@/workbench/contributions";
 import { ToolWindowContentTabs } from "@/workbench/toolwindows/ToolWindows";
 import { ChartView } from "./ChartView";
 import { ColumnsPopup } from "./ColumnsPopup";
+import { cellOf, cutLength, hasCutCells, loadCells, loadPage, rowsOf, useCutCells } from "./cutCells";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportData, ExportFormat } from "./export";
 import { buildRowEdits, emptyEdits, hasEdits, splitTarget, type Cell, type PendingEdits } from "./model";
@@ -34,7 +38,7 @@ import {
   resolveTarget,
   type EditBlockReason,
 } from "./resultEditing";
-import { pageWindow } from "./resultView";
+import { formatElapsed, pageWindow } from "./resultView";
 import { resultTabMenu } from "./resultTabActions";
 import { analyze } from "./sql/analyze";
 import { nameMatcher } from "./sql/dialect";
@@ -54,6 +58,7 @@ import {
   rerunResult,
   useDatabase,
   withConnection,
+  type ConsoleExecution,
   type OutputLine,
   type ResultTab,
 } from "./store";
@@ -270,8 +275,8 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   const editability = useMemo(() => resultEditability(text, driver), [text, driver]);
   const model = useDatabase((s) => s.completion[tab.sourceId]) ?? null;
   const target = useMemo(
-    () => (editability.kind === "editable" ? resolveTarget(editability, model, tab.schema, driver) : null),
-    [editability, model, tab.schema, driver],
+    () => (editability.kind === "editable" ? resolveTarget(editability, model, tab.schema) : null),
+    [editability, model, tab.schema],
   );
   const detailsId = target ? detailsKey(tab.sourceId, target.schema ?? "", target.table) : null;
   const details = useDatabase((s) => (detailsId ? s.details[detailsId] : undefined));
@@ -325,7 +330,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
     !!target &&
     !!pk &&
     !readOnlySource &&
-    driver !== "clickhouse" &&
+    canModifyTable(driver) &&
     sources.some((s) => s !== null);
 
   // The pending edits belong to the result they were made on: fresh rows (a re-run,
@@ -336,16 +341,38 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   };
   const loaded = r?.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
+  // Cells the page carries only the start of are read whole on demand and re-render the grid.
+  const wholeCells = useCutCells();
   const value = useCallback(
     (row: number, col: number): Cell => {
       const name = resultNames[col]!;
       if (row >= loaded) return edits.inserts[row - loaded]?.get(name) ?? null;
       const upd = edits.updates.get(row);
       if (upd?.has(name)) return upd.get(name)!;
-      return r?.rows[row]?.[col] ?? null;
+      return r ? cellOf(r, row, col) : null;
     },
-    [r, resultNames, loaded, edits],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `wholeCells` changes when a cut cell is read
+    [r, resultNames, loaded, edits, wholeCells],
   );
+  const truncated = useCallback(
+    (row: number, col: number) => (r && row < loaded ? cutLength(r, row, col) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `wholeCells` changes when a cut cell is read
+    [r, loaded, wholeCells],
+  );
+  /** Reads cut cells whole (failing with a notification: `null`). */
+  const loadFull = async (cells: ReadonlyArray<{ row: number; col: number }>): Promise<Cell[] | null> => {
+    try {
+      return await loadCells(tab, cells);
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: "Cannot read the whole value",
+        body: e instanceof Error ? e.message : String(e),
+        key: "db-whole-value",
+      });
+      return null;
+    }
+  };
 
   const onEdit = (row: number, col: number, v: Cell) => {
     if (!editable || busy || !sources[col]) return; // an aliased or computed column
@@ -358,7 +385,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
         next.inserts[row - loaded] = ins;
       } else {
         const upd = new Map(next.updates.get(row));
-        if ((r?.rows[row]?.[col] ?? null) === v) upd.delete(name);
+        if ((r ? cellOf(r, row, col) : null) === v) upd.delete(name);
         else upd.set(name, v);
         if (upd.size) next.updates.set(row, upd);
         else next.updates.delete(row);
@@ -396,8 +423,13 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   const submit = async () => {
     if (!r || !target || !pk || !editable || busy || submittingResults.has(r)) return;
     setSubmittingResult(r, true);
-    const list = buildRowEdits(resultNames, r.rows, pk, edits);
     try {
+      // The key of a row identifies it by its whole value.
+      const keyCells = [...edits.updates.keys(), ...edits.deletes].flatMap((row) =>
+        pk.map((name) => ({ row, col: resultNames.indexOf(name) })).filter((c) => cutLength(r, c.row, c.col) !== null),
+      );
+      if (keyCells.length) await loadCells(tab, keyCells);
+      const list = buildRowEdits(resultNames, rowsOf(r), pk, edits);
       // The Output log shows what the submit is about to change.
       for (const s of editStatements(driver, target.schema ?? "", target.table, list)) log("statement", s);
       const n = await withConnection(tab.sourceId, () =>
@@ -421,16 +453,31 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
     }
   };
 
-  const showExport = (at: { x: number; y: number }) =>
-    r &&
+  const showExport = async (at: { x: number; y: number }) => {
+    if (!r) return;
+    // What is exported or copied is the whole values, not the starts the page carries.
+    if (hasCutCells(r)) {
+      try {
+        await loadPage(tab);
+      } catch (e) {
+        notifications().notify({
+          level: "error",
+          title: "Cannot read the whole values",
+          body: e instanceof Error ? e.message : String(e),
+          key: "db-whole-value",
+        });
+        return;
+      }
+    }
     showContextMenu(
       at,
       exportMenu(
-        { columns, rows: r.rows, driver, table: queryTable(text, { driver }) },
+        { columns, rows: rowsOf(r), driver, table: queryTable(text, { driver }) },
         queryTable(text, { driver }),
         extractor,
       ),
     );
+  };
 
   // Submit / Revert / Go to Column (⌘↩ / ⌥⌘Z / ⌘F12) reach the latest state through the handle, as in the table editor.
   const canSubmit = editable && dirty && !busy;
@@ -470,7 +517,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
             enabled: () => true,
             run: () => {
               const rect = viewRef.current?.querySelector("[data-db-export]")?.getBoundingClientRect();
-              if (rect) showExport({ x: rect.left, y: rect.bottom });
+              if (rect) void showExport({ x: rect.left, y: rect.bottom });
             },
           },
           deleteRows: { enabled: (rows) => rowsEditable && rows.length > 0, run: deleteRows },
@@ -493,7 +540,8 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   const tablePkCount = detailsValue?.columns.filter((c) => c.primaryKey).length ?? 0;
   let notice: string | null = null;
   if (!editable) {
-    if (driver === "clickhouse") notice = tx("Use the query console to change ClickHouse data.");
+    if (driver === "jdbc") notice = tx("Use the query console to change JDBC data.");
+    else if (driver === "clickhouse") notice = tx("Use the query console to change ClickHouse data.");
     else if (readOnlySource) notice = tx("Read-only data source.");
     else if (editability.kind === "readonly") notice = readonlyNotice(editability.reason);
     else if (!target) notice = tx("Read-only: the table schema could not be identified in the result database.");
@@ -559,7 +607,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
           title="Export Data"
           shortcut={shortcutLabel("db.exportData")}
           data-db-export=""
-          onClick={(e) => showExport({ x: e.clientX, y: e.clientY })}
+          onClick={(e) => void showExport({ x: e.clientX, y: e.clientY })}
         />
         {view === "table" && <PanelToggle panel={panel} onChange={setPanel} />}
         {onClose && <IconButton icon="close" title="Close" onClick={onClose} />}
@@ -575,19 +623,22 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               {notice}
             </div>
           )}
-          <div className={clsx(styles.fill, styles.gridHost)}>
+          <div className={styles.fill}>
             <DataView
               columns={gridColumns}
               rowCount={rowCount}
               fixedRows={loaded}
               driver={driver}
               value={value}
+              truncated={truncated}
+              loadFull={loadFull}
               panel={panel}
               onPanelChange={setPanel}
               copyFormat={copyFormatOf(extractor)}
               searchOpen={searchOpen}
               onSearchOpenChange={setSearchOpen}
               firstRowNumber={(tab.page ?? 0) * (tab.pageSize ?? 0) + 1}
+              pager={<Pager tab={busy ? { ...tab, busy: true } : tab} />}
               aria-label={tab.title}
               rowState={(row) => (row >= loaded ? "inserted" : edits.deletes.has(row) ? "deleted" : null)}
               isModified={(row, col) => !!edits.updates.get(row)?.has(resultNames[col]!)}
@@ -609,7 +660,6 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
                   : []
               }
             />
-            <Pager tab={busy ? { ...tab, busy: true } : tab} />
           </div>
         </>
       )}
@@ -742,8 +792,48 @@ function PinButton({ tab }: { tab: ResultTab }) {
   );
 }
 
+/** The most recently started console request, while it runs. */
+function useLatestExecution(): [string, ConsoleExecution] | undefined {
+  return useDatabase(
+    useShallow((s) => {
+      let latest: [string, ConsoleExecution] | undefined;
+      for (const entry of Object.entries(s.executions))
+        if (!latest || entry[1].startedAt > latest[1].startedAt) latest = entry;
+      return latest;
+    }),
+  );
+}
+
+function ExecutingBar({ path, execution }: { path: string; execution: ConsoleExecution }) {
+  const startedAt = execution.active?.startedAt ?? execution.startedAt;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+  const name = basename(path);
+  const count = execution.statements;
+  const index = execution.active ? execution.active.index + 1 : null;
+  const label =
+    count === 1
+      ? tx`Executing in ${name}…`
+      : index === null
+        ? tx`Executing ${count} statements in ${name}…`
+        : tx`Executing statement ${index} of ${count} in ${name}…`;
+  return (
+    <div className={styles.executing} role="status">
+      <Spinner size={12} label={tx("Executing")} />
+      <span className={styles.executingText} title={path}>
+        {label}
+      </span>
+      <span className={styles.executingTime}>{formatElapsed(Math.max(0, now - startedAt))}</span>
+    </div>
+  );
+}
+
 export function ResultsView() {
   const results = useDatabase((s) => s.results);
+  const execution = useLatestExecution();
   const active = useDatabase((s) => s.activeResult);
   const hasOutput = useDatabase((s) => s.output.length > 0);
   const root = useRef<HTMLDivElement>(null);
@@ -770,6 +860,8 @@ export function ResultsView() {
       owner: e.currentTarget,
     });
   };
+  const executing = execution && <ExecutingBar path={execution[0]} execution={execution[1]} />;
+  if (!results.length && !hasOutput && executing) return <div className={styles.view}>{executing}</div>;
   if (!results.length && !hasOutput)
     return (
       <EmptyState title="No results">
@@ -815,7 +907,7 @@ export function ResultsView() {
             ...results.map((r) => ({
               id: String(r.id),
               label: r.title,
-              icon: r.plan ? "db-plan" : "database",
+              icon: r.plan ? "db-plan" : "db-table",
               closable: true,
               pinned: r.pinned,
               tooltip: r.outcome.statement.text,
@@ -823,6 +915,7 @@ export function ResultsView() {
           ]}
         />
       </ToolWindowContentTabs>
+      {executing}
       <div
         ref={panel}
         className={styles.fill}

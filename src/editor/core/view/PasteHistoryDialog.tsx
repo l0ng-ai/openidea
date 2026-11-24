@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import { EditorState } from "@codemirror/state";
-import { EditorView, highlightSpecialChars, lineNumbers } from "@codemirror/view";
+import { EditorView, highlightSpecialChars } from "@codemirror/view";
 import { language, syntaxHighlighting } from "@codemirror/language";
 import { tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
@@ -9,11 +9,14 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { bindingsFor, normalizeBinding, strokeOf } from "@/platform/keymap";
 import {
-  Button,
   Dialog,
+  IconButton,
   List,
   SearchField,
   SINGLE_FIRST,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
   T,
   isRowSelected,
   listNavigate,
@@ -22,9 +25,11 @@ import {
   selectableText,
   selectedRows,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { clipLabel, clipboardHistory, removeClipboardEntries } from "../clipboardHistory";
 import { openideaHighlightStyle } from "../cm/highlight";
 import { compartments } from "../cm/setup";
+import { fontZoom } from "../cm/prefs";
 import { openideaTheme } from "../cm/theme";
 import styles from "./PasteHistoryDialog.module.css";
 
@@ -82,6 +87,11 @@ function PasteHistoryDialog({ view, paste, onClose }: Request & { onClose: () =>
   const [entries, setEntries] = useState(clipboardHistory);
   const [query, setQuery] = useState("");
   const [selection, setSelection] = useState(SINGLE_FIRST);
+  const [editorFont] = useState(() => {
+    const { fontFamily, fontSize, fontWeight } = getComputedStyle(view.contentDOM);
+    return { fontFamily, fontSize, fontWeight };
+  });
+  const rowHeight = Math.max(useRowHeight(), Math.ceil(Number.parseFloat(editorFont.fontSize) || 0) + 8);
   const search = useRef<HTMLInputElement>(null);
   const rows = entries
     .filter(({ text }) => text.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
@@ -156,7 +166,7 @@ function PasteHistoryDialog({ view, paste, onClose }: Request & { onClose: () =>
       title="Choose Content to Paste"
       onClose={onClose}
       className={styles.dialog}
-      width={680}
+      width={560}
       resizable="both"
       minWidth={360}
       minHeight={320}
@@ -169,48 +179,63 @@ function PasteHistoryDialog({ view, paste, onClose }: Request & { onClose: () =>
         },
         { label: "Cancel", role: "cancel" },
       ]}
-      footerStart={
-        <Button disabled={!selected.length} onClick={runRemove}>
-          <T>Delete</T>
-        </Button>
-      }
     >
       <div
         className={styles.body}
+        style={
+          {
+            "--paste-history-font-family": editorFont.fontFamily,
+            "--paste-history-font-size": editorFont.fontSize,
+            "--paste-history-font-weight": editorFont.fontWeight,
+          } as CSSProperties
+        }
         onKeyDown={onKeyDown}
         onFocusCapture={(e) => setContext("pasteHistoryListFocus", !!e.target.closest('[role="listbox"]'))}
         onBlurCapture={() => setContext("pasteHistoryListFocus", false)}
       >
-        <SearchField
-          ref={search}
-          data-autofocus=""
-          aria-label="Filter clipboard history"
-          placeholder="Filter clipboard history"
-          value={query}
-          onChange={filter}
-        />
-        <List
-          items={rows}
-          getKey={(row) => row.key}
-          activeIndex={selection.lead}
-          onSelect={(index, e) => setSelection(selectRow(rows, selection, index, rowSelectionMode(e)))}
-          isSelected={(row) => isRowSelected(selection, row.key)}
-          onActivate={(row, _index, e) => {
-            if (e.type === "keydown") runPaste();
-            else if (e.detail === 2) runPaste(row.key);
-          }}
-          rowHeight={28}
-          className={styles.list}
-          aria-label={tx("Clipboard history")}
-          empty={<T>{entries.length ? "No matches" : "Nothing to paste: the clipboard history is empty"}</T>}
-          renderItem={(row) => (
-            <>
-              <span className={styles.label}>{row.label}</span>
-              <span className={styles.detail}>{row.detail ?? tx("1 line")}</span>
-            </>
-          )}
-        />
-        <PastePreview source={view} text={preview} />
+        <SplitGroup orientation="vertical" storageKey="openidea.editor.pasteHistory" className={styles.split}>
+          <SplitPanel id="clipboard" defaultSize="30%" minSize="96px">
+            <div className={styles.history}>
+              <div className={styles.toolbar}>
+                <IconButton icon="minus" size="small" title="Delete" disabled={!selected.length} onClick={runRemove} />
+                <SearchField
+                  ref={search}
+                  className={styles.filter}
+                  data-autofocus=""
+                  aria-label="Filter clipboard history"
+                  placeholder="Filter clipboard history"
+                  value={query}
+                  onChange={filter}
+                />
+              </div>
+              <List
+                items={rows}
+                getKey={(row) => row.key}
+                activeIndex={selection.lead}
+                onSelect={(index, e) => setSelection(selectRow(rows, selection, index, rowSelectionMode(e)))}
+                isSelected={(row) => isRowSelected(selection, row.key)}
+                onActivate={(row, _index, e) => {
+                  if (e.type === "keydown") runPaste();
+                  else if (e.detail === 2) runPaste(row.key);
+                }}
+                rowHeight={rowHeight}
+                className={styles.list}
+                aria-label={tx("Clipboard history")}
+                empty={<T>{entries.length ? "No matches" : "Nothing to paste: the clipboard history is empty"}</T>}
+                renderItem={(row) => (
+                  <>
+                    <span className={styles.label}>{row.label}</span>
+                    <span className={styles.detail}>{row.detail ?? tx("1 line")}</span>
+                  </>
+                )}
+              />
+            </div>
+          </SplitPanel>
+          <SplitHandle aria-label={tx("Resize paste preview")} />
+          <SplitPanel id="preview" defaultSize="70%" minSize="100px" className={styles.previewPanel}>
+            <PastePreview source={view} text={preview} />
+          </SplitPanel>
+        </SplitGroup>
       </div>
     </Dialog>
   );
@@ -228,11 +253,11 @@ function PastePreview({ source, text }: { source: EditorView; text: string }) {
           syntaxHighlighting(openideaHighlightStyle),
           source.state.facet(language)?.extension ?? [],
           compartments.font.get(source.state) ?? [],
+          fontZoom.init(() => source.state.field(fontZoom, false) ?? 0),
           EditorState.tabSize.of(source.state.tabSize),
           EditorState.readOnly.of(true),
           EditorView.editable.of(false),
           EditorView.contentAttributes.of({ "aria-label": tx("Paste preview"), class: selectableText, tabindex: "0" }),
-          lineNumbers(),
           highlightSpecialChars(),
         ],
       }),

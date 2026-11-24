@@ -1,6 +1,6 @@
 /**
  * Shared MCP server model, multi-level inheritance resolution (IDE -> Project -> Global -> Agent CLI),
- * and reactive cache for Settings › Agents › External MCP Servers and the Composer MCP picker.
+ * and reactive cache for Settings › Agents › MCP Connections and the Composer MCP picker.
  */
 import { useEffect } from "react";
 import { create } from "zustand";
@@ -239,13 +239,15 @@ export async function refreshMcpCatalog(): Promise<void> {
   }));
 }
 
-export function useMcpCatalogSync(): void {
+export function useMcpCatalogSync(eager: boolean): void {
   const root = useProject((s) => s.project?.root);
   useEffect(() => {
     if (!isTauri()) return;
-    void refreshMcpCatalog();
     const onFocus = () => void refreshMcpCatalog();
-    window.addEventListener("focus", onFocus);
+    if (eager) {
+      onFocus();
+      window.addEventListener("focus", onFocus);
+    }
     if (!listenerAttached && typeof onIdeEvent === "function") {
       listenerAttached = true;
       onIdeEvent("settingsChanged", (e) => {
@@ -255,5 +257,5 @@ export function useMcpCatalogSync(): void {
       });
     }
     return () => window.removeEventListener("focus", onFocus);
-  }, [root]);
+  }, [eager, root]);
 }

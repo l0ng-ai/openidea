@@ -11,6 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react"
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
+import { mathExtension, renderMath } from "@/editor/lsp/markdownMath";
 import { iconNode } from "@/ui/iconNode";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
@@ -37,7 +38,7 @@ const marked = new Marked({
       return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
     },
   },
-});
+}).use(mathExtension());
 
 /** Rendered messages by text, least recently used first: reopening a conversation renders it again. */
 const rendered = new Map<string, string>();
@@ -133,10 +134,11 @@ function renderHtml(text: string): string {
     FORBID_TAGS: ["style", "form", "source"],
     FORBID_ATTR: ["style", "srcset"],
     ALLOW_DATA_ATTR: false,
-    // Only the mermaid placeholder written by the renderer above; data attributes
+    // Only the mermaid and math placeholders written by the renderer above; data attributes
     // quoted in a reply stay out.
-    ADD_ATTR: ["data-mermaid"],
+    ADD_ATTR: ["data-mermaid", "data-math"],
   }) as HTMLElement;
+  renderMath(root);
   root.querySelectorAll("li").forEach(wrapLooseText);
   // WebKit cuts controls inside <pre> out of a text selection, even when transparent.
   root.querySelectorAll("pre").forEach((pre) => {
@@ -232,6 +234,27 @@ async function linkSymbols(root: HTMLElement, spans: HTMLElement[], cwd: string)
   );
 }
 
+const COPIED_MS = 2000;
+const copiedTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
+
+function setCopyState(button: HTMLElement, copied: boolean) {
+  const label = tx(copied ? "Copied" : "Copy Code");
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.replaceChildren(iconNode(copied ? "check" : "copy", 14));
+  button.toggleAttribute("data-copied", copied);
+}
+
+/** Shows a check on a code block's Copy button for a moment. */
+function flashCopied(button: HTMLElement) {
+  clearTimeout(copiedTimers.get(button));
+  setCopyState(button, true);
+  copiedTimers.set(
+    button,
+    setTimeout(() => setCopyState(button, false), COPIED_MS),
+  );
+}
+
 /** Highlighting, Copy buttons and file links over freshly rendered `root`. */
 function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => void {
   let alive = true;
@@ -253,10 +276,7 @@ function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => v
     const copy = document.createElement("button");
     copy.type = "button";
     copy.className = styles.codeCopy!;
-    const label = tx("Copy Code");
-    copy.title = label;
-    copy.setAttribute("aria-label", label);
-    copy.appendChild(iconNode("copy", 14));
+    setCopyState(copy, false);
     copy.dataset.copy = text;
     const block = pre.parentElement!;
     block.appendChild(copy);
@@ -278,7 +298,10 @@ function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => v
   });
   return () => {
     alive = false;
-    copies.forEach((copy) => copy.remove());
+    copies.forEach((copy) => {
+      clearTimeout(copiedTimers.get(copy));
+      copy.remove();
+    });
     disposeImages();
   };
 }
@@ -419,7 +442,7 @@ export function Markdown({
         const target = e.target as HTMLElement;
         const copy = target.closest<HTMLElement>("button[data-copy]");
         if (copy) {
-          void copyText(copy.dataset.copy ?? "");
+          void copyText(copy.dataset.copy ?? "").then(() => flashCopied(copy));
           return;
         }
         const code = target.closest<HTMLElement>("code");

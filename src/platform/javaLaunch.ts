@@ -14,6 +14,7 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { useBuildPresentation } from "@/platform/projectPresentation";
 import { isRemoteWindow } from "@/platform/remote";
 
@@ -192,7 +193,14 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
   if (config.module != null) return config.module;
   const main = parseJavaArgs(config.args).mainClass;
   if (!main) return null;
-  const outer = main.split("$")[0]!;
+  const modules = await classModules(main);
+  return modules.length === 1 ? modules[0]! : null;
+}
+
+/** Module directories (as {@link jvmModuleDir}) of the project's sources declaring the class `binaryName`. */
+export async function classModules(binaryName: string): Promise<string[]> {
+  const root = useProject.getState().project?.root;
+  const outer = binaryName.split("$")[0]!;
   const simple = outer.slice(outer.lastIndexOf(".") + 1);
   const pkg = outer.slice(0, Math.max(0, outer.lastIndexOf(".")));
   const names = [`${simple}.java`, `${simple}.kt`, ...(simple.endsWith("Kt") ? [`${simple.slice(0, -2)}.kt`] : [])];
@@ -204,9 +212,9 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
   for (const file of matches) {
     const text = await call(commands.fsReadText(file.path));
     const sourcePackage = /^\s*package\s+([\w.]+)\s*[;\r\n]/m.exec(text)?.[1] ?? "";
-    if (sourcePackage === pkg) modules.add(jvmModuleDir(file.relPath, configs));
+    if (sourcePackage === pkg) modules.add(jvmModuleDir(root ? relativePath(root, file.path) : file.relPath, configs));
   }
-  return modules.size === 1 ? [...modules][0]! : null;
+  return [...modules];
 }
 
 export async function resolveJavaModule(config: RunConfig): Promise<string> {
@@ -258,6 +266,12 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   const info = await call(
     commands.javaResolveLaunch(module, parsed.classpath === "test", policy, preparation.request),
   ).catch((error: unknown) => {
+    if (error instanceof IpcError && error.data?.type === "javaBuildProblems") {
+      const problems = error.data.problems.join("; ");
+      throw new Error(
+        tx`Java module '${module || "."}' could not be imported because its build has errors: ${problems}. Fix them, then reload the Maven or Gradle project.`,
+      );
+    }
     if (
       error instanceof IpcError &&
       error.kind !== "cancelled" &&
@@ -285,5 +299,12 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   }
   if (parsed.classpath && !info.classPaths.length)
     throw new Error(tx("The classpath is empty: is the module imported by the Java language server?"));
-  return { module, info, resolved: resolveJavaCommand(config, info) };
+  const resolved = resolveJavaCommand({ ...config, module }, info);
+  const project = useProject.getState().project;
+  if (resolved.cwd == null && project?.workspace) {
+    const path = /^(?:[A-Za-z]:)?\//.test(module) ? module : `${project.root}/${module}`;
+    const owner = projectFolder(project, path);
+    if (owner && owner.root !== project.root) resolved.cwd = path;
+  }
+  return { module, info, resolved };
 }

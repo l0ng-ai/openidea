@@ -612,6 +612,26 @@ describe("single-file producers (scratches)", () => {
     expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
   });
 
+  it("Java: a main in a Maven project linked from outside the project runs on its classpath (#4066)", () => {
+    const svc = "/work/billing";
+    const boot =
+      "package com.example;\n@SpringBootApplication\npublic class ShopApplication {\n" +
+      "  public static void main(String[] args) {}\n}";
+    const maven = [cfg({ id: `maven:test:${svc}`, kind: "maven", args: ["test"], cwd: svc, isTest: true })];
+    const p = produceContext(
+      {
+        path: `${svc}/src/main/java/com/example/ShopApplication.java`,
+        root: ROOT,
+        configs: maven,
+        content: boot,
+        line: 3,
+        contentRoots: [svc],
+      },
+      ALL,
+    )!;
+    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: null });
+  });
+
   it("Java: a class whose superclass declares main runs as a Spring Boot application", async () => {
     const path = `${ROOT}/src/main/java/demo/AiChatApplication.java`;
     const content = "package demo;\n\n@SpringBootApplication\npublic class AiChatApplication extends AtomStarter {}\n";
@@ -657,6 +677,12 @@ describe("single-file producers (scratches)", () => {
         dir: "services/api",
         file: "services/api/app/src/main/java/org/dromara/DromaraApplication.java",
       },
+      // #4066: linked through Add Maven Projects, deeper than the folder search reaches.
+      {
+        kind: "maven",
+        dir: "site/service/03_src/demo-monitor",
+        file: "site/service/03_src/demo-monitor/src/main/java/org/dromara/DromaraApplication.java",
+      },
     ] as const;
     for (const { kind, dir, file } of cases) {
       it(`${kind}: the Spring Boot application in its module, from the gutter and from the file`, () => {
@@ -695,7 +721,45 @@ describe("single-file producers (scratches)", () => {
         ALL,
       )!;
       expect(t.config).toMatchObject({ kind: "gradle", cwd: "backend" });
-      expect(t.config!.args).toEqual(["test", "--tests", "demo.AppTest.works"]);
+      expect(t.config!.args).toEqual([":app:test", "--tests", "demo.AppTest.works"]);
+    });
+
+    it("a test-named class with a main runs its main; without one, its tests (IDEA semantics)", () => {
+      const maven = nested("maven", "");
+      // `Test.java` with a `main`: the file-level context runs the program.
+      const withMain =
+        "package demo;\npublic class Test {\n  public static void main(String[] a) {\n  }\n  @Test\n  void works() {\n  }\n}\n";
+      const main = produceFile(
+        { path: `${ROOT}/src/test/java/demo/Test.java`, root: ROOT, configs: maven, content: withMain },
+        ALL,
+      )!;
+      expect(main.config).toMatchObject({ kind: "application", name: "Test" });
+      expect(main.config!.args).toEqual(["-cp", "${testClasspath}", "demo.Test"]);
+      // The caret inside a `@Test` method still runs that test, main or not.
+      const onTest = produceContext(at("src/test/java/demo/Test.java", maven, withMain, 5), ALL)!;
+      expect(onTest.config).toMatchObject({ kind: "maven" });
+      expect(onTest.config!.args).toEqual([
+        "test",
+        "-Dtest=demo.Test#works",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ]);
+      // No `main`: the file-level context runs the class's tests.
+      const noMain = "package demo;\npublic class Test {\n  @Test\n  void works() {\n  }\n}\n";
+      const tests = produceFile(
+        { path: `${ROOT}/src/test/java/demo/Test.java`, root: ROOT, configs: maven, content: noMain },
+        ALL,
+      )!;
+      expect(tests.config).toMatchObject({ kind: "maven", isTest: true });
+      // A reactor module without `Test` must not fail the build before the module that has it.
+      expect(tests.config!.args).toEqual([
+        "test",
+        "-Dtest=Test",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ]);
     });
   });
 
@@ -748,6 +812,36 @@ describe("project producers", () => {
     expect(nested.config).toMatchObject({ args: ["--path", ".", "res://main.tscn"], cwd: "demo" });
     // Outside a Godot project there is nothing to run.
     expect(produceContext({ path: `${ROOT}/a.tscn`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+  });
+
+  it("Dart files of a Flutter app run as the app (flutter run -t) in the app's folder", () => {
+    const flutter = [
+      cfg({ id: "flutter:run", kind: "flutter", command: "flutter", args: ["run", "-t", "lib/main.dart"], cwd: "app" }),
+    ];
+    const p = produceContext({ path: `${ROOT}/app/lib/demo.dart`, root: ROOT, configs: flutter }, ALL)!;
+    expect(p).toMatchObject({ name: "demo.dart", scope: "file" });
+    expect(p.config).toMatchObject({
+      kind: "flutter",
+      command: "flutter",
+      args: ["run", "-t", "lib/demo.dart"],
+      cwd: "app",
+      debugAdapter: "dart",
+    });
+    // Its tests run with `flutter test`, a Dart package's with `dart test`.
+    expect(run({ path: `${ROOT}/app/test/widget_test.dart`, root: ROOT, configs: flutter })).toMatchObject({
+      command: "flutter",
+      args: ["test", "test/widget_test.dart"],
+      cwd: "app",
+    });
+    expect(run({ path: `${ROOT}/tool/test/gen_test.dart`, root: ROOT, configs: flutter })).toMatchObject({
+      command: "/bin/dart",
+      args: ["test", "tool/test/gen_test.dart"],
+    });
+    // Outside the app (a Dart package next to it): `dart run`.
+    expect(run({ path: `${ROOT}/tool/gen.dart`, root: ROOT, configs: flutter })).toMatchObject({
+      command: "/bin/dart",
+      args: ["run", "tool/gen.dart"],
+    });
   });
 
   it("keeps package.json test files on the project's runner", () => {
@@ -918,6 +1012,48 @@ describe("project producers", () => {
     ).toEqual([":services:api:test", "--tests", "com.acme.*"]);
     expect(produceDirectory({ path: `${ROOT}/src/main`, root: ROOT, configs })).toBeNull();
     expect(produceDirectory({ path: ROOT, root: ROOT, configs })).toBeNull();
+  });
+
+  // `--tests` on the root `test` runs every subproject's test task, and one without a match
+  // fails the build ("No tests found for given includes") before the subproject with the test.
+  it("Gradle: a subproject's test class, method and file run that subproject's test task", () => {
+    const gradle = [cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true })];
+    const content =
+      "package com.acme;\n\nimport org.junit.jupiter.api.Test;\n\nclass OrderTest {\n  @Test\n  void ships() {\n  }\n}\n";
+    const input = (path: string, configs = gradle, line?: number): ContextInput => ({
+      path: `${ROOT}/${path}`,
+      root: ROOT,
+      configs,
+      content,
+      line,
+    });
+    const file = "services/api/src/test/java/com/acme/OrderTest.java";
+    const method = produceContext(input(file, gradle, 6), ALL)!.config!;
+    expect(method).toMatchObject({ cwd: null, args: [":services:api:test", "--tests", "com.acme.OrderTest.ships"] });
+    expect(produceContext(input(file, gradle, 4), ALL)!.config!.args).toEqual([
+      ":services:api:test",
+      "--tests",
+      "com.acme.OrderTest",
+    ]);
+    expect(produceFile(input(file), ALL)!.config).toMatchObject({
+      cwd: null,
+      args: [":services:api:test", "--tests", "*OrderTest"],
+    });
+    // The root project's own tests keep the plain task.
+    expect(produceFile(input("src/test/java/com/acme/OrderTest.java"), ALL)!.config!.args).toEqual([
+      "test",
+      "--tests",
+      "*OrderTest",
+    ]);
+    // A build nested in a folder: the subproject path is relative to that build.
+    const nested = [cfg({ id: "gradle:test:shop", kind: "gradle", args: ["test"], cwd: "shop", isTest: true })];
+    expect(produceFile(input("shop/api/src/test/java/com/acme/OrderTest.java", nested), ALL)!.config).toMatchObject({
+      cwd: "shop",
+      args: [":api:test", "--tests", "*OrderTest"],
+    });
+    expect(
+      produceDirectory({ path: `${ROOT}/shop/api/src/test/java`, root: ROOT, configs: nested })!.config!.args,
+    ).toEqual([":api:test"]);
   });
 });
 

@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { Chunk, MergeView } from "@codemirror/merge";
+import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { Chunk, MergeView, unifiedMergeView } from "@codemirror/merge";
 import { ChangeSet, Text } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
-import { applyChunk, arrowControls } from "../diffControls";
+import { EditorView } from "@codemirror/view";
+import { applyChunk, arrowControls, hoverRevert } from "../diffControls";
 import {
   DEFAULT_DIFF_OPTIONS,
   parseDiffOptions,
@@ -363,6 +364,35 @@ describe("diff options", () => {
     parent.remove();
   });
 
+  it("paints whole inserted and deleted blocks of the unified viewer as blocks, without word marks", () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      doc: "keep\nvalue = new\nmid\n  first();\n  second();\nend\n",
+      parent,
+      extensions: [
+        viewerBase({ readOnly: true }),
+        diffWords,
+        unifiedMergeView({
+          original: "dropped\nkeep\nvalue = old\nmid\nend\n  gone();\n  away();\n",
+          highlightChanges: true,
+          mergeControls: false,
+          diffConfig: ideaDiffConfig("none", "words"),
+        }),
+      ],
+    });
+    const texts = (selector: string) => [...view.dom.querySelectorAll(selector)].map((e) => e.textContent);
+    // A whole block (IDEA's fragment without inner ones) has no words to compare: a full-width line tint only.
+    expect(texts(".cm-diffLine-inserted:not(.cm-diffLine-fine)")).toEqual(["  first();", "  second();"]);
+    expect(texts(".cm-changedText")).toEqual(["new"]);
+    expect(texts(".cm-deletedChunk .cm-deletedLine")).toEqual(["dropped", "value = old", "  gone();", "  away();"]);
+    expect(texts(".cm-deletedText")).toEqual(["old"]);
+    // The old lines of the compared chunk take its lighter colour, whole deleted blocks the full one.
+    expect(texts(".cm-diffWords .cm-deletedChunk:has(+ .cm-diffLine-fine)")).toEqual(["value = old"]);
+    view.destroy();
+    parent.remove();
+  });
+
   it("gives a read-only side a tab stop and leaves an editable side alone", () => {
     const parent = document.createElement("div");
     document.body.appendChild(parent);
@@ -389,7 +419,12 @@ describe("diff options", () => {
     expect(a.replace(toA.from, toA.to, Text.of(toA.insert.split("\n"))).toString()).toBe("x\nnew\nnewer\ny\n");
   });
 
-  it("applies chunks in a merge view through the arrow controls", () => {
+  it.each([
+    ["a-to-b", "right", "{Enter}"],
+    ["b-to-a", "left", " "],
+    ["a-to-b", "right", "click"],
+    ["b-to-a", "left", "click"],
+  ] as const)("applies a chunk %s to the %s (%j)", async (direction, side, activation) => {
     const parent = document.createElement("div");
     document.body.appendChild(parent);
     let mv: MergeView | null = null;
@@ -400,21 +435,53 @@ describe("diff options", () => {
       revertControls: "a-to-b",
       renderRevertControl: arrowControls(() => mv, { toA: true, toB: true }),
     });
-    const holder = arrowControls(() => mv, { toA: true, toB: true })();
-    expect([...holder.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"))).toEqual([
-      expect.stringContaining("right"),
-      expect.stringContaining("left"),
-    ]);
-    // "<<": the right side's text replaces the left chunk.
-    holder.dataset.chunk = "0";
-    holder.querySelectorAll("button")[1]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    expect(mv.a.state.doc.toString()).toBe("1\nright\n3\n");
-    expect(mv.chunks).toHaveLength(0);
-    mv.a.dispatch({ changes: { from: 2, to: 7, insert: "LEFT" } });
-    applyChunk(mv, 0, "a");
-    expect(mv.b.state.doc.toString()).toBe("1\nLEFT\n3\n");
-    mv.destroy();
-    parent.remove();
+    try {
+      const arrow = await vi.waitFor(() => {
+        const button = parent.querySelector<HTMLButtonElement>(`.cm-diffArrow-${direction}`);
+        expect(button).not.toBeNull();
+        return button!;
+      });
+      expect(arrow.getAttribute("aria-label")).toContain(side);
+      const user = userEvent.setup();
+      if (activation === "click") {
+        mv.b.focus();
+        await user.click(arrow);
+        expect(document.activeElement).toBe(mv.b.contentDOM);
+      } else {
+        arrow.focus();
+        await user.keyboard(activation);
+      }
+
+      const expected = direction === "a-to-b" ? "1\nleft\n3\n" : "1\nright\n3\n";
+      expect(mv.a.state.doc.toString()).toBe(expected);
+      expect(mv.b.state.doc.toString()).toBe(expected);
+      expect(mv.chunks).toHaveLength(0);
+    } finally {
+      mv.destroy();
+      parent.remove();
+    }
+  });
+
+  it("reverts a hovered chunk when its button is activated by the keyboard", async () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const diff = new MergeView({
+      a: { doc: "1\nleft\n3\n" },
+      b: { doc: "1\nright\n3\n", extensions: hoverRevert((_view, index) => applyChunk(diff, index, "a")) },
+      parent,
+    });
+    try {
+      vi.spyOn(diff.b, "posAtCoords").mockReturnValue(2);
+      diff.b.contentDOM.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+      const button = parent.querySelector<HTMLButtonElement>(".cm-diffHoverRevert");
+      expect(button).not.toBeNull();
+      button!.focus();
+      await userEvent.setup().keyboard("{Enter}");
+      expect(diff.b.state.doc.toString()).toBe("1\nleft\n3\n");
+    } finally {
+      diff.destroy();
+      parent.remove();
+    }
   });
 });
 
@@ -428,10 +495,12 @@ describe("compare entry points", () => {
 
   it("Compare with Clipboard: the file, or the selection", () => {
     const whole = clipboardDiffData("/p/a.ts", "clip", null);
-    expect(whole.left).toEqual({ type: "text", text: "clip", label: "Clipboard" });
+    expect(whole.left).toEqual({ type: "text", text: "clip", label: "From Clipboard" });
     expect(sideFile(whole.right, whole.path)).toBe("/p/a.ts");
+    expect(whole.right).toMatchObject({ label: "a.ts", labelDetail: "/p" });
     const sel = clipboardDiffData("/p/a.ts", "clip", "sel");
     expect(sideFile(sel.right, sel.path)).toBeNull();
+    expect(sel.right).toMatchObject({ label: "Selection from a.ts", labelDetail: "/p" });
     expect(diffTitle(sel)).toBe("Clipboard ↔ a.ts (selection)");
   });
 
@@ -467,6 +536,8 @@ describe("oversized line comparison", () => {
       [updatedA, nextA, b],
     ] as const) {
       expect(chunks.length).toBeGreaterThan(0);
+      // No words compared: the unified viewer paints whole blocks, as for IDEA's own chunks.
+      expect(chunks.every((chunk) => chunk.changes.length === 0)).toBe(true);
       let restored = target;
       for (const chunk of [...chunks].reverse()) {
         const edit = transferChunk(chunk, "a", source, restored);

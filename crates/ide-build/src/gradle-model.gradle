@@ -30,6 +30,7 @@ def processedResources = { Project p, s ->
 def describe = { Project p ->
     def m = [path: identity(p), dir: canon(p.projectDir), buildDir: canon(p.layout.buildDirectory.get().asFile)]
     if (p.gradle.parent != null) m.build = identity(p.rootProject)
+    m.resolvableConfigurations = p.configurations.findAll { it.canBeResolved }.collect { it.name }.sort()
     // Gradle 4.x has it as a convention property, not an extension.
     def sets = p.extensions.findByName('sourceSets') ?: p.findProperty('sourceSets')
     if (sets != null) {

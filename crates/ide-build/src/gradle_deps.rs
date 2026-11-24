@@ -135,7 +135,7 @@ pub fn gradle_dependencies(
     configuration: &str,
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<GradleDependency>> {
-    if !configuration.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') || configuration.is_empty() {
+    if configuration.is_empty() || !configuration.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')) {
         return Err(IdeError::invalid(format!("not a configuration name: {configuration}")));
     }
     if !project.starts_with(':') || project.chars().any(char::is_whitespace) {
@@ -143,7 +143,7 @@ pub fn gradle_dependencies(
     }
     let task = if project == ":" { ":dependencies".to_owned() } else { format!("{project}:dependencies") };
     let mut args: Vec<String> =
-        vec!["--console=plain".into(), "-q".into(), task, "--configuration".into(), configuration.into()];
+        vec!["--console=plain".into(), "-q".into(), task, format!("--configuration={configuration}")];
     if options.offline {
         args.push("--offline".into());
     }
@@ -156,7 +156,10 @@ pub fn gradle_dependencies(
         |_, _| {},
     )?;
     if !out.success {
-        return Err(IdeError::unavailable(error_summary(&out.text)));
+        return Err(IdeError::unavailable(error_summary(&out)));
+    }
+    if let Some(note) = sync::truncation_note(&out) {
+        return Err(IdeError::unavailable(note));
     }
     Ok(parse_report(&out.text))
 }
@@ -337,14 +340,14 @@ runtimeClasspath - Runtime classpath of source set 'main'.
             &gradle::load(root).unwrap(),
             &options,
             ":app",
-            "testRuntimeClasspath",
+            "review.tools",
             &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(tree, vec![dep("org.a", "b", Some("1.0"))]);
         assert_eq!(
             std::fs::read_to_string(root.join("args")).unwrap().trim(),
-            "--console=plain -q :app:dependencies --configuration testRuntimeClasspath --offline"
+            "--console=plain -q :app:dependencies --configuration=review.tools --offline"
         );
     }
 }

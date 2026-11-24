@@ -27,6 +27,8 @@ describe("unwrapOptions (Unwrap/Remove)", () => {
     const opts = unwrapOptions(Text.of(src.split("\n")), chain);
     expect(opts.map((o) => o.label)).toEqual(["Unwrap 'if'"]);
     expect(apply(src, opts[0]!)).toBe("void f() {\n    foo();\n    bar();\n}\n");
+    const retained = opts[0]!.retained!;
+    expect(src.slice(retained.from, retained.to)).toBe("foo();\n        bar();");
   });
 
   it("keeps the else branch the caret is in", () => {
@@ -84,6 +86,8 @@ describe("unwrapOptions (Unwrap/Remove)", () => {
     expect(opts.map((o) => o.label)).toEqual(["Unwrap 'if'", "Unwrap 'else'"]);
     expect(apply(src, opts[0]!)).toBe("if (a) {\n    p();\n} else {\n    q();\n}");
     expect(apply(src, opts[1]!)).toBe("if (b) {\n    q();\n}");
+    const retained = opts[0]!.retained!;
+    expect(src.slice(retained.from, retained.to)).toBe("{\n    q();\n}");
 
     const cond = [
       node(src, "identifier", "b"),

@@ -100,8 +100,13 @@ export function pruneGroups(
 }
 
 /** The default server after `servers` changed: kept when still present, else the first one (or none). */
-export function fixDefaultServer(servers: readonly DeploymentServerValid[], defaultServer: string): string {
-  if (servers.some((s) => s.id === defaultServer)) return defaultServer;
+/** The default target kept valid: an existing server or server group, else the first server. */
+export function fixDefaultServer(
+  servers: readonly DeploymentServerValid[],
+  defaultServer: string,
+  groups: readonly { id: string }[] = [],
+): string {
+  if (servers.some((s) => s.id === defaultServer) || groups.some((g) => g.id === defaultServer)) return defaultServer;
   return servers[0]?.id ?? "";
 }
 

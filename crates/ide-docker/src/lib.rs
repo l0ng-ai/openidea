@@ -5,6 +5,7 @@
 //! Every function blocks; callers run them off the UI / command threads.
 
 mod connection;
+mod engine;
 mod model;
 mod process;
 
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 /// Listing and lifecycle commands normally answer in well under a second; a
@@ -114,6 +115,11 @@ fn failure(args: &[&str], stderr: &str, stdout: &str) -> IdeError {
 
 /// Whether docker can be used right now.
 pub fn availability(ep: &DockerEndpoint) -> DockerAvailability {
+    if docker_executable().is_none()
+        && let Some(available) = engine::availability(ep, Duration::from_secs(15))
+    {
+        return available;
+    }
     let Ok(cmd) = command(ep, &["version", "--format", "{{json .}}"]) else {
         return DockerAvailability::NotInstalled;
     };
@@ -125,6 +131,11 @@ pub fn availability(ep: &DockerEndpoint) -> DockerAvailability {
 
 /// Availability plus containers, images, volumes and networks (listed in parallel).
 pub fn snapshot(ep: &DockerEndpoint) -> DockerSnapshot {
+    if docker_executable().is_none()
+        && let Some(listed) = engine::snapshot(ep, QUICK)
+    {
+        return listed;
+    }
     let availability = availability(ep);
     let executable = docker_executable().map(|p| ide_core::ipc_path::to_ipc(&p));
     let mut snap = DockerSnapshot {
@@ -202,6 +213,11 @@ pub fn container_op(ep: &DockerEndpoint, ids: &[String], op: ContainerOp) -> Ide
     if ids.is_empty() {
         return Ok(());
     }
+    if docker_executable().is_none()
+        && let Some(ran) = engine::container_op(ep, ids, op, LIFECYCLE)
+    {
+        return ran;
+    }
     let mut args = vec!["container", op.verb()];
     args.extend(ids.iter().map(String::as_str));
     run(ep, &args, LIFECYCLE).map(drop)
@@ -232,6 +248,11 @@ pub fn remove(ep: &DockerEndpoint, object: DockerObject, ids: &[String], force: 
     if ids.is_empty() {
         return Ok(());
     }
+    if docker_executable().is_none()
+        && let Some(ran) = engine::remove(ep, object, ids, force, LIFECYCLE)
+    {
+        return ran;
+    }
     let mut args = vec![object.noun(), "rm"];
     if force && matches!(object, DockerObject::Container | DockerObject::Image | DockerObject::Volume) {
         args.push("--force");
@@ -242,6 +263,11 @@ pub fn remove(ep: &DockerEndpoint, object: DockerObject, ids: &[String], force: 
 
 /// `docker inspect` of one object, pretty-printed.
 pub fn inspect(ep: &DockerEndpoint, object: DockerObject, id: &str) -> IdeResult<String> {
+    if docker_executable().is_none()
+        && let Some(inspected) = engine::inspect(ep, object, id, QUICK)
+    {
+        return inspected;
+    }
     let out = run(ep, &["inspect", "--type", object.noun(), id], QUICK)?;
     match serde_json::from_str::<serde_json::Value>(&out) {
         // A one-element array for a single id: show the object itself.
@@ -261,6 +287,11 @@ fn check_id(id: &str) -> IdeResult<&str> {
 /// `docker image history --no-trunc --format '{{json .}}'` of one image.
 pub fn image_history(ep: &DockerEndpoint, id: &str) -> IdeResult<Vec<DockerImageLayer>> {
     let id = check_id(id)?;
+    if docker_executable().is_none()
+        && let Some(layers) = engine::image_history(ep, id, QUICK)
+    {
+        return layers;
+    }
     let out = run(ep, &["image", "history", "--no-trunc", "--format", "{{json .}}", id], QUICK)?;
     Ok(parse_image_history(&out))
 }
@@ -268,6 +299,11 @@ pub fn image_history(ep: &DockerEndpoint, id: &str) -> IdeResult<Vec<DockerImage
 /// `docker top <id>` of a running container.
 pub fn container_top(ep: &DockerEndpoint, id: &str) -> IdeResult<DockerProcessList> {
     let id = check_id(id)?;
+    if docker_executable().is_none()
+        && let Some(processes) = engine::container_top(ep, id, QUICK)
+    {
+        return processes;
+    }
     let out = run(ep, &["top", id], QUICK)?;
     Ok(parse_container_top(&out))
 }
@@ -279,9 +315,67 @@ pub fn container_stats(ep: &DockerEndpoint, id: &str) -> IdeResult<DockerContain
     parse_container_stats(&out).ok_or_else(|| IdeError::not_found("no container stats returned"))
 }
 
+/// Per-volume disk usage (`docker system df -v --format '{{json .Volumes}}'`).
+pub fn volume_sizes(ep: &DockerEndpoint) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    if docker_executable().is_none()
+        && let Some(sizes) = engine::volume_sizes(ep, QUICK)
+    {
+        return sizes;
+    }
+    let out = run(ep, &["system", "df", "-v", "--format", "{{json .Volumes}}"], QUICK)?;
+    Ok(parse_volume_sizes(&out))
+}
+
+/// How long log lines collect before they are handed on together.
+const LOG_BATCH: Duration = Duration::from_millis(30);
+
 /// Streams a container's logs (`tail` last lines, then follows while `follow`)
-/// until it ends or `cancel` fires.
+/// until it ends or `cancel` fires. Lines arrive in batches, at most one per
+/// [`LOG_BATCH`]: a webview delivers each IPC message on its own, so a message
+/// per line made a 1000-line tail take tens of seconds on Windows.
 pub fn logs(
+    ep: &DockerEndpoint,
+    id: &str,
+    tail: u32,
+    follow: bool,
+    timestamps: bool,
+    cancel: &CancellationToken,
+    on_lines: &(dyn Fn(Vec<DockerLogLine>) + Sync),
+) -> IdeResult<()> {
+    batched(LOG_BATCH, on_lines, |on_line| stream_logs(ep, id, tail, follow, timestamps, cancel, on_line))
+}
+
+/// Runs `produce` with a per-item callback and hands the items to `emit` in order,
+/// collected over `every`, from a second thread so a quiet stream still flushes.
+fn batched<T: Send, R>(every: Duration, emit: &(dyn Fn(Vec<T>) + Sync), produce: impl FnOnce(&dyn Fn(T)) -> R) -> R {
+    let pending = Mutex::new(Vec::new());
+    let finished = (Mutex::new(false), Condvar::new());
+    let flush = || {
+        let items = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
+        if !items.is_empty() {
+            emit(items);
+        }
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let (done, wake) = &finished;
+            let mut stop = done.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                stop = wake.wait_timeout(stop, every).unwrap_or_else(|e| e.into_inner()).0;
+                flush();
+                if *stop {
+                    break;
+                }
+            }
+        });
+        let result = produce(&|item| pending.lock().unwrap_or_else(|e| e.into_inner()).push(item));
+        *finished.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        finished.1.notify_one();
+        result
+    })
+}
+
+fn stream_logs(
     ep: &DockerEndpoint,
     id: &str,
     tail: u32,
@@ -290,6 +384,11 @@ pub fn logs(
     cancel: &CancellationToken,
     on_line: &dyn Fn(DockerLogLine),
 ) -> IdeResult<()> {
+    if docker_executable().is_none()
+        && let Some(streamed) = engine::logs(ep, id, tail, follow, timestamps, QUICK, cancel, on_line)
+    {
+        return streamed;
+    }
     let tail = tail.to_string();
     let mut args = vec!["logs", "--tail", &tail];
     if follow {
@@ -564,6 +663,27 @@ pub fn cli(
 #[cfg(test)]
 mod local_tests {
     use super::*;
+
+    #[test]
+    fn log_lines_arrive_in_order_as_few_batches() {
+        let batches = Mutex::new(Vec::<Vec<u32>>::new());
+        let result = batched(Duration::from_millis(30), &|b| batches.lock().unwrap().push(b), |line| {
+            (0..1000).for_each(line);
+            // Wait for the flusher to emit the whole burst rather than assuming a fixed
+            // sleep outlasts its scheduling: a loaded runner can starve the thread
+            // past the quiet spell and fold the trailing line into the burst.
+            while batches.lock().unwrap().iter().map(Vec::len).sum::<usize>() < 1000 {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            line(1000);
+            "done"
+        });
+        assert_eq!(result, "done");
+        let batches = batches.into_inner().unwrap();
+        assert_eq!(batches.concat(), (0..=1000).collect::<Vec<_>>(), "every line once, in order");
+        assert!(batches.len() <= 3, "a burst is one message, not one per line: {} batches", batches.len());
+        assert_eq!(batches.last().unwrap(), &[1000], "a line after a quiet spell is flushed on its own");
+    }
 
     #[test]
     fn the_selected_context_overrides_docker_host() {

@@ -366,9 +366,56 @@ describe("the ACP Registry in the agent list", () => {
     renderRegistry(backend);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the ACP Registry: offline"));
   });
+
+  it("prefers the live registry update version over a stale cached provider snapshot", async () => {
+    const backend = new FakeBackend();
+    backend.registry = {
+      agents: [
+        agent({ id: "copilot", name: "GitHub Copilot", version: "1.0.114", installed: "1.0.112", update: true }),
+        agent({ id: "cline", name: "Cline", version: "3.0.74", installed: "3.0.70", update: true }),
+      ],
+      warning: null,
+    };
+    const commands = new FakeCommands();
+    commands.list = [
+      {
+        ...claudeProvider("/tools/copilot/1.0.112/copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        commandEditable: false,
+        commandReadOnlyReason: "registry",
+        source: { kind: "registry", version: "1.0.112", update: "1.0.113" },
+      },
+      {
+        ...claudeProvider("/tools/cline/3.0.70/cline"),
+        id: "cline",
+        name: "Cline",
+        commandEditable: false,
+        commandReadOnlyReason: "registry",
+        source: { kind: "registry", version: "3.0.70", update: null },
+      },
+    ];
+    render(
+      <>
+        <AgentRegistryPage backend={backend} commandBackend={commands} />
+        <MessagesHost />
+      </>,
+    );
+
+    await waitFor(() => expect(within(row("GitHub Copilot")).getByText("1.0.114 is available")).toBeInTheDocument());
+    expect(within(row("GitHub Copilot")).queryByText("1.0.113 is available")).toBeNull();
+    expect(within(item("GitHub Copilot")).getByText("Update")).toBeInTheDocument();
+
+    await waitFor(() => expect(within(item("Cline")).getByText("Update")).toBeInTheDocument());
+    expect(within(row("Cline")).getByText("3.0.74 is available")).toBeInTheDocument();
+    expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeEnabled();
+  });
 });
 
 class FakeCommands implements CommandsBackend {
+  checkCli = vi.fn<CommandsBackend["checkCli"]>();
+  updateCli = vi.fn<CommandsBackend["updateCli"]>();
+  cancel = vi.fn<CommandsBackend["cancel"]>();
   list: AgentProvider[] = [];
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
@@ -411,6 +458,7 @@ const claudeProvider = (command: string): AgentProvider => ({
   commandEditable: true,
   commandReadOnlyReason: null,
   installed: true,
+  canCheckCliUpdate: true,
   env: {},
   config: [],
   commands: [],
@@ -425,7 +473,7 @@ describe("Built-in executable overrides", () => {
     dispose();
   });
 
-  const openCommands = async (commands: FakeCommands, onChanged = vi.fn()) => {
+  const openCommands = async (commands: FakeCommands, onChanged = vi.fn(), name = "Claude Code") => {
     const backend = new FakeBackend();
     dispose = registerSettingsPage({
       id: REGISTRY_PAGE,
@@ -434,10 +482,49 @@ describe("Built-in executable overrides", () => {
       component: () => <RegistryPage backend={backend} commandBackend={commands} onChanged={onChanged} />,
     });
     render(<SettingsDialog />);
-    return screen.findByRole("region", { name: "Claude Code" });
+    return screen.findByRole("region", { name });
   };
   const apply = () => screen.getByRole("button", { name: "Apply" });
   const field = () => screen.getByRole("textbox", { name: "Executable" });
+
+  it("checks only on click and updates only after the user chooses the offered version", async () => {
+    const commands = new FakeCommands();
+    const provider = claudeProvider("claude");
+    const offer = { status: "available" as const, current: "1.0.0", latest: "1.1.0", prefix: "/usr/local" };
+    commands.list = [provider];
+    commands.checkCli.mockResolvedValueOnce(offer);
+    commands.updateCli.mockResolvedValueOnce({ status: "updated", current: "1.1.0" });
+    const panel = within(await openCommands(commands));
+    expect(commands.checkCli).not.toHaveBeenCalled();
+    fireEvent.click(panel.getByRole("button", { name: "Check for updates" }));
+    const update = await panel.findByRole("button", { name: "Update to 1.1.0" });
+    expect(commands.checkCli).toHaveBeenCalledOnce();
+    fireEvent.click(update);
+    await panel.findByText("Updated to 1.1.0. New sessions will use this version.");
+    expect(commands.updateCli).toHaveBeenCalledWith(provider.id, offer, expect.any(Number));
+    expect(commands.saved).toEqual([]);
+  });
+
+  it("cancels the in-progress update by its request id", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    commands.checkCli.mockResolvedValue({ status: "available", current: "1.0.0", latest: "1.1.0", prefix: "/test" });
+    let cancel!: () => void;
+    commands.updateCli.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          cancel = () => reject(new IpcError({ kind: "cancelled", message: "cancelled" }));
+        }),
+    );
+    const panel = within(await openCommands(commands));
+    fireEvent.click(panel.getByRole("button", { name: "Check for updates" }));
+    fireEvent.click(await panel.findByRole("button", { name: "Update to 1.1.0" }));
+    fireEvent.click(panel.getByRole("button", { name: "Cancel" }));
+    expect(commands.cancel).toHaveBeenCalledWith(commands.updateCli.mock.calls[0]![2]);
+    await act(async () => cancel());
+    await waitFor(() => expect(panel.getByRole("button", { name: "Check for updates" })).toBeEnabled());
+    expect(panel.queryByRole("alert")).toBeNull();
+  });
 
   it("follows locale changes and renders login commands as inline code", async () => {
     const commands = new FakeCommands();
@@ -518,6 +605,38 @@ describe("Built-in executable overrides", () => {
     fireEvent.change(env(), { target: { value: "" } });
     await act(async () => fireEvent.click(apply()));
     expect(commands.savedEnv.at(-1)).toEqual(["claude", {}]);
+  });
+
+  it("writes a Copilot GitHub account without storing a token or exposing the control variable", async () => {
+    const commands = new FakeCommands();
+    commands.list = [
+      {
+        ...claudeProvider("copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        command: "copilot --acp",
+        defaultProgram: "copilot",
+        commandReadOnlyReason: "registry",
+        env: { COPILOT_TELEMETRY_OPTOUT: "1" },
+      },
+    ];
+    await openCommands(commands, vi.fn(), "GitHub Copilot");
+    const account = screen.getByRole("textbox", { name: "GitHub account" });
+    expect(screen.queryByRole("textbox", { name: "Environment variables" })).toBeNull();
+    fireEvent.change(account, { target: { value: "dengliu_microsoft" } });
+
+    await act(async () => fireEvent.click(apply()));
+
+    expect(commands.savedEnv).toEqual([
+      [
+        "copilot",
+        {
+          COPILOT_TELEMETRY_OPTOUT: "1",
+          OPENIDEA_COPILOT_GITHUB_ACCOUNT: "dengliu_microsoft",
+        },
+      ],
+    ]);
+    expect(JSON.stringify(commands.savedEnv)).not.toMatch(/gho_|ghp_|token/i);
   });
 
   it("Cancel discards command edits without writing", async () => {

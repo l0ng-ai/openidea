@@ -1,16 +1,25 @@
 .view {
   height: 100%;
   display: flex;
-  flex-direction: column;
   min-height: 0;
 }
-.body {
+.toolbar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-inline-end: 1px solid var(--border);
+  overflow-y: auto;
+}
+.content {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.body > * {
+.body {
   flex: 1;
   min-height: 0;
 }
@@ -32,18 +41,48 @@
   color: var(--warning);
   border-bottom: 1px solid var(--border);
 }
+.skippedSummary,
+.skippedOnly {
+  padding: var(--space-2) var(--space-3);
+  overflow: auto;
+}
+.skippedSummary {
+  max-block-size: 45%;
+  border-bottom: 1px solid var(--border);
+}
+.skippedSummary summary {
+  cursor: pointer;
+}
+.skippedOnly h3 {
+  margin: 0;
+  font: inherit;
+  font-weight: 600;
+}
+.skippedFiles {
+  margin: var(--space-2) 0 0;
+  padding-inline-start: calc(var(--space-4) + var(--space-1));
+  overflow-wrap: anywhere;
+}
+.skippedFiles li + li {
+  margin-top: var(--space-2);
+}
+.skippedFiles li > * {
+  display: block;
+}
+.skipDetail {
+  color: var(--fg-muted);
+}
 .scopeBar {
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  height: 32px;
-  padding: 0 8px;
+  padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--border);
 }
 .scopeSelect {
-  min-width: 200px;
-  max-width: 360px;
+  flex: 0 1 224px;
+  min-width: 0;
 }
 .row {
   display: flex;
@@ -57,7 +96,17 @@
   flex: none;
   color: var(--fg-muted);
 }
+.fileLocation {
+  display: flex;
+  gap: var(--space-1-5);
+  min-width: 0;
+  overflow: hidden;
+}
 .fileName {
+  flex: none;
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-emphasis);
 }
 .selectedText {
@@ -66,28 +115,31 @@
 .muted {
   flex: none;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+}
+.directory {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
 }
 .count {
+  flex: none;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
-  margin-left: 4px;
 }
 .position {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  min-inline-size: 3ch;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
 }
 .text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-style: italic;
 }
 .keyword {
   font-weight: 600;
-  font-style: normal;
 }
 .loading {
   display: flex;

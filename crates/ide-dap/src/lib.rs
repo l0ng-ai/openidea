@@ -12,6 +12,7 @@ pub mod adapter;
 pub mod attach;
 mod cargo;
 pub mod connection;
+mod exception_classes;
 pub mod jdwp;
 mod js_cdp;
 mod js_debug;
@@ -24,6 +25,7 @@ pub mod unity;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
+pub use exception_classes::{ExceptionClassBreakpoint, ExceptionClassSupport};
 use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
 use ide_language::LanguageRegistry;
@@ -236,6 +238,11 @@ pub struct Variable {
     /// > 0 when expandable.
     pub variables_reference: i64,
     pub evaluate_name: Option<String>,
+    /// `value` is not computed yet (DAP `presentationHint.lazy`): the single variable that
+    /// `variables` returns for `variables_reference` holds the value and its children.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[specta(optional)]
+    pub lazy: bool,
 }
 
 /// A completion the adapter offers for an expression (DAP `completions`).
@@ -278,6 +285,16 @@ pub struct SessionExceptionFilters {
     pub session: DebugSessionId,
     pub adapter: String,
     pub filters: Vec<ExceptionFilter>,
+    /// Set when the session takes exception breakpoints on a chosen class.
+    pub classes: Option<ExceptionClassSupport>,
+}
+
+/// What triggered a hot reload; `flutter debug_adapter` takes it as `reason`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum HotReloadReason {
+    Manual,
+    Save,
 }
 
 /// A live session, as listed by [`DebugManager::sessions`].
@@ -323,6 +340,7 @@ pub struct DebugManager {
     states: Mutex<HashMap<PathBuf, Vec<BreakpointState>>>,
     /// Explicit exception filter choices (filter id → enabled); unset filters use the adapter default.
     exception_choices: Mutex<BTreeMap<String, bool>>,
+    exception_classes: Mutex<Vec<ExceptionClassBreakpoint>>,
     function_breakpoints: Mutex<Vec<FunctionBreakpoint>>,
     data_breakpoints: Mutex<Vec<DataBreakpoint>>,
     /// In-flight stops, by session: a second Stop sets `stop_force`, the waiting one kills.
@@ -402,6 +420,30 @@ fn is_flutter_project(dir: &Path, program: Option<&Path>) -> bool {
         .filter_map(|d| d.ancestors().take(6).find(|a| a.join("pubspec.yaml").is_file()))
         .filter_map(|root| std::fs::read_to_string(root.join("pubspec.yaml")).ok())
         .any(|s| s.contains("sdk: flutter"))
+}
+
+/// `flutter debug_adapter` passes `toolArgs` on to `flutter run` / `flutter attach`.
+fn add_flutter_device(arguments: &mut Value, device: Value) {
+    let args = arguments.as_object_mut().map(|o| o.entry("toolArgs").or_insert_with(|| json!([])));
+    if let Some(args) = args.and_then(Value::as_array_mut) {
+        args.extend([json!("-d"), device]);
+    }
+}
+
+/// The source a `navigate` tool event points at (1-based there). A `package:` location comes
+/// with the file the adapter resolved it to.
+fn flutter_navigation(body: &Value) -> Option<ide_core::event::DebugEvent> {
+    if body.get("kind")?.as_str()? != "navigate" {
+        return None;
+    }
+    let data = body.get("data")?;
+    let uri = data.get("resolvedFileUri").or_else(|| data.get("fileUri"))?.as_str()?;
+    let position = |key| data.get(key)?.as_u64().map(|n| n.saturating_sub(1) as u32);
+    Some(ide_core::event::DebugEvent::FlutterNavigate {
+        path: kotlin_lsp::source_path(uri)?.into(),
+        line: position("line")?,
+        column: position("column").unwrap_or(0),
+    })
 }
 
 fn no_session(s: DebugSessionId) -> IdeError {
@@ -695,7 +737,44 @@ pub(crate) fn variable_from(v: &Value) -> Variable {
         type_name: s("type").filter(|t| !t.is_empty()),
         variables_reference: v.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
         evaluate_name: s("evaluateName"),
+        lazy: v.pointer("/presentationHint/lazy").and_then(Value::as_bool).unwrap_or(false),
     }
+}
+
+async fn session_variables(session: &Session, reference: i64) -> IdeResult<Vec<Variable>> {
+    let body =
+        session.conn.request_timeout("variables", json!({ "variablesReference": reference }), REQUEST_TIMEOUT).await?;
+    Ok(body
+        .get("variables")
+        .and_then(Value::as_array)
+        .map(|v| v.iter().map(variable_from).collect())
+        .unwrap_or_default())
+}
+
+async fn resolve_in(session: &Session, variable: Variable) -> IdeResult<Variable> {
+    if !variable.lazy || variable.variables_reference <= 0 {
+        return Ok(variable);
+    }
+    let mut inner = session_variables(session, variable.variables_reference).await?;
+    Ok(match (inner.pop(), inner.is_empty()) {
+        (Some(value), true) => Variable {
+            type_name: value.type_name.or(variable.type_name),
+            evaluate_name: variable.evaluate_name.or(value.evaluate_name),
+            name: variable.name,
+            value: value.value,
+            variables_reference: value.variables_reference,
+            lazy: value.lazy,
+        },
+        _ => variable,
+    })
+}
+
+/// A value that cannot be computed stays lazy, so the row can still be opened by hand.
+async fn resolve_lazy(session: &Session, variable: Variable) -> Variable {
+    if !variable.lazy {
+        return variable;
+    }
+    resolve_in(session, variable.clone()).await.unwrap_or(variable)
 }
 
 impl DebugManager {
@@ -714,6 +793,7 @@ impl DebugManager {
             breakpoints: Mutex::default(),
             states: Mutex::default(),
             exception_choices: Mutex::default(),
+            exception_classes: Mutex::default(),
             function_breakpoints: Mutex::default(),
             data_breakpoints: Mutex::default(),
             stopping: Mutex::default(),
@@ -763,11 +843,25 @@ impl DebugManager {
         owner: SessionOwner,
         custom_command: impl FnOnce(&str) -> Option<String>,
     ) -> IdeResult<DebugSessionId> {
+        self.start_with_exception_classes(config, owner, custom_command, None).await
+    }
+
+    /// [`start_with`](Self::start_with), the session arming [`Self::set_exception_class_breakpoints`]
+    /// through `exception_classes`.
+    pub async fn start_with_exception_classes(
+        &self,
+        config: LaunchConfig,
+        owner: SessionOwner,
+        custom_command: impl FnOnce(&str) -> Option<String>,
+        exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
+    ) -> IdeResult<DebugSessionId> {
         let mut arguments = launch_arguments(&config)?;
         // An IDE-side marker (never sent to the adapter): the session is a Flutter
         // one regardless of what the working directory holds.
         let force_flutter =
             arguments.as_object_mut().and_then(|o| o.remove("__flutter")).and_then(|v| v.as_bool()).unwrap_or(false);
+        // Also IDE-side: the device to run on, should this turn out to be a Flutter session.
+        let flutter_device = arguments.as_object_mut().and_then(|o| o.remove("__flutterDevice"));
         let cwd = config
             .cwd
             .clone()
@@ -812,10 +906,15 @@ impl DebugManager {
         // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
         // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
         // is Flutter-only). Plain Dart projects keep the configured `dart`.
-        if config.adapter == "dart" && spec.command == "dart" {
+        if config.adapter == "dart" {
             let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
             if force_flutter || is_flutter_project(&cwd, program) {
-                spec.command = "flutter".into();
+                if spec.command == "dart" {
+                    spec.command = "flutter".into();
+                }
+                if let Some(device) = flutter_device {
+                    add_flutter_device(&mut arguments, device);
+                }
             }
         }
         let id = DebugSessionId::next();
@@ -896,7 +995,19 @@ impl DebugManager {
             }
         }
         let port = debug_server.map(|s| s.port);
-        self.start_session(id, owner, config.name, config.adapter, None, config.request, arguments, spec, port).await
+        self.start_session(
+            id,
+            owner,
+            config.name,
+            config.adapter,
+            None,
+            config.request,
+            arguments,
+            spec,
+            port,
+            exception_classes,
+        )
+        .await
     }
 
     /// `startDebugging` reverse request: a child session on the same adapter.
@@ -921,6 +1032,7 @@ impl DebugManager {
             configuration,
             parent.spec.clone(),
             parent.port,
+            None,
         )
         .await
         .map(|_| ())
@@ -938,6 +1050,7 @@ impl DebugManager {
         arguments: Value,
         spec: AdapterSpec,
         reuse_port: Option<u16>,
+        exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
     ) -> IdeResult<DebugSessionId> {
         if request != "launch" && request != "attach" {
             return Err(IdeError::invalid(format!("request must be `launch` or `attach`, got `{request}`")));
@@ -952,8 +1065,9 @@ impl DebugManager {
         let rdbg_pid = (adapter_name == "rdbg" && request == "launch")
             .then(|| io.child.as_ref().and_then(tokio::process::Child::id))
             .flatten();
-        let session =
-            Arc::new(Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child));
+        let mut session = Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child);
+        session.exception_classes = exception_classes;
+        let session = Arc::new(session);
         if let Some(launch_type) = arguments.get("type").and_then(Value::as_str) {
             let _ = session.launch_type.set(launch_type.to_owned());
         }
@@ -1105,7 +1219,7 @@ impl DebugManager {
         let mut launch = if launch_in_config {
             None
         } else {
-            let reply = s.conn.send_request(request, arguments.clone())?;
+            let reply = s.conn.send_request(request, arguments.clone()).await?;
             Some(Box::pin(async move { reply.await.unwrap_or(Err(DapError::Closed)) }))
         };
         let mut initialized = s.initialized.subscribe();
@@ -1178,12 +1292,16 @@ impl DebugManager {
             tracing::debug!("setDataBreakpoints failed: {e}");
         }
         let has_filters = s.caps.lock().get("exceptionBreakpointFilters").and_then(Value::as_array).is_some();
-        if has_filters {
-            let _ = self.send_exception_breakpoints(s).await;
+        {
+            let _turn = s.exception_turn.lock().await;
+            if has_filters {
+                let _ = self.send_exception_breakpoints(s).await;
+            }
+            self.arm_exception_classes(s, false).await;
         }
         if s.supports("supportsConfigurationDoneRequest") {
             if s.adapter == kotlin::ADAPTER {
-                drop(s.conn.send_request("configurationDone", json!({}))?);
+                drop(s.conn.send_request("configurationDone", json!({})).await?);
             } else {
                 s.conn.request_timeout("configurationDone", Value::Null, REQUEST_TIMEOUT).await?;
             }
@@ -1197,7 +1315,7 @@ impl DebugManager {
             }
             None => {
                 // GDB 15: the breakpoints are in, so its `run` cannot miss them.
-                let reply = s.conn.send_request(request, arguments)?;
+                let reply = s.conn.send_request(request, arguments).await?;
                 reply.await.unwrap_or(Err(DapError::Closed))?;
             }
         }
@@ -1207,7 +1325,7 @@ impl DebugManager {
         // never answered), and the page is already loading: its document and first scripts
         // are not in the list.
         if js_debug::is_page(s) {
-            let answer = s.conn.send_request("enableNetworking", js_debug::networking_arguments())?;
+            let answer = s.conn.send_request("enableNetworking", js_debug::networking_arguments()).await?;
             let session = s.clone();
             // Not waited for here: the page runs on. A refusal is told to the Network view,
             // which would otherwise wait for requests that never come.
@@ -1400,6 +1518,7 @@ impl DebugManager {
                 session: s.id,
                 adapter: s.adapter.clone(),
                 filters: exception_filters_from(&s.caps.lock()),
+                classes: exception_classes::support(s),
             })
             .collect()
     }
@@ -1415,9 +1534,11 @@ impl DebugManager {
             if exception_filters_from(&s.caps.lock()).is_empty() {
                 continue;
             }
+            let _turn = s.exception_turn.lock().await;
             if let Err(e) = self.send_exception_breakpoints(&s).await {
                 tracing::debug!("setExceptionBreakpoints on session {} failed: {e}", s.id.0);
             }
+            self.arm_exception_classes(&s, false).await;
         }
         Ok(())
     }
@@ -1458,6 +1579,7 @@ impl DebugManager {
             type_name: body.get("type").and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_owned),
             variables_reference: body.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
             evaluate_name: evaluate_name.or(Some(name)),
+            lazy: false,
         })
     }
 
@@ -1528,16 +1650,18 @@ impl DebugManager {
     }
 
     pub async fn variables(&self, s: DebugSessionId, reference: i64) -> IdeResult<Vec<Variable>> {
-        let body = self
-            .session(s)?
-            .conn
-            .request_timeout("variables", json!({ "variablesReference": reference }), REQUEST_TIMEOUT)
-            .await?;
-        Ok(body
-            .get("variables")
-            .and_then(Value::as_array)
-            .map(|v| v.iter().map(variable_from).collect())
-            .unwrap_or_default())
+        let session = self.session(s)?;
+        let vars = session_variables(&session, reference).await?;
+        if !session.spec.resolve_lazy_variables {
+            return Ok(vars);
+        }
+        Ok(join_all(vars.into_iter().map(|v| resolve_lazy(&session, v))).await)
+    }
+
+    /// Computes a lazy variable's value (DAP `presentationHint.lazy`); any other variable, or one
+    /// whose value the adapter does not give as a single variable, comes back unchanged.
+    pub async fn resolve_variable(&self, s: DebugSessionId, variable: Variable) -> IdeResult<Variable> {
+        resolve_in(&*self.session(s)?, variable).await
     }
 
     /// Evaluates in the `repl` context.
@@ -1563,13 +1687,18 @@ impl DebugManager {
             args["frameId"] = f.into();
         }
         let body = session.conn.request_timeout("evaluate", args, REQUEST_TIMEOUT).await?;
-        Ok(Variable {
+        let result = Variable {
             name: expression.clone(),
             value: body.get("result").and_then(Value::as_str).unwrap_or_default().to_owned(),
             type_name: body.get("type").and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_owned),
             variables_reference: body.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
             evaluate_name: Some(expression),
-        })
+            lazy: body.pointer("/presentationHint/lazy").and_then(Value::as_bool).unwrap_or(false),
+        };
+        if !session.spec.resolve_lazy_variables {
+            return Ok(result);
+        }
+        Ok(resolve_lazy(&session, result).await)
     }
 
     /// Completions for `text` at `line` / `column` (0-based, UTF-16) in the frame's scope; none
@@ -1623,9 +1752,7 @@ impl DebugManager {
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
         // DAP: a response without the flag continued every thread.
         let all = body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true);
-        session.suspended.resumed(ticket, thread_id, all);
-        stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: all });
+        session.finish_resume(ticket, thread_id, all);
         Ok(())
     }
 
@@ -1646,8 +1773,8 @@ impl DebugManager {
 
     /// Flutter's DAP adapter: injects the changed sources into the running app.
     /// Not part of the DAP standard; adapters that do not know the request reject it.
-    pub async fn hot_reload(&self, s: DebugSessionId) -> IdeResult<()> {
-        self.session(s)?.conn.request_timeout("hotReload", json!({ "reason": "manual" }), REQUEST_TIMEOUT).await?;
+    pub async fn hot_reload(&self, s: DebugSessionId, reason: HotReloadReason) -> IdeResult<()> {
+        self.session(s)?.conn.request_timeout("hotReload", json!({ "reason": reason }), REQUEST_TIMEOUT).await?;
         Ok(())
     }
 
@@ -1672,9 +1799,7 @@ impl DebugManager {
         let sent = session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await;
         step_settled(&session, sent)?;
         // A step runs its thread; other threads stopped by their own events stay stopped.
-        session.suspended.resumed(ticket, thread_id, false);
-        stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
+        session.finish_resume(ticket, thread_id, false);
         Ok(())
     }
 
@@ -1784,9 +1909,7 @@ impl DebugManager {
             .request_timeout("stepIn", json!({ "threadId": thread_id, "targetId": target_id }), REQUEST_TIMEOUT)
             .await;
         step_settled(&session, sent)?;
-        session.suspended.resumed(ticket, thread_id, false);
-        stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
+        session.finish_resume(ticket, thread_id, false);
         Ok(())
     }
 

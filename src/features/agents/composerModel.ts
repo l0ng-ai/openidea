@@ -8,9 +8,10 @@ import type {
   AgentLimit,
   AgentPrompt,
   AgentRetry,
+  AgentTokens,
   AgentUsage,
 } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export interface FileRef {
   /** Absolute path (in the task's directory). */
@@ -60,11 +61,22 @@ export function messageTokens(text: string): MessageToken[] {
 
 export type Completion =
   | { kind: "file"; query: string; from: number; to: number }
-  | { kind: "command"; query: string; from: number; to: number };
+  | { kind: "command"; query: string; from: number; to: number }
+  /** A word of a `!` command line: its first word (`command`) or an argument. */
+  | { kind: "shell"; query: string; from: number; to: number; command: boolean };
 
-/** The `@file` or `/command` being typed at `caret`, if any; both may follow other text. */
+/**
+ * The `@file` or `/command` being typed at `caret`, if any; both may follow other text. In a
+ * `!` command line, the word at `caret` instead.
+ */
 export function completionAt(text: string, caret: number): Completion | null {
   const before = text.slice(0, caret);
+  if (text.startsWith("!") && caret > 0) {
+    if (before.includes("\n")) return null;
+    const query = /\S*$/.exec(before.slice(1))![0];
+    const from = caret - query.length;
+    return { kind: "shell", query, from, to: caret, command: !before.slice(1, from).trim() };
+  }
   const word = /(^|\s)([@/])([^\s@]*)$/.exec(before);
   if (!word) return null;
   const from = caret - word[3]!.length - 1;
@@ -74,6 +86,20 @@ export function completionAt(text: string, caret: number): Completion | null {
     from,
     to: caret,
   };
+}
+
+/**
+ * The earlier `!` commands (newest first, without the `!`) that extend `query`, each once.
+ */
+export function shellHistoryMatches(history: readonly string[], query: string, max: number): string[] {
+  const out: string[] = [];
+  for (const line of history) {
+    if (!line.startsWith("!") || line.includes("\n")) continue;
+    const command = line.slice(1).trim();
+    if (command && command !== query.trim() && command.startsWith(query) && !out.includes(command)) out.push(command);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 /** Replaces the completion with `insert` plus a space; returns the text and the caret after it. */
@@ -125,6 +151,40 @@ export function resolveTyped(root: string, rel: string): string {
     } else if (part && part !== ".") out.push(part);
   }
   return isDrive(out[0]) ? out.join("/") : `/${out.join("/")}`;
+}
+
+/** `abs` relative to the first of `bases` it is under ("." for the base itself). */
+export function relativeTo(bases: readonly string[], abs: string): string | null {
+  const source = resolveTyped("", abs.replace(/\\/g, "/"));
+  const base = bases
+    .filter(Boolean)
+    .map((path) => resolveTyped(path, "."))
+    .find((path) => source === path || source.startsWith(`${path}/`));
+  if (!base) return null;
+  return source === base ? "." : source.slice(base.length + 1);
+}
+
+export interface ReferenceRoots {
+  /** The folder the agent works in. */
+  root: string;
+  /** The project `root` is a worktree of (or `root` itself): its files are referenced inside `root`. */
+  projectRoot: string;
+  /** The workspace's projects: the files of another one are referenced by path, named by that project. */
+  members?: readonly string[];
+}
+
+/** How the composer references `abs`: the path it sends and the name written after `@`. */
+export function referenceOf(roots: ReferenceRoots, abs: string): { path: string; rel: string } | null {
+  const own = relativeTo([roots.root, roots.projectRoot], abs);
+  if (own !== null) return { path: resolveTyped(roots.root, own), rel: own };
+  const source = resolveTyped("", abs.replace(/\\/g, "/"));
+  for (const member of roots.members ?? []) {
+    const rel = relativeTo([member], source);
+    if (rel === null) continue;
+    const name = resolveTyped(member, ".").split("/").pop() ?? "";
+    return { path: source, rel: rel === "." ? name : `${name}/${rel}` };
+  }
+  return null;
 }
 
 interface IndexMatch {
@@ -313,6 +373,10 @@ export function mentionOf(rel: string, lines?: { from: number; to: number }): st
   return lines.from === lines.to ? `@${rel}:${lines.from}` : `@${rel}:${lines.from}-${lines.to}`;
 }
 
+/** Whether `text` holds exactly `mention` (as made by {@link mentionOf}): same file, same lines. */
+export const hasMention = (text: string, mention: string) =>
+  new RegExp(`(?:^|\\s)${escapeRe(mention)}(?=\\s|$)`).test(text);
+
 /** Whether `text` still holds the `@rel` mention, with or without a line range. */
 export const isMentioned = (text: string, rel: string) =>
   new RegExp(`@${escapeRe(rel)}(?![\\w./-])|@${escapeRe(rel)}:`).test(text);
@@ -360,6 +424,15 @@ export function toPrompt(draft: ComposerDraft): AgentPrompt {
     files: files.map((f) => f.path),
     images: draft.images,
   };
+}
+
+/**
+ * The shell command of a message starting with `!` (Claude Code's bash mode): it runs in the
+ * task's folder instead of going to the agent. `null` for any other message.
+ */
+export function shellCommand(d: ComposerDraft): string | null {
+  if (!d.text.startsWith("!") || d.images.length > 0 || d.files.some((f) => f.attached)) return null;
+  return d.text.slice(1).trim() || null;
 }
 
 export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0 || d.files.some((f) => f.attached);
@@ -493,7 +566,7 @@ const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
 export function limitLabel(l: AgentLimit, now: number): { short: string; percent: number; detail: string } {
   const known = LIMIT_WINDOWS[l.window];
   const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
-  const name = known ? tx(known.name) : l.window;
+  const name = known ? txPart(known.name) : l.window;
   const used = tx`${name}: ${percent}% used`;
   if (l.resetsMs == null)
     return {
@@ -529,6 +602,14 @@ export function costLabel(c: AgentCost): string {
     // Not an ISO 4217 code.
     return `${(c.amount ?? 0).toFixed(2)} ${c.currency}`;
   }
+}
+
+/** The last turn's tokens: "in 77.3k · cached 51.3k · out 509". */
+export function turnTokensLabel(t: AgentTokens): string {
+  const parts = [tx`in ${tokens(t.input)}`];
+  if (t.cached) parts.push(tx`cached ${tokens(t.cached)}`);
+  parts.push(tx`out ${tokens(t.output)}`);
+  return parts.join(" · ");
 }
 
 /** `850`, `83.1k`, `1M`. */

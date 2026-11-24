@@ -47,6 +47,21 @@ describe("syncSections", () => {
     ]);
   });
 
+  it("uses the push destination's tracking ref for outgoing commits", () => {
+    const outgoing = {
+      remote: "fork",
+      branch: "review/main",
+      reference: "refs/remotes/published/review/main",
+      count: 4,
+    };
+    expect(syncSections(branch({ ahead: 2, behind: 3, outgoing }))).toEqual([
+      { direction: "incoming", count: 3, range: "main..origin/main" },
+      { direction: "outgoing", count: 4, range: "refs/remotes/published/review/main..refs/heads/main" },
+    ]);
+    expect(syncSections(branch({ upstream: null, outgoing }))).toHaveLength(1);
+    expect(syncSections(branch({ ahead: 2, outgoing: null }))).toEqual([]);
+  });
+
   it("has no section without an upstream, even with stale counts", () => {
     expect(syncSections(branch({ upstream: null, behind: 3, ahead: 2 }))).toEqual([]);
   });

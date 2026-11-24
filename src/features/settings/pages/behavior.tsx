@@ -16,10 +16,10 @@ import { notifications } from "@/workbench/contributions";
 import { ZOOM_LIMITS } from "@/platform/zoom";
 import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
-import { Button, Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
+import { Button, Checkbox, IconButton, Input, List, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, FormGroup, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
-import { useLabelMatch, useSetting } from "../components/context";
+import { useLabelMatch, useSearchQuery, useSetting } from "../components/context";
 import {
   IDLE_LIMITS,
   type Antialiasing,
@@ -36,11 +36,12 @@ import {
   type PresentationAssistantPosition,
   type PresentationAssistantSize,
 } from "../model/behaviorSchema";
+import { labelMatches } from "../model/pages";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
 import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
-import { LOCALES, SUPPORTED_LOCALES, tx, useT, useTx } from "@/platform/i18n";
+import { LOCALES, SUPPORTED_LOCALES, tx, txPart, useT, useTx } from "@/platform/i18n";
 import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
 import { currentThemeChoice, originDetail, previewTheme, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
 import { themePreview } from "@/workbench/quickSwitch";
@@ -97,7 +98,14 @@ function ThemeRow() {
     showPicked(shown);
   };
   return (
-    <Row label="Theme">
+    <Row
+      label="Theme"
+      hint={
+        <button type="button" className={styles.link} onClick={() => selectPage("plugins#themes")}>
+          <T>Get more themes</T>
+        </button>
+      }
+    >
       <Select<ConcreteTheme>
         value={shown}
         options={themeSelectOptions(choices, shown)}
@@ -107,11 +115,7 @@ function ThemeRow() {
         className={styles.themeSelect}
         disabled={sync}
       />
-      {/* As in IntelliJ IDEA: most themes are plugins, so point at the marketplace's. */}
-      <button type="button" className={styles.link} onClick={() => selectPage("plugins#themes")}>
-        <T>Get more themes</T>
-      </button>
-      <span className={clsx(styles.inline, matched && styles.matched)}>
+      <span className={clsx(styles.themeSync, matched && styles.matched)}>
         <Checkbox
           checked={sync}
           onChange={(on) => {
@@ -140,7 +144,7 @@ function ThemeRow() {
         offset={4}
         aria-label="Preferred themes"
       >
-        <div className={styles.popupBody}>
+        <FormGroup className={styles.preferredThemes}>
           <Row label="Preferred theme for light OS mode">
             <Select<ConcreteTheme>
               value={light}
@@ -157,7 +161,7 @@ function ThemeRow() {
               aria-label="Preferred dark theme"
             />
           </Row>
-        </div>
+        </FormGroup>
       </Popup>
     </Row>
   );
@@ -208,7 +212,13 @@ function AccentRow() {
   return (
     <Indented>
       <Row label="Accent color">
-        <ColorSwatches value={accent} presets={ACCENT_PRESETS} onChange={setAccent} aria-label="Accent color" />
+        <ColorSwatches
+          value={accent}
+          presets={ACCENT_PRESETS}
+          onChange={setAccent}
+          aria-label="Accent color"
+          useColorPicker
+        />
       </Row>
     </Indented>
   );
@@ -259,53 +269,37 @@ function CustomFontRow() {
   const [size, setSize] = useSetting<number>("appearance.uiFontSize");
   const id = useId();
   const matched = useLabelMatch("Use custom font");
-  // Labels share one column (IDEA Appearance): the UI font, fallback and Size
-  // controls all start at the same x instead of drifting with flex wrapping.
   return (
     <div className={clsx(styles.customFontRow, matched && styles.matched)}>
       <span className={styles.fontCheck}>
         <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
       </span>
-      <span className={styles.fontControl}>
-        <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
-      </span>
+      <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
+      <div className={clsx(styles.fontSize, !on && styles.disabled)}>
+        <label htmlFor={`${id}-size`}>
+          <SearchLabel text="Size:" />
+        </label>
+        <NumberInput
+          id={`${id}-size`}
+          value={size}
+          onChange={setSize}
+          {...LIMITS.uiFontSize}
+          integer
+          disabled={!on}
+          aria-label="UI font size"
+        />
+      </div>
       <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-fallback`}>
         <SearchLabel text="Fallback font:" />
       </label>
-      <span className={styles.fontControl}>
-        <FontPicker
-          id={`${id}-fallback`}
-          label="UI fallback font"
-          disabled={!on}
-          value={fallback}
-          onChange={setFallback}
-          allowEmpty
-        />
-      </span>
-      <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
-        <SearchLabel text="Size:" />
-      </label>
-      <span className={styles.fontControl}>
-        {on ? (
-          <NumberInput
-            id={`${id}-size`}
-            value={size}
-            onChange={setSize}
-            {...LIMITS.uiFontSize}
-            integer
-            aria-label="UI font size"
-          />
-        ) : (
-          <Input
-            id={`${id}-size`}
-            className={styles.sizeInput}
-            value={String(size)}
-            disabled
-            aria-label="UI font size"
-            readOnly
-          />
-        )}
-      </span>
+      <FontPicker
+        id={`${id}-fallback`}
+        label="UI fallback font"
+        disabled={!on}
+        value={fallback}
+        onChange={setFallback}
+        allowEmpty
+      />
     </div>
   );
 }
@@ -374,6 +368,19 @@ function UiOptionsGrid() {
           />
         </>
       }
+    />
+  );
+}
+
+/** Linux (with desktop) only: WebKitGTK's wheel animation */
+function SmoothScrollingRow() {
+  const linux = usePlatform((s) => s.os === "linux");
+  if (!isTauri() || !linux) return null;
+  return (
+    <BoundToggle
+      k="appearance.smoothScrolling"
+      label="Smooth scrolling"
+      hint="Animates each mouse wheel step. Turn it off if scrolling stutters"
     />
   );
 }
@@ -539,11 +546,18 @@ function ToolWindowsGrid() {
         </>
       }
       right={
-        <BoundToggle
-          k="appearance.widescreenToolWindows"
-          label="Widescreen tool window layout"
-          hint="Side tool windows take the full height; the bottom ones fit between them"
-        />
+        <>
+          <BoundToggle
+            k="appearance.widescreenToolWindows"
+            label="Widescreen tool window layout"
+            hint="Side tool windows take the full height; the bottom ones fit between them"
+          />
+          <BoundToggle
+            k="appearance.rememberToolWindowSizes"
+            label="Remember size for each tool window"
+            hint="Off, the tool windows of one side share its size"
+          />
+        </>
       }
     />
   );
@@ -555,6 +569,7 @@ function ToolWindowsGrid() {
 const OPEN_IN: Array<{ value: OpenProjectIn; label: string }> = [
   { value: "new", label: "New window" },
   { value: "same", label: "Current window" },
+  { value: "tab", label: "New tab in current window" },
   { value: "ask", label: "Ask" },
 ];
 
@@ -595,21 +610,23 @@ function DefaultDirectoryRow() {
       htmlFor={id}
       hint={'This directory is preselected in "Open…" and "New Window" dialogs.'}
     >
-      <Input
-        id={id}
-        className={styles.pathInput}
-        value={dir}
-        placeholder="System default"
-        onChange={(e) => setDir(e.target.value)}
-      />
-      <IconButton
-        icon="folder-open"
-        size="small"
-        title="Browse…"
-        aria-label="Browse"
-        disabled={!isTauri()}
-        onClick={() => void browse()}
-      />
+      <div className={styles.directoryBrowse}>
+        <Input
+          id={id}
+          className={styles.pathInput}
+          value={dir}
+          placeholder="System default"
+          onChange={(e) => setDir(e.target.value)}
+        />
+        <IconButton
+          icon="folder-open"
+          size="small"
+          title="Browse…"
+          aria-label="Browse"
+          disabled={!isTauri()}
+          onClick={() => void browse()}
+        />
+      </div>
     </Row>
   );
 }
@@ -737,12 +754,28 @@ function IdleSaveRow() {
   const [seconds, setSeconds] = useSetting<number>("general.idleSeconds");
   const matched = useLabelMatch("Save files if the IDE is idle for");
   return (
-    <div className={clsx(styles.fontRow, matched && styles.matched)}>
+    <div className={clsx(styles.fontRow, matched && styles.matched)} data-search-match={matched || undefined}>
       <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Save files if the IDE is idle for" />} />
-      <NumberInput value={seconds} onChange={setSeconds} {...IDLE_LIMITS} integer aria-label="Idle seconds" />
-      <span className={clsx(!on && styles.disabled)}>
-        <T>seconds</T>
+      <span className={styles.idleDuration}>
+        <NumberInput value={seconds} onChange={setSeconds} {...IDLE_LIMITS} integer aria-label="Idle seconds" />
+        <span className={clsx(!on && styles.disabled)}>
+          <T>seconds</T>
+        </span>
       </span>
+    </div>
+  );
+}
+
+function FileSynchronizationRow() {
+  const labelId = useId();
+  return (
+    <div className={styles.fileSynchronization} role="group" aria-labelledby={labelId}>
+      <div id={labelId}>
+        <SearchLabel text="Synchronization" />
+      </div>
+      <Indented>
+        <BoundToggle k="files.syncOnFocus" label="Synchronize external changes when switching to the IDE window" />
+      </Indented>
     </div>
   );
 }
@@ -763,15 +796,19 @@ function DateFormatRows() {
         onChange={(v) => set({ overrideSystem: v })}
       />
       <Indented>
-        <Row label="Date format" htmlFor={id} hint="Placeholders: yyyy, yy, MMMM, MMM, MM, M, dd, d">
+        <Row label="Date format" htmlFor={id} disabled={!f.overrideSystem}>
           <Input
             id={id}
             className={styles.patternInput}
+            aria-describedby={`${id}-help`}
             mono
             disabled={!f.overrideSystem}
             value={f.pattern}
             onChange={(e) => e.target.value.trim() && set({ pattern: e.target.value })}
           />
+          <span id={`${id}-help`} className={styles.patternHint}>
+            <T>Placeholders: yyyy, yy, MMMM, MMM, MM, M, dd, d</T>
+          </span>
         </Row>
         <Toggle
           label="Use 24-hour time format"
@@ -779,6 +816,11 @@ function DateFormatRows() {
           disabled={!f.overrideSystem}
           onChange={(v) => set({ use24Hour: v })}
         />
+        <Row label="Preview" htmlFor={`${id}-preview`}>
+          <output id={`${id}-preview`} className={styles.preview}>
+            {formatTimestamp(now - 2 * 3_600_000, now, f)} · {formatTimestamp(now - 3 * 86_400_000, now, f)}
+          </output>
+        </Row>
       </Indented>
       <Toggle
         label="Use pretty formatting"
@@ -786,11 +828,6 @@ function DateFormatRows() {
         checked={f.pretty}
         onChange={(v) => set({ pretty: v })}
       />
-      <Row label="Preview">
-        <span className={styles.preview}>
-          {formatTimestamp(now - 2 * 3_600_000, now, f)} · {formatTimestamp(now - 3 * 86_400_000, now, f)}
-        </span>
-      </Row>
     </>
   );
 }
@@ -804,59 +841,57 @@ const DISPLAY_OPTIONS: SelectOption<NotificationDisplay>[] = [
   { value: "none", label: "No popup" },
 ];
 
-function NotificationGroupsTable() {
+function NotificationGroups() {
   const [groups, setGroups] = useSetting<Record<string, NotificationGroupValid>>("notifications.groups");
-  const update = (id: string, patch: Partial<NotificationGroupValid>) => {
-    const next = { ...(groups[id] ?? { display: "balloon", log: true }), ...patch };
+  const query = useSearchQuery();
+  const [selection, setSelection] = useState({ query: "", index: 0 });
+  const matched = NOTIFICATION_GROUPS.findIndex((group) => labelMatches(group.title, query));
+  const index = matched >= 0 && query !== selection.query ? matched : selection.index;
+  const { id, title } = NOTIFICATION_GROUPS[index]!;
+  const value = groups[id] ?? { display: "balloon", log: true };
+  const update = (patch: Partial<NotificationGroupValid>) => {
+    const next = { ...value, ...patch };
     const all = { ...groups };
-    // Defaults are not stored.
     if (next.display === "balloon" && next.log) delete all[id];
     else all[id] = next;
     setGroups(all);
   };
+
   return (
-    <table className={styles.table} aria-label={tx("Notification groups")}>
-      <thead>
-        <tr>
-          <th>
-            <T>Group</T>
-          </th>
-          <th>
-            <T>Popup type</T>
-          </th>
-          <th>
-            <T>Show in tool window</T>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {NOTIFICATION_GROUPS.map((g) => {
-          const v = groups[g.id] ?? { display: "balloon", log: true };
-          return (
-            <tr key={g.id}>
-              <td>
-                <SearchLabel text={g.title} />
-              </td>
-              <td>
-                <Select<NotificationDisplay>
-                  value={v.display}
-                  options={DISPLAY_OPTIONS}
-                  onChange={(display) => update(g.id, { display })}
-                  aria-label={tx`${g.title} popup type`}
-                />
-              </td>
-              <td className={styles.center}>
-                <Checkbox
-                  checked={v.log}
-                  onChange={(log) => update(g.id, { log })}
-                  aria-label={tx`Show ${g.title} in tool window`}
-                />
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className={styles.notificationGroups}>
+      <List
+        className={styles.notificationList}
+        aria-label={tx("Notification groups")}
+        items={NOTIFICATION_GROUPS}
+        getKey={(group) => group.id}
+        activeIndex={index}
+        onActiveChange={(index) => setSelection({ query, index })}
+        renderItem={(group) => (
+          <span title={tx(group.title)} className={styles.notificationGroupLabel}>
+            <SearchLabel text={group.title} />
+          </span>
+        )}
+      />
+      <section className={styles.notificationDetails} aria-label={tx(title)}>
+        <h3 className={styles.notificationTitle}>
+          <SearchLabel text={title} />
+        </h3>
+        <Row label="Popup type" className={styles.notificationPopupRow}>
+          <Select<NotificationDisplay>
+            value={value.display}
+            options={DISPLAY_OPTIONS}
+            onChange={(display) => update({ display })}
+            aria-label={tx`${txPart(title)} popup type`}
+          />
+        </Row>
+        <Checkbox
+          checked={value.log}
+          onChange={(log) => update({ log })}
+          label={<SearchLabel text="Show in tool window" />}
+          aria-label={tx`Show ${txPart(title)} in tool window`}
+        />
+      </section>
+    </div>
   );
 }
 
@@ -899,6 +934,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           },
           { kind: "custom", label: "Accent color", keywords: ["accent colour", "highlight"], component: AccentRow },
           { kind: "custom", label: "Different tool window background", component: ToolWindowBackgroundRow },
+          {
+            kind: "custom",
+            label: "Use custom font",
+            keywords: ["UI font size", "Size", "font family", "fallback font"],
+            component: CustomFontRow,
+          },
         ],
       },
       {
@@ -916,12 +957,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         title: "Accessibility",
         options: [
           { kind: "custom", label: "Zoom", keywords: ["scale", "zoom ide"], component: ZoomRow },
-          {
-            kind: "custom",
-            label: "Use custom font",
-            keywords: ["UI font size", "Size", "font family", "fallback font"],
-            component: CustomFontRow,
-          },
           { kind: "toggle", key: "appearance.contrastScrollbars", label: "Use contrast scrollbars" },
           {
             kind: "toggle",
@@ -958,6 +993,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           },
           {
             kind: "custom",
+            label: "Smooth scrolling",
+            keywords: ["mouse wheel", "scroll animation"],
+            component: SmoothScrollingRow,
+          },
+          {
+            kind: "custom",
             label: "Open Settings in a separate window",
             keywords: ["settings window", "settings dialog"],
             component: SettingsWindowRow,
@@ -977,7 +1018,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Show tool window bars",
-            keywords: ["Show tool window names", "Widescreen tool window layout", "stripes"],
+            keywords: [
+              "Show tool window names",
+              "Widescreen tool window layout",
+              "Remember size for each tool window",
+              "stripes",
+            ],
             component: ToolWindowsGrid,
           },
         ],
@@ -1033,8 +1079,11 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "System Settings",
     group: APPEARANCE_GROUP,
     order: 1,
-    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history", "welcome", "editor tabs"],
+    keywords: ["general", "startup", "exit", "quit", "save", "local history", "welcome", "editor tabs"],
     sections: [
+      {
+        options: [{ kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" }],
+      },
       {
         title: "Project",
         options: [
@@ -1049,23 +1098,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         ],
       },
       {
-        title: "Caches",
-        options: [
-          {
-            kind: "custom",
-            label: "Local data directory",
-            keywords: ["cache", "local data", "data directory", "C盘", "缓存", "目录"],
-            component: LocalDataDirRow,
-          },
-        ],
-      },
-      {
-        title: "Autosave",
+        title: "Files",
         options: [
           {
             kind: "custom",
             label: "Save files if the IDE is idle for",
-            keywords: ["idle", "seconds"],
+            keywords: ["Autosave", "idle", "seconds"],
             component: IdleSaveRow,
           },
           {
@@ -1074,9 +1112,21 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             label: "Save files when switching to a different application or a built-in terminal",
           },
           {
-            kind: "toggle",
-            key: "files.syncOnFocus",
-            label: "Synchronize external changes when switching to the IDE window",
+            kind: "custom",
+            label: "Synchronization",
+            keywords: ["Synchronize external changes when switching to the IDE window"],
+            component: FileSynchronizationRow,
+          },
+        ],
+      },
+      {
+        title: "Caches",
+        options: [
+          {
+            kind: "custom",
+            label: "Local data directory",
+            keywords: ["cache", "local data", "data directory", "C盘", "缓存", "目录"],
+            component: LocalDataDirRow,
           },
         ],
       },
@@ -1106,7 +1156,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       {
         title: "Exit",
         options: [
-          { kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" },
           {
             kind: "toggle",
             key: "general.closeWithoutWelcome",
@@ -1180,6 +1229,17 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         ],
       },
       {
+        title: "Groups",
+        options: [
+          {
+            kind: "custom",
+            label: "Popup type",
+            keywords: [...NOTIFICATION_GROUPS.map((g) => g.title), "Sticky balloon", "No popup", "Show in tool window"],
+            component: NotificationGroups,
+          },
+        ],
+      },
+      {
         title: "Terminal",
         options: [
           {
@@ -1201,17 +1261,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             max: 86_400,
             integer: true,
             unit: "seconds",
-          },
-        ],
-      },
-      {
-        title: "Groups",
-        options: [
-          {
-            kind: "custom",
-            label: "Popup type",
-            keywords: [...NOTIFICATION_GROUPS.map((g) => g.title), "Sticky balloon", "No popup", "Show in tool window"],
-            component: NotificationGroupsTable,
           },
         ],
       },

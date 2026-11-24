@@ -1,8 +1,9 @@
 /** "hierarchy" tool window: call hierarchy (⌃⌥H) and type hierarchy (⌃H). */
+import { openCodeLocation } from "@/editor/api";
 import { useCallback, useMemo, useRef } from "react";
 import { create } from "zustand";
 import { basename, relativePath, useProject } from "@/platform/project";
-import { maybeEditorService, useOccurrenceNavigator } from "@/workbench/contributions";
+import { useOccurrenceNavigator } from "@/workbench/contributions";
 import {
   EmptyState,
   IconButton,
@@ -106,35 +107,37 @@ function HierarchyToolbar() {
   const autoscroll = useHierarchyOptions((s) => s.autoscroll);
   return (
     <div className={styles.toolbar} role="toolbar" aria-label={tx("Hierarchy actions")}>
-      <IconButton
-        icon="arrow-up"
-        size="small"
-        iconSize={16}
-        title={tx`${directionLabel(mode, "incoming")} Hierarchy`}
-        pressed={direction === "incoming"}
-        onClick={() => setDirection("incoming")}
-      />
-      <IconButton
-        icon="arrow-down"
-        size="small"
-        iconSize={16}
-        title={tx`${directionLabel(mode, "outgoing")} Hierarchy`}
-        pressed={direction === "outgoing"}
-        onClick={() => setDirection("outgoing")}
-      />
-      <span className={styles.sep} />
+      <div className={styles.toolbarGroup}>
+        <IconButton
+          icon="arrow-up"
+          size="small"
+          iconSize={16}
+          title={tx`${directionLabel(mode, "incoming")} Hierarchy`}
+          pressed={direction === "incoming"}
+          onClick={() => setDirection("incoming")}
+        />
+        <IconButton
+          icon="arrow-down"
+          size="small"
+          iconSize={16}
+          title={tx`${directionLabel(mode, "outgoing")} Hierarchy`}
+          pressed={direction === "outgoing"}
+          onClick={() => setDirection("outgoing")}
+        />
+      </div>
       <IconButton icon="refresh" size="small" iconSize={16} title="Refresh" onClick={refreshHierarchy} />
-      <span className={styles.sep} />
-      <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" iconSize={16} />
-      <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" iconSize={16} />
-      <IconButton
-        icon="autoscroll-to-source"
-        size="small"
-        iconSize={16}
-        title="Autoscroll to Source"
-        pressed={autoscroll}
-        onClick={() => useHierarchyOptions.setState({ autoscroll: !autoscroll })}
-      />
+      <div className={styles.toolbarGroup}>
+        <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" iconSize={16} />
+        <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" iconSize={16} />
+        <IconButton
+          icon="autoscroll-to-source"
+          size="small"
+          iconSize={16}
+          title="Autoscroll to Source"
+          pressed={autoscroll}
+          onClick={() => useHierarchyOptions.setState({ autoscroll: !autoscroll })}
+        />
+      </div>
     </div>
   );
 }
@@ -162,7 +165,7 @@ export function HierarchyView() {
   };
   const show = (n: Node, focus: boolean) => {
     const t = targetOf(n);
-    if (t) void maybeEditorService()?.openFile(t.path, { selection: { line: t.line, col: t.col }, focus });
+    if (t) void openCodeLocation(t.path, { line: t.line, col: t.col }, { focus });
   };
 
   // Every node is an occurrence, as in IDEA's hierarchy views.
@@ -183,13 +186,9 @@ export function HierarchyView() {
   const renderNode = (n: Node, _state: TreeRowState) => {
     if (n.kind === "root") {
       return (
-        <span className={styles.row}>
+        <span className={styles.row} title={`${root.name}\n${relativePath(projectRoot, root.path)}:${root.line + 1}`}>
           <SymbolBadge kind={mode === "call" ? "function" : "class"} />
           <span className={styles.name}>{root.name}</span>
-          {root.detail && <span className={styles.detail}>{root.detail}</span>}
-          <span className={styles.muted}>
-            {basename(root.path)}:{root.line + 1}
-          </span>
           {loading && <Spinner size={12} />}
           {failed.has(ROOT_ID) && (
             <span className={styles.error}>
@@ -199,33 +198,40 @@ export function HierarchyView() {
           {!loading && !failed.has(ROOT_ID) && children.get(ROOT_ID)?.length === 0 && (
             <span className={styles.muted}>{noneFoundLabel(mode, direction)}</span>
           )}
+          {root.detail && <span className={styles.muted}>{root.detail}</span>}
+          <span className={styles.muted}>
+            {basename(root.path)}:{root.line + 1}
+          </span>
         </span>
       );
     }
     const { item } = n.node;
     const calls = item.fromRanges.length;
     return (
-      <span className={styles.row} title={relativePath(projectRoot, item.path)}>
+      <span
+        className={styles.row}
+        title={`${item.name}\n${relativePath(projectRoot, item.path)}:${item.selectionRange.start.line + 1}`}
+      >
         <SymbolBadge kind={badgeKind(item.kind)} />
         <span className={styles.name}>{item.name}</span>
-        {item.detail && <span className={styles.detail}>{item.detail}</span>}
-        <span className={styles.muted}>
-          {basename(item.path)}:{item.selectionRange.start.line + 1}
-        </span>
         {calls > 1 && <span className={styles.muted}>{tx`(${calls} calls)`}</span>}
         {n.node.recursion && (
           <span className={styles.muted}>
             <T>recursive</T>
           </span>
         )}
-        {notes.has(n.id) && (
-          <span className={styles.muted} title={notes.get(n.id)}>
-            {notes.get(n.id)}
-          </span>
-        )}
         {failed.has(n.id) && (
           <span className={styles.error}>
             <T>failed to load</T>
+          </span>
+        )}
+        {item.detail && <span className={styles.muted}>{item.detail}</span>}
+        <span className={styles.muted}>
+          {basename(item.path)}:{item.selectionRange.start.line + 1}
+        </span>
+        {notes.has(n.id) && (
+          <span className={styles.muted} title={notes.get(n.id)}>
+            {notes.get(n.id)}
           </span>
         )}
       </span>
@@ -244,6 +250,7 @@ export function HierarchyView() {
         <Tree<Node>
           key={generation}
           aria-label={mode === "call" ? "Call hierarchy" : "Type hierarchy"}
+          horizontalScroll
           roots={roots}
           getKey={(n) => n.id}
           getLabel={(n) => (n.kind === "root" ? root.name : n.node.item.name)}

@@ -4,27 +4,29 @@
  */
 
 import { FontPicker } from "../../components/FontPicker";
-import { useId, useState } from "react";
-import { Checkbox, type SelectOption, T } from "@/ui";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { Checkbox, type SelectOption, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { monoFontFamily } from "@/platform/fonts";
 import { NumberInput, Row, SearchLabel, Select } from "../../components/Form";
 import { useLabelMatch, usePageContext, useSetting } from "../../components/context";
 import { FONT_WEIGHTS, fontWeightOf, fontWeightVars } from "@/platform/editorSettings";
 import { LIMITS } from "../../model/schema";
-import { editorPage } from "./kit";
+import type { PageSpec } from "../spec";
+import { EditorSections, type EditorSection, sectionLabels } from "./kit";
 import styles from "./Editor.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 function FontRow() {
   const [family, setFamily] = useSetting<string>("editor.fontFamily");
   const [monoSetting, setMonoOnly] = useSetting<boolean>("editor.onlyMonospacedFonts");
   const monoOnly = monoSetting !== false;
   const matched = useLabelMatch("Show only monospaced fonts");
+  const id = useId();
   return (
-    <Row label="Font">
+    <Row label="Font" htmlFor={id} className={styles.fontRow}>
       <span className={styles.fontFamily}>
         <span className={styles.fontSelect}>
-          <FontPicker value={family} onChange={setFamily} label="Font" monoOnly={monoOnly} />
+          <FontPicker id={id} value={family} onChange={setFamily} label="Font" monoOnly={monoOnly} />
         </span>
         <span className={matched ? styles.matched : undefined}>
           <Checkbox
@@ -41,10 +43,11 @@ function FontRow() {
 function SizeRow() {
   const [size, setSize] = useSetting<number>("editor.fontSize");
   const [line, setLine] = useSetting<number>("editor.lineHeight");
+  const sizeId = useId();
   const lineId = useId();
   return (
-    <Row label="Size">
-      <NumberInput value={size} onChange={setSize} {...LIMITS.fontSize} aria-label="Size" unit="px" />
+    <Row label="Size" htmlFor={sizeId} className={styles.fontRow}>
+      <NumberInput id={sizeId} value={size} onChange={setSize} {...LIMITS.fontSize} aria-label="Size" unit="px" />
       <span className={styles.inline}>
         <label htmlFor={lineId} className={styles.inlineLabel}>
           <SearchLabel text="Line height" />
@@ -64,9 +67,17 @@ function SizeRow() {
 
 function FallbackRow() {
   const [fallback, setFallback] = useSetting<string>("editor.fallbackFont");
+  const id = useId();
   return (
-    <Row label="Fallback font" hint="For symbols not supported by the main font">
-      <FontPicker value={fallback} onChange={setFallback} label="Fallback font" allowEmpty />
+    <Row
+      label="Fallback font"
+      htmlFor={id}
+      hint="For symbols not supported by the main font"
+      className={styles.fontRow}
+    >
+      <span className={styles.fontSelect}>
+        <FontPicker id={id} value={fallback} onChange={setFallback} label="Fallback font" allowEmpty />
+      </span>
     </Row>
   );
 }
@@ -93,8 +104,9 @@ function WeightRow({
   const weight = fontWeightOf(value, defaultWeight);
   const custom = customSelected || !FONT_WEIGHTS.some(([w]) => w === weight);
   return (
-    <Row label={label} hint={hint}>
+    <Row label={label} hint={hint} className={styles.fontRow}>
       <Select
+        className={styles.fontWeight}
         value={custom ? "custom" : String(weight)}
         options={WEIGHT_OPTIONS}
         onChange={(v) => {
@@ -111,7 +123,7 @@ function WeightRow({
           max={900}
           step={50}
           integer
-          aria-label={tx`${label} custom value`}
+          aria-label={tx`${txPart(label)} custom value`}
         />
       )}
     </Row>
@@ -187,27 +199,60 @@ function Preview() {
   );
 }
 
-export const FONT_PAGE = editorPage({
+const FONT_SECTIONS: EditorSection[] = [
+  {
+    items: [
+      { t: "custom", label: "Font", keywords: ["font family", "Show only monospaced fonts"], component: FontRow },
+      { t: "custom", label: "Size", keywords: ["Line height"], component: SizeRow },
+      { t: "check", key: "editor.ligatures", label: "Enable ligatures" },
+    ],
+  },
+  {
+    title: "Typography Settings",
+    items: [
+      { t: "custom", label: "Main font weight", keywords: ["Bold font weight"], component: WeightRows },
+      { t: "custom", label: "Fallback font", component: FallbackRow },
+    ],
+  },
+];
+
+function FontPage() {
+  const page = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(true);
+  useLayoutEffect(() => {
+    const el = page.current;
+    if (!el) return;
+    const measure = () => setStacked(el.clientWidth < 620);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div className={styles.fontPage} ref={page}>
+      <SplitGroup orientation={stacked ? "vertical" : "horizontal"} className={styles.fontSplit}>
+        <SplitPanel defaultSize={stacked ? "52%" : "45%"} minSize={stacked ? "96px" : "220px"}>
+          <section className={styles.fontOptions} aria-label={tx("Font options")}>
+            <EditorSections sections={FONT_SECTIONS} />
+          </section>
+        </SplitPanel>
+        <SplitHandle aria-label={tx("Resize font preview")} />
+        <SplitPanel defaultSize={stacked ? "48%" : "55%"} minSize={stacked ? "96px" : "200px"}>
+          <Preview />
+        </SplitPanel>
+      </SplitGroup>
+    </div>
+  );
+}
+
+export const FONT_PAGE: PageSpec = {
   id: "editor.font",
   title: "Font",
+  group: "Editor",
   order: 22,
   projectScope: true,
   keywords: ["typeface", "monospace", "ligatures", "font size", "line spacing", "font weight", "bold"],
-  sections: [
-    {
-      items: [
-        { t: "custom", label: "Font", keywords: ["font family", "Show only monospaced fonts"], component: FontRow },
-        { t: "custom", label: "Size", keywords: ["Line height"], component: SizeRow },
-        { t: "check", key: "editor.ligatures", label: "Enable ligatures" },
-      ],
-    },
-    {
-      title: "Typography Settings",
-      items: [
-        { t: "custom", label: "Main font weight", keywords: ["Bold font weight"], component: WeightRows },
-        { t: "custom", label: "Fallback font", component: FallbackRow },
-      ],
-    },
-  ],
-  footer: Preview,
-});
+  component: FontPage,
+  dynamicLabels: () => sectionLabels(FONT_SECTIONS),
+};

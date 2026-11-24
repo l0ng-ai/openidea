@@ -1,5 +1,5 @@
 /** Actions of the LSP editor layer (ids from keymaps/intellij-macos.ts). */
-import { isGenerateAction } from "./generate";
+import { generateActionIcon, isGenerateAction } from "./generate";
 import type { EditorView } from "@codemirror/view";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { activeEditor, editorsFor, registerSaveParticipant, whenSynced, type TextEditorHandle } from "@/editor/api";
@@ -8,14 +8,15 @@ import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { validateLanguages } from "@/platform/languageSettings";
 import type { Settings } from "@/bindings";
-import { explicitCompletion } from "./completion";
+import { basicCompletion, smartTypeCompletion } from "./completion";
+import { SMART_TYPE_LANGUAGES } from "./smartCompletion";
 import { triggerSignatureHelp } from "./signature";
 import { quickDefinition, quickDocumentation } from "./hover";
 import { expressionTypeInfo } from "./typeInfo";
 import { gotoHighlightedUsage, gotoTargets, highlightUsages } from "./navigation";
 import { gotoDiagnostic, showErrorDescription } from "./diagnostics";
 import { applyKindSilently, applyQuickFix, runKindAction, showIntentions } from "./intentions";
-import { docOf } from "./lsp";
+import { docOf, reportLspError } from "./lsp";
 import { languageSemantics } from "./semantic";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
@@ -29,6 +30,9 @@ import {
   startHierarchyRefactoring,
 } from "@/editor/refactor";
 import { evaluateWhen } from "@/platform/context";
+import { isolateHistory } from "@codemirror/commands";
+import { textEditsToChanges } from "./positions";
+import { tx } from "@/platform/i18n";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
 export const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
@@ -103,12 +107,62 @@ const fixEslintProblems = (v: EditorView) =>
     none: "No ESLint problems to fix",
     label: "Fix ESLint Problems",
   });
-const optimizeImports = (v: EditorView) =>
-  runKindAction(v, "source.organizeImports", {
+/** WebStorm's Fix Stylelint Problems: vscode-stylelint's fix-all for the whole file. */
+const fixStylelintProblems = (v: EditorView) =>
+  runKindAction(v, "source.fixAll.stylelint", {
+    whole: true,
+    none: "No Stylelint problems to fix",
+    label: "Fix Stylelint Problems",
+  });
+/**
+ * typescript-language-server's organize imports only sorts and merges them; removing the unused
+ * ones is its own action, so Optimize Imports runs that first in these languages.
+ */
+const REMOVE_UNUSED_IMPORTS_FIRST = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact"]);
+
+/** Removes unused imports where the server keeps that apart from organizing them; true when it did. */
+export async function removeUnusedImports(view: EditorView): Promise<boolean> {
+  const language = docOf(view)?.language;
+  if (!language || !REMOVE_UNUSED_IMPORTS_FIRST.has(language)) return false;
+  return applyKindSilently(view, "source.removeUnusedImports");
+}
+
+const optimizeImports = async (v: EditorView) => {
+  if (await removeUnusedImports(v)) {
+    // Then sort what is left; there may be nothing to sort.
+    await applyKindSilently(v, "source.organizeImports");
+    return;
+  }
+  return runKindAction(v, "source.organizeImports", {
     whole: true,
     none: "Optimize imports is not available",
     label: "Optimize Imports",
   });
+};
+
+/** Rearrange Code: class members in arrangement order (Python), as one undo step. */
+async function rearrange(view: EditorView) {
+  const doc = docOf(view);
+  if (!doc || doc.readOnly) return;
+  await whenSynced(view);
+  const state = view.state;
+  let edits;
+  try {
+    edits = await call(commands.docRearrange(doc.doc));
+  } catch (e) {
+    reportLspError(view, e, true);
+    return;
+  }
+  if (view.state.doc !== state.doc) return showHint(view, "The file changed while rearranging; try again");
+  if (!edits.length)
+    return showHint(view, "Nothing to rearrange: members are in order, or moving them could change the class");
+  view.dispatch({
+    changes: textEditsToChanges(state.doc, edits),
+    userEvent: "format.rearrange",
+    annotations: isolateHistory.of("full"),
+    scrollIntoView: false,
+  });
+}
 
 export interface CleanupOptions {
   fixAll?: boolean;
@@ -139,7 +193,10 @@ async function vcsChangedRanges(view: EditorView): Promise<Array<{ from: number;
 /** Code Cleanup of one document: the server's fix-all, organize imports, then reformat (whose result it returns). */
 async function cleanup(view: EditorView, o: CleanupOptions): Promise<FormatResult | null> {
   if (o.fixAll !== false) await applyKindSilently(view, "source.fixAll");
-  if (o.optimizeImports !== false) await applyKindSilently(view, "source.organizeImports");
+  if (o.optimizeImports !== false) {
+    await removeUnusedImports(view);
+    await applyKindSilently(view, "source.organizeImports");
+  }
   if (o.reformat === false) return null;
   const ranges = o.changedTextOnly ? await vcsChangedRanges(view) : undefined;
   return formatDocument(view, { explicit: false, selectionOnly: false, ranges });
@@ -172,10 +229,12 @@ function editorAction(
 
 /** Whether saving a `language` file formats it: Format on save, or Run on save of an external formatter. */
 export function formatsOnSave(settings: Settings | null, language: string): boolean {
-  const { prettier, oxfmt, ruff } = validateLanguages(settings?.languages);
+  const { prettier, oxfmt, biome, ruff, black } = validateLanguages(settings?.languages);
   return (
     !!settings?.editor?.formatOnSave ||
-    [prettier, oxfmt, ruff].some((formatter) => formatter.runOnSave && formatter.languages.includes(language))
+    [prettier, oxfmt, biome, ruff, black].some(
+      (formatter) => formatter.runOnSave && formatter.languages.includes(language),
+    )
   );
 }
 
@@ -211,9 +270,13 @@ export function registerActionsOnSave(): () => void {
 
 export function registerLspActions(): () => void {
   return registerActions([
-    editorAction("code.completion", "Basic", "Code Completion", (v) => explicitCompletion(v), {
+    editorAction("code.completion", "Basic", "Code Completion", (v) => basicCompletion(v), {
       icon: "list",
       keywords: ["code completion", "basic completion", "autocomplete"],
+    }),
+    editorAction("code.smartTypeCompletion", "Smart Type", "Code Completion", smartTypeCompletion, {
+      when: `${EDITOR_WHEN} && (${[...SMART_TYPE_LANGUAGES].map((id) => `editorLangId == ${id}`).join(" || ")})`,
+      keywords: ["smart completion", "smart type completion", "expected type"],
     }),
     editorAction("code.parameterInfo", "Parameter Info", "Code", (v) => triggerSignatureHelp(v, true)),
     editorAction("code.quickDocumentation", "Quick Documentation", "Code", quickDocumentation, {
@@ -253,17 +316,38 @@ export function registerLspActions(): () => void {
       { keywords: ["format", "oxfmt", "oxc"] },
     ),
     editorAction(
+      "code.reformatWithBiome",
+      "Reformat with Biome",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "biome" }),
+      { keywords: ["format", "biome"] },
+    ),
+    editorAction(
       "code.reformatWithRuff",
       "Reformat with Ruff",
       "Code",
       (v) => formatDocument(v, { explicit: true, tool: "ruff" }),
       { keywords: ["format", "ruff", "python"] },
     ),
+    editorAction(
+      "code.reformatWithBlack",
+      "Reformat with Black",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "black" }),
+      { keywords: ["format", "black", "python"] },
+    ),
     editorAction("code.reformatDialog", "Reformat File…", "Code", (v) =>
       reformatDialog(v, (view) => applyKindSilently(view, "source.organizeImports")),
     ),
     editorAction("code.fixEslintProblems", "Fix ESLint Problems", "Code", fixEslintProblems, {
       keywords: ["eslint", "lint", "fix all"],
+    }),
+    editorAction("code.fixStylelintProblems", "Fix Stylelint Problems", "Code", fixStylelintProblems, {
+      keywords: ["stylelint", "lint", "css", "fix all"],
+    }),
+    editorAction("code.rearrange", "Rearrange Code", "Code", rearrange, {
+      when: `${EDITOR_WHEN} && editorLangId == python`,
+      keywords: ["arrange", "sort", "members", "methods", "order"],
     }),
     editorAction("code.optimizeImports", "Optimize Imports", "Code", optimizeImports, {
       keywords: ["organize imports"],
@@ -374,7 +458,9 @@ export function registerLspActions(): () => void {
         runKindAction(v, "", {
           predicate: isGenerateAction,
           none: "Nothing to generate here",
-          label: "Generate",
+          label: tx("Generate"),
+          compact: true,
+          actionIcon: generateActionIcon,
         }),
       { keyWhen: GENERATE_KEY_WHEN },
     ),

@@ -2,10 +2,13 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Commit } from "@/bindings";
 
-const ipc = vi.hoisted(() => ({ log: vi.fn(), files: vi.fn() }));
+const ipc = vi.hoisted(() => ({ log: vi.fn(), files: vi.fn(), branchInfo: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
-  return { ...real, commands: { ...real.commands, vcsLog: ipc.log, vcsCommitFiles: ipc.files } };
+  return {
+    ...real,
+    commands: { ...real.commands, vcsLog: ipc.log, vcsCommitFiles: ipc.files, vcsBranchInfo: ipc.branchInfo },
+  };
 });
 
 const execute = vi.hoisted(() => vi.fn());
@@ -61,6 +64,49 @@ beforeEach(() => {
 });
 
 describe("incoming and outgoing commits popup", () => {
+  it("names the separate push destination and lists its commits without an upstream", async () => {
+    render(<SyncCommitsPopupHost />);
+    open({
+      branch: {
+        branch: "main",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        outgoing: { remote: "fork", branch: "review", reference: "refs/remotes/published/review", count: 1 },
+      },
+      direction: "outgoing",
+    });
+    expect(await screen.findByText("Push destination: fork/review")).toBeInTheDocument();
+    expect(await screen.findByText("Outgoing feature")).toBeInTheDocument();
+    expect(ipc.log).toHaveBeenCalledWith(
+      "/p",
+      expect.objectContaining({
+        range: "refs/remotes/published/review..refs/heads/main",
+      }),
+    );
+  });
+
+  it("fetches the tracked remote on demand and replaces the notification with the incoming list", async () => {
+    ipc.branchInfo.mockResolvedValue({
+      status: "ok",
+      data: { head: "main", upstream: "fork/main", ahead: 0, behind: 1 },
+    });
+    execute.mockResolvedValue(true);
+    render(<SyncCommitsPopupHost />);
+    open({
+      branch: { branch: "main", upstream: "fork/main", ahead: 0, behind: 0 },
+      direction: "incoming",
+      unfetchedRemote: "fork",
+    });
+    expect(screen.getByText("Remote changes available to fetch")).toBeInTheDocument();
+    expect(ipc.log).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /^Fetch$/ }));
+    await screen.findByRole("option");
+    expect(execute).toHaveBeenCalledWith("vcs.fetch", { repo: "/p", remote: "fork" });
+    expect(ipc.log).toHaveBeenCalledWith("/p", expect.objectContaining({ range: "main..fork/main" }));
+    expect(screen.queryByText("Remote changes available to fetch")).toBeNull();
+  });
+
   it("lists both sides newest first, with the range git returns for each", async () => {
     render(<SyncCommitsPopupHost />);
     open();

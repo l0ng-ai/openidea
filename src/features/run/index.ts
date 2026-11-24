@@ -7,6 +7,7 @@ import { executeAction, executeActionOrThrow, getAction, registerActions } from 
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { projectFolder, useProject } from "@/platform/project";
+import { parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { isSameOrInside } from "@/platform/paths";
 import { agentRunSettings, onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
@@ -14,6 +15,7 @@ import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunConfigurationChecks,
   provideRunConfigurationLookup,
   provideRunOutput,
   registerMenuGroup,
@@ -25,6 +27,7 @@ import {
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
+import { restartFlutterDaemon, selectFlutterDevice, useFlutterDevices } from "@/workbench/flutterDevices";
 import { chooserJustClosed, ConfigChooserOverlay } from "./ConfigChooser";
 import {
   compiledDebugPlan,
@@ -36,6 +39,7 @@ import {
   runContextAction,
 } from "./contextRun";
 import { runWithExecutor } from "./executors";
+import { notifyCwdError, withExpandedCwd } from "./cwdMacros";
 import { debugWithAgent, jdwpLaunch } from "./javaDebug";
 import { attachesToChild, debugAttachingToChild } from "./pluginAttach";
 import { RunDialogsOverlay } from "./dialogs";
@@ -58,6 +62,7 @@ import {
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { ServiceImportHost } from "./serviceImport";
 import { cmakeBuildId } from "./cmake";
+import { configurationChecks } from "./configurationChecks";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
@@ -66,9 +71,11 @@ import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { isZigBuildStep, zigDebugTarget } from "./zigDebug";
 import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
+import { markdownCommandGutter } from "./markdownCommands";
 import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
@@ -157,7 +164,11 @@ async function runSelected() {
     useRun.setState({ chooserOpen: true, chooserMode: "run" });
     return;
   }
-  const target = selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
+  // As in IDEA, Run starts another instance of a configuration that allows multiple instances;
+  // otherwise it restarts the running one.
+  const target = config.allowParallel
+    ? null
+    : selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
   if (target) {
     target.rerun?.();
     return;
@@ -177,6 +188,11 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
 }
 
 async function debugLaunch(config: RunConfig, chain: readonly string[], show?: boolean): Promise<void> {
+  try {
+    config = await withExpandedCwd(config);
+  } catch (e) {
+    return notifyCwdError(config, e);
+  }
   if (!(await prepareLaunch(config, chain, show))) return;
   if (config.kind === UNITY_CONFIG_KIND) return showUnityAttach(config);
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
@@ -479,6 +495,7 @@ export function activate(): () => void {
     }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
+    registerEditorContribution({ id: "run.markdownCommands", order: 58, extensions: markdownCommandGutter }),
     registerEditorContribution({ id: "run.launchSettings", order: 58, extensions: launchSettingsGutter }),
     registerMenuGroup({
       id: "run.context",
@@ -573,6 +590,58 @@ export function activate(): () => void {
         icon: "rerun",
         when: "projectOpen && activeToolWindow == 'run'",
         run: () => rerunActive(),
+      },
+      {
+        id: "run.flutterChooseDevice",
+        title: "Select Flutter Device…",
+        category: "Run",
+        when: "flutterProject",
+        run: () => {
+          const chooserOpen = !useFlutterDevices.getState().chooserOpen;
+          useFlutterDevices.setState({ chooserOpen });
+          if (chooserOpen) void call(commands.flutterDevicesRefresh()).catch(() => undefined);
+        },
+      },
+      {
+        id: "run.flutterSelectDevice",
+        title: "Use Flutter Device",
+        category: "Run",
+        hidden: true,
+        when: "flutterProject",
+        run: ({ arg }) => {
+          if (typeof arg === "string") selectFlutterDevice(arg);
+        },
+      },
+      {
+        id: "run.flutterRestartDaemon",
+        title: "Restart Flutter Daemon",
+        category: "Run",
+        when: "flutterProject",
+        run: () => restartFlutterDaemon(),
+      },
+      {
+        id: "run.flutterHotReload",
+        title: "Hot Reload",
+        category: "Run",
+        icon: "hot-reload",
+        description: "Flutter: inject the changed sources into the running app",
+        when: "run.flutterHotReloadable",
+        run: () => {
+          const session = hotReloadSession();
+          if (session) hotReload(session.id);
+        },
+      },
+      {
+        id: "run.flutterHotRestart",
+        title: "Hot Restart",
+        category: "Run",
+        icon: "refresh",
+        description: "Flutter: restart the app, discarding its state",
+        when: "run.flutterHotReloadable",
+        run: () => {
+          const session = hotReloadSession();
+          if (session) hotRestart(session.id);
+        },
       },
       {
         id: "run.chooseConfig",
@@ -689,6 +758,26 @@ export function activate(): () => void {
         when: "projectOpen && activeToolWindow == 'run'",
         keyWhen: TEST_TREE_FOCUS,
         run: () => testTree.collapseAll?.(),
+      },
+      {
+        id: "run.exportTestResults",
+        title: "Export Test Results…",
+        description: "Save the test results as an HTML report or IDEA's XML",
+        category: "Run",
+        icon: "export",
+        when: "projectOpen && activeToolWindow == 'run'",
+        keywords: ["test", "results", "report", "html", "xml", "save"],
+        enabled: () => testTree.exportResults !== null,
+        run: () => testTree.exportResults?.(),
+      },
+      {
+        id: "run.toggleTestDurations",
+        title: "Show Test Durations",
+        category: "Run",
+        when: "projectOpen",
+        enabled: () => testTree.toggleDurations !== null,
+        toggled: () => testTree.showDurations === true,
+        run: () => testTree.toggleDurations?.(),
       },
       {
         id: "run.reloadConfigs",
@@ -817,22 +906,31 @@ export function activate(): () => void {
       const cmake = selected ?? s.configs.find((c) => c.kind === "cmake" && c.args[0] === "--build");
       setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
       setContext("run.updatableRunning", updatableSessions().length > 0);
+      setContext("run.flutterHotReloadable", !!hotReloadSession());
     }),
     // Agent tabs (`run_command`): the archive keeps at most Settings' number of them.
     useRun.subscribe((s, prev) => {
       if (s.sessions !== prev.sessions) trimAgentArchive();
     }),
     onWorkflowSettingsChange(() => agentRunSettings(), trimAgentArchive),
-    useProject.subscribe((s, prev) => {
-      if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
-      resetRuns();
-      useStackTraces.setState({ tabs: [], dialog: null });
-      if (s.project) void loadConfigs();
-    }),
+    (() => {
+      let prevLocation = projectLocation(useProject.getState().project?.root);
+      return useProject.subscribe((s, prev) => {
+        const nextLocation = projectLocation(s.project?.root);
+        if (nextLocation === prevLocation && s.project?.trusted === prev.project?.trusted) return;
+        const wasRemote = !!prevLocation && parseRemoteLocation(prevLocation) !== null;
+        prevLocation = nextLocation;
+        resetRuns(!wasRemote);
+        useStackTraces.setState({ tabs: [], dialog: null });
+        if (s.project) void loadConfigs();
+      });
+    })(),
   ];
 
   setBeforeLaunchRunner(runBeforeLaunch);
   disposers.push(() => setBeforeLaunchRunner(null));
+  provideRunConfigurationChecks(configurationChecks);
+  disposers.push(() => provideRunConfigurationChecks(undefined));
   provideRunOutput({ subscribe: subscribeOutput });
   disposers.push(() => provideRunOutput(undefined));
   provideRunConfigurationLookup((kind, directory) => {

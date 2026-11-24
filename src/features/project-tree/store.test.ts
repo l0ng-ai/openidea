@@ -7,6 +7,8 @@ import {
   reloadLoadedDirs,
   currentModel,
   expandAll,
+  explainHiddenPath,
+  hidingOption,
   initProjectTree,
   loadDir,
   revealPath,
@@ -18,6 +20,7 @@ import {
 } from "./store";
 import { beginNew, commitEditing, copySelection, paste, transfer } from "./operations";
 import { closeFileRefactorDialog, pendingFileRefactorDialog } from "./FileRefactorDialogs";
+import { provideNotificationService } from "@/workbench/contributions";
 
 const ROOT = "/p";
 let fs: MemoryFs;
@@ -318,4 +321,29 @@ it("keeps the primary first and sorts attachments by name", () => {
   expect(currentModel().roots.map((n) => n.path)).toEqual(["/z", "/a", "/c"]);
   initProjectTree("/ws", "Workspace", ["/z", "/c", "/a"]);
   expect(currentModel().roots.map((n) => n.path)).toEqual(["/a", "/c", "/z"]);
+});
+
+describe("a file the view options hide", () => {
+  const entry = (name: string, ignored = false) => ({ name, path: `/p/${name}`, isDir: true, ignored }) as never;
+
+  it("names the option that hides it below the shown ancestor, and offers to turn it on", () => {
+    useProjectTree.setState({ listings: new Map([["/p", [entry("build", true), entry("src")]]]) });
+    setViewOption("showExcluded", false);
+    expect(hidingOption("/p/build/out.txt", "/p")).toBe("showExcluded");
+    expect(hidingOption("/p/.git/config", "/p")).toBe(
+      useProjectTree.getState().options.showHidden ? null : "showHidden",
+    );
+    expect(hidingOption("/p/src/a.ts", "/p")).toBeNull();
+
+    const notify = vi.fn();
+    provideNotificationService({ notify } as never);
+    explainHiddenPath("/p/build/out.txt", "/p");
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "out.txt is hidden because Show Excluded Files is off" }),
+    );
+    notify.mock.calls[0]![0].actions[0].run();
+    expect(useProjectTree.getState().options.showExcluded).toBe(true);
+    expect(useProjectTree.getState().revealRequest?.path).toBe("/p/build/out.txt");
+    expect(hidingOption("/p/build/out.txt", "/p")).toBeNull();
+  });
 });

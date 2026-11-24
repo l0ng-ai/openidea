@@ -1,27 +1,18 @@
 /** TODO tool window, project TODO index and in-editor TODO highlighting. */
 import { registerActions } from "@/platform/actions";
 import { registerEditorContribution } from "@/editor/api";
-import { registerSettingsPage, registerToolWindow, toolWindowService } from "@/workbench/contributions";
-import { hasIcon, lazyComponent } from "@/ui";
-import { TodoHeaderActions, TodoTabs, TodoView, useTodoBadge, useTodoHeaderMenu, useTodoView } from "./TodoView";
+import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
+import { hasIcon } from "@/ui";
+import { activateSettingsPages } from "./settingsPages";
+import { installTodoReviews, TodoTabs, TodoView, useTodoBadge, useTodoHeaderMenu, useTodoView } from "./TodoView";
 import { todoEditorExtension } from "./highlight";
-import { installTodoIndex, scanProject, syncTodoSettingsFromStorage } from "./store";
-
-/** Settings › Editor › TODO (also used by the Settings window). */
-export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: "editor.todo",
-    title: "TODO",
-    group: "Editor",
-    order: 40,
-    keywords: ["todo", "fixme", "hack", "pattern"],
-    component: lazyComponent(() => import("./TodoSettingsPage").then((m) => m.TodoSettingsPage)),
-  });
-}
+import { syncTodoSettingsFromStorage } from "@/platform/todo";
+import { installTodoIndex, scanProject } from "./store";
 
 export function activate(): () => void {
   const disposers = [
     installTodoIndex(),
+    installTodoReviews(),
     syncTodoSettingsFromStorage(),
     registerEditorContribution({ id: "todo.highlight", order: 120, extensions: todoEditorExtension }),
     registerToolWindow({
@@ -30,9 +21,9 @@ export function activate(): () => void {
       icon: hasIcon("toolwindow-todo") ? "toolwindow-todo" : "list",
       anchor: "bottom",
       order: 40,
+      stripe: "onUse",
       component: TodoView,
       headerContent: TodoTabs,
-      headerActions: TodoHeaderActions,
       headerMenu: useTodoHeaderMenu,
       useBadge: useTodoBadge,
     }),

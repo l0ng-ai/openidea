@@ -59,6 +59,7 @@ import {
   VolumeDashboard,
 } from "./dashboard";
 import { openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeSource } from "./composeSource";
 import {
   canRemove,
   canRestart,
@@ -74,7 +75,9 @@ import {
 } from "./ops";
 import {
   cancelTask,
+  connectConnection,
   connectionState,
+  disconnectConnection,
   endpointOf,
   errorMessage,
   refresh,
@@ -110,6 +113,7 @@ function endpointText(ep: DockerEndpoint): string {
 }
 
 function connectionDetail(state: ConnectionState): string | undefined {
+  if (state.disconnected) return "disconnected";
   const a = state.snapshot?.availability;
   if (!a) return state.error ?? (state.loading ? "connecting…" : undefined);
   if (a.kind === "notInstalled") return "docker not installed";
@@ -250,6 +254,9 @@ function menu(item: ServiceTreeItem): MenuItem[] {
   if (c)
     items.push(
       { kind: "separator" },
+      connectionState(c.id).disconnected
+        ? { label: "Connect", run: () => void connectConnection(c.id) }
+        : { label: "Disconnect", run: () => void disconnectConnection(c.id) },
       { label: "Edit Connection…", icon: "edit", run: () => openConnectionDialog(c) },
       { label: "Remove Connection", icon: "trash", danger: true, run: () => void removeConnectionPrompt(c) },
     );
@@ -320,8 +327,8 @@ function LogView({ conn, container, running }: { conn: string; container: Docker
         ariaLabel={tx("Container log")}
         start={(onLine, onError, on) => {
           const request = nextRequestId();
-          const channel = new Channel<DockerLogLine>();
-          channel.onmessage = onLine;
+          const channel = new Channel<DockerLogLine[]>();
+          channel.onmessage = (lines) => lines.forEach(onLine);
           call(commands.dockerLogs(request, endpointOf(conn), id, 1000, running, on.has("timestamps"), channel)).catch(
             (e) => {
               if (!isCancelled(e)) onError(errorMessage(e));
@@ -439,6 +446,13 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
   if (!target || !parsed || !state || !node) return <EmptyState title="Select service to view details" />;
   const conn = connectionOf(parsed.conn);
   const snapshot = state.snapshot;
+  if (state.disconnected)
+    return (
+      <EmptyState
+        title="Disconnected"
+        actions={<Button onClick={() => void connectConnection(parsed.conn)}>Connect</Button>}
+      />
+    );
   if (!snapshot)
     return (
       <div className={styles.loading}>
@@ -454,7 +468,12 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
   if (node.kind === "compose") {
     return (
       <div className={styles.detailPane}>
-        <ComposeProjectDashboard conn={parsed.conn} project={node.project} containers={node.containers} />
+        <ComposeProjectDashboard
+          conn={parsed.conn}
+          project={node.project}
+          containers={node.containers}
+          snapshot={snapshot}
+        />
       </div>
     );
   }
@@ -469,7 +488,9 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
         )}
         <EmptyState title={conn?.name ?? "Docker"}>
           <div>
-            {txTemplate(`Engine ${a.serverVersion} · CLI ${a.clientVersion}`)}
+            {a.clientVersion
+              ? txTemplate(`Engine ${a.serverVersion} · CLI ${a.clientVersion}`)
+              : txTemplate(`Engine ${a.serverVersion}`)}
             {a.context ? txTemplate(` · context ${a.context}`) : ""}
           </div>
           {conn && <div className={styles.hint}>{endpointText(conn.endpoint)}</div>}
@@ -567,6 +588,18 @@ export const dockerProvider: ServiceProviderContribution = {
     if (t?.node.kind === "container") useServices.setState({ detailTab: "log" });
     const r = registryOf(item.key);
     if (r) openRegistryDialog(r);
+  },
+  jumpToSource: (item) => {
+    const t = resolveTarget(item.key);
+    if (t?.node.kind === "container" && hasComposeSource(t.node.container)) {
+      void jumpToContainerComposeSource(t.node.container);
+      return;
+    }
+    if (t?.node.kind === "compose" && t.node.containers[0] && hasComposeSource(t.node.containers[0])) {
+      void jumpToComposeProjectSource(t.node.project, t.node.containers);
+      return;
+    }
+    dockerProvider.activate?.(item);
   },
   detail: DockerDetail,
   banner: DockerTaskBanner,

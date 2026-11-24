@@ -136,7 +136,7 @@ const completion: Scenario = {
       const before = await h.counters();
       const narrow = await h.typeMeasured("etOrd", 150);
       const work = Harness.delta(before, await h.counters());
-      const arrows = await h.pressMeasured(Array(20).fill("ArrowDown"), 60);
+      const arrows = await h.completionArrowsMeasured(20, 60);
       await h.page.keyboard.press("Escape");
       return {
         openMs,
@@ -310,13 +310,9 @@ const scroll: Scenario = {
     const smooth = frameSummary(await wheel(160, 120), refresh);
     const tbtMs = totalBlockingTime(await h.longTasksSince(t0));
     const fling = frameSummary(await wheel(60, 600), refresh);
-    // Jump far: scrollbar drag / Ctrl+End style repositioning.
-    const jumpMs = await h.measure(
-      () => h.page.keyboard.press("Control+End"),
-      ".cm-content",
-      "export class Repository",
-      5_000,
-    );
+    // Jump far: document-end repositioning.
+    await h.setCursor(0);
+    const jumpMs = await h.jumpToEnd();
     return {
       ...smooth,
       tbtMs,
@@ -326,6 +322,18 @@ const scroll: Scenario = {
     };
   },
 };
+
+/**
+ * Runs an action without a default shortcut from a key press: the press is the measured input,
+ * and the action runs in its handler, as from a key binding. Pause is bound to nothing.
+ */
+async function runActionOnKey(h: Harness, id: string) {
+  await h.page.evaluate((id) => {
+    const probe = (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf;
+    addEventListener("keydown", () => void probe.runAction(id), { capture: true, once: true });
+  }, id);
+  await h.page.keyboard.press("Pause");
+}
 
 /**
  * Git Log with 20,000 commits on branching lanes, loaded page by page as the
@@ -343,12 +351,7 @@ const gitLog: Scenario = {
       ).__openideaPerf.fakeGitLog(20_000, 150),
     );
     const showMs = await h.measure(
-      () =>
-        h.page.evaluate(() =>
-          (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
-            "vcs.showLog",
-          ),
-        ),
+      () => runActionOnKey(h, "vcs.showLog"),
       '[role="listbox"][aria-label="Commits"]',
       "order flow step 0",
     );
@@ -434,16 +437,13 @@ const resizePanels: Scenario = {
     await h.page.evaluate(() =>
       (window as never as { __openideaPerf: { fakeGitLog(n: number): void } }).__openideaPerf.fakeGitLog(2_000),
     );
-    await h.measure(
-      () =>
-        h.page.evaluate(() =>
-          (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
-            "vcs.showLog",
-          ),
-        ),
-      '[role="listbox"][aria-label="Commits"]',
-      "order flow step 0",
+    await h.page.evaluate(() =>
+      (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
+        "vcs.showLog",
+      ),
     );
+    // Set-up, not measured: the splitters are dragged once the log is shown.
+    await h.inPage((p) => p.waitShown('[role="listbox"][aria-label="Commits"]', "order flow step 0", 10_000));
     const refresh = await h.refreshMs();
     const drag = async (name: string, dx: number, dy: number) => {
       const box = (await h.page.getByRole("separator", { name }).boundingBox())!;
@@ -564,40 +564,35 @@ const agentTabs: Scenario = {
         window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } }
       ).__openideaPerf.runAction("agents.openSampleConversations", { tasks: 2, turns: 150 }),
     );
-    const shown = (n: number) => `[data-editor-focus] span[title="Sample task ${n}"]`;
-    // Both conversations get their earlier entries painted in background batches, also the
-    // first one, hidden behind the second as soon as it opened.
-    await h.page.waitForFunction(
-      () =>
-        [...document.querySelectorAll("[data-message]")]
-          .map((m) => m.parentElement!)
-          .filter((stream, i, all) => all.indexOf(stream) === i && stream.textContent!.includes("Turn 0:")).length ===
-        2,
-      undefined,
-      { timeout: 30_000, polling: 200 },
-    );
-    // Rows painted while hidden are laid out the first time their conversation shows.
+    // The conversation shown: its requests end with its task's title.
+    const SHOWN = "[data-editor-focus] [data-message]";
+    const title = (n: number) => `(Sample task ${n})`;
+    // Visit each conversation to let it finish painting and laying out its history.
     for (const n of [1, 2]) {
       await h.page.getByRole("tab", { name: `Sample task ${n}` }).click();
-      await h.page.locator(shown(n)).waitFor();
+      await h.page
+        .locator(SHOWN, { hasText: title(n) })
+        .filter({ hasText: "Turn 0:" })
+        .first()
+        .waitFor({ state: "attached", timeout: 30_000 });
       await h.page.waitForTimeout(300);
     }
     // WebKit restyles a hidden conversation in full when it is shown again (Chromium keeps its
     // style): what bounds that there is the history's DOM, and rows skipping rendering off screen.
     const { conversationNodes, rowsAlwaysRendered } = await h.page.evaluate((selector) => {
-      const conversation = document.querySelector(selector)!.closest("[data-editor-focus]")!;
+      const conversation = document.querySelector(selector)!;
       const rows = [...conversation.querySelector("[data-message]")!.parentElement!.children];
       return {
         conversationNodes: conversation.querySelectorAll("*").length,
         rowsAlwaysRendered: rows.filter((r) => getComputedStyle(r).contentVisibility !== "auto").length,
       };
-    }, shown(2));
+    }, "[data-editor-focus]");
 
     const t0 = await h.now();
     const before = await h.counters();
     const switches: number[] = [];
     for (let i = 0; i < 10; i++) {
-      switches.push(await h.measure(() => h.pressAction("navigate.switcher"), shown(i % 2 ? 2 : 1)));
+      switches.push(await h.measure(() => h.pressAction("navigate.switcher"), SHOWN, title(i % 2 ? 2 : 1)));
       await h.page.waitForTimeout(150);
     }
     const work = Harness.delta(before, await h.counters());
@@ -606,10 +601,7 @@ const agentTabs: Scenario = {
     // Scrolling up from the end, a step at a time: how far the text under the pointer moves
     // beyond the scroll itself.
     const scrollJumps = await h.page.evaluate(async (selector) => {
-      const stream = document
-        .querySelector(selector)!
-        .closest("[data-editor-focus]")!
-        .querySelector("[data-message]")!.parentElement!;
+      const stream = document.querySelector(selector)!.parentElement!;
       const frame = () => new Promise(requestAnimationFrame);
       stream.scrollTop = stream.scrollHeight;
       await frame();
@@ -630,7 +622,7 @@ const agentTabs: Scenario = {
       }
       stream.scrollTop = stream.scrollHeight;
       return jumps;
-    }, shown(2));
+    }, SHOWN);
 
     const refresh = await h.refreshMs();
     const box = (await h.page.locator("[data-editor-focus]").boundingBox())!;
@@ -673,7 +665,7 @@ const popups: Scenario = {
     );
     // Editing the query: Backspace → list re-filtered and painted.
     const refresh = await h.refreshMs();
-    const keyLat = await h.typeMeasured("\b\b\b\b\b\b", 80);
+    const keyLat = await h.typeMeasured("\b\b\b\b\b\b", 80, "input");
     await h.page.keyboard.press("Escape");
     await h.page.locator('[role="dialog"]').waitFor({ state: "detached" });
 
@@ -736,6 +728,9 @@ const projectTree: Scenario = {
   async run(h) {
     const generated = h.page.locator('[role="treeitem"][aria-level="2"]', { hasText: "generated" }).first();
     await generated.click();
+    // Measure from a settled selection: a key pressed in the click's own frame also pays for that frame.
+    await generated.and(h.page.locator('[aria-selected="true"]')).waitFor();
+    await h.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     const expandMs = await h.measure(
       () => h.page.keyboard.press("ArrowRight"),
       '[role="tree"][aria-label="Project"]',
@@ -761,6 +756,123 @@ const projectTree: Scenario = {
       ...keySummary(keyLat, refresh, "arrowKey"),
     };
   },
+};
+
+/** Files in the `combinedDiff` scenarios (`OPENIDEA_PERF_COMBINED_FILES`). */
+const COMBINED_FILES = Number(process.env.OPENIDEA_PERF_COMBINED_FILES ?? 500);
+/** Farthest the wheel pass scrolls before turning back: about 100 files of 40 lines. */
+const COMBINED_WHEEL_PX = 100_000;
+
+/**
+ * Opens an all-in-one diff of `COMBINED_FILES` files from a key press, then scrolls down and back
+ * up, for at most 60 s each way. `wheel`: 120 px per 16 ms of wall time (a fast wheel; the
+ * compositor keeps scrolling through a slow frame), down to the end or `COMBINED_WHEEL_PX`.
+ * `stress`: a viewport (or 1/300 of the whole height, if more) a frame, down to the end.
+ * `blankFrames`: frames whose viewport centre shows neither a diff nor a file header.
+ * `slowFrameMs` / `slowTimePct`: time in frames over 33 ms, and its share of the scroll time:
+ * shares of frame counts mislead when one side renders far fewer, longer frames.
+ */
+async function combinedDiffScroll(h: Harness, mode: "wheel" | "stress") {
+  // Opened from a key press, the measured input (no default shortcut opens it).
+  await h.page.evaluate((n) => {
+    const w = window as never as {
+      __openideaPerf: { openCombinedDiff(n: number): Promise<{ first: string; last: string }> };
+      __combinedPaths?: Promise<{ first: string; last: string }>;
+    };
+    addEventListener("keydown", () => (w.__combinedPaths = w.__openideaPerf.openCombinedDiff(n)), {
+      capture: true,
+      once: true,
+    });
+  }, COMBINED_FILES);
+  const openMs = await h.measure(
+    () => h.page.keyboard.press("Pause"),
+    "[data-combined-scroll] .cm-content",
+    null,
+    30_000,
+  );
+  const paths = await h.page.evaluate(
+    () => (window as never as { __combinedPaths: Promise<{ first: string; last: string }> }).__combinedPaths,
+  );
+  await h.page.waitForTimeout(500);
+  const refresh = await h.refreshMs();
+  const t0 = await h.now();
+  await h.inPage((p) => p.startFrames());
+  const pass = await h.page.locator("[data-combined-scroll]").evaluate(
+    async (el, { first, last, wheel, maxPx }) => {
+      const editors = () => el.querySelectorAll(".cm-editor").length;
+      const box = el.getBoundingClientRect();
+      const blank = () => {
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return !hit?.closest(".cm-editor, [data-combined-block] > :first-child");
+      };
+      const shown = (path: string) => !!el.querySelector(`[data-combined-block="${CSS.escape(path)}"]`);
+      const step = () => Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
+      let peakEditors = editors();
+      let blankFrames = 0;
+      let frames = 0;
+      let reachedEnd = false;
+      const walk = async (down: boolean) => {
+        const started = performance.now();
+        const from = el.scrollTop;
+        // The end only once the view has stayed there for 30 frames: blocks loading near the bottom
+        // still grow the view, so a first touch of the bottom isn't the end of the whole change.
+        let settled = 0;
+        while (performance.now() - started < 60_000) {
+          const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 1 && shown(last);
+          settled = down && atEnd ? settled + 1 : 0;
+          if (settled >= 30) reachedEnd = true;
+          if (down ? reachedEnd || (wheel && el.scrollTop - from >= maxPx) : el.scrollTop <= 0 && shown(first))
+            return true;
+          const moved = wheel ? ((performance.now() - started) * 120) / 16 : 0;
+          if (wheel) el.scrollTop = down ? Math.min(from + moved, from + maxPx) : Math.max(0, from - moved);
+          else el.scrollTop = down ? el.scrollTop + step() : Math.max(0, el.scrollTop - step());
+          await new Promise(requestAnimationFrame);
+          frames++;
+          if (blank()) blankFrames++;
+          peakEditors = Math.max(peakEditors, editors());
+        }
+        return false;
+      };
+      await walk(true);
+      const scrolledPx = el.scrollTop;
+      const backAtTop = await walk(false);
+      return { reachedEnd, backAtTop, scrolledPx, peakEditors, blankFrames, frames };
+    },
+    { ...paths, wheel: mode === "wheel", maxPx: COMBINED_WHEEL_PX },
+  );
+  const frames = await h.inPage((p) => p.stopFrames());
+  const tbtMs = totalBlockingTime(await h.longTasksSince(t0));
+  const slow = frames.filter((f) => f > 33);
+  const slowFrameMs = slow.reduce((sum, f) => sum + f, 0);
+  const totalMs = frames.reduce((sum, f) => sum + f, 0);
+  return {
+    openMs,
+    ...frameSummary(frames, refresh),
+    slowFramesPct: frames.length ? (100 * slow.length) / frames.length : 0,
+    slowFrameMs,
+    slowTimePct: totalMs ? (100 * slowFrameMs) / totalMs : 0,
+    tbtMs,
+    peakEditors: pass.peakEditors,
+    blankFrames: pass.blankFrames,
+    scrollFrames: pass.frames,
+    blankPct: pass.frames ? (100 * pass.blankFrames) / pass.frames : 0,
+    scrolledPx: pass.scrolledPx,
+    reachedEnd: pass.reachedEnd ? 1 : 0,
+    backAtTop: pass.backAtTop ? 1 : 0,
+    domNodes: (await h.counters()).Nodes ?? NaN,
+  };
+}
+
+const combinedDiff: Scenario = {
+  id: "combinedDiff",
+  title: `Wheel through an all-in-one diff of ${COMBINED_FILES} files`,
+  run: (h) => combinedDiffScroll(h, "wheel"),
+};
+
+const combinedDiffStress: Scenario = {
+  id: "combinedDiffStress",
+  title: `Scroll an all-in-one diff of ${COMBINED_FILES} files a screen a frame`,
+  run: (h) => combinedDiffScroll(h, "stress"),
 };
 
 /** Opening and closing editors repeatedly must not grow the heap or the DOM. */
@@ -811,5 +923,7 @@ export const SCENARIOS: Scenario[] = [
   popups,
   toolWindows,
   projectTree,
+  combinedDiff,
+  combinedDiffStress,
   leaks,
 ];

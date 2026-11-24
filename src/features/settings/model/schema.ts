@@ -41,11 +41,15 @@ import {
   type NotificationsValid,
 } from "./behaviorSchema";
 import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
-import { PLAYFUL_AFTER_LIMITS } from "@/platform/agentStatus";
+import { DEFAULT_REMOTE_IDLE_MINUTES, validRemoteIdleMinutes } from "@/platform/remoteIdle";
 
 /** Agents › IDE MCP Server › Port: its default (`ide-core::settings::DEFAULT_MCP_PORT`) and range. */
 export const DEFAULT_MCP_PORT = 26371;
 export const MCP_PORT_LIMITS = { min: 1, max: 65535 };
+/** Agents › IDE MCP Server › Background projects: the idle minutes (0 = never unload) and the project limit. */
+export const MCP_BACKGROUND_IDLE_LIMITS = { min: 0, max: 1440 };
+export const MCP_BACKGROUND_PROJECT_LIMITS = { min: 1, max: 32 };
+export const MCP_BACKGROUND_MODES = ["off", "trusted", "listed"] as const;
 /** Agents › IDE MCP Server › Listen address: its default (`ide-core::settings::DEFAULT_MCP_ADDRESS`). */
 export const DEFAULT_MCP_ADDRESS = "127.0.0.1";
 
@@ -112,6 +116,9 @@ export interface ValidSettings extends WorkflowSettings {
   notifications: NotificationsValid;
   /** System Settings › HTTP Proxy (global). */
   proxy: ProxySettingsValid;
+  remoteDevelopment: { idleTimeoutMinutes: number };
+  /** Tools › Download sources: a mirror prefix for the installer's release downloads. */
+  toolDownloads: { githubMirror: string };
   languages: LanguagesValid;
   cmake: ReturnType<typeof validateCMake>;
   projectStructure: ProjectStructureValid;
@@ -137,6 +144,14 @@ export interface ValidSettings extends WorkflowSettings {
     port: number;
     /** Keep the bearer token across runs rather than make a new one each run. */
     fixedToken: boolean;
+    /** Which folders without an open window the server still serves. */
+    backgroundProjects: (typeof MCP_BACKGROUND_MODES)[number];
+    /** The folders `listed` serves (and `trusted` serves even when untrusted). */
+    backgroundProjectPaths: string[];
+    /** Minutes a background project may sit idle before it unloads; 0 keeps it until the IDE quits. */
+    backgroundIdleMinutes: number;
+    /** Background projects loaded at once. */
+    backgroundProjectLimit: number;
   };
 }
 
@@ -147,6 +162,8 @@ export interface SpellingValid {
   ideWords: string[];
   projectWords: string[];
   customDictionaries: string[];
+  /** Where "Save '…' to dictionary" writes; empty means project (application without a project). */
+  defaultDictionary: string;
 }
 
 const stringList = (v: unknown): string[] =>
@@ -158,6 +175,7 @@ function validateSpelling(raw: unknown): SpellingValid {
     ideWords: stringList(r.ideWords),
     projectWords: stringList(r.projectWords),
     customDictionaries: stringList(r.customDictionaries),
+    defaultDictionary: typeof r.defaultDictionary === "string" ? r.defaultDictionary : "",
   };
 }
 
@@ -208,11 +226,13 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   customKeymaps: {},
   notifications: DEFAULT_NOTIFICATIONS,
   proxy: DEFAULT_PROXY,
+  remoteDevelopment: { idleTimeoutMinutes: DEFAULT_REMOTE_IDLE_MINUTES },
+  toolDownloads: { githubMirror: "" },
   languages: DEFAULT_LANGUAGES,
   cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
   inspections: DEFAULT_INSPECTIONS,
-  spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
+  spelling: { ideWords: [], projectWords: [], customDictionaries: [], defaultDictionary: "" },
   tools: {},
   languageServers: {},
   agents: {
@@ -223,9 +243,6 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     foldTurns: true,
     smoothText: true,
     fitWindowWidth: false,
-    playfulStatus: false,
-    playfulAfterSeconds: 0,
-    playfulWords: {},
     thinking: "auto",
     toolCalls: "grouped",
     expandToolOutput: false,
@@ -234,6 +251,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     newTaskApprovals: "bypass",
     defaults: {},
     mcpServers: {},
+    skills: {},
   },
   mcpServer: {
     enabled: false,
@@ -244,6 +262,10 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     fixedPort: true,
     port: DEFAULT_MCP_PORT,
     fixedToken: false,
+    backgroundProjects: "off",
+    backgroundProjectPaths: [],
+    backgroundIdleMinutes: 30,
+    backgroundProjectLimit: 8,
   },
   ...DEFAULT_WORKFLOW,
 };
@@ -272,15 +294,6 @@ function agentDefaults(v: unknown): Record<string, Record<string, string>> {
   return Object.fromEntries(Object.entries(obj(v)).map(([agent, options]) => [agent, stringMap(options)]));
 }
 
-/** Activity → the user's playful words; a list, even an empty one, stands for that activity. */
-function playfulWords(v: unknown): Record<string, string[]> {
-  return Object.fromEntries(
-    Object.entries(obj(v))
-      .filter(([, words]) => Array.isArray(words))
-      .map(([activity, words]) => [activity, stringList(words)]),
-  );
-}
-
 function agentMcpServers(v: unknown): Required<AgentSettings>["mcpServers"] {
   const out: Required<AgentSettings>["mcpServers"] = {};
   for (const [name, raw] of Object.entries(obj(v))) {
@@ -304,6 +317,15 @@ function agentMcpServers(v: unknown): Required<AgentSettings>["mcpServers"] {
       ...(Object.keys(headers).length ? { headers } : {}),
       ...(agents.length ? { agents } : {}),
     };
+  }
+  return out;
+}
+
+function agentSkillPolicies(v: unknown): Required<AgentSettings>["skills"] {
+  const out: Required<AgentSettings>["skills"] = {};
+  for (const [name, raw] of Object.entries(obj(v))) {
+    if (!name.trim()) continue;
+    out[name] = { mode: oneOf(obj(raw).mode, ["auto", "slashOnly", "off"] as const, "auto") };
   }
   return out;
 }
@@ -406,6 +428,15 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     customKeymaps,
     notifications: validateNotifications(root.notifications),
     proxy: validateProxy(root.proxy),
+    remoteDevelopment: {
+      idleTimeoutMinutes: validRemoteIdleMinutes(obj(root.remoteDevelopment).idleTimeoutMinutes),
+    },
+    toolDownloads: {
+      githubMirror:
+        typeof obj(root.toolDownloads).githubMirror === "string"
+          ? String(obj(root.toolDownloads).githubMirror).trim()
+          : "",
+    },
     languages: validateLanguages(root.languages),
     cmake: validateCMake(root.cmake),
     projectStructure: validateProjectStructure(root.projectStructure),
@@ -428,9 +459,6 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       foldTurns: bool(agents.foldTurns, d.agents.foldTurns),
       smoothText: bool(agents.smoothText, d.agents.smoothText),
       fitWindowWidth: bool(agents.fitWindowWidth, d.agents.fitWindowWidth),
-      playfulStatus: bool(agents.playfulStatus, d.agents.playfulStatus),
-      playfulAfterSeconds: num(agents.playfulAfterSeconds, d.agents.playfulAfterSeconds, PLAYFUL_AFTER_LIMITS, true),
-      playfulWords: playfulWords(agents.playfulWords),
       thinking: oneOf(agents.thinking, ["auto", "expanded", "collapsed"] as const, d.agents.thinking),
       toolCalls: oneOf(agents.toolCalls, ["grouped", "each"] as const, d.agents.toolCalls),
       expandToolOutput: bool(agents.expandToolOutput, d.agents.expandToolOutput),
@@ -439,6 +467,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       newTaskApprovals: oneOf(agents.newTaskApprovals, ["bypass", "ask"] as const, d.agents.newTaskApprovals),
       defaults: agentDefaults(agents.defaults),
       mcpServers: agentMcpServers(agents.mcpServers),
+      skills: agentSkillPolicies(agents.skills),
     },
     mcpServer: {
       enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled),
@@ -449,6 +478,24 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       fixedPort: bool(obj(root.mcpServer).fixedPort, d.mcpServer.fixedPort),
       port: num(obj(root.mcpServer).port, d.mcpServer.port, MCP_PORT_LIMITS, true),
       fixedToken: bool(obj(root.mcpServer).fixedToken, d.mcpServer.fixedToken),
+      backgroundProjects: oneOf(
+        obj(root.mcpServer).backgroundProjects,
+        MCP_BACKGROUND_MODES,
+        d.mcpServer.backgroundProjects,
+      ),
+      backgroundProjectPaths: [...new Set(stringList(obj(root.mcpServer).backgroundProjectPaths))],
+      backgroundIdleMinutes: num(
+        obj(root.mcpServer).backgroundIdleMinutes,
+        d.mcpServer.backgroundIdleMinutes,
+        MCP_BACKGROUND_IDLE_LIMITS,
+        true,
+      ),
+      backgroundProjectLimit: num(
+        obj(root.mcpServer).backgroundProjectLimit,
+        d.mcpServer.backgroundProjectLimit,
+        MCP_BACKGROUND_PROJECT_LIMITS,
+        true,
+      ),
     },
     ...validateWorkflow(root),
   };

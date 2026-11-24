@@ -68,6 +68,7 @@ import { cloneCaretAbove, cloneCaretBelow } from "./cm/verticalMotion";
 import { pasteAsPlainText, pasteFromHistory, unwrapAtCaret } from "./extras";
 import { cyclicExpandWord } from "./wordCompletion";
 import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOffset } from "./copyReference";
+import { selectedLineContext, selectedLines } from "./selectedLines";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
@@ -107,6 +108,25 @@ const TABS_WHEN = "editorTabsOpen && !toolWindowFocus";
 function activeSlot(): EditorSlot | null {
   const slot = editorController().activeSlot;
   return slot && !slot.disposed ? slot : null;
+}
+
+/**
+ * The text pane that has focus in a diff or merge editor (`editable`: only a side that can be
+ * edited). Text actions that need nothing but the view run there, as in a file editor.
+ */
+function focusedDiffPane(editable: boolean): EditorView | null {
+  const el = typeof document === "undefined" ? null : document.activeElement;
+  const view = el instanceof HTMLElement ? EditorView.findFromDOM(el) : null;
+  return view && !(editable && view.state.readOnly) ? view : null;
+}
+
+/** `run` on the focused diff pane while a diff has focus, otherwise on the active editor. */
+function withTextView(run: (view: EditorView) => unknown, editable: boolean) {
+  return () => {
+    if (!getContext().diffEditorFocus) return withView(run)();
+    const view = focusedDiffPane(editable);
+    if (view) run(view);
+  };
 }
 
 function withView(run: (view: EditorView, slot: EditorSlot) => unknown) {
@@ -570,28 +590,17 @@ function copyReference(reference: Promise<string>) {
   }
 }
 
-/** The selected lines (1-based), leaving out the one a selection ends at the start of. */
-function selectedLines(state: EditorState): { first: number; last: number } {
-  const { doc, selection } = state;
-  const { from, to } = selection.main;
-  const first = doc.lineAt(from).number;
-  const last = Math.max(first, doc.lineAt(to).number - (to > from && doc.lineAt(to).from === to ? 1 : 0));
-  return { first, last };
-}
-
 /** `path:12`, or `path:12-18` for a selection over several lines. */
-function pathWithLines(state: EditorState, path: string): string {
+function pathWithLines(state: EditorState, path: string, kind: "relative" | "absolute" = "relative"): string {
   const { first, last } = selectedLines(state);
-  return `${pathToCopy("relative", path)}:${first}${last > first ? `-${last}` : ""}`;
+  return `${pathToCopy(kind, path)}:${first}${last > first ? `-${last}` : ""}`;
 }
 
 function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const path = slot.model.path;
-  const { first, last } = selectedLines(view.state);
   const contributed = menuGroupItems("copyPath", {
     paths: [path],
-    line: first - 1,
-    endLine: last > first ? last - 1 : undefined,
+    ...selectedLineContext(view.state),
   }).flatMap((item) =>
     (item.kind ?? "item") === "item" && "run" in item && item.id && item.run && item.preview
       ? [
@@ -607,6 +616,11 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   );
   const flavours = [
     { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
+    {
+      id: "editor.copyAbsolutePathWithLineNumber",
+      label: "Absolute Path with line number",
+      value: pathWithLines(view.state, path, "absolute"),
+    },
     { id: "project.copyFileName", label: "File Name", value: pathToCopy("name", path) },
     { id: "project.copyRelativePath", label: "Path From Content Root", value: pathToCopy("relative", path) },
     { id: "project.copySourceRootPath", label: "Path From Source Root", value: pathToCopy("source", path) },
@@ -619,6 +633,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const popup: Extract<LspPopup, { kind: "list" }> = {
     kind: "list",
     title: tx("Copy Path/Reference…"),
+    layout: "copyPath",
     anchor: caretAnchor(view, view.state.selection.main.head),
     items: [
       ...flavours
@@ -629,7 +644,9 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
           preview: f.value!,
           shortcut: shortcutLabel(f.id),
           run: () => {
-            void executeAction(f.id, f.id === "editor.copyPathWithLineNumber" ? f.value : path);
+            const lineNumbered =
+              f.id === "editor.copyPathWithLineNumber" || f.id === "editor.copyAbsolutePathWithLineNumber";
+            void executeAction(f.id, lineNumbered ? f.value : path);
           },
         })),
       ...contributed,
@@ -736,6 +753,16 @@ export function registerEditorActions(): () => void {
     run: withView(run),
     ...extra,
   });
+  /** A text action that also runs in a diff: on its editable side (`edit`) or on either side (`caret`). */
+  const diffText =
+    (editable: boolean) =>
+    (id: string, title: string, run: (view: EditorView) => unknown, extra: Partial<Action> = {}): Action => ({
+      ...text(id, title, run, extra),
+      when: `${TEXT_WHEN} || diffEditorFocus`,
+      run: withTextView(run, editable),
+    });
+  const edit = diffText(true);
+  const caret = diffText(false);
   const activePaneTab = () => {
     const s = useTabs.getState();
     const pane = s.panes[s.activePane];
@@ -745,13 +772,13 @@ export function registerEditorActions(): () => void {
     id,
     title,
     category: "Edit",
-    when: `${TEXT_WHEN} || findBarFocus || findBarOpen && popupOpen && !toolWindowFocus`,
+    when: `${TEXT_WHEN} || diffEditorFocus || findBarFocus || findBarOpen && popupOpen && !toolWindowFocus`,
     run: ({ arg, ctx }) => {
       const view = typeof arg === "string" || ctx.findBarFocus ? findPanelTarget(arg)?.view() : null;
       if (view) {
         run(view);
         view.focus();
-      } else withView(run)();
+      } else withTextView(run, false)();
     },
   });
   return registerActions([
@@ -773,16 +800,16 @@ export function registerEditorActions(): () => void {
       toggled: codeVisionShown,
       run: () => toggleCodeVision(),
     },
-    text("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
-    text("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
-    text("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
-    text("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
-    text("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
-    text("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
-    text("code.moveElementLeft", "Move Element Left", (v) => moveElementLeft(v), {
+    edit("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
+    edit("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
+    edit("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
+    edit("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
+    edit("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
+    edit("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
+    edit("code.moveElementLeft", "Move Element Left", (v) => moveElementLeft(v), {
       keywords: ["swap argument", "move parameter"],
     }),
-    text("code.moveElementRight", "Move Element Right", (v) => moveElementRight(v), {
+    edit("code.moveElementRight", "Move Element Right", (v) => moveElementRight(v), {
       keywords: ["swap argument", "move parameter"],
     }),
     text("code.moveStatementUp", "Move Statement Up", (v, slot) => moveStatement(v, slot, true)),
@@ -818,7 +845,7 @@ export function registerEditorActions(): () => void {
       category: "Edit",
       keywords: ["fully qualified name", "fqn", "copy path"],
     },
-    text("code.pasteAsPlainText", "Paste as Plain Text", (v) => pasteAsPlainText(v), {
+    edit("code.pasteAsPlainText", "Paste as Plain Text", (v) => pasteAsPlainText(v), {
       category: "Edit",
       icon: "paste",
     }),
@@ -862,23 +889,23 @@ export function registerEditorActions(): () => void {
     occurrence("code.addCaretNextOccurrence", "Add Selection for Next Occurrence", addNextOccurrence),
     occurrence("code.selectAllOccurrences", "Select All Occurrences", selectAllOccurrences),
     text("code.completeStatement", "Complete Current Statement", (v, slot) => completeCurrentStatement(v, slot)),
-    text("code.startNewLine", "Start New Line", (v) => startNewLine(v)),
-    text("code.startNewLineBefore", "Start New Line Before Current", (v) => startNewLineBefore(v)),
-    text("code.splitLine", "Split Line", (v) => splitLine(v)),
-    text("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
-    text("editor.codeBlockStart", "Move Caret to Code Block Start", (v) => cursorCodeBlockStart(v), {
+    edit("code.startNewLine", "Start New Line", (v) => startNewLine(v)),
+    edit("code.startNewLineBefore", "Start New Line Before Current", (v) => startNewLineBefore(v)),
+    edit("code.splitLine", "Split Line", (v) => splitLine(v)),
+    caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
+    caret("editor.codeBlockStart", "Move Caret to Code Block Start", (v) => cursorCodeBlockStart(v), {
       category: "Editor Actions",
     }),
-    text("editor.codeBlockEnd", "Move Caret to Code Block End", (v) => cursorCodeBlockEnd(v), {
+    caret("editor.codeBlockEnd", "Move Caret to Code Block End", (v) => cursorCodeBlockEnd(v), {
       category: "Editor Actions",
     }),
-    text(
+    caret(
       "editor.codeBlockStartWithSelection",
       "Move Caret to Code Block Start with Selection",
       (v) => selectCodeBlockStart(v),
       { category: "Editor Actions" },
     ),
-    text(
+    caret(
       "editor.codeBlockEndWithSelection",
       "Move Caret to Code Block End with Selection",
       (v) => selectCodeBlockEnd(v),
@@ -905,7 +932,7 @@ export function registerEditorActions(): () => void {
       }),
     ]),
     text("code.collapseBlock", "Fold Code Block", (v) => collapseBlock(v), { category: "Folding", keywords: ["fold"] }),
-    text("code.autoIndentLines", "Auto-Indent Lines", (v) => !v.state.readOnly && indentSelection(v), {
+    edit("code.autoIndentLines", "Auto-Indent Lines", (v) => !v.state.readOnly && indentSelection(v), {
       keywords: ["reindent", "fix indentation"],
     }),
     {
@@ -927,8 +954,8 @@ export function registerEditorActions(): () => void {
       // The mouse selection style owns the drag; invoking the action alone is harmless.
       run: () => {},
     },
-    text("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
-    text("editor.cloneCaretBelow", "Clone Caret Below", (v) => cloneCaretBelow(v), { category: "Editor Actions" }),
+    caret("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
+    caret("editor.cloneCaretBelow", "Clone Caret Below", (v) => cloneCaretBelow(v), { category: "Editor Actions" }),
     text("editor.matchBrace", "Move Caret to Matching Brace", (v) => cursorMatchBrace(v), {
       category: "Editor Actions",
       // ⌃M is Show Commit Message History in the commit window.
@@ -942,9 +969,9 @@ export function registerEditorActions(): () => void {
         return view ? isOverwrite(view.state) : false;
       },
     }),
-    text("code.joinLines", "Join Lines", (v) => joinLines(v)),
-    text("code.toggleCase", "Toggle Case", (v) => toggleCase(v), { keywords: ["upper", "lower"] }),
-    text("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
+    edit("code.joinLines", "Join Lines", (v) => joinLines(v)),
+    edit("code.toggleCase", "Toggle Case", (v) => toggleCase(v), { keywords: ["upper", "lower"] }),
+    caret("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
       category: "Edit",
     }),
     occurrence("code.unselectOccurrence", "Unselect Occurrence", unselectOccurrence),
@@ -952,8 +979,8 @@ export function registerEditorActions(): () => void {
       category: "Edit",
       keywords: ["clipboard", "paste multiple"],
     }),
-    text("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
-    text("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
+    edit("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
+    edit("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
     text("code.unwrap", "Unwrap/Remove…", (_v, slot) => void unwrapAtCaret(slot), {
       keywords: ["unwrap", "remove if"],
     }),
@@ -1008,7 +1035,7 @@ export function registerEditorActions(): () => void {
       title: "Reset Font Size",
       category: "View",
       keywords: ["zoom", "font size", "mouse wheel"],
-      when: "projectOpen",
+      when: "projectOpen || lightEdit",
       run: resetFontSize,
     },
     {
@@ -1301,6 +1328,16 @@ export function registerEditorActions(): () => void {
       run: ({ arg }) => {
         if (typeof arg === "string") copyEditorPath(arg);
         else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path)))();
+      },
+    },
+    {
+      id: "editor.copyAbsolutePathWithLineNumber",
+      title: "Copy Absolute Path with Line Number",
+      category: "Edit",
+      when: TEXT_WHEN,
+      run: ({ arg }) => {
+        if (typeof arg === "string") copyEditorPath(arg);
+        else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path, "absolute")))();
       },
     },
     {

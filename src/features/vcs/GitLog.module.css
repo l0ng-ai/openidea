@@ -1,8 +1,25 @@
 .root {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+/* Absolute in both states, so hiding and showing the log doesn't lay it out again. */
+.logHost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logHidden {
+  content-visibility: hidden;
+  z-index: -1;
+}
+/* WebKit leaves a stale selection highlight on a subtree whose rendering was skipped when the selection cleared. */
+.logHidden[data-selection] {
+  content-visibility: visible;
+  opacity: 0;
 }
 .headerTabs {
   min-width: 0;
@@ -14,6 +31,7 @@
   min-height: 0;
 }
 .log {
+  container: git-log / inline-size;
   height: 100%;
   min-height: 0;
   display: flex;
@@ -64,6 +82,14 @@
   flex: 1;
   min-height: 0;
 }
+/* Long repository lists shrink before the branch name. */
+.mergedBranchTree {
+  --tree-detail-flex-shrink: 1000;
+}
+.branchRepos {
+  margin-left: var(--space-1-5);
+  color: var(--fg-subtle);
+}
 .branchDetail {
   min-width: 0;
   display: inline-flex;
@@ -75,14 +101,32 @@
 
 /* filters */
 .filters {
-  gap: var(--space-1);
-  padding: 0 8px 0 6px;
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-0-5) var(--space-1);
+  padding: var(--space-0-5) 8px var(--space-0-5) 6px;
   min-width: 0;
-  overflow: hidden;
+}
+.filterControls,
+.filterActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.filterControls {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.filterActions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
 }
 .textFilter {
   flex: 0 1 260px;
-  min-width: 100px;
+  min-width: min(100px, 60%);
 }
 .filterGroup {
   position: relative;
@@ -95,6 +139,20 @@
 }
 .filterHidden {
   visibility: hidden;
+}
+@container git-log (max-width: 320px) {
+  .filterControls,
+  .filterActions {
+    display: contents;
+  }
+  .textFilter {
+    flex: 1 0 100%;
+  }
+  /* Keep the filters measurable for the overflow menu. */
+  .filterGroup {
+    position: absolute;
+    width: 0;
+  }
 }
 .filterButton {
   flex: none;
@@ -121,15 +179,24 @@
   white-space: nowrap;
   max-width: 220px;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .filterValue {
+  min-width: 0;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-strong);
+}
+@container git-log (max-width: 600px) {
+  .filterValue {
+    max-width: 10ch;
+  }
 }
 .filterChevron {
   color: var(--fg-icon);
 }
 .filterClear {
+  flex: none;
   height: 100%;
   display: inline-flex;
   align-items: center;
@@ -168,7 +235,7 @@
 .list {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden auto;
   outline: none;
   /* Rows coming and going while scrolling relay out the list alone, not the workbench. */
   contain: strict;
@@ -181,8 +248,8 @@
   height: 26px;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 0 8px;
+  gap: min(var(--space-2), 2%);
+  padding: 0 min(var(--space-2), 2%);
   white-space: nowrap;
   cursor: default;
   font-size: var(--fs-ui);
@@ -199,18 +266,23 @@
   background: var(--bg-app);
 }
 .columnCell {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   /* Keep the first glyph clear of the divider on this column's left edge.
      box-sizing: border-box keeps the width and boundary position unchanged. */
-  padding-inline-start: var(--space-2);
+  padding-inline-start: min(var(--space-2), 2%);
   /* Anchor for the full-height column resize strip (IDEA's invisible divider). */
   position: relative;
 }
+.signatureIndicator {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
 .columnHeading {
   position: relative;
-  padding-inline-end: 6px;
   cursor: grab;
   touch-action: none;
 }
@@ -234,7 +306,7 @@
      overflow:hidden, so any rule drawn into the 8px gap would be clipped away. */
   inset-inline-start: -4px;
   width: 8px;
-  cursor: ew-resize;
+  cursor: col-resize;
   touch-action: none;
   z-index: 1;
   display: flex;
@@ -314,7 +386,7 @@
   --log-row-bg: var(--bg-tree-selected);
 }
 .colSubject {
-  flex: 1;
+  flex: 1 0 min(220px, 50%);
   min-width: 0;
   display: flex;
   align-items: center;
@@ -347,27 +419,41 @@
   font-weight: 600;
   color: var(--fg);
 }
-.mergeSubject {
-  color: var(--fg-subtle);
-}
 .muted {
   color: var(--fg-subtle);
 }
+.commitText {
+  --log-subject-min: min(10ch, 30%);
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
 .subject {
   flex: 0 1 auto;
-  min-width: 0;
+  min-width: var(--log-subject-min);
+  color: var(--fg);
+}
+.subjectText {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--fg);
+}
+.mergeSubject {
+  color: var(--fg-subtle);
 }
 .headSubject {
   font-weight: 600;
 }
 .graph {
   flex: none;
+  /* Leave room for the subject when the graph has many lanes: the lanes past it are cut off, not squeezed. */
+  max-width: calc(100% - min(120px, 50%));
   fill: none;
   stroke-width: 1.6;
   overflow: visible;
+  clip-path: inset(-50% 0);
 }
 .refs {
   flex: 0 1 auto;
@@ -376,11 +462,30 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  /* May use the whole subject cell when space allows (#2447); shrinks with
-     per-label ellipsis before crowding out the commit message. */
   max-width: 100%;
   overflow: hidden;
   margin-left: auto;
+}
+.commitText > .refs {
+  /* Keep ref names at their full width while leaving space for a short subject. */
+  flex: none;
+  max-width: calc(100% - var(--log-subject-min) - var(--space-1-5));
+}
+.commitText > .refsCompact {
+  flex: 0 1 auto;
+  max-width: calc(100% / 3);
+}
+.commitText:has(> .refsCompact) > .subject {
+  /* Protect a short subject while leaving room for compact reference names. */
+  flex: 0 1000 max-content;
+  min-width: auto;
+  width: min(75%, 24ch);
+}
+.commitText > .refs .ref {
+  font-size: var(--fs-small);
+}
+.refsCompact .ref {
+  min-width: 11px;
 }
 .refsLeft {
   margin-left: 0;
@@ -394,10 +499,11 @@
   color: var(--fg-secondary);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
-  /* Sizes to content (#2447): truncates with ellipsis only when .refs runs
-     out of room; the full name stays available via the title tooltip. */
+}
+.refText {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Outlined tag glyph in the ref's colour. */
 .ref::before {
@@ -440,7 +546,17 @@
   flex-direction: column;
   min-height: 0;
 }
+.detailsBar {
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  padding-block: var(--space-0-5);
+}
 .detailsCount {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding-left: 4px;
   color: var(--fg-subtle);
   font-size: var(--fs-ui);
@@ -507,6 +623,10 @@
   user-select: text;
   font-size: var(--fs-ui);
 }
+.historyMessageBox {
+  padding: var(--space-2) var(--space-3);
+  border-top: 0;
+}
 .commitTooltip {
   width: min(520px, calc(100vw - 32px));
   max-height: 60vh;
@@ -570,45 +690,53 @@
   flex: 1;
   min-width: 0;
 }
+.messageText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
 .subjectLine {
   color: var(--fg-strong);
-  font-weight: 600;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .fullMessage {
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
   color: var(--fg);
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .meta {
-  margin-top: 10px;
+  font-size: var(--fs-small);
   color: var(--fg-subtle);
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.messageText + .meta {
+  margin-top: var(--space-2);
+}
+.meta + .meta,
+.commitEntry .messageText + .meta {
+  margin-top: var(--space-0-5);
 }
 .commitEntry + .commitEntry {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
-.metaCompact {
-  margin-top: 2px;
-}
-.meta .refs {
-  margin-left: 0;
-  max-width: none;
+.detailRefGroup {
+  display: flex;
   flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
 }
-.meta .ref {
+.detailRefGroup .ref {
+  align-items: baseline;
+  font-size: inherit;
   max-width: 100%;
   white-space: normal;
-  overflow-wrap: anywhere;
 }
 .hash {
   font-family: var(--font-mono);
+}
+.messageText .linkButton,
+.meta .linkButton {
+  max-width: 100%;
 }
 .linkButton {
   color: var(--link);
@@ -760,9 +888,19 @@
 }
 
 .colRepository {
-  flex: 0 0 100px;
+  flex: 0 1 100px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-secondary);
+}
+.shallowHistory {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
 }

@@ -4,23 +4,6 @@
   flex-direction: column;
   min-height: 0;
 }
-.toolbar {
-  height: 32px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--space-0-5);
-  padding: 0 6px;
-}
-.sep {
-  width: 1px;
-  height: 16px;
-  margin: 0 4px;
-  background: var(--border);
-}
-.grow {
-  flex: 1;
-}
 .tree {
   flex: 1;
   min-height: 0;
@@ -39,6 +22,24 @@
 .badge {
   flex: none;
 }
+/* The Flutter plugin's widget icon: its disc image with the class's initial on top. */
+.widgetBadge {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: url("@/ui/expui/flutter/widget@2x.png") center / 16px no-repeat;
+  color: var(--flutter-widget-fg);
+  font-size: 10px;
+  line-height: 1;
+}
+.privateWidget {
+  background-image: url("@/ui/expui/flutter/widget_private@2x.png");
+}
+.widgetBuild {
+  font-weight: 600;
+}
 .name {
   flex: none;
   max-width: 100%;
@@ -56,12 +57,23 @@
 .ancestor .name {
   color: var(--fg-subtle);
 }
+.structurePopup > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
 .popupTitle {
   display: flex;
   align-items: center;
   gap: var(--space-2);
 }
+.popupName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .popupHint {
+  flex: none;
+  margin-inline-start: auto;
   color: var(--fg-faint);
   font-family: var(--font-keys);
   font-size: var(--fs-small);
@@ -69,10 +81,11 @@
 }
 .filterRow {
   display: flex;
+  flex: none;
   align-items: center;
   gap: var(--space-1-5);
-  height: 32px;
-  padding: 0 8px 0 12px;
+  height: var(--h-row);
+  padding: 0 var(--space-3);
   border-bottom: 1px solid var(--border-popup);
 }
 .filter {
@@ -83,31 +96,49 @@
   border: 0;
   outline: none;
   color: var(--fg-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
   caret-color: var(--accent);
 }
 .filter::placeholder {
   color: var(--fg-faint);
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui);
+}
+.filterStatus {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  white-space: nowrap;
 }
 .popupList {
   display: flex;
   flex-direction: column;
-  padding: 4px 0;
+  min-height: 0;
+  padding-block: var(--space-1);
 }
 .popupList > * {
   flex: 1;
 }
+.popupToolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
+  border-block: 1px solid var(--border-popup);
+  background: var(--bg-popup-inline);
+  font-size: var(--fs-small);
+}
 .popupOptions {
   display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: var(--space-1) var(--space-4);
   align-items: center;
-  gap: var(--space-3);
-  height: 26px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border-popup);
-  font-size: var(--fs-small);
+}
+.popupOptions > label {
+  min-height: var(--h-row);
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .popupEmpty {
   padding: 4px 12px;

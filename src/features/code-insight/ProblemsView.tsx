@@ -13,6 +13,7 @@ import { basename, relativeDir, useProject } from "@/platform/project";
 import { diagnosticInspection, producerOf, type InspectionRef } from "@/platform/inspections";
 import { problemControls } from "@/platform/inspectionControls";
 import { editorService, maybeEditorService, useOccurrenceNavigator } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   EmptyState,
   Icon,
@@ -22,6 +23,7 @@ import {
   SplitHandle,
   SplitPanel,
   Tabs,
+  Toolbar,
   Tree,
   fileIconName,
   showContextMenu,
@@ -40,6 +42,7 @@ import {
   producerFor,
   sortProblems,
   useProblems,
+  type FileDiagnostics,
   type ProblemOrder,
   type ProblemsMap,
 } from "./problemsStore";
@@ -70,7 +73,7 @@ const OPTIONS_KEY = "openidea.problems.view.v1";
 interface ProblemsOptions extends ProblemOrder {
   /** Selecting a problem opens it in the editor. */
   autoscroll: boolean;
-  /** Source preview beside the list. */
+  /** Source preview in the Problems tool window. */
   preview: boolean;
 }
 
@@ -113,9 +116,8 @@ export function useProblemsHeaderMenu(): MenuItem[] {
 
 const group = (s: Severity): "error" | "warning" | "info" => (s === "hint" ? "info" : s);
 
-type Node =
-  | { kind: "file"; key: string; path: string; items: Diagnostic[] }
-  | { kind: "diag"; key: string; path: string; d: Diagnostic };
+type FileNode = { kind: "file"; key: string; path: string; items: Diagnostic[]; error: boolean };
+type Node = FileNode | { kind: "diag"; key: string; path: string; d: Diagnostic };
 
 /** The inspection that reported `d` (for Disable inspection / Change Severity). */
 export function diagInspection(map: ProblemsMap, path: string, d: Diagnostic): InspectionRef | null {
@@ -129,23 +131,64 @@ const plural = (n: number, word: string) => (n ? `${n} ${word}${n === 1 ? "" : "
 
 const SEVERITY_ICON: Record<Severity, string> = { error: "error", warning: "warning", info: "info", hint: "info" };
 
+interface CachedFileNode {
+  path: string;
+  show: ViewState["show"];
+  order: ProblemOrder;
+  node: FileNode | null;
+}
+
+// Keyed by the file's sources map, which the store replaces only when that file's diagnostics
+// change: a single-file update re-filters and re-sorts that file alone.
+const fileNodes = new WeakMap<FileDiagnostics, CachedFileNode>();
+
+function fileNode(map: ProblemsMap, path: string, show: ViewState["show"], order: ProblemOrder): FileNode | null {
+  const sources = map.get(path);
+  if (!sources) return null;
+  const hit = fileNodes.get(sources);
+  if (
+    hit?.path === path &&
+    hit.show.error === show.error &&
+    hit.show.warning === show.warning &&
+    hit.show.info === show.info &&
+    hit.order.bySeverity === order.bySeverity &&
+    hit.order.byName === order.byName
+  )
+    return hit.node;
+  const items = sortProblems(
+    fileDiagnostics(map, path).filter((d) => show[group(d.severity)]),
+    order,
+  );
+  const node: FileNode | null = items.length
+    ? { kind: "file", key: path, path, items, error: items.some((d) => d.severity === "error") }
+    : null;
+  fileNodes.set(sources, { path, show: { ...show }, order: { ...order }, node });
+  return node;
+}
+
 export function buildProblemNodes(
   map: ProblemsMap,
   paths: readonly string[],
   show: ViewState["show"],
   order: ProblemOrder = DEFAULT_PROBLEM_ORDER,
-): Node[] {
-  const files: Node[] = [];
+): FileNode[] {
+  const files: FileNode[] = [];
   for (const path of paths) {
-    const items = sortProblems(
-      fileDiagnostics(map, path).filter((d) => show[group(d.severity)]),
-      order,
-    );
-    if (!items.length) continue;
-    files.push({ kind: "file", key: path, path, items });
+    const node = fileNode(map, path, show, order);
+    if (node) files.push(node);
   }
-  const rank = (n: Node) => (n.kind === "file" ? (n.items.some((d) => d.severity === "error") ? 0 : 1) : 2);
-  return files.sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path));
+  return files.sort((a, b) => Number(!a.error) - Number(!b.error) || a.path.localeCompare(b.path));
+}
+
+const diagNodes = new WeakMap<FileNode, Node[]>();
+
+function diagChildren(n: FileNode): Node[] {
+  let children = diagNodes.get(n);
+  if (!children) {
+    children = n.items.map((d, i) => ({ kind: "diag", key: `${n.path}\u0000${i}`, path: n.path, d }));
+    diagNodes.set(n, children);
+  }
+  return children;
 }
 
 function open(path: string, d: Diagnostic, focus = true): Promise<void> {
@@ -172,11 +215,11 @@ function useCurrentPath(): string | null {
   return currentProblemsPath(text, useSyncExternalStore(subscribeActiveInput, activeInput));
 }
 
-export function ProblemsHeaderActions() {
+function ProblemsToolbar({ orientation }: { orientation: "horizontal" | "vertical" }) {
   const show = useProblemsView((s) => s.show);
   const toggle = useProblemsView((s) => s.toggle);
   return (
-    <>
+    <Toolbar aria-label="Problems actions" orientation={orientation} className={styles.toolbar}>
       <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" />
       <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" />
       <IconButton icon="error" title="Show Errors" size="small" pressed={show.error} onClick={() => toggle("error")} />
@@ -194,25 +237,21 @@ export function ProblemsHeaderActions() {
         pressed={show.info}
         onClick={() => toggle("info")}
       />
-    </>
+    </Toolbar>
   );
 }
 
 /** Scope tabs in the tool window header: "File: name  2" / "Project Errors". */
 export function ProblemsTabs() {
-  const map = useProblems((s) => s.map);
   const tab = useProblemsView((s) => s.tab);
   const setTab = useProblemsView((s) => s.setTab);
   const current = useCurrentPath();
-  const fileCount = current
-    ? countSeverities(filePaths(map, current).flatMap((path) => fileDiagnostics(map, path)))
-    : null;
-  const projectErrors = useMemo(() => {
-    let n = 0;
-    for (const sources of map.values())
-      for (const items of sources.values()) n += items.filter((d) => d.severity === "error").length;
-    return n;
-  }, [map]);
+  const fileCount = useProblems((s) => {
+    if (!current) return 0;
+    const c = countSeverities(filePaths(s.map, current).flatMap((path) => fileDiagnostics(s.map, path)));
+    return c.error + c.warning;
+  });
+  const projectErrors = useProblems((s) => s.counts.error);
   return (
     <Tabs
       variant="compact"
@@ -231,10 +270,7 @@ export function ProblemsTabs() {
             "File"
           ),
           text: "File",
-          trailing:
-            fileCount && fileCount.error + fileCount.warning > 0 ? (
-              <span className={styles.tabCount}>{fileCount.error + fileCount.warning}</span>
-            ) : undefined,
+          trailing: fileCount > 0 ? <span className={styles.tabCount}>{fileCount}</span> : undefined,
         },
         {
           id: "project",
@@ -246,12 +282,16 @@ export function ProblemsTabs() {
   );
 }
 
+const DEFAULT_PREVIEW_LAYOUT = { problems: 50, preview: 50 };
+
 export function ProblemsView() {
   const map = useProblems((s) => s.map);
   const { tab, show } = useProblemsView();
   const options = useProblemsOptions();
   const current = useCurrentPath();
   const root = useProject((s) => s.project?.root ?? "");
+  const sideDocked = useToolWindowLayout((s) => (s.placements.problems?.anchor ?? "bottom") !== "bottom");
+  const previewMinimum = sideDocked ? "25%" : 120;
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [lead, setLead] = useState<Node | null>(null);
   const tree = useRef<TreeHandle>(null);
@@ -297,42 +337,50 @@ export function ProblemsView() {
   );
 
   const getChildren = useCallback(
-    (n: Node): Node[] | undefined =>
-      n.kind === "file"
-        ? n.items.map((d, i) => ({ kind: "diag", key: `${n.path}\u0000${i}`, path: n.path, d }) as Node)
-        : undefined,
+    (n: Node): Node[] | undefined => (n.kind === "file" ? diagChildren(n) : undefined),
     [],
   );
 
   const renderNode = (n: Node, state: TreeRowState) => {
     if (n.kind === "file") {
+      const name = basename(n.path);
+      const directory = relativeDir(root, n.path);
       const c = countSeverities(n.items);
-      const parts = [plural(c.error, "error"), plural(c.warning, "warning"), plural(c.info + c.hint, "info")].filter(
-        Boolean,
-      );
+      const counts = [plural(c.error, "error"), plural(c.warning, "warning"), plural(c.info + c.hint, "info")]
+        .filter(Boolean)
+        .join(", ");
       return (
         <span className={styles.row}>
-          <Icon name={fileIconName(basename(n.path), n.path)} size={16} className={styles.fileIcon} />
-          <span
-            className={clsx(styles.fileName, c.error > 0 && styles.fileError, state.selected && styles.selectedText)}
-          >
-            {basename(n.path)}
+          <Icon name={fileIconName(name, n.path)} size={16} className={styles.fileIcon} />
+          <span className={styles.fileLocation}>
+            <span
+              className={clsx(styles.fileName, c.error > 0 && styles.fileError, state.selected && styles.selectedText)}
+              title={name}
+            >
+              {name}
+            </span>
+            {directory && (
+              <span className={styles.directory} title={directory}>
+                {directory}
+              </span>
+            )}
           </span>
-          <span className={styles.muted}>{relativeDir(root, n.path)}</span>
-          <span className={styles.count}>{parts.join(", ")}</span>
+          <span className={styles.count} title={counts}>
+            {counts}
+          </span>
         </span>
       );
     }
     const d = n.d;
+    const source = d.source && (d.code ? `${d.source}(${d.code})` : d.source);
     return (
       <span className={styles.row} title={d.message}>
         <Icon name={SEVERITY_ICON[d.severity]} size={14} className={styles[`sev-${d.severity}`]} />
         <span className={clsx(styles.message, d.deprecated && styles.deprecated)}>{d.message.split("\n")[0]}</span>
         <span className={styles.position}>:{d.range.start.line + 1}</span>
-        {d.source && (
-          <span className={styles.source}>
-            {d.source}
-            {d.code ? `(${d.code})` : ""}
+        {source && (
+          <span className={styles.source} title={source}>
+            {source}
           </span>
         )}
       </span>
@@ -347,9 +395,10 @@ export function ProblemsView() {
     );
 
   const selected = target(lead);
-  const list = (
+  const treeView = (
     <Tree<Node>
       aria-label="Problems"
+      className={styles.tree}
       handleRef={tree}
       roots={roots}
       getKey={(n) => n.key}
@@ -397,7 +446,11 @@ export function ProblemsView() {
             run: () => copy(n),
           },
           ...inspectionMenu(n.kind === "diag" ? diagInspection(map, n.path, n.d) : null),
-          ...menuGroupItems("problems", { paths: [t.path], line: t.d.range.start.line, column: t.d.range.start.col }),
+          ...menuGroupItems("problems", {
+            paths: [t.path],
+            line: t.d.range.start.line,
+            column: t.d.range.start.col,
+          }),
         ]);
       }}
       activateExpandable={false}
@@ -405,17 +458,28 @@ export function ProblemsView() {
       empty={empty}
     />
   );
+  const list = (
+    <div className={clsx(styles.results, sideDocked && styles.resultsStacked)}>
+      <ProblemsToolbar orientation={sideDocked ? "horizontal" : "vertical"} />
+      {treeView}
+    </div>
+  );
 
   return (
     <div className={styles.view}>
       <div className={styles.body} onKeyDownCapture={onKeyDownCapture}>
         {options.preview ? (
-          <SplitGroup orientation="horizontal" id="problems-preview-split" storageKey="openidea.problems.previewSplit">
-            <SplitPanel id="problems" minSize={120} className={styles.panel}>
+          <SplitGroup
+            orientation={sideDocked ? "vertical" : "horizontal"}
+            id="problems-preview-split"
+            storageKey={sideDocked ? "openidea.problems.previewSplit.vertical" : "openidea.problems.previewSplit"}
+            defaultLayout={DEFAULT_PREVIEW_LAYOUT}
+          >
+            <SplitPanel id="problems" minSize={previewMinimum} className={styles.panel}>
               {list}
             </SplitPanel>
             <SplitHandle />
-            <SplitPanel id="preview" minSize={120} defaultSize="50%" className={styles.panel}>
+            <SplitPanel id="preview" minSize={previewMinimum} className={styles.panel}>
               <SourcePreview
                 path={selected?.path ?? null}
                 line={selected?.d.range.start.line ?? 0}

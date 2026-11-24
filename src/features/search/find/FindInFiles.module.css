@@ -1,5 +1,6 @@
 /* IDEA's Find in Files is a popup: Popup.background, not the dialog surface. */
 .dialog {
+  container-type: inline-size;
   max-height: calc(90vh - 12px);
   background: var(--bg-popup, var(--bg-elev));
   font-family: var(--font-ui);
@@ -25,11 +26,20 @@
   border-bottom: 1px solid var(--border-popup);
   color: var(--fg-subtle);
 }
+/* Title and count give way to the controls: they end in an ellipsis instead of wrapping. */
+.title,
+.count {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .title {
   color: var(--fg-strong);
   font-weight: 600;
 }
 .status {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
@@ -40,7 +50,16 @@
 .spacer {
   flex: 1;
 }
+/* The mask and the buttons; their own row once the popup is too narrow for one (as in Search Everywhere). */
+.tools {
+  display: contents;
+}
+.maskToggle {
+  flex: none;
+  white-space: nowrap;
+}
 .mask {
+  min-width: 0;
   display: flex;
   align-items: center;
   height: var(--h-control);
@@ -54,6 +73,7 @@
 }
 .maskInput {
   width: 120px;
+  min-width: 0;
   background: none;
   border: 0;
   outline: none;
@@ -63,17 +83,13 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: 8px 8px 0;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2) 0;
 }
 /* The query fields sit on the popup surface, framed only by their border. */
 .fields .field {
   width: 100%;
   background: transparent;
-}
-.field input {
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
 }
 .error {
   color: var(--danger);
@@ -86,17 +102,21 @@
   --border-tab-selected: transparent;
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-1) var(--space-3);
   padding: 8px 14px 4px 20px;
 }
 .scopeDetail {
-  flex: 1;
+  flex: 1 1 200px;
   min-width: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-1);
+}
+.scopeDetail:empty {
+  display: none;
 }
 .dirInput {
   width: 100%;
@@ -138,8 +158,8 @@
 }
 .outdated .rowText,
 .outdated .rowText *,
-.outdated .rowFile,
-.outdated .rowFile * {
+.outdated .rowLocation,
+.outdated .rowLocation * {
   color: var(--fg-faint);
 }
 .rowText {
@@ -150,40 +170,59 @@
   font-family: var(--font-mono);
   font-weight: var(--fw-code);
 }
-.rowFile {
+.rowLocation {
   flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1-5);
   max-width: 40%;
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+}
+.rowLocationActive {
+  color: var(--fg-emphasis);
+}
+.rowFile {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--fg-subtle);
 }
-.rowFileActive {
+.rowFileRepeated {
   color: var(--fg-muted);
 }
 .rowLine {
-  color: var(--fg-faint);
+  flex: none;
   font-variant-numeric: tabular-nums;
 }
 .previewHeader {
   flex: none;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  height: 36px;
-  padding: 0 20px;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: 10px 20px var(--space-1-5);
   border-top: 1px solid var(--border-popup);
   color: var(--fg-subtle);
+  font-size: var(--fs-ui);
+  line-height: 1.25;
+  white-space: nowrap;
 }
-.previewPath {
+.previewDirectory {
+  display: flex;
   min-width: 0;
+}
+.previewName,
+.previewSegment {
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.previewName,
+.previewParent {
+  flex: none;
 }
 .previewName {
   color: var(--fg-strong);
-  margin-right: 8px;
 }
 .previewBox {
   flex: 1;
@@ -200,20 +239,40 @@
   gap: var(--space-2);
   min-height: 46px;
   padding: 8px 20px;
+  border-top: 1px solid var(--border-popup);
+  background: var(--bg-frame, var(--bg-app));
 }
-.footer > button,
-.footer > label {
+.footerOptions,
+.footerGroup {
+  display: flex;
   flex: none;
-  white-space: nowrap;
+  max-width: 100%;
+  align-items: center;
+  gap: var(--space-2);
+}
+.footerOptions {
+  flex-wrap: wrap;
+  margin-inline-end: auto;
+}
+.footerGroup > button {
+  flex-shrink: 1;
+  min-width: 0;
+  height: auto;
+  min-height: var(--h-button);
+  padding-block: var(--space-1);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .hint {
-  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-faint);
   font-size: var(--fs-small);
+}
+.footer > .hint {
+  flex: 1 1 0;
 }
 .rowDone {
   opacity: 0.55;
@@ -252,5 +311,29 @@
 .okHint {
   flex: none;
   color: var(--fg-faint);
+  font-family: var(--font-keys);
+  font-size: var(--fs-small);
   white-space: nowrap;
+}
+
+/* Narrower than the popup's own minimum width happens only when the window is smaller. */
+@container (max-width: 559px) {
+  .header {
+    flex-wrap: wrap;
+    row-gap: var(--space-1-5);
+    height: auto;
+    padding-block: 6px;
+  }
+  .spacer {
+    display: none;
+  }
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+  }
+  .mask {
+    margin-right: auto;
+  }
 }

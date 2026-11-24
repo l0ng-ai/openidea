@@ -26,23 +26,23 @@ OpenIDEA 通过 [Debug Adapter Protocol](https://microsoft.github.io/debug-adapt
 
 ## 支持的调试器
 
-| 语言                              | 调试适配器                               | 获取方式                                                           |
-| --------------------------------- | ---------------------------------------- | ------------------------------------------------------------------ |
-| Java                              | Microsoft java-debug（运行在 JDT LS 内） | 一键安装                                                           |
-| Kotlin                            | kotlin-debug-adapter                     | 一键安装                                                           |
-| C、C++、Objective-C、Swift        | `lldb-dap`                               | 随 LLVM、Xcode（`xcrun -f lldb-dap`）和 Swift 6+ 工具链提供        |
-| Rust、Zig                         | CodeLLDB                                 | 一键安装                                                           |
-| Go                                | Delve（`dlv`）                           | 一键安装（通过 `go install`，需先装好 Go）                         |
-| Python                            | debugpy                                  | 一键安装一份私有副本，所有解释器共用；也可以 `pip install debugpy` |
-| JavaScript、TypeScript（Node.js） | vscode-js-debug                          | 一键安装                                                           |
-| C#、F#                            | netcoredbg                               | 一键安装                                                           |
-| PHP                               | PHP Debug (Xdebug)                       | 适配器一键安装；PHP 本身需要装 Xdebug 3 扩展                       |
-| Shell 脚本                        | Bash Debug                               | 一键安装                                                           |
-| Ruby                              | rdbg                                     | `gem install debug`                                                |
-| Elixir                            | ElixirLS 调试器                          | 一键安装                                                           |
-| Dart、Flutter                     | `dart debug_adapter`                     | 随 Dart / Flutter SDK 提供                                         |
-| OCaml                             | earlybird                                | `opam install earlybird`                                           |
-| GDScript                          | Godot 编辑器                             | Godot 4                                                            |
+| 语言                                            | 调试适配器                               | 获取方式                                                           |
+| ----------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------ |
+| Java                                            | Microsoft java-debug（运行在 JDT LS 内） | 一键安装                                                           |
+| Kotlin                                          | kotlin-debug-adapter                     | 一键安装                                                           |
+| C、C++、Objective-C、Swift                      | `lldb-dap`                               | 随 LLVM、Xcode（`xcrun -f lldb-dap`）和 Swift 6+ 工具链提供        |
+| Rust、Zig                                       | CodeLLDB                                 | 一键安装                                                           |
+| Go                                              | Delve（`dlv`）                           | 一键安装（通过 `go install`，需先装好 Go）                         |
+| Python                                          | debugpy                                  | 一键安装一份私有副本，所有解释器共用；也可以 `pip install debugpy` |
+| JavaScript、TypeScript（Node.js、Chrome、Edge） | vscode-js-debug                          | 一键安装                                                           |
+| C#、F#                                          | netcoredbg                               | 一键安装                                                           |
+| PHP                                             | PHP Debug (Xdebug)                       | 适配器一键安装；PHP 本身需要装 Xdebug 3 扩展                       |
+| Shell 脚本                                      | Bash Debug                               | 一键安装                                                           |
+| Ruby                                            | rdbg                                     | `gem install debug`                                                |
+| Elixir                                          | ElixirLS 调试器                          | 一键安装                                                           |
+| Dart、Flutter                                   | `dart debug_adapter`                     | 随 Dart / Flutter SDK 提供                                         |
+| OCaml                                           | earlybird                                | `opam install earlybird`                                           |
+| GDScript                                        | Godot 编辑器                             | Godot 4                                                            |
 
 C 和 C++ 的配置也可以改用 GDB 14 及以上版本（`gdb -i dap`）：在 **调试适配器** 字段里选 **GDB（C、C++）**。IDE 不会自动安装 GDB，需要自己装（`apt install gdb`、`dnf install gdb`、`brew install gdb`）。
 
@@ -125,7 +125,7 @@ C 和 C++ 的配置也可以改用 GDB 14 及以上版本（`gdb -i dap`）：�
 程序挂起时：
 
 - **变量** 视图显示选中帧的变量。右键点击某个值，可以 **设置值…**（`F2`）、**复制值**、**复制名称**、**跳转到源代码**（`F4`）和 **添加到监视**。
-- 监视表达式显示在变量视图顶部，每次停下或切换帧时重新计算。用 **添加到监视** 添加，用 **移除监视** 删除。
+- 监视表达式显示在变量视图顶部，每次停下或切换帧时重新计算。用 **添加到监视** 添加，用 **移除监视** 删除，用 **移除所有监视** 一次全部删除。
 - 在编辑器里悬停变量会显示它的值。`⌥` 点击（`Alt` 点击）或 **快速计算表达式**（`⌘⌥F8` / `Ctrl+Alt+F8`）计算鼠标下的表达式或选中的内容。
 - 局部变量的值会内联显示在使用它们的行尾。
 - **计算表达式…**（`⌥F8` / `Alt+F8`）打开对话框，在选中帧里计算任意表达式，带历史记录，也能把表达式加入监视。
@@ -164,8 +164,9 @@ C 和 C++ 的配置也可以改用 GDB 14 及以上版本（`gdb -i dap`）：�
 ## 各语言的特有功能
 
 - **Java HotSwap**：**运行 › 调试操作 › 重新加载已更改的类** 编译改动，并把变化的类重新加载到正在运行的 Java 调试会话中。已经在执行的帧要等返回后才会用上新代码。保存后 JDT LS 自动完成构建时，IDE 也会提示是否重新加载。
+- **浏览器中的 JavaScript**：**JavaScript 调试** 配置在 Chrome 或 Edge 中打开一个 URL，通过 source map 在源码中调试页面脚本。见 [JavaScript 与 TypeScript](/zh/languages/javascript)。
 - **Maven 和 Gradle**：调试 Maven 或 Gradle 配置时，IDE 会让 JVM 带上 JDWP agent 启动，再用 java-debug 附加上去。
-- **Dart / Flutter**：Dart 会话运行时可以用 **热重载** 和 **热重启**。
+- **Dart / Flutter**：Dart 会话运行时可以用 **热重载** 和 **热重启**。在 Flutter 项目中，运行配置旁边的设备选择器决定运行和调试在哪台设备上启动应用；运行配置的 **设备** 字段可以固定使用某台设备。保存正在运行的 Flutter 调试会话里的 Dart 文件时也会自动热重载，文件有错误时跳过。可在 **设置 › 构建、执行、部署 › 调试器** 中关闭 **保存时热重载**。
 - **PHP**：如果 PHP 解释器没有加载 Xdebug，断点会被跳过；会话启动时 IDE 会提示。
 - **Python**：**设置 › 构建、执行、部署 › Python 调试器** 中有 **调试时自动附加到子进程** 和 **兼容 Gevent**。
 

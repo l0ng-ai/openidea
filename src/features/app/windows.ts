@@ -26,6 +26,7 @@ import { connectRemote, isRemoteWindow } from "@/platform/remote";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
 import { chooseProjectWindow } from "@/workbench/projectWindow";
+import { openTabColorPicker } from "@/workbench/TabColorPicker";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
 import { editorSwitching } from "@/editor/api";
 import { showWorkspaceDialog } from "./WorkspaceDialog";
@@ -57,6 +58,13 @@ async function openHere(path: string): Promise<boolean> {
   if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
   // A folder of a WSL distro runs there, not as a network folder; the window then drops untitled buffers.
   const wsl = await commands.wslResolve(path).catch(() => null);
+  try {
+    // Asked before leaving, so Don't Open keeps the current project and its processes running.
+    if (!wsl) await confirmProjectTrust(path, "local");
+  } catch (e) {
+    openFailed(path, e);
+    return false;
+  }
   if (!(await confirmLeaveProject(!wsl))) return false;
   try {
     if (wsl) await connectRemote(wsl.target, wsl.path);
@@ -178,6 +186,10 @@ export async function openProjectWithPolicy(path: string, files: readonly string
     await attachProject(path, files);
     return;
   }
+  if (mode === "tab") {
+    await openProjectTab(path, files);
+    return;
+  }
   try {
     // A window that already has the project is focused instead.
     const outcome = await call(commands.windowOpenProject(path, false, [...files]));
@@ -203,6 +215,19 @@ async function attachProject(path: string, files: readonly string[] = []): Promi
     if (project) useProject.setState({ project, settings: project.settings });
     await executeAction("project.reveal", path);
     await openInEditor(files);
+  } catch (e) {
+    openFailed(path, e);
+  }
+}
+
+/** Opens `path` as a new project tab of this window: a window of its own, joined into this window's group. */
+async function openProjectTab(path: string, files: readonly string[]): Promise<void> {
+  try {
+    // `new_window` always answers with the window holding the project, focused or just created;
+    // either way that window becomes this window's tab.
+    const outcome = await openProjectWindow(path, true, files);
+    if (outcome.kind === "current") return;
+    await call(commands.windowGroupJoin(outcome.label));
   } catch (e) {
     openFailed(path, e);
   }
@@ -412,6 +437,25 @@ export function windowActions(): Action[] {
       },
     },
     {
+      id: "window.setTabColor",
+      title: "Change Project Color…",
+      category: t("app.category.window"),
+      when: "windowGrouped",
+      run: ({ arg }) => {
+        const tabs = useWindowGroup.getState().tabs;
+        const label = typeof arg === "string" ? arg : tabs.find((tab) => tab.current)?.label;
+        const tab = tabs.find((t) => t.label === label);
+        if (!tab?.root) return;
+        const rect = document.querySelector(`[data-project-tab="${CSS.escape(tab.label)}"]`)?.getBoundingClientRect();
+        openTabColorPicker({
+          root: tab.root,
+          name: tab.name,
+          x: rect ? rect.left : window.innerWidth / 2 - 110,
+          y: rect ? rect.bottom : 64,
+        });
+      },
+    },
+    {
       id: "window.selectTab",
       title: "Select Project Tab",
       hidden: true,
@@ -500,7 +544,7 @@ export function windowActions(): Action[] {
       id: "file.newUntitled",
       title: t("app.action.newFile"),
       category: t("app.category.file"),
-      icon: "plus",
+      icon: "file-new",
       keywords: ["new", "create", "untitled", "file", "light edit"],
       run: async () => {
         if (desktopOnly()) return;
@@ -632,7 +676,20 @@ export function installLaunchHandling(): () => void {
     }
   });
   provideStartupLaunch(launch);
-  holdSplash(launch);
+  // Uncover once the launch project starts opening — the opening view shows the title bar and its
+  // own progress — rather than holding the splash over it until the project is fully open.
+  const shown = new Promise<void>((resolve) => {
+    const done = () => {
+      off();
+      resolve();
+    };
+    const off = useProject.subscribe((s) => {
+      if (s.openingPath !== null) done();
+    });
+    if (useProject.getState().openingPath !== null) done();
+    void launch.then(done, done);
+  });
+  holdSplash(shown);
   return () => {
     disposed = true;
     unlisten?.();

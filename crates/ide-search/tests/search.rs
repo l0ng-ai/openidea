@@ -30,6 +30,7 @@ fn query(pattern: &str) -> SearchQuery {
         scope: SearchScope::Project,
         max_matches: 0,
         context: Default::default(),
+        include_excluded: false,
     }
 }
 
@@ -129,6 +130,36 @@ fn whole_word() {
     assert_eq!(views[0].matches[0].ranges, vec![(0, 3), (27, 30), (32, 35)]);
     let (views, _) = run(p.path(), &SearchQuery { whole_word: true, ..regex("fo+") });
     assert_eq!(views[0].matches[0].ranges, vec![(0, 3), (27, 30), (32, 35)]);
+}
+
+/// IDEA's whole word: a word boundary is needed only at an edge where the match has an
+/// identifier character; a punctuation edge only needs a different character beside it.
+#[test]
+fn whole_word_needs_a_boundary_only_at_identifier_edges() {
+    let starts = |text: &str, q: SearchQuery| -> Vec<usize> {
+        let q = SearchQuery { whole_word: true, ..q };
+        ide_search::match_ranges(text, &q).unwrap().into_iter().map(|r| r.0).collect()
+    };
+    let text = "doWork(arg); redoWork(x); list: string[] = [];";
+    assert_eq!(starts(text, query("doWork(")), [0]);
+    assert_eq!(starts(text, query("(arg)")), [6]);
+    assert_eq!(starts(text, query("[]")), [38, 43]);
+    assert_eq!(starts(text, query("list")), [26]);
+    assert_eq!(starts("a == b; c === d", query("==")), [2]);
+    // `$` is part of an identifier (Java, Kotlin, JavaScript).
+    assert_eq!(starts("foo$bar foo", query("foo")), [8]);
+    // After an escape such as `\n`, a word starts.
+    assert_eq!(starts(r#"s = "\nfoo";"#, query("foo")), [7]);
+    assert_eq!(starts("é1 1 éé", query("1")), [4]);
+    // Regex matches follow the same rule.
+    assert_eq!(starts(text, regex(r"\w+\(")), [0, 13]);
+    assert_eq!(starts(text, regex(r"\[\]")), [38, 43]);
+
+    let p = project(&[("a.ts", text.as_bytes())]);
+    let (views, summary) = run(p.path(), &SearchQuery { whole_word: true, ..query("[]") });
+    assert_eq!((summary.matches, views[0].matches[0].ranges.clone()), (2, vec![(38, 40), (43, 45)]));
+    let (out, n) = replace_in_text(text, &SearchQuery { whole_word: true, ..query("doWork(") }, "run(").unwrap();
+    assert_eq!((out.as_str(), n), ("run(arg); redoWork(x); list: string[] = [];", 1));
 }
 
 #[test]
@@ -315,6 +346,25 @@ fn match_limit() {
 }
 
 #[test]
+fn match_limit_across_parallel_files() {
+    // One file per folder, so several walker threads search at once.
+    let content = "x\n".repeat(50);
+    let names: Vec<String> = (0..16).map(|i| format!("m{i}/a.txt")).collect();
+    let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), content.as_bytes())).collect();
+    let p = project(&files);
+    for _ in 0..20 {
+        let (views, summary) = run(p.path(), &SearchQuery { max_matches: 800, ..query("x") });
+        assert!(!summary.limit_hit);
+        assert_eq!((total(&views), summary.matches, summary.files), (800, 800, 16));
+
+        let (views, summary) = run(p.path(), &SearchQuery { max_matches: 799, ..query("x") });
+        assert!(summary.limit_hit);
+        assert_eq!((total(&views), summary.matches), (799, 799));
+        assert_eq!(summary.files as usize, views.len());
+    }
+}
+
+#[test]
 fn default_limit_is_ten_thousand() {
     let content = "a\n".repeat(10_050);
     let p = project(&[("a.txt", content.as_bytes())]);
@@ -409,6 +459,41 @@ fn long_lines_are_truncated() {
     let second = &views[0].matches[1];
     assert_eq!(second.text_offset, 0);
     assert_eq!(second.text, "short needle");
+}
+
+#[test]
+fn every_match_of_a_long_line_is_reported_in_its_own_window() {
+    let long = format!("a='needle';{}b='needle';{}needle!\n", "x".repeat(2000), "y".repeat(2000));
+    let p = project(&[("min.js", long.as_bytes())]);
+    let (views, summary) = run(p.path(), &query("needle"));
+    assert_eq!(summary.matches, 3);
+    let lines = &views[0].matches;
+    assert_eq!(lines.len(), 3, "one window per far-apart match");
+    let line_utf16: Vec<u16> = long.trim_end().encode_utf16().collect();
+    let mut starts = Vec::new();
+    for m in lines {
+        assert_eq!(m.line, 0);
+        assert!(m.text.encode_utf16().count() <= 500);
+        let [(a, b)] = m.ranges[..] else { panic!("{:?}", m.ranges) };
+        let text: Vec<u16> = m.text.encode_utf16().collect();
+        assert_eq!(String::from_utf16(&text[a as usize..b as usize]).unwrap(), "needle");
+        let col = (m.text_offset + a) as usize;
+        assert_eq!(String::from_utf16(&line_utf16[col..col + 6]).unwrap(), "needle");
+        starts.push(ide_core::Pos::new(0, m.text_offset + a));
+    }
+    // The reported positions are the ones Replace takes: all of them are replaced.
+    let edits = ide_search::replacement_edits(&long, &query("needle"), "pin", false, Some(&starts)).unwrap();
+    assert_eq!(edits.len(), 3);
+    assert!(!ide_search::apply_edits(&long, &edits).contains("needle"));
+}
+
+#[test]
+fn match_limit_counts_every_match_of_a_long_line() {
+    let long = format!("needle{}needle{}needle\n", "x".repeat(1000), "y".repeat(1000));
+    let p = project(&[("min.js", long.as_bytes())]);
+    let (views, summary) = run(p.path(), &SearchQuery { max_matches: 2, ..query("needle") });
+    assert!(summary.limit_hit);
+    assert_eq!((summary.matches, total(&views)), (2, 2));
 }
 
 #[test]
@@ -776,12 +861,36 @@ fn non_utf8_files_are_searched_as_text() {
 }
 
 #[test]
+fn dropped_matches_give_back_their_budget() {
+    // Matches claimed before a late NUL (binary) or late GBK bytes (searched again as text).
+    let head = b"needle\n".repeat(100);
+    let filler = b"a".repeat(200_000);
+    let binary = [head.as_slice(), &filler, b"\0\n"].concat();
+    let late_gbk = [head.as_slice(), &filler, b"\n", &gbk("中文\n")].concat();
+    // One project each: a thread's searcher keeps its grown buffer for the next file.
+    for (file, bytes, found) in [("bin.dat", binary, 0), ("late.txt", late_gbk, 100)] {
+        let p = project(&[(file, &bytes)]);
+        let (views, summary) = run(p.path(), &query("needle"));
+        assert_eq!((total(&views), summary.matches), (found, found as u32), "{file}");
+        assert!(!summary.limit_hit);
+    }
+}
+
+#[test]
+fn non_utf8_files_past_the_limit_show_decoded_text() {
+    let p = project(&[("a.txt", &gbk(&"x 中文\n".repeat(200)))]);
+    let (views, summary) = run(p.path(), &SearchQuery { max_matches: 100, ..query("x") });
+    assert!(summary.limit_hit);
+    assert_eq!((total(&views), summary.matches), (100, 100));
+    assert!(views[0].matches.iter().all(|m| m.text == "x 中文"));
+}
+
+#[test]
 fn non_utf8_files_use_the_given_decoder() {
     // Text too short to detect reliably decodes with the configured encoding.
     let p = project(&[("a.txt", &gbk("中文\n"))]);
     let out = Mutex::new(Vec::new());
-    let decode = |_: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, Some("gbk"));
-    let source = TextSource { overlay: &|_| None, decode: &decode };
+    let source = TextSource { overlay: &|_| None, fallback: &|_| Some("gbk".into()) };
     ide_search::search_in_context(p.path(), &query("中文"), None, None, source, &CancellationToken::new(), &|f| {
         out.lock().unwrap().push(f)
     })

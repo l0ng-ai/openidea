@@ -15,6 +15,12 @@ const mocks = vi.hoisted(() => ({
   showWorktreeComparison: vi.fn(),
   openDialog: vi.fn(),
   notify: vi.fn(),
+  toggleCommitBookmark: vi.fn(),
+}));
+
+vi.mock("../logStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../logStore")>()),
+  toggleCommitBookmark: mocks.toggleCommitBookmark,
 }));
 
 vi.mock("../diffInput", async (importOriginal) => ({
@@ -65,6 +71,7 @@ beforeEach(() => {
   mocks.showWorktreeComparison.mockReset();
   mocks.openDialog.mockReset();
   mocks.notify.mockReset();
+  mocks.toggleCommitBookmark.mockReset();
   useGitLog.setState({ commits: [], selected: null, selection: [], shownLog: "log", logTabs: [] });
   useVcs.setState({ root: "/repo", repo: "/repo", roots: ["/repo"], branchesLoaded: true });
   setContext("vcsAvailable", true);
@@ -116,7 +123,7 @@ describe("File History actions", () => {
     try {
       expect(getAction("vcs.log.changes.showDiff")!.keyWhen).toBe("vcsLogChangesFocus || vcsLogRevisionFocus");
       expect(getAction("vcs.showDiff")!.keyWhen).toBe(
-        "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
+        "!editorTextFocus && !diffEditorFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       );
       window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyD", key: "d", ctrlKey: true, bubbles: true }));
       await vi.waitFor(() => expect(mocks.openVcsDiff).toHaveBeenCalledOnce());
@@ -362,5 +369,36 @@ describe("File History actions", () => {
 
     expect(mocks.openVcsDiff).not.toHaveBeenCalled();
     expect(mocks.showWorktreeComparison).toHaveBeenCalledWith(commit.id, commit.shortId);
+  });
+});
+
+describe("Git Log commit shortcuts", () => {
+  it("act on the selected commit only while the commit list has focus", async () => {
+    const originalOverrides = useKeymap.getState().overrides;
+    const uninstallDispatcher = installKeyboardDispatcher(window);
+    useKeymap.setState({ overrides: { ...originalOverrides, "vcs.log.toggleBookmark": ["F3"] } });
+    useGitLog.setState({ commits: [commit], selected: commit.id, selection: [commit.id] });
+    const press = () => window.dispatchEvent(new KeyboardEvent("keydown", { code: "F3", key: "F3", bubbles: true }));
+    try {
+      for (const id of [
+        "vcs.log.editMessage",
+        "vcs.log.newBranch",
+        "vcs.log.goToChild",
+        "vcs.log.goToParent",
+        "vcs.log.toggleBookmark",
+        "vcs.log.toggleBookmarkWithMnemonic",
+      ])
+        expect(getAction(id)!.keyWhen, id).toBe("vcsLogCommitsFocus");
+      press();
+      await Promise.resolve();
+      expect(mocks.toggleCommitBookmark).not.toHaveBeenCalled();
+      setContext("vcsLogCommitsFocus", true);
+      press();
+      await vi.waitFor(() => expect(mocks.toggleCommitBookmark).toHaveBeenCalledWith(commit));
+    } finally {
+      setContext("vcsLogCommitsFocus", false);
+      useKeymap.setState({ overrides: originalOverrides });
+      uninstallDispatcher();
+    }
   });
 });

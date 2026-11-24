@@ -4,6 +4,7 @@
  */
 import { readFileSync } from "node:fs";
 import type { Comparison, ResultSet } from "./golden.ts";
+import type { ExpectedOutcome } from "./selection.ts";
 
 export type Condition = "warm" | "cold";
 
@@ -97,15 +98,42 @@ export function judge(
   budgets: Budgets,
   baseline: Outcome[] | null,
   repro: (o: Outcome) => string,
+  expected: readonly ExpectedOutcome[],
 ): Verdict[] {
   const base = new Map((baseline ?? []).map((o) => [idOf(o), o.metrics]));
-  return outcomes.map((o) => {
+  const expectedIds = new Set(expected.map(idOf));
+  const counts = new Map<string, number>();
+  for (const o of outcomes) counts.set(idOf(o), (counts.get(idOf(o)) ?? 0) + 1);
+  const work: Outcome[] = [...outcomes];
+  for (const e of expected) {
+    if (!counts.has(idOf(e))) work.push({ ...e, metrics: {}, samples: {}, error: "missing expected outcome" });
+  }
+  if (!work.length) work.push({ scenario: "workload", title: "Workload", condition: "warm", metrics: {}, samples: {} });
+  return work.map((o) => {
     const failures: Failure[] = [];
+    if (!expected.length) failures.push({ kind: "error", detail: "expected workload is empty" });
+    if (expectedIds.size !== expected.length) failures.push({ kind: "error", detail: "duplicate expected outcome" });
+    if (!expectedIds.has(idOf(o))) failures.push({ kind: "error", detail: "unexpected outcome" });
+    if ((counts.get(idOf(o)) ?? 0) > 1) failures.push({ kind: "error", detail: "duplicate outcome" });
     if (o.error) failures.push({ kind: /timed out/.test(o.error) ? "timeout" : "error", detail: o.error });
     if (o.degraded) failures.push({ kind: "degraded", detail: o.degraded });
     if (o.results && !o.comparison && !o.error)
       failures.push({ kind: "golden", detail: "no golden recorded: run with --update-golden and review it" });
-    for (const [metric, limit] of Object.entries(budgetsFor(budgets, o))) {
+    const limits = budgetsFor(budgets, o);
+    const required = new Set(["feedbackMs", "firstResultMs", "completeMs", ...Object.keys(limits)]);
+    if (o.results || o.comparison) {
+      required.add("recall");
+      required.add("precision");
+    }
+    for (const metric of new Set([...required, ...Object.keys(o.metrics)])) {
+      if (!Number.isFinite(o.metrics[metric]))
+        failures.push({
+          kind: lowerBound(metric) ? "correctness" : "budget",
+          metric,
+          detail: `${metric} is missing or nonfinite`,
+        });
+    }
+    for (const [metric, limit] of Object.entries(limits)) {
       const value = o.metrics[metric];
       if (value === undefined || !Number.isFinite(value)) continue;
       const over = lowerBound(metric) ? value < limit : value > limit;

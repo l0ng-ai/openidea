@@ -7,6 +7,7 @@
 use crate::LspManager;
 use crate::server::Server;
 use ide_core::{CancellationToken, DocId, Pos, Range};
+use ide_language::LanguageServerConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -125,10 +126,10 @@ impl LspManager {
             return;
         }
         let config = server.effective_config();
-        let search = crate::launch::server_search_path(&config);
+        let search = crate::launch::server_search_path(&config, &server.root);
         let Some(dir) = path.parent().map(Path::to_path_buf) else { return };
         let modules: Vec<String> = required.iter().map(|r| r.path.clone()).collect();
-        let Some(deprecated) = list_deprecations(&dir, &search, &modules, cancel).await else { return };
+        let Some(deprecated) = list_deprecations(&dir, &config, &search, &modules, cancel).await else { return };
         // The document changed meanwhile: its own save runs again.
         if cancel.is_cancelled() || self.docs.lock().get(&doc).is_none_or(|d| d.text.as_str() != text) {
             return;
@@ -208,16 +209,15 @@ struct ListedModule {
 /// `(module, message)` of each deprecated module in `modules`; `None` when `go` failed.
 async fn list_deprecations(
     dir: &Path,
+    config: &LanguageServerConfig,
     search: &std::ffi::OsStr,
     modules: &[String],
     cancel: &CancellationToken,
 ) -> Option<Vec<(String, String)>> {
-    let (dir, search, modules) = (dir.to_path_buf(), search.to_owned(), modules.to_vec());
+    let (dir, config, search, modules) = (dir.to_path_buf(), config.clone(), search.to_owned(), modules.to_vec());
     let command = tokio::task::spawn_blocking(move || {
         let go: PathBuf = ide_core::tool_path::find_command("go", &search, &dir)?;
-        let mut command = Command::new(go);
-        command.args(["list", "-m", "-u", "-e", "-json"]).args(modules).current_dir(dir).env("PATH", search);
-        Some(command)
+        Some(deprecations_command(&go, &dir, &config, &search, &modules))
     })
     .await
     .ok()??;
@@ -226,6 +226,23 @@ async fn list_deprecations(
         return None;
     }
     tokio::task::spawn_blocking(move || parse_deprecations(&output)).await.ok()
+}
+
+fn deprecations_command(
+    go: &Path,
+    dir: &Path,
+    config: &LanguageServerConfig,
+    search: &std::ffi::OsStr,
+    modules: &[String],
+) -> Command {
+    let mut command = Command::new(go);
+    command
+        .args(["list", "-m", "-u", "-e", "-json"])
+        .args(modules)
+        .current_dir(dir)
+        .envs(&config.env)
+        .env("PATH", search);
+    command
 }
 
 async fn run_query(command: Command, cancel: &CancellationToken, timeout: Duration) -> Option<Vec<u8>> {
@@ -313,6 +330,30 @@ fn parse_deprecations(json: &[u8]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deprecation_command_inherits_server_environment() {
+        let config: LanguageServerConfig = serde_json::from_value(serde_json::json!({
+            "name": "gopls", "command": "gopls", "env": {
+                "PATH": "selected-toolchain", "GOPROXY": "off", "GOPRIVATE": "example.invalid/*",
+                "GOTOOLCHAIN": "local", "GOWORK": "off"
+            }
+        }))
+        .unwrap();
+        let command = deprecations_command(
+            Path::new("go"),
+            Path::new("workspace"),
+            &config,
+            &crate::launch::server_search_path(&config, Path::new("workspace")),
+            &["example.invalid/lib".into()],
+        );
+        let env: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        for (key, value) in &config.env {
+            assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&Some(std::ffi::OsStr::new(value))), "missing {key}");
+        }
+        assert_eq!(command.get_current_dir(), Some(Path::new("workspace")));
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["list", "-m", "-u", "-e", "-json", "example.invalid/lib"]);
+    }
 
     #[test]
     fn queries_cancel_only_the_superseded_document() {

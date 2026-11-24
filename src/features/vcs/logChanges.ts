@@ -8,6 +8,8 @@ import type { ChangedFile, Commit, FileLineStats, LinkTarget, RevisionChange } f
 import { call, commands } from "@/platform/ipc";
 import { editorService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
+import { workflowSettings } from "@/platform/workflowSettings";
+import { combinedOf } from "./allInOneDiff";
 import {
   commitFileDiffData,
   openDiff,
@@ -67,7 +69,7 @@ export interface LineStatRange {
 /** One commit's files (`commit` given) or several commits' combined changes. */
 export function toLogChanges(
   files: readonly (ChangedFile | RevisionChange)[],
-  commit: Commit | null,
+  commit: Pick<Commit, "id" | "shortId" | "parents"> | null,
   repo = currentRepoRoot(),
   readOnly = false,
 ): LogChange[] {
@@ -255,22 +257,29 @@ export async function showChangesDiff(
     Math.max(0, chain.indexOf(first)),
   );
   // Selection preview stays a preview tab even under the modal interface; an explicit
-  // diff opens where the commit interface puts it.
-  if (preview) await openDiff(data, { preview: true, focus: false });
-  else await openVcsDiff(data, { preview: true });
+  // diff opens where the commit interface puts it. With "Open diff as editor tab" off
+  // (and no all-in-one diff) that is a separate window, so there is no tab to preview in.
+  if (preview) {
+    if (!vcsDiffInFront() && !workflowSettings().vcs.diffAsEditorTab && !combinedOf(data)) return;
+    await openDiff(data, { preview: true, focus: false });
+  } else await openVcsDiff(data, { preview: true });
 }
 
-/** Compare with Local (`side` after) / Compare Before with Local: the revision ↔ the working file. */
-export async function compareChangeWithLocal(change: LogChange, side: "after" | "before" = "after") {
-  if (change.readOnly) return;
-  const rev = side === "after" ? change.after : change.before;
-  if (!rev) return;
-  const revPath = side === "before" && change.oldPath ? absolutePath(change.oldPath, change.repo) : undefined;
-  await openVcsDiff({
-    path: absolutePath(change.path, change.repo),
-    left: { type: "rev", rev, path: revPath, label: rev.slice(0, 8) },
-    right: { type: "worktree" },
+/** Compare the selected files' saved revisions with their working copies. */
+export async function compareChangesWithLocal(changes: readonly LogChange[], side: "after" | "before" = "after") {
+  const diffs = changes.flatMap((change): DiffData[] => {
+    const rev = change[side];
+    if (!rev || change.readOnly) return [];
+    const revPath = side === "before" && change.oldPath ? absolutePath(change.oldPath, change.repo) : undefined;
+    return [
+      {
+        path: absolutePath(change.path, change.repo),
+        left: { type: "rev", rev, path: revPath, label: rev.slice(0, 8) },
+        right: { type: "worktree" },
+      },
+    ];
   });
+  if (diffs.length) await openVcsDiff(withChain(diffs, 0));
 }
 
 /** Jump to Source: the working file. */
@@ -336,18 +345,54 @@ export async function revertSelectedChanges(changes: readonly LogChange[], commi
     async () => {
       const patch = filterPatch(
         await call(
-          commands.vcsCreatePatch(changes[0]!.repo ?? currentRepoRoot(), {
-            from: "commits",
-            commits: ids,
-            reverse: true,
-          }),
+          commands.vcsCreatePatch(
+            changes[0]!.repo ?? currentRepoRoot(),
+            { from: "commits", commits: ids, reverse: true },
+            null,
+          ),
         ),
         paths,
       );
       if (!patch.trim()) throw new Error(tx("Nothing to revert"));
-      return call(commands.vcsApplyPatch(changes[0]!.repo ?? currentRepoRoot(), patch));
+      return call(commands.vcsApplyPatch(changes[0]!.repo ?? currentRepoRoot(), patch, null));
     },
     { refresh: false },
   );
   if (outcome) await reportApply(outcome, "Changes reverted");
+}
+
+export function canApplySelectedChanges(changes: readonly LogChange[]): boolean {
+  if (!changes.length || changes.some((change) => change.readOnly || change.statsFrom === change.statsTo)) return false;
+  const repo = changes[0]!.repo ?? currentRepoRoot();
+  if (!repo || changes.some((change) => (change.repo ?? currentRepoRoot()) !== repo)) return false;
+  const paths = new Set<string>();
+  for (const change of changes) {
+    if (paths.has(change.path) || (change.oldPath && paths.has(change.oldPath))) return false;
+    paths.add(change.path);
+    if (change.oldPath) paths.add(change.oldPath);
+  }
+  return true;
+}
+
+export async function applySelectedChanges(changes: readonly LogChange[]) {
+  if (!canApplySelectedChanges(changes)) return;
+  const repo = changes[0]!.repo ?? currentRepoRoot();
+  if (!repo) return;
+  const ranges = lineStatRanges(changes);
+  await saveAll();
+  const outcome = await runOp(
+    tx("Apply Selected Changes"),
+    async () => {
+      const patches = await Promise.all(
+        ranges.map(({ from, to, paths }) =>
+          call(commands.vcsCreatePatch(repo, { from: "revisions", before: from, after: to, paths }, null)),
+        ),
+      );
+      const patch = patches.join("");
+      if (!patch.trim()) throw new Error(tx("Nothing to apply"));
+      return call(commands.vcsApplyPatch(repo, patch, null));
+    },
+    { refresh: false },
+  );
+  if (outcome) await reportApply(outcome, tx("Changes applied"));
 }

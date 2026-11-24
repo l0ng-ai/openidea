@@ -2,40 +2,21 @@
  * Tools installer: Settings › Languages & Frameworks › Language Servers, plus
  * install prompts for missing language servers.
  *
- * Actions: `tools.languageServers` (open the page), `tools.install` (arg: tool name),
+ * Actions: `tools.languageServers` (open the page; arg: a tool name to show), `tools.install` (arg: tool name),
+ * `tools.promptInstall` (arg: `{ name, sticky?, formatter?, refactoring?: label }`),
  * `java.downloadJdk` (arg: `DownloadJdkArgs`).
  */
-import { lazyComponent } from "@/ui";
 import { executeAction, registerActions } from "@/platform/actions";
-import { registerSettingsPage } from "@/workbench/contributions";
 import { installExpiredServerPrompts } from "./expired";
 import { installJdkPrompts, registerJdkActions } from "./jdk";
-import { installMissingServerPrompts, installServerWarningPrompts, promptInstall } from "./missing";
+import {
+  installMissingServerPrompts,
+  installServerReadyExpiry,
+  installServerWarningPrompts,
+  promptInstall,
+} from "./missing";
+import { activateSettingsPages } from "./settingsPages";
 import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName, useTools } from "./store";
-
-/** The Language Servers page (also used by the Settings window). */
-export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: SETTINGS_PAGE_ID,
-    title: "Language Servers",
-    group: "Languages & Frameworks",
-    order: 400,
-    keywords: [
-      "lsp",
-      "language server",
-      "debugger",
-      "adapter",
-      "dap",
-      "install",
-      "initialization options",
-      "rust-analyzer",
-      "gopls",
-      "pyright",
-    ],
-    projectScope: true,
-    component: lazyComponent(() => import("./LanguageServersPage").then((m) => m.LanguageServersPage)),
-  });
-}
 
 export function activate(): () => void {
   const disposers = [
@@ -51,7 +32,11 @@ export function activate(): () => void {
               arg.name,
               !("sticky" in arg) || arg.sticky !== false,
               new Set(),
-              "formatter" in arg && arg.formatter === true,
+              "refactoring" in arg && typeof arg.refactoring === "string"
+                ? { refactoring: arg.refactoring }
+                : "formatter" in arg && arg.formatter === true
+                  ? "formatter"
+                  : "codeInsight",
             );
           }
         },
@@ -62,7 +47,11 @@ export function activate(): () => void {
         category: "Tools",
         icon: "package",
         keywords: ["lsp", "install", "debugger", "adapter"],
-        run: () => void executeAction("file.settings", SETTINGS_PAGE_ID),
+        run: ({ arg }) =>
+          void executeAction(
+            "file.settings",
+            typeof arg === "string" ? `${SETTINGS_PAGE_ID}#${arg}` : SETTINGS_PAGE_ID,
+          ),
       },
       {
         id: "tools.install",
@@ -85,6 +74,7 @@ export function activate(): () => void {
       },
     ]),
     installMissingServerPrompts(),
+    installServerReadyExpiry(),
     installServerWarningPrompts(),
     installExpiredServerPrompts(),
     registerJdkActions(),

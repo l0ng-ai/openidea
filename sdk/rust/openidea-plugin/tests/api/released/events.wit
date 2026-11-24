@@ -1,4 +1,4 @@
-package openidea:plugin@1.10.0;
+package openidea:plugin@1.15.0;
 
 /// Workbench events, delivered in batches to `event-handler.handle`.
 interface events {
@@ -35,9 +35,13 @@ interface events {
     /// API 1.5 also delivers `extensions-changed` (JSON array of the extension
     /// points this plugin declares whose contributions changed) through `other`,
     /// to the declaring plugin only and without a capability.
+    /// API 1.15 also delivers `caret-moved` (JSON {path, line, col, settled},
+    /// 0-based UTF-16 positions, when the caret moves in the focused editor;
+    /// `settled` is true for the final position once the caret rests, so costly
+    /// work waits for it; it requires `events`) through `other`.
     /// Kinds: `file-opened`, `file-saved`, `document-changed` (versioned UTF-16
     /// replacements from explicit path subscriptions), `websocket-ready`
-    /// (a host-owned connection has messages to drain), `files-changed` (batched disk changes
+    /// (a host-owned connection has messages to drain), `caret-moved`, `files-changed` (batched disk changes
     /// as `other`, with created/modified/removed path lists in JSON), `editor-focused` (the focused editor
     /// changed), `vcs-changed` (a repository's state changed: commit,
     /// checkout, fetch…), `action-performed` (an IDE action ran) and

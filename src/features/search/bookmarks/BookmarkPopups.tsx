@@ -3,13 +3,26 @@
  * popup (⌘F3: line, file and folder bookmarks by list + preview; Enter jumps), the Edit Description dialog
  * (F2 / Rename) and the bookmark list name dialog (New List / Rename List).
  */
-import { useMemo, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { Dialog, Icon, Input, List, Popup, T, fileIconName, type DialogButton } from "@/ui";
+import {
+  Dialog,
+  Icon,
+  Input,
+  List,
+  Popup,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  T,
+  fileIconName,
+  type DialogButton,
+} from "@/ui";
+import { useTx } from "@/platform/i18n";
 import { CodePreview } from "../find/parts";
-import { basename, openLocation, relPath } from "../common/open";
+import { basename, loadJson, openLocation, relPath, saveJson } from "../common/open";
 import {
   MNEMONICS,
   assignMnemonic,
@@ -29,6 +42,7 @@ import {
   type PathBookmark,
 } from "./store";
 import styles from "./BookmarkPopups.module.css";
+import { useRowHeight } from "@/ui/density";
 
 export function BookmarkPopupsOverlay() {
   const chooser = useBookmarkPopups((s) => s.chooser);
@@ -185,12 +199,46 @@ export function bookmarkRows(
 
 const isSectionRow = (r: Row) => r.kind === "file" || r.kind === "list";
 
+const BOOKMARK_POPUP_SIZE = "openidea.bookmarks.popupSize";
+const MIN_WIDTH = 340;
+const MIN_HEIGHT = 260;
+
 function BookmarksPopup() {
+  const tx = useTx();
+  const rowHeight = useRowHeight();
   const items = useBookmarks((s) => s.items);
   const paths = useBookmarks((s) => s.paths);
   const lists = useBookmarks((s) => s.lists);
   const root = useProject((s) => s.project?.root ?? null);
   const rows = useMemo(() => bookmarkRows(items, paths, lists), [items, paths, lists]);
+  const layout = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  const [initialSize] = useState(() => {
+    const saved = loadJson<{ w?: unknown; h?: unknown } | null>(BOOKMARK_POPUP_SIZE, null);
+    return typeof saved?.w === "number" &&
+      typeof saved.h === "number" &&
+      Number.isFinite(saved.w) &&
+      Number.isFinite(saved.h)
+      ? { w: Math.max(MIN_WIDTH, saved.w), h: Math.max(MIN_HEIGHT, saved.h) }
+      : null;
+  });
+  useLayoutEffect(() => {
+    const element = layout.current;
+    if (!element) return;
+    const update = () => setStacked(element.clientWidth > 0 && element.clientWidth < 600);
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
+    });
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, []);
   const [index, setIndex] = useState(() => rows.findIndex((r) => !isSectionRow(r)));
   const active = Math.min(index, rows.length - 1);
   const row = rows[active];
@@ -233,9 +281,32 @@ function BookmarksPopup() {
   const previewPath = selected?.path ?? (selectedPath && !selectedPath.dir ? selectedPath.path : null);
 
   return (
-    <Dialog open onClose={close} width={820} title="Bookmarks" position="top" className={styles.listDialog}>
-      <div className={styles.listBody} onKeyDown={onKeyDown}>
-        <div className={styles.listPane}>
+    <Dialog
+      open
+      onClose={close}
+      title="Bookmarks"
+      popup
+      className={styles.listDialog}
+      width={820}
+      minWidth={MIN_WIDTH}
+      minHeight={MIN_HEIGHT}
+      resizable="both"
+      initialSize={initialSize}
+      onResized={(size) => saveJson(BOOKMARK_POPUP_SIZE, size)}
+    >
+      <SplitGroup
+        elementRef={layout}
+        orientation={stacked ? "vertical" : "horizontal"}
+        storageKey={stacked ? "openidea.bookmarks.popupStacked" : "openidea.bookmarks.popupSplit"}
+        className={styles.listBody}
+      >
+        <SplitPanel
+          id="bookmark-list"
+          defaultSize="38%"
+          minSize={stacked ? "30%" : "200px"}
+          className={styles.listPane}
+          onKeyDown={onKeyDown}
+        >
           <List<Row>
             items={rows}
             getKey={(r) => r.key}
@@ -247,8 +318,8 @@ function BookmarksPopup() {
               jump(r);
             }}
             aria-label="Bookmarks"
-            rowHeight={22}
-            sectionHeight={24}
+            autoFocus
+            rowHeight={rowHeight}
             empty={<span>{items.length || paths.length ? null : <T>No bookmarks</T>}</span>}
             renderSection={(r) =>
               r.kind === "file" ? (
@@ -268,16 +339,17 @@ function BookmarksPopup() {
                     <Icon name="bookmark" size={14} />
                   )}
                   <span className={styles.markText}>{bookmarkLabel(r.bookmark) || <T>(empty line)</T>}</span>
-                  <span className={styles.dim}>{r.bookmark.line + 1}</span>
+                  <span className={styles.lineNumber}>{r.bookmark.line + 1}</span>
                 </span>
               ) : null
             }
           />
-        </div>
-        <div className={styles.previewPane}>
+        </SplitPanel>
+        <SplitHandle aria-label={tx("Resize bookmark panes")} />
+        <SplitPanel id="bookmark-preview" minSize={stacked ? "30%" : "240px"} className={styles.previewPane}>
           <CodePreview path={previewPath} line={selected?.line ?? 0} highlights={[]} />
-        </div>
-      </div>
+        </SplitPanel>
+      </SplitGroup>
     </Dialog>
   );
 }

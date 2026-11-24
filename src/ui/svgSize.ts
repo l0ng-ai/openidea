@@ -123,25 +123,30 @@ const formatPx = (n: number) => `${Number(n.toFixed(2))}px`;
 /**
  * Sets an `<img>`'s 1× base width so CSS scales it by `--markdown-zoom-scale`,
  * respecting explicit HTML `width` / `height` attributes when present.
+ * The width goes on `box` when the image sits in a wrapper that takes its size.
  */
-export function applyImageZoomWidth(img: HTMLImageElement, intrinsic?: { w: number; h: number } | null): boolean {
+export function applyImageZoomWidth(
+  img: HTMLImageElement,
+  intrinsic?: { w: number; h: number } | null,
+  box: HTMLElement = img,
+): boolean {
   const rawWidth = img.getAttribute("width");
   const pct = parsePercent(rawWidth);
   if (pct !== null) {
-    img.style.width = `calc(${pct}% * var(--markdown-zoom-scale, 1))`;
-    img.style.height = "auto";
+    box.style.width = `calc(${pct}% * var(--markdown-zoom-scale, 1))`;
+    box.style.height = "auto";
     return true;
   }
   const attrW = parseLengthPx(rawWidth);
   if (attrW !== null) {
-    img.style.setProperty("--image-width", formatPx(attrW));
-    img.dataset.naturalWidth = "";
+    box.style.setProperty("--image-width", formatPx(attrW));
+    img.dataset.naturalWidth = box.dataset.naturalWidth = "";
     return true;
   }
   if (!intrinsic || intrinsic.w <= 0 || intrinsic.h <= 0) return false;
   const attrH = parseLengthPx(img.getAttribute("height"));
   const baseW = attrH !== null ? (attrH * intrinsic.w) / intrinsic.h : intrinsic.w;
-  img.style.setProperty("--image-width", formatPx(baseW));
-  img.dataset.naturalWidth = "";
+  box.style.setProperty("--image-width", formatPx(baseW));
+  img.dataset.naturalWidth = box.dataset.naturalWidth = "";
   return true;
 }

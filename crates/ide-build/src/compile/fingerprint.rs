@@ -120,7 +120,7 @@ fn collect(
                 break;
             }
         }
-        let program = process::program_path(&step.program, &step.env);
+        let program = process::program_path(&step.program, &step.env, &step.cwd);
         inputs.push(program.clone());
         // Maven installed via a symlink still reads conf from its distribution.
         if let Ok(program) = dunce::canonicalize(program)
@@ -131,7 +131,7 @@ fn collect(
             }
         }
         if !environment.contains_key("JAVA_HOME") {
-            let java = process::program_path(if cfg!(windows) { "java.exe" } else { "java" }, &step.env);
+            let java = process::program_path(if cfg!(windows) { "java.exe" } else { "java" }, &step.env, &step.cwd);
             inputs.push(java.clone());
             if let Ok(java) = dunce::canonicalize(java)
                 && let Some(home) = java.parent().and_then(Path::parent)
@@ -171,7 +171,7 @@ fn collect(
     let steps = plan
         .steps
         .iter()
-        .map(|s| (process::program_path(&s.program, &s.env), s.args.clone(), s.cwd.clone(), s.env.clone()))
+        .map(|s| (process::program_path(&s.program, &s.env, &s.cwd), s.args.clone(), s.cwd.clone(), s.env.clone()))
         .collect();
     // Profiles and plugins can read arbitrary environment variables. Keep a signature
     // of the inherited environment without persisting unrelated credentials.
@@ -182,7 +182,7 @@ fn collect(
 }
 
 /// Scans every input, storing project inputs relative to the project.
-fn scan_all(
+pub(super) fn scan_all(
     root: &Path,
     inputs: Vec<PathBuf>,
     cancel: &CancellationToken,
@@ -210,7 +210,7 @@ pub fn launch_fingerprint(
     if projects.is_empty() {
         return Ok(None);
     }
-    let plan = launch_plan(root, model, module, test, BuildKind::Build)?;
+    let plan = launch_plan(root, model, module, test, BuildKind::Build, cancel)?;
     let Some(collected) = collect(root, &projects, &plan, local_repo)? else { return Ok(None) };
     let Collected { inputs, environment, steps, inherited_hash } = collected;
     let parameters = serde_json::to_string(&(root, module, test, steps, environment, inherited_hash, projects))
@@ -229,7 +229,7 @@ pub fn menu_fingerprint(
     file: Option<&Path>,
     cancel: &CancellationToken,
 ) -> IdeResult<Option<LaunchFingerprint>> {
-    let plan = plan(root, model, BuildKind::Build, file, None)?;
+    let plan = plan(root, model, BuildKind::Build, file, None, None, cancel)?;
     if plan.system != BuildSystem::Maven {
         return Ok(None);
     }
@@ -261,6 +261,23 @@ pub fn menu_fingerprint(
     let scope = file.map(|f| rel_str(root, f));
     let parameters = serde_json::to_string(&("menu-build", scope, steps, environment, inherited_hash))
         .map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(Some(LaunchFingerprint { version: 2, parameters, files: scan_all(root, inputs, cancel)? }))
+}
+
+/// Input fingerprint of one Maven module's menu build (#4078): its POM chain,
+/// source and resource trees plus the launcher settings that shape the build.
+/// `None` disables the module-scoped reuse (unresolved custom roots).
+/// All filesystem work belongs on the caller's blocking thread.
+pub(super) fn module_fingerprint(
+    root: &Path,
+    project: &maven::MavenProject,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<LaunchFingerprint>> {
+    let projects = [project];
+    let Some(inputs) = maven::launch_inputs(root, &projects, None) else { return Ok(None) };
+    let parameters =
+        serde_json::to_string(&("module-build", &project.dir, &project.command, &project.options, &project.env))
+            .map_err(|e| IdeError::internal(e.to_string()))?;
     Ok(Some(LaunchFingerprint { version: 2, parameters, files: scan_all(root, inputs, cancel)? }))
 }
 

@@ -23,13 +23,25 @@ it("stays up, under dialogs, until a question asked while the window opens is an
   const question = new Promise<boolean>((resolve) => (answer = resolve));
   holdSplash(question);
   hideSplash();
-  askOverSplash(question);
-  expect(splash()?.classList.contains("splash-under-dialogs")).toBe(true);
-  await vi.advanceTimersByTimeAsync(60_000);
-  expect(splash()).not.toBeNull();
-  answer(false);
-  await vi.advanceTimersByTimeAsync(1000);
-  expect(splash()).toBeNull();
+  const events: string[] = [];
+  const record = (e: Event) => events.push(e.type);
+  window.addEventListener("openidea:boot-question", record);
+  window.addEventListener("openidea:boot-answer", record);
+  try {
+    askOverSplash(question);
+    expect(splash()?.classList.contains("splash-under-dialogs")).toBe(true);
+    // The startup timeout pauses while the user answers.
+    expect(events).toEqual(["openidea:boot-question"]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(splash()).not.toBeNull();
+    answer(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(splash()).toBeNull();
+    expect(events).toEqual(["openidea:boot-question", "openidea:boot-answer"]);
+  } finally {
+    window.removeEventListener("openidea:boot-question", record);
+    window.removeEventListener("openidea:boot-answer", record);
+  }
 });
 
 it("leaves a page without a splash alone", async () => {

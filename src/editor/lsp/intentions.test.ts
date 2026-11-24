@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setDiagnostics } from "@codemirror/lint";
 import type { CodeAction, Diagnostic } from "@/bindings";
@@ -40,6 +40,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 const {
   actionsForDiagnostic,
   applyQuickFix,
+  INTENTIONS_POPUP_DELAY_MS,
   quickFixesAt,
   applyKindSilently,
   bulbLine,
@@ -49,24 +50,211 @@ const {
   lightsBulb,
   listedCodeActions,
   listedIntentions,
+  showIntentions,
   withInspectionControls,
 } = await import("./intentions");
+const { useLspPopup, closePopup } = await import("./popupStore");
+const { asyncIntentionProviders, inspectionControlProviders } = await import("@/editor/api");
 const { setFileDiagnostics, toLintDiagnostics } = await import("./diagnostics");
 const { lspDoc } = await import("./lsp");
 
 const views: EditorView[] = [];
 afterEach(() => {
   views.splice(0).forEach((v) => v.destroy());
+  closePopup();
   vi.clearAllMocks();
+  vi.useRealTimers();
+});
+
+describe("⌥↵ popup timing", () => {
+  const editor = (doc: string, caret: number, path = "/p/a.ts") => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc,
+        selection: { anchor: caret },
+        extensions: [lspDoc.of({ doc: 1, path, language: "typescript", uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    return view;
+  };
+  const answer = (data: CodeAction[]) => ({ status: "ok" as const, data });
+
+  it("shows the popup while the server is still answering, then fills it", async () => {
+    vi.useFakeTimers();
+    const view = editor("f(1);\n", 0);
+    let resolve!: (v: unknown) => void;
+    lspCodeActions.mockImplementation(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const shown = showIntentions(view);
+    await vi.advanceTimersByTimeAsync(INTENTIONS_POPUP_DELAY_MS);
+    const popup = useLspPopup.getState().popup;
+    expect(popup).toMatchObject({ kind: "list", title: "Intentions", busy: true, items: [] });
+    resolve(answer([{ ...resolved, edit: null }]));
+    await shown;
+    expect(useLspPopup.getState().popup).toMatchObject({ kind: "list", busy: false });
+    expect((useLspPopup.getState().popup as { items: { label: string }[] }).items.map((i) => i.label)).toEqual([
+      "Introduce local variable",
+    ]);
+  });
+
+  it("shows the answer at once when it beats the delay", async () => {
+    vi.useFakeTimers();
+    const view = editor("f(1);\n", 0);
+    lspCodeActions.mockResolvedValue(answer([{ ...resolved, edit: null }]));
+    await showIntentions(view);
+    const popup = useLspPopup.getState().popup;
+    expect(popup).toMatchObject({ kind: "list", busy: false });
+    // Every row is there before the delay could have shown an empty list.
+    expect((popup as { items: unknown[] }).items).toHaveLength(1);
+  });
+
+  it("asks the line's errors alongside the caret's actions instead of after them", async () => {
+    vi.useFakeTimers();
+    const view = editor("val order: Order\n", 4);
+    const error: Diagnostic = {
+      range: { start: { line: 0, col: 11 }, end: { line: 0, col: 16 } },
+      severity: "error",
+      message: "Unresolved reference: Order",
+      source: "kotlin",
+      code: null,
+    };
+    view.dispatch(setDiagnostics(view.state, toLintDiagnostics(view.state.doc, [error])));
+    const fix = { ...resolved, title: "Create class 'Order'", kind: "quickfix", edit: null };
+    lspCodeActions.mockImplementation(async (_doc: number, range: { start: { col: number } }) =>
+      answer(range.start.col === 11 ? [fix] : []),
+    );
+    await showIntentions(view);
+    expect(lspCodeActions).toHaveBeenCalledTimes(2);
+    expect((useLspPopup.getState().popup as { items: { label: string }[] }).items.map((i) => i.label)).toEqual([
+      "Create class 'Order'",
+    ]);
+    setFileDiagnostics("/p/a.ts", "kotlin", []);
+  });
+
+  it("drops the busy popup when the request fails and nothing local is offered", async () => {
+    vi.useFakeTimers();
+    const view = editor("f(1);\n", 0);
+    let reject!: (e: unknown) => void;
+    lspCodeActions.mockImplementation(
+      () =>
+        new Promise((_, r) => {
+          reject = r;
+        }),
+    );
+    const shown = showIntentions(view);
+    await vi.advanceTimersByTimeAsync(INTENTIONS_POPUP_DELAY_MS);
+    expect((useLspPopup.getState().popup as { busy: boolean }).busy).toBe(true);
+    reject({ kind: "internal", message: "boom" });
+    await shown;
+    expect(useLspPopup.getState().popup).toBeNull();
+  });
+
+  it("closes instead of reopening when the caret's context changed meanwhile", async () => {
+    vi.useFakeTimers();
+    const view = editor("f(1);\n", 0);
+    let resolve!: (v: unknown) => void;
+    lspCodeActions.mockImplementation(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const shown = showIntentions(view);
+    await vi.advanceTimersByTimeAsync(INTENTIONS_POPUP_DELAY_MS);
+    expect(useLspPopup.getState().popup).not.toBeNull();
+    view.dispatch({ changes: { from: 0, insert: "g();\n" } });
+    resolve(answer([{ ...resolved, edit: null }]));
+    await shown;
+    expect(useLspPopup.getState().popup).toBeNull();
+  });
+
+  it("keeps a popup the user opened while the actions were being computed", async () => {
+    vi.useFakeTimers();
+    const view = editor("f(1);\n", 0);
+    let resolve!: (v: unknown) => void;
+    lspCodeActions.mockImplementation(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const shown = showIntentions(view);
+    await vi.advanceTimersByTimeAsync(INTENTIONS_POPUP_DELAY_MS);
+    const mine = useLspPopup.getState().popup;
+    // Something else (a chooser, another ⌥↵) replaced it.
+    const other = { kind: "list" as const, anchor: { x: 0, y: 0 }, title: "Other", items: [] };
+    useLspPopup.setState((s) => ({ popup: other, seq: s.seq + 1 }));
+    resolve(answer([{ ...resolved, edit: null }]));
+    await shown;
+    expect(useLspPopup.getState().popup).toBe(other);
+    expect(mine).not.toBe(other);
+  });
+});
+
+describe("context actions a feature finds through the language server", () => {
+  const editor = (...providers: Parameters<typeof asyncIntentionProviders.of>[0][]) => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "f(1);\n",
+        extensions: [
+          lspDoc.of({ doc: 1, path: "/p/A.java", language: "java", uiMode: null, readOnly: false }),
+          ...providers.map((p) => asyncIntentionProviders.of(p)),
+        ],
+      }),
+    });
+    views.push(view);
+    return view;
+  };
+  const labels = () => (useLspPopup.getState().popup as { items: { label: string }[] }).items.map((i) => i.label);
+  const intention = (label: string) => ({ id: label, label, run: () => {} });
+
+  it("waits for them and lists them with the server's actions", async () => {
+    let answer!: (v: ReturnType<typeof intention>[]) => void;
+    const view = editor(() => new Promise((r) => (answer = r)));
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [{ ...resolved, edit: null }] });
+    const shown = showIntentions(view);
+    await Promise.resolve();
+    answer([intention("Create exception breakpoint on Failure")]);
+    await shown;
+    expect(labels()).toEqual(
+      expect.arrayContaining(["Create exception breakpoint on Failure", "Introduce local variable"]),
+    );
+  });
+
+  it("lists them alone when the server has nothing", async () => {
+    const view = editor(async () => [intention("Disable exception breakpoint on Failure")]);
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [] });
+    await showIntentions(view);
+    expect(labels()).toEqual(["Disable exception breakpoint on Failure"]);
+  });
+
+  it("keeps the other rows when one provider fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const view = editor(
+      async () => {
+        throw new Error("boom");
+      },
+      async () => [intention("Enable exception breakpoint on Failure")],
+    );
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [] });
+    await showIntentions(view);
+    expect(labels()).toEqual(["Enable exception breakpoint on Failure"]);
+    error.mockRestore();
+  });
 });
 
 describe("inspection controls in ⌥↵ (issue #42)", () => {
-  const editorAt = (path: string) => {
+  const editorAt = (path: string, extra: Extension = []) => {
     const view = new EditorView({
       state: EditorState.create({
         doc: "import os\n",
         selection: { anchor: 8 },
-        extensions: [lspDoc.of({ doc: 1, path, language: "python", uiMode: null, readOnly: false })],
+        extensions: [lspDoc.of({ doc: 1, path, language: "python", uiMode: null, readOnly: false }), extra],
       }),
     });
     views.push(view);
@@ -103,6 +291,24 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
     expect(items[0]!.submenu).toHaveLength(2);
     setFileDiagnostics("/p/two.py", "ruff", []);
     expect(withInspectionControls(view, [])).toEqual([]);
+  });
+
+  it("adds the rows features contribute for the inspection", () => {
+    setFileDiagnostics("/p/three.py", "ruff", [unused]);
+    const suppress = vi.fn();
+    const view = editorAt(
+      "/p/three.py",
+      inspectionControlProviders.of((_view, id) =>
+        id === "lsp:ruff:F401" ? [{ id: "suppress", label: "Suppress for statement", run: suppress }] : [],
+      ),
+    );
+    const [options] = withInspectionControls(view, []);
+    expect(options!.submenu?.map((s) => ("label" in s ? s.label : "-"))).toEqual([
+      "Edit inspection profile setting",
+      "Disable inspection",
+      "Suppress for statement",
+    ]);
+    setFileDiagnostics("/p/three.py", "ruff", []);
   });
 
   it.each(["info", "warning", "error"] as const)(

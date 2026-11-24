@@ -2,7 +2,7 @@
 import type { ChangeKind, FileStatus } from "@/bindings";
 import type { FileDecoration } from "@/workbench/contributions";
 import { formatDay, formatTimestamp } from "@/platform/dateFormat";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 /** What a file looks like in IDEA's change lists (one kind per file). */
 export type EffectiveKind = "modified" | "added" | "deleted" | "renamed" | "untracked" | "ignored" | "conflicted";
@@ -63,7 +63,7 @@ export function statusDecorations(status: readonly FileStatus[], propagate = tru
     if (!kind) continue;
     const deco: FileDecoration = {
       color: KIND_COLOR[kind],
-      tooltip: fs.renamedFrom ? tx`${KIND_LABEL[kind]} (from ${fs.renamedFrom})` : KIND_LABEL[kind],
+      tooltip: fs.renamedFrom ? tx`${txPart(KIND_LABEL[kind])} (from ${fs.renamedFrom})` : KIND_LABEL[kind],
     };
     if (kind === "ignored") deco.faded = true;
     // Settings › Version Control › Show directories with changed descendants.
@@ -139,6 +139,12 @@ export function formatTime(ms: number | null | undefined, now = Date.now()): str
 
 export function formatDate(ms: number | null | undefined): string {
   return ms ? formatDay(new Date(ms), undefined, true) : "";
+}
+
+export function formatSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** Parses a git progress line ("Receiving objects:  45% (9/20)") into a fraction. */

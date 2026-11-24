@@ -1,14 +1,16 @@
 import { readFileSync } from "node:fs";
+import { useMemo } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction } from "@/platform/actions";
-import { CLEAR_COLOR, _setSchemeSource } from "@/platform/colorScheme";
+import { CLEAR_COLOR, _setSchemeSource, resolvedAttribute } from "@/platform/colorScheme";
 import { setLocale } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS } from "../model/schema";
 import { openSettings, stage, stagedValue, useSettingsDialog } from "../model/staging";
 import { PageContext } from "../components/context";
 import { COLOR_SCHEME_PAGES } from "../pages/editor/colorScheme";
+import { preloadBuiltinPage } from "../pages/lazyPage";
 
 const mocks = vi.hoisted(() => ({
   open: vi.fn(),
@@ -30,16 +32,19 @@ const run = (name: string) =>
   act(async () => {
     await executeAction(`editor.colorScheme.${name}`);
   });
-const schemePage = (id: string) => {
+function SchemePage({ id }: { id: string }) {
   const page = COLOR_SCHEME_PAGES.find((p) => p.id === id)!;
   const Page = page.component!;
-  render(
-    <PageContext.Provider value={{ pageId: page.id, scope: "project" }}>
+  const value = useMemo(() => ({ pageId: id, scope: "project" as const }), [id]);
+  return (
+    <PageContext.Provider value={value}>
       <Page />
-    </PageContext.Provider>,
+    </PageContext.Provider>
   );
-};
+}
+const schemePage = (id: string) => render(<SchemePage id={id} />);
 
+beforeAll(() => preloadBuiltinPage("editor.colorScheme"));
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.open.mockResolvedValue("/schemes/forest.icls");
@@ -62,10 +67,10 @@ describe("scheme actions", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Applied 16 values; skipped 2");
     expect(Object.values(useSettingsDialog.getState().staged).every((s) => s.scope === "global")).toBe(true);
     await run("export");
-    expect(mocks.write).toHaveBeenCalledWith("/schemes/export.icls", expect.any(Array));
-    expect(new TextDecoder().decode(new Uint8Array(mocks.write.mock.calls[0]![1]))).toContain(
-      'name="Forest &amp; Moss"',
-    );
+    expect(mocks.write).toHaveBeenCalledWith("/schemes/export.icls", expect.any(String));
+    expect(
+      new TextDecoder().decode(Uint8Array.from(atob(mocks.write.mock.calls[0]![1]), (c) => c.charCodeAt(0))),
+    ).toContain('name="Forest &amp; Moss"');
     mocks.confirm.mockResolvedValueOnce(false);
     await run("delete");
     expect(value("colorScheme")).toBe(id);
@@ -86,7 +91,7 @@ describe("scheme actions", () => {
       await executeAction("editor.colorScheme.export", "/chosen/custom-export.icls");
     });
     expect(mocks.save).not.toHaveBeenCalled();
-    expect(mocks.write).toHaveBeenCalledWith("/chosen/custom-export.icls", expect.any(Array));
+    expect(mocks.write).toHaveBeenCalledWith("/chosen/custom-export.icls", expect.any(String));
   });
 
   it("supports cancel, keep both and overwrite collisions", async () => {
@@ -179,6 +184,19 @@ describe("python scheme attributes", () => {
   });
 });
 
+describe("Julia scheme attributes", () => {
+  it("previews Julia roles and selects their independently scoped attributes", () => {
+    schemePage("editor.colorScheme.julia");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-function-call"]')!));
+    expect(screen.getByRole("treeitem", { name: "Function call", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-type"]')!));
+    expect(screen.getByRole("treeitem", { name: "Class name", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(within(preview).getByText("@show")));
+    expect(screen.getByRole("treeitem", { name: "Metadata", selected: true })).toBeInTheDocument();
+  });
+});
+
 describe("doc comment scheme attributes", () => {
   it.each([
     ["en", "Doc comment", "Tag", "Tag value", "Markup"],
@@ -260,6 +278,21 @@ describe("Go scheme attributes", () => {
 
 describe("scheme attribute state", () => {
   beforeEach(() => schemePage("editor.colorScheme.language-defaults"));
+  it("shows and clears inherited italics for static symbols (#4493)", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-static-italic"]')!));
+
+    const italic = screen.getByRole("checkbox", { name: "Italic" });
+    expect(italic).toBeChecked();
+
+    act(() => fireEvent.click(italic));
+    expect(italic).not.toBeChecked();
+    expect(preview.style.getPropertyValue("--syn-static-italic")).toBe("normal");
+    expect(value("colorOverrides")).toEqual({ dark: { staticSymbol: { italic: false } } });
+  });
+
   it("shows the red-green colours the editor uses and the setting behind them (#3851)", () => {
     _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8"));
     try {
@@ -396,6 +429,45 @@ describe("Console Colors (#2698)", () => {
     const preview = screen.getByLabelText("Color scheme preview");
     act(() => fireEvent.click(within(preview).getByText(/^red\s*$/)));
     expect(screen.getByRole("treeitem", { name: "Red", selected: true })).toBeInTheDocument();
+  });
+});
+
+describe("Diff & Merge colors", () => {
+  // The three-pane preview is registered by the VCS feature's editor kind, absent in this
+  // isolated settings test, so drive the attribute tree directly.
+  const expand = (tree: HTMLElement, group: string) => {
+    const row = within(tree).getByRole("treeitem", { name: group });
+    act(() => fireEvent.mouseDown(within(row).getByText(group).previousElementSibling!, { button: 0 }));
+  };
+
+  it("groups change types and the folded wave, and overrides the stripe", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+    schemePage("editor.colorScheme.diff-and-merge");
+    const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
+    expect(within(tree).getByRole("treeitem", { name: "Changed lines" })).toBeInTheDocument();
+    expect(within(tree).getByRole("treeitem", { name: "Folded unchanged fragments" })).toBeInTheDocument();
+    expand(tree, "Changed lines");
+    act(() => fireEvent.click(within(tree).getByRole("treeitem", { name: "Changed" })));
+    act(() => fireEvent.click(screen.getByRole("checkbox", { name: "Error stripe mark" })));
+    const stripe = screen.getByRole("textbox", { name: "Error stripe mark hex" });
+    act(() => fireEvent.change(stripe, { target: { value: "#ff4081" } }));
+    expect(value("colorOverrides")).toEqual({ dark: { diffChanged: { errorStripeColor: "#ff4081" } } });
+    const preview = screen.getByLabelText("Color scheme preview");
+    expect(preview.style.getPropertyValue("--diff-modified-stripe")).toBe("#ff4081");
+  });
+
+  it("shows the wave default following the theme's subtle text", () => {
+    _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8"));
+    try {
+      // The default resolves from --fg-subtle, not a hardcoded IDEA colour.
+      expect(resolvedAttribute("dark", "diffSeparatorWave").foreground).toBe("#73767c");
+      act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+      schemePage("editor.colorScheme.diff-and-merge");
+      const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
+      expect(within(tree).getByRole("treeitem", { name: "Folded unchanged fragments" })).toBeInTheDocument();
+    } finally {
+      _setSchemeSource("");
+    }
   });
 });
 

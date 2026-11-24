@@ -4,12 +4,18 @@ import {
   alterTableSql,
   canDrop,
   canModifyTable,
+  createDatabaseSql,
+  createSchemaSql,
   createTableSql,
   draftOf,
+  dropDatabaseSql,
+  templateOf,
   dropSql,
   ident,
   reference,
+  canRename,
   renameSql,
+  renameDatabaseSql,
   scriptSql,
   truncateSql,
   quoteIdent,
@@ -108,6 +114,17 @@ describe("database object SQL", () => {
     expect(renameSql("postgres", { kind: "column", schema: "public", name: "users", column: "email" }, "mail")).toBe(
       "alter table public.users rename column email to mail;",
     );
+  });
+
+  it("renames schemas and databases where the server can", () => {
+    const schema = { kind: "schema" as const, schema: "sales", name: "sales" };
+    expect(canRename("postgres", schema)).toBe(true);
+    expect(canRename("snowflake", schema)).toBe(true);
+    expect(canRename("mysql", schema)).toBe(false);
+    expect(canRename("sqlServer", schema)).toBe(false);
+    expect(renameSql("postgres", schema, "Old Sales")).toBe('alter schema sales rename to "Old Sales";');
+    expect(renameDatabaseSql("postgres", "shop", "store")).toBe("alter database shop rename to store;");
+    expect(renameDatabaseSql("sqlServer", "shop", "store")).toBe("alter database shop modify name = store;");
   });
 
   it("drops with IF EXISTS / CASCADE", () => {
@@ -339,5 +356,51 @@ describe("snowflake object SQL", () => {
     const dropped = emp.map(draftOf);
     dropped[1] = { ...dropped[1]!, dropped: true };
     expect(alterTableSql("snowflake", "HR", "EMP", "EMP", dropped)).toEqual(["alter table HR.EMP drop column NAME;"]);
+  });
+});
+
+describe("database and schema SQL", () => {
+  it("creates a PostgreSQL database with only the options given", () => {
+    expect(createDatabaseSql("postgres", "shop", {})).toBe("create database shop;");
+    expect(
+      createDatabaseSql("postgres", "Shop Copy", {
+        owner: "app",
+        template: "template0",
+        encoding: "UTF8",
+        tablespace: " ",
+      }),
+    ).toBe(`create database "Shop Copy" owner app template template0 encoding 'UTF8';`);
+    expect(createDatabaseSql("postgres", "shop", { encoding: "it's" })).toBe("create database shop encoding 'it''s';");
+  });
+
+  it("names the database the server copies for a new one", () => {
+    expect(templateOf("postgres", {})).toBe("template1");
+    expect(templateOf("postgres", { template: "template0" })).toBe("template0");
+    expect(templateOf("sqlServer", { template: "ignored" })).toBe("model");
+  });
+
+  it("creates a SQL Server database with a collation", () => {
+    expect(createDatabaseSql("sqlServer", "shop", { collation: "Latin1_General_CI_AS", owner: "ignored" })).toBe(
+      "create database shop collate Latin1_General_CI_AS;",
+    );
+  });
+
+  it("creates a schema with an owner, and a MySQL schema as a database", () => {
+    expect(createSchemaSql("postgres", "sales", {})).toBe("create schema sales;");
+    expect(createSchemaSql("postgres", "sales", { owner: "app" })).toBe("create schema sales authorization app;");
+    expect(createSchemaSql("sqlServer", "sales", { owner: "dbo" })).toBe("create schema sales authorization dbo;");
+    expect(createSchemaSql("mysql", "shop", { charset: "utf8mb4", collation: "utf8mb4_0900_ai_ci" })).toBe(
+      "create database shop character set utf8mb4 collate utf8mb4_0900_ai_ci;",
+    );
+    expect(createSchemaSql("mysql", "shop", {})).toBe("create database shop;");
+  });
+
+  it("drops a database, forcing out other sessions when asked", () => {
+    expect(dropDatabaseSql("postgres", "shop", false)).toBe("drop database shop;");
+    expect(dropDatabaseSql("postgres", "shop", true)).toBe("drop database shop with (force);");
+    expect(dropDatabaseSql("sqlServer", "shop", false)).toBe("drop database shop;");
+    expect(dropDatabaseSql("sqlServer", "shop", true)).toBe(
+      "alter database shop set single_user with rollback immediate;\ndrop database shop;",
+    );
   });
 });

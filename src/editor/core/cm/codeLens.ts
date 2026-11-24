@@ -7,6 +7,7 @@
 import { EditorState, Facet, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import { codeLenses, type CodeLens } from "@/editor/api";
+import { foldChipWidth } from "./folding";
 import { showContextMenu } from "@/ui";
 import { codeVisionMenuItems } from "../codeVision";
 import { LINE_INSET } from "./lineInset";
@@ -99,6 +100,21 @@ class LensWidget extends WidgetType {
     return this.key === other.key && this.lenses.every((l, i) => l.run === other.lenses[i]?.run);
   }
 
+  /** The box parks a fixed offset past its zero-width anchor; a folded chip drawn after the
+      anchor paints under the box, so the box also steps past the chip's width (folding.ts). */
+  private stepPastFoldChip(el: HTMLElement) {
+    const inner = this.inline ? (el.firstElementChild as HTMLElement | null) : el;
+    if (!inner) return;
+    const chip = foldChipWidth(el);
+    if (chip === this.appliedChip) return;
+    this.appliedChip = chip;
+    if (chip) inner.style.left = `calc(var(--openidea-hint-offset) + ${chip}px)`;
+    else inner.style.removeProperty("left");
+  }
+
+  private appliedChip = -1;
+  private observer: MutationObserver | undefined;
+
   override toDOM(view: EditorView): HTMLElement {
     // The inline one shares no class with the row, so none of the row's block styles reach into the line.
     const dom: HTMLElement = document.createElement(this.inline ? "span" : "div");
@@ -111,6 +127,18 @@ class LensWidget extends WidgetType {
       dom.appendChild(host);
     }
     this.fill(host, view);
+    if (this.inline) {
+      // The chip can appear (or go away) after this widget mounted, hence the observer; the
+      // element is only measurable once CodeMirror has inserted it, so defer like the blame does.
+      setTimeout(() => {
+        if (!dom.isConnected) return;
+        this.stepPastFoldChip(dom);
+        const line = dom.closest(".cm-line");
+        if (!line) return;
+        this.observer = new MutationObserver(() => this.stepPastFoldChip(dom));
+        this.observer.observe(line, { childList: true, subtree: true, characterData: true });
+      }, 0);
+    }
     dom.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -126,6 +154,7 @@ class LensWidget extends WidgetType {
     const host = this.inline ? (dom.firstElementChild as HTMLElement | null) : dom;
     if (!host) return false;
     this.fill(host, view);
+    if (this.inline) this.stepPastFoldChip(dom);
     return true;
   }
 
@@ -174,6 +203,11 @@ class LensWidget extends WidgetType {
     return this.inline ? -1 : 16;
   }
 
+  override destroy(): void {
+    this.observer?.disconnect();
+    this.observer = undefined;
+  }
+
   override ignoreEvent(): boolean {
     return true;
   }
@@ -204,11 +238,13 @@ function buildDecorations(state: EditorState): DecorationSet {
 
 const lensTheme = EditorView.theme({
   // IDEA paints code vision with the colour scheme's Inline hints attribute.
+  // At least 16px, and taller when the hint font needs it: the row grows with its items, so a
+  // large editor font or a fallback font that inks below the baseline (CJK) is never cut off.
   ".cm-openidea-lens": {
     display: "flex",
     alignItems: "center",
     gap: "12px",
-    height: "16px",
+    minHeight: "16px",
     color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
@@ -242,7 +278,10 @@ const lensTheme = EditorView.theme({
     // Pinned to the line, the hint may run past the editor's edge (IDEA clips it there); cap it so a
     // long one cannot stretch across the whole window first.
     maxWidth: "min(60ch, 50vw)",
-    overflow: "hidden",
+    // The box is 1em tall (the anchor's `lineHeight: 1`): clip only past the side, so a glyph that
+    // inks above or below its em box (CJK fallback fonts) still shows whole.
+    overflowX: "clip",
+    overflowY: "visible",
     pointerEvents: "auto",
   },
   ".cm-openidea-lensItem": {
@@ -259,6 +298,9 @@ const lensTheme = EditorView.theme({
     fontFamily: "var(--font-ui)",
     fontSize: "calc(1em - 1px)",
   },
+  // The row's items size to the fonts their text is drawn with (fallback fonts included), not to the
+  // editor's line height, which `font: inherit` brings along.
+  ".cm-openidea-lens > .cm-openidea-lensItem": { lineHeight: "normal" },
   ".cm-openidea-lensAction": { cursor: "pointer" },
   ".cm-openidea-lensAction:hover": { color: "var(--accent)", textDecoration: "underline" },
   ".cm-openidea-lensIcon-run": { color: "var(--success)" },

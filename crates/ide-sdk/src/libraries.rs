@@ -84,7 +84,7 @@ pub fn project_libraries_stream(
     cancel: &CancellationToken,
     on_groups: &(dyn Fn(Vec<LibraryGroup>) + Sync),
 ) -> Vec<LibraryGroup> {
-    type Detect = fn(&Path, &Settings, &CancellationToken) -> Vec<LibraryGroup>;
+    type Detect = fn(&Path, &Path, &Settings, &CancellationToken) -> Vec<LibraryGroup>;
     let detectors: [Detect; 6] = [python_groups, jdk_groups, node_groups, go_groups, ruby_groups, zig_groups];
     let roots = library_project_roots(root, cancel);
     let settings = module_settings(root, settings);
@@ -99,7 +99,7 @@ pub fn project_libraries_stream(
                         if cancel.is_cancelled() {
                             break;
                         }
-                        let batch = d(dir, settings, cancel);
+                        let batch = d(dir, root, settings, cancel);
                         if !cancel.is_cancelled() && !batch.is_empty() {
                             on_groups(batch.clone());
                             groups.extend(batch);
@@ -231,7 +231,7 @@ fn library_project_roots(root: &Path, cancel: &CancellationToken) -> Vec<PathBuf
             members.extend(expand_members(&dir, &patterns, "Cargo.toml"));
         }
         if let Ok(work) = std::fs::read_to_string(dir.join("go.work")) {
-            members.extend(ide_run::go::work_modules(&work).into_iter().map(|path| dir.join(path)));
+            members.extend(ide_core::go::work_modules(&work).into_iter().map(|path| dir.join(path)));
         }
         roots.extend(
             members
@@ -384,13 +384,31 @@ fn tool(bin: Option<PathBuf>, name: &str) -> Option<PathBuf> {
 
 // ------------------------------------------------------------------ python
 
-fn python_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+fn python_groups(root: &Path, project: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(python) = crate::apply::python_interpreter(root, s) else { return Vec::new() };
     let mut files = vec![python.clone()];
     files.extend(crate::venv_of(&python).map(|v| v.join("pyvenv.cfg")));
-    cached_cancellable(root, "python", python.display().to_string(), &files, cancel, || {
-        python_libraries(&python, Some(root)).into_iter().collect()
+    let structure = &s.project_structure;
+    let folders: Vec<PathBuf> = [root, project]
+        .into_iter()
+        .map(Path::to_path_buf)
+        .chain(structure.content_roots.iter().chain(&structure.dependencies).map(|p| PathBuf::from(p.trim())))
+        .collect();
+    let user = outside_folders(crate::apply::interpreter_user_paths(&python, s), &folders);
+    let key = std::iter::once(&python).chain(&user).map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
+    cached_cancellable(root, "python", key, &files, cancel, || {
+        let mut group = python_libraries(&python, Some(root));
+        if let Some(group) = &mut group {
+            group.roots.extend(library_roots(user));
+        }
+        group.into_iter().collect()
     })
+}
+
+/// `paths` without the ones inside, or around, one of the project's `folders`: a library root
+/// opens its files read-only, and the project's own code stays editable.
+fn outside_folders(paths: Vec<PathBuf>, folders: &[PathBuf]) -> Vec<PathBuf> {
+    paths.into_iter().filter(|p| !folders.iter().any(|f| p.starts_with(f) || f.starts_with(p))).collect()
 }
 
 /// Standard library and site-packages folders of a Python interpreter.
@@ -400,6 +418,16 @@ pub fn python_libraries(python: &Path, root: Option<&Path>) -> Option<LibraryGro
     let out = query_in(python, &["-c", PYTHON_PATHS], dir.as_ref().map(|d| d.path()), &[], QUERY_TIMEOUT)?;
     let name = crate::discover::python_sdk(python, "system", root).map(|s| s.name).unwrap_or_else(|| "Python".into());
     group(name, "python", library_roots(parse_python_paths(&out)))
+}
+
+/// `sys.path` of `python` started on its own; `None` when it cannot run or was cancelled.
+pub fn python_sys_path(python: &Path, cancel: &CancellationToken) -> Option<Vec<PathBuf>> {
+    // In a neutral directory and without the IDE's own `PYTHONPATH`: neither belongs to the
+    // interpreter. `-c` puts `''` first for the working directory; a hook may add non-strings.
+    let dir = crate::python::neutral_dir()?;
+    let script = "import json,sys;print(json.dumps([p for p in sys.path if isinstance(p,str) and p]))";
+    let out = query_in_cancellable(python, &["-c", script], dir.path(), &[("PYTHONPATH", "")], QUERY_TIMEOUT, cancel)?;
+    Some(parse_python_paths(&out))
 }
 
 pub(crate) fn parse_python_paths(out: &str) -> Vec<PathBuf> {
@@ -436,7 +464,7 @@ pub(crate) fn named_roots(roots: Vec<(String, PathBuf)>) -> Vec<LibraryRoot> {
 
 // ------------------------------------------------------------------ ruby
 
-fn ruby_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+fn ruby_groups(root: &Path, _project: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(files) = manifests(root, RUBY_MANIFESTS) else { return Vec::new() };
     if !root.join("Gemfile").is_file() && !root.join(".ruby-version").is_file() {
         return Vec::new();
@@ -454,7 +482,7 @@ fn ruby_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<Lib
 
 // ------------------------------------------------------------------ jdk
 
-fn jdk_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+fn jdk_groups(root: &Path, _project: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     // Java modules without a build manifest carry `.classpath` / `.project` /
     // `.idea` instead; a configured JDK or declared source roots mark one too.
     let files = match manifests(root, JAVA_MANIFESTS) {
@@ -731,7 +759,7 @@ pub(crate) fn gradle_jar(home: &Path, d: &BuildDependency) -> Option<PathBuf> {
 
 // ------------------------------------------------------------------ node
 
-fn node_groups(root: &Path, s: &Settings, _cancel: &CancellationToken) -> Vec<LibraryGroup> {
+fn node_groups(root: &Path, _project: &Path, s: &Settings, _cancel: &CancellationToken) -> Vec<LibraryGroup> {
     if !root.join("package.json").is_file() {
         return Vec::new();
     }
@@ -907,13 +935,13 @@ pub(crate) fn parse_cargo_metadata(json: &str) -> Option<Vec<(String, PathBuf)>>
 
 // ------------------------------------------------------------------ go
 
-fn go_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+fn go_groups(root: &Path, project: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(mut files) = manifests(root, GO_MANIFESTS) else { return Vec::new() };
     if !root.join("go.mod").is_file() && !root.join("go.work").is_file() {
         return Vec::new();
     }
     if let Ok(work) = std::fs::read_to_string(root.join("go.work")) {
-        for module in ide_run::go::work_modules(&work) {
+        for module in ide_core::go::work_modules(&work) {
             files.extend([root.join(&module).join("go.mod"), root.join(&module).join("go.sum")]);
         }
     }
@@ -958,7 +986,7 @@ fn go_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<Libra
         } else if let Some(text) =
             query_in_cancellable(&go, &["list", "-m", "-e", "-json", "all"], root, &env, GRAPH_TIMEOUT, cancel)
         {
-            out.extend(group("Go Modules", "goModules", named_roots(parse_go_modules(&text))));
+            out.extend(group("Go Modules", "goModules", named_roots(parse_go_modules(&text, project))));
         }
         out
     })
@@ -978,8 +1006,19 @@ fn vendor_roots(vendor: &Path, text: &str) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// `(path@version, dir)` of the downloaded non-main modules in `go list -m -json` output.
-pub(crate) fn parse_go_modules(text: &str) -> Vec<(String, PathBuf)> {
+/// True when `path` is source the user owns: inside `project` and not a `vendor` copy.
+fn is_project_source(project: &Path, path: &Path) -> bool {
+    let project = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let Ok(relative) = path.strip_prefix(&project) else { return false };
+    !relative.components().any(|component| component.as_os_str() == "vendor")
+}
+
+/// `(path@version, dir)` of the modules that are libraries: everything whose source is
+/// outside the opened project. Source inside it is the user's own code — the target of a
+/// `replace`, say — and stays editable; a `vendor` copy is the exception, checked in and
+/// kept read-only.
+pub(crate) fn parse_go_modules(text: &str, project: &Path) -> Vec<(String, PathBuf)> {
     #[derive(Deserialize)]
     #[serde(rename_all = "PascalCase")]
     struct Module {
@@ -993,6 +1032,8 @@ pub(crate) fn parse_go_modules(text: &str) -> Vec<(String, PathBuf)> {
         .into_iter::<Module>()
         .map_while(Result::ok)
         .filter(|m| !m.main)
+        // A module whose source sits in the project is the user's own code, not a library.
+        .filter(|m| m.dir.as_deref().is_none_or(|dir| !is_project_source(project, dir)))
         .filter_map(|m| {
             let name = match &m.version {
                 Some(v) => format!("{}@{v}", m.path),
@@ -1005,7 +1046,7 @@ pub(crate) fn parse_go_modules(text: &str) -> Vec<(String, PathBuf)> {
 
 // ------------------------------------------------------------------ zig
 
-fn zig_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+fn zig_groups(root: &Path, _project: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(files) = manifests(root, ZIG_MANIFESTS) else { return Vec::new() };
     let Some(zig) = tool(crate::apply::zig_bin(root, s), "zig") else { return Vec::new() };
     cached_cancellable(root, "zig", zig.display().to_string(), &files, cancel, || {
@@ -1074,6 +1115,58 @@ fn package_label(dep: &crate::zig::ZonDependency, hash: &str) -> String {
     match parts.is_empty() || !version.starts_with(|c: char| c.is_ascii_digit()) || !version.contains('.') {
         true => dep.name.clone(),
         false => format!("{} {version}", parts.join("-")),
+    }
+}
+
+#[cfg(test)]
+mod python_tests {
+    use super::*;
+
+    #[test]
+    fn user_paths_inside_or_around_the_project_are_not_library_roots() {
+        let folders = [PathBuf::from("/work/app"), PathBuf::from("/work/attached")];
+        let paths = ["/work/app/stubs", "/work/app", "/work", "/work/attached/src", "/shared/lib", "/work/apple"];
+        assert_eq!(
+            outside_folders(paths.iter().map(PathBuf::from).collect(), &folders),
+            [PathBuf::from("/shared/lib"), PathBuf::from("/work/apple")]
+        );
+    }
+
+    #[test]
+    fn external_libraries_list_user_paths_outside_the_project_only() {
+        let Some(python) = crate::exec::which("python3") else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (root, attached, shared) = (base.join("app"), base.join("attached"), base.join("shared"));
+        for dir in [&root.join("stubs"), &attached.join("src"), &shared] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let text = |p: &Path| p.to_string_lossy().into_owned();
+        let mut s = Settings::default();
+        s.languages.python.interpreter = text(&python);
+        s.project_structure.dependencies = vec![text(&attached)];
+        s.languages.python.interpreter_paths =
+            [(text(&python), vec![text(&root.join("stubs")), text(&attached.join("src")), text(&base), text(&shared)])]
+                .into();
+        let groups = python_groups(&root, &root, &s, &CancellationToken::new());
+        let roots: Vec<&Path> = groups.iter().flat_map(|g| &g.roots).map(|r| Path::new(&*r.path)).collect();
+        assert!(roots.contains(&shared.as_path()), "{roots:?}");
+        // The project's own folders stay editable: a library root opens read-only.
+        for inside in [root.join("stubs"), attached.join("src"), base.clone()] {
+            assert!(!roots.contains(&inside.as_path()), "{roots:?}");
+        }
+    }
+
+    #[test]
+    fn sys_path_is_the_interpreters_own_and_can_be_cancelled() {
+        let Some(python) = crate::exec::which("python3") else { return };
+        let paths = python_sys_path(&python, &CancellationToken::new()).unwrap();
+        // Site hooks can add non-filesystem entries for editable packages.
+        assert!(paths.iter().any(|p| p.is_absolute()), "{paths:?}");
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(python_sys_path(&python, &cancelled), None);
+        assert_eq!(python_sys_path(Path::new("/no/such/python"), &CancellationToken::new()), None);
     }
 }
 
@@ -1574,7 +1667,7 @@ mod zig_tests {
         std::fs::set_permissions(&zig, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut settings = Settings::default();
         settings.languages.zig.zig = "tools".into();
-        let groups = zig_groups(root, &settings, &CancellationToken::new());
+        let groups = zig_groups(root, root, &settings, &CancellationToken::new());
         let summary: Vec<(&str, &str, Vec<&str>)> = groups
             .iter()
             .map(|g| (g.name.as_str(), g.kind.as_str(), g.roots.iter().map(|r| r.name.as_str()).collect()))

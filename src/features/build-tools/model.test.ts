@@ -130,7 +130,7 @@ describe("Maven tree", () => {
   it("shows profiles, then the aggregator with lifecycle, plugins and its modules", () => {
     const roots = mavenRoots(maven);
     expect(labels(roots)).toEqual(["Profiles", "Multi Demo"]);
-    expect(labels(children(roots[0]!))).toEqual(["dev", "ci"]);
+    expect(labels(children(roots[0]!))).toEqual(["ci", "dev"]);
     const top = children(roots[1]!);
     expect(labels(top)).toEqual(["Lifecycle", "Plugins", "core", "Demo App"]);
     expect(labels(children(top[0]!))).toEqual([
@@ -146,6 +146,22 @@ describe("Maven tree", () => {
     ]);
     expect(nodeIcon(top[2]!)).toBe("maven-module");
     expect(nodeIcon(roots[1]!)).toBe("maven-project");
+  });
+
+  it("sorts Maven profiles by ID ignoring case while preserving the order used for Maven arguments", () => {
+    const model = {
+      ...maven,
+      profiles: [
+        { id: "zulu", activeByDefault: false },
+        { id: "Beta", activeByDefault: false },
+        { id: "alpha_ci", activeByDefault: false },
+        { id: "alpha", activeByDefault: true },
+        { id: "alpha-edge", activeByDefault: false },
+      ],
+    };
+    const group = mavenRoots(model)[0]!;
+    expect(labels(mavenChildren(group, model, [])!)).toEqual(["alpha", "alpha-edge", "alpha_ci", "Beta", "zulu"]);
+    expect(profilesArg(model.profiles, { zulu: true, alpha_ci: true, alpha: false })).toBe("zulu,alpha_ci,!alpha");
   });
 
   it("expands plugins to goals and dependencies to their transitive ones", () => {

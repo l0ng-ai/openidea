@@ -186,9 +186,6 @@ export function ImageViewer({ input }: { input: EditorInput }) {
 
   const z = view?.z ?? 1;
   const svg = isSvgPath(path);
-  const info = [natural && `${natural.w}×${natural.h}`, size !== null && formatSize(size), view && zoomLabel(z)]
-    .filter(Boolean)
-    .join(" · ");
 
   return (
     <div
@@ -203,24 +200,27 @@ export function ImageViewer({ input }: { input: EditorInput }) {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("imageViewerFocus", false);
       }}
     >
-      <div className={styles.toolbar} role="toolbar" aria-label={tx("Image viewer")}>
-        <IconButton icon="zoom-in" size="small" action="image.zoomIn" />
-        <IconButton icon="zoom-out" size="small" action="image.zoomOut" />
-        <IconButton icon="actual-size" size="small" action="image.actualSize" />
-        <IconButton icon="maximize" size="small" action="image.fitToWindow" />
-        <div className={styles.separator} />
-        <IconButton icon="chessboard" size="small" action="image.toggleChessboard" pressed={chessboard} />
-        <IconButton
-          icon="refresh"
-          size="small"
-          title="Reload from Disk"
-          onClick={() => {
-            setError(null);
-            setReload((n) => n + 1);
-          }}
-        />
-        <div className={styles.spacer} />
-        <span className={styles.info}>{info}</span>
+      <div className={clsx(styles.toolbar, styles.imageToolbar)} role="toolbar" aria-label={tx("Image viewer")}>
+        <div className={styles.imageActions}>
+          <div className={styles.imageActionGroup}>
+            <IconButton icon="chessboard" size="small" action="image.toggleChessboard" pressed={chessboard} />
+            <IconButton
+              icon="refresh"
+              size="small"
+              title="Reload from Disk"
+              onClick={() => {
+                setError(null);
+                setReload((n) => n + 1);
+              }}
+            />
+          </div>
+          <div className={styles.imageActionGroup}>
+            <IconButton icon="zoom-in" size="small" action="image.zoomIn" />
+            <IconButton icon="zoom-out" size="small" action="image.zoomOut" />
+            <IconButton icon="actual-size" size="small" action="image.actualSize" />
+            <IconButton icon="maximize" size="small" action="image.fitToWindow" />
+          </div>
+        </div>
         {svg && (
           <button
             type="button"
@@ -229,6 +229,13 @@ export function ImageViewer({ input }: { input: EditorInput }) {
           >
             <T>Open as Text</T>
           </button>
+        )}
+        {(natural || size !== null || view) && (
+          <div className={styles.imageInfo}>
+            {natural && <span>{`${natural.w} × ${natural.h}`}</span>}
+            {size !== null && <span>{formatSize(size)}</span>}
+            {view && <span>{zoomLabel(z)}</span>}
+          </div>
         )}
       </div>
       {error ? (

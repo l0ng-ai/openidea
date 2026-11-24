@@ -98,6 +98,8 @@ html {
   --diff-inserted-stripe: #447152;
   --diff-deleted-stripe: #656e76;
   --diff-conflict-stripe: #8f5247;
+  /* diff folded-unchanged separator wave (IDEA DIFF_SEPARATOR_WAVE): follows the theme's subtle text. */
+  --diff-separator-wave: var(--fg-subtle);
 
   /* coverage (IDEA LINE_FULL / PARTIAL / NONE_COVERAGE), following the theme's status colours */
   --coverage-covered: var(--gutter-added);
@@ -215,6 +217,8 @@ html {
   --fg-deprecated: #8c8f95;
   --bg-identifier-under-caret: #373b39;
   --bg-identifier-under-caret-write: #402f33;
+  --fg-identifier-under-caret: inherit;
+  --fg-identifier-under-caret-write: inherit;
   --fg-inlay: #868a91;
   --bg-inlay: #393b40;
   --wave-error: #fa6675;
@@ -293,6 +297,8 @@ html {
   --fs-tiny: 11px;
   --fs-code: 13px;
   --fs-input-large: 15px;
+  /* main toolbar, status bar, tool window headers and editor tabs (IDEA fontSizeOffset) */
+  --fs-chrome: var(--fs-ui);
   --lh-code: 22px;
 
   /* metrics (theme JSON at 100%) */
@@ -300,6 +306,8 @@ html {
   /* IDEA's compact header (HEADER_HEIGHT_DFM), the same in compact mode. */
   --h-compact-header: 30px;
   --titlebar-tool-button: 30px;
+  /* main toolbar dropdowns: project, VCS branch, run configuration */
+  --h-toolbar-widget: 30px;
   /* tool window stripe button, icons only */
   --stripe-icon-button: 30px;
   --stripe-outer-padding: 4px;
@@ -320,8 +328,16 @@ html {
   --radius-row: 4px;
   --radius-selection: 5px;
   --radius-control: 4px;
+  /* Combo boxes follow Component.arc 8 (radius 4); ComboBox.padding 1,9,1,6 (left 9, right 6). */
+  --radius-combo: 4px;
+  --combo-pad-start: 9px;
+  --combo-pad-end: 6px;
+  /* EditorTabs.tabInsets -6,8,-6,8: the tab pill's inline padding (8px each side). */
+  --tab-pad-x: 8px;
   --radius-tab: 6px;
   --radius-toolbar-button: 6px;
+  /* main toolbar dropdowns (MainToolbar.Dropdown.arc 12): unchanged in compact mode */
+  --radius-toolbar-dropdown: 6px;
   --radius-floating-toolbar: 3px;
   --h-floating-toolbar-button: 22px;
   --floating-toolbar-top: 25px;
@@ -383,6 +399,9 @@ html {
   --bg-island: #191a1c;
   --island-gap: 6px;
   --island-radius: 10px;
+  /* Tree horizontal inset. Together with the island gap it makes JetBrains'
+     Tree.border left/right padding: 6 + 6 = 12px (4 + 4 = 8px in compact). */
+  --tree-inset: 6px;
   --bg-stripe: var(--bg-frame);
   --bg-stripe-hover: #ffffff17;
   --bg-stripe-selected: #ffffff29;
@@ -447,6 +466,14 @@ html {
   --project-gradient-strength: 22%;
 
   color-scheme: dark;
+}
+
+/* The letter on the Flutter plugin's widget icons: one colour in every theme, as in the plugin. */
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark-hc"],
+:root[data-color-theme] {
+  --flutter-widget-fg: #231f20;
 }
 
 /* RecentProject.ColorN.Avatar Start/End — identical in Islands Light and Dark. */
@@ -570,6 +597,7 @@ html {
   --diff-inserted-stripe: #aadeaa;
   --diff-deleted-stripe: #c8c8c8;
   --diff-conflict-stripe: #ffc8bd;
+  --diff-separator-wave: var(--fg-subtle);
 
   /* syntax (Light scheme + Default / Python defaults) */
   --syn-keyword: #0033b3;
@@ -673,6 +701,8 @@ html {
   --fg-deprecated: #6c707e;
   --bg-identifier-under-caret: #edebfc;
   --bg-identifier-under-caret-write: #fce8f4;
+  --fg-identifier-under-caret: inherit;
+  --fg-identifier-under-caret-write: inherit;
   --fg-inlay: #73767c;
   --bg-inlay: #00000012;
   --wave-error: #f50000;
@@ -872,6 +902,7 @@ html {
   --diff-inserted-stripe: #009924;
   --diff-deleted-stripe: #a66a32;
   --diff-conflict-stripe: #ff0d25;
+  --diff-separator-wave: var(--fg-subtle);
 
   --syn-keyword: #e8a885;
   --syn-string: #8ccc94;
@@ -1204,6 +1235,7 @@ html {
   --diff-inserted-stripe: color-mix(in srgb, var(--palette-green) 50%, var(--palette-bg));
   --diff-deleted-stripe: color-mix(in srgb, var(--palette-fg) 35%, var(--palette-bg));
   --diff-conflict-stripe: color-mix(in srgb, var(--palette-red) 50%, var(--palette-bg));
+  --diff-separator-wave: var(--fg-subtle);
   --syn-link: var(--palette-blue);
   --link-hover: var(--palette-cyan);
   --danger: var(--palette-red);
@@ -1484,18 +1516,39 @@ html {
  * Appearance options (Settings › Appearance), applied as attributes on :root
  * by the settings runtime.
  */
-/* Compact mode: smaller rows, toolbars and tabs. */
+/*
+ * Compact mode: smaller rows, toolbars and tabs. Values follow IDEA's `*.compact`
+ * theme keys (Islands): Tree/List.rowHeight 22, MainToolbar.Button.size and
+ * RunWidget.toolbarHeight 26, Island.borderWidth 4, chrome fontSizeOffset -1.
+ * Swing `arc` is a diameter, so radii here are half of it.
+ */
 :root[data-compact] {
   --h-titlebar: 32px;
+  --titlebar-tool-button: 26px;
+  --h-toolbar-widget: 26px;
   --h-header: 32px;
   --h-tabbar: 32px;
   --h-tab: 24px;
-  --h-row: 20px;
-  --h-list-row: 20px;
+  --h-row: 22px;
+  --h-list-row: 22px;
   --h-statusbar: 24px;
   --stripe-icon-button: 24px;
   --h-field: 24px;
   --h-button: 24px;
+  --fs-chrome: calc(var(--fs-ui) - 1px);
+  --island-gap: 4px;
+  --island-radius: 8px;
+  /* Compact Tree.border is "2,8,2,8": island gap 4 + tree inset 4 = 8 horizontally. */
+  --tree-inset: 4px;
+  /* ComboBox.arc.compact "4,4,4,4" (radius 2) and padding.compact 1,6,1,6. */
+  --radius-combo: 2px;
+  --combo-pad-start: 6px;
+  --combo-pad-end: 6px;
+  /* EditorTabs.tabInsets.compact -2,6,-2,4: the pill's inline padding shrinks 8→6/4. */
+  --tab-pad-x: 6px;
+  --radius-control: 3px;
+  /* MainToolbar.Button.arc 12 → 8 and Button.ToolWindow.arc 12 → 8 (stripe buttons). */
+  --radius-toolbar-button: 4px;
 }
 /* Use contrast scrollbars. */
 :root[data-contrast-scrollbars] {

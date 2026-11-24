@@ -31,6 +31,8 @@ import com.sun.jdi.event.MethodExitEvent;
 import com.sun.jdi.event.VMDeathEvent;
 import com.sun.jdi.event.VMDisconnectEvent;
 import com.sun.jdi.request.EventRequest;
+import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.ExceptionRequest;
 import com.sun.jdi.request.MethodEntryRequest;
 import com.sun.jdi.request.MethodExitRequest;
 import com.sun.jdi.request.StepRequest;
@@ -170,6 +172,10 @@ final class RealRunTrace {
     private Value echoValue;
     private EventSet parked;
     private Method terminalMethod;
+    /** Stops the thread at a throw of the terminal's that nothing catches; see {@link #watchUncaught}. */
+    private volatile EventRequest uncaught;
+    /** {@code collect} ran, so the client's step-out ended in a stop of its own; see {@link #dispose}. */
+    private volatile boolean steppedOut;
 
     private RealRunTrace(long id, VirtualMachine vm, ThreadReference thread, RealRunPlan plan, int budget, long generation) {
         this.id = id;
@@ -514,6 +520,8 @@ final class RealRunTrace {
         }
         if (outcome instanceof ObjectReference object) keep(pinned(object));
         restoreSilencers();
+        // Before the state moves: the client steps out as soon as it sees the trace parked.
+        if (kind.equals("threw")) watchUncaught((ObjectReference) outcome);
         boolean hold;
         synchronized (stateLock) {
             terminalKind = kind;
@@ -532,8 +540,60 @@ final class RealRunTrace {
         if (hold) {
             parked = set;
             terminalMethod = method;
+        } else {
+            deleteUncaught();
         }
         return hold;
+    }
+
+    /**
+     * Worker, before the trace parks on a terminal that threw. The client's step-out ends in the
+     * program's catch, but an exception nothing catches ends the thread, with no stop left to read the
+     * records in. This request stops the thread at that throw instead: java-debug reports every
+     * exception event as a stop. Not when an enabled request of java-debug's, or an exception breakpoint
+     * without class filters, already stops there, since the throw would then be reported twice.
+     */
+    private void watchUncaught(ObjectReference exception) {
+        try {
+            EventRequestManager manager = vm.eventRequestManager();
+            ReferenceType type = exception.referenceType();
+            for (ExceptionRequest r : manager.exceptionRequests()) {
+                if (r.isEnabled() && r.notifyUncaught() && r.getProperty(Silencer.OWN_PROPERTY) == null && covers(r.exception(), type)
+                        && ExceptionBreakpoints.coversWholeType(r)) {
+                    return;
+                }
+            }
+            ExceptionRequest r = manager.createExceptionRequest(null, false, true);
+            r.addThreadFilter(thread);
+            r.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD);
+            r.putProperty(Silencer.OWN_PROPERTY, id);
+            r.enable();
+            uncaught = r;
+        } catch (VMDisconnectedException e) {
+            // nothing left to stop
+        } catch (RuntimeException e) {
+            errors.add("watching for an uncaught throw: " + e);
+        }
+    }
+
+    private static boolean covers(ReferenceType declared, ReferenceType type) {
+        for (ReferenceType t = type; t != null; t = t instanceof ClassType c ? c.superclass() : null) {
+            if (declared == null || t.equals(declared)) return true;
+        }
+        return false;
+    }
+
+    private void deleteUncaught() {
+        EventRequest r = uncaught;
+        if (r == null) return;
+        uncaught = null;
+        try {
+            vm.eventRequestManager().deleteEventRequest(r);
+        } catch (VMDisconnectedException e) {
+            // it went with the VM
+        } catch (RuntimeException e) {
+            errors.add("deleting the uncaught-throw request: " + e);
+        }
     }
 
     /**
@@ -730,6 +790,17 @@ final class RealRunTrace {
                 }
             }
         }
+        ExceptionBreakpoints.traceEnded(vm);
+    }
+
+    /** Some of the user's breakpoints are switched off for the trace. */
+    boolean silencing() {
+        synchronized (silenceLock) {
+            for (Silencer s : silencers) {
+                if (s.size() > 0) return true;
+            }
+            return false;
+        }
     }
 
     /**
@@ -758,9 +829,11 @@ final class RealRunTrace {
     /** Worker: everything the trace holds, a parked thread the client never stepped out included. */
     private void dispose() {
         if (parked != null) {
-            if (stillParked()) resume(parked);
+            // A stop at an uncaught throw of the terminal's keeps the parked frames: resuming would end it behind java-debug.
+            if (!steppedOut && stillParked()) resume(parked);
             parked = null;
         }
+        deleteUncaught();
         teardown();
         for (ObjectReference o : pinned) {
             try {
@@ -996,6 +1069,8 @@ final class RealRunTrace {
         if (generation <= this.generation) {
             throw new Failure("stale", "collect needs a stop after the trace's, not generation " + generation);
         }
+        steppedOut = true;
+        deleteUncaught();
         handles.begin(generation);
         ToLongFunction<ObjectReference> handle = o -> {
             long objectId = o.uniqueID();

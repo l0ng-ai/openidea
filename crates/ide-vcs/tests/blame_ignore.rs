@@ -1,5 +1,6 @@
-//! Annotate skips the commits listed in `blame.ignoreRevsFile`.
+//! Git Annotate handles ignored commits and attribution options.
 
+use ide_core::workflow_settings::{GitAnnotateMovement, GitAnnotateSettings};
 use ide_vcs::Repo;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -128,4 +129,51 @@ fn ignoring_a_commit_adds_it_to_the_configured_list() {
     assert_eq!(fx.git(&["config", "--local", "--get", "blame.ignoreRevsFile"]), "custom-revs");
     let blamed = commits(&fx.repo(), &fx.path("file.txt"));
     assert_ne!(blamed[1], second);
+}
+
+#[test]
+fn annotate_tracks_whitespace_and_line_movement() {
+    let fx = Fixture::new();
+    let source = "original café.txt";
+    let within = "Move this existing line below a larger block of unchanged lines";
+    let across = "Move this line into a different file within the same repository";
+    let anchors = "retain line 1\nretain line 2\nretain line 3\nretain line 4\nretain line 5\nretain line 6\n";
+    fx.write("spaces.txt", "this line is only indented later\n");
+    fx.write("target.txt", &format!("{within}\n{anchors}"));
+    fx.write(source, &format!("{across}\nretain source line\n"));
+    let first = fx.commit_all("original files");
+    fx.write("spaces.txt", "    this line is only indented later\n");
+    fx.write("target.txt", &format!("{anchors}{within}\n{across}\n"));
+    fx.write(source, "retain source line\n");
+    let second = fx.commit_all("move and indent lines");
+
+    for repo in [fx.repo(), fx.restricted()] {
+        let blame = |path: &str, text: Option<&str>, ignore_whitespace, movement| {
+            repo.blame_with_options(
+                &fx.path(path),
+                text,
+                None,
+                encoding_rs::UTF_8.into(),
+                GitAnnotateSettings { ignore_whitespace, movement },
+            )
+            .unwrap()
+        };
+        use GitAnnotateMovement::{AcrossFiles, WithinFile};
+        assert_eq!(blame("spaces.txt", None, true, GitAnnotateMovement::None)[0].commit, first);
+        assert_eq!(blame("spaces.txt", None, false, GitAnnotateMovement::None)[0].commit, second);
+        assert_eq!(
+            blame("spaces.txt", Some("\tthis line is only indented later\n"), true, GitAnnotateMovement::None)[0]
+                .commit,
+            first
+        );
+        let unchanged = blame("target.txt", None, true, GitAnnotateMovement::None);
+        let moved = blame("target.txt", None, true, WithinFile);
+        let copied = blame("target.txt", None, true, AcrossFiles);
+        let commits = |lines: &[ide_vcs::BlameLine]| [lines[6].commit.clone(), lines[7].commit.clone()];
+        assert_eq!(commits(&unchanged), [second.clone(), second.clone()]);
+        assert_eq!(commits(&moved), [first.clone(), second.clone()]);
+        assert_eq!(commits(&copied), [first.clone(), first.clone()]);
+        assert!(copied[6].origin_path.is_none());
+        assert!(copied[7].origin_path.as_ref().unwrap().0.ends_with(source));
+    }
 }

@@ -25,16 +25,12 @@ export interface SeverityCounts {
   hint: number;
 }
 
-/** Replaces `source`'s diagnostics for `path`; returns the same map when nothing changed. */
-export function mergeDiagnostics(
-  map: ProblemsMap,
-  path: string,
-  source: string,
-  items: readonly Diagnostic[],
-): ProblemsMap {
-  const prev = map.get(path);
-  if (!items.length && !prev?.has(source)) return map;
-  const next = new Map(map);
+/**
+ * `prev` (one file's sources) with `source`'s diagnostics replaced; undefined when nothing
+ * changes. An empty result means the file has no problems left.
+ */
+function replaceSource(prev: FileDiagnostics | undefined, source: string, items: readonly Diagnostic[]) {
+  if (!items.length && !prev?.has(source)) return undefined;
   const sources = new Map(prev ?? []);
   if (items.length)
     sources.set(
@@ -42,25 +38,50 @@ export function mergeDiagnostics(
       items.map((d) => (d.source ? d : { ...d, source })),
     );
   else sources.delete(source);
-  if (sources.size) next.set(path, sources);
-  else next.delete(path);
+  return sources;
+}
+
+function putSources(map: Map<string, FileDiagnostics>, path: string, sources: FileDiagnostics) {
+  if (sources.size) map.set(path, sources);
+  else map.delete(path);
+}
+
+/** Replaces `source`'s diagnostics for `path`; returns the same map when nothing changed. */
+export function mergeDiagnostics(
+  map: ProblemsMap,
+  path: string,
+  source: string,
+  items: readonly Diagnostic[],
+): ProblemsMap {
+  const sources = replaceSource(map.get(path), source, items);
+  if (!sources) return map;
+  const next = new Map(map);
+  putSources(next, path, sources);
   return next;
 }
 
 const SEVERITY_ORDER: Record<Severity, number> = { error: 0, warning: 1, info: 2, hint: 3 };
 
+// A file's sources map is replaced whenever its diagnostics change, so it keys the merged list.
+const merged = new WeakMap<FileDiagnostics, readonly Diagnostic[]>();
+
 /** All diagnostics of a file across sources, ordered by position then severity. */
-export function fileDiagnostics(map: ProblemsMap, path: string): Diagnostic[] {
+export function fileDiagnostics(map: ProblemsMap, path: string): readonly Diagnostic[] {
   const sources = map.get(path);
   if (!sources) return [];
-  return [...sources.values()]
-    .flat()
-    .sort(
-      (a, b) =>
-        a.range.start.line - b.range.start.line ||
-        a.range.start.col - b.range.start.col ||
-        SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
-    );
+  let items = merged.get(sources);
+  if (!items) {
+    items = [...sources.values()]
+      .flat()
+      .sort(
+        (a, b) =>
+          a.range.start.line - b.range.start.line ||
+          a.range.start.col - b.range.start.col ||
+          SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
+      );
+    merged.set(sources, items);
+  }
+  return items;
 }
 
 /** The producer (inspection) that reported `d`, one of `path`'s problems in `map`. */
@@ -143,36 +164,98 @@ export function worstSeverity(diags: Iterable<Diagnostic>): Severity | null {
 }
 
 /** `raw` under the inspection profile: disabled inspections dropped, severities remapped. */
-export function profiledProblems(raw: ProblemsMap, profile: ProfileOverrides): ProblemsMap {
-  let out: ProblemsMap = new Map();
+export function profiledProblems(raw: ProblemsMap, profile: ProfileOverrides): Map<string, FileDiagnostics> {
+  const out = new Map<string, FileDiagnostics>();
   for (const [path, sources] of raw) {
     for (const [source, items] of sources) {
-      out = mergeDiagnostics(out, path, source, applyProfile(profile, source, items));
+      const next = replaceSource(out.get(path), source, applyProfile(profile, source, items));
+      if (next) putSources(out, path, next);
     }
   }
   return out;
 }
 
-interface ProblemsState {
-  /** As reported, before the inspection profile. */
-  raw: ProblemsMap;
-  /** What the views show. */
-  map: ProblemsMap;
+/**
+ * A problems map the store updates in place, so applying an event costs the size of the event,
+ * not the number of files. Each change publishes a new facade object: subscribers still see a new
+ * `map`/`raw` identity exactly when the content changed, but an older facade reads the current
+ * content, so keep a copy (`new Map(map)`) to compare against later, never the facade itself.
+ */
+class ProblemsSnapshot implements ProblemsMap {
+  constructor(readonly data: Map<string, FileDiagnostics>) {}
+  get size() {
+    return this.data.size;
+  }
+  get(path: string) {
+    return this.data.get(path);
+  }
+  has(path: string) {
+    return this.data.has(path);
+  }
+  keys() {
+    return this.data.keys();
+  }
+  values() {
+    return this.data.values();
+  }
+  entries() {
+    return this.data.entries();
+  }
+  forEach(fn: (value: FileDiagnostics, path: string, map: ProblemsMap) => void) {
+    for (const [path, sources] of this.data) fn(sources, path, this);
+  }
+  [Symbol.iterator]() {
+    return this.data[Symbol.iterator]();
+  }
 }
 
-export const useProblems = create<ProblemsState>(() => ({ raw: new Map(), map: new Map() }));
+interface ProblemsState {
+  /** As reported, before the inspection profile. */
+  raw: ProblemsSnapshot;
+  /** What the views show. */
+  map: ProblemsSnapshot;
+  /** `projectCounts(map)`, kept up to date per event. */
+  counts: SeverityCounts;
+}
+
+const NO_COUNTS: SeverityCounts = { error: 0, warning: 0, info: 0, hint: 0 };
+
+const emptyProblems = (): ProblemsState => ({
+  raw: new ProblemsSnapshot(new Map()),
+  map: new ProblemsSnapshot(new Map()),
+  counts: NO_COUNTS,
+});
+
+export const useProblems = create<ProblemsState>(emptyProblems);
+
+function recount(counts: SeverityCounts, removed: readonly Diagnostic[], added: readonly Diagnostic[]) {
+  const c = { ...counts };
+  for (const d of removed) c[d.severity]--;
+  for (const d of added) c[d.severity]++;
+  return c;
+}
+
+/** Replaces `source`'s diagnostics for `path` in `snapshot`'s data; the new facade, or null when nothing changed. */
+function applyTo(snapshot: ProblemsSnapshot, path: string, source: string, items: readonly Diagnostic[]) {
+  const sources = replaceSource(snapshot.data.get(path), source, items);
+  if (!sources) return null;
+  putSources(snapshot.data, path, sources);
+  return new ProblemsSnapshot(snapshot.data);
+}
 
 export function applyDiagnosticsEvent(path: string, source: string, items: readonly Diagnostic[]) {
   useProblems.setState((s) => {
-    const raw = mergeDiagnostics(s.raw, path, source, items);
-    if (raw === s.raw) return s;
-    const map = mergeDiagnostics(s.map, path, source, applyProfile(inspectionProfile(), source, items));
-    return { raw, map };
+    const before = s.map.get(path)?.get(source) ?? [];
+    const raw = applyTo(s.raw, path, source, items);
+    if (!raw) return s;
+    const map = applyTo(s.map, path, source, applyProfile(inspectionProfile(), source, items));
+    if (!map) return { raw };
+    return { raw, map, counts: recount(s.counts, before, map.get(path)?.get(source) ?? []) };
   });
 }
 
 export function clearProblems() {
-  useProblems.setState({ raw: new Map(), map: new Map() });
+  useProblems.setState(emptyProblems());
 }
 
 export function installProblemsEvents(): () => void {
@@ -180,7 +263,10 @@ export function installProblemsEvents(): () => void {
   // Typo, file references, SQL: inspections the editor runs itself.
   const offLocal = onLocalDiagnostics(applyDiagnosticsEvent);
   const offProfile = subscribeInspectionProfile(() =>
-    useProblems.setState((s) => ({ map: profiledProblems(s.raw, inspectionProfile()) })),
+    useProblems.setState((s) => {
+      const map = new ProblemsSnapshot(profiledProblems(s.raw, inspectionProfile()));
+      return { map, counts: projectCounts(map) };
+    }),
   );
   return () => {
     off();

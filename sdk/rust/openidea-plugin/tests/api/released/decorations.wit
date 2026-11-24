@@ -1,4 +1,4 @@
-package openidea:plugin@1.10.0;
+package openidea:plugin@1.15.0;
 
 /// Editor and project-tree decorations (API 1.4). Requires project.read. An editor set
 /// follows its file: the file's own project, or the nearest one when it is outside them all.

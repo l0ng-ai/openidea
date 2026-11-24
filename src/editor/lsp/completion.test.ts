@@ -28,6 +28,7 @@ import {
 import {
   acceptCompletion,
   closeCompletion,
+  completionStatus,
   currentCompletions,
   snippet,
   startCompletion,
@@ -241,6 +242,7 @@ describe("completion helpers", () => {
   it("finds identifier ends", () => {
     expect(identifierEnd("foo.barBaz(1)", 4)).toBe(10);
     expect(identifierEnd("x ", 1)).toBe(1);
+    expect(identifierEnd("a𐐀\u0301;", 1)).toBe(4);
   });
 });
 
@@ -295,6 +297,23 @@ describe("applying completions", () => {
     await vi.waitFor(() => expect(view.state.selection.main.head).toBe(17));
   });
 
+  it("edits repeated LSP placeholders from one selection", () => {
+    const { view, req } = setup("lo|", "", [EditorState.allowMultipleSelections.of(true)]);
+    const completion = makeCompletion(
+      item({ kind: "snippet", insertText: "log(${1:value}, $1, ${2:label})$0", isSnippet: true }),
+      req,
+    );
+    apply(view, completion, 0);
+    expect(view.state.selection.ranges).toHaveLength(1);
+    expect(view.state.doc.toString()).toBe("log(value, value, label)");
+    view.dispatch(view.state.replaceSelection("name"));
+    expect(view.state.doc.toString()).toBe("log(name, name, label)");
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Enter" }), "editor")).toBe(false);
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor")).toBe(true);
+    const { from, to } = view.state.selection.main;
+    expect(view.state.sliceDoc(from, to)).toBe("label");
+  });
+
   it("leaves an item its server inserts to the server, and puts the caret after what it inserted", async () => {
     const executed: string[] = [];
     setInvokeRoute((cmd) => {
@@ -316,6 +335,22 @@ describe("applying completions", () => {
       // Later edits from elsewhere leave the caret alone.
       view.dispatch({ changes: { from: 15, insert: " " }, annotations: remoteChange.of(true) });
       expect(view.state.selection.main.head).toBe(15);
+    } finally {
+      setInvokeRoute(null);
+    }
+  });
+
+  it("puts the caret inside the parentheses of a server-inserted call that takes arguments", async () => {
+    setInvokeRoute(() => Promise.resolve(null));
+    try {
+      const { view, req } = setup("x.rea|\n", "", [completionExtension()]);
+      view.dispatch({ effects: StateEffect.appendConfig.of(lspDoc.of({ doc: 1 } as EditorDocContext)) });
+      const command = { title: "Apply Completion", command: "jetbrains.kotlin.completion.apply", arguments: ["1"] };
+      const kotlin = item({ label: "read", kind: "method", labelDetail: "(name: String)", insertText: "", command });
+      applyLspCompletion(view, makeCompletion(kotlin, req), 5, 5, "insert");
+      view.dispatch({ changes: { from: 5, insert: "d()" }, annotations: remoteChange.of(true) });
+      expect(view.state.doc.toString()).toBe("x.read()\n");
+      expect(view.state.selection.main.head).toBe(7);
     } finally {
       setInvokeRoute(null);
     }
@@ -704,15 +739,27 @@ describe("lookup commit characters", () => {
 });
 
 describe("explicit completion", () => {
-  function editor(labels: string[]) {
+  function editor(labels: string[], doc = "pri|", serverItems = false) {
     const source: CompletionSource = (ctx) => {
       const word = ctx.matchBefore(/\w*/);
-      return { from: word?.from ?? ctx.pos, options: labels.map((label) => ({ label })) };
+      const from = word?.from ?? ctx.pos;
+      const options = labels.map((label) =>
+        serverItems
+          ? makeCompletion(item({ label, insertText: label, kind: "field" }), {
+              doc: 1,
+              path: "/p/a.ts",
+              language: "typescript",
+              pos: ctx.pos,
+              text: ctx.state.doc,
+            })
+          : { label },
+      );
+      return { from, options };
     };
     const view = new EditorView({
       state: EditorState.create({
-        doc: "pri",
-        selection: { anchor: 3 },
+        doc: doc.replace("|", ""),
+        selection: { anchor: doc.indexOf("|") },
         extensions: [completionExtension(), EditorState.languageData.of(() => [{ openideaCompletion: source }])],
       }),
       parent: document.body,
@@ -720,12 +767,34 @@ describe("explicit completion", () => {
     return view;
   }
 
-  it("inserts a sole candidate right away (IDEA)", async () => {
-    const view = editor(["println"]);
+  it.each([
+    ["pri|", "println"],
+    ["pri|;", "println;"],
+  ])("inserts a sole candidate right away at the end of a prefix (%s)", async (doc, expected) => {
+    const view = editor(["println"], doc);
     explicitCompletion(view);
-    await vi.waitFor(() => expect(view.state.doc.toString()).toBe("println"), { timeout: 2000 });
+    await vi.waitFor(() => expect(view.state.doc.toString()).toBe(expected), { timeout: 2000 });
     view.destroy();
   });
+
+  it.each(["first|Name", "fir|Name", "first|𐐀Name"])(
+    "leaves the lookup open inside an identifier (%s)",
+    async (reference) => {
+      const doc = `const person = { firstName: "Ada", lastName: "Lovelace" };\nconst value = person.${reference};`;
+      const view = editor(["firstName"], doc, true);
+      try {
+        explicitCompletion(view);
+        await vi.waitFor(() => expect(currentCompletions(view.state)).toHaveLength(1));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(view.state.doc.toString()).toBe(doc.replace("|", ""));
+        expect(currentCompletions(view.state)).toHaveLength(1);
+        expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor")).toBe(true);
+        expect(view.state.doc.toString()).toBe(doc.replace(reference, "firstName"));
+      } finally {
+        view.destroy();
+      }
+    },
+  );
 
   it("keeps a sole candidate in the list when auto-insert is off", async () => {
     useProject.setState({ settings: { editor: { completion: { autoInsertSingle: false } } } as unknown as Settings });
@@ -803,6 +872,38 @@ describe("completion footer", () => {
   afterEach(() => {
     view?.destroy();
     view = null;
+  });
+
+  it("formats partial results while the language server is still answering", async () => {
+    let finishReply = () => {};
+    const reply = new Promise((resolve) => {
+      finishReply = () => resolve({ isIncomplete: false, items: [] });
+    });
+    setInvokeRoute((cmd) => (cmd === "lsp_completion" ? reply : Promise.resolve(null)));
+    const source: CompletionSource = (ctx) => ({ from: ctx.pos, options: [{ label: "localSuggestion" }] });
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "thing.",
+        selection: { anchor: 6 },
+        extensions: [
+          lspDoc.of({ doc: 902, path: "/p/Example.java", language: "java", uiMode: "Java", readOnly: false }),
+          completionExtension(),
+          EditorState.languageData.of(() => [{ openideaCompletion: source }]),
+        ],
+      }),
+      parent: document.body,
+    });
+    try {
+      startCompletion(view);
+      await vi.waitFor(() => {
+        expect(completionStatus(view!.state)).toBe("pending");
+        expect(document.querySelector(".cm-tooltip-autocomplete > .cm-lsp-completion-footer")).not.toBeNull();
+      });
+    } finally {
+      closeCompletion(view);
+      setInvokeRoute(null);
+      finishReply();
+    }
   });
 
   it("stays below the list after CodeMirror rebuilds the options", async () => {

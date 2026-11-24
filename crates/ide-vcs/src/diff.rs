@@ -1,8 +1,9 @@
 //! Line diffs (imara-diff Histogram) for gutter markers and partial staging.
 
-use crate::{HunkKind, LineHunk};
+use crate::{HunkKind, LineHunk, PartialCommitHunk, StagingLineHunk};
 use gix::diff::blob::{Algorithm, Diff, InternedInput};
 use std::borrow::Cow;
+use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 
 /// Converts CRLF (and lone CR) line endings to LF.
@@ -49,6 +50,91 @@ pub fn line_hunks(old: &str, new: &str) -> Vec<LineHunk> {
                 old_start: before.start,
                 old_lines: before.end - before.start,
                 old_text: old_lines[before.start as usize..before.end as usize].concat(),
+            }
+        })
+        .collect()
+}
+
+struct IndexRange {
+    lines: Range<u32>,
+    head_delta: i64,
+    working_delta: i64,
+    staged: bool,
+    unstaged: bool,
+}
+
+/// Combine the two diffs in index coordinates, then project each connected
+/// block onto HEAD and the working text.
+pub(crate) fn staging_line_hunks(head: &str, index: &str, working: &str) -> Vec<StagingLineHunk> {
+    let head = normalize_eol(head);
+    let working = normalize_eol(working);
+    let head = split_lines(&head);
+    let index = split_lines(index);
+    let working = split_lines(&working);
+    let delta = |from: &Range<u32>, to: &Range<u32>| to.len() as i64 - from.len() as i64;
+    let mut changes: Vec<_> = raw_hunks(&head, &index)
+        .into_iter()
+        .map(|(before, after)| IndexRange {
+            head_delta: delta(&after, &before),
+            lines: after,
+            working_delta: 0,
+            staged: true,
+            unstaged: false,
+        })
+        .chain(raw_hunks(&index, &working).into_iter().map(|(before, after)| IndexRange {
+            working_delta: delta(&before, &after),
+            lines: before,
+            head_delta: 0,
+            staged: false,
+            unstaged: true,
+        }))
+        .collect();
+    changes.sort_unstable_by_key(|block| block.lines.start);
+    let mut blocks: Vec<IndexRange> = Vec::new();
+    for change in changes {
+        if let Some(block) = blocks.last_mut().filter(|block| change.lines.start <= block.lines.end) {
+            block.lines.end = block.lines.end.max(change.lines.end);
+            block.head_delta += change.head_delta;
+            block.working_delta += change.working_delta;
+            block.staged |= change.staged;
+            block.unstaged |= change.unstaged;
+        } else {
+            blocks.push(change);
+        }
+    }
+    let mut head_shift = 0;
+    let mut working_shift = 0;
+    blocks
+        .into_iter()
+        .map(|block| {
+            let head_start = (i64::from(block.lines.start) + head_shift) as u32;
+            let start = (i64::from(block.lines.start) + working_shift) as u32;
+            head_shift += block.head_delta;
+            working_shift += block.working_delta;
+            let head_end = (i64::from(block.lines.end) + head_shift) as u32;
+            let end = (i64::from(block.lines.end) + working_shift) as u32;
+            let index_start = block.lines.start;
+            let index_end = block.lines.end;
+            let before_is_empty = if block.unstaged { index_end == index_start } else { head_end == head_start };
+            let kind = if end == start {
+                HunkKind::Deleted
+            } else if before_is_empty {
+                HunkKind::Added
+            } else {
+                HunkKind::Modified
+            };
+            StagingLineHunk {
+                kind,
+                start,
+                lines: end - start,
+                head_start,
+                head_lines: head_end - head_start,
+                head_text: head[head_start as usize..head_end as usize].concat(),
+                index_start,
+                index_lines: index_end - index_start,
+                index_text: index[index_start as usize..index_end as usize].concat(),
+                staged: block.staged,
+                unstaged: block.unstaged,
             }
         })
         .collect()
@@ -154,7 +240,7 @@ fn push_line(out: &mut String, prefix: char, line: &str) {
 }
 
 /// C-style quoting for paths git would quote in patch headers.
-fn quote_path(path: &str) -> String {
+pub(crate) fn quote_path(path: &str) -> String {
     let needs = path.chars().any(|c| c == '"' || c == '\\' || c.is_control() || c == ' ' || c == '\t');
     if !needs {
         return path.to_string();
@@ -176,11 +262,53 @@ fn quote_path(path: &str) -> String {
 
 /// Apply selected line hunks while retaining the base's line separators.
 pub(crate) fn selected_text(old: &str, new: &str, selected: &[usize]) -> String {
+    selected_lines_text(old, new, selected, &BTreeMap::new())
+}
+
+pub(crate) fn selected_lines_text(
+    old: &str,
+    new: &str,
+    selected: &[usize],
+    lines: &BTreeMap<usize, &PartialCommitHunk>,
+) -> String {
+    apply_text_hunks(old, new, |index| match lines.get(&index) {
+        Some(selection) => HunkSelection::Lines(selection),
+        None if selected.contains(&index) => HunkSelection::Whole,
+        None => HunkSelection::Excluded,
+    })
+}
+
+pub(crate) fn replace_text(old: &str, new: &str) -> String {
+    apply_text_hunks(old, new, |_| HunkSelection::Whole)
+}
+
+enum HunkSelection<'a> {
+    Whole,
+    Lines(&'a PartialCommitHunk),
+    Excluded,
+}
+
+fn apply_text_hunks<'a>(old: &str, new: &str, included: impl Fn(usize) -> HunkSelection<'a>) -> String {
     let old_norm = normalize_eol(old);
     let new_norm = normalize_eol(new);
     let old_lines = split_lines(&old_norm);
     let new_lines = split_lines(&new_norm);
-    let old_raw = split_raw_lines(old);
+    let mut start = 0;
+    let old_raw: Vec<_> = old
+        .bytes()
+        .enumerate()
+        .filter_map(|(i, byte)| {
+            let end = i + 1;
+            let separator = byte == b'\n' || (byte == b'\r' && old.as_bytes().get(end) != Some(&b'\n'));
+            if separator || end == old.len() {
+                let line = &old[start..end];
+                start = end;
+                Some(line)
+            } else {
+                None
+            }
+        })
+        .collect();
     let eol = if old.contains("\r\n") {
         "\r\n"
     } else if old.contains('\r') {
@@ -191,13 +319,30 @@ pub(crate) fn selected_text(old: &str, new: &str, selected: &[usize]) -> String 
     let mut result = String::new();
     let mut cursor = 0;
     for (index, (before, after)) in raw_hunks(&old_lines, &new_lines).iter().enumerate() {
-        if !selected.contains(&index) {
-            continue;
-        }
+        let lines = match included(index) {
+            HunkSelection::Excluded => continue,
+            HunkSelection::Whole => None,
+            HunkSelection::Lines(lines) => Some(lines),
+        };
         for line in &old_raw[cursor..before.start as usize] {
             result.push_str(line);
         }
-        for line in &new_lines[after.start as usize..after.end as usize] {
+        if let Some(lines) = lines {
+            let deletions: HashSet<_> = lines.deletions.iter().copied().collect();
+            for (offset, line) in old_raw[before.start as usize..before.end as usize].iter().enumerate() {
+                if !deletions.contains(&(offset as u32)) {
+                    result.push_str(line);
+                }
+            }
+        }
+        let additions = lines.map(|lines| lines.additions.iter().copied().collect::<HashSet<_>>());
+        for (offset, line) in new_lines[after.start as usize..after.end as usize].iter().enumerate() {
+            if additions.as_ref().is_some_and(|lines| !lines.contains(&(offset as u32))) {
+                continue;
+            }
+            if lines.is_some() && !result.is_empty() && !result.ends_with(['\r', '\n']) {
+                result.push_str(eol);
+            }
             if let Some(body) = line.strip_suffix('\n') {
                 result.push_str(body);
                 result.push_str(eol);
@@ -216,6 +361,41 @@ pub(crate) fn selected_text(old: &str, new: &str, selected: &[usize]) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staging_line_hunks_keep_both_changes_when_head_and_worktree_match() {
+        let hunks = staging_line_hunks("top\r\nhead\r\nend", "top\nindex\nend", "top\nhead\nend");
+        assert_eq!(hunks.len(), 1);
+        let hunk = &hunks[0];
+        assert!(hunk.staged && hunk.unstaged);
+        assert_eq!((hunk.start, hunk.lines, hunk.index_start, hunk.index_lines), (1, 1, 1, 1));
+        assert_eq!(hunk.head_text, "head\n");
+        assert_eq!(hunk.index_text, "index\n");
+    }
+
+    #[test]
+    fn staging_line_hunks_project_deletions_and_insertions_into_worktree_lines() {
+        let hunks = staging_line_hunks(
+            "intro\nremoved\npivot\ntarget\ntail\nend\n",
+            "intro\npivot\ntarget\ntail\nstaged tail\nend\n",
+            "intro\ninserted A\ninserted B\npivot\nworking target\ntail\nstaged tail\nend\n",
+        );
+        assert_eq!(hunks.len(), 3);
+        assert!(hunks[0].staged && hunks[0].unstaged);
+        assert_eq!((hunks[0].start, hunks[0].lines, hunks[0].head_start), (1, 2, 1));
+        assert_eq!(hunks[0].head_text, "removed\n");
+        assert_eq!(hunks[0].index_text, "");
+        assert!(!hunks[1].staged && hunks[1].unstaged);
+        assert_eq!((hunks[1].start, hunks[1].head_start, hunks[1].index_start), (4, 3, 2));
+        assert_eq!(hunks[1].index_text, "target\n");
+        assert!(hunks[2].staged && !hunks[2].unstaged);
+        assert_eq!((hunks[2].start, hunks[2].head_start, hunks[2].index_start), (6, 5, 4));
+    }
+
+    #[test]
+    fn selected_text_handles_lone_carriage_returns() {
+        assert_eq!(selected_text("old\rkeep\r", "new\rkeep\r", &[0]), "new\rkeep\r");
+    }
 
     #[test]
     fn hunk_kinds() {

@@ -15,10 +15,11 @@ async function mountMerge(
   page: Page,
   versions: [string | null, string | null, string | null] = [BASE, OURS, THEIRS],
   failure: string | null = null,
+  binary = false,
 ) {
   await page.goto("/");
   await page.evaluate(
-    async ({ versions: [base, ours, theirs], failure }) => {
+    async ({ versions: [base, ours, theirs], failure, binary }) => {
       const reactPath = "/node_modules/.vite/deps/react.js";
       const domPath = "/node_modules/.vite/deps/react-dom_client.js";
       const react = await import(reactPath);
@@ -37,6 +38,7 @@ async function mountMerge(
           : {
               status: "ok",
               data: {
+                binary,
                 base,
                 ours,
                 theirs,
@@ -53,15 +55,53 @@ async function mountMerge(
         createElement(MergeEditor, { input: { key: "merge:demo.ts", data: { path: "/project/demo.ts" } } }),
       );
     },
-    { versions, failure },
+    { versions, failure, binary },
   );
-  if (!failure && !versions.some((text) => text?.includes("\0")))
+  if (!failure && !binary)
     await expect(page.getByRole("region", { name: "Result" }).locator(".cm-content")).toBeVisible();
 }
 
 const result = (page: Page) => page.getByRole("region", { name: "Result" });
 const text = async (pane: Locator) => (await pane.locator(".cm-content").innerText()).replace(/​/g, "");
 const status = (page: Page) => page.locator("#merge-host [class*=status]").first();
+
+test("merge controls and pane titles fit while resizing the result", async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 600 });
+  await mountMerge(page);
+  const host = page.locator("#merge-host");
+  for (const name of ["Accept Yours", "Accept Theirs", "Cancel", "Apply"])
+    await expect(host.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(status(page)).toHaveText("3 changes left, 2 conflicts");
+  await expect(status(page)).toBeInViewport({ ratio: 1 });
+
+  const ours = page.getByRole("region", { name: "Your version" });
+  await expect(ours.getByText("Your version", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Their version" }).getByText("Their version", { exact: true }),
+  ).toBeVisible();
+  await ours.locator(".cm-merge-accept").nth(1).focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => text(result(page))).toContain("\nmine\n");
+
+  await page.setViewportSize({ width: 980, height: 660 });
+  const resultWidth = async () => (await result(page).boundingBox())!.width;
+  const initial = await resultWidth();
+  const left = host.getByRole("separator", { name: "Resize left merge pane" });
+  await left.press("ArrowLeft");
+  await expect.poll(resultWidth).toBeGreaterThan(initial + 1);
+
+  const right = host.getByRole("separator", { name: "Resize right merge pane" });
+  const grip = (await right.boundingBox())!;
+  const withLeftResized = await resultWidth();
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + grip.width / 2 + 36, grip.y + grip.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(resultWidth).toBeGreaterThan(withLeftResized + 20);
+  await expect(result(page).getByText("Result", { exact: true })).toBeVisible();
+  await expect(ours.getByText("Changes from main", { exact: true })).toBeVisible();
+  await expect.poll(() => text(result(page))).toContain("\nmine\n");
+});
 
 /** Capture the save boundary, keeping real editor state, dialogs and Apply behavior. */
 async function captureWrites(page: Page) {
@@ -72,7 +112,7 @@ async function captureWrites(page: Page) {
     Object.assign(window, { mergeWrites: calls });
     commands.fsReadText = async () => ({ status: "ok", data: "working copy\n" });
     commands.docOpen = async () => ({ status: "ok", data: { id: 777, version: 1 } });
-    for (const command of ["docEdit", "docSave", "docClose", "fsDelete", "vcsStage"])
+    for (const command of ["docEdit", "docSave", "docClose", "vcsAcceptConflictSide", "vcsStage"])
       commands[command] = async (...args: unknown[]) => {
         calls.push({ command, args });
         return { status: "ok", data: null };
@@ -139,10 +179,16 @@ test("footer buttons work when a click doesn't focus them, as in WebKit", async 
   await expect(page.getByRole("dialog")).toContainText("Save and mark the file as resolved anyway?");
 });
 
-test("binary and unreadable versions show an error with no Apply controls", async ({ page }) => {
-  await mountMerge(page, ["\0base", "\0ours", "\0theirs"]);
-  await expect(page.locator("#merge-host")).toContainText("Binary files cannot be resolved in the merge editor.");
-  await expect(page.locator("#merge-host").getByRole("button", { name: "Apply", exact: true })).toHaveCount(0);
+test("binary conflicts offer whole-file acceptance and unreadable versions can be retried", async ({ page }) => {
+  await mountMerge(page, [null, null, null], null, true);
+  const host = page.locator("#merge-host");
+  await expect(host).toContainText("Binary file. Choose which version to keep.");
+  await expect(host.getByRole("button", { name: "Apply", exact: true })).toHaveCount(0);
+  await captureWrites(page);
+  await host.getByRole("button", { name: "Accept Yours", exact: true }).click();
+  await expect
+    .poll(() => writes(page))
+    .toEqual([{ command: "vcsAcceptConflictSide", args: [["/project/demo.ts"], "ours"] }]);
   await mountMerge(page, [BASE, OURS, THEIRS], "Cannot read conflict versions");
   await expect(page.locator("#merge-host")).toContainText("Cannot read conflict versions");
   await expect(page.locator("#merge-host").getByRole("button", { name: "Retry", exact: true })).toBeVisible();
@@ -161,15 +207,13 @@ test("per-change controls also work from the keyboard", async ({ page }) => {
   await expect(status(page)).toHaveText("2 changes left, 1 conflict");
 });
 
-test("accepting a deleted version removes the file before staging", async ({ page }) => {
+test("accepting a deleted version delegates removal and staging to Git", async ({ page }) => {
   await mountMerge(page, [BASE, OURS, null]);
   await captureWrites(page);
   await page.locator("#merge-host").getByRole("button", { name: "Accept Theirs", exact: true }).click();
-  await expect.poll(async () => (await writes(page)).some((call) => call.command === "vcsStage")).toBe(true);
-  expect(await writes(page)).toEqual([
-    { command: "fsDelete", args: ["/project/demo.ts"] },
-    { command: "vcsStage", args: [["/project/demo.ts"]] },
-  ]);
+  await expect
+    .poll(() => writes(page))
+    .toEqual([{ command: "vcsAcceptConflictSide", args: [["/project/demo.ts"], "theirs"] }]);
 });
 
 test("a long side shows only the lines it changed against the base", async ({ page }) => {

@@ -23,7 +23,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const { useProject } = await import("@/platform/project");
 const { provideNotificationService } = await import("@/workbench/contributions");
-const { BUSY_SHOW_DELAY_MS, eslintCovers, installServerEvents, restartServer, serversSummary, useServers } =
+const { BUSY_SHOW_DELAY_MS, installServerEvents, linterCovers, restartServer, serversSummary, useServers } =
   await import("./servers");
 
 describe("server status", () => {
@@ -177,7 +177,7 @@ describe("serversSummary", () => {
   });
 });
 
-describe("ESLint coverage", () => {
+describe("linter coverage", () => {
   afterEach(() => useServers.setState({ servers: new Map() }));
 
   it("covers files of its languages below its configuration while it runs", () => {
@@ -188,14 +188,25 @@ describe("ESLint coverage", () => {
         ]),
       });
     eslint("ready", "/p/web");
-    expect(eslintCovers("/p/web/src/a.ts", "typescript")).toBe(true);
-    expect(eslintCovers("/p/web/src/a.ts", "rust")).toBe(false);
-    expect(eslintCovers("/p/api/a.ts", "typescript")).toBe(false);
-    expect(eslintCovers("/p/webapp/a.ts", "typescript")).toBe(false);
-    expect(eslintCovers("/p/web/src/a.ts", null)).toBe(false);
+    expect(linterCovers("eslint", "/p/web/src/a.ts", "typescript")).toBe(true);
+    expect(linterCovers("eslint", "/p/web/src/a.ts", "rust")).toBe(false);
+    expect(linterCovers("eslint", "/p/api/a.ts", "typescript")).toBe(false);
+    expect(linterCovers("eslint", "/p/webapp/a.ts", "typescript")).toBe(false);
+    expect(linterCovers("eslint", "/p/web/src/a.ts", null)).toBe(false);
     eslint("starting", "/p/web");
-    expect(eslintCovers("/p/web/src/a.ts", "typescript")).toBe(false);
+    expect(linterCovers("eslint", "/p/web/src/a.ts", "typescript")).toBe(false);
     eslint("ready", "C:\\p\\web");
-    expect(eslintCovers("C:\\p\\web\\a.js", "javascript")).toBe(true);
+    expect(linterCovers("eslint", "C:\\p\\web\\a.js", "javascript")).toBe(true);
+  });
+
+  it("tells Stylelint apart from ESLint", () => {
+    useServers.setState({
+      servers: new Map([
+        [2, { id: 2, name: "stylelint", status: "ready", message: null, languages: ["css", "scss"], root: "/p/web" }],
+      ]),
+    });
+    expect(linterCovers("stylelint", "/p/web/src/app.scss", "scss")).toBe(true);
+    expect(linterCovers("eslint", "/p/web/src/app.scss", "scss")).toBe(false);
+    expect(linterCovers("stylelint", "/p/web/src/app.less", "less")).toBe(false);
   });
 });

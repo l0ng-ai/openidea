@@ -6,6 +6,7 @@ import type { MenuItem } from "@/ui";
 
 const config = vi.hoisted(() => new Map<string, string>());
 const configReads = vi.hoisted(() => vi.fn());
+const remotes = vi.hoisted(() => new Map<string, { name: string; url: string; resolvedUrl?: string | null }[]>());
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -14,6 +15,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     call: vi.fn(async (request: Promise<unknown>) => request),
     commands: {
       ...real.commands,
+      vcsRemotes: async (root: string) => remotes.get(root) ?? [],
       vcsConfigGet: async (root: string, key: string) => {
         configReads(root, key);
         return config.get(`${root} ${key}`) ?? null;
@@ -21,6 +23,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     },
   };
 });
+
+const openUrl = vi.hoisted(() => vi.fn(async (_url: string) => undefined));
+vi.mock("../issueLinks", () => ({ openUrl }));
 
 import { openOnRemoteActions, registerOpenOnRemote } from "../openOnRemote";
 import { useVcs } from "../store";
@@ -42,6 +47,7 @@ async function start() {
 beforeEach(() => {
   vi.clearAllMocks();
   config.clear();
+  remotes.clear();
   config.set("/p remote.origin.url", "git@gitlab.example.com:group/sub/app.git");
   vi.stubGlobal("navigator", { clipboard: { writeText }, userAgent: navigator.userAgent });
   provideNotificationService({ notify });
@@ -111,6 +117,35 @@ describe("Copy Path/Reference… › <hosting> Link", () => {
     await vi.waitFor(() => expect(configReads).toHaveBeenCalledWith("/p", "remote.origin.url"));
     await new Promise((resolve) => setTimeout(resolve));
     expect(items({ paths: ["/p/a.ts"] })).toEqual([]);
+  });
+
+  it("builds the link on the web host behind an ~/.ssh/config host alias", async () => {
+    remotes.set("/p", [
+      { name: "origin", url: "git@github.com-work:acme/app.git", resolvedUrl: "git@github.com:acme/app.git" },
+    ]);
+    await start();
+    expect(items({ paths: ["/p/src/main.rs"], line: 9 })[0]).toMatchObject({
+      label: "GitHub Link",
+      preview: "https://github.com/acme/app/blob/feature/x/src/main.rs#L10",
+    });
+  });
+
+  it("opens the file on its remote at the selected lines from Open In", async () => {
+    await start();
+    const open = (ctx: Parameters<typeof menuGroupItems>[1]) =>
+      menuGroupItems("openIn", ctx).filter((i): i is Item => i.kind !== "separator" && "run" in i)[0]!;
+    open({ paths: ["/p/src/a.ts"], line: 9, endLine: 19 }).run!();
+    await vi.waitFor(() =>
+      expect(openUrl).toHaveBeenLastCalledWith(
+        "https://gitlab.example.com/group/sub/app/-/blob/feature/x/src/a.ts#L10-20",
+      ),
+    );
+    open({ paths: ["/p/src/a.ts"], line: 9 }).run!();
+    await vi.waitFor(() =>
+      expect(openUrl).toHaveBeenLastCalledWith(
+        "https://gitlab.example.com/group/sub/app/-/blob/feature/x/src/a.ts#L10",
+      ),
+    );
   });
 
   it("warns instead of copying when the file has no page on a remote", async () => {

@@ -16,6 +16,7 @@ import {
   Icon,
   IconButton,
   Menu,
+  Toolbar,
   Tree,
   showContextMenu,
   tooltipAttrs,
@@ -23,6 +24,7 @@ import {
   T,
 } from "@/ui";
 import { databaseKey, passesObjectFilter, shownNames, sourceIcon, splitTarget, targetOf } from "./model";
+import { IntrospectionPicker } from "./IntrospectionPicker";
 import {
   nodeTarget,
   isOtherFolder,
@@ -45,6 +47,7 @@ import {
   loadTables,
   openConsole,
   openObjectDdl,
+  saveSourceVisibility,
   tablesKey,
   useDatabase,
   type Loaded,
@@ -52,7 +55,7 @@ import {
 import { DB_VIEW_FOCUS, databaseTree, openTableData } from "./treeActions";
 import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
-import { tx } from "@/platform/i18n";
+import { formatMessage, tx } from "@/platform/i18n";
 import { databaseRequest } from "./requests";
 
 const GROUP_LABELS: Record<Group, string> = {
@@ -186,19 +189,31 @@ export function DatabaseView() {
   };
 
   const sourceOf = (target: string) => st.sources.find((s) => s.id === splitTarget(target).id);
-  /** The Schemas tab's choice. */
-  const shownSchemas = (target: string, names: string[]) => {
+  const schemaOverride = (target: string, database: string | null) => {
+    const overrides = sourceOf(target)?.introspection?.schemasByDatabase;
+    return database !== null && overrides && Object.hasOwn(overrides, database) ? overrides[database] : undefined;
+  };
+  const defaultSchemas = (target: string, names: string[]) => {
     const i = sourceOf(target)?.introspection;
     return shownNames(names, i?.allSchemas, i?.schemas);
+  };
+  const exactNames = (available: string[], choice: readonly string[]) => {
+    const picked = new Set(choice);
+    return available.filter((name) => picked.has(name));
+  };
+  const shownSchemas = (target: string, names: string[], database: string | null) => {
+    const override = schemaOverride(target, database);
+    if (!override) return defaultSchemas(target, names);
+    return override.all ? names : exactNames(names, override.names ?? []);
   };
   const shownDatabases = (id: string, v: DbDatabases) => {
     const i = sourceOf(id)?.introspection;
     return shownNames(v.names, i?.allDatabases, i?.databases, v.current);
   };
 
-  const schemasOf = (key: string, id: string) =>
+  const schemasOf = (key: string, id: string, database: string | null) =>
     status(key, st.schemas[id], (v) =>
-      shownSchemas(id, v).map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
+      shownSchemas(id, v, database).map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
     );
 
   const children = (n: Node): readonly Node[] | undefined => {
@@ -215,10 +230,10 @@ export function DatabaseView() {
               current: name === v.current,
             })),
           );
-        return schemasOf(n.key, id);
+        return schemasOf(n.key, id, null);
       }
       case "database":
-        return schemasOf(n.key, n.id);
+        return schemasOf(n.key, n.id, n.name);
       case "schema":
         return status(n.key, st.tables[tablesKey(n.id, n.schema)], () =>
           folders
@@ -340,6 +355,82 @@ export function DatabaseView() {
     else if (n.kind === "table") await loadDetails(n.id, n.schema, n.table.name);
   };
 
+  const picker = (n: Node, lead: boolean) => {
+    if (n.kind !== "source" && n.kind !== "database") return null;
+    const source = n.kind === "source" ? n.source : sourceOf(n.id);
+    if (!source?.id || source.driver === "sqlite") return null;
+    const sourceId = source.id;
+    const database = n.kind === "database" ? n.name : null;
+    const target = n.kind === "database" ? n.id : sourceId;
+    const listDatabases = database === null && listsDatabases(source);
+    const databases = listDatabases ? st.databases[sourceId] : undefined;
+    const schemas = listDatabases ? undefined : st.schemas[target];
+    const intro = source.introspection;
+    const name = label(n);
+    const kind =
+      listDatabases || source.driver === "clickhouse" || source.vendor === "clickhouse" ? "databases" : "schemas";
+    const title = kind === "databases" ? tx("Choose databases for {name}") : tx("Choose schemas for {name}");
+    const override = schemaOverride(target, database);
+    const hasPattern = (value: string) => /[*?]/.test(value);
+    const protectedRules = database === null && (listDatabases ? intro?.databases : intro?.schemas)?.some(hasPattern);
+    const names =
+      databases?.status === "ok"
+        ? {
+            available: databases.value.names,
+            visible: shownDatabases(sourceId, databases.value),
+            current: databases.value.current,
+            restore: () => shownNames(databases.value.names, false, intro?.databases, databases.value.current),
+          }
+        : schemas?.status === "ok"
+          ? {
+              available: schemas.value,
+              visible: shownSchemas(target, schemas.value, database),
+              defaults: database === null ? undefined : defaultSchemas(target, schemas.value),
+              restore: () =>
+                database === null
+                  ? shownNames(schemas.value, false, intro?.schemas)
+                  : override
+                    ? exactNames(schemas.value, override.names ?? [])
+                    : defaultSchemas(target, schemas.value),
+            }
+          : undefined;
+    const initial =
+      database !== null
+        ? override
+          ? { all: !!override.all, names: override.names ?? [] }
+          : null
+        : listDatabases
+          ? { all: intro?.allDatabases !== false, names: intro?.databases ?? [] }
+          : { all: intro?.allSchemas !== false, names: intro?.schemas ?? [] };
+    const metadata = databases ?? schemas;
+    return (
+      <IntrospectionPicker
+        title={formatMessage(title, { name })}
+        kind={kind}
+        names={names}
+        initial={initial}
+        tabIndex={lead ? 0 : -1}
+        protectedRules={!!protectedRules}
+        editableName={(name) => database !== null || (!protectedRules && !hasPattern(name))}
+        loadError={metadata?.status === "error" ? metadata.message : undefined}
+        onLoad={() => {
+          if (metadata?.status !== "loading") void load(n);
+        }}
+        onApply={async (selection) => {
+          const available = names?.available ?? [];
+          if (database !== null) {
+            await saveSourceVisibility(sourceId, available, { kind: "databaseSchemas", database, selection });
+          } else if (selection) {
+            await saveSourceVisibility(sourceId, available, {
+              kind: listDatabases ? "databases" : "schemas",
+              selection,
+            });
+          }
+        }}
+      />
+    );
+  };
+
   const expandable = (n: Node) =>
     n.kind === "source" ||
     n.kind === "database" ||
@@ -410,17 +501,10 @@ export function DatabaseView() {
   const detail = (n: Node): string | undefined => {
     switch (n.kind) {
       case "source": {
+        if (n.source.driver !== "sqlite") return undefined;
         const id = n.source.id ?? "";
-        if (listsDatabases(n.source)) {
-          const d = st.databases[id];
-          return d?.status === "ok" ? String(shownDatabases(id, d.value).length) : undefined;
-        }
         const s = st.schemas[id];
-        return s?.status === "ok" ? String(shownSchemas(id, s.value).length) : undefined;
-      }
-      case "database": {
-        const s = st.schemas[n.id];
-        return s?.status === "ok" ? String(shownSchemas(n.id, s.value).length) : undefined;
+        return s?.status === "ok" ? String(shownSchemas(id, s.value, null).length) : undefined;
       }
       case "folder":
         return String(folderSize(n.id, n.schema, n.folder));
@@ -454,7 +538,7 @@ export function DatabaseView() {
       case "source":
         return sourceIcon(n.source);
       case "database":
-        return "database";
+        return "db-database";
       case "schema":
         return "db-schema";
       case "folder":
@@ -523,10 +607,11 @@ export function DatabaseView() {
             return color ? `var(--db-color-${color})` : undefined;
           }}
           speedSearchField
+          horizontalScroll
           renderNode={(n: Node, state) => {
             const i = icon(n);
             const d = detail(n);
-            const counted = n.kind === "source" || n.kind === "database" || n.kind === "folder" || n.kind === "group";
+            const counted = n.kind === "source" || n.kind === "folder" || n.kind === "group";
             const labelClass =
               n.kind === "message" && n.error
                 ? styles.treeError
@@ -552,6 +637,7 @@ export function DatabaseView() {
                     {tx("global")}
                   </span>
                 )}
+                {picker(n, state.lead)}
                 {d && (
                   <span
                     className={
@@ -611,7 +697,7 @@ function DatabaseToolbar() {
   const active = !!target && [...connected].some((t) => splitTarget(t).id === splitTarget(target).id);
   const button = { size: "small", iconSize: 16 } as const;
   return (
-    <div className={styles.dbToolbar} role="toolbar" aria-label={tx("Database actions")}>
+    <Toolbar className={styles.dbToolbar} aria-label="Database actions">
       <IconButton
         ref={plus}
         {...button}
@@ -648,7 +734,7 @@ function DatabaseToolbar() {
       >
         <T>DDL</T>
       </button>
-    </div>
+    </Toolbar>
   );
 }
 

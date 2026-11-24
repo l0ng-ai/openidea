@@ -26,7 +26,15 @@ vi.mock("@/workbench/contributions", async (orig) => ({
   ...(await orig<typeof import("@/workbench/contributions")>()),
   maybeEditorService: () => ({ openFile: vi.fn(async () => {}) }),
 }));
-import { adoptSession, handleDebugEvent, selectThread, resumeExecution, useDebug, useExecutionPoint } from "../state";
+import {
+  adoptSession,
+  handleDebugEvent,
+  isThreadSuspended,
+  selectThread,
+  resumeExecution,
+  useDebug,
+  useExecutionPoint,
+} from "../state";
 
 const path = "/proj/MsMemberUtils.java";
 const frame = (line: number, id = 100): StackFrame => ({
@@ -124,6 +132,56 @@ describe("execution point state", () => {
     expect(useDebug.getState().sessions[1]?.status).toBe("paused");
     handleDebugEvent(1, { kind: "continued", threadId: 5, allThreadsContinued: false });
     expect(useExecutionPoint.getState().path).toBeNull();
+  });
+
+  it("moves to another thread still stopped by its own breakpoint when the current one continues", async () => {
+    stopped(5);
+    await settle();
+    ipc.debugStackTrace.mockResolvedValueOnce(ipc.ok([frame(9, 200)]));
+    stopped(1);
+    await settle();
+    ipc.debugStackTrace.mockResolvedValueOnce(ipc.ok([frame(6841)]));
+    await resumeExecution(1, async () => {
+      handleDebugEvent(1, { kind: "continued", threadId: 1, allThreadsContinued: false });
+    });
+    await settle();
+    expect(useDebug.getState().sessions[1]).toMatchObject({
+      status: "paused",
+      stoppedThread: 5,
+      selectedThread: 5,
+      stopReason: "step",
+      selectedFrame: 100,
+    });
+    expect(useExecutionPoint.getState()).toMatchObject({ path, line: 6841 });
+    expect(isThreadSuspended(useDebug.getState().sessions[1]!, 5)).toBe(true);
+    expect(isThreadSuspended(useDebug.getState().sessions[1]!, 1)).toBe(false);
+    handleDebugEvent(1, { kind: "continued", threadId: 5, allThreadsContinued: false });
+    expect(useDebug.getState().sessions[1]?.status).toBe("running");
+  });
+
+  it("forgets a stopped thread that continues while another one is shown", async () => {
+    stopped(5);
+    await settle();
+    stopped(1);
+    await settle();
+    handleDebugEvent(1, { kind: "continued", threadId: 5, allThreadsContinued: false });
+    expect(useDebug.getState().sessions[1]).toMatchObject({ status: "paused", stoppedThread: 1 });
+    handleDebugEvent(1, { kind: "continued", threadId: 1, allThreadsContinued: false });
+    expect(useDebug.getState().sessions[1]?.status).toBe("running");
+  });
+
+  it.each([
+    ["every thread continues", false, true],
+    ["the stop suspended every thread", true, false],
+  ])("runs when %s", async (_, allStopped, allContinued) => {
+    stopped(5, allStopped);
+    await settle();
+    stopped(1, allStopped);
+    await settle();
+    expect(isThreadSuspended(useDebug.getState().sessions[1]!, 5)).toBe(true);
+    handleDebugEvent(1, { kind: "continued", threadId: 1, allThreadsContinued: allContinued });
+    expect(useDebug.getState().sessions[1]?.status).toBe("running");
+    expect(isThreadSuspended(useDebug.getState().sessions[1]!, 5)).toBe(false);
   });
 
   it.each(["continued", "terminated"] as const)("clears the execution point on %s", async (kind) => {

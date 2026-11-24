@@ -1,0 +1,14 @@
+.badge {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-selection);
+  background: linear-gradient(135deg, var(--project-color), var(--project-color-end));
+  color: var(--fg-button-primary);
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}

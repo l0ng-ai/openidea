@@ -4,11 +4,16 @@
  * direct interpreter invocation for main files. Best effort, IDEA-style.
  */
 import type { RunConfig } from "@/platform/ipc";
+import { jvmModuleDir } from "@/platform/javaLaunch";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { inGradleModule } from "./gradleModuleTests";
+import { systemPython } from "./pythonTypes";
 import { phpunitArgs } from "./testing/phpunit";
+import { frameworkFor } from "./testing";
 import { goTestParts } from "./goArguments";
 import { goBuildType } from "./goTypes";
 import { isWindows } from "./jvmTypes";
+import { withMavenTests } from "./mavenTests";
 import { typeFor } from "./types";
 import { runTemplate } from "./runTemplates";
 import { appendScriptArgs } from "./scriptArgs";
@@ -21,6 +26,10 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
   if (/\.cs$/i.test(relPath) && content && csharpTargets(content).some((target) => target.kind === "test"))
     return "test";
   const name = relPath.split("/").pop() ?? relPath;
+  // A JVM class with a `main` is a runnable program even when its name looks like
+  // a test's (`Test.java`): content decides before the test-name pattern does.
+  if (/\.(kt|java)$/.test(name) && content !== undefined && /\bfun\s+main\s*\(|static\s+void\s+main\s*\(/.test(content))
+    return "main";
   if (
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
     /(^|\/)__tests__\//.test(relPath) ||
@@ -35,8 +44,6 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
     return "test";
   if (/(^|\/)src\/main\.rs$|(^|\/)src\/bin\/[^/]+\.rs$/.test(relPath)) return "main";
   if (/\.go$/.test(name) && content !== undefined && /^\s*package\s+main\b/m.test(content)) return "main";
-  if (/\.(kt|java)$/.test(name) && content !== undefined && /\bfun\s+main\s*\(|static\s+void\s+main\s*\(/.test(content))
-    return "main";
   if (/\.(py|rb|sh|bash|zsh|[cm]?js|ts)$/.test(name)) return "script";
   if (windows && /\.(bat|cmd)$/i.test(name)) return "script";
   return null;
@@ -48,7 +55,7 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 /** Kinds whose test configs can run a file of this extension. */
 function testKinds(relPath: string): string[] {
   if (/\.cs$/i.test(relPath)) return ["dotnet-test"];
-  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
+  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun", "node"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
   if (/\.php$/.test(relPath)) return ["phpunit"];
   if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake", "ruby"];
@@ -122,7 +129,8 @@ export function projectPython(configs: RunConfig[], relPath?: string): { command
       configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
       relPath,
     );
-  const py = configs.find((c) => c.kind === "python");
+  // A detected configuration says what the project uses; one made by hand only what it runs itself.
+  const py = configs.find((c) => c.kind === "python" && c.detected) ?? configs.find((c) => c.kind === "python");
   if (py) {
     // The interpreter part ends where the program starts: `-m`, or the script (`manage.py`). What follows
     // (`runserver`, `test`…) belongs to that program, never to the interpreter.
@@ -142,11 +150,6 @@ export function projectPython(configs: RunConfig[], relPath?: string): { command
   if (pytest.args[0] === "run" && pytest.args[1] === "pytest")
     return { command: pytest.command, prefix: ["run", "python"] };
   return null;
-}
-
-/** `python` on Windows (where `python3` is not a command), `python3` elsewhere. */
-function systemPython(): string {
-  return isWindows() ? "python" : "python3";
 }
 
 /**
@@ -196,18 +199,33 @@ function applyPytestTemplate(config: RunConfig): RunConfig {
   return { ...config, command: line.command, args: line.args };
 }
 
+/** A Playwright spec: it imports Playwright Test, or uses its `test.describe` / `test.step` / `test.use`. */
+export function isPlaywrightSpec(content: string): boolean {
+  return /['"]@playwright\/test['"]|\btest\.(?:describe|step|use)\s*[.(]/.test(content);
+}
+
+/** A project with Playwright and another JS runner: specs run on Playwright's configurations, other tests on the rest. */
+function byRunner(bases: RunConfig[], content: string): RunConfig[] {
+  const playwright = bases.filter((c) => frameworkFor(c) === "playwright");
+  if (!playwright.length || playwright.length === bases.length) return bases;
+  return isPlaywrightSpec(content) ? playwright : bases.filter((c) => !playwright.includes(c));
+}
+
 /**
  * Test configurations that can run `relPath` equally well (same, closest working
  * directory: `npm run test` and `npm run test:unit`…); the default one first.
+ * `content` (the file's text) tells a Playwright spec from other JS tests.
  */
-export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[] {
+export function testBasesFor(relPath: string, configs: RunConfig[], content?: string): RunConfig[] {
   const kinds = testKinds(relPath);
   // Configurations produced from a test or file are results of narrowing, never bases for it.
   const candidates = configs
     .filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"))
+    // `node` configurations run a file of their own; only Playwright's (`npx playwright test`) take a test file.
+    .filter((c) => c.kind !== "node" || frameworkFor(c) === "playwright")
     .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
   const best = allClosest(candidates, relPath);
-  if (best.length) return best;
+  if (best.length) return content === undefined ? best : byRunner(best, content);
   const fallback = implicitPytest(relPath, configs);
   return fallback ? [fallback] : [];
 }
@@ -222,7 +240,7 @@ export function testConfigFor(
   base?: RunConfig,
   content?: string,
 ): RunConfig | null {
-  base ??= testBasesFor(relPath, configs)[0];
+  base ??= testBasesFor(relPath, configs, content)[0];
   if (!base) return null;
   const file = relToCwd(relPath, base);
   switch (base.kind) {
@@ -242,6 +260,7 @@ export function testConfigFor(
       return derived(base, relPath, { args });
     }
     case "deno":
+    case "node":
       return derived(base, relPath, { args: [...base.args, file] });
     case "pytest":
     case "python":
@@ -277,10 +296,13 @@ export function testConfigFor(
       const m = /(?:^|\/)tests\/([^/]+)\.rs$/.exec(relPath);
       return m ? derived(base, relPath, { args: [...base.args, "--test", m[1]!] }) : base;
     }
-    case "gradle":
-      return derived(base, relPath, { args: [...base.args, "--tests", `*${stem(relPath)}`] });
+    case "gradle": {
+      // Class and method runs narrow this file configuration, so they inherit its subproject task.
+      const module = inGradleModule(base, jvmModuleDir(relPath, configs));
+      return derived(module, relPath, { args: [...module.args, "--tests", `*${stem(relPath)}`] });
+    }
     case "maven":
-      return derived(base, relPath, { args: [...base.args, `-Dtest=${stem(relPath)}`] });
+      return derived(base, relPath, { args: withMavenTests(base.args, stem(relPath)) });
   }
   return base;
 }

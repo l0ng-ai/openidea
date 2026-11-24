@@ -149,7 +149,7 @@ test("opens slash-prefixed Windows Markdown links with preview content and hover
   for (const [label, path, heading] of [
     ["Specification", spec, "Windows specification"],
     ["Work skill", skill, "Work specification skill"],
-  ]) {
+  ] as const) {
     const link = reply.getByRole("link", { name: label, exact: true });
     await link.hover();
     await expect(link).toHaveAttribute("title", path);
@@ -947,8 +947,9 @@ test("indents process-run thoughts and tool calls clearly and aligns output-less
     const expandableToolChevron = toolRows[0]!
       .querySelector<SVGElement>("[class*='_toolChevron_']")!
       .getBoundingClientRect();
-    const completedReadIcon = [...toolRows[1]!.querySelectorAll("svg")].at(-1)!.getBoundingClientRect();
-    const runningReadIcon = toolRows[2]!.querySelector("svg")!.getBoundingClientRect();
+    const kindIcon = (row: HTMLElement) => row.querySelector<SVGElement>("[class*='_toolKindIcon_']")!;
+    const completedReadIcon = kindIcon(toolRows[1]!).getBoundingClientRect();
+    const runningReadIcon = kindIcon(toolRows[2]!).getBoundingClientRect();
     return {
       summaryChevronCenter: summaryChevron.left + summaryChevron.width / 2,
       guideLeft: processBody.left,
@@ -1023,4 +1024,38 @@ test("aligns Mermaid diagrams in replies to their container align attribute", as
   expect(offsets[2]!.leftGap).toBeGreaterThan(40);
   expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
   expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
+});
+
+test("renders LaTeX math formulas with KaTeX and keeps wide equations scrollable", async ({ page }) => {
+  const reply = await openReply(
+    page,
+    [
+      "Inline $E = mc^2$ and \\(a^2 + b^2 = c^2\\), prices $5 and $10 stay plain.",
+      "",
+      "$$",
+      "\\int_{-\\infty}^{\\infty} e^{-x^2} \\, dx = \\sqrt{\\pi}",
+      "$$",
+      "",
+      "```math",
+      "\\sum_{k=1}^{n} k = \\frac{n(n+1)}{2} + a_1 + a_2 + a_3 + a_4 + a_5 + a_6 + a_7 + a_8 + a_9 + a_{10}",
+      "```",
+    ].join("\n"),
+  );
+  await expect(reply.locator(".katex")).toHaveCount(4);
+  await expect(reply.locator(".katex-display")).toHaveCount(2);
+  await expect(reply).toContainText("prices $5 and $10 stay plain.");
+
+  const layout = await reply.evaluate((el) => {
+    const firstKatex = el.querySelector<HTMLElement>(".katex")!;
+    const display = el.querySelectorAll<HTMLElement>(".katex-display");
+    const font = getComputedStyle(firstKatex).fontFamily;
+    return {
+      font,
+      height: firstKatex.getBoundingClientRect().height,
+      overflowX: getComputedStyle(display[1]!).overflowX,
+    };
+  });
+  expect(layout.font).toContain("KaTeX_Main");
+  expect(layout.height).toBeGreaterThan(10);
+  expect(layout.overflowX).toBe("auto");
 });

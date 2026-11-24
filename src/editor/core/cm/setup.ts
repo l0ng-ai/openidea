@@ -39,6 +39,7 @@ import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
 import { indentGuides, rainbowIndentGuides } from "./indentGuides";
 import { rainbowBrackets } from "./rainbowBrackets";
+import { scopeContext } from "./scopeContext";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
 import { codeLensExtension } from "./codeLens";
@@ -178,6 +179,15 @@ export const formatIndentFacet = Facet.define<EffectiveIndent | null>({
   combine: (values) => [values.find((v) => v !== null) ?? null],
 });
 
+// One theme per set of values: a theme made per call mounts new rules for every editor, and the page restyles.
+const fontThemes = new Map<string, Extension>();
+function fontVarsTheme(vars: Record<string, string>): Extension {
+  const key = JSON.stringify(vars);
+  let theme = fontThemes.get(key);
+  if (!theme) fontThemes.set(key, (theme = EditorView.theme({ "&": vars })));
+  return theme;
+}
+
 export function fontExtension(settings: EditorSettings | undefined): Extension {
   const vars: Record<string, string> = {};
   const prefs = prefsOf(settings);
@@ -202,7 +212,7 @@ export function fontExtension(settings: EditorSettings | undefined): Extension {
     Object.keys(attrs).length ? EditorView.editorAttributes.of(attrs) : [],
     // The same variables as a theme: tooltips (completion, parameter info, hover docs) render
     // in a container outside the editor that carries its theme classes, not its attributes.
-    entries.length ? EditorView.theme({ "&": vars }) : [],
+    entries.length ? fontVarsTheme(vars) : [],
   ];
 }
 
@@ -242,7 +252,7 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
   if (docLength > HEAVY_LIMIT) return [];
   const prefs = prefsOf(settings);
   return [
-    prefs.codeEditing.highlightBraces ? bracketMatching({ renderMatch }) : [],
+    prefs.codeEditing.highlightBraces ? [bracketMatching({ renderMatch }), scopeContext] : [],
     prefs.appearance.indentGuides ? (prefs.appearance.rainbowIndentGuides ? rainbowIndentGuides : indentGuides) : [],
     prefs.rainbowBrackets
       ? rainbowBrackets({ ...prefs.rainbowBracketKinds, colors: prefs.rainbowBracketColors, syntax: bracketSyntax() })
@@ -276,7 +286,8 @@ export function distractionFreeExtension(
 }
 
 export function foldingFor(settings: EditorSettings | undefined): Extension {
-  return foldingExtension(prefsOf(settings).folding.showOutline);
+  const { showOutline, outlineVisibility } = prefsOf(settings).folding;
+  return foldingExtension(showOutline, outlineVisibility);
 }
 
 export function caretFor(settings: EditorSettings | undefined): Extension {

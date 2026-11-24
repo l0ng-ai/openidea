@@ -9,6 +9,8 @@ use ide_core::{IdeError, IdeResult};
 pub(crate) struct Compiled {
     pub matcher: RegexMatcher,
     pub multi_line: bool,
+    /// Keep only whole-word matches ([`crate::iter`] checks IDEA's rule on each match).
+    pub whole_word: bool,
 }
 
 /// The line terminator shared by the matcher and the searcher. CRLF mode lets
@@ -19,12 +21,13 @@ pub(crate) fn line_terminator() -> LineTerminator {
 
 pub(crate) fn compile(query: &SearchQuery) -> IdeResult<Compiled> {
     let multi_line = needs_multi_line(query);
+    let whole_word = query.whole_word;
     match build(query, multi_line) {
-        Ok(matcher) => Ok(Compiled { matcher, multi_line }),
+        Ok(matcher) => Ok(Compiled { matcher, multi_line, whole_word }),
         // Patterns such as `[\n]` or `\x0A` can only match across lines;
         // retry in multi-line mode before reporting an error.
         Err(err) if !multi_line => match build(query, true) {
-            Ok(matcher) => Ok(Compiled { matcher, multi_line: true }),
+            Ok(matcher) => Ok(Compiled { matcher, multi_line: true, whole_word }),
             Err(_) => Err(invalid_pattern(query, &err)),
         },
         Err(err) => Err(invalid_pattern(query, &err)),
@@ -35,7 +38,8 @@ fn build(query: &SearchQuery, multi_line: bool) -> Result<RegexMatcher, grep_reg
     let mut b = RegexMatcherBuilder::new();
     b.case_smart(false)
         .case_insensitive(!query.case_sensitive)
-        .word(query.whole_word)
+        // Not `.word()`: ripgrep's rule wants a non-word character on both sides even of
+        // `foo(`, IDEA's (in `iter`) only beside the match's identifier characters.
         .fixed_strings(!query.is_regex)
         .unicode(true)
         // `^`/`$` always mean start/end of line, as in IDEA and ripgrep.
@@ -98,6 +102,7 @@ mod tests {
             scope: SearchScope::Project,
             max_matches: 0,
             context: Default::default(),
+            include_excluded: false,
         }
     }
 

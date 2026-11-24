@@ -198,6 +198,32 @@ describe("Spring mappings (Kotlin)", () => {
   });
 });
 
+describe("mapping conditions", () => {
+  it("keeps a value that has its own '='", () => {
+    const [controller] = springControllers(`package demo;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ReportController {
+    @GetMapping(path = "/report", headers = "Accept=text/plain;charset=UTF-8", params = "range=a=b")
+    public String report() { return ""; }
+
+    @PostMapping(path = "/upload", headers = {"Content-Type=multipart/form-data; boundary=xyz", "X-Token=YWJj=="})
+    public void upload() {}
+}
+`);
+    const [report, upload] = controller!.endpoints;
+    expect(report).toMatchObject({
+      query: [{ name: "range", value: "a=b" }],
+      headers: [{ name: "Accept", value: "text/plain;charset=UTF-8" }],
+    });
+    expect(upload!.headers).toEqual([
+      { name: "Content-Type", value: "multipart/form-data; boundary=xyz" },
+      { name: "X-Token", value: "YWJj==" },
+    ]);
+  });
+});
+
 describe("non-controllers", () => {
   it("ignores classes that are not controllers and files without any", () => {
     expect(springControllers('@Service class A { @GetMapping("/x") void a() {} }')).toEqual([]);
@@ -241,6 +267,19 @@ describe("server address", () => {
       "https://localhost:8443",
     );
     expect(hostFromConfig([parseYaml("spring:\n  webflux:\n    base-path: /rx\n")])).toBe("http://localhost:8080/rx");
+  });
+
+  it("uses https for a key store unless server.ssl.enabled is false", () => {
+    const keyStore = "server.port=8443\nserver.ssl.key-store=classpath:keystore.p12\n";
+    expect(hostFromConfig([parseProperties(keyStore)])).toBe("https://localhost:8443");
+    expect(hostFromConfig([parseProperties(`${keyStore}server.ssl.enabled=false\n`)])).toBe("http://localhost:8443");
+    expect(
+      hostFromConfig([parseYaml("server:\n  ssl:\n    enabled: false\n    key-store: classpath:keystore.p12\n")]),
+    ).toBe("http://localhost:8080");
+    // A profile that turns TLS off over a base file that configures it.
+    expect(hostFromConfig([parseProperties("server.ssl.enabled=false\n"), parseProperties(keyStore)])).toBe(
+      "http://localhost:8443",
+    );
   });
 
   it("looks in the module's src/main/resources", async () => {

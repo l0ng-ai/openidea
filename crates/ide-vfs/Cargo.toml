@@ -22,6 +22,7 @@ parking_lot.workspace = true
 zip.workspace = true
 flate2.workspace = true
 tar.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

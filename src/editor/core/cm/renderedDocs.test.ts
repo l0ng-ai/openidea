@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { java } from "@codemirror/lang-java";
 import { javascript } from "@codemirror/lang-javascript";
 import { ensureSyntaxTree } from "@codemirror/language";
@@ -15,8 +15,20 @@ import {
 } from "./renderedDocs";
 
 const defaultMode = new Compartment();
+/** A language without a grammar, as `languages/zig.toml` defines it: comment tokens only. */
+const zig = EditorState.languageData.of(() => [{ commentTokens: { line: "//" } }]);
+const ungrammaredC = EditorState.languageData.of(() => [
+  { commentTokens: { line: "//", block: { open: "/*", close: "*/" } } },
+]);
 
-function state(doc: string, { reader = true, language = java(), at = 0 } = {}) {
+function state(
+  doc: string,
+  {
+    reader = true,
+    language = java() as Extension,
+    at = 0,
+  }: { reader?: boolean; language?: Extension; at?: number } = {},
+) {
   return EditorState.create({
     doc,
     selection: EditorSelection.cursor(at),
@@ -83,9 +95,46 @@ describe("docComments", () => {
   it("ignores a plain // comment", () => {
     expect(docComments(state("// just a note\nfunction f() {}", { language: javascript() }))).toHaveLength(0);
   });
+
+  it("finds Zig doc comments without a syntax tree", () => {
+    const s = state(
+      "//! Module docs.\n\n/// Adds two numbers.\n/// Uses `a` and `b`.\npub fn add(a: i32, b: i32) i32 {\n    return a + b;\n}",
+      { language: zig },
+    );
+    const found = docComments(s);
+    expect(found.map((c) => [s.doc.lineAt(c.from).number, s.doc.lineAt(c.to).number])).toEqual([
+      [1, 1],
+      [3, 4],
+    ]);
+    expect(found[1]!.style).toBe("line");
+    expect(found[1]!.text).toBe("/// Adds two numbers.\n/// Uses `a` and `b`.");
+  });
+
+  it("finds a block doc comment without a syntax tree", () => {
+    const s = state("/**\n * Docs.\n */\npub fn f() void {}", { language: ungrammaredC });
+    const found = docComments(s);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.style).toBe("block");
+    expect(found[0]!.text).toBe("/**\n * Docs.\n */");
+  });
+
+  it("does not treat ordinary // lines as docs without a syntax tree", () => {
+    expect(docComments(state("// just a note\npub fn f() void {}", { language: zig }))).toHaveLength(0);
+  });
+
+  it("finds no doc comments in a document without comment syntax (plain text, logs)", () => {
+    expect(docComments(state("/// not docs\n/** nor this */\ntext", { language: [] }))).toHaveLength(0);
+    expect(docComments(state("/** not a block doc in Zig */\npub fn f() void {}", { language: zig }))).toHaveLength(0);
+  });
 });
 
 describe("the file's default", () => {
+  it("renders Zig doc comments without a syntax tree", () => {
+    const doc = "/// Adds `a` and `b`.\npub fn add(a: i32, b: i32) i32 { return a + b; }";
+    expect(replaced(state(doc, { language: zig }))).toEqual([[1, 1]]);
+    expect(replaced(state(doc, { language: zig, reader: false }))).toEqual([]);
+  });
+
   it("renders every doc comment when on", () => {
     expect(replaced(state(JAVA))).toEqual([
       [3, 7],

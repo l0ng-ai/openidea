@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 dunce.workspace = true
 encoding_rs.workspace = true
 serde.workspace = true

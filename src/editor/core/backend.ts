@@ -16,6 +16,7 @@ import {
   type DocumentInfo,
   type DocumentLanguage,
   type FoldRange,
+  type IdeEvent,
   type LanguageInfo_Serialize,
   type LineEnding,
   type OutlineItem,
@@ -38,6 +39,8 @@ export interface DocPatchedEvent {
   changes: TextChange[];
 }
 
+export type DocDirtyEvent = Extract<IdeEvent, { type: "docDirty" }>;
+
 export interface DocBackend {
   open(path: string): Promise<DocumentInfo>;
   /** Opens a read-only language-server document (library or disk class contents). */
@@ -49,6 +52,8 @@ export interface DocBackend {
   close(doc: DocId): Promise<void>;
   edit(doc: DocId, baseVersion: number, changes: TextChange[]): Promise<number>;
   save(doc: DocId): Promise<void>;
+  /** An automatic save; `false` when the file changed on disk after the buffer was edited (nothing written). */
+  autosave?(doc: DocId): Promise<boolean>;
   /** Re-check every open file for external changes missed by file watchers. */
   syncFromDisk?(): Promise<void>;
   snapshot(doc: DocId): Promise<DocumentInfo>;
@@ -69,9 +74,13 @@ export interface DocBackend {
    */
   languageOf?(path: string, firstLine?: string): Promise<DocumentLanguage>;
   onPatched(handler: (e: DocPatchedEvent) => void): () => void;
-  onDirty(handler: (e: { doc: DocId; dirty: boolean }) => void): () => void;
+  onDirty(handler: (e: DocDirtyEvent) => void): () => void;
   /** Files changed on disk (used to refresh nothing but closed-file state). */
   onFsChanged?(handler: (e: { removed: string[] }) => void): () => void;
+  /** A file changed on disk while its buffer had unsaved changes, which the buffer kept. */
+  onDiskConflict?(handler: (e: { doc: DocId; path: string }) => void): () => void;
+  /** Load Changes from Disk: drops the buffer's unsaved changes and reads its file again. */
+  reloadDiscarding?(doc: DocId): Promise<void>;
   /**
    * Every OpenIDEA window lost focus to another application. Also seen while focus is in a frame
    * (a plugin's web view), which hides the window's own `blur`.
@@ -92,6 +101,7 @@ export const ipcBackend: DocBackend = {
   close: async (doc) => void (await call(commands.docClose(doc))),
   edit: (doc, baseVersion, changes) => call(commands.docEdit(doc, baseVersion, { changes })),
   save: async (doc) => void (await call(commands.docSave(doc))),
+  autosave: (doc) => call(commands.docAutosave(doc)),
   syncFromDisk: async () => void (await call(commands.docSyncFromDisk())),
   snapshot: (doc) => call(commands.docSnapshot(doc)),
   setLineEnding: async (doc, le) => void (await call(commands.docSetLineEnding(doc, le))),
@@ -106,6 +116,8 @@ export const ipcBackend: DocBackend = {
   onPatched: (h) => onIdeEvent("docPatched", (e) => h(e)),
   onDirty: (h) => onIdeEvent("docDirty", (e) => h(e)),
   onFsChanged: (h) => onIdeEvent("fsChanged", (e) => h(e)),
+  onDiskConflict: (h) => onIdeEvent("docDiskConflict", (e) => h(e)),
+  reloadDiscarding: async (doc) => void (await call(commands.docReloadFromDisk(doc))),
   onApplicationDeactivated: (h) => {
     if (!isTauri()) return () => {};
     const listener = getCurrentWebviewWindow().listen("ide://application-deactivated", () => h());
@@ -390,7 +402,7 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
   const docs = new Map<DocId, MemDoc>();
   const byPath = new Map<string, DocId>();
   const patched = new Set<(e: DocPatchedEvent) => void>();
-  const dirtyHandlers = new Set<(e: { doc: DocId; dirty: boolean }) => void>();
+  const dirtyHandlers = new Set<(e: DocDirtyEvent) => void>();
   let nextId = 1;
   const store = new Map(Object.entries(files));
   const savedBoms = new Map<string, boolean>();
@@ -439,7 +451,8 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
   };
   const setDirty = (d: MemDoc, before: boolean) => {
     const now = d.text !== d.saved || d.hasBom !== d.savedBom;
-    if (now !== before) dirtyHandlers.forEach((h) => h({ doc: d.id, dirty: now }));
+    if (now !== before)
+      dirtyHandlers.forEach((h) => h({ type: "docDirty", doc: d.id, dirty: now, version: d.version }));
   };
   const delay = <T>(v: () => T): Promise<T> =>
     backend.latency > 0

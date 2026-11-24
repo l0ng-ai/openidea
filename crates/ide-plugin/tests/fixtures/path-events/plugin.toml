@@ -34,5 +34,9 @@ id = "document"
 title = "document"
 
 [[contributes.commands]]
+id = "document-project"
+title = "document-project"
+
+[[contributes.commands]]
 id = "count"
 title = "count"

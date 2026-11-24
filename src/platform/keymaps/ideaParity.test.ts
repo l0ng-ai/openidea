@@ -6,6 +6,7 @@ import { intellijWindows } from "./intellij-windows";
 describe("IDEA keymap parity", () => {
   it.each([
     ["code.splitLine", ["Meta+Enter"], ["Ctrl+Enter"]],
+    ["code.smartTypeCompletion", ["Ctrl+Shift+Space"], ["Ctrl+Shift+Space"]],
     ["editor.scrollToCenter", ["Ctrl+L"], ["Ctrl+M"]],
     ["editor.codeBlockStart", ["Meta+Alt+["], ["Ctrl+["]],
     ["editor.codeBlockEnd", ["Meta+Alt+]"], ["Ctrl+]"]],
@@ -38,6 +39,7 @@ describe("IDEA keymap parity", () => {
     ["run.expandAllTests", ["Meta+="], ["Ctrl+="]],
     ["run.collapseAllTests", ["Meta+-"], ["Ctrl+-"]],
     ["navigate.searchText", ["Meta+Alt+Shift+E"], ["Ctrl+Alt+Shift+E"]],
+    ["python.console.executeSelection", ["Alt+Shift+E"], ["Alt+Shift+E"]],
     ["window.next", ["Meta+Alt+`"], ["Ctrl+Alt+]"]],
     ["window.previous", ["Meta+Alt+Shift+`"], ["Ctrl+Alt+["]],
     ["code.commentBlock", ["Meta+Alt+/", "Ctrl+Shift+/"], ["Ctrl+Shift+/"]],

@@ -3,6 +3,7 @@
  * shape, defaults and normalisation (mirrors `ide-core::settings`).
  */
 import { useMemo } from "react";
+import type { MarkdownPreviewLayout } from "@/bindings";
 import { useProject } from "./project";
 
 export interface GoBuildTags {
@@ -25,7 +26,7 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
-/** An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
+/** An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
 interface ExternalFormatterValid {
   path: string;
   configurationDirectory: string;
@@ -57,7 +58,13 @@ const DEFAULT_FORMATTER: ExternalFormatterValid = {
   runOnSave: false,
 };
 
-const DEFAULT_RUFF_FORMATTER: ExternalFormatterValid = {
+/** Biome formats these of Prettier's languages (`BIOME_LANGUAGES` in `ide-core`). */
+const DEFAULT_BIOME_FORMATTER: ExternalFormatterValid = {
+  ...DEFAULT_FORMATTER,
+  languages: ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"],
+};
+
+const DEFAULT_PYTHON_FORMATTER: ExternalFormatterValid = {
   ...DEFAULT_FORMATTER,
   languages: ["python"],
 };
@@ -166,6 +173,8 @@ export interface LanguagesValid {
     hideOtherProjectInterpreters: boolean;
     /** Show each interpreter's path under its name on the interpreters page. */
     showInterpreterPaths: boolean;
+    /** Folders added to an interpreter's `sys.path`, by interpreter executable. */
+    interpreterPaths: Record<string, string[]>;
   };
   ruby: { interpreter: string };
   zig: { zig: string };
@@ -193,13 +202,16 @@ export interface LanguagesValid {
   go: {
     goroot: string;
     gopath: string;
+    gofumpt: boolean;
     buildTags: GoBuildTags;
     modules: { env: Record<string, string>; autoVendor: boolean };
   };
   typescript: { version: string };
   prettier: ExternalFormatterValid;
   oxfmt: ExternalFormatterValid;
+  biome: ExternalFormatterValid;
   ruff: ExternalFormatterValid;
+  black: ExternalFormatterValid;
   java: {
     jdk: string;
     languageLevel: (typeof JAVA_LANGUAGE_LEVELS)[number];
@@ -231,10 +243,21 @@ export interface LanguagesValid {
       activeProfiles: string;
       /** Delegate IDE build/run actions to Maven (`javac`) instead of jdtls (ECJ). */
       delegateBuild: boolean;
+      /** Download dependencies' `-sources.jar` when jdtls imports the project. */
+      downloadSources: boolean;
+      /** Always update snapshots: `-U` on Maven runs, `java.maven.updateSnapshots` for jdtls. */
+      updateSnapshots: boolean;
     };
   };
-  /** Preview font size in px; `null` follows the editor font size. */
-  markdown: { previewFontSize: number | null };
+  markdown: {
+    previewLayout: MarkdownPreviewLayout;
+    /** Preview font size in px; `null` follows the editor font size. */
+    previewFontSize: number | null;
+    /** Run icons on shell code blocks and command lines. */
+    runCommands: boolean;
+    /** Where commands run; `null` asks when the project and the file's folder differ. */
+    commandDirectory: "project" | "file" | null;
+  };
 }
 
 export interface ProjectStructureValid {
@@ -283,17 +306,26 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     hiddenInterpreters: [],
     hideOtherProjectInterpreters: false,
     showInterpreterPaths: true,
+    interpreterPaths: {},
   },
   ruby: { interpreter: "" },
   zig: { zig: "" },
   node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
-  go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
+  go: {
+    goroot: "",
+    gopath: "",
+    gofumpt: false,
+    buildTags: DEFAULT_GO_BUILD_TAGS,
+    modules: { env: {}, autoVendor: true },
+  },
   typescript: { version: "bundled" },
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
-  ruff: DEFAULT_RUFF_FORMATTER,
+  biome: DEFAULT_BIOME_FORMATTER,
+  ruff: DEFAULT_PYTHON_FORMATTER,
+  black: DEFAULT_PYTHON_FORMATTER,
   java: {
     jdk: "",
     languageLevel: "",
@@ -314,9 +346,11 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       threads: "",
       activeProfiles: "",
       delegateBuild: false,
+      downloadSources: false,
+      updateSnapshots: false,
     },
   },
-  markdown: { previewFontSize: null },
+  markdown: { previewLayout: "sideBySide", previewFontSize: null, runCommands: true, commandDirectory: null },
 };
 
 export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
@@ -343,6 +377,8 @@ const text = (v: unknown, d: string) => (typeof v === "string" ? v.trim() : d);
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], d: T): T =>
   typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : d;
+const markdownPreviewLayout = (v: unknown): MarkdownPreviewLayout =>
+  oneOf(v, ["sideBySide", "stacked"], DEFAULT_LANGUAGES.markdown.previewLayout);
 
 /** Project-relative folder: `/`-separated, no leading `./` or `/`, no trailing `/`. */
 export function normalizeFolder(path: string): string {
@@ -420,6 +456,9 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       hiddenInterpreters: strings(py.hiddenInterpreters),
       hideOtherProjectInterpreters: bool(py.hideOtherProjectInterpreters, d.python.hideOtherProjectInterpreters),
       showInterpreterPaths: bool(py.showInterpreterPaths, d.python.showInterpreterPaths),
+      interpreterPaths: Object.fromEntries(
+        Object.entries(obj(py.interpreterPaths)).map(([python, paths]) => [python, strings(paths)]),
+      ),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     zig: { zig: text(zig.zig, d.zig.zig) },
@@ -447,6 +486,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     go: {
       goroot: text(go.goroot, d.go.goroot),
       gopath: text(go.gopath, d.go.gopath),
+      gofumpt: bool(go.gofumpt, d.go.gofumpt),
       buildTags: Object.fromEntries(
         Object.entries(DEFAULT_GO_BUILD_TAGS).map(([key, value]) => [key, text(tags[key], value)]),
       ) as unknown as GoBuildTags,
@@ -462,7 +502,9 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
-    ruff: validateFormatter(l.ruff, DEFAULT_RUFF_FORMATTER),
+    biome: validateFormatter(l.biome, DEFAULT_BIOME_FORMATTER),
+    ruff: validateFormatter(l.ruff, DEFAULT_PYTHON_FORMATTER),
+    black: validateFormatter(l.black, DEFAULT_PYTHON_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),
       languageLevel: oneOf(java.languageLevel, JAVA_LANGUAGE_LEVELS, d.java.languageLevel),
@@ -492,9 +534,19 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         threads: text(maven.threads, d.java.maven.threads),
         activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
         delegateBuild: bool(maven.delegateBuild, d.java.maven.delegateBuild),
+        downloadSources: bool(maven.downloadSources, d.java.maven.downloadSources),
+        updateSnapshots: bool(maven.updateSnapshots, d.java.maven.updateSnapshots),
       },
     },
-    markdown: { previewFontSize: previewSize(markdown.previewFontSize) },
+    markdown: {
+      previewLayout: markdownPreviewLayout(markdown.previewLayout),
+      previewFontSize: previewSize(markdown.previewFontSize),
+      runCommands: bool(markdown.runCommands, d.markdown.runCommands),
+      commandDirectory:
+        markdown.commandDirectory === "project" || markdown.commandDirectory === "file"
+          ? markdown.commandDirectory
+          : null,
+    },
   };
 }
 
@@ -512,9 +564,21 @@ export function markdownPreviewFontSize(settings: unknown): number {
   );
 }
 
+/** Languages & Frameworks › Markdown › Commands of `settings`. */
+export function markdownCommandSettings(
+  settings: unknown,
+): Pick<LanguagesValid["markdown"], "runCommands" | "commandDirectory"> {
+  const markdown = validateLanguages(obj(settings).languages).markdown;
+  return { runCommands: markdown.runCommands, commandDirectory: markdown.commandDirectory };
+}
+
 /** Reactive `markdownPreviewFontSize` of the open project. */
 export function useMarkdownPreviewFontSize(): number {
   return useProject((s) => markdownPreviewFontSize(s.settings));
+}
+
+export function useMarkdownPreviewLayout(): MarkdownPreviewLayout {
+  return useProject((s) => markdownPreviewLayout(s.settings?.languages?.markdown?.previewLayout));
 }
 
 function validateModuleDependencies(raw: unknown): ModuleDependencyValid[] {

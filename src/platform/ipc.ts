@@ -9,6 +9,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { commands, type IdeError, type IdeEvent, type RequestId } from "@/bindings";
 import { notifyEach } from "./listeners";
+import { invokeLocal } from "./tauriCore";
+import type { InvokeArgs } from "@tauri-apps/api/core";
 
 export { commands };
 export type * from "@/bindings";
@@ -24,6 +26,16 @@ export class IpcError extends Error {
   }
 }
 
+/** Matches both wrapped IPC errors and raw invoke rejections by kind. */
+export function isErrorKind(e: unknown, kind: IdeError["kind"]): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  try {
+    return "kind" in e && e.kind === kind;
+  } catch {
+    return false;
+  }
+}
+
 type Result<T> = { status: "ok"; data: T } | { status: "error"; error: IdeError };
 
 /** Unwraps a fallible command result: `await call(commands.docOpen(path))`. */
@@ -31,6 +43,16 @@ export async function call<T>(result: Promise<Result<T>>): Promise<T> {
   const r = await result;
   if (r.status === "error") throw new IpcError(r.error);
   return r.data;
+}
+
+/** Run a command in the desktop process when its path came from that machine. */
+export async function callDesktop<T>(command: string, args: InvokeArgs): Promise<T> {
+  try {
+    return await invokeLocal<T>(command, args);
+  } catch (e) {
+    if (e && typeof e === "object" && "kind" in e && "message" in e) throw new IpcError(e as IdeError);
+    throw e;
+  }
 }
 
 export function isCancelled(e: unknown): boolean {

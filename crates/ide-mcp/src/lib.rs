@@ -8,7 +8,8 @@
 //!   `Authorization: Bearer <token>` (random, per run); requests from another
 //!   `Origin` or `Host` are refused (DNS rebinding).
 //! - **Projects:** the `X-OpenIDEA-Project` header or the `?project=` query
-//!   names a folder; the server picks the open project containing it.
+//!   names a folder; the server picks the open project containing it, or the
+//!   project the IDE serves it from without a window.
 //! - **Discovery:** `<app-data>/mcp/server.json` (`address`, `port`, `token`,
 //!   `pid`, `version`; readable only by the user) while the server runs.
 //! - **Stdio:** `<app exe> --mcp-stdio [--project <path>]` reads the discovery
@@ -23,7 +24,7 @@ mod protocol;
 mod server;
 pub mod stdio;
 
-pub use discovery::{DISCOVERY_FILE, Discovery, TOKEN_FILE, discovery_path, kept_token, token_path};
+pub use discovery::{Discovery, discovery_path, kept_token, token_path};
 pub use server::{McpServer, ServerOptions, local_address};
 pub use tokio_util::sync::CancellationToken;
 
@@ -60,10 +61,16 @@ pub enum ToolCallError {
 /// Where the tools come from (the IDE host). Calls block; the server runs
 /// them off its async threads.
 pub trait ToolRegistry: Send + Sync + 'static {
-    /// Roots of the projects open in the IDE that the server serves.
+    /// Roots of the projects open in a window of the IDE that the server serves.
     fn projects(&self) -> Vec<PathBuf>;
-    /// The tools callable for `project` (one of [`Self::projects`]). `Err`
-    /// says why there are none (an unsupported project).
+    /// The root of the project the IDE serves `path` from without a window (a background
+    /// project), asked when no project of [`Self::projects`] contains `path`. Opens nothing:
+    /// the first call for that root does.
+    fn resolve(&self, _path: &Path) -> Option<PathBuf> {
+        None
+    }
+    /// The tools callable for `project` (one of [`Self::projects`] or a root
+    /// [`Self::resolve`] gave). `Err` says why there are none (an unsupported project).
     fn tools(&self, project: &Path) -> Result<Vec<Tool>, String>;
     fn call_with_client(
         &self,
@@ -84,11 +91,6 @@ pub trait ToolRegistry: Send + Sync + 'static {
         arguments: &str,
         cancel: CancellationToken,
     ) -> Result<String, ToolCallError>;
-}
-
-/// The URL of the server at `127.0.0.1:<port>` for `project`.
-pub fn endpoint_url(port: u16, project: &Path) -> String {
-    endpoint_url_at(std::net::Ipv4Addr::LOCALHOST.into(), port, project)
 }
 
 /// The URL of the server at `<address>:<port>` for `project`.
@@ -138,7 +140,7 @@ mod tests {
 
     #[test]
     fn urls_and_commands_name_the_project() {
-        let url = endpoint_url(4321, Path::new("/home/me/my app/项目"));
+        let url = endpoint_url_at(std::net::Ipv4Addr::LOCALHOST.into(), 4321, Path::new("/home/me/my app/项目"));
         assert_eq!(url, "http://127.0.0.1:4321/mcp?project=/home/me/my%20app/%E9%A1%B9%E7%9B%AE");
         let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
         assert_eq!(endpoint_url_at(ip("100.92.72.95"), 80, Path::new("/p")), "http://100.92.72.95:80/mcp?project=/p");

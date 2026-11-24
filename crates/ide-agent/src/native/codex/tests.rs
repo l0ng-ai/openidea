@@ -1847,3 +1847,14 @@ fn skills_become_commands_with_their_invocation_names() {
     assert!(skill_commands(&json!({"data": []})).unwrap()["availableCommands"].as_array().unwrap().is_empty());
     assert!(skill_commands(&json!({})).is_none());
 }
+
+#[test]
+fn workspace_roots_join_the_thread_roots() {
+    let params = json!({ "cwd": "/w/api", "mcpServers": [], "additionalDirectories": ["/w/web"] });
+    let mut request = json!({});
+    apply_thread_config(&params, &mut request);
+    assert_eq!(request["runtimeWorkspaceRoots"], json!(["/w/api", "/w/web"]));
+    let mut request = json!({});
+    apply_thread_config(&json!({ "cwd": "/w/api", "mcpServers": [] }), &mut request);
+    assert!(request.get("runtimeWorkspaceRoots").is_none());
+}

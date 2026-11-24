@@ -30,12 +30,42 @@
 .strong {
   color: var(--fg-strong);
 }
+.strong,
+.rootDetail,
+.directory {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row > svg {
+  flex: none;
+}
 .selected {
   color: var(--fg-strong);
 }
 .muted {
   flex: none;
   color: var(--fg-subtle);
+}
+.rootDetail {
+  max-width: 50%;
+}
+.fileLabel {
+  display: flex;
+  min-width: 0;
+  gap: var(--space-1-5);
+}
+.fileName {
+  flex: none;
+  max-width: 100%;
+}
+.muted.directory {
+  flex: 0 1 auto;
+}
+.duration {
+  margin-inline-start: auto;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
 }
 .fileIcon {
   flex: none;
@@ -76,8 +106,6 @@
   overflow: auto;
   position: relative;
   padding: 4px 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
   color: var(--fg);
   background: var(--bg-app);
   -webkit-user-select: text;
@@ -99,7 +127,6 @@
   left: 0;
   min-width: 100%;
   padding: 0 12px;
-  line-height: 20px;
   white-space: pre;
   tab-size: 4;
 }
@@ -141,9 +168,6 @@
 .detail {
   overflow: auto;
   padding: 4px 12px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  line-height: 20px;
   color: var(--fg);
   background: var(--bg-app);
   -webkit-user-select: text;

@@ -116,6 +116,27 @@ describe("configuration types", () => {
     expect(change.mock.calls.at(-1)?.[0]).toMatchObject({ args: ["-Xmx1g", "-jar", "new.jar", "hello"] });
   });
 
+  it("inserts a path macro at the caret of the working directory (#4755)", () => {
+    const type = typeFor("jar-application")!;
+    const config = withParams(newConfigOfType(type, []), { jarPath: "app.jar" });
+    const change = vi.fn();
+    render(
+      <ConfigForm
+        config={{ ...config, cwd: "/web" }}
+        all={[]}
+        type={type}
+        errors={{}}
+        onChange={change}
+        modifyRequest={0}
+      />,
+    );
+    const field = screen.getByLabelText<HTMLInputElement>("Working directory");
+    field.setSelectionRange(0, 0);
+    fireEvent.click(screen.getByRole("button", { name: "Insert Macro…" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /\$PROJECT_DIR\$/ }));
+    expect(change.mock.calls.at(-1)?.[0]).toMatchObject({ cwd: "$PROJECT_DIR$/web" });
+  });
+
   it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
     const type = typeFor("application")!;
     const base = withParams(newConfigOfType(type, []), { ...newConfigOfType(type, []).params, mainClass: "a.Main" });
@@ -353,6 +374,47 @@ describe("configuration types", () => {
       task: "test TEST=test/a_test.rb",
     });
     expect(rake(["-T"])).toMatchObject({ options: "-T", task: "" });
+  });
+
+  it("Python runs a script or module and round-trips detected command lines", () => {
+    const python = typeFor("python")!;
+    expect(newConfigOfType(python, [])).toMatchObject({
+      kind: "python",
+      command: "python3",
+      args: [],
+      isTest: false,
+      debugAdapter: "debugpy",
+    });
+    expect(missingParams(newConfigOfType(python, []), python)).toHaveProperty("script");
+    expect(
+      python.commandLine({ mode: "module", module: " uvicorn ", script: "ignored.py", args: "app:app --reload" }),
+    ).toEqual({ command: "python3", args: ["-m", "uvicorn", "app:app", "--reload"] });
+
+    const lines: Array<{ command: string; args: string[]; params: Record<string, string> }> = [
+      {
+        command: ".venv/bin/python",
+        args: ["-u", "src/my app.py", "--port", "8000"],
+        params: { mode: "script", script: "src/my app.py", runnerArgs: "-u", args: "--port 8000" },
+      },
+      {
+        command: "uv",
+        args: ["run", "python", "manage.py", "runserver"],
+        params: { mode: "script", script: "manage.py", runnerArgs: "run python", args: "runserver" },
+      },
+      {
+        command: "python3",
+        args: ["-X", "utf8", "-m", "pkg.cli", "serve"],
+        params: { mode: "module", module: "pkg.cli", runnerArgs: "-X utf8", args: "serve" },
+      },
+    ];
+    for (const { command, args, params } of lines) {
+      const config = { ...newConfigOfType(python, []), command, args, params: undefined };
+      expect(formParams(config, python)).toMatchObject({ command, ...params });
+    }
+    // No script or module to show in the form: it stays a plain command.
+    expect(
+      formParams({ ...newConfigOfType(python, []), args: ["-c", "print(1)"], params: undefined }, python),
+    ).toBeNull();
   });
 
   it("Django tests round-trip commandLine / paramsFrom and always report to the test tree", () => {

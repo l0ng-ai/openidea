@@ -111,6 +111,72 @@ fn sample_price_units() -> Value {
 }
 
 #[test]
+fn parses_an_enabled_auto_only_catalog() {
+    let list = json!({
+        "models": [],
+        "auto": {
+            "defaultTier": "balance",
+            "tiers": [
+                {
+                    "id": "balance",
+                    "displayName": "Standard",
+                    "type": "auto",
+                    "fusionTier": "standard",
+                    "status": { "enabled": true, "pickerVisible": true }
+                },
+                {
+                    "id": "hydrafusion",
+                    "displayName": "High",
+                    "type": "fusion",
+                    "fusionTier": "high",
+                    "status": {
+                        "enabled": false,
+                        "pickerVisible": true,
+                        "reason": "user_not_eligible"
+                    }
+                },
+                {
+                    "id": "fast",
+                    "displayName": "Fast",
+                    "type": "auto",
+                    "status": { "enabled": true, "pickerVisible": false }
+                }
+            ],
+            "providerId": "copilot"
+        },
+        "imageModels": []
+    });
+
+    let catalog = models::parse_catalog(&list, None);
+    assert_eq!(catalog.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["auto"]);
+    assert_eq!(Settings::new(&catalog, &UserDefaults::default()).model, "auto");
+
+    let options =
+        config::parse_options(&models::config_options(&catalog, &Settings::new(&catalog, &UserDefaults::default())));
+    let model = options.iter().find(|option| option.id == MODEL).unwrap();
+    assert_eq!(model.current.as_deref(), Some("auto"));
+    assert_eq!(model.values.iter().map(|value| value.value.as_str()).collect::<Vec<_>>(), ["auto"]);
+}
+
+#[test]
+fn rejects_an_auto_only_catalog_when_every_tier_is_disabled() {
+    let list = json!({
+        "models": [],
+        "auto": {
+            "defaultTier": "balance",
+            "tiers": [
+                {
+                    "id": "balance",
+                    "status": { "enabled": false, "pickerVisible": true }
+                }
+            ]
+        }
+    });
+
+    assert!(models::parse_catalog(&list, None).is_empty());
+}
+
+#[test]
 fn parses_tiered_context_windows_pricing_and_uses_copilots_own_defaults() {
     let catalog = models::parse_catalog(&sample_models_list(), Some(&sample_price_units()));
     assert_eq!(

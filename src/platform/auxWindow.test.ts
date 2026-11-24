@@ -11,15 +11,20 @@ describe("auxiliaryWindow", () => {
     expect(auxiliaryWindow("comparison-project-2-14")).toEqual({ kind: "comparison", parent: "project-2" });
     expect(auxiliaryWindow("diff-main-0")).toEqual({ kind: "diff", parent: "main" });
     expect(auxiliaryWindow("diff-project-2-14")).toEqual({ kind: "diff", parent: "project-2" });
+    expect(auxiliaryWindow("editor-main-0")).toEqual({ kind: "editor", parent: "main" });
+    expect(auxiliaryWindow("editor-project-2-14")).toEqual({ kind: "editor", parent: "project-2" });
     expect(auxiliaryWindow("deployment-project-2")).toEqual({ kind: "deployment", parent: "project-2" });
   });
 
-  it.each(["settings", "comparison", "diff", "deployment"])("grants %s windows permission to close", (kind) => {
-    expect(capability.windows).toContain(`${kind}-*`);
-    expect(bridgeCapability.windows).toContain(`${kind}-*`);
-    expect(capability.permissions).toContain("core:window:allow-close");
-    expect(capability.permissions).toContain("core:window:allow-destroy");
-  });
+  it.each(["settings", "comparison", "diff", "editor", "deployment"])(
+    "grants %s windows permission to close",
+    (kind) => {
+      expect(capability.windows).toContain(`${kind}-*`);
+      expect(bridgeCapability.windows).toContain(`${kind}-*`);
+      expect(capability.permissions).toContain("core:window:allow-close");
+      expect(capability.permissions).toContain("core:window:allow-destroy");
+    },
+  );
 
   it("leaves project windows and malformed labels alone", () => {
     for (const label of ["", "main", "project-1", "settings-", "comparison-main", "comparison-main-x"]) {

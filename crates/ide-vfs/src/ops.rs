@@ -17,6 +17,31 @@ fn exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
+fn validate_destination(path: &Path) -> IdeResult<()> {
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+
+        if matches!(path.components().next(), Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim()) {
+            return Ok(());
+        }
+        // Win32 can silently strip trailing periods and spaces when resolving a path.
+        for component in path.components() {
+            if let Component::Normal(name) = component
+                && matches!(name.as_encoded_bytes().last(), Some(b'.' | b' '))
+            {
+                return Err(IdeError::invalid(format!(
+                    "Windows file and folder names cannot end with a period or space ({:?})",
+                    name,
+                )));
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+    Ok(())
+}
+
 fn ensure_parent(path: &Path) -> IdeResult<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -27,16 +52,12 @@ fn ensure_parent(path: &Path) -> IdeResult<()> {
 }
 
 pub(crate) fn create_file(path: &Path) -> IdeResult<()> {
-    if exists(path) {
-        return Err(already_exists(path));
-    }
-    ensure_parent(path)?;
-    fs::OpenOptions::new().write(true).create_new(true).open(path)?;
-    Ok(())
+    create_file_bytes(path, &[])
 }
 
 pub(crate) fn create_file_bytes(path: &Path, data: &[u8]) -> IdeResult<()> {
     use std::io::Write;
+    validate_destination(path)?;
     if exists(path) {
         return Err(already_exists(path));
     }
@@ -64,6 +85,7 @@ pub(crate) fn set_writable(path: &Path, writable: bool) -> IdeResult<()> {
 }
 
 pub(crate) fn create_dir(path: &Path) -> IdeResult<()> {
+    validate_destination(path)?;
     if exists(path) {
         return Err(already_exists(path));
     }
@@ -95,6 +117,7 @@ pub(crate) fn validate_rename(from: &Path, to: &Path) -> IdeResult<()> {
     if from == to {
         return Ok(());
     }
+    validate_destination(to)?;
     // A case-only rename on a case-insensitive file system sees `to` as existing.
     if exists(to) && !same_file(from, to) {
         return Err(already_exists(to));
@@ -151,6 +174,7 @@ pub(crate) fn delete(path: &Path, use_trash: bool) -> IdeResult<()> {
 
 pub(crate) fn copy(from: &Path, to: &Path) -> IdeResult<()> {
     let meta = fs::symlink_metadata(from).map_err(|_| not_found(from))?;
+    validate_destination(to)?;
     if exists(to) {
         return Err(already_exists(to));
     }

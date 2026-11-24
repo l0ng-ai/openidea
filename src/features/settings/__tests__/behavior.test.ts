@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatPattern, formatTimestamp } from "@/platform/dateFormat";
 import { resolveThemeId } from "@/workbench/theme";
+import { useCompactMode } from "@/ui/density";
 import { applyAppearanceOptions, nextZoom, SMALL_TREE_INDENT } from "../appearanceRuntime";
 import { validateSettings } from "../model/schema";
 import { validateGeneralExtras, validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
@@ -106,6 +107,16 @@ describe("appearance & behavior settings", () => {
     expect(validateAppearanceExtras({ navigationBar: "everywhere" }).navigationBar).toBe("statusBar");
   });
 
+  it("applies Compact mode to the root attribute and the JS density store", () => {
+    const root = document.createElement("div");
+    applyAppearanceOptions(validateSettings({ appearance: { compactMode: true } }), root);
+    expect(root.dataset.compact).toBe("");
+    expect(useCompactMode.getState()).toBe(true);
+    applyAppearanceOptions(validateSettings({}), root);
+    expect(root.dataset.compact).toBeUndefined();
+    expect(useCompactMode.getState()).toBe(false);
+  });
+
   it("defaults Use smaller indents in trees to off and applies the indent variable", () => {
     expect(validateAppearanceExtras({}).smallTreeIndents).toBe(false);
     expect(validateAppearanceExtras({ smallTreeIndents: true }).smallTreeIndents).toBe(true);
@@ -118,6 +129,12 @@ describe("appearance & behavior settings", () => {
     expect(root.style.getPropertyValue("--tree-indent")).toBe("");
     applyAppearanceOptions(validateSettings({ appearance: { smallTreeIndents: false } }), root);
     expect(root.style.getPropertyValue("--tree-indent")).toBe("");
+  });
+
+  it("defaults Smooth scrolling to on", () => {
+    expect(validateAppearanceExtras({}).smoothScrolling).toBe(true);
+    expect(validateAppearanceExtras({ smoothScrolling: false }).smoothScrolling).toBe(false);
+    expect(validateAppearanceExtras({ smoothScrolling: "off" }).smoothScrolling).toBe(true);
   });
 
   it("opens Settings in a separate window unless turned off", () => {
@@ -183,4 +200,5 @@ describe("appearance & behavior settings", () => {
 
 it("loads an old attach setting as ask", () => {
   expect(validateGeneralExtras({ openProjectIn: "attach" }).openProjectIn).toBe("ask");
+  expect(validateGeneralExtras({ openProjectIn: "tab" }).openProjectIn).toBe("tab");
 });

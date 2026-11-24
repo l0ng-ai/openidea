@@ -12,9 +12,10 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 specta.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 parking_lot.workspace = true
 reqwest.workspace = true
+# The system proxy reqwest reads, to notice when it changes (see `client::shared`).
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 uuid.workspace = true

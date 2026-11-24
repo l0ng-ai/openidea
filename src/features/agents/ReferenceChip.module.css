@@ -75,10 +75,6 @@
 .missing .name {
   text-decoration: line-through;
 }
-/* Selected together with the text around it in the composer. */
-.selected {
-  background: var(--bg-editor-selection);
-}
 /* A `/command` or skill. */
 .command {
   display: inline;

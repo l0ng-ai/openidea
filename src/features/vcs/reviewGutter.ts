@@ -352,7 +352,7 @@ const theme = EditorView.baseTheme({
     height: "4px",
     borderRadius: "2px",
     background: "var(--focus-ring, #3574f0)",
-    cursor: "ns-resize",
+    cursor: "row-resize",
   },
   ".cm-reviewHandle[data-disabled]": { opacity: "0.4", cursor: "default" },
   ".cm-reviewHandle-start": { top: "-2px" },

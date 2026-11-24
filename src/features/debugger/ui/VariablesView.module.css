@@ -10,12 +10,12 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
   min-width: 0;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   font-size: var(--fs-ui);
   white-space: pre;
   color: var(--fg);
@@ -23,8 +23,19 @@
 }
 
 .name {
-  flex: none;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg);
+}
+
+.evalName {
+  flex: 0 1 auto;
+  max-width: 45%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .varName {
@@ -33,7 +44,6 @@
 
 .nodeIcon {
   flex: none;
-  margin-right: 1px;
 }
 
 .eq {
@@ -41,15 +51,29 @@
   color: var(--fg-subtle);
 }
 
+.valueGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  /* Cap the automatic flex minimum at the space needed for a short preview. */
+  width: min(14ch, 50%);
+  flex: 1 1 0;
+}
+
 .value {
   min-width: 0;
   flex: 1 1 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-family: var(--font-mono);
 }
 
 .showValue {
-  flex: none;
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 0;
   border: 0;
   background: none;
@@ -69,21 +93,30 @@
   border-radius: var(--radius-small);
 }
 
-.valuePopupContent {
-  padding: 12px 16px;
+.valuePopup {
+  height: clamp(240px, 50vh, 560px);
+}
+
+.valuePopup > [data-dialog-body] {
+  display: flex;
+  overflow: hidden;
 }
 
 .valuePopupValue {
-  max-height: min(420px, calc(100vh - 120px));
+  flex: 1;
+  min-width: 0;
   margin: 0;
+  padding: var(--space-3) var(--space-4);
   overflow: auto;
   color: var(--fg);
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  font-weight: var(--fw-code);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   user-select: text;
+}
+
+.valuePopupValue:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
 }
 
 .number {
@@ -103,8 +136,8 @@
 }
 
 .type {
-  min-width: 0;
-  flex: 0 1 auto;
+  min-width: min(3ch, 10%);
+  flex: 0 4 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
@@ -126,11 +159,17 @@
   font-size: var(--fs-ui);
 }
 
+.editRow,
+.editRow > .valueGroup {
+  height: 100%;
+}
+
 .editInput {
-  flex: 1;
-  min-width: 80px;
-  height: 18px;
-  padding: 0 4px;
+  box-sizing: border-box;
+  flex: 1 1 0;
+  min-width: 0;
+  height: calc(100% - var(--space-1));
+  padding: 0 var(--space-1);
   font: inherit;
   font-family: var(--font-mono);
   color: var(--fg-strong);
@@ -143,6 +182,10 @@
   border-color: var(--danger);
 }
 
+.editError {
+  max-width: 33%;
+}
+
 /* Changed since the previous stop. */
 .name.changed {
   color: var(--debug-changed, var(--link));
@@ -151,8 +194,9 @@
 /* Expanded value hint in the editor. */
 .hint {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
-  width: 460px;
-  height: 260px;
+  min-height: 0;
+  padding-block: var(--space-1);
 }

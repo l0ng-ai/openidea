@@ -18,11 +18,25 @@ import {
   type Requirement,
   type ScaffoldEvent,
   type Sdk,
+  type SdkKind,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useTx, useTxTemplate } from "@/platform/i18n";
-import { Button, Checkbox, Dialog, Icon, Input, Select, type SelectOption, T, hasIcon } from "@/ui";
-import { effectiveValues, fieldError, isVisible, type Values } from "./newProjectTemplate";
+import {
+  Checkbox,
+  Dialog,
+  Icon,
+  IconButton,
+  Input,
+  Select,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  type SelectOption,
+  T,
+  hasIcon,
+} from "@/ui";
+import { effectiveValues, fieldError, isVisible, versionAtLeast, type Values } from "./newProjectTemplate";
 import { defaultProjectDirectory, openProjectInWindow } from "./windows";
 import styles from "./newProject.module.css";
 
@@ -52,9 +66,28 @@ function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Default Project Directory, else the parent of the open project. */
+const LOCATION_KEY = "openidea.newProject.location";
+const DEFAULT_NAME = "untitled";
+
+function lastLocation(): string {
+  try {
+    return localStorage.getItem(LOCATION_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveLocation(dir: string) {
+  try {
+    localStorage.setItem(LOCATION_KEY, dir);
+  } catch {
+    // Not kept: the next project starts from the default location.
+  }
+}
+
+/** Default Project Directory, else where the last project was created, else the parent of the open project. */
 function initialLocation(): string {
-  const preset = defaultProjectDirectory();
+  const preset = defaultProjectDirectory() || lastLocation();
   if (preset) return preset;
   const root = useProject.getState().project?.root;
   return root ? root.slice(0, Math.max(root.lastIndexOf("/"), 1)) : "";
@@ -106,7 +139,11 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selected, setSelected] = useState("empty");
   const [query, setQuery] = useState("");
-  const [name, setName] = useState("untitled");
+  const [name, setName] = useState(DEFAULT_NAME);
+  /** Until the user types a name, it follows the first free `untitled…` in the location. */
+  const [nameEdited, setNameEdited] = useState(false);
+  /** The project path last found taken (something other than an empty folder is there). */
+  const [takenPath, setTakenPath] = useState<string | null>(null);
   const [location, setLocation] = useState(initialLocation);
   const [git, setGit] = useState(true);
   /** Values the user set, per generator; the rest are rendered defaults. */
@@ -114,8 +151,24 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [dynamic, setDynamic] = useState<{ id: string; key: string; fields: Field[] } | null>(null);
   const [dynamicError, setDynamicError] = useState<string | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
-  const [jdks, setJdks] = useState<Sdk[] | null>(null);
+  /** Installed SDKs by kind, once detected. */
+  const [sdks, setSdks] = useState<Partial<Record<string, Sdk[]>>>({});
+  const detecting = useRef(new Set<string>());
   const [job, setJob] = useState<Job | null>(null);
+  const layout = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  const configuring = job === null;
+
+  useEffect(() => {
+    const el = layout.current;
+    if (!configuring || !el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry?.contentRect.width;
+      if (width) setStacked(width < 580);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [configuring]);
 
   useEffect(() => {
     if (initialLocation()) return;
@@ -174,19 +227,57 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     };
   }, [generator, valuesKey]);
 
-  const needsJdk = fields.some((f) => f.kind.type === "sdk" && f.kind.sdk === "jdk");
+  const sdkKinds = [...new Set(fields.flatMap((f) => (f.kind.type === "sdk" ? [f.kind.sdk] : [])))].join(",");
   useEffect(() => {
-    if (!needsJdk || jdks) return;
-    call(commands.sdkDetect("jdk"))
-      .then(setJdks)
-      .catch(() => setJdks([]));
-  }, [needsJdk, jdks]);
+    for (const kind of sdkKinds.split(",")) {
+      if (!kind || sdks[kind] || detecting.current.has(kind)) continue;
+      detecting.current.add(kind);
+      const found = (list: Sdk[]) => setSdks((all) => ({ ...all, [kind]: list }));
+      call(commands.sdkDetect(kind as SdkKind))
+        .then(found)
+        .catch(() => found([]));
+    }
+  }, [sdkKinds, sdks]);
 
   const setValue = (id: string, value: string) =>
     setEdited((all) => ({ ...all, [selected]: { ...(all[selected] ?? {}), [id]: value } }));
 
-  const nameError = projectNameError(name);
-  const path = location.trim() && !nameError ? joinPath(location.trim(), name) : "";
+  const syntaxError = projectNameError(name);
+  const path = location.trim() && !syntaxError ? joinPath(location.trim(), name) : "";
+  const nameError =
+    syntaxError ?? (path && takenPath === path ? "A folder with this name already exists and is not empty" : null);
+
+  useEffect(() => {
+    const dir = location.trim();
+    if (nameEdited || !dir) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      call(commands.scaffoldFreeName(dir, DEFAULT_NAME))
+        .then((free) => live && setName(free))
+        .catch(() => {});
+    }, 200);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [location, nameEdited]);
+
+  useEffect(() => {
+    if (!path) return;
+    let live = true;
+    const dir = location.trim();
+    const timer = setTimeout(() => {
+      call(commands.scaffoldTargetTaken(dir, name.trim()))
+        .then((taken) => live && setTakenPath(taken ? path : null))
+        .catch(() => {});
+    }, 150);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+    // `path` already reflects `location` and `name`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
   const visibleFields = fields.filter((f) => isVisible(f, values));
   const invalidField = visibleFields.find((f) => fieldError(f, values[f.id] ?? ""));
   const missing = requirements.filter((r) => !r.satisfied);
@@ -238,6 +329,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
           channel,
         ),
       );
+      saveLocation(location.trim());
       onClose();
       await openProjectInWindow(dir, useProject.getState().project !== null);
     } catch (e) {
@@ -265,8 +357,19 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.layout}>
-        <div className={styles.sidebar}>
+      <SplitGroup
+        className={styles.layout}
+        elementRef={layout}
+        orientation={stacked ? "vertical" : "horizontal"}
+        storageKey="openidea.newProject.layout"
+      >
+        <SplitPanel
+          id="new-project-generators"
+          defaultSize="25%"
+          minSize={stacked ? "28%" : "148px"}
+          maxSize="45%"
+          className={styles.sidebar}
+        >
           <Input
             className={styles.search}
             value={query}
@@ -286,6 +389,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                     role="option"
                     aria-selected={g.id === selected}
                     className={styles.entry}
+                    title={tx(g.name)}
                     onClick={() => setSelected(g.id)}
                   >
                     <Icon name={hasIcon(g.icon) ? g.icon : "folder"} />
@@ -295,82 +399,98 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
               </div>
             ))}
           </div>
-        </div>
-        <form
-          className={styles.form}
-          onSubmit={(e) => {
-            e.preventDefault();
-            void createProject();
-          }}
-        >
-          {generator?.description && <div className={styles.description}>{tx(generator.description)}</div>}
-          <div className={styles.grid}>
-            <label className={styles.label} htmlFor="np-name">
-              <T>Name:</T>
-            </label>
-            <Input
-              id="np-name"
-              data-autofocus
-              value={name}
-              invalid={!!nameError}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <label className={styles.label} htmlFor="np-location">
-              <T>Location:</T>
-            </label>
-            <div className={styles.inline}>
-              <Input id="np-location" value={location} onChange={(e) => setLocation(e.target.value)} />
-              <Button onClick={() => void browse()} disabled={!isTauri()}>
-                <T>Browse…</T>
-              </Button>
-            </div>
-            <span />
-            <div className={styles.hint}>
-              {nameError ? txTemplate(nameError) : path && txTemplate(`Project will be created in: ${path}`)}
-            </div>
-            {generator?.git && (
-              <>
-                <span />
-                <Checkbox checked={git} onChange={setGit} label="Create Git repository" />
-              </>
-            )}
-            {visibleFields.map((f) => (
-              <FieldRow
-                key={f.id}
-                field={f}
-                value={values[f.id] ?? ""}
-                onChange={(v) => setValue(f.id, v)}
-                jdks={jdks}
+        </SplitPanel>
+        <SplitHandle aria-label={tx("Generators")} />
+        <SplitPanel id="new-project-form" defaultSize="75%">
+          <form
+            className={styles.form}
+            onSubmit={(e) => {
+              e.preventDefault();
+              void createProject();
+            }}
+          >
+            {generator?.description && <div className={styles.description}>{tx(generator.description)}</div>}
+            <div className={styles.grid}>
+              <label className={styles.label} htmlFor="np-name">
+                <T>Name:</T>
+              </label>
+              <Input
+                id="np-name"
+                data-autofocus
+                value={name}
+                invalid={!!nameError}
+                onChange={(e) => {
+                  setNameEdited(true);
+                  setName(e.target.value);
+                }}
               />
-            ))}
-            {loadingDynamic && (
-              <>
-                <span />
-                <div className={styles.hint}>
-                  <T>Loading options…</T>
-                </div>
-              </>
-            )}
-            {dynamicError && (
-              <>
-                <span />
-                <div className={styles.error}>{txTemplate(dynamicError)}</div>
-              </>
-            )}
-          </div>
-          {missing.map((r) => (
-            <div key={r.program} className={styles.missing}>
-              <Icon name="warning" />
-              <span>
-                {r.found
-                  ? tx`${r.program} ${r.found} is installed, but this project needs ${r.min ?? ""} or later.`
-                  : tx`${r.program} is not installed.`}{" "}
-                {r.hint && tx(r.hint)}
-              </span>
+              <label className={styles.label} htmlFor="np-location">
+                <T>Location:</T>
+              </label>
+              <div className={styles.location}>
+                <Input
+                  id="np-location"
+                  variant="bare"
+                  className={styles.locationInput}
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                />
+                <IconButton
+                  icon="folder-open"
+                  title="Browse…"
+                  size="small"
+                  onClick={() => void browse()}
+                  disabled={!isTauri()}
+                />
+              </div>
+              <span />
+              <div className={nameError ? `${styles.hint} ${styles.hintError}` : styles.hint}>
+                {nameError ? txTemplate(nameError) : path && txTemplate(`Project will be created in: ${path}`)}
+              </div>
+              {generator?.git && (
+                <>
+                  <span />
+                  <Checkbox checked={git} onChange={setGit} label="Create Git repository" />
+                </>
+              )}
+              {visibleFields.map((f) => (
+                <FieldRow
+                  key={f.id}
+                  field={f}
+                  value={values[f.id] ?? ""}
+                  onChange={(v) => setValue(f.id, v)}
+                  sdks={f.kind.type === "sdk" ? (sdks[f.kind.sdk] ?? null) : null}
+                />
+              ))}
+              {loadingDynamic && (
+                <>
+                  <span />
+                  <div className={styles.hint}>
+                    <T>Loading options…</T>
+                  </div>
+                </>
+              )}
+              {dynamicError && (
+                <>
+                  <span />
+                  <div className={styles.error}>{txTemplate(dynamicError)}</div>
+                </>
+              )}
             </div>
-          ))}
-        </form>
-      </div>
+            {missing.map((r) => (
+              <div key={r.program} className={styles.missing}>
+                <Icon name="warning" />
+                <span>
+                  {r.found
+                    ? tx`${r.program} ${r.found} is installed, but this project needs ${r.min ?? ""} or later.`
+                    : tx`${r.program} is not installed.`}{" "}
+                  {r.hint && tx(r.hint)}
+                </span>
+              </div>
+            ))}
+          </form>
+        </SplitPanel>
+      </SplitGroup>
     </Dialog>
   );
 }
@@ -379,12 +499,12 @@ function FieldRow({
   field,
   value,
   onChange,
-  jdks,
+  sdks,
 }: {
   field: Field;
   value: string;
   onChange: (value: string) => void;
-  jdks: Sdk[] | null;
+  sdks: Sdk[] | null;
 }) {
   const tx = useTx();
   const id = `np-field-${field.id}`;
@@ -420,6 +540,7 @@ function FieldRow({
     control = (
       <Select
         id={id}
+        className={styles.fieldSelect}
         value={value}
         options={kind.options.map((o) => ({ value: o.value, label: o.label }))}
         onChange={onChange}
@@ -429,16 +550,27 @@ function FieldRow({
     );
   else if (kind.type === "sdk") {
     const options: SelectOption[] = [
-      { value: "", label: jdks === null ? "Detecting…" : "Automatic" },
-      ...(jdks ?? []).map((s) => ({
-        value: s.home ?? s.path,
-        label: s.name,
-        detail: s.version ?? undefined,
-        verbatim: true,
-      })),
-    ];
+      { value: "", label: sdks === null ? "Detecting…" : "Automatic" },
+      ...(sdks ?? [])
+        .filter((s) => !kind.min || versionAtLeast(s.version ?? "", kind.min))
+        .map((s) => ({
+          value: kind.version ? (s.version ?? "") : (s.home ?? s.path),
+          label: s.name,
+          detail: s.version ?? undefined,
+          verbatim: true,
+        })),
+    ].filter((o, i) => i === 0 || o.value);
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
-    control = <Select id={id} value={value} options={options} onChange={onChange} aria-label={tx(field.label)} />;
+    control = (
+      <Select
+        id={id}
+        className={styles.fieldSelect}
+        value={value}
+        options={options}
+        onChange={onChange}
+        aria-label={tx(field.label)}
+      />
+    );
   } else if (kind.type === "dependencies")
     control = <DependencyPicker id={id} groups={kind.groups} value={value} onChange={onChange} />;
   else
@@ -549,6 +681,7 @@ function ProgressView({ job, onBack, onClose }: { job: Job; onBack: () => void; 
       <div className={styles.progress}>
         <ol className={styles.steps}>
           {job.steps.map((s, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- step labels can repeat; position is the identity
             <li key={i} aria-current={i === job.steps.length - 1 && !failed ? "step" : undefined}>
               {tx(s)}
             </li>

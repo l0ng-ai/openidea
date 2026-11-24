@@ -165,21 +165,30 @@ function PageHost({
   const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
   if (!node) return <EmptyState title="Nothing found" icon="search" />;
   const Body = page?.component;
+  const parents = crumbs.slice(0, -1);
   return (
     <PageContext.Provider value={ctx}>
       <SettingsFormContext.Provider value={form}>
         <SettingsPageFocusContext.Provider value={pageFocus}>
           <SettingsHeaderSlotContext.Provider value={headerSlot}>
             <div className={styles.pageHeader}>
-              <div className={styles.crumbs} aria-label={tx("Breadcrumb")}>
-                {crumbs.map((c, i) => (
-                  <span key={i} className={styles.crumb}>
-                    {i > 0 && <Icon name="chevron-right" size={12} className={styles.crumbSep} />}
-                    <span>
-                      <T>{c}</T>
-                    </span>
+              <div className={styles.crumbs} aria-label={tx("Breadcrumb")} title={crumbs.map((c) => tx(c)).join(" › ")}>
+                {parents.length > 0 && (
+                  <span className={styles.parentCrumbs}>
+                    {parents.map((c, i) => (
+                      // oxlint-disable-next-line react/no-array-index-key -- crumb labels can repeat; position is the identity
+                      <span key={i} className={styles.crumb}>
+                        <span className={styles.crumbLabel}>
+                          <T>{c}</T>
+                        </span>
+                        <Icon name="chevron-right" size={12} className={styles.crumbSep} />
+                      </span>
+                    ))}
                   </span>
-                ))}
+                )}
+                <span className={clsx(styles.crumbLabel, styles.currentCrumb)} aria-current="page">
+                  <T>{node.title}</T>
+                </span>
               </div>
               <div ref={setHeaderSlot} className={styles.headerSlot} />
               {dirty && (
@@ -321,7 +330,7 @@ export function SettingsLayout() {
 
   return (
     <SplitGroup id="settings" orientation="horizontal" storageKey="openidea.settings.layout" className={styles.layout}>
-      <SplitPanel id="navigation" defaultSize="240px" minSize="160px" maxSize="40%" className={styles.sidebar}>
+      <SplitPanel id="navigation" defaultSize="22.5%" minSize="160px" maxSize="40%" className={styles.sidebar}>
         <SearchField
           data-autofocus
           className={styles.search}
@@ -352,11 +361,11 @@ export function SettingsLayout() {
             isExpandable={(n) => n.children.length > 0}
             defaultExpanded={current ? ancestorKeys(tree, current.key) : []}
             expanded={query ? expanded : undefined}
+            indent={16}
             selected={current ? new Set([current.key]) : new Set()}
             onSelectionChange={(_sel, node) => node && selectPage(node.key)}
             multiSelect={false}
             speedSearch={false}
-            rowHeight={24}
             empty={
               <div className={styles.noMatch}>
                 <T>No matches</T>

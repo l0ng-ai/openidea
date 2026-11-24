@@ -26,6 +26,20 @@
   gap: var(--space-0-5);
   padding: 0 6px;
 }
+.changesToolbar {
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  column-gap: var(--space-2);
+  padding-block: var(--space-0-5);
+}
+.changesTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0-5);
+  max-width: 100%;
+}
 .sep {
   width: 1px;
   height: 16px;
@@ -62,6 +76,9 @@
 .icon {
   flex: none;
 }
+.committerWarning {
+  --icon-color: var(--warning);
+}
 /* The name takes the whole row; when it doesn't fit, the grey detail after it gives way first. */
 .label {
   flex: 0 1 auto;
@@ -72,11 +89,18 @@
 .groupLabel {
   color: var(--fg-strong);
 }
+.stageGroupLabel {
+  font-weight: 600;
+}
 .detail {
   flex: 0 10000 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}
+.nodeCount {
+  flex: none;
   color: var(--fg-subtle);
 }
 .detailIcon {
@@ -106,13 +130,51 @@
 }
 .commitBar {
   flex: none;
-  height: 32px;
+  min-height: 32px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-1);
-  padding: 0 6px 0 12px;
-  white-space: nowrap;
+  gap: var(--space-0-5) var(--space-1);
+  padding: var(--space-0-5) 6px var(--space-0-5) 12px;
+}
+.messageHistory {
+  --history-row-height: max(var(--h-list-row), calc(1em + var(--space-2)));
+  min-width: min(180px, calc(100vw - var(--space-3)));
+  max-height: calc(7 * var(--history-row-height) + var(--space-2) + 2px);
+  padding-block: var(--space-1);
+  overflow-x: hidden;
+}
+.messageHistory [role="menu"] {
+  max-width: calc(var(--history-columns) + var(--space-4) + var(--space-2));
+  font-size: inherit;
+}
+.messageHistory [role="menuitem"] {
+  height: var(--history-row-height);
+  margin-inline: var(--space-1);
+  padding-inline: var(--space-2);
+}
+.amendTarget {
+  min-width: 0;
+  max-width: 112px;
+}
+.amendTarget > span {
   overflow: hidden;
+  text-overflow: ellipsis;
+}
+.amendPicker {
+  width: max-content;
+  min-width: min(280px, calc(100vw - var(--space-4)));
+  padding-block: var(--space-1);
+}
+.amendPicker > * {
+  max-width: 520px;
+}
+.amendPickerRows {
+  max-height: calc(5 * var(--h-list-row));
+}
+.amendPickerStatus {
+  color: var(--fg-muted);
+  padding: var(--space-1) var(--space-3);
 }
 .grow {
   flex: 1;
@@ -121,6 +183,7 @@
   color: var(--fg-faint);
   font-family: var(--font-mono);
   font-size: var(--fs-tiny);
+  white-space: nowrap;
 }
 .lineLenWarn {
   color: var(--warning);
@@ -136,8 +199,6 @@
   border-top: 1px solid var(--border);
   outline: none;
   color: var(--fg-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
   line-height: var(--lh-code);
   -webkit-user-select: text;
   user-select: text;
@@ -158,13 +219,29 @@
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
 }
+.commitAuthor {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3) 0;
+  color: var(--fg-subtle);
+}
+.authorLink {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.authorDate {
+  flex: none;
+  white-space: nowrap;
+}
 /* IDEA: Commit and Commit and Push… on one row under the message, the gear at its end. */
 .commitActions {
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  /* A narrow panel moves Commit and Push… to its own row rather than cutting its label. */
   flex-wrap: wrap;
   padding: 8px 6px 10px 10px;
   white-space: nowrap;
@@ -175,10 +252,14 @@
 .commitActions > .pushButton {
   flex: 0 1 auto;
   min-width: 0;
+  min-height: var(--h-button, 28px);
+  height: auto;
+  padding: var(--space-1) var(--space-3);
+  line-height: 1.3;
 }
 .pushButton > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .stashList {
   flex: 1;
@@ -189,21 +270,30 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
 }
-/* The message identifies a stash: the branch gives way first, the time stays whole. */
-.stashRow > .detail {
-  white-space: nowrap;
-}
-.stashRow > .stashTime {
-  flex: none;
-}
+.stashGroupName,
+.stashTime,
+.stashBranch,
 .stashMessage {
-  flex: 1 1 auto;
-  min-width: 4em;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.stashMessage {
+  min-width: min(4em, 100%);
+}
+.stashGroupName {
+  font-weight: 600;
+}
+.stashTime {
+  flex-shrink: 10000;
+  color: var(--fg-secondary);
+}
+.stashBranch {
+  max-width: 30%;
+  margin-inline-start: auto;
 }
 @container stash-list (max-width: 320px) {
   .stashBranch {
@@ -251,7 +341,7 @@
 }
 /* Commit Options popup (gear next to Commit). */
 .options {
-  width: 340px;
+  width: 384px;
   max-height: min(560px, 80vh);
   overflow: auto;
   padding: 4px 16px 12px;
@@ -288,14 +378,39 @@
   align-items: center;
   gap: 10px;
 }
-.optField {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--fg);
-}
-.optField > :last-child {
+.testConfiguration {
   flex: 1;
+  min-width: 0;
+}
+.optIdentity {
+  container-type: inline-size;
+}
+.optIdentityFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+.optIdentityFields > label {
+  overflow-wrap: anywhere;
+}
+@container (min-width: 328px) {
+  .optIdentityFields {
+    grid-template-columns: fit-content(32%) minmax(0, 1fr);
+    row-gap: var(--space-1-5);
+  }
+}
+.optDateInput {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+.optDateInput input {
+  flex: 1 1 min(100%, 212px);
   min-width: 0;
 }
 .optLink {
@@ -306,20 +421,48 @@
   font: inherit;
   cursor: pointer;
 }
-.optLink:hover {
+.todoFilter {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.optLink:disabled {
+  color: var(--fg-muted);
+  cursor: default;
+}
+.optLink:not(:disabled):hover {
   color: var(--link-hover);
   text-decoration: underline;
 }
-/* Failed before-commit checks (IDEA's commit checks failure panel). */
+/* Commit checks and their retry action, above the commit buttons. */
+.checkFeedback {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-1);
+  min-height: var(--h-control-small);
+}
+.checkFeedback > .checkProblems {
+  align-self: stretch;
+  flex: 1;
+}
+.checkFeedback .checkProblemsList {
+  align-self: stretch;
+}
+.checkFeedback > button {
+  flex: none;
+}
 .checkProblems {
   flex: none;
   display: flex;
+  align-items: flex-start;
   gap: var(--space-1-5);
-  max-height: 120px;
-  overflow: auto;
-  padding: 4px 10px 0;
+  min-width: 0;
+  padding: var(--space-1) 10px 0;
   color: var(--fg-secondary);
-  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+  font-size: var(--fs-ui);
   line-height: 1.4;
 }
 .checkProblemsIcon {
@@ -327,14 +470,27 @@
   margin-top: 1px;
   color: var(--warning);
 }
+.checkPassedIcon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--success);
+}
 .checkProblemsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
+  max-height: 150px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .checkProblemTitle {
   color: var(--fg);
 }
 .checkProblemLink {
+  max-width: 100%;
   padding: 0;
+  text-align: start;
   border: 0;
   background: none;
   color: var(--accent);
@@ -344,14 +500,13 @@
 .checkProblemLink:hover {
   text-decoration: underline;
 }
-/* Staging area: Stage / Unstage on the hovered or selected row, as a hover icon at the row's end. */
 .stageButton {
   flex: none;
   margin-left: auto;
   visibility: hidden;
 }
 [role="treeitem"]:hover .stageButton,
-[role="treeitem"][aria-selected="true"] .stageButton {
+.stageButtonLead {
   visibility: visible;
 }
 .inspectionFix {

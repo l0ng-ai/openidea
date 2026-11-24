@@ -6,36 +6,30 @@
 import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { clearContext, setContext } from "@/platform/context";
+import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { executeAction } from "@/platform/actions";
 import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { call, commands } from "@/platform/ipc";
 import {
+  maybeEditorService,
   registerAgentContextSource,
   registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
   registerMenuSlotItem,
   registerOverlay,
-  registerSettingsPage,
   registerStatusItem,
   registerToolWindow,
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import {
-  AGENTS_GROUP,
-  HOME_KIND,
-  MCP_PAGE,
-  POLICY_PAGE,
-  REGISTRY_PAGE,
-  SESSION_KIND,
-  TASK_DRAG,
-  TOOL_WINDOW,
-  WORKING_STATUS_PAGE,
-  providerIcon,
-} from "./model";
+import { activateSettingsPages } from "./settingsPages";
+import { HOME_KIND, MCP_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
+import { copyAgentReferenceActions, registerCopyAgentReference } from "./copyReference";
+import { diagnoseTestFailure, isTestFailure } from "./testFailure";
 import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
 import { clearAgentTabFontZoom } from "./fontZoom";
@@ -47,52 +41,33 @@ import {
   openHome,
   refreshModels,
   refreshProviders,
+  refreshTaskModels,
+  releaseClosedTaskCache,
+  trackPromptHistory,
   useAgents,
 } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
+import { activateTaskWindows, moveTaskToWindow, prepareTaskWindowInput, taskTabClosed } from "./taskWindows";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 
-/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
-export function activateSettingsPages(): () => void {
-  const disposers = [
-    registerSettingsPage({
-      id: REGISTRY_PAGE,
-      title: "Coding Agents",
-      group: AGENTS_GROUP,
-      // First in Agents, which sits after Languages & Frameworks and before Tools.
-      order: 450,
-      keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
-      component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
-    }),
-    registerSettingsPage({
-      id: WORKING_STATUS_PAGE,
-      title: "Working Status",
-      group: AGENTS_GROUP,
-      // After Chat.
-      order: 465,
-      keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
-      component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
-    }),
-    registerSettingsPage({
-      id: MCP_PAGE,
-      title: "External MCP Servers",
-      group: AGENTS_GROUP,
-      order: 475,
-      keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
-      component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
-    }),
-    registerSettingsPage({
-      id: POLICY_PAGE,
-      title: "Command Permissions",
-      group: AGENTS_GROUP,
-      order: 490,
-      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
-      component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
-    }),
-  ];
-  return () => disposers.reverse().forEach((d) => d());
+export { activateSettingsPages } from "./settingsPages";
+
+function trackAgentButtonSetting(): () => void {
+  setContext("commitAgentButton", workflowSettings().vcs.commit.agentButton);
+  const stop = onWorkflowSettingsChange(
+    (s) => s.vcs.commit.agentButton,
+    (on) => setContext("commitAgentButton", on),
+  );
+  return () => {
+    stop();
+    clearContext("commitAgentButton");
+  };
 }
+
+/** A lightweight editor window has agents only once it shows a conversation. */
+const agentsHere = () => !auxiliaryWindow() || useAgents.getState().loaded;
 
 export function activate(): () => void {
   const sync = (root: string | null | undefined) => {
@@ -101,8 +76,12 @@ export function activate(): () => void {
   };
   sync(useProject.getState().project?.root);
   const disposers = [
+    activateTaskWindows(),
+    trackPromptHistory(),
     activateSettingsPages(),
     trackEditorCopies(),
+    registerActions(copyAgentReferenceActions),
+    registerCopyAgentReference(),
     registerAgentContextSource({
       id: "changes",
       title: "Changes",
@@ -141,7 +120,7 @@ export function activate(): () => void {
       icon: "toolwindow-agents",
       anchor: "right",
       order: 0.5,
-      component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
+      component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView), { prefetch: true }),
       headerMenu: useAgentsHeaderMenu,
       plainTitle: true,
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
@@ -161,7 +140,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: SESSION_KIND,
-      component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor)),
+      component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor), { prefetch: true }),
       title: (input) => {
         const data = input.data as { task: string; title?: string };
         return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
@@ -175,12 +154,22 @@ export function activate(): () => void {
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
       onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
+      prepareWindowInput: prepareTaskWindowInput,
+      onClose: (input) => {
+        const task = (input.data as { task?: string } | undefined)?.task;
+        if (!task) return;
+        releaseClosedTaskCache(task);
+        taskTabClosed(task);
+      },
+      ...(auxiliaryWindow()
+        ? {}
+        : { openInWindow: (input) => moveTaskToWindow((input.data as { task: string }).task) }),
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
     }),
     registerEditorKind({
       kind: HOME_KIND,
-      component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor)),
+      component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor), { prefetch: true }),
       title: () => "New Agent Task",
       icon: (input) => {
         const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
@@ -196,24 +185,52 @@ export function activate(): () => void {
       accepts: (type) => type === TASK_DRAG,
       drop: ({ payload }) => void executeAction("agents.openTaskInEditor", payload),
     }),
-    // The button above the commit message (the Commit tool window and dialog).
+    // The button above the commit message (the Commit tool window and dialog), unless turned off.
+    trackAgentButtonSetting(),
     registerMenuSlotItem("commitMessage", {
       action: "agents.generateCommitMessage",
       label: "Generate Commit Message with Agent",
       icon: "toolwindow-agents",
-      when: "projectOpen && vcsAvailable",
+      when: "projectOpen && vcsAvailable && commitAgentButton",
     }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({
       id: "agents.send",
       menus: ["editor", "projectView"],
       order: 80,
-      items: (menu, { paths }) =>
-        paths.length && !paths.some(isVirtualUri)
-          ? [{ kind: "action", action: "agents.sendToAgent", arg: menu === "projectView" ? paths : undefined }]
+      items: (menu, { paths, dirs }) =>
+        paths.length && !paths.some(isVirtualUri) && agentsHere()
+          ? [
+              {
+                kind: "action",
+                action: "agents.sendToAgent",
+                arg: menu === "projectView" ? paths.map((p, i) => (dirs?.[i] ? `${p}/` : p)) : undefined,
+              },
+            ]
           : [],
     }),
     registerActions([
+      {
+        id: "agents.moveToNewWindow",
+        title: "Open in New Window",
+        category: "Agents",
+        when: "projectOpen",
+        enabled: ({ arg }) =>
+          !auxiliaryWindow() &&
+          (typeof arg === "string" ||
+            maybeEditorService()?.activeInput?.()?.kind === SESSION_KIND ||
+            !!useAgents.getState().docked),
+        run: async ({ arg }) => {
+          const input = maybeEditorService()?.activeInput?.();
+          const task =
+            typeof arg === "string"
+              ? arg
+              : input?.kind === SESSION_KIND
+                ? (input.data as { task: string }).task
+                : useAgents.getState().docked;
+          if (task) await moveTaskToWindow(task);
+        },
+      },
       ...taskActions,
       ...replyActions,
       {
@@ -259,7 +276,22 @@ export function activate(): () => void {
         title: "Refresh models",
         category: "Agents",
         when: "projectOpen",
-        run: () => refreshModels(),
+        run: ({ arg }) => {
+          if (typeof arg === "string") return refreshTaskModels(arg);
+          if (arg === null) return refreshModels(); // Explicitly invoked by the New Task picker.
+          const { sessionLocation, docked, homeOpen } = useAgents.getState();
+          if (sessionLocation === "toolWindow" && (homeOpen || docked) && toolWindowService().isVisible(TOOL_WINDOW)) {
+            return !homeOpen && docked ? refreshTaskModels(docked) : refreshModels();
+          }
+          const active = maybeEditorService()?.activeInput?.();
+          if (active?.kind === SESSION_KIND) {
+            const data = active.data;
+            if (data && typeof data === "object" && "task" in data && typeof data.task === "string")
+              return refreshTaskModels(data.task);
+            return;
+          }
+          return refreshModels();
+        },
       },
       {
         id: "agents.closeTask",
@@ -284,7 +316,7 @@ export function activate(): () => void {
       {
         id: "agents.addAgent",
         title: "More Agents…",
-        description: "Opens Settings › Tools › Agents: installs, updates or removes agents from the ACP Registry.",
+        description: "Install, update, or remove agents from the ACP Registry.",
         category: "Agents",
         icon: "plugin",
         keywords: ["agent", "acp", "registry", "install", "update"],
@@ -292,12 +324,11 @@ export function activate(): () => void {
       },
       {
         id: "agents.mcpServers",
-        title: "External MCP Servers…",
-        description:
-          "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.",
+        title: "MCP Connections…",
+        description: "Configure the MCP servers that agents can use.",
         category: "Agents",
         icon: "settings",
-        keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
+        keywords: ["mcp", "model context protocol", "servers", "tools", "agent", "External MCP Servers"],
         run: () => void executeAction("file.settings", MCP_PAGE),
       },
       {
@@ -309,9 +340,26 @@ export function activate(): () => void {
         icon: "toolwindow-agents",
         when: "projectOpen",
         keywords: ["agent", "chat", "context", "reference", "selection"],
+        enabled: agentsHere,
         run: ({ arg }) => {
           if (Array.isArray(arg)) sendPaths(arg.filter((p): p is string => typeof p === "string"));
           else sendSelection();
+        },
+      },
+      {
+        id: "agents.diagnoseTestFailure",
+        title: "Diagnose with Agent",
+        description:
+          "Adds a failed test's name, source location, expected and actual values and output to the agent message typed last, to review and send.",
+        category: "Agents",
+        icon: "toolwindow-agents",
+        when: "projectOpen",
+        keywords: ["agent", "test", "failure", "diagnose", "explain", "fix"],
+        // Run from the test tree, which passes the failure.
+        hidden: true,
+        enabled: ({ arg }) => isTestFailure(arg),
+        run: ({ arg }) => {
+          if (isTestFailure(arg)) diagnoseTestFailure(arg);
         },
       },
       {

@@ -5,11 +5,11 @@
  */
 import type { HistoryEntry } from "@/bindings";
 import { openPopup, type ListPopupItem } from "@/editor/lsp/popupStore";
+import { dateFormatOptions, formatDateTime } from "@/platform/dateFormat";
 import { call, commands } from "@/platform/ipc";
 import { relativePath, useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { openLocalHistory } from "./localHistoryKind";
-import { formatTime } from "./model";
 import { errorMessage } from "./ops";
 
 const MAX_ROWS = 40;
@@ -45,15 +45,15 @@ export async function showRecentChanges() {
     notifications().notify({ level: "error", title: "Cannot read Local History", body: errorMessage(e) });
     return;
   }
-  const now = Date.now();
+  const dateFormat = dateFormatOptions();
   const items: ListPopupItem[] = entries.map((e, i) => ({
     id: `${i}`,
     label: recentChangeLabel(e, root),
-    detail: formatTime(e.timestampMs, now),
+    leadingDetail: e.timestampMs == null ? "" : formatDateTime(new Date(e.timestampMs), dateFormat),
     icon: e.kind === "label" ? "bookmark" : "history",
     run: () => openLocalHistory(e.kind === "label" ? root : e.path),
   }));
   if (!items.length)
     items.push({ id: "none", label: "No recent changes", disabled: "Local History has no entries yet", run: () => {} });
-  openPopup({ kind: "list", anchor: { x: window.innerWidth / 2 - 200, y: 96 }, title: "Recent Changes", items });
+  openPopup({ kind: "list", anchor: "center", title: "Recent Changes", items });
 }

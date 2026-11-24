@@ -221,6 +221,8 @@ export interface BuiltinInspection {
   /** Each diagnostic code is an inspection of its own (`<id>:<code>`), as a language server's are. */
   byCode?: boolean;
   options?: readonly InspectionOptionSpec[];
+  /** Id a `# noinspection` comment names to suppress it (PyCharm's, where PyCharm has the inspection). */
+  suppressId?: string;
 }
 
 /** Turned on, the Java language server's compiler reports it (`ide-sdk` `SERIAL_VERSION_INSPECTION`). */
@@ -235,6 +237,8 @@ export const SYNTAX_ERRORS_PRODUCER = "syntax";
 
 export const DEPENDENCY_PRODUCER = "dependency-versions";
 export const DEPENDENCY_INSPECTION = "builtin:dependency-versions";
+export const PYTHON_REQUIREMENTS_PRODUCER = "python-requirements";
+export const PYTHON_REQUIREMENTS_INSPECTION = "builtin:python-requirements";
 
 /** Conflict markers left in a file by a merge, rebase, cherry-pick or stash that stopped on conflicts. */
 export const CONFLICT_MARKERS_PRODUCER = "merge-conflict-markers";
@@ -279,6 +283,15 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     group: "Cargo",
     description: "Reports newer crate versions that Cargo.toml requirements do not already allow.",
     defaultLevel: "weakWarning",
+  },
+  {
+    id: PYTHON_REQUIREMENTS_INSPECTION,
+    producer: PYTHON_REQUIREMENTS_PRODUCER,
+    name: "Unsatisfied package requirements",
+    group: "Python",
+    description:
+      "Reports requirements in requirements.txt and pyproject.toml that the project's Python interpreter does not have installed, or whose installed version does not match.",
+    defaultLevel: "warning",
   },
   {
     id: "builtin:syntax",
@@ -335,6 +348,7 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
   },
   {
     id: PYTHON_CIRCULAR_BASES_INSPECTION,
+    suppressId: "PyCircularInheritance",
     producer: PYTHON_CIRCULAR_BASES_PRODUCER,
     name: "Circular inheritance",
     group: "Python",
@@ -344,6 +358,7 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
   },
   {
     id: PYTHON_OVERRIDE_INSPECTION,
+    suppressId: "PyOverrideDecorator",
     producer: PYTHON_OVERRIDE_PRODUCER,
     name: "Inconsistent '@override'",
     group: "Python",
@@ -353,6 +368,7 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
   },
   {
     id: PYTHON_ABSTRACT_METHOD_INSPECTION,
+    suppressId: "PyAbstractClass",
     producer: PYTHON_ABSTRACT_METHOD_PRODUCER,
     name: "Abstract method not implemented",
     group: "Python",
@@ -362,6 +378,7 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
   },
   {
     id: PYTHON_REDUNDANT_OVERRIDE_INSPECTION,
+    suppressId: "PyRedundantOverride",
     producer: PYTHON_REDUNDANT_OVERRIDE_PRODUCER,
     name: "Redundant override",
     group: "Python",
@@ -416,11 +433,19 @@ export interface InspectionRef {
 
 export function diagnosticInspection(producer: string, d: Pick<Diagnostic, "code">): InspectionRef | null {
   if (!producer) return null;
+  // Producers that publish several inspections (the Python inheritance checks) set each one's id as the code.
+  const own = d.code ? BUILTIN_BY_ID.get(d.code) : undefined;
+  if (own) return { id: own.id, name: own.name };
   const builtin = BUILTIN_BY_PRODUCER.get(producer);
   if (builtin && !(builtin.byCode && d.code)) return { id: builtin.id, name: builtin.name };
   const base = producerInspectionId(producer);
   const name = builtin?.name ?? producer;
   return d.code ? { id: codeInspectionId(base, d.code), name: `${name} ${d.code}` } : { id: base, name };
+}
+
+/** The `# noinspection` id of inspection `id`, if it can be suppressed that way. */
+export function suppressIdOf(id: string): string | undefined {
+  return BUILTIN_BY_ID.get(id)?.suppressId;
 }
 
 /** Inspection id of everything a producer reports. */

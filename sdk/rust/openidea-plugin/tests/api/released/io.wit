@@ -1,4 +1,4 @@
-package openidea:plugin@1.10.0;
+package openidea:plugin@1.15.0;
 
 /// Problems in files, shown in the editor and the Problems view.
 interface diagnostics {
@@ -138,6 +138,14 @@ interface process {
         stderr: string,
     }
 
+    /// Options for running a program with configurable capture or streaming (API 1.15).
+    record process-options {
+        /// Maximum bytes captured per stream before returning an error (up to 128 MiB; default 16 MiB).
+        max-output-bytes: option<u32>,
+        /// In-flight buffer size per stream for streaming backpressure (default 256 KiB, max 4 MiB).
+        buffer-bytes: option<u32>,
+    }
+
     /// What to run (API 1.3). `env` only adds variables: an existing name in
     /// the prepared child environment (including the login-shell PATH) is an
     /// error naming that key; nothing is replaced or removed. Names compare
@@ -150,7 +158,8 @@ interface process {
     }
 
     /// What a kept-running program printed since the last call, and its exit
-    /// code once it ended (`none` while it still runs).
+    /// code with the last of its output (`none` while it still runs or output
+    /// is left to read, so the first chunk with a status is the final one).
     record chunk {
         /// Up to 1 MiB per stream; unpolled output keeps the last 1 MiB.
         /// `poll` takes up to `max-bytes`, or one whole character when that
@@ -165,10 +174,13 @@ interface process {
     /// (the ninth `start` is `invalid`). They also end with the plugin:
     /// stopping, disabling or reclaiming it kills what it started.
     resource child {
-        /// What it printed since the last call, and its status once it ends.
+        /// What it printed since the last call; the status comes with the
+        /// chunk that holds the last of its output.
         poll: func(max-bytes: u32) -> result<chunk, error>;
-        /// Waits up to `timeout-ms` for it to end (0 only checks), then
-        /// reports what it printed since the last call.
+        /// Waits up to `timeout-ms` for it to end and its output to reach the
+        /// end (0 only checks), then reports what it printed since the last
+        /// call. When more is left than one chunk holds, the status comes
+        /// with a later `poll`.
         wait: func(timeout-ms: u32) -> result<chunk, error>;
         /// Writes to its stdin; fails once it ended or stdin was closed.
         write: func(text: string) -> result<_, error>;
@@ -190,6 +202,17 @@ interface process {
     /// handle to it without waiting (API 1.3). Closing the invoking window
     /// also ends its processes.
     start: func(cmd: command, cwd: option<borrow<project>>) -> result<child, error>;
+
+    /// Runs `cmd` with configurable capture limits (API 1.15).
+    /// Both stdout and stderr are captured losslessly up to `options.max-output-bytes`.
+    /// Exceeding the limit on either stream returns an explicit error naming that stream.
+    run-captured: func(cmd: command, cwd: option<borrow<project>>, stdin: option<string>, options: option<process-options>) -> result<output, error>;
+
+    /// Starts `cmd` with backpressure-driven lossless streaming (API 1.15).
+    /// If the unread buffer reaches `buffer-bytes`, the reader pauses and the child blocks
+    /// on its pipe, preventing head truncation. If total output exceeds `max-output-bytes`,
+    /// polling returns an explicit error.
+    start-stream: func(cmd: command, cwd: option<borrow<project>>, options: option<process-options>) -> result<child, error>;
 }
 
 /// Local sockets on the project machine, including the server for remote projects.

@@ -74,7 +74,7 @@ describe("Quick Switch theme preview", () => {
   it("previews from the Theme submenu and takes the preview back when the menu closes", async () => {
     const before = shown();
     render(<ContextMenuHost />);
-    act(() => showQuickSwitch({ x: 10, y: 10 }));
+    act(showQuickSwitch);
     fireEvent.pointerEnter(screen.getByRole("menuitem", { name: "Theme" }));
     act(() => vi.advanceTimersByTime(200));
     fireEvent.pointerEnter(screen.getByRole("menuitemcheckbox", { name: "Solarized Light" }));
@@ -95,7 +95,7 @@ describe("Quick Switch theme preview", () => {
 
   it("selects a theme clicked in the Theme submenu", async () => {
     render(<ContextMenuHost />);
-    act(() => showQuickSwitch({ x: 10, y: 10 }));
+    act(showQuickSwitch);
     fireEvent.pointerEnter(screen.getByRole("menuitem", { name: "Theme" }));
     act(() => vi.advanceTimersByTime(200));
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Solarized Dark" }));

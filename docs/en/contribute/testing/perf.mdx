@@ -29,7 +29,13 @@ pnpm perf -- --only typing --profile --unminified   # CPU profile and top functi
 
 Other options: `--warmup <n>` (default 1), `--headed`, `--no-build` (reuse the last build), `--channel <browser>` (default `chromium`, or `OPENIDEA_PERF_CHANNEL`), `--fail-on-regression`.
 
-Scenarios (`perf/scenarios.ts`): `typing`, `typingLarge`, `typingAngular`, `completion`, `consoleOutput`, `terminalTui`, `keyRepeat`, `scroll`, `gitLog`, `gitLogScrollbar`, `resizePanels`, `startup`, `tabs`, `agentTabs`, `popups`, `toolWindows`, `projectTree`, `leaks`. Bundle size (`bundle.initialJsKb`, `bundle.initialCssKb`) is checked on every run.
+`--runs` must be a positive integer, `--warmup` a nonnegative integer, and `--cpu` a finite number of at least 1. Empty or unknown `--only` entries fail before building or launching a browser. Every declared selected scenario must return exactly one result; missing budgeted metrics and nonfinite metrics fail even when CPU throttling disables timing-budget enforcement. Unminified profiling builds intentionally omit bundle-size checks.
+
+Every attempted repetition, including warmups, is retained in `target/perf/report.json` with status, metrics and failure reason. Markdown shows valid/planned and attempted counts. Missing or nonfinite repetitions are not filtered out of medians; invalid warmups also fail the scenario. Build, browser and cleanup failures replace the previous report with a fresh failure.
+
+UI builds and individual trials have five-minute wall-clock deadlines independent of renderer animation frames. Browser startup is bounded to 30 seconds; context/HTTP cleanup to five seconds, with bounded forced browser termination. The owned Playwright browser server adds a local WebSocket command hop; in-page timing clocks are unchanged.
+
+Scenarios (`perf/scenarios.ts`): `typing`, `typingLarge`, `typingAngular`, `completion`, `consoleOutput`, `terminalTui`, `keyRepeat`, `scroll`, `gitLog`, `gitLogScrollbar`, `resizePanels`, `startup`, `tabs`, `agentTabs`, `popups`, `toolWindows`, `projectTree`, `leaks`. Bundle size (`bundle.initialJsKb`, `bundle.initialCssKb`) is checked except with `--unminified`.
 
 Latencies are measured from input to the start of the first frame that shows the result, so about 16.7 ms means "next frame".
 
@@ -42,9 +48,17 @@ Latencies are measured from input to the start of the first frame that shows the
 
 A scenario in `perf/scenarios.ts` has an `id`, a `title` and a `run(h)` that drives the page through the harness (`perf/lib/harness.ts`: open files, set the cursor, type and measure, read editor state) and returns metrics. Add a budget for each metric you want enforced as `"<scenario>.<metric>"` in `budgets.json`.
 
+### Current-operation checks
+
+An already-visible result is not evidence that the measured action worked. Interaction waits require a current input and the requested state transition; file opening checks the active full path, typing checks the resulting text/caret and key-sample count, and scroll/completion navigation checks its destination.
+
+Code-intelligence evals also wait for successful action completion. Rename correctness uses the current matching request only: multi-file previews validate proposed edits, while applied local renames validate the edited document. Incomplete answers are degraded results. Clean-file diagnostics require a fresh backend publication for that document, including an explicitly empty publication; a quiet empty UI alone cannot pass.
+
+Diagnostics acknowledgements match the path, backend source and local opening token. Backend publications carry no document version, so a delayed same-path publication after reopening cannot be distinguished from a newly computed one.
+
 ## Backend: `pnpm perf:rust`
 
-`perf/rust.ts` runs `cargo bench` for `ide-text`, `ide-language`, `ide-index`, `ide-search` and `ide-host`, reads the Criterion results from `target/criterion`, and checks each bench's mean (in µs).
+`perf/rust.ts` runs `cargo bench` for `ide-text`, `ide-language`, `ide-index`, `ide-search`, `ide-host` and `ide-heap`, reads the Criterion results, and checks each bench's mean (in µs).
 
 ```sh
 pnpm perf:rust                               # run the benches, then check
@@ -61,6 +75,22 @@ The benches live in `crates/<crate>/benches/`:
 | `index_100k/…` | `ide-index`    | file, directory and symbol queries on a 100k-file index                                            |
 | `search_5k/…`  | `ide-search`   | literal, regex and dense-match search over 5k files                                                |
 | `plugins/…`    | `ide-host`     | loading 50 plugins, cold activation, syntax highlights of a 2k-line file                           |
+
+Expected IDs and package ownership are declared independently of collected artifacts in `perf/lib/rust.ts`. A selected package must produce every expected ID, including observe-only measurements. `--package` scopes both collection and required budgets, also with `--no-run`; unknown packages fail before Cargo starts.
+
+Six IDs are observe-only (required finite measurements, without an absolute budget): `syntax_2mb/outline_uncached`, `syntax_2mb/folding_uncached`, `index_100k/find_files/zzzz`, `index_100k/find_symbols/renderView`, `startup_20k/reopen_wait_idle`, and `search_excluded_subtrees/5k_dependencies`. New IDs need an explicit budget or observe-only classification.
+
+Normal runs write isolated `<Criterion root>/runs/run-*/criterion` artifacts, a `run.json` manifest and Cargo logs. `CRITERION_HOME` and `CARGO_TARGET_DIR` are passed consistently to Cargo. Both artifact files must fall within the recorded run window; future timestamps fail. `--no-run` inspects the newest recorded run covering the selected packages, retaining original artifact dates and any recorded failure; pre-manifest output is explicitly labelled legacy inspection, not current execution.
+
+Cargo has a 60-minute deadline including cold compilation (`PERF_RUST_TIMEOUT_MS` overrides milliseconds), followed by bounded process-tree termination. Cargo, artifact and manifest failures write fresh `report-rust.json` and Markdown with partial evidence.
+
+## Code intelligence: `pnpm eval`
+
+Use `pnpm eval --list` for scenario IDs and supported conditions. `--only` accepts comma-separated IDs or dot-prefix groups; every entry must match executable work. `--condition` accepts only `warm` or `cold`, and a selection incompatible with that condition is rejected before building or launching. Repetition counts follow the UI runner's integer requirements.
+
+The selected scenario/condition plan defines the required outcomes independently of collected results. Missing, duplicate or unexpected outcomes fail; an empty workload cannot pass. Required timing and correctness metrics must be present and finite, rather than silently skipped by the judge.
+
+Raw attempts, warmups, results and partial timeout timings remain in `target/eval/report.json`; invalid trials cannot disappear into an otherwise valid median. Startup/build failures also produce a fresh failing report. Session startup, fixture setup and each trial have five-minute wall-clock bounds; renderer measurements additionally have a Node deadline one second beyond their configured timeout. Server initialization is limited to 30 seconds, individual stdio requests to five minutes, release compilation to 60 minutes. Cleanup errors fail the run.
 
 ## Budgets and baselines
 
@@ -91,5 +121,7 @@ python perf/compare/bench.py ~/src/some-project --runs 5 --wipe-caches   # cold 
 ```
 
 Each run launches the app on the project, waits until it is ready (the process tree's CPU stays low after the window and the log markers appear), idles, closes it, and records time to window and to ready, peak and idle memory summed over every process the app started (webview, language servers, JVMs), CPU time, exit time and cache size. Apps run interleaved after warmup runs; output goes to `results/<time>-<project>/` (`report.md`, `results.json`).
+
+Reports retain failed trials and warmups, display per-cell valid/attempted counts, and distinguish unsupported metrics from missing required values. Startup timeouts, crashes, forced shutdowns and interruptions fail the command. Quit/cache commands have explicit deadlines; cleanup runs even after observation failures. See the comparison README for the unchanged CPU-settled readiness proxy and daemon exclusions.
 
 Use release builds only; the script refuses to run while another instance of the same executable is running. See [`perf/compare/README.md`](https://github.com/l0ng-ai/openidea/blob/main/perf/compare/README.md) for fair-run rules and platform notes.

@@ -51,6 +51,10 @@
   min-width: 0;
 }
 
+.topToolbarSession {
+  flex-direction: column;
+}
+
 .toolbar {
   flex: none;
   width: 32px;
@@ -69,11 +73,35 @@
 .toolbar::-webkit-scrollbar {
   display: none;
 }
-.toolbarSep {
+.toolbarGroup {
+  display: flex;
+  flex: none;
+  flex-direction: inherit;
+  align-items: center;
+  gap: var(--space-0-5);
+  max-width: 100%;
+}
+.toolbarGroup + .toolbarGroup::before {
+  content: "";
   width: 16px;
   height: 1px;
   margin: 3px 0;
   background: var(--border-strong);
+}
+.topToolbarSession .toolbar {
+  width: auto;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
+  padding: var(--space-0-5) var(--space-1);
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+}
+.topToolbarSession .toolbarGroup {
+  flex-wrap: wrap;
+}
+.topToolbarSession .toolbarGroup::before {
+  display: none;
 }
 
 .sessionBody {
@@ -184,7 +212,7 @@
   top: 0;
   left: 0;
   min-width: 100%;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   line-height: inherit;
   white-space: pre;
   tab-size: 4;
@@ -225,25 +253,59 @@
   flex-direction: column;
   height: 100%;
   min-width: 0;
-  border-right: 1px solid var(--border);
 }
-.testHeader {
+.testToolbar,
+.testStatusBar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  height: 28px;
-  padding: 0 4px 0 10px;
+  min-height: 28px;
   border-bottom: 1px solid var(--border);
+}
+.testToolbar {
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-0-5) var(--space-1);
+}
+
+.testFilters {
+  display: flex;
+  gap: var(--space-0-5);
+  padding-inline-end: var(--space-1);
+  border-inline-end: 1px solid var(--border);
+}
+.testStatusBar {
+  gap: var(--space-2);
+  padding: var(--space-0-5) var(--space-2);
+  border-block-end-width: var(--space-0-5);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
 }
+.testStatusBar[data-outcome="passed"] {
+  border-block-end-color: var(--success);
+}
+.testStatusBar[data-outcome="skipped"] {
+  border-block-end-color: var(--warning);
+}
+.testStatusBar[data-running] {
+  border-block-end-color: var(--accent);
+}
+.testStatusBar[data-outcome="failed"] {
+  border-block-end-color: var(--danger);
+}
 .testCounts {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
   min-width: 0;
-  overflow: hidden;
   white-space: nowrap;
+}
+.testStatus {
+  flex: none;
+}
+.testTotalDuration {
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
 }
 .testTree {
   flex: 1;
@@ -271,8 +333,11 @@
   flex: none;
   padding-right: 8px;
   color: var(--fg-subtle);
-  font-family: var(--font-mono);
   font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.testTree [aria-selected="true"] .testDuration {
+  color: var(--fg);
 }
 .testEmpty {
   padding: 12px;
@@ -310,13 +375,17 @@
   align-items: center;
   gap: var(--space-1);
   max-width: 260px;
-  height: 30px;
-  border-radius: 6px;
+  height: var(--h-toolbar-widget);
+  border-radius: var(--radius-toolbar-dropdown);
+}
+.widgetDevice {
+  composes: widgetChooser;
+  max-width: 180px;
 }
 .widgetButton {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
+  width: var(--titlebar-tool-button);
+  height: var(--titlebar-tool-button);
+  border-radius: var(--radius-toolbar-button);
 }
 .widgetLoading {
   display: inline-flex;
@@ -358,8 +427,10 @@
   padding: 0;
   border: none;
   line-height: 0;
-  background: var(--warning);
-  color: var(--fg-on-accent);
+}
+/* Stays the red Stop button, like IDEA. White is too faint on the dark theme's --danger. */
+.widgetStopping svg {
+  color: var(--bg-elev);
 }
 .widgetFilled:hover:not(:disabled) {
   filter: brightness(0.94);
@@ -389,20 +460,35 @@
 /* Configuration chooser */
 
 .chooser {
-  width: 340px;
-  padding: 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-block-end: var(--space-1);
 }
 .chooserSearch {
+  flex: none;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border-popup);
 }
+/* The list fills what is left of the viewport once the popup is capped by the window, not its full height. */
+.chooserViewport {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.chooserViewport > .chooserList {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
 .chooserList {
   height: 100%;
+  overflow-x: hidden;
 }
 .chooserRow {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
   width: 100%;
   min-width: 0;
 }
@@ -439,7 +525,10 @@
   font-weight: 500;
 }
 .chooserMuted {
-  flex: none;
+  min-width: 0;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-faint);
   font-size: var(--fs-small);
 }
@@ -457,9 +546,21 @@
   opacity: 0.55;
 }
 .chooserCaption {
+  flex: none;
   padding: 6px 10px 0;
   color: var(--fg-secondary);
   font-weight: 500;
+}
+.typeChooser {
+  width: 280px;
+}
+.typeChooser .chooserCaption {
+  padding: var(--space-2) var(--space-3) 0;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.typeChooser .chooserSearch {
+  padding: var(--space-1) var(--space-3);
 }
 .chooserMnemonic {
   flex: none;
@@ -470,6 +571,7 @@
 }
 /* IDEA's popup ad text. */
 .chooserHint {
+  flex: none;
   padding: 4px 10px 0;
   border-top: 1px solid var(--border-popup);
   color: var(--fg-faint);
@@ -477,6 +579,7 @@
 }
 .chooserActions {
   display: flex;
+  flex: none;
   margin-right: -4px;
 }
 .chooserSeparator {
@@ -519,6 +622,7 @@
   flex: 1;
 }
 .editSidebar {
+  container: run-config-navigation / inline-size;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -562,6 +666,22 @@
   background: var(--bg-selected-strong);
   color: var(--fg-strong);
 }
+.editTarget {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 25%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editItem .failed {
+  flex: none;
+}
+@container run-config-navigation (max-width: 220px) {
+  .editItem .chooserMuted {
+    display: none;
+  }
+}
 .editForm {
   flex: 1;
   min-width: 0;
@@ -573,21 +693,38 @@
   gap: var(--space-2);
 }
 .configFields {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  grid-template-rows: [notice] auto [header] auto [options] minmax(0, 1fr);
   column-gap: var(--space-3);
-  row-gap: var(--space-2);
-  align-content: start;
   min-width: 0;
 }
-.configFields > * {
+.configFields > *,
+.formSettings > * {
   grid-column: 1 / -1;
   min-width: 0;
 }
-.configFields:not(.configFieldsTomcat) > .field,
+.configFields > .notice {
+  grid-row: notice;
+}
+.configFields:not(.configFieldsTomcat) > .notice,
+.configFields:not(.configFieldsTomcat) > .formHeader {
+  margin-bottom: var(--space-2);
+}
 .configFields:not(.configFieldsTomcat) > .formHeader,
-.configFields:not(.configFieldsTomcat) > .formHeader > .field {
+.configFields:not(.configFieldsTomcat) > .formHeader > .field,
+.formSettings > .field {
   grid-template-columns: subgrid;
+}
+.formSettings {
+  display: grid;
+  grid-row: options;
+  grid-template-columns: subgrid;
+  row-gap: var(--space-2);
+  align-content: start;
+  overflow: auto;
 }
 .formHeader > .field {
   grid-column: 1 / -1;
@@ -596,8 +733,6 @@
   overflow: hidden;
 }
 .configFieldsTomcat {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -667,6 +802,7 @@
 }
 .editGroupName {
   color: var(--fg-strong);
+  font-weight: 600;
 }
 .editEmpty {
   flex: 1;
@@ -700,6 +836,7 @@
 }
 .formHeader {
   display: grid;
+  grid-row: header;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: var(--space-4);
@@ -775,6 +912,45 @@
   font-size: var(--fs-ui);
   outline: none;
 }
+.textareaWithButton {
+  position: relative;
+  min-width: 0;
+}
+.textareaWithButton > textarea {
+  display: block;
+  width: 100%;
+  padding-inline-end: calc(var(--space-3) + var(--space-4));
+}
+.textareaWithButton > button {
+  position: absolute;
+  inset-block-start: var(--space-1);
+  inset-inline-end: var(--space-1);
+}
+.expandedEditor {
+  width: 512px;
+  height: 272px;
+}
+.expandedEditorBody {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--space-2);
+  gap: var(--space-2);
+}
+/* One visual line per line of text: a long argument scrolls instead of wrapping. */
+.expandedTextarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  white-space: pre;
+  overflow: auto;
+}
+.expandedEditorActions {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  gap: var(--space-2);
+}
 .textarea:focus {
   box-shadow: inset 0 0 0 1px var(--focus-ring);
 }
@@ -800,10 +976,43 @@
 .taskRow > :first-child {
   min-width: 0;
 }
-.taskActions {
+.beforeLaunchTasks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.taskTag {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-0-5);
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--h-list-row);
+  padding-inline: var(--space-2) var(--space-1);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+.taskName {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: var(--h-list-row);
+  text-align: start;
+}
+.taskName:hover {
+  color: var(--fg-strong);
+}
+.taskOrder {
+  flex: none;
+  color: var(--fg-muted);
+}
+.taskTag .taskCommand {
+  width: 24ch;
+  height: var(--h-control-small);
 }
 .taskLabel {
   overflow: hidden;
@@ -840,15 +1049,27 @@
 .emptyHints li::before {
   content: "— ";
 }
-.envDialog {
+.envWindow {
+  height: 500px;
+}
+.envWindow > [data-dialog-body] {
   display: flex;
   flex-direction: column;
+}
+.envDialog {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
   gap: var(--space-2);
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
 }
 .envPanel {
   display: flex;
+  flex: 1;
   flex-direction: column;
+  min-height: calc(var(--h-row) * 3 + var(--space-3));
+  overflow: hidden;
   border: 1px solid var(--border-popup);
   border-radius: var(--radius-small);
 }
@@ -856,25 +1077,42 @@
   opacity: 0.55;
 }
 .envGrid {
-  height: 140px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
+  scroll-padding-top: var(--h-row);
 }
 .envHeader,
 .envGridRow {
   display: grid;
-  grid-template-columns: 2fr 3fr;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
   gap: var(--space-1);
   align-items: center;
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   min-height: var(--h-row);
 }
 .envHeader {
   position: sticky;
   top: 0;
+  z-index: 1;
   background: var(--bg-popup);
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--fs-ui);
   border-bottom: 1px solid var(--border-popup);
+}
+.envGridRow input {
+  width: 100%;
+  height: var(--h-row);
+}
+.envGridRow input:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+  border-radius: var(--radius-small);
+}
+.envError {
+  color: var(--danger);
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
 }
 .envSystemRow {
   color: var(--fg-subtle);
@@ -887,7 +1125,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--fs-ui);
 }
 .editPreview {
   display: flex;
@@ -947,6 +1185,47 @@
   gap: var(--space-2);
   padding: 12px 16px;
 }
+.exportReport {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-1);
+  font-size: var(--fs-ui);
+}
+
+.exportFormats,
+.exportOutput {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.exportReport legend {
+  margin-block-end: var(--space-2);
+  padding: 0;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.exportFormats {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-1);
+}
+
+.exportOutput {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.exportOutput > label {
+  max-inline-size: 120px;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
 
 /* Folded console lines ("<N internal lines>"). */
 .fold {
@@ -962,15 +1241,19 @@
   color: var(--fg);
 }
 .foldToggle {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 6px;
-  padding: 0 2px;
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-3);
+  margin-inline-start: calc(-1 * var(--space-3));
+  padding: 0;
   border: none;
-  border-radius: 3px;
-  background: none;
+  border-radius: var(--radius-small);
+  background: var(--bg-app);
   color: var(--fg-faint);
-  vertical-align: middle;
+  vertical-align: top;
   cursor: pointer;
 }
 .foldToggle:hover {

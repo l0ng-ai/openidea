@@ -62,10 +62,22 @@ export function loadSystemFonts(refresh = false): Promise<void> {
     });
   return pending;
 }
-export function useSystemFonts() {
+export function useSystemFonts(enabled = true) {
   const state = useSystemFontStore();
   useEffect(() => {
-    void loadSystemFonts();
-  }, []);
+    if (!enabled || useSystemFontStore.getState().status !== "idle") return;
+    let idleId: number | undefined;
+    const timer = setTimeout(() => {
+      if (typeof requestIdleCallback === "function") {
+        idleId = requestIdleCallback(() => void loadSystemFonts(), { timeout: 1000 });
+      } else {
+        void loadSystemFonts();
+      }
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      if (idleId !== undefined && typeof cancelIdleCallback === "function") cancelIdleCallback(idleId);
+    };
+  }, [enabled]);
   return state;
 }

@@ -9,21 +9,21 @@
   -webkit-user-select: none;
   user-select: none;
   color: var(--fg-strong);
+  font-size: var(--fs-chrome);
 }
-/* Room for the native macOS traffic lights (Overlay title bar). */
+/* Room for the native macOS traffic lights, including in full screen (#4746). */
 .overlay {
   padding-left: max(82px, calc(82px / var(--titlebar-zoom, 1)));
   /* Keep the gear on the icon-only right stripe's centre line, including compact mode. */
   padding-right: calc(var(--stripe-outer-padding) + (var(--stripe-icon-button) - var(--titlebar-tool-button)) / 2);
 }
-/* Native full screen moves the window buttons out of the bar. */
-.overlayFullscreen {
-  padding-left: 10px;
-}
 /* Welcome window: plain title on the frame colour with a hairline, like IntelliJ's welcome frame. */
 .minimal {
   background: var(--bg-elev);
   box-shadow: inset 0 -1px 0 var(--border);
+}
+.minimal .windowTitle {
+  margin-left: var(--space-2);
 }
 /* Dialog window (Settings): the title sits on the dialog surface, no hairline. */
 .dialogBar {
@@ -36,9 +36,6 @@
 }
 .overlay.compactHeader {
   padding-right: max(82px, calc(82px / var(--titlebar-zoom, 1)));
-}
-.overlayFullscreen.compactHeader {
-  padding-right: 10px;
 }
 .compactTitle {
   flex: 1;
@@ -65,15 +62,23 @@
   gap: var(--space-1);
   min-width: 0;
 }
+.bar > .widget,
+.item:has([data-toolbar-label]) {
+  flex: none;
+}
+.bar [data-toolbar-label] {
+  min-inline-size: 0;
+  max-inline-size: min(var(--toolbar-label-width, 100vw), var(--toolbar-label-max, 100vw));
+}
 /* Main toolbar dropdown widgets. */
 .widget {
   min-width: 0;
-  height: 30px;
+  height: var(--h-toolbar-widget);
   margin: 0;
   padding: 0 8px;
-  border-radius: var(--radius-popup);
+  border-radius: var(--radius-toolbar-dropdown);
   color: var(--fg-strong);
-  font-size: var(--fs-ui);
+  font-size: var(--fs-chrome);
 }
 .widget {
   gap: var(--space-1-5);
@@ -106,6 +111,12 @@
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+/* IDEA compact: the avatar follows MainToolbar.Button.iconSize (20 → 16). */
+:global(:root[data-compact]) .avatar {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+}
 .drag {
   flex: 1;
   align-self: stretch;
@@ -120,7 +131,7 @@
 .tool {
   width: var(--titlebar-tool-button);
   height: var(--titlebar-tool-button);
-  border-radius: var(--radius-popup);
+  border-radius: var(--radius-toolbar-button);
   color: var(--fg-secondary);
 }
 
@@ -253,13 +264,17 @@
   color: var(--fg-caption-close-hover);
 }
 
-/* A narrow window: tighter spacing, and the widgets give way (ellipsis) before anything overlaps. */
+/* A narrow window leaves more room for widgets and window controls. */
 @media (max-width: 560px) {
   .bar {
     gap: var(--space-0-5);
   }
   .widget {
     padding: 0 4px;
+  }
+  .item button:has(> [data-toolbar-label]) {
+    margin-inline: 0;
+    padding-inline: var(--space-1);
   }
   .tools {
     margin-left: 2px;
@@ -278,5 +293,17 @@
   }
   .caption {
     width: 28px;
+  }
+}
+
+/* The leading icons identify these dropdowns when the toolbar has to use its smallest spacing. */
+@media (max-width: 480px) {
+  .bar [data-toolbar-icon-dropdown] {
+    gap: var(--space-0-5);
+    min-inline-size: var(--h-control-small);
+    padding-inline: var(--space-0-5);
+  }
+  .bar [data-toolbar-icon-dropdown] > svg:last-child {
+    display: none;
   }
 }

@@ -120,7 +120,7 @@ export function useColumnResize(target: ResizeTarget) {
         x: e.clientX,
         element: e.currentTarget,
         pointerId: e.pointerId,
-        releaseCursor: lockDragCursor("ew-resize"),
+        releaseCursor: lockDragCursor("col-resize"),
       };
       listeners.current = { blur, escape };
       e.currentTarget.setPointerCapture?.(e.pointerId);

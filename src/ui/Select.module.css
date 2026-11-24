@@ -5,8 +5,8 @@
   gap: var(--space-1-5);
   height: var(--h-field, 28px);
   min-width: 0;
-  padding: 0 6px 0 9px;
-  border-radius: var(--radius-control, 4px);
+  padding: 0 var(--combo-pad-end, 6px) 0 var(--combo-pad-start, 9px);
+  border-radius: var(--radius-combo, var(--radius-control, 4px));
   color: var(--fg-strong);
   transition:
     background var(--dur-fast) var(--ease),
@@ -113,6 +113,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.emphasized {
+  font-weight: 600;
+}
 /* The label keeps its width (up to most of the row); a long detail (a path) is cut instead. */
 .withDetail {
   flex-shrink: 0;
@@ -157,6 +160,16 @@
 
 .option {
   display: contents;
+}
+
+/* Tree rows: indentation plus room for the disclosure chevron. */
+.treeIndent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: none;
+  width: calc(var(--tree-depth) * 16px + 12px);
+  color: var(--fg-muted);
 }
 
 .rowAction {

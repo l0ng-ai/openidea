@@ -29,7 +29,13 @@ pnpm perf -- --only typing --profile --unminified   # CPU profile 和耗时最�
 
 其他选项：`--warmup <n>`（默认 1）、`--headed`、`--no-build`（复用上次构建）、`--channel <browser>`（默认 `chromium`，或 `OPENIDEA_PERF_CHANNEL`）、`--fail-on-regression`。
 
-场景（`perf/scenarios.ts`）：`typing`、`typingLarge`、`typingAngular`、`completion`、`consoleOutput`、`terminalTui`、`keyRepeat`、`scroll`、`gitLog`、`gitLogScrollbar`、`resizePanels`、`startup`、`tabs`、`agentTabs`、`popups`、`toolWindows`、`projectTree`、`leaks`。每次运行都会检查包体积（`bundle.initialJsKb`、`bundle.initialCssKb`）。
+`--runs` 必须为正整数，`--warmup` 为非负整数，`--cpu` 为不小于 1 的有限数值。`--only` 中的空项或未知场景会在构建或启动浏览器前报错。每个选中场景必须恰好返回一份结果；预算指标缺失或指标非有限值都会失败，即使 CPU 降速关闭了耗时预算检查。未压缩的性能分析构建不检查包体积。
+
+`target/perf/report.json` 保留每次尝试（包括预热）的状态、指标和失败原因，Markdown 显示有效/计划次数及实际尝试次数。缺失或非有限值不会从中位数中被过滤，预热无效也会导致场景失败。构建、浏览器和清理失败都会用新的失败报告替换旧报告。
+
+UI 构建和每次尝试都有独立于渲染器动画帧的五分钟墙钟期限。浏览器启动限时 30 秒，上下文及 HTTP 清理限时五秒，必要时有界强制终止浏览器。独立管理的 Playwright 浏览器服务增加一次本地 WebSocket 命令跳转，页面内计时基准不变。
+
+场景（`perf/scenarios.ts`）：`typing`、`typingLarge`、`typingAngular`、`completion`、`consoleOutput`、`terminalTui`、`keyRepeat`、`scroll`、`gitLog`、`gitLogScrollbar`、`resizePanels`、`startup`、`tabs`、`agentTabs`、`popups`、`toolWindows`、`projectTree`、`leaks`。除 `--unminified` 外，每次运行都会检查包体积（`bundle.initialJsKb`、`bundle.initialCssKb`）。
 
 延迟是从输入到显示结果的第一帧开始的时间，因此约 16.7 ms 就表示“下一帧”。
 
@@ -42,9 +48,17 @@ pnpm perf -- --only typing --profile --unminified   # CPU profile 和耗时最�
 
 `perf/scenarios.ts` 中的场景包含 `id`、`title` 和 `run(h)`：通过 harness（`perf/lib/harness.ts`：打开文件、设置光标、输入并测量、读取编辑器状态）驱动页面并返回指标。需要强制检查的指标，在 `budgets.json` 中以 `"<scenario>.<metric>"` 加上预算。
 
+### 当前操作的正确性检查
+
+已显示的结果不能证明被测操作成功。交互等待必须观察到当前输入及目标状态变化；打开文件会核对活动编辑器的完整路径，输入会核对最终文本、光标和按键样本数，滚动及补全导航会核对目标位置。
+
+代码智能 eval 也会等待动作成功结束。重命名只使用当前匹配请求的结果：跨文件预览验证拟议的修改，已应用的局部重命名验证实际文档。不完整的答复按降级结果处理。干净文件的诊断必须收到针对该文档的新后端发布，包括明确的空发布；仅有安静且为空的 UI 不能通过。
+
+诊断确认匹配路径、后端来源和本地打开令牌。后端发布不携带文档版本，因此重新打开后延迟到达的同路径发布，无法与新计算的发布区分。
+
 ## 后端：`pnpm perf:rust`
 
-`perf/rust.ts` 对 `ide-text`、`ide-language`、`ide-index`、`ide-search` 和 `ide-host` 运行 `cargo bench`，从 `target/criterion` 读取 Criterion 结果，检查每个基准的平均值（µs）。
+`perf/rust.ts` 对 `ide-text`、`ide-language`、`ide-index`、`ide-search`、`ide-host` 和 `ide-heap` 运行 `cargo bench`，读取 Criterion 结果，检查每个基准的平均值（µs）。
 
 ```sh
 pnpm perf:rust                               # 跑基准并检查
@@ -61,6 +75,22 @@ pnpm perf:rust -- --package ide-text --save-baseline
 | `index_100k/…` | `ide-index`    | 在 10 万文件的索引上查询文件、目录和符号                         |
 | `search_5k/…`  | `ide-search`   | 在 5 千个文件中做字面量、正则和密集匹配搜索                      |
 | `plugins/…`    | `ide-host`     | 加载 50 个插件、冷激活、2 千行文件的语法高亮                     |
+
+预期 ID 及其所属包在 `perf/lib/rust.ts` 中独立于收集到的产物声明。选中的包必须提供全部预期 ID，包括仅观察的指标。`--package` 同时限定收集范围和必需预算，使用 `--no-run` 时也如此；未知包会在启动 Cargo 前报错。
+
+六个 ID 仅观察（必须提供有限测量值，但没有绝对预算）：`syntax_2mb/outline_uncached`、`syntax_2mb/folding_uncached`、`index_100k/find_files/zzzz`、`index_100k/find_symbols/renderView`、`startup_20k/reopen_wait_idle`、`search_excluded_subtrees/5k_dependencies`。新增 ID 必须明确设置预算或归类为仅观察。
+
+正常执行将产物隔离到 `<Criterion 根目录>/runs/run-*/criterion`，并保留 `run.json` 清单和 Cargo 日志。`CRITERION_HOME`、`CARGO_TARGET_DIR` 与 Cargo 保持一致。两个产物文件都必须处于记录的运行时间窗口内，未来时间戳会失败。`--no-run` 检查覆盖所选包的最新记录，保留原始产物时间及已有失败；清单引入前的产物明确标为旧产物检查，而非本次执行。
+
+Cargo 包括冷编译在内默认限时 60 分钟（`PERF_RUST_TIMEOUT_MS` 可按毫秒覆盖），随后有界终止所属进程树。Cargo、产物和清单失败都会输出新的 `report-rust.json` 和 Markdown，并保留部分证据。
+
+## 代码智能：`pnpm eval`
+
+用 `pnpm eval --list` 查看场景 ID 及支持的条件。`--only` 接受逗号分隔的 ID 或点号前缀分组；每项都必须匹配可执行的工作。`--condition` 只接受 `warm` 或 `cold`，与该条件不兼容的选择会在构建或启动前被拒绝。重复次数遵循 UI 运行器的整数要求。
+
+选中的场景/条件计划独立于收集结果定义必需的输出。缺失、重复或非预期输出都会失败，空工作集不能通过。必需的耗时和正确性指标必须存在且为有限数值，判定器不再静默跳过它们。
+
+`target/eval/report.json` 保留原始尝试、预热、结果及超时前的部分计时，无效尝试不能消失在看似有效的中位数中。启动或构建失败也会生成新的失败报告。会话启动、夹具准备和每次尝试均限时五分钟；渲染器测量另有 Node 期限，比场景配置超时多一秒。服务初始化限时 30 秒，单个 stdio 请求限时五分钟，release 编译限时 60 分钟。清理错误会导致整次运行失败。
 
 ## 预算与基线
 
@@ -91,5 +121,7 @@ python perf/compare/bench.py ~/src/some-project --runs 5 --wipe-caches   # 冷�
 ```
 
 每次运行都会用该应用打开项目，等待就绪（窗口出现、日志标记出现后，进程树的 CPU 保持在低位），空闲一段时间后关闭，并记录：到窗口出现和到就绪的时间、应用启动的所有进程（webview、语言服务器、JVM）合计的峰值与空闲内存、CPU 时间、退出耗时和缓存大小。各应用在预热后交替运行，结果输出到 `results/<time>-<project>/`（`report.md`、`results.json`）。
+
+报告保留失败尝试和预热，逐单元格显示有效/尝试次数，并区分不支持的指标与缺失的必需指标。启动超时、崩溃、强制关闭和中断都会使命令失败。退出及清缓存命令有明确期限，观察失败后仍会清理。CPU 平静就绪代理和守护进程排除策略保持不变，详见对比工具 README。
 
 只使用 release 构建；同一可执行文件已有实例在运行时脚本会拒绝执行。公平测量的规则和各平台说明见 [`perf/compare/README.md`](https://github.com/l0ng-ai/openidea/blob/main/perf/compare/README.md)。

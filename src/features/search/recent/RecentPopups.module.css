@@ -1,7 +1,13 @@
 .dialog {
   --rp-bg-chrome: var(--bg-frame, var(--bg-app));
+  container-type: inline-size;
   max-height: 80vh;
   background: var(--bg-popup, var(--bg-elev));
+}
+.dialog > :global([data-dialog-body]) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .header {
   flex: none;
@@ -78,7 +84,7 @@
 }
 .tools {
   flex: none;
-  width: 230px;
+  width: clamp(140px, 32%, 230px);
   display: flex;
   flex-direction: column;
   padding: 6px 0 4px;
@@ -95,6 +101,20 @@
 .files > *,
 .locations > * {
   flex: 1;
+}
+.switcher {
+  min-height: min(350px, 80vh);
+}
+.switcher .columns {
+  flex: auto;
+  height: auto;
+  max-height: 440px;
+}
+.switcher .tools {
+  width: clamp(112px, 32%, 184px);
+}
+.switcher .footer {
+  font-size: var(--fs-small);
 }
 .locationsLink {
   flex: none;
@@ -132,9 +152,13 @@
 .current {
   font-style: italic;
 }
+.fileName,
+.locationName {
+  flex: 0 1 auto;
+}
 .dir {
-  flex: none;
-  max-width: 50%;
+  flex: 0 1000 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
@@ -162,23 +186,23 @@
 }
 .locationHeader {
   display: flex;
+  flex: none;
   align-items: center;
   gap: var(--space-2);
   height: 20px;
 }
 .locationName {
-  flex: none;
+  font-weight: 600;
 }
 .changed {
+  flex: none;
   margin-left: auto;
   color: var(--vcs-modified);
   font-size: var(--fs-small);
 }
 .snippet {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
-  line-height: 16px;
+  font-size: var(--fs-code);
   color: var(--fg-muted);
   overflow: hidden;
 }
@@ -232,4 +256,39 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@container (max-width: 480px) {
+  .header {
+    height: auto;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+  .speed {
+    order: 1;
+    flex-basis: 100%;
+    background: var(--bg-input);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .speed .filterIcon {
+    visibility: visible;
+  }
+  .speed .filter {
+    caret-color: var(--fg-strong);
+  }
+  .hint,
+  .tools .shortcut {
+    display: none;
+  }
+  .switcher .columns {
+    --list-inset: var(--space-1);
+  }
+  .switcher .columns [role="option"] {
+    gap: var(--space-1);
+    padding-inline: var(--space-1);
+  }
+  .locationsLink {
+    margin-inline: var(--space-1);
+  }
 }

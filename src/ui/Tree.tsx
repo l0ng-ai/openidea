@@ -33,15 +33,22 @@ import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 import { T } from "./T";
 import { setContext } from "@/platform/context";
-import { registerKeyClaim } from "@/platform/keymap";
+import { isMacHost, registerKeyClaim } from "@/platform/keymap";
 import { useGivenTx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
 import { startPointerDrag, type DragData } from "./pointerDrag";
 import { useTreeDirectoryContext } from "./treeDirectoryContext";
+import { useRowHeight } from "./density";
 import { useIconRowHeight } from "./iconAppearance";
 
-const DEFAULT_ROW_HEIGHT = 24;
 export type { TreeReorder } from "./treeReorder";
+
+/** The host's native Paste shortcuts. */
+const isPasteStroke = (stroke: string) =>
+  isMacHost() ? stroke === "Meta+V" : stroke === "Ctrl+V" || stroke === "Shift+Insert";
+
+/** Pasted text as one query line: a speed search has no caret and no newlines. */
+const queryLine = (text: string) => text.replace(/[\r\n\u2028\u2029]+/g, " ").trim();
 
 export interface TreeRowState {
   depth: number;
@@ -66,6 +73,7 @@ export interface TreeHandle {
   focus(): void;
   /** Selects `key` (must be visible, i.e. ancestors expanded) and scrolls to it; false when no row has `key`. */
   reveal(key: string): boolean;
+  clearSelection(): void;
   leadKey(): string | null;
   /** Selects the next (1) / previous (-1) row, for a filter field that keeps the focus (Settings search). */
   moveSelection(dir: 1 | -1): void;
@@ -92,6 +100,8 @@ export interface TreeProps<T> {
   getIcon?: (node: T, expanded: boolean) => IconName | (string & {}) | undefined;
   /** Muted trailing detail (e.g. a path next to the project root); may include styled content. */
   getDetail?: (node: T) => ReactNode;
+  /** Native tooltip and accessible description for a row. */
+  getTooltip?: (node: T) => string | undefined;
   /** Label colour, e.g. VCS status. */
   getColor?: (node: T) => string | undefined;
   /** Filesystem directory for actions on the focused selection; groups return null. */
@@ -103,7 +113,8 @@ export interface TreeProps<T> {
 
   selected?: ReadonlySet<string>;
   defaultSelected?: Iterable<string>;
-  onSelectionChange?: (selected: Set<string>, lead: T | null) => void;
+  /** Context-menu selection can update the action target without navigating to it. */
+  onSelectionChange?: (selected: Set<string>, lead: T | null, reason?: "contextMenu") => void;
   multiSelect?: boolean;
 
   /** Enter / double-click on a leaf (or on nodes `activateExpandable` accepts). */
@@ -120,6 +131,8 @@ export interface TreeProps<T> {
 
   speedSearch?: boolean;
   speedSearchMode?: "highlight" | "filter";
+  /** Fit the passive speed-search field above the tree when its panel has a header. */
+  speedSearchAbove?: boolean;
   /**
    * Speed search shows as a field over the bar right above the tree (a tool window's toolbar)
    * instead of a popup over its first rows, with a toggle to show only the matches.
@@ -127,6 +140,8 @@ export interface TreeProps<T> {
   speedSearchField?: boolean;
   rowHeight?: number;
   indent?: number;
+  /** CSS length limiting the leading inset of deeply nested rows. */
+  maxRowInset?: string;
   className?: string;
   rowClassName?: (node: T) => string | undefined;
   /** CSS colour the row background is tinted with (File Colors). */
@@ -271,6 +286,7 @@ export function Tree<T>(props: TreeProps<T>) {
     onContextMenu,
     speedSearch = true,
     speedSearchMode = "highlight",
+    speedSearchAbove = false,
     speedSearchField = false,
     rowHeight: fixedRowHeight,
     indent = 20,
@@ -286,6 +302,13 @@ export function Tree<T>(props: TreeProps<T>) {
   const [lead, setLead] = useState<string | null>(() => [...selected][0] ?? null);
   const [anchor, setAnchor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // ⌘F / Ctrl+F opens speed search before anything is typed (IDEA's Find in a tree).
+  const [armed, setArmed] = useState(false);
+  const searching = !!query || armed;
+  const endSearch = () => {
+    setQuery("");
+    setArmed(false);
+  };
   const [onlyMatches, setOnlyMatches] = useState(false);
   const filterMatches = speedSearchMode === "filter" || (speedSearchField && onlyMatches);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -352,7 +375,8 @@ export function Tree<T>(props: TreeProps<T>) {
   const leadIndex = lead != null ? (indexOfKey.get(lead) ?? -1) : -1;
 
   const themedRowHeight = useIconRowHeight();
-  const rowHeight = fixedRowHeight ?? themedRowHeight ?? DEFAULT_ROW_HEIGHT;
+  const defaultRowHeight = useRowHeight();
+  const rowHeight = fixedRowHeight ?? themedRowHeight ?? defaultRowHeight;
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -381,19 +405,22 @@ export function Tree<T>(props: TreeProps<T>) {
     pendingScrollToLead.current = null;
   }, [lead, indexOfKey, virtualizer]);
 
-  // Speed search owns Escape while active, and ⌫ with any modifier: the query is edited like a
-  // text field instead of the view's shortcuts running (⌘⌫ is Drop… in the Database view).
+  // While speed search is active, reserve Backspace and the native Paste shortcuts for the query.
+  // The view's shortcuts can drop a database object or paste files into the project.
   useEffect(() => {
-    if (!query) return;
+    if (!searching) return;
     const release = acquirePopup();
     const unclaim = registerKeyClaim(
-      (e) => e.key === "Backspace" && e.target instanceof Node && !!scrollRef.current?.contains(e.target),
+      (e, stroke) =>
+        e.target instanceof Node &&
+        !!scrollRef.current?.contains(e.target) &&
+        (e.key === "Backspace" || (speedSearch && isPasteStroke(stroke))),
     );
     return () => {
       release();
       unclaim();
     };
-  }, [query]);
+  }, [searching, speedSearch]);
 
   const setExpanded = (row: Row<T>, open: boolean) => {
     if (!row.expandable || row.expanded === open) return;
@@ -415,22 +442,23 @@ export function Tree<T>(props: TreeProps<T>) {
   };
 
   const commitSelection = useCallback(
-    (next: Set<string>, leadKey: string | null) => {
+    (next: Set<string>, leadKey: string | null, reason?: "contextMenu") => {
       if (!selectedControlled) setSelectedInner(next);
       setLead(leadKey);
       const leadRow = leadKey != null ? rows[indexOfKey.get(leadKey) ?? -1] : undefined;
-      props.onSelectionChange?.(next, leadRow?.node ?? null);
+      if (reason) props.onSelectionChange?.(next, leadRow?.node ?? null, reason);
+      else props.onSelectionChange?.(next, leadRow?.node ?? null);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, indexOfKey, selectedControlled, props.onSelectionChange],
   );
 
-  const selectIndex = (i: number, mode: "single" | "toggle" | "range" = "single") => {
+  const selectIndex = (i: number, mode: "single" | "toggle" | "range" = "single", reason?: "contextMenu") => {
     const row = rows[i];
     if (!row || row.loading) return;
     if (mode === "single" || !multiSelect) {
       setAnchor(row.key);
-      commitSelection(new Set([row.key]), row.key);
+      commitSelection(new Set([row.key]), row.key, reason);
     } else if (mode === "toggle") {
       const next = new Set(selected);
       if (next.has(row.key)) next.delete(row.key);
@@ -456,6 +484,10 @@ export function Tree<T>(props: TreeProps<T>) {
       commitSelection(new Set([key]), key);
       virtualizer.scrollToIndex(i, { align: "center" });
       return true;
+    },
+    clearSelection: () => {
+      setAnchor(null);
+      commitSelection(new Set(), null);
     },
     leadKey: () => lead,
     moveSelection: (dir: 1 | -1) => {
@@ -523,11 +555,38 @@ export function Tree<T>(props: TreeProps<T>) {
     return i;
   };
 
+  /** The active speed search takes pasted text: its query is edited like a text field. */
+  const onPaste = (e: React.ClipboardEvent) => {
+    if (e.defaultPrevented || !speedSearch || !searching) return;
+    // An inline editor (rename, new value) inside a row keeps the native paste.
+    if ((e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable]")) return;
+    const text = queryLine(e.clipboardData?.getData("text/plain") ?? "");
+    if (!text) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const q = query + text;
+    setQuery(q);
+    const hit = findMatch(leadIndex, 1, true, q);
+    if (hit >= 0) selectIndex(hit);
+  };
+
   const onKeyDown = (e: KeyboardEvent) => {
     const row = leadIndex >= 0 ? rows[leadIndex] : undefined;
     const pageSize = Math.max(1, Math.floor((scrollRef.current?.clientHeight ?? 300) / rowHeight) - 1);
     const typed =
       speedSearch && e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey && !(e.key === " " && !query);
+    if (
+      speedSearch &&
+      e.key.toLowerCase() === "f" &&
+      (isMacHost() ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) &&
+      !e.altKey &&
+      !e.shiftKey
+    ) {
+      setArmed(true);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (typed) {
       const q = query + e.key;
       setQuery(q);
@@ -540,7 +599,7 @@ export function Tree<T>(props: TreeProps<T>) {
     // Jump to Source (F4 / ⌘↓): the tree's own handler, else it activates like Enter.
     if (e.key === "F4" || (e.key === "ArrowDown" && e.metaKey && !e.shiftKey && !e.altKey)) {
       if (!row) return;
-      setQuery("");
+      endSearch();
       if (onJumpToSource) {
         if (!row.loading) onJumpToSource(row.node, selected);
       } else activate(row, e);
@@ -550,8 +609,8 @@ export function Tree<T>(props: TreeProps<T>) {
     }
     switch (e.key) {
       case "Escape":
-        if (!query) return;
-        setQuery("");
+        if (!searching) return;
+        endSearch();
         break;
       case "Backspace":
         if (!query) return;
@@ -572,14 +631,14 @@ export function Tree<T>(props: TreeProps<T>) {
         break;
       }
       case "ArrowRight":
-        setQuery("");
+        endSearch();
         if (!row) return;
         if (row.expandable && !row.expanded) setExpanded(row, true);
         else if (row.expanded && rows[leadIndex + 1]?.parentKey === row.key && !rows[leadIndex + 1]!.loading)
           selectIndex(leadIndex + 1);
         break;
       case "ArrowLeft":
-        setQuery("");
+        endSearch();
         if (!row) return;
         if (row.expanded) setExpanded(row, false);
         else if (row.parentKey != null) {
@@ -597,16 +656,16 @@ export function Tree<T>(props: TreeProps<T>) {
         break;
       }
       case "PageDown":
-        setQuery("");
+        endSearch();
         selectIndex(Math.min(rows.length - 1, Math.max(0, leadIndex) + pageSize), range ? "range" : "single");
         break;
       case "PageUp":
-        setQuery("");
+        endSearch();
         selectIndex(Math.max(0, leadIndex - pageSize), range ? "range" : "single");
         break;
       case "Enter":
         if (!row) return;
-        setQuery("");
+        endSearch();
         activate(row, e);
         break;
       case "a":
@@ -622,8 +681,8 @@ export function Tree<T>(props: TreeProps<T>) {
   };
 
   const onRowMouseDown = (e: MouseEvent, i: number) => {
-    if (e.button === 2) {
-      if (!selected.has(rows[i]!.key)) selectIndex(i);
+    if (e.button === 2 || (e.button === 0 && e.ctrlKey && isMacHost())) {
+      if (!selected.has(rows[i]!.key)) selectIndex(i, "single", "contextMenu");
       return;
     }
     if (e.button !== 0) return;
@@ -638,7 +697,7 @@ export function Tree<T>(props: TreeProps<T>) {
       e.preventDefault();
       return;
     }
-    setQuery("");
+    endSearch();
     if (e.shiftKey) selectIndex(i, "range");
     else if (e.metaKey || e.ctrlKey) selectIndex(i, "toggle");
     else selectIndex(i);
@@ -694,8 +753,10 @@ export function Tree<T>(props: TreeProps<T>) {
         tabIndex={0}
         className={styles.tree}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         onBlur={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setQuery("");
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          endSearch();
         }}
         onContextMenu={
           onContextMenu
@@ -720,7 +781,10 @@ export function Tree<T>(props: TreeProps<T>) {
             // Settings › Appearance › "Use smaller indents in trees" sets `--tree-indent`
             // on the root; reading it here applies the setting to every tree at once,
             // instantly, and keeps chevrons and level alignment consistent with it.
-            const pad = (extra = 0) => `calc(${4 + extra}px + ${row.depth} * var(--tree-indent, ${indent}px))`;
+            const pad = (extra = 0) => {
+              const offset = `calc(${4 + extra}px + ${row.depth} * var(--tree-indent, ${indent}px))`;
+              return props.maxRowInset ? `min(${offset}, ${props.maxRowInset})` : offset;
+            };
             const style = { transform: `translateY(${v.start}px)`, height: v.size, paddingLeft: pad() };
             if (row.loading) {
               return (
@@ -764,6 +828,7 @@ export function Tree<T>(props: TreeProps<T>) {
                 aria-setsize={positions[v.index]![1]}
                 aria-expanded={row.expandable ? row.expanded : undefined}
                 aria-selected={isSelected}
+                title={props.getTooltip?.(row.node)}
                 className={clsx(
                   styles.row,
                   props.horizontalScroll && styles.wideRow,
@@ -830,7 +895,7 @@ export function Tree<T>(props: TreeProps<T>) {
           })}
         </div>
       </div>
-      {query &&
+      {searching &&
         (speedSearchField ? (
           // Typing stays in the tree: a press here must not take its focus, which would end the search.
           <div
@@ -852,9 +917,14 @@ export function Tree<T>(props: TreeProps<T>) {
             />
           </div>
         ) : (
-          <div className={clsx(styles.speedSearch, noMatch && styles.noMatch)} role="status" aria-live="polite">
-            <Icon name="search" size={12} />
+          <div
+            className={clsx(styles.speedSearch, speedSearchAbove && styles.speedAbove, noMatch && styles.noMatch)}
+            role="status"
+            aria-live="polite"
+          >
+            <Icon name="search" size={speedSearchAbove ? 16 : 12} />
             <span className={styles.speedQuery}>{query}</span>
+            {speedSearchAbove && <span className={styles.caret} aria-hidden="true" />}
           </div>
         ))}
     </div>

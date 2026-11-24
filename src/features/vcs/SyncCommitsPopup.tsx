@@ -5,19 +5,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
-import type { Commit } from "@/bindings";
+import type { BranchInfo, Commit } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { Button, Icon, List, Popup, Spinner, T, firstSelectable } from "@/ui";
 import type { PopupAnchor } from "@/ui/Popup";
+import { activeRepository } from "./activeRepository";
 import { showChangesDiff, toLogChanges } from "./logChanges";
 import { formatTime } from "./model";
-import { currentRepo, useVcs } from "./store";
-import { syncRow, syncSections, type SyncBranch, type SyncDirection, type SyncSection } from "./syncCommits";
+import { currentRepoRoot, unfetchedBranch, useVcs } from "./store";
+import {
+  outgoingDestination,
+  syncRow,
+  syncSections,
+  type SyncBranch,
+  type SyncDirection,
+  type SyncSection,
+} from "./syncCommits";
 import styles from "./SyncCommitsPopup.module.css";
 import common from "./common.module.css";
+import { useRowHeight } from "@/ui/density";
 
 /** A commit range can be long; the popup shows what git lists, bounded like Compare Branches. */
 const LIMIT = 2000;
@@ -27,24 +37,50 @@ export interface SyncCommitsSource {
   branch: SyncBranch;
   /** Only the side whose marker was clicked; `undefined` lists both. */
   direction?: SyncDirection;
+  unfetchedRemote?: string;
 }
 
 export const useSyncCommits = create<{ source: SyncCommitsSource | null }>(() => ({ source: null }));
+let openGeneration = 0;
 
 /** Opens the commit list of `source` (a marker click, or the branches popup entry). */
 export function showSyncCommits(source: SyncCommitsSource) {
+  openGeneration++;
   useSyncCommits.setState({ source });
 }
 
-/** The selected branch's own list: the Branches popup entry and the `vcs.syncCommits` action. */
-export function showSyncCommitsForCurrent(direction?: SyncDirection) {
-  const info = useVcs.getState().branch;
-  if (!info) return;
-  showSyncCommits({
-    repo: currentRepo(),
-    branch: { branch: info.head, upstream: info.upstream, ahead: info.ahead, behind: info.behind },
+export function showBranchSync(repo: string | null, info: BranchInfo, direction?: SyncDirection) {
+  showSyncCommits(syncSource(repo, info, direction));
+}
+
+/** The active file's repository also scopes the Branches popup entry and Find Action. */
+export async function showSyncCommitsForCurrent(direction?: SyncDirection) {
+  const request = ++openGeneration;
+  const { branch, branchRoot, roots } = useVcs.getState();
+  const project = useProject.getState().project;
+  const repo = activeRepository();
+  const info =
+    repo && roots.length > 1 && repo !== branchRoot
+      ? await call(commands.vcsBranchInfo(repo)).catch(() => null)
+      : branch;
+  if (info && request === openGeneration && project === useProject.getState().project)
+    showBranchSync(repo, info, direction);
+}
+
+function syncSource(repo: string | null, info: BranchInfo, direction?: SyncDirection): SyncCommitsSource {
+  const pending = unfetchedBranch(useVcs.getState().unfetched, repo ?? currentRepoRoot(), info.head, info.trackedTip);
+  return {
+    repo,
+    branch: {
+      branch: info.head,
+      upstream: info.upstream,
+      ahead: info.ahead,
+      behind: info.behind,
+      outgoing: info.outgoing,
+    },
     direction,
-  });
+    unfetchedRemote: pending?.trackedTip.tracking.remote,
+  };
 }
 
 /** The popup host; the branches widget anchors it, and it falls back to the window centre. */
@@ -56,7 +92,17 @@ export function SyncCommitsPopupHost() {
     y: 60,
   };
   // Another branch, direction or repository starts from a clean popup rather than the last list.
-  const key = `${source.repo ?? ""}\0${source.branch.branch ?? ""}\0${source.branch.upstream ?? ""}\0${source.direction ?? ""}`;
+  const key = [
+    source.repo,
+    source.branch.branch,
+    source.branch.upstream,
+    source.branch.ahead,
+    source.branch.behind,
+    source.branch.outgoing?.reference,
+    source.branch.outgoing?.count,
+    source.direction,
+    source.unfetchedRemote,
+  ].join("\0");
   return (
     <SyncCommitsPopup
       key={key}
@@ -96,12 +142,16 @@ function SyncCommitsPopup({
   anchor: PopupAnchor;
   onClose: () => void;
 }) {
+  const rowHeight = useRowHeight(22);
   const sections = useMemo(() => syncSections(source.branch, source.direction), [source.branch, source.direction]);
   const [lists, setLists] = useState<Commit[][] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const title = popupTitle(source);
+  const remoteBusy = useVcs((s) => !!s.remoteBusy);
+  const unfetched = source.direction !== "outgoing" && !!source.unfetchedRemote;
+  const destination = outgoingDestination(source.branch.outgoing);
 
   useEffect(() => {
     if (!sections.length) return;
@@ -171,15 +221,46 @@ function SyncCommitsPopup({
     onClose();
     void executeAction("vcs.showCommit", { ...activeCommit, repo: source.repo });
   };
+  const fetch = async () => {
+    const project = useProject.getState().project;
+    if (!(await executeAction("vcs.fetch", { repo: source.repo, remote: source.unfetchedRemote }))) return;
+    if (useProject.getState().project !== project || useSyncCommits.getState().source !== source) return;
+    const info = await call(commands.vcsBranchInfo(source.repo)).catch(() => null);
+    if (
+      info &&
+      info.head === source.branch.branch &&
+      useProject.getState().project === project &&
+      useSyncCommits.getState().source === source
+    )
+      showSyncCommits(syncSource(source.repo, info, source.direction));
+  };
 
   const body = () => {
-    if (!source.branch.upstream)
+    if (!sections.length) {
+      if (unfetched) return null;
+      if (source.direction === "outgoing" && source.branch.outgoing === null)
+        return (
+          <div className={styles.empty}>
+            <T>No local tracking ref is available for the push destination.</T>
+          </div>
+        );
+      const upstream = source.branch.upstream;
+      const compared =
+        source.direction === "outgoing"
+          ? (destination ?? upstream)
+          : source.direction === "incoming"
+            ? upstream
+            : (upstream ?? destination);
       return (
         <div className={styles.empty}>
-          <T>This branch has no upstream. Push it to compare with a remote branch.</T>
+          {compared ? (
+            tx`Up to date with ${compared}`
+          ) : (
+            <T>This branch has no upstream. Push it to compare with a remote branch.</T>
+          )}
         </div>
       );
-    if (!sections.length) return <div className={styles.empty}>{tx`Up to date with ${source.branch.upstream}`}</div>;
+    }
     if (error) return <div className={clsx(common.error, styles.empty)}>{error}</div>;
     if (!lists)
       return (
@@ -223,7 +304,7 @@ function SyncCommitsPopup({
           onActivate={(row) => {
             if (row.type === "commit") openDiff(row.commit);
           }}
-          rowHeight={22}
+          rowHeight={rowHeight}
           aria-label={title}
           className={styles.list}
         />
@@ -234,11 +315,32 @@ function SyncCommitsPopup({
   return (
     <Popup open anchor={anchor} placement="bottom-start" onClose={onClose} aria-label={title} className={styles.popup}>
       <div className={styles.header}>{title}</div>
+      {source.direction !== "incoming" && destination && destination !== source.branch.upstream && (
+        <div className={styles.destination}>{tx`Push destination: ${destination}`}</div>
+      )}
+      {unfetched && (
+        <div className={styles.empty}>
+          <T>Remote changes available to fetch</T>
+        </div>
+      )}
       {body()}
       <div className={styles.footer}>
-        <Button icon="history" disabled={!activeCommit} onClick={openInLog}>
-          Open in Git Log
-        </Button>
+        {unfetched && (
+          <Button
+            icon="git-fetch"
+            variant={sections.length ? "secondary" : "primary"}
+            data-autofocus={!sections.length || undefined}
+            disabled={remoteBusy}
+            onClick={() => void fetch()}
+          >
+            Fetch
+          </Button>
+        )}
+        {(!unfetched || sections.length > 0) && (
+          <Button icon="history" disabled={!activeCommit} onClick={openInLog}>
+            Open in Git Log
+          </Button>
+        )}
       </div>
     </Popup>
   );

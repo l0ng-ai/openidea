@@ -1,14 +1,18 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentType } from "react";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
 import { DEFAULT_DEPLOYMENT_SERVER } from "@/platform/remoteSettings";
 import { useContextMenuStore } from "@/ui";
 import { PageContext } from "../components/context";
 import { DEFAULT_SETTINGS } from "../model/schema";
 import { stagedValue, useSettingsDialog } from "../model/staging";
 import { DEPLOYMENT_PAGES } from "../pages/deployment";
+import { preloadBuiltinPage } from "../pages/lazyPage";
 
 const server = (id: string, name: string) => ({ ...DEFAULT_DEPLOYMENT_SERVER, id, name });
+const DEPLOYMENT_CONTEXT = { pageId: "build.deployment", scope: "project" } as const;
+
+beforeAll(() => preloadBuiltinPage("build.deployment"));
 
 beforeEach(() => {
   const base = structuredClone(DEFAULT_SETTINGS) as typeof DEFAULT_SETTINGS & { deployment: Record<string, unknown> };
@@ -27,7 +31,7 @@ function renderList() {
     .find((o) => o.kind === "custom" && o.label === "Deployment servers");
   const Editor = (option as unknown as { component: ComponentType }).component;
   render(
-    <PageContext.Provider value={{ pageId: page.id, scope: "project" }}>
+    <PageContext.Provider value={DEPLOYMENT_CONTEXT}>
       <Editor />
     </PageContext.Provider>,
   );

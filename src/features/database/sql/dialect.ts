@@ -142,6 +142,7 @@ export function statementStarters(driver: DbDriver): string[] {
     "COMMIT",
     "ROLLBACK",
   ];
+  if (driver === "jdbc") return common;
   if (driver === "sqlite") return [...common, "PRAGMA", "VACUUM", "ATTACH DATABASE", "REPLACE INTO", "CREATE TRIGGER"];
   if (driver === "mysql")
     return [
@@ -217,6 +218,7 @@ export function predicateKeywords(driver: DbDriver): string[] {
 }
 
 export const DATA_TYPES: Record<DbDriver, string[]> = {
+  jdbc: ["INTEGER", "BIGINT", "DECIMAL", "DOUBLE PRECISION", "VARCHAR", "BOOLEAN", "DATE", "TIME", "TIMESTAMP"],
   snowflake: [
     "NUMBER",
     "INTEGER",
@@ -397,6 +399,7 @@ const COMMON: SqlFunction[] = [
 ];
 
 const FUNCTIONS: Record<DbDriver, SqlFunction[]> = {
+  jdbc: COMMON,
   snowflake: [
     ...COMMON,
     f("listagg", "expr, delimiter", "varchar", true),

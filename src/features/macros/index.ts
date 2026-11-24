@@ -7,8 +7,10 @@ import { EditorView } from "@codemirror/view";
 import { activeEditor, registerEditorContribution } from "@/editor/api";
 import { executeAction, onActionExecuted, registerActions, type Action } from "@/platform/actions";
 import { setContext } from "@/platform/context";
+import { tx } from "@/platform/i18n";
 import { notifications, registerOverlay, registerStatusItem } from "@/workbench/contributions";
 import { chooseItem, promptInput } from "@/workbench/inputDialogs";
+import { ask } from "@/workbench/messages";
 import { EDITOR_KEY_COMMANDS, editorKeyName } from "./editorKeys";
 import { MacroStatus, MacrosDialogHost, showEditMacros } from "./MacrosDialog";
 import {
@@ -76,13 +78,34 @@ async function stop() {
     notifications().notify({ level: "info", title: "Nothing was recorded", key: "macro.recording" });
     return;
   }
-  const name = await promptInput({
-    title: "Enter Macro Name",
-    label: "Name (leave empty to keep it only as the last macro):",
-    okLabel: "OK",
-    validate: () => null,
-  });
-  if (name) saveMacro(name, steps);
+  let initial = "";
+  for (;;) {
+    const name = await promptInput({
+      title: "Enter Macro Name",
+      label: "Name (leave empty to keep it only as the last macro):",
+      initial,
+      okLabel: "OK",
+      validate: () => null,
+    });
+    if (!name) return;
+    const existing = useMacros.getState().saved.find((macro) => macro.name === name);
+    if (!existing) {
+      saveMacro(name, steps);
+      return;
+    }
+    const { button } = await ask({
+      title: "Replace Macro?",
+      body: tx`A macro named '${name}' already exists. Replace its recorded steps?`,
+      icon: "warning",
+      buttons: [
+        { id: "rename", label: "Choose Another Name", primary: true },
+        { id: "replace", label: "Replace" },
+      ],
+    });
+    if (button === "cancel") return;
+    if (button === "replace" && saveMacro(name, steps, existing)) return;
+    initial = name;
+  }
 }
 
 const playActionId = (name: string) => `macros.play.${name}`;

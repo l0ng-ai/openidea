@@ -10,7 +10,7 @@ import { registerOverlay, registerRunExecutor, registerToolWindow, toolWindowSer
 import { CoverageHeaderActions, CoverageTabs, CoverageView } from "./CoverageView";
 import { coverageExecutor } from "./executor";
 import { coverageGutter } from "./gutter";
-import { ManageReportsOverlay, importReport, openManageReports } from "./reports";
+import { ManageReportsOverlay, closeManageReports, importReport, openManageReports } from "./reports";
 import { resetCoverage, setCoverageVisible, syncCoverageViews, useCoverage } from "./store";
 
 export function activate(): () => void {
@@ -96,11 +96,15 @@ export function activate(): () => void {
       },
     ]),
     useProject.subscribe((s, prev) => {
-      if (s.project?.root !== prev.project?.root) resetCoverage();
+      if (s.project?.root !== prev.project?.root) {
+        resetCoverage();
+        closeManageReports();
+      }
     }),
   ];
   return () => {
     disposers.reverse().forEach((d) => d());
+    closeManageReports();
     if (useCoverage.getState().suites.length) resetCoverage();
   };
 }

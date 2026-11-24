@@ -49,7 +49,7 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 
 **Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones.
 
-Brackets and quotes are paired as you type, and typing a quote or bracket over a selection surrounds it. These and other typing aids (smart Home, Tab out of a closing bracket, smart indent on Enter, documentation comment stubs, what Backspace does with indentation, reformat on paste) are under **Settings › Editor › General › Smart Keys**.
+Brackets and quotes are paired as you type, and typing a quote or bracket over a selection surrounds it. These and other typing aids (smart Home, Tab out of a closing bracket, a `;` typed before a closing `)` moving to the end of the statement, smart indent on Enter, documentation comment stubs, what Backspace does with indentation, reformat on paste) are under **Settings › Editor › General › Smart Keys**.
 
 ## Clipboard
 
@@ -88,7 +88,7 @@ All folding commands are also in **Code › Folding**. Fold regions come from th
 | **Auto-Indent Lines** | `⌃⌥I`  | `Ctrl+Alt+I`       |
 | **Optimize Imports**  | `⌃⌥O`  | `Ctrl+Alt+O`       |
 
-**Reformat Code** formats the selection, or the whole file when nothing is selected, as one undo step. The formatting comes from the file's language server or from the formatter the language is configured with (for example Ruff for Python, Prettier or oxfmt for web languages; find their commands as **Reformat with …** in Find Action). **Reformat File…** also lets you choose the scope and optimize imports.
+**Reformat Code** formats the selection, or the whole file when nothing is selected, as one undo step. The formatting comes from the file's language server or from the formatter the language is configured with (for example Ruff for Python, Prettier, oxfmt or Biome for web languages; find their commands as **Reformat with …** in Find Action). **Reformat File…** also lets you choose the scope and optimize imports.
 
 Indentation and other style options are under **Settings › Editor › Code Style**, with a page per language. `.editorconfig` files in the project are read too.
 
@@ -135,6 +135,8 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 ## Saving
 
 As in IntelliJ IDEA, there is no per-file save: files are saved when you switch to another application or to the built-in terminal, and **File › Save All** (`⌘S` / `Ctrl+S`) saves everything at once. **Settings › Appearance & Behavior › System Settings**, section **Autosave**, can also save after the IDE has been idle for a while.
+
+If you keep typing during a save, edits not included in that write stay marked as unsaved.
 
 Changes made outside the IDE are picked up when you switch back to its window. **Reload from Disk** (`⌥⌘Y` / `Ctrl+Alt+Y`) reloads the current file now.
 

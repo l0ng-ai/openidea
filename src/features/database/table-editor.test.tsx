@@ -4,7 +4,7 @@ import type { DbDriver, DbTablePage } from "@/platform/ipc";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { activeCellGrid, installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
-import { TableEditor } from "./TableEditor";
+import { TableEditor, _resetTableViewStates } from "./TableEditor";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { tableInput } from "./tableInput";
 
@@ -45,6 +45,7 @@ const page: DbTablePage = {
     hasMore: false,
     elapsedMs: 1,
     executionMs: 1,
+    truncated: [],
   },
   details: {
     columns: [
@@ -59,27 +60,38 @@ const page: DbTablePage = {
 };
 
 beforeEach(() => {
+  _resetTableViewStates();
   backend.driver = "clickhouse";
   backend.page.mockResolvedValue({ status: "ok", data: page });
   backend.applyEdits.mockClear();
 });
 
 describe("table editor capabilities", () => {
-  it("keeps ClickHouse rows read-only even when metadata marks a primary key", async () => {
-    await act(async () => {
-      render(<TableEditor input={tableInput("source", "default", "users")} />);
-    });
-    const cell = await screen.findByRole("gridcell", { name: "Ann" });
-    fireEvent.doubleClick(cell);
-    expect(screen.queryByRole("textbox", { name: "Edit name" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Add Row" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
-    expect(screen.getByText("Use the query console to change ClickHouse data.")).toBeTruthy();
-    fireEvent.mouseDown(cell, { button: 0 });
-    fireEvent.paste(screen.getByRole("grid"), { clipboardData: { getData: () => "Changed" } });
-    expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
-    expect(backend.applyEdits).not.toHaveBeenCalled();
-  });
+  it.each(["clickhouse", "jdbc"] as const)(
+    "keeps %s rows read-only even when metadata marks a primary key",
+    async (driver) => {
+      backend.driver = driver;
+      await act(async () => {
+        render(<TableEditor input={tableInput("source", "default", "users")} />);
+      });
+      const cell = await screen.findByRole("gridcell", { name: "Ann" });
+      fireEvent.doubleClick(cell);
+      expect(screen.queryByRole("textbox", { name: "Edit name" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Add Row" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
+      expect(
+        screen.getByText(
+          driver === "jdbc"
+            ? "Use the query console to change JDBC data."
+            : "Use the query console to change ClickHouse data.",
+        ),
+      ).toBeTruthy();
+      fireEvent.mouseDown(cell, { button: 0 });
+      fireEvent.paste(screen.getByRole("grid"), { clipboardData: { getData: () => "Changed" } });
+      expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
+      expect(backend.applyEdits).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps keyed PostgreSQL rows editable", async () => {
     backend.driver = "postgres";
@@ -210,4 +222,42 @@ it("omits a reset inserted cell from Submit instead of writing SQL NULL", async 
     disposeKeys();
     disposeActions();
   }
+});
+
+describe("table editor view state", () => {
+  it("restores the grid's horizontal scroll position when its tab mounts again (#4775)", async () => {
+    const input = tableInput("source", "default", "users");
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<TableEditor input={input} />);
+    });
+    const grid = await screen.findByRole("grid");
+    grid.scrollLeft = 180;
+    fireEvent.scroll(grid);
+    view.unmount();
+    await act(async () => {
+      render(<TableEditor input={input} />);
+    });
+    expect((await screen.findByRole("grid")).scrollLeft).toBe(180);
+  });
+
+  it("queries with the sort it had when its tab mounts again", async () => {
+    const input = tableInput("source", "default", "users");
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<TableEditor input={input} />);
+    });
+    await screen.findByRole("gridcell", { name: "Ann" });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("columnheader", { name: /name/ }));
+    });
+    const sorted = backend.page.mock.calls.at(-1)!;
+    expect(sorted[5]).toEqual([{ column: "name", descending: false }]);
+    view.unmount();
+    backend.page.mockClear();
+    await act(async () => {
+      render(<TableEditor input={input} />);
+    });
+    expect(backend.page.mock.calls[0]![5]).toEqual(sorted[5]);
+  });
 });

@@ -44,6 +44,7 @@ optional = ["net:api.example.com", "secrets"]
 | `events`            | 低   | 文件打开、关闭、保存，文件变化，编辑器焦点变化，仓库变化，设置变化                                                             | 1.0                        |
 | `events.input`      | 中   | `action-performed` 和 `input-mode-changed` 事件（按键和编辑器输入）                                                            | 1.0                        |
 | `clipboard`         | 中   | `host::copy_to_clipboard`，以及插件 Web 视图中的剪贴板 API                                                                     | 1.0                        |
+| `clipboard.read`    | 中   | `host::read_clipboard`：读取剪贴板的文本和图片，仅限用户运行的命令和视图操作（事件处理器等无人值守的调用会被拒绝）             | 1.11                       |
 | `secrets`           | 中   | 请求头中的 `{{secret:<name>}}`、`secret_is_set`、`secret_set`、`secret_delete`                                                 | 1.0                        |
 | `net:<host>`        | 中   | `host::fetch` 通过 HTTPS（以及回环地址的 HTTP）访问该主机；`*.example.com` 匹配子域名                                          | 1.0                        |
 | `net:ask`           | 中   | 第一次请求未声明的 HTTPS 主机时询问用户                                                                                        | 1.5                        |

@@ -40,6 +40,8 @@ vi.mock("@/editor/api", async (importOriginal) => ({
       text: () => working,
       lineEnding: () => workingEol,
       readOnly: false,
+      subscribeReadOnly: () => () => {},
+      subscribeExternalChanges: () => () => {},
       extension: [],
       context: () => ({ doc: 1, path, language: "plaintext", uiMode: null, readOnly: false }),
       save: () => Promise.resolve(),
@@ -123,6 +125,20 @@ describe("Diff toolbar", () => {
     expect(screen.getByRole("button", { name: "Side-by-side Viewer" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Unified Viewer" })).toBeDisabled();
     expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).mode).toBe("split");
+    mounted.unmount();
+    localStorage.removeItem("openidea.vcs.diffOptions");
+  });
+  it("shows lines added to two texts as one block in the unified viewer, as a plugin's diff", async () => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "unified", highlight: "words" }));
+    const data = {
+      path: "plugin-diff:/Rules.java",
+      left: { type: "text", text: "class Rules {\n  int a;\n}\n", label: "Before" },
+      right: { type: "text", text: "class Rules {\n  int a;\n  void check() {\n    run();\n  }\n}\n", label: "After" },
+    };
+    const mounted = render(<DiffEditor input={{ ...input, data } as EditorInput} />);
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-diffLine-inserted")).toHaveLength(3));
+    expect(mounted.container.querySelector(".cm-mergeView")).toBeNull();
+    expect(mounted.container.querySelector(".cm-changedText, .cm-deletedText, .cm-diffWord")).toBeNull();
     mounted.unmount();
     localStorage.removeItem("openidea.vcs.diffOptions");
   });
@@ -698,7 +714,7 @@ describe("Unified Revert", () => {
           await waitFor(() => expect(button).not.toBeDisabled());
           fireEvent.click(button);
         } else {
-          fireEvent.mouseDown(await screen.findByRole("button", { name: /^Revert$/ }));
+          fireEvent.click(await screen.findByRole("button", { name: /^Revert$/ }));
         }
         await waitFor(() => expect(view.state.doc.toString()).toBe(original));
       } finally {

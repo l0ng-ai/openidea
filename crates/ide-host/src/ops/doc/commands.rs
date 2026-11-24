@@ -1,6 +1,6 @@
 use crate::Host;
 use ide_command::command;
-use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range};
+use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range, TextEdit};
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
 use ide_workspace::{DocumentEncoding, DocumentInfo, DocumentLanguage, HistoryEntry};
@@ -85,7 +85,7 @@ pub async fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_end
 }
 
 /// Structure view: LSP document symbols when available (with tree-sitter
-/// visibility), tree-sitter otherwise.
+/// visibility and type-alias kinds), tree-sitter otherwise.
 /// Tree-sitter answers come from the per-document tree cache (incremental
 /// re-parse); large documents get no syntax structure.
 #[command(trust = always)]
@@ -113,10 +113,13 @@ pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
         };
         let syntax = || project.syntax.outline(doc, &snap.language, snap.version, &snap.text);
         Ok(match lsp {
-            // Server symbols carry no visibility; borrow it from the syntax tree.
+            // Server symbols carry no visibility, nor a kind for type aliases; borrow them from
+            // the syntax tree.
             Some(mut items) => {
                 if !snap.large {
-                    ide_language::merge_visibility(&mut items, &syntax());
+                    let syntax = syntax();
+                    ide_language::merge_visibility(&mut items, &syntax);
+                    ide_language::merge_kinds(&mut items, &syntax);
                 }
                 items
             }
@@ -125,6 +128,13 @@ pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
         })
     })
     .await
+}
+
+/// Structure view of a Flutter file: its declarations with the widgets they build. `None`
+/// when the Dart server published no widgets for it; `doc_outline` then applies.
+#[command(trust = always)]
+pub async fn doc_flutter_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<Vec<OutlineItem>>> {
+    Ok(host.project(window)?.lsp.flutter_outline(doc))
 }
 
 #[command(trust = always)]
@@ -185,6 +195,29 @@ pub async fn doc_python_facts(host: &Host, window: &str, doc: DocId) -> IdeResul
     blocking(move || Ok(syntax.python_facts(&snap.language, &snap.text))).await
 }
 
+/// Rearrange Code: the edits that put the document's class members in arrangement order (Python
+/// for now); none when they already are or the language has no arrangement.
+#[command(trust = always)]
+pub async fn doc_rearrange(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    let snap = project.documents.text_snapshot(doc)?;
+    blocking(move || {
+        let Some(rearranged) = syntax.rearranged(&snap.language, &snap.text) else { return Ok(Vec::new()) };
+        let text = ide_text::Document::new(&snap.text);
+        Ok(text
+            .diff(&rearranged)
+            .changes
+            .into_iter()
+            .map(|c| TextEdit {
+                range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
+                new_text: c.insert,
+            })
+            .collect())
+    })
+    .await
+}
+
 /// Extend Selection (⌥↑): syntax ranges around `offset`, innermost first.
 /// Large documents fall back to word / line / document ranges.
 #[command(trust = always)]
@@ -227,12 +260,14 @@ pub async fn history_content(host: &Host, window: &str, id: String) -> IdeResult
 
 ide_command::domain!(
     doc_commands:
+    doc_flutter_outline,
     doc_folding,
     doc_highlights,
     doc_language,
     doc_open_virtual,
     doc_outline,
     doc_python_facts,
+    doc_rearrange,
     doc_selection_ranges,
     doc_set_bom,
     doc_set_encoding,

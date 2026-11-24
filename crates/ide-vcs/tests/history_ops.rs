@@ -1,7 +1,7 @@
 //! Rebase / cherry-pick / revert / reset / tags, the shelf and patches, against
 //! throwaway repositories created with the git CLI.
 
-use ide_core::CancellationToken;
+use ide_core::{CancellationToken, workflow_settings::EmptyCherryPickAction};
 use ide_vcs::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -127,6 +127,9 @@ fn merge_versions_put_the_users_work_on_the_left() {
     assert_eq!(v.sides.commit.as_deref(), Some(&topic[..8]));
     // The merged text puts the user's side first, whatever git's stage order.
     assert_eq!(v.merged.as_deref(), Some("<<<<<<< yours\ntopic\n||||||| base\nbase\n=======\nmain\n>>>>>>> theirs\n"));
+    repo.accept_conflict_side(&[fx.path("f.txt")], ConflictSide::Ours).unwrap();
+    assert_eq!(fx.read("f.txt"), "topic\n");
+    assert_eq!(fx.git(&["show", ":f.txt"]), "topic");
     let (cancel, out) = quiet();
     repo.abort_operation(&cancel, &out).unwrap();
 
@@ -189,6 +192,19 @@ fn rebase_conflict_then_abort_and_skip() {
 }
 
 #[test]
+fn rebase_abort_does_not_abort_a_different_operation() {
+    let fx = diverged();
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    assert!(repo.merge("main").is_err());
+    let error = repo.abort_expected_operation(Some("rebase"), &cancel, &out).unwrap_err();
+    assert_eq!(error.message, "Git operation changed before it could be aborted");
+    assert_eq!(repo.operation().unwrap().as_deref(), Some("merge"));
+    repo.abort_expected_operation(Some("merge"), &cancel, &out).unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+}
+
+#[test]
 fn merge_conflict_continue_commits() {
     let fx = diverged();
     fx.git(&["checkout", "-q", "main"]);
@@ -202,6 +218,37 @@ fn merge_conflict_continue_commits() {
     repo.continue_operation(&cancel, &out).unwrap();
     assert_eq!(repo.branch_info().unwrap().operation, None);
     assert_eq!(fx.git(&["rev-list", "--count", "--merges", "HEAD"]), "1");
+}
+
+#[test]
+fn finish_merge_checks_the_reviewed_heads_and_uses_the_prepared_message() {
+    let fx = diverged();
+    fx.git(&["checkout", "-q", "main"]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let head = fx.git(&["rev-parse", "HEAD"]);
+    let target = fx.git(&["rev-parse", "topic"]);
+    assert!(repo.merge("topic").is_err());
+    assert!(
+        repo.finish_merge(Some("main"), &head, &target, &cancel, &out).is_err(),
+        "unresolved files block finishing"
+    );
+    fx.write("f.txt", "resolved\n");
+    repo.stage(&[fx.path("f.txt")]).unwrap();
+
+    for (branch, before, incoming) in
+        [(Some("topic"), &head, &target), (Some("main"), &target, &target), (Some("main"), &head, &head)]
+    {
+        let error = repo.finish_merge(branch, before, incoming, &cancel, &out).unwrap_err();
+        assert_eq!(error.message, "The merge changed before it could be finished");
+    }
+    assert_eq!(fx.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(fx.git(&["rev-parse", "MERGE_HEAD"]), target);
+
+    repo.finish_merge(Some("main"), &head, &target, &cancel, &out).unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["log", "-1", "--format=%s%n%P"]), format!("Merge branch 'topic'\n{head} {target}"));
+    assert_eq!(fx.git(&["show", "HEAD:f.txt"]), "resolved");
 }
 
 #[test]
@@ -242,6 +289,411 @@ fn revert_creates_inverse_commit() {
     assert_eq!(fx.read("a.txt"), "1\n");
     assert_eq!(fx.git(&["log", "-1", "--format=%s"]), "Revert \"two\"");
     assert_eq!(fx.git(&["rev-list", "--count", "HEAD"]), "3");
+}
+
+fn mixed_cherry_pick_fixture() -> (Fixture, [String; 3]) {
+    let fx = Fixture::new();
+    fx.write("f.txt", "base\n");
+    fx.commit_all("base");
+    fx.git(&["checkout", "-q", "-b", "topic"]);
+    fx.write("setup.txt", "setup\n");
+    let setup = fx.commit_all("published setup");
+    fx.write("f.txt", "topic\n");
+    let edit = fx.commit_all("published edit");
+    fx.write("followup.txt", "local\n");
+    let local = fx.commit_all("local follow-up");
+    fx.git(&["checkout", "-q", "main"]);
+    fx.write("f.txt", "main\n");
+    fx.commit_all("main edit");
+    (fx, [setup, edit, local])
+}
+
+#[test]
+fn mixed_cherry_pick_keeps_per_commit_origins_when_resumed() {
+    let (fx, picks) = mixed_cherry_pick_fixture();
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    assert!(repo.cherry_pick_with_origins(&picks, &picks[..2], &cancel, &out).is_err());
+    assert_eq!(repo.operation().unwrap().as_deref(), Some("cherry-pick"));
+    assert_eq!(fx.git(&["rev-parse", "CHERRY_PICK_HEAD"]), picks[1]);
+    assert!(!fx.path("followup.txt").exists());
+    drop(repo);
+
+    let repo = fx.repo();
+    fx.write("f.txt", "resolved\n");
+    repo.stage(&[fx.path("f.txt")]).unwrap();
+    repo.continue_operation(&cancel, &out).unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["log", "-3", "--format=%s"]), "local follow-up\npublished edit\npublished setup");
+    assert_eq!(fx.git(&["show", "-s", "--format=%b", "HEAD"]), "");
+    assert_eq!(fx.git(&["show", "-s", "--format=%b", "HEAD~1"]), format!("(cherry picked from commit {})", picks[1]));
+    assert_eq!(fx.git(&["show", "-s", "--format=%b", "HEAD~2"]), format!("(cherry picked from commit {})", picks[0]));
+    assert!(!fx.path(".git/openidea-cherry-pick.json").exists());
+}
+
+#[test]
+fn reviewed_formatting_keeps_the_index_transaction_scoped_and_preserves_worktree_edits() {
+    let (fx, picks) = mixed_cherry_pick_fixture();
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    assert!(repo.cherry_pick_with(&picks, true, &cancel, &out).is_err());
+    fx.write("f.txt", "resolved   \n");
+    repo.stage(&[fx.path("f.txt")]).unwrap();
+    fx.write("f.txt", "other unstaged edit\n");
+    fx.write("local.txt", "unrelated work\n");
+    let encoding = |_: &Path, _: &[u8]| encoding_rs::UTF_8.into();
+    let edit = |file, formatted: &str| {
+        let path = fx.path(file);
+        let staged = repo.staged_text(&path, 1024, |_| encoding_rs::UTF_8.into()).unwrap().unwrap();
+        StagedTextEdit { path: path.into(), version: staged.version, text: formatted.to_string() }
+    };
+
+    let review = repo.review_apply_commit(&cancel).unwrap().unwrap();
+    let retained =
+        repo.format_reviewed_apply(&review.checkpoint, &[edit("f.txt", "main\n")], &cancel, encoding).unwrap();
+    assert_eq!(retained, review);
+    assert_eq!(repo.review_apply_commit(&cancel).unwrap().unwrap(), review);
+
+    fx.write("extra.txt", "staged   \n");
+    repo.stage(&[fx.path("extra.txt")]).unwrap();
+    let review = repo.review_apply_commit(&cancel).unwrap().unwrap();
+    let unrelated = edit("setup.txt", "not part of the review\n");
+    assert!(
+        repo.format_reviewed_apply(&review.checkpoint, &[edit("f.txt", "resolved\n"), unrelated], &cancel, encoding)
+            .is_err()
+    );
+    assert_eq!(repo.review_apply_commit(&cancel).unwrap().unwrap(), review);
+
+    let mut stale = edit("extra.txt", "staged\n");
+    stale.version.clear();
+    assert!(
+        repo.format_reviewed_apply(&review.checkpoint, &[edit("f.txt", "resolved\n"), stale], &cancel, encoding)
+            .is_err()
+    );
+    assert_eq!(repo.review_apply_commit(&cancel).unwrap().unwrap(), review);
+
+    fx.write("extra.txt", "external staged edit\n");
+    repo.stage(&[fx.path("extra.txt")]).unwrap();
+    assert!(repo.format_reviewed_apply(&review.checkpoint, &[edit("f.txt", "resolved\n")], &cancel, encoding).is_err());
+    let review = repo.review_apply_commit(&cancel).unwrap().unwrap();
+    let formatted =
+        repo.format_reviewed_apply(&review.checkpoint, &[edit("f.txt", "resolved\n")], &cancel, encoding).unwrap();
+    assert_ne!(review.checkpoint, formatted.checkpoint);
+    assert_eq!(review.paths, formatted.paths);
+    assert_eq!(repo.review_apply_commit(&cancel).unwrap().unwrap(), formatted);
+    assert_eq!(fx.git(&["show", ":extra.txt"]), "external staged edit");
+    assert_eq!(fx.read("f.txt"), "other unstaged edit\n");
+    assert_eq!(fx.read("local.txt"), "unrelated work\n");
+
+    assert!(
+        repo.continue_reviewed_apply(
+            &review.checkpoint,
+            &review.message,
+            &Default::default(),
+            Default::default(),
+            &cancel,
+            &out
+        )
+        .is_err()
+    );
+    repo.continue_reviewed_apply(
+        &formatted.checkpoint,
+        &formatted.message,
+        &Default::default(),
+        Default::default(),
+        &cancel,
+        &out,
+    )
+    .unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["show", "HEAD:f.txt"]), "resolved");
+    assert_eq!(fx.read("f.txt"), "other unstaged edit\n");
+}
+
+#[test]
+fn reviewed_cherry_pick_keeps_the_edited_message_and_resumes_both_kinds_of_queue() {
+    for mixed in [false, true] {
+        let (fx, picks) = mixed_cherry_pick_fixture();
+        let (cancel, out) = quiet();
+        let repo = fx.repo();
+        let result = if mixed {
+            repo.cherry_pick_with_origins(&picks, &picks[..2], &cancel, &out)
+        } else {
+            repo.cherry_pick_with(&picks, true, &cancel, &out)
+        };
+        assert!(result.is_err());
+        fx.write("f.txt", "resolved\n");
+        repo.stage(&[fx.path("f.txt")]).unwrap();
+        let review = repo.review_apply_commit(&cancel).unwrap().unwrap();
+        assert_eq!(review.kind, ide_vcs::CommitApplyKind::CherryPick);
+        assert_eq!(review.paths, [ide_core::IpcPath(fx.path("f.txt"))]);
+        let message = format!("Reviewed pick\n\n# Context\n{}", review.message);
+        let head = fx.git(&["rev-parse", "HEAD"]);
+        fx.write("local.txt", "unrelated work\n");
+        let options =
+            ide_vcs::CommitOptions { stage: vec![ide_core::IpcPath(fx.path("local.txt"))], ..Default::default() };
+        assert!(repo.commit_with("Ordinary commit", &options, &|_| Ok(encoding_rs::UTF_8)).is_err());
+        assert_eq!(fx.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "f.txt");
+        assert_eq!(fx.git(&["rev-parse", "CHERRY_PICK_HEAD"]), picks[1]);
+
+        fx.write("f.txt", "staged after opening the review\n");
+        repo.stage(&[fx.path("f.txt")]).unwrap();
+        assert!(
+            repo.continue_reviewed_apply(
+                &review.checkpoint,
+                &message,
+                &Default::default(),
+                Default::default(),
+                &cancel,
+                &out
+            )
+            .is_err()
+        );
+        assert_eq!(fx.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fx.git(&["rev-parse", "CHERRY_PICK_HEAD"]), picks[1]);
+
+        let review = repo.review_apply_commit(&cancel).unwrap().unwrap();
+        repo.continue_reviewed_apply(
+            &review.checkpoint,
+            &message,
+            &Default::default(),
+            Default::default(),
+            &cancel,
+            &out,
+        )
+        .unwrap();
+        assert_eq!(repo.operation().unwrap(), None);
+        assert_eq!(fx.git(&["log", "-3", "--format=%s"]), "local follow-up\nReviewed pick\npublished setup");
+        assert!(fx.git(&["show", "-s", "--format=%B", "HEAD~1"]).contains("# Context\npublished edit"));
+        assert!(fx.git(&["show", "-s", "--format=%B", "HEAD~1"]).contains(&picks[1]));
+        assert_eq!(fx.git(&["show", "-s", "--format=%b", "HEAD"]).contains(&picks[2]), !mixed);
+        assert!(!fx.path(".git/openidea-cherry-pick.json").exists());
+    }
+}
+
+#[test]
+fn reviewed_revert_uses_the_current_author_and_continues_the_sequence() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "base\n");
+    fx.write("local.txt", "clean\n");
+    fx.commit_all("base");
+    fx.write("other.txt", "delete this too\n");
+    let other = fx.commit_all("other change");
+    fx.write("a.txt", "incoming\n");
+    fx.git(&["add", "a.txt"]);
+    fx.git(&[
+        "commit",
+        "-qm",
+        "incoming change",
+        "--author=Author <author@example.invalid>",
+        "--date=2022-06-04T13:20:21+05:30",
+    ]);
+    let incoming = fx.git(&["rev-parse", "HEAD"]);
+    fx.write("a.txt", "local head\n");
+    fx.commit_all("local head");
+    fx.write("local.txt", "unrelated edit\n");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    assert!(repo.revert(&[incoming.clone(), other], &cancel, &out).is_err());
+    fx.write("a.txt", "reviewed resolution\n");
+    repo.stage(&[fx.path("a.txt")]).unwrap();
+    let review = repo.review_apply_commit(&cancel).unwrap().unwrap();
+    assert_eq!(review.kind, ide_vcs::CommitApplyKind::Revert);
+    assert_eq!(review.paths, [ide_core::IpcPath(fx.path("a.txt"))]);
+    assert!(review.message.contains(&incoming));
+    let head = fx.git(&["rev-parse", "HEAD"]);
+    assert!(repo.commit("Ordinary commit", false, false).is_err());
+    assert_eq!(fx.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(fx.git(&["rev-parse", "REVERT_HEAD"]), incoming);
+    repo.continue_reviewed_apply(
+        &review.checkpoint,
+        "Reviewed revert\n\n# Why",
+        &Default::default(),
+        Default::default(),
+        &cancel,
+        &out,
+    )
+    .unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["log", "-2", "--format=%s"]), "Revert \"other change\"\nReviewed revert");
+    assert_eq!(fx.git(&["show", "-s", "--format=%B", "HEAD~1"]), "Reviewed revert\n\n# Why");
+    assert_eq!(
+        fx.git(&["show", "-s", "--format=%an <%ae>", "HEAD~1"]),
+        fx.git(&["var", "GIT_AUTHOR_IDENT"]).split('>').next().unwrap().to_owned() + ">"
+    );
+    assert_eq!(fx.git(&["status", "--short"]), "M local.txt");
+}
+
+#[test]
+fn reviewed_commit_options_apply_only_to_the_paused_step() {
+    let (fx, picks) = mixed_cherry_pick_fixture();
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    assert!(repo.cherry_pick_with_origins(&picks[1..], &picks[1..2], &cancel, &out).is_err());
+    fx.write("f.txt", "resolved\n");
+    repo.stage(&[fx.path("f.txt")]).unwrap();
+    fx.git(&["config", "core.hooksPath", ".git/hooks"]);
+    fx.write(
+        ".git/hooks/pre-commit",
+        "#!/bin/sh\nif git diff --cached --name-only -- f.txt | grep -qx f.txt; then\n  echo ran >> .git/reviewed-hook-log\n  exit 1\nfi\n",
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(fx.path(".git/hooks/pre-commit"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let review = repo.review_apply_commit(&cancel).unwrap().unwrap();
+    assert!(review.author.is_some());
+    assert!(review.author_date.is_some());
+    assert!(
+        repo.continue_reviewed_apply(
+            &review.checkpoint,
+            &review.message,
+            &Default::default(),
+            Default::default(),
+            &cancel,
+            &out,
+        )
+        .is_err()
+    );
+    assert_eq!(fx.git(&["rev-parse", "CHERRY_PICK_HEAD"]), picks[1]);
+    assert_eq!(fx.read(".git/reviewed-hook-log"), "ran\n");
+    let options = ide_vcs::ApplyCommitOptions {
+        author: Some("Reviewed Author <reviewed@example.invalid>".into()),
+        author_date: Some("2024-06-04T13:20:21+05:30".into()),
+        sign_off: true,
+        run_hooks: false,
+    };
+    repo.continue_reviewed_apply(&review.checkpoint, &review.message, &options, Default::default(), &cancel, &out)
+        .unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["log", "-2", "--format=%s"]), "local follow-up\npublished edit");
+    assert_eq!(
+        fx.git(&["show", "-s", "--format=%an <%ae>%n%aI", "HEAD^"]),
+        "Reviewed Author <reviewed@example.invalid>\n2024-06-04T13:20:21+05:30"
+    );
+    let committer = fx.git(&["show", "-s", "--format=%cn <%ce>", "HEAD^"]);
+    assert!(fx.git(&["show", "-s", "--format=%B", "HEAD^"]).contains(&format!("Signed-off-by: {committer}")));
+    assert!(!fx.git(&["show", "-s", "--format=%B", "HEAD"]).contains("Signed-off-by:"));
+    assert_eq!(fx.read(".git/reviewed-hook-log"), "ran\n");
+}
+
+#[test]
+fn cherry_pick_continues_when_conflict_resolution_leaves_an_empty_commit() {
+    for action in [EmptyCherryPickAction::Skip, EmptyCherryPickAction::CreateEmpty] {
+        let (fx, picks) = mixed_cherry_pick_fixture();
+        let (cancel, out) = quiet();
+        let repo = fx.repo();
+        let before = fx.git(&["rev-parse", "HEAD"]);
+        let options = CherryPickOptions { record_origin: true, empty_action: action, ..Default::default() };
+        assert!(repo.cherry_pick_with_options(&picks[1..], options, &cancel, &out).is_err());
+        assert_eq!(repo.operation().unwrap().as_deref(), Some("cherry-pick"));
+        fx.write("f.txt", "main\n");
+        repo.stage(&[fx.path("f.txt")]).unwrap();
+
+        assert_eq!(repo.continue_operation_with(true, action, &cancel, &out).unwrap(), 1);
+        assert_eq!(repo.operation().unwrap(), None);
+        assert_eq!(fx.read("f.txt"), "main\n");
+        assert_eq!(fx.read("followup.txt"), "local\n");
+        if action == EmptyCherryPickAction::CreateEmpty {
+            assert_eq!(fx.git(&["rev-parse", "HEAD~2"]), before);
+            assert_eq!(fx.git(&["rev-parse", "HEAD~1^{tree}"]), fx.git(&["rev-parse", "HEAD~2^{tree}"]));
+            assert_eq!(
+                fx.git(&["show", "-s", "--format=%B", "HEAD~1"]),
+                format!("published edit\n\n(cherry picked from commit {})", picks[1]),
+            );
+        } else {
+            assert_eq!(fx.git(&["rev-parse", "HEAD~1"]), before);
+        }
+    }
+}
+
+#[test]
+fn a_native_cherry_pick_sequence_can_resume_after_its_empty_commit_was_saved() {
+    let (fx, picks) = mixed_cherry_pick_fixture();
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    assert!(repo.cherry_pick(&picks[1..], &cancel, &out).is_err());
+    fx.write("f.txt", "main\n");
+    repo.stage(&[fx.path("f.txt")]).unwrap();
+    fx.git(&["commit", "--allow-empty", "--no-edit"]);
+    assert!(!fx.path(".git/CHERRY_PICK_HEAD").exists());
+    assert!(fx.path(".git/sequencer/todo").exists());
+    assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("cherry-pick"));
+
+    repo.continue_operation(&cancel, &out).unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.read("followup.txt"), "local\n");
+}
+
+#[test]
+fn creating_an_empty_cherry_pick_after_resolution_continues_a_mixed_batch() {
+    let (fx, picks) = mixed_cherry_pick_fixture();
+    let (cancel, out) = quiet();
+    let action = EmptyCherryPickAction::CreateEmpty;
+    let options = CherryPickOptions { record_origin_for: &picks[..2], empty_action: action, ..Default::default() };
+    assert!(fx.repo().cherry_pick_with_options(&picks, options, &cancel, &out).is_err());
+    assert!(fx.path(".git/openidea-cherry-pick.json").exists());
+    fx.write("f.txt", "main\n");
+    let repo = fx.repo();
+    repo.stage(&[fx.path("f.txt")]).unwrap();
+
+    assert_eq!(repo.continue_operation_with(false, action, &cancel, &out).unwrap(), 1);
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["log", "-3", "--format=%s"]), "local follow-up\npublished edit\npublished setup");
+    assert_eq!(fx.git(&["show", "-s", "--format=%b", "HEAD"]), "");
+    assert_eq!(fx.git(&["show", "-s", "--format=%b", "HEAD~1"]), format!("(cherry picked from commit {})", picks[1]));
+    assert_eq!(fx.git(&["rev-parse", "HEAD~1^{tree}"]), fx.git(&["rev-parse", "HEAD~2^{tree}"]));
+    assert!(!fx.path(".git/openidea-cherry-pick.json").exists());
+}
+
+#[test]
+fn aborting_a_mixed_cherry_pick_keeps_already_applied_commits() {
+    let (fx, picks) = mixed_cherry_pick_fixture();
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    assert!(repo.cherry_pick_with_origins(&picks, &picks[..2], &cancel, &out).is_err());
+    assert!(fx.path(".git/openidea-cherry-pick.json").exists());
+    repo.abort_expected_operation(Some("cherry-pick"), &cancel, &out).unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["log", "-2", "--format=%s"]), "published setup\nmain edit");
+    assert_eq!(fx.read("f.txt"), "main\n");
+    assert!(!fx.path("followup.txt").exists());
+    assert!(!fx.path(".git/openidea-cherry-pick.json").exists());
+}
+
+#[test]
+fn skipping_a_mixed_cherry_pick_conflict_still_applies_the_remaining_commits() {
+    let (fx, picks) = mixed_cherry_pick_fixture();
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    assert!(repo.cherry_pick_with_origins(&picks, &picks[1..2], &cancel, &out).is_err());
+    repo.skip_operation(&cancel, &out).unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["log", "-3", "--format=%s"]), "local follow-up\npublished setup\nmain edit");
+    assert_eq!(fx.read("f.txt"), "main\n");
+    assert_eq!(fx.read("followup.txt"), "local\n");
+}
+
+#[test]
+fn a_cherry_pick_started_externally_does_not_resume_an_abandoned_batch() {
+    let (fx, picks) = mixed_cherry_pick_fixture();
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    assert!(repo.cherry_pick_with_origins(&picks, &picks[..2], &cancel, &out).is_err());
+    fx.git(&["cherry-pick", "--abort"]);
+    fx.git(&["commit", "-q", "--allow-empty", "-m", "new HEAD"]);
+    let external = Command::new("git").current_dir(&fx.dir).args(["cherry-pick", &picks[1]]).output().unwrap();
+    assert!(!external.status.success());
+    assert_eq!(fx.git(&["rev-parse", "CHERRY_PICK_HEAD"]), picks[1]);
+
+    fx.write("f.txt", "resolved externally\n");
+    repo.stage(&[fx.path("f.txt")]).unwrap();
+    repo.continue_operation(&cancel, &out).unwrap();
+    assert_eq!(fx.git(&["log", "-2", "--format=%s"]), "published edit\nnew HEAD");
+    assert!(!fx.path("followup.txt").exists());
+    assert!(!fx.path(".git/openidea-cherry-pick.json").exists());
 }
 
 #[test]
@@ -436,6 +888,97 @@ fn create_and_apply_patches() {
 }
 
 #[test]
+fn staging_patch_exports_only_the_chosen_sides() {
+    let fx = Fixture::new();
+    for file in ["staged.txt", "local.txt", "both.txt", "outside.txt", "rename me.txt"] {
+        fx.write(file, "HEAD line\n");
+    }
+    fx.commit_all("base");
+    for file in ["staged.txt", "local.txt", "both.txt", "outside.txt"] {
+        fx.write(file, "index line\n");
+    }
+    fx.git(&["add", "."]);
+    fx.git(&["mv", "rename me.txt", "renamed.txt"]);
+    for file in ["staged.txt", "local.txt", "both.txt", "outside.txt", "renamed.txt"] {
+        fx.write(file, "working line\n");
+    }
+    fx.write("new.txt", "untracked text\n");
+    fx.write("binary.bin", "\0binary bytes\n");
+    let repo = fx.repo();
+    let entry = |path, side, renamed_from: Option<&str>| StagingPatchEntry {
+        path: fx.path(path).into(),
+        renamed_from: renamed_from.map(|old| fx.path(old).into()),
+        side,
+    };
+    use StagingPatchSide::{Staged, Unstaged};
+    let entries = [
+        entry("staged.txt", Staged, None),
+        entry("local.txt", Unstaged, None),
+        entry("both.txt", Staged, None),
+        entry("both.txt", Unstaged, None),
+        entry("renamed.txt", Staged, Some("rename me.txt")),
+        entry("new.txt", Unstaged, None),
+        entry("binary.bin", Unstaged, None),
+    ];
+    let old_index = std::fs::read(fx.path(".git/index")).unwrap();
+    let patch = repo.create_staging_patch(&entries, false, "repo/").unwrap();
+    let block = |path| patch.split("diff --git ").find(|section| section.starts_with(path)).unwrap_or("");
+    assert!(block("a/repo/staged.txt ").contains("-HEAD line\n+index line"), "{patch}");
+    assert!(block("a/repo/local.txt ").contains("-index line\n+working line"), "{patch}");
+    assert!(block("a/repo/both.txt ").contains("-HEAD line\n+working line"), "{patch}");
+    assert_eq!(patch.matches("diff --git a/repo/both.txt ").count(), 1, "{patch}");
+    assert!(patch.contains("rename from \"repo/rename me.txt\"\nrename to repo/renamed.txt"), "{patch}");
+    assert!(block("a/repo/new.txt ").contains("+untracked text"), "{patch}");
+    assert!(block("a/repo/binary.bin ").contains("GIT binary patch"), "{patch}");
+    assert!(!patch.contains("outside.txt"), "{patch}");
+    let reverse = repo.create_staging_patch(&entries, true, "repo/").unwrap();
+    assert!(reverse.contains("diff --git a/repo/local.txt b/repo/local.txt"), "{reverse}");
+    assert!(reverse.contains("-working line\n+index line"), "{reverse}");
+    assert_eq!(std::fs::read(fx.path(".git/index")).unwrap(), old_index);
+    assert_eq!(fx.read("staged.txt"), "working line\n");
+    assert_eq!(fx.read("new.txt"), "untracked text\n");
+
+    let target = Fixture::new();
+    for (path, text) in [
+        ("repo/staged.txt", "HEAD line\n"),
+        ("repo/local.txt", "index line\n"),
+        ("repo/both.txt", "HEAD line\n"),
+        ("repo/rename me.txt", "HEAD line\n"),
+    ] {
+        target.write(path, text);
+    }
+    target.commit_all("patch base");
+    assert!(target.repo().apply_patch(&patch).unwrap().conflicts.is_empty());
+    assert!(!target.path("repo/rename me.txt").exists());
+    assert_eq!(target.read("repo/renamed.txt"), "HEAD line\n");
+    assert_eq!(target.read("repo/both.txt"), "working line\n");
+    assert_eq!(target.read("repo/binary.bin"), "\0binary bytes\n");
+    assert!(target.repo().apply_patch(&reverse).unwrap().conflicts.is_empty());
+    assert!(!target.path("repo/renamed.txt").exists());
+    assert_eq!(target.read("repo/rename me.txt"), "HEAD line\n");
+    assert_eq!(target.read("repo/local.txt"), "index line\n");
+    assert!(!target.path("repo/binary.bin").exists());
+}
+
+#[test]
+fn staging_patch_handles_unborn_head_and_an_index_with_intent_to_add() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "index\n");
+    fx.git(&["add", "a.txt"]);
+    fx.write("a.txt", "working\n");
+    fx.write("intent.txt", "intent to add\n");
+    fx.git(&["add", "--intent-to-add", "intent.txt"]);
+    let entries = [
+        StagingPatchEntry { path: fx.path("a.txt").into(), renamed_from: None, side: StagingPatchSide::Both },
+        StagingPatchEntry { path: fx.path("intent.txt").into(), renamed_from: None, side: StagingPatchSide::Unstaged },
+    ];
+    let patch = fx.repo().create_staging_patch(&entries, false, "").unwrap();
+    assert!(patch.contains("+working\n") && patch.contains("+intent to add\n"), "{patch}");
+    assert!(!patch.contains("index\n"), "{patch}");
+    assert_eq!(patch.matches("new file mode").count(), 2, "{patch}");
+}
+
+#[test]
 fn patch_from_commits_applies_elsewhere() {
     let fx = Fixture::new();
     fx.write("a.txt", "1\n");
@@ -560,7 +1103,7 @@ fn push_branch_and_up_to_revision() {
 }
 
 #[test]
-fn update_branch_fast_forwards_a_branch_not_checked_out() {
+fn update_branches_fast_forwards_each_selected_branch() {
     let fx = Fixture::new();
     let bare = fx._tmp.path().join("origin.git");
     git_in(fx._tmp.path(), &["init", "-q", "--bare", bare.to_str().unwrap()]);
@@ -568,26 +1111,156 @@ fn update_branch_fast_forwards_a_branch_not_checked_out() {
     fx.commit_all("one");
     fx.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
     fx.git(&["push", "-q", "-u", "origin", "main"]);
-    fx.git(&["checkout", "-q", "-b", "work"]);
-    // Someone else advances origin/main.
+    for b in ["behind", "diverged", "ahead", "same", "elsewhere", "blocked"] {
+        fx.git(&["push", "-q", "origin", &format!("main:{b}")]);
+        fx.git(&["branch", "-q", "--track", b, &format!("origin/{b}")]);
+    }
+    fx.git(&["branch", "-q", "local-only"]);
+    // Someone else advances the remote branches.
     let other = fx._tmp.path().join("other");
     git_in(fx._tmp.path(), &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()]);
-    std::fs::write(other.join("a.txt"), "2\n").unwrap();
-    git_in(&other, &["-c", "user.name=O", "-c", "user.email=o@x", "commit", "-q", "-am", "two"]);
-    git_in(&other, &["push", "-q", "origin", "main"]);
-    let tip = git_in(&other, &["rev-parse", "HEAD"]);
+    let mut tips = std::collections::HashMap::new();
+    for b in ["main", "behind", "diverged", "elsewhere", "blocked"] {
+        git_in(&other, &["checkout", "-q", b]);
+        std::fs::write(other.join("a.txt"), format!("{b}\n")).unwrap();
+        git_in(&other, &["-c", "user.name=O", "-c", "user.email=o@x", "commit", "-q", "-am", b]);
+        git_in(&other, &["push", "-q", "origin", b]);
+        tips.insert(b, git_in(&other, &["rev-parse", "HEAD"]));
+    }
+    // Local commits: `diverged` can't be fast-forwarded, `ahead` has nothing to take.
+    for b in ["diverged", "ahead"] {
+        fx.git(&["checkout", "-q", b]);
+        fx.write("b.txt", b);
+        fx.commit_all(b);
+    }
+    fx.git(&["checkout", "-q", "main"]);
+    // Linked worktrees fast-forward their files along with the ref.
+    let wt = fx._tmp.path().join("wt");
+    fx.git(&["worktree", "add", "-q", wt.to_str().unwrap(), "elsewhere"]);
+    let dirty = fx._tmp.path().join("dirty");
+    fx.git(&["worktree", "add", "-q", dirty.to_str().unwrap(), "blocked"]);
+    std::fs::write(dirty.join("a.txt"), "local working changes\n").unwrap();
+    let blocked = fx.git(&["rev-parse", "blocked"]);
+    let ahead = fx.git(&["rev-parse", "ahead"]);
 
     let repo = fx.repo();
     let (cancel, out) = quiet();
-    repo.update_branch("main", &cancel, &out).unwrap();
-    assert_eq!(fx.git(&["rev-parse", "main"]), tip);
-    assert_eq!(fx.git(&["rev-parse", "origin/main"]), tip);
-    // The checked-out branch and branches without upstream are refused.
-    assert!(repo.update_branch("work", &cancel, &out).is_err());
+    let names = ["main", "behind", "diverged", "ahead", "same", "local-only", "elsewhere", "blocked"].map(String::from);
+    let result = repo.update_branches(&names, &cancel, &out).unwrap();
+    let status: Vec<_> = result.iter().map(|u| (u.branch.as_str(), u.status)).collect();
+    use BranchUpdateStatus::*;
+    assert_eq!(
+        status,
+        [
+            ("main", Updated),
+            ("behind", Updated),
+            ("diverged", NotFastForward),
+            ("ahead", UpToDate),
+            ("same", UpToDate),
+            ("local-only", NoUpstream),
+            ("elsewhere", Updated),
+            ("blocked", Failed),
+        ]
+    );
+    let failed_worktree = result[7].worktree.as_ref().unwrap();
+    assert_eq!(dunce::canonicalize(&failed_worktree.0).unwrap(), dunce::canonicalize(&dirty).unwrap());
+    // The checked-out branch is fast-forwarded with its working tree.
+    assert_eq!(fx.git(&["rev-parse", "main"]), tips["main"]);
+    assert_eq!(fx.read("a.txt"), "main\n");
+    assert_eq!(fx.git(&["rev-parse", "behind"]), tips["behind"]);
+    assert_eq!(fx.git(&["rev-parse", "origin/diverged"]), tips["diverged"]);
+    assert_ne!(fx.git(&["rev-parse", "diverged"]), tips["diverged"]);
+    assert_eq!(fx.git(&["rev-parse", "ahead"]), ahead);
+    assert_eq!(fx.git(&["rev-parse", "elsewhere"]), tips["elsewhere"]);
+    assert_eq!(std::fs::read_to_string(wt.join("a.txt")).unwrap(), "elsewhere\n");
+    assert_eq!(fx.git(&["rev-parse", "blocked"]), blocked);
+    assert_eq!(std::fs::read_to_string(dirty.join("a.txt")).unwrap(), "local working changes\n");
+    assert!(repo.update_branches(&["origin/main".into()], &cancel, &out).is_err());
+}
+
+#[test]
+fn pull_refuses_to_update_a_different_checked_out_branch() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "before\n");
+    fx.commit_all("initial");
+    fx.write("a.txt", "uncommitted\n");
+    let (cancel, out) = quiet();
+    let error = fx.repo().pull_checked_branch(false, Some("topic"), &cancel, &out).unwrap_err();
+    assert_eq!(error.message, "Branch 'topic' is no longer checked out");
+    assert_eq!(fx.read("a.txt"), "uncommitted\n");
+    assert!(fx.git(&["stash", "list"]).is_empty());
+}
+
+#[test]
+fn update_branches_fetches_each_remote_once_and_reports_its_failure() {
+    let fx = Fixture::new();
+    let bare = fx._tmp.path().join("origin.git");
+    git_in(fx._tmp.path(), &["init", "-q", "--bare", bare.to_str().unwrap()]);
+    fx.write("a.txt", "1\n");
+    fx.commit_all("one");
+    fx.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+    fx.git(&["remote", "add", "gone", fx._tmp.path().join("missing.git").to_str().unwrap()]);
+    fx.git(&["push", "-q", "-u", "origin", "main", "main:a", "main:b"]);
+    for b in ["a", "b"] {
+        fx.git(&["branch", "-q", "--track", b, &format!("origin/{b}")]);
+    }
+    fx.git(&["branch", "-q", "c"]);
+    fx.git(&["config", "branch.c.remote", "gone"]);
+    fx.git(&["config", "branch.c.merge", "refs/heads/c"]);
+
+    // Counts the fetches from origin.
+    #[cfg(unix)]
+    let counter = {
+        use std::os::unix::fs::PermissionsExt;
+        let counter = fx._tmp.path().join("fetches");
+        let script = fx._tmp.path().join("upload-pack.sh");
+        std::fs::write(&script, format!("#!/bin/sh\necho >> '{}'\nexec git-upload-pack \"$@\"\n", counter.display()))
+            .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fx.git(&["config", "remote.origin.uploadpack", script.to_str().unwrap()]);
+        counter
+    };
+
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let names = ["a", "b", "c"].map(String::from);
+    let result = repo.update_branches(&names, &cancel, &out).unwrap();
+    let status: Vec<_> = result.iter().map(|u| u.status).collect();
+    use BranchUpdateStatus::*;
+    assert_eq!(status, [UpToDate, UpToDate, Failed]);
+    assert!(result[2].message.is_some());
+    #[cfg(unix)]
+    assert_eq!(std::fs::read_to_string(counter).unwrap().lines().count(), 1);
 }
 
 /// `"` and tabs are illegal in Windows file names, and only they make Git quote a path.
 const QUOTED: &str = if cfg!(windows) { "quote '.txt" } else { "quote\"\t.txt" };
+
+#[test]
+fn shelf_capture_does_not_revert_edits_made_after_capture() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "base\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "captured\n");
+    let repo = fx.repo();
+    let root = fx._tmp.path();
+    let directory = root.join("shelf");
+    let part = shelf::ShelfCapture::capture(&repo, root, &[fx.path("a.txt")]).unwrap();
+    let entry = shelf::save_combined(&directory, root, "Shared", std::slice::from_ref(&part)).unwrap();
+    fx.write("a.txt", "updated after capture\n");
+    assert!(part.revert(&repo).unwrap_err().message.contains("Files changed while shelving"));
+    assert_eq!(fx.read("a.txt"), "updated after capture\n");
+    assert!(shelf::patch_of(&directory, &entry.id).unwrap().contains("+captured"));
+    let selections = shelf::selections(&directory, &entry.id, None).unwrap();
+    let diff = selections[0].diff_files(&repo).unwrap().remove(0);
+    assert_eq!(diff.before.as_deref(), Some("base\n"));
+    assert_eq!(diff.after.as_deref(), Some("captured\n"));
+    fx.write("a.txt", "captured\n");
+    part.revert(&repo).unwrap();
+    assert_eq!(fx.read("a.txt"), "base\n");
+    assert_eq!(selections[0].apply(&repo).unwrap().applied, [diff.path]);
+    assert_eq!(fx.read("a.txt"), "captured\n");
+}
 
 #[test]
 fn shelf_diff_and_scoped_operations_preserve_siblings() {
@@ -700,11 +1373,51 @@ fn cherry_pick_skips_commits_already_applied() {
     let lines = std::sync::Mutex::new(Vec::new());
     let out = |l: String| lines.lock().unwrap().push(l);
 
-    repo.cherry_pick_with(&[same.clone(), other], true, &cancel, &out).unwrap();
+    let options = CherryPickOptions { record_origin: true, ..Default::default() };
+    assert_eq!(repo.cherry_pick_with_options(&[same.clone(), other], options, &cancel, &out).unwrap(), 1);
     assert_eq!(repo.branch_info().unwrap().operation, None, "nothing left in progress");
     assert_eq!(fx.git(&["log", "--format=%s", "-2"]), "other change\nsame change, made on main");
     assert!(fx.git(&["log", "-1", "--format=%B"]).contains("(cherry picked from commit"));
     assert!(lines.lock().unwrap().iter().any(|l| l.starts_with(&same[..8]) && l.contains("skipped")));
+}
+
+#[test]
+fn cherry_pick_can_keep_redundant_and_originally_empty_commits() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "base\n");
+    fx.commit_all("base");
+    fx.git(&["checkout", "-q", "-b", "topic"]);
+    fx.write("a.txt", "change\n");
+    let redundant = fx.commit_all("original change");
+    fx.git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "--author=Original Author <original@example.test>",
+        "-m",
+        "originally empty",
+    ]);
+    let empty = fx.git(&["rev-parse", "HEAD"]);
+    fx.git(&["checkout", "-q", "main"]);
+    fx.write("a.txt", "change\n");
+    let before = fx.commit_all("same change on main");
+    fx.write("untracked.txt", "leave me alone\n");
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    let options = CherryPickOptions {
+        record_origin: true,
+        empty_action: EmptyCherryPickAction::CreateEmpty,
+        ..Default::default()
+    };
+
+    assert_eq!(repo.cherry_pick_with_options(&[redundant.clone(), empty.clone()], options, &cancel, &out).unwrap(), 2);
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["rev-parse", "HEAD~2"]), before);
+    assert_eq!(fx.git(&["rev-parse", "HEAD^{tree}"]), fx.git(&["rev-parse", "HEAD~2^{tree}"]));
+    assert_eq!(fx.git(&["show", "-s", "--format=%an", "HEAD"]), "Original Author");
+    assert_eq!(fx.git(&["show", "-s", "--format=%b", "HEAD"]), format!("(cherry picked from commit {empty})"));
+    assert_eq!(fx.git(&["show", "-s", "--format=%b", "HEAD~1"]), format!("(cherry picked from commit {redundant})"));
+    assert_eq!(fx.git(&["status", "--short"]), "?? untracked.txt");
 }
 
 #[test]

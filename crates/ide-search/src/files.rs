@@ -43,23 +43,28 @@ pub fn scope_files(
             on_disk.push(path);
         }
     }
-    walk_files(&on_disk, &|path| mask.has_directory_exclusions() && mask.excludes_dir(&rel_path(root, path)), || {
-        let found = &found;
-        let keep = &keep;
-        Box::new(move |path| {
-            if cancel.is_cancelled() {
-                return WalkState::Quit;
-            }
-            let rel = rel_path(root, path);
-            if keep(&rel) {
-                found
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(ScopeFile { path: path.to_path_buf(), rel_path: rel });
-            }
-            WalkState::Continue
-        })
-    });
+    walk_files(
+        &on_disk,
+        true,
+        &|path| mask.has_directory_exclusions() && mask.excludes_dir(&rel_path(root, path)),
+        || {
+            let found = &found;
+            let keep = &keep;
+            Box::new(move |path| {
+                if cancel.is_cancelled() {
+                    return WalkState::Quit;
+                }
+                let rel = rel_path(root, path);
+                if keep(&rel) {
+                    found
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(ScopeFile { path: path.to_path_buf(), rel_path: rel });
+                }
+                WalkState::Continue
+            })
+        },
+    );
     let mut files = found.into_inner().unwrap_or_else(|e| e.into_inner());
     files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     files.dedup_by(|a, b| a.path == b.path);

@@ -1,58 +1,74 @@
 .popup {
-  min-width: 320px;
-  max-width: min(720px, 80vw);
+  --hunk-surface-width: min(720px, var(--hunk-popup-width), calc(100vw - var(--space-4)));
   display: flex;
   flex-direction: column;
+  width: max-content;
   overflow: hidden;
 }
 .toolbar {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-0-5);
-  height: 28px;
-  padding: 0 4px;
-  border-bottom: 1px solid var(--border-popup);
+  align-self: flex-start;
+  max-width: var(--hunk-surface-width);
+  gap: var(--space-0-5) var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-popup);
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-small);
+}
+.toolbar:has(+ .preview),
+.toolbar:has(+ .versions) {
+  border-bottom: 0;
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+}
+.versions {
+  max-width: var(--hunk-surface-width);
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--border-popup);
+  border-radius: 0 var(--radius-small) var(--radius-small) var(--radius-small);
+}
+.versionLabel {
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-popup);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.versions .preview {
+  border: 0;
+  border-radius: 0;
 }
 .title {
-  flex: 1;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  padding: 0 8px;
+  min-width: 0;
+  padding-inline: var(--space-1);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .counter {
   color: var(--fg-faint);
 }
-.body {
+.preview {
+  max-width: var(--hunk-surface-width);
+  min-height: 0;
   max-height: 280px;
+  margin: 0;
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
   overflow: auto;
-  padding: 4px 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  line-height: var(--lh-code);
-  -webkit-user-select: text;
-  user-select: text;
-}
-.removed,
-.added {
-  padding: 0 12px 0 4px;
+  overscroll-behavior: contain;
   white-space: pre;
   color: var(--fg);
+  background: color-mix(in srgb, var(--gutter-deleted) 12%, var(--bg-editor));
+  border: 1px solid var(--border-popup);
+  border-radius: 0 var(--radius-small) var(--radius-small) var(--radius-small);
 }
-.removed {
-  background: color-mix(in srgb, var(--gutter-deleted) 14%, transparent);
-  color: var(--fg-muted);
-}
-.added {
-  background: color-mix(in srgb, var(--gutter-added) 16%, transparent);
-}
-.sign {
-  display: inline-block;
-  width: 16px;
-  color: var(--fg-faint);
-  -webkit-user-select: none;
-  user-select: none;
+.preview:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }

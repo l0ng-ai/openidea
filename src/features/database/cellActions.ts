@@ -1,5 +1,5 @@
 import { registerActions, type ActionContext } from "@/platform/actions";
-import { setContext } from "@/platform/context";
+import { getContext, setContext } from "@/platform/context";
 
 export type CellCopy = "tsv" | "csv" | "onerow" | "header" | "rowsTsv" | "rowsCsv";
 
@@ -26,7 +26,7 @@ let active: CellActions | null = null;
 
 /** The focused grid (not while a text field in it has focus). */
 export function activeCellGrid(): CellActions | null {
-  return active;
+  return getContext().dbCellGridFocus ? active : null;
 }
 
 const COPIES: Array<[CellCopy, string, string]> = [
@@ -53,12 +53,18 @@ export function installCellActions(): () => void {
   const onFocus = (event: FocusEvent) => {
     const target = event.target instanceof Element ? event.target : null;
     const root = target?.closest("[data-db-cell-grid]");
+    // A popup can query the grid that opened it with its captured context.
+    if (!root && target?.closest("[data-popup], [role=dialog]")) {
+      setContext("dbCellGridFocus", false);
+      return;
+    }
     active =
       root && !target?.closest("input, textarea, select, [contenteditable='true']") ? (grids.get(root) ?? null) : null;
     setContext("dbCellGridFocus", !!active);
   };
   document.addEventListener("focusin", onFocus);
-  const handle = ({ arg }: ActionContext) => (arg as CellActions | undefined) ?? active;
+  const handle = ({ arg, ctx }: ActionContext) =>
+    (arg as CellActions | undefined) ?? (ctx.dbCellGridFocus ? active : null);
   const dispose = registerActions([
     {
       id: "db.toggleBooleanCell",

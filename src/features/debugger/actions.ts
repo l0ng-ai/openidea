@@ -15,6 +15,7 @@ import {
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
+import { openExternalUrl } from "@/platform/openUrl";
 import { activeEditor } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
@@ -29,6 +30,7 @@ import {
   useBreakpoints,
 } from "./breakpoints/store";
 import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./breakpoints/special";
+import { removeAllExceptionClasses } from "./breakpoints/exceptionClasses";
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import {
@@ -48,6 +50,8 @@ import { isTracing, useStreamTrace } from "./streams/streamStore";
 import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
+import { warnPinnedFlutterDevice } from "@/workbench/flutterDevices";
+import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools } from "./flutter/devTools";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import { attachConfig } from "./attach";
 import {
@@ -76,12 +80,13 @@ import {
   startPreparedSession,
   stopSession,
   stopAssociatedProcess,
+  stopTarget,
   useDebug,
   type DebugSession,
 } from "./state";
 import { focusedDebugView } from "./ui/focusedView";
 import { browseFocusedConsoleHistory } from "./ui/expressionHistory";
-import { expressionAt, valueHint } from "./editor/valueTooltip";
+import { expressionAt, showQuickValue } from "./editor/valueTooltip";
 import { mouseEvaluateTarget } from "./editor/quickEvaluate";
 import { showHint } from "@/editor/lsp/hint";
 import { pausedLineTargets, startInlineSmartStep } from "./editor/smartStep";
@@ -204,24 +209,37 @@ function evaluateSeed(view: EditorView | undefined = activeEditor()?.view, pos?:
   const { state } = view;
   const sel = state.selection.main;
   if (!sel.empty && (pos == null || (sel.from <= pos && pos <= sel.to))) return state.sliceDoc(sel.from, sel.to);
-  return expressionAt(view, pos ?? sel.head)?.text ?? "";
+  return expressionAt(view, pos ?? sel.head, { calls: true })?.text ?? "";
 }
 
 async function quickEvaluate(arg?: unknown) {
   const target = mouseEvaluateTarget(arg);
   const view = target?.view ?? activeEditor()?.view;
   if (!view) return;
-  const sel = view.state.selection.main;
-  const pos = target?.pos ?? sel.from;
+  const { doc, selection } = view.state;
+  const pos = target?.pos ?? selection.main.from;
   const expression = evaluateSeed(view, target?.pos).trim();
   if (!expression) return showHint(view, "Nothing to evaluate at the caret");
   const session = activeSession();
+  const stop = useDebug.getState().stopSeq;
+  const stillCurrent = () => {
+    const current = activeSession();
+    return (
+      view.dom.isConnected &&
+      view.state.doc === doc &&
+      view.state.selection.eq(selection) &&
+      current?.status === "paused" &&
+      current.id === session?.id &&
+      current.selectedFrame === session?.selectedFrame &&
+      useDebug.getState().stopSeq === stop
+    );
+  };
   try {
-    const value = await evaluate(expression, "hover", session);
-    if (!session) return;
-    showHint(view, () => valueHint(expression, value, session.id), { pos, timeout: 60_000 });
+    // Unlike a plain hover, an explicit Quick Evaluate may call methods (adapters refuse that for "hover").
+    const value = await evaluate(expression, "watch", session);
+    if (session && stillCurrent()) showQuickValue(view, pos, expression, value, session.id);
   } catch (e) {
-    showHint(view, e instanceof Error ? e.message : String(e), { pos, tone: "error" });
+    if (stillCurrent()) showHint(view, e instanceof Error ? e.message : String(e), { pos, tone: "error" });
   }
 }
 
@@ -281,6 +299,20 @@ function browserUnavailable(name: string): boolean {
     body: "JavaScript Debug isn't available in a remote project yet.",
   });
   return true;
+}
+
+/** The browser opens on this desktop, which can't reach a server on a remote project's machine. */
+async function openDevTools(vmServiceUri: string) {
+  if (isRemoteWindow()) {
+    notifications().notify({
+      group: "run",
+      level: "warning",
+      title: "Flutter DevTools isn't available in a remote project yet",
+    });
+    return;
+  }
+  const server = await call(commands.flutterDevtoolsUrl());
+  await openExternalUrl(devToolsUrl(server, { page: "inspector" }, { uri: vmServiceUri }));
 }
 
 async function startBrowser(config: RunConfig, root: string, show?: boolean) {
@@ -387,6 +419,7 @@ async function startConfig(arg: unknown) {
     });
     return;
   }
+  if (config.debugAdapter === "dart") warnPinnedFlutterDevice(config);
   const xdebugCheck = config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
   await maybeEditorService()
     ?.saveAll()
@@ -542,9 +575,9 @@ export function registerDebugActions(): () => void {
       title: "Stop",
       category: "Debug",
       icon: "stop",
-      when: "debugSessionActive",
+      when: "debugCanStop",
       run: () => {
-        const s = activeSession() ?? Object.values(useDebug.getState().sessions).find(isLive);
+        const s = stopTarget();
         if (s) void stopSession(s.id);
       },
     },
@@ -756,7 +789,7 @@ export function registerDebugActions(): () => void {
       when: "debugSessionRunning && debugSessionDart",
       run: () => {
         const s = activeSession();
-        if (s) void report("Hot Reload failed", call(commands.debugHotReload(s.id)));
+        if (s) void report("Hot Reload failed", call(commands.debugHotReload(s.id, "manual")));
       },
     },
     {
@@ -769,6 +802,31 @@ export function registerDebugActions(): () => void {
       run: () => {
         const s = activeSession();
         if (s) void report("Hot Restart failed", call(commands.debugHotRestart(s.id)));
+      },
+    },
+    {
+      id: "debug.openDevTools",
+      title: "Open Flutter DevTools in Browser",
+      category: "Debug",
+      icon: "external-link",
+      description: "Flutter: inspect the running app in the browser",
+      when: "debugHasVmService",
+      run: () => {
+        const s = activeSession();
+        const uri = s && rootOf(s).vmServiceUri;
+        if (uri) void report("Couldn't open Flutter DevTools", openDevTools(uri));
+      },
+    },
+    {
+      id: "debug.refreshDevTools",
+      title: "Refresh Flutter DevTools",
+      category: "Debug",
+      icon: "refresh",
+      description: "Flutter: load the DevTools page again",
+      when: "flutterDevTools",
+      run: (c) => {
+        const id = c.arg;
+        for (const w of DEVTOOLS_WINDOWS) if (!id || id === w.id) refreshDevTools(w.id);
       },
     },
     step("debug.stepOver", "Step Over", "over", "step-over"),
@@ -1048,6 +1106,7 @@ export function registerDebugActions(): () => void {
       run: () => {
         removeAllBreakpoints();
         removeAllSpecial();
+        removeAllExceptionClasses();
       },
     },
     {

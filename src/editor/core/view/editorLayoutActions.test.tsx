@@ -6,7 +6,7 @@ import { registerTextEditorWrapper } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { MarkdownEditor } from "@/features/viewers/markdown/MarkdownEditor";
 import { MarkdownLayoutActions } from "@/features/viewers/markdown/MarkdownLayoutActions";
-import { setMarkdownMode, useMarkdownModes } from "@/features/viewers/markdown/modes";
+import { setMarkdownMode, useMarkdownModes, useMarkdownSourceHidden } from "@/features/viewers/markdown/modes";
 import { useTabs } from "../controller";
 import type { Tab } from "../model/tabs";
 import { EditorAreaView } from "./EditorArea";
@@ -18,7 +18,9 @@ vi.mock("../controller", async (original) => ({
 vi.mock("./TextEditorHost", () => ({ TextEditorHost: () => <input aria-label="Source" /> }));
 vi.mock("./FindBar", () => ({ FindBar: () => null }));
 vi.mock("./Banner", () => ({ EditorBanners: () => null, VirtualBanner: () => null }));
-vi.mock("./StatusItems", () => ({ CodeBreadcrumbs: () => null }));
+vi.mock("./StatusItems", () => ({
+  CodeBreadcrumbs: ({ position }: { position: string }) => <nav aria-label={`Code breadcrumbs ${position}`} />,
+}));
 
 const md = (id: string, path: string): Tab => ({
   id,
@@ -33,7 +35,7 @@ const originalTabs = useTabs.getState();
 const originalProject = useProject.getState();
 
 beforeEach(() => {
-  useMarkdownModes.setState({ byPath: {}, fallback: "editor" });
+  useMarkdownModes.setState({ byTab: {}, fallback: "editor" });
   useTabs.setState({
     layout: { kind: "pane", paneId: "p1" },
     panes: { p1: { id: "p1", tabs: [first], active: first.id, mru: [first.id] } },
@@ -46,6 +48,7 @@ beforeEach(() => {
       matches: (path) => path.endsWith(".md"),
       component: MarkdownEditor,
       tabActions: MarkdownLayoutActions,
+      useSourceHidden: useMarkdownSourceHidden,
     }),
     registerActions([
       { id: "markdown.editorOnly", title: "Editor Only", run: ({ arg }) => setMarkdownMode(String(arg), "editor") },
@@ -87,7 +90,33 @@ describe("Markdown layout controls", () => {
     expect(screen.getByRole("toolbar", { name: "Markdown editor layout" }).closest('[role="tabpanel"]')).not.toBeNull();
   });
 
-  it("routes each pane's layout buttons to that pane's file", () => {
+  it("keeps a separate layout in each split pane of the same file", () => {
+    useProject.setState({ settings: null });
+    const copy = md("t3", first.input.path!);
+    useTabs.setState({
+      layout: {
+        kind: "split",
+        id: "split",
+        dir: "row",
+        children: [
+          { kind: "pane", paneId: "p1" },
+          { kind: "pane", paneId: "p2" },
+        ],
+      },
+      panes: {
+        p1: { id: "p1", tabs: [first], active: first.id, mru: [first.id] },
+        p2: { id: "p2", tabs: [copy], active: copy.id, mru: [copy.id] },
+      },
+    });
+    render(<EditorAreaView />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Preview Only" })[1]!);
+    const [left, right] = screen.getAllByRole("button", { name: "Preview Only" });
+    expect(left).toHaveAttribute("aria-pressed", "false");
+    expect(right).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByRole("document", { name: "Markdown preview" })).toHaveLength(1);
+  });
+
+  it("routes each pane's layout buttons to that pane's tab", () => {
     useProject.setState({ settings: null });
     useTabs.setState({
       layout: {
@@ -106,9 +135,21 @@ describe("Markdown layout controls", () => {
     });
     render(<EditorAreaView />);
     fireEvent.click(screen.getAllByRole("button", { name: "Preview Only" })[1]!);
-    expect(useMarkdownModes.getState().byPath[first.input.path!]).toBeUndefined();
-    expect(useMarkdownModes.getState().byPath[second.input.path!]).toBe("preview");
+    expect(useMarkdownModes.getState().byTab[first.id]).toBe("editor");
+    expect(useMarkdownModes.getState().byTab[second.id]).toBe("preview");
     act(() => useDistractionFree.setState({ active: true }));
     expect(screen.getAllByRole("toolbar", { name: "Markdown editor layout" })).toHaveLength(2);
+  });
+
+  it("drops the code breadcrumbs only while the source is hidden", () => {
+    useProject.setState({ settings: null });
+    render(<EditorAreaView />);
+    expect(screen.getByRole("navigation", { name: "Code breadcrumbs top" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Editor and Preview" }));
+    expect(screen.getByRole("navigation", { name: "Code breadcrumbs bottom" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview Only" }));
+    expect(screen.queryByRole("navigation", { name: /^Code breadcrumbs/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Editor Only" }));
+    expect(screen.getByRole("navigation", { name: "Code breadcrumbs top" })).toBeInTheDocument();
   });
 });

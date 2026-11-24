@@ -40,7 +40,7 @@ describe("semanticRanges", () => {
     expect(semanticRanges(doc, input, false, "python")[0]?.className).toBe(
       "cm-sem-function cm-sem-builtin cm-sem-python-builtin",
     );
-    expect(semanticRanges(doc, input, false, "java")[0]?.className).toBe("cm-sem-function cm-sem-builtin");
+    expect(semanticRanges(doc, input, false, "typescript")[0]?.className).toBe("cm-sem-function cm-sem-builtin");
   });
 
   it("ignores type and modifier names that only exist on Object.prototype", () => {
@@ -61,6 +61,19 @@ describe("semanticRanges", () => {
     expect(semanticRanges(doc, input)).toEqual([
       { from: 0, to: 3, className: "cm-sem-global" },
       { from: 4, to: 7, className: "cm-sem-function cm-sem-global" },
+    ]);
+  });
+
+  it("colours typescript-language-server's `member` (a method) like vtsls's `method`", () => {
+    const input = {
+      tokenTypes: ["member", "method"],
+      tokenModifiers: ["declaration", "defaultLibrary"],
+      data: [0, 0, 3, 0, 1, 0, 4, 3, 1, 1, 0, 8, 3, 0, 2],
+    };
+    expect(semanticRanges(doc, input, false, "typescript")).toEqual([
+      { from: 0, to: 3, className: "cm-sem-function cm-sem-declaration" },
+      { from: 4, to: 7, className: "cm-sem-function cm-sem-declaration" },
+      { from: 8, to: 11, className: "cm-sem-function cm-sem-builtin" },
     ]);
   });
 

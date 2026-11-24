@@ -18,17 +18,17 @@ mod markers;
 pub mod plugin_point;
 mod registry;
 mod syntax;
-pub use markers::{arduino_sketch_root, is_arduino_sketch_dir, marked_root};
+pub use markers::{arduino_sketch_root, is_arduino_sketch_dir, marked_root, project_spelling};
 pub use plugin_point::PluginLanguages;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
     CSS_CLASS, CSS_ID, CSS_VARIABLE, ClassBases, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax,
     ExternalToken, FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind,
     SpellingRegion, Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError,
-    VueComponentImport, VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_visibility,
+    VueComponentImport, VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_kinds, merge_visibility,
     set_external_syntax, shift_pos, shift_range,
 };
-pub use syntax::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts};
+pub use syntax::{MethodBody, PhpAlignment, PythonClassFacts, PythonFacts, PythonMethodFacts, PythonSuppression};
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,6 +121,9 @@ pub struct FrameworkFiles {
     pub extensions: Vec<String>,
     /// Matched like language servers' `root-markers`, e.g. `manage.py`.
     pub root_markers: Vec<String>,
+    /// Require the marker directly beside `folder`.
+    #[serde(default)]
+    pub root_marker_in_parent: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
@@ -156,7 +159,8 @@ pub struct LanguageServerConfig {
     pub requires_env: Vec<String>,
     /// Files whose presence marks a workspace root, e.g. `Cargo.toml`;
     /// `file#table` requires the TOML file to contain that dotted table, e.g.
-    /// `pyproject.toml#tool.ruff`.
+    /// `pyproject.toml#tool.ruff`, or the JSON file that dotted key, e.g.
+    /// `package.json#devDependencies.tailwindcss`.
     #[serde(default)]
     pub root_markers: Vec<String>,
     /// Serve only files below a root marker, not the whole project: a framework's
@@ -245,6 +249,11 @@ pub struct DebuggerConfig {
     pub connect: Option<String>,
     #[serde(default)]
     pub install_hint: Option<String>,
+    /// The adapter's lazy values (DAP `presentationHint.lazy`) are renderings such as `toString()`,
+    /// safe to compute for every value shown: they are resolved before the UI sees them, as IDEA
+    /// shows `toString()` at once. Off (getters with side effects), a value resolves when opened.
+    #[serde(default)]
+    pub resolve_lazy_variables: bool,
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,

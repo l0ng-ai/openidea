@@ -19,6 +19,7 @@ When a project opens, OpenIDEA scans its build files (also in nested projects of
 | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `package.json`                                                                                    | One per `scripts` entry, run with the package manager of the lock file (npm, pnpm, yarn or bun). `test`, `test:*`, `jest` and `vitest` scripts are marked as tests. |
 | `deno.json` / `deno.jsonc`                                                                        | Deno tasks                                                                                                                                                          |
+| `playwright.config.*`                                                                             | Scripts that run `playwright test` are tests; without one, `npx playwright test`                                                                                    |
 | `Cargo.toml`                                                                                      | `cargo run` for each binary, `cargo test`, `cargo build`; workspace members are included                                                                            |
 | `build.gradle(.kts)` / `pom.xml`                                                                  | Gradle and Maven run configurations                                                                                                                                 |
 | `go.mod` / `go.work`                                                                              | Go programs and tests                                                                                                                                               |
@@ -97,6 +98,7 @@ Open **Run › Edit Configurations…** (also in the run widget menu). The **Run
 | **Gradle** / **Maven**                                  | Gradle tasks or Maven goals, optionally through the wrapper                    |
 | **Application** / **JAR Application** / **Spring Boot** | A Java main class, an executable JAR, a Spring Boot application                |
 | **Tomcat Server**                                       | A WAR application in a local Tomcat                                            |
+| **Python**                                              | A Python script or `-m` module                                                 |
 | **pytest** / **Django tests**                           | pytest tests, `manage.py test`                                                 |
 | **Ruby** / **Rake** / **RSpec**                         | A Ruby script, a Rake task, RSpec examples                                     |
 | **PHPUnit**                                             | PHPUnit tests                                                                  |
@@ -111,7 +113,7 @@ The debugger adds attach-only types such as **Remote JVM Debug**, **Go Remote**,
 ### Common fields
 
 - **Run on**: the local machine, or an SSH host defined in **Settings › Build, Execution, Deployment › Run Targets**. Debugging is not available on run targets. See [SSH](/en/guide/remote/ssh).
-- **Working directory**: relative to the project root; empty means the project root.
+- **Working directory**: relative to the project root; empty means the project root. It may use the path macros `$PROJECT_DIR$`, `$ContentRoot$`, `$MODULE_DIR$`, `$MODULE_WORKING_DIR$` and `$USER_HOME$`, expanded when the configuration starts, so a shared configuration works on every machine.
 - **Environment variables**: `VAR=value` pairs separated by `;`. The list button opens the **Environment Variables** dialog, where **Include system environment variables** can be turned off.
 - **Debug adapter**: which debugger **Debug** uses for this configuration (for example `debugpy`, `js-debug`, `codelldb`, `delve`).
 
@@ -120,6 +122,10 @@ The debugger adds attach-only types such as **Remote JVM Debug**, **Go Remote**,
 Turn on **Modify options › Paths to ".env" files** to load one or more `.env` files (relative to the project root, separated by `;`). They support `KEY=value`, `export` prefixes, `#` comments, quoted values and `${VAR}` references. Variables set in the configuration override the ones from `.env` files.
 
 With **Include system environment variables** on, the process also gets the IDE's environment and the variables of your login shell.
+
+### direnv and Nix flakes
+
+When a trusted project has an `.envrc` in its root, the IDE runs `direnv export json` there (`direnv` must be installed) and gives what it exports to terminals, run configurations, language servers, build tools and debuggers started in the project. Language servers wait until it has loaded; an `.envrc` with `use flake` loads the flake's devshell this way, which can take a while the first time. The IDE never runs `direnv allow` for you: when the `.envrc` is blocked, a notification says so. After you edit `.envrc`, `flake.nix` or `flake.lock`, a notification offers **Reload Environment**.
 
 ### Modify options
 
@@ -155,7 +161,7 @@ A **Compound** configuration starts several configurations at once. Run it to st
 Each launch opens a tab in the **Run** tool window (bottom). The toolbar has **Rerun**, **Debug**, **Rerun Failed Tests** (for test runs), **Update Application**, **Find…**, **Scroll to End**, **Soft-Wrap**, **Clear All** and **Edit Configurations…**.
 
 - File paths and stack trace frames in the output are links.
-- Repeated lines can be folded; configure the patterns in **Settings › Build, Execution, Deployment › Console**, along with the buffer size and the console encoding.
+- Repeated lines can be folded; configure the patterns in **Settings › Build, Execution, Deployment › Console**, along with the buffer size and the console encoding. **Fold Lines Like This** in the console's context menu opens that page with the selected text (or the clicked line) added as a pattern.
 - Log lines can take the colour of their level (`ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`); colours the program prints itself are kept. Turn it on and pick the colours in **Settings › Build, Execution, Deployment › Console**.
 - For test runs the tab shows a test tree next to the output. See [Testing](/en/guide/testing).
 
@@ -165,8 +171,8 @@ Each launch opens a tab in the **Run** tool window (bottom). The toolbar has **R
 
 Two actions in Find Action (also linked from the dialog) import existing configurations:
 
-- **Import Run Configurations from .vscode/launch.json**: Python and Node.js launches and attaches, plus compounds. Fixed variables such as `${workspaceFolder}` and `${env:NAME}` are replaced; entries that use `${file}`, `${input:…}` or `${command:…}` are skipped.
-- **Import Run Configurations from JetBrains (.run, .idea)**: reads `.run/*.run.xml`, `.idea/runConfigurations/*.xml` and `.idea/workspace.xml`. Python, Django, pytest, npm, Jest, Vitest, Node.js, Shell Script, Application, JAR Application, Spring Boot, Go and compound configurations are converted; other types are skipped.
+- **Import Run Configurations from .vscode/launch.json**: Python and Node.js launches and attaches, Dart launches (Flutter apps as Flutter configurations), plus compounds. Fixed variables such as `${workspaceFolder}` and `${env:NAME}` are replaced; entries that use `${file}`, `${input:…}` or `${command:…}` are skipped.
+- **Import Run Configurations from JetBrains (.run, .idea)**: reads `.run/*.run.xml`, `.idea/runConfigurations/*.xml` and `.idea/workspace.xml`. Python, Django, pytest, npm, Jest, Vitest, Node.js, Shell Script, Application, JAR Application, Spring Boot, Go, Flutter and compound configurations are converted; other types are skipped. An entry that runs the same command as an existing configuration, such as the detected `flutter run`, is skipped.
 
 A notification says how many were imported and why others were left out.
 

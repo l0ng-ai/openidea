@@ -1,6 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import type { ConsoleRule } from "@/bindings";
 import { useProject } from "@/platform/project";
+import { setConsoleRules } from "@/workbench/contributions";
 import { ConsoleModel } from "./console";
 import { ConsoleView } from "./ConsoleView";
 
@@ -60,5 +62,48 @@ describe("console log colours", () => {
   it("does no colouring when disabled", () => {
     setup([{ kind: "stdout", text: "INFO plain\n" }], { enabled: false });
     expect(rowOf("INFO").style.color).toBe("");
+  });
+});
+
+describe("plugin console rules", () => {
+  const rule = (pattern: string, extra: Partial<ConsoleRule>): ConsoleRule => ({
+    pattern,
+    ignoreCase: false,
+    foreground: null,
+    background: null,
+    styles: [],
+    wholeLine: false,
+    enabled: true,
+    ...extra,
+  });
+  afterEach(() => setConsoleRules("acme.grep", []));
+
+  it("colour a matched line instead of its level, and fall back to the level elsewhere", () => {
+    setConsoleRules("acme.grep", [
+      rule("\\[AUDIT\\]", { wholeLine: true, foreground: "magenta", background: "black" }),
+    ]);
+    setup([
+      { kind: "stdout", text: "ERROR [AUDIT] login\n" },
+      { kind: "stdout", text: "ERROR other\n" },
+    ]);
+    expect(rowOf("login").style.color).toBe("var(--ansi-magenta)");
+    expect(rowOf("login").style.background).toBe("var(--ansi-black)");
+    expect(rowOf("other").style.color).toBe("var(--ansi-red)");
+  });
+
+  it("style only the matched text, over the program's own colours, with level colouring off", () => {
+    setConsoleRules("acme.grep", [rule("JOB-\\d+", { foreground: "cyan", styles: ["bold"] })]);
+    setup([{ kind: "stderr", text: "start \x1b[34mJOB-42\x1b[0m now\n" }], { enabled: false });
+    const row = rowOf("JOB-42");
+    expect(row.style.color).toBe("");
+    const job = Array.from(row.querySelectorAll("span")).find((s) => s.textContent === "JOB-42")!;
+    expect(job.style.color).toBe("var(--ansi-cyan)");
+    expect(job.style.fontWeight).not.toBe("");
+  });
+
+  it("leave lines the IDE prints alone", () => {
+    setConsoleRules("acme.grep", [rule("Process", { wholeLine: true, foreground: "red" })]);
+    setup([{ kind: "system", text: "Process finished with exit code 0\n" }]);
+    expect(rowOf("Process finished").style.color).toBe("");
   });
 });

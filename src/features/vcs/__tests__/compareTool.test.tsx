@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   worktree: vi.fn(),
+  revisions: vi.fn(),
+  presentations: vi.fn(),
   openDiff: vi.fn(),
   openFile: vi.fn(),
 }));
@@ -10,9 +12,19 @@ vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
     ...real,
-    commands: { ...real.commands, vcsDiffWithWorktree: mocks.worktree },
+    isTauri: () => true,
+    commands: {
+      ...real.commands,
+      vcsDiffWithWorktree: mocks.worktree,
+      vcsDiffRevisions: mocks.revisions,
+      jvmFilePresentations: mocks.presentations,
+    },
   };
 });
+vi.mock("@/ui", async (original) => ({
+  ...(await original<typeof import("@/ui")>()),
+  Icon: ({ name }: { name: string }) => <span data-testid={`icon-${name}`} />,
+}));
 vi.mock("../diffInput", async (original) => {
   const real = await original<typeof import("../diffInput")>();
   return { ...real, openVcsDiff: mocks.openDiff };
@@ -25,7 +37,7 @@ vi.mock("@/workbench/contributions", async (original) => {
   return { ...real, maybeEditorService: () => ({ openFile: mocks.openFile }) };
 });
 import { useProject } from "@/platform/project";
-import { comparisonDiffData, type ComparisonFile } from "../operations";
+import { ChangesBetweenDialog, comparisonDiffData, type ComparisonFile } from "../operations";
 import { CompareToolWindow, useCompareTool } from "../compareTool";
 import { useVcs } from "../store";
 
@@ -112,6 +124,118 @@ describe("CompareToolWindow", () => {
     expect(jump).toBeEnabled();
     fireEvent.click(jump);
     expect(mocks.openFile).toHaveBeenCalledWith("/workspace/client/src/app.ts", { focus: true });
+  });
+
+  it("groups working-tree diffs by the requested repositories and opens the selected copy of a common path", async () => {
+    const roots = ["/workspace/client", "/workspace/server"];
+    useVcs.setState({ roots: [...roots, "/workspace/tools"], repo: "/workspace/tools" });
+    const ref = { rev: "refs/heads/main", label: "main" };
+    useCompareTool.getState().show(ref, null, roots);
+    mocks.worktree.mockResolvedValue({ status: "ok", data: [modified] });
+    mocks.openDiff.mockResolvedValue(undefined);
+    render(<CompareToolWindow />);
+
+    const files = await screen.findAllByText("app.ts");
+    expect(files).toHaveLength(2);
+    expect(screen.getByText("client")).toBeInTheDocument();
+    expect(screen.getByText("server")).toBeInTheDocument();
+    expect(mocks.worktree.mock.calls).toEqual(roots.map((root) => [root, ref.rev]));
+    fireEvent.doubleClick(files[1]!);
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/workspace/server/src/app.ts",
+        left: expect.objectContaining({ rev: ref.rev }),
+      }),
+    );
+
+    act(() => useCompareTool.getState().show(ref, null, [roots[0]!]));
+    expect(await screen.findAllByText("app.ts")).toHaveLength(1);
+    expect(mocks.worktree).toHaveBeenLastCalledWith(roots[0], ref.rev);
+
+    act(() => useCompareTool.getState().show(ref, null, [roots[0]!]));
+    expect(await screen.findAllByText("app.ts")).toHaveLength(1);
+    expect(mocks.worktree).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps results from repositories it can compare and names the repository that failed", async () => {
+    useCompareTool.getState().show(from, null, ["/workspace/client", "/workspace/server"]);
+    mocks.worktree
+      .mockResolvedValueOnce({ status: "ok", data: [modified] })
+      .mockRejectedValueOnce(new Error("revision unavailable"));
+    render(<CompareToolWindow />);
+    expect(await screen.findByText("app.ts")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Cannot compare server against main: revision unavailable");
+  });
+
+  it("shows Java and Kotlin declarations from the compared repository and skips deleted files", async () => {
+    const base = "/workspace/client/src/";
+    mocks.worktree.mockResolvedValue({
+      status: "ok",
+      data: [
+        { ...modified, path: "src/PricingRule.java", kind: "renamed", oldPath: "src/Rule.java" },
+        { ...modified, path: "src/Order.java" },
+        { ...modified, path: "src/OrderTest.java", kind: "added" },
+        { ...modified, path: "src/Removed.java", kind: "deleted" },
+        { ...modified, path: "src/Pricing.kt" },
+        modified,
+      ],
+    });
+    mocks.presentations.mockResolvedValue({
+      status: "ok",
+      data: [
+        { path: base + "PricingRule.java", presentation: { kind: "interface" } },
+        { path: base + "Order.java", presentation: { kind: "class" } },
+        { path: base + "OrderTest.java", presentation: { kind: "class" } },
+        { path: base + "Pricing.kt", presentation: { kind: "object" } },
+      ],
+    });
+    render(<CompareToolWindow />);
+    expect(await screen.findByTestId("icon-interface")).toBeInTheDocument();
+    expect(screen.getByText("PricingRule.java").previousElementSibling).toBe(screen.getByTestId("icon-interface"));
+    expect(screen.getByText("Order.java").previousElementSibling).toBe(screen.getByTestId("icon-class"));
+    expect(screen.getByText("OrderTest.java").previousElementSibling).toBe(screen.getByTestId("icon-jvm-test"));
+    expect(screen.getByText("Removed.java").previousElementSibling).toBe(screen.getByTestId("icon-file-java"));
+    expect(screen.getByText("Pricing.kt").previousElementSibling).toBe(screen.getByTestId("icon-kotlin-object"));
+    expect(mocks.presentations.mock.calls.flatMap(([paths]) => paths).sort()).toEqual(
+      ["Order.java", "OrderTest.java", "Pricing.kt", "PricingRule.java"].map((name) => base + name),
+    );
+  });
+
+  it("keeps the file-type icon for a comparison of two revisions", async () => {
+    mocks.revisions.mockResolvedValue({ status: "ok", data: [{ ...modified, path: "src/PricingRule.java" }] });
+    render(<ChangesBetweenDialog from={from} to={{ rev: "next", label: "next" }} onClose={() => {}} />);
+    expect(await screen.findByTestId("icon-file-java")).toBeInTheDocument();
+    expect(mocks.presentations).not.toHaveBeenCalled();
+  });
+
+  it("opens the selected revision diff from the native comparison toolbar", async () => {
+    mocks.revisions.mockResolvedValue({ status: "ok", data: [modified] });
+    const onShowDiff = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ChangesBetweenDialog
+        from={from}
+        to={{ rev: "next", label: "next" }}
+        onClose={onClose}
+        onShowDiff={onShowDiff}
+        native
+      />,
+    );
+
+    const toolbar = screen.getByRole("toolbar", { name: "Comparison actions" });
+    const showDiff = within(toolbar).getByRole("button", { name: "Show Diff" });
+    expect(showDiff).toBeDisabled();
+    fireEvent.mouseDown(await screen.findByText("app.ts"), { button: 0 });
+    expect(await screen.findByTestId("diff")).toBeInTheDocument();
+    expect(showDiff).toBeEnabled();
+    fireEvent.click(showDiff);
+    expect(onShowDiff).toHaveBeenCalledWith({
+      path: "/workspace/client/src/app.ts",
+      left: { type: "rev", rev: "main", label: "main", path: undefined },
+      right: { type: "rev", rev: "next", label: "next" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("lists files without an inline diff and opens a file's diff in the editor", async () => {

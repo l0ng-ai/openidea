@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   patch: vi.fn(),
   probe: vi.fn(),
   unshelve: vi.fn(),
+  shelve: vi.fn(),
 }));
 vi.mock("../diffInput", async (original) => ({
   ...(await original<typeof import("../diffInput")>()),
@@ -30,18 +31,32 @@ vi.mock("@/platform/ipc", async (original) => ({
     fsProbe: mocks.probe,
     vcsShelfPatch: mocks.patch,
     vcsUnshelve: mocks.unshelve,
+    vcsShelve: mocks.shelve,
   },
 }));
-import { ShelfPanel, copyShelfPatch, shelfDiffs, shelfTarget, showShelfDiff, unshelve, useShelf } from "../shelf";
+import {
+  ShelfPanel,
+  copyShelfPatch,
+  shelfDiffs,
+  shelfTarget,
+  shelveSilently,
+  showShelfDiff,
+  unshelve,
+  unshelveSilently,
+  useShelf,
+} from "../shelf";
 import { useCommit } from "../commitStore";
 import { useVcs } from "../store";
 import { useChangelists } from "../changelists";
 import { VcsDialogHost } from "../dialogs";
 import { ContextMenuHost } from "@/ui";
 import { registerVcsActions } from "../actions";
+import { registerHistoryActions } from "../historyActions";
 import { getAction, isActionKeyEnabled } from "@/platform/actions";
 import { intellijWindows } from "@/platform/keymaps/intellij-windows";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
+import { useProject } from "@/platform/project";
+import { setContext } from "@/platform/context";
 
 const entry: ShelvedChangeList = {
   id: "work",
@@ -71,6 +86,22 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("shelf scope and diffs", () => {
+  it("keeps identical file names from different repositories in the same shelf", () => {
+    const paths = ["repoA/src/same.txt", "repoB/src/same.txt"];
+    const combined: ShelvedChangeList = {
+      ...entry,
+      repo: "/project",
+      files: paths.map((path) => ({ path, kind: "modified", oldPath: null })),
+    };
+    useVcs.setState({ root: "/project", roots: ["/project/repoA", "/project/repoB"], repo: "/project/repoA" });
+    useShelf.setState({
+      shelves: [combined],
+      diffs: { work: paths.map((path) => ({ path, before: path, after: path, patch: "" })) },
+    });
+    expect(shelfDiffs({ id: entry.id }).map((diff) => diff.path)).toEqual(paths.map((path) => `/project/${path}`));
+    expect(shelfDiffs({ id: entry.id, path: paths[1] })[0]?.path).toBe("/project/repoB/src/same.txt");
+  });
+
   it("keeps file scope from selection and explicit targets; rejects stale files", () => {
     expect(shelfTarget()).toEqual({ entry, path: "a.txt" });
     expect(shelfTarget({ id: "work", path: "b.txt" })).toEqual({ entry, path: "b.txt" });
@@ -196,7 +227,7 @@ describe("shelf scope and diffs", () => {
     mocks.ipc.mockReset().mockResolvedValue("selected file patch");
     try {
       await copyShelfPatch(entry, "a.txt");
-      expect(mocks.patch).toHaveBeenCalledWith("work", "a.txt");
+      expect(mocks.patch).toHaveBeenCalledWith("work", "a.txt", null);
       expect(writeText).toHaveBeenCalledWith("selected file patch");
     } finally {
       if (previous) Object.defineProperty(navigator, "clipboard", previous);
@@ -225,12 +256,10 @@ describe("shelf scope and diffs", () => {
       </>,
     );
     await waitFor(() => expect(screen.getByText("Work")).toBeTruthy());
-    fireEvent.doubleClick(screen.getByText("Work"));
-    // Expand explicitly through the accessible tree keyboard navigation.
-    const tree = screen.getByRole("tree");
-    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    fireEvent.mouseDown(screen.getByText("Work"), { button: 0 });
+    expect(useCommit.getState().selectedShelf).toBe("work");
     const file = await screen.findByText("a.txt");
-    fireEvent.click(file);
+    fireEvent.mouseDown(file, { button: 0 });
     expect(useCommit.getState().selectedShelf).toBe("work\u0000a.txt");
     fireEvent.click(screen.getByRole("button", { name: "Unshelve…" }));
     expect(mocks.execute).toHaveBeenCalledWith("vcs.unshelve", { id: "work", path: "a.txt" });
@@ -253,5 +282,156 @@ describe("shelf scope and diffs", () => {
     expect(screen.getByRole("menuitem", { name: "Rename…" }).getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy as Patch to Clipboard" }));
     expect(mocks.execute).toHaveBeenCalledWith("vcs.shelf.copyPatch", { id: "work", path: "a.txt" });
+  });
+});
+
+describe("Shelve Silently / Unshelve Silently", () => {
+  const change = (path: string) => ({
+    path,
+    relPath: path,
+    staged: null,
+    unstaged: "modified" as const,
+    renamedFrom: null,
+  });
+  const lists = (files: Record<string, string> = {}, active = "default") =>
+    useChangelists.setState({
+      loaded: false,
+      state: {
+        lists: [
+          { id: "default", name: "Changes", comment: "" },
+          { id: "work", name: "Work", comment: "" },
+        ],
+        active,
+        files,
+      },
+    });
+  beforeEach(() => {
+    mocks.ipc.mockReset().mockImplementation(async (value: unknown) => (await value) ?? []);
+    mocks.shelve.mockImplementation(async (name: string, paths: string[]) => ({
+      ...entry,
+      id: name,
+      name,
+      files: paths.map((path) => ({ path, kind: "modified", oldPath: null })),
+    }));
+    mocks.unshelve.mockResolvedValue({ applied: ["a.txt"], conflicts: [] });
+    useVcs.setState({
+      root: "/repo",
+      roots: ["/repo"],
+      available: true,
+      status: [change("/repo/a.txt"), change("/repo/b.txt"), change("/repo/c.txt")],
+    });
+    useProject.setState({ settings: {} });
+  });
+
+  it("shelves the selected changes without a dialog, one shelf per changelist named after it", async () => {
+    lists({ "b.txt": "work" });
+    render(<VcsDialogHost />);
+    await act(() => shelveSilently(["/repo/a.txt", "/repo/b.txt"]));
+    expect(mocks.shelve.mock.calls).toEqual([
+      ["Changes", ["/repo/a.txt"]],
+      ["Work", ["/repo/b.txt"]],
+    ]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("shelves the active changelist's changes when nothing is selected", async () => {
+    lists({ "a.txt": "default", "b.txt": "work", "c.txt": "work" }, "work");
+    await shelveSilently();
+    expect(mocks.shelve.mock.calls).toEqual([["Work", ["/repo/b.txt", "/repo/c.txt"]]]);
+  });
+
+  it("names the shelf like the Shelve dialog when the project has one changelist", async () => {
+    useChangelists.setState({
+      loaded: false,
+      state: { lists: [{ id: "default", name: "Changes", comment: "" }], active: "default", files: {} },
+    });
+    await shelveSilently(["/repo/a.txt"]);
+    expect(mocks.shelve.mock.calls).toEqual([["Uncommitted changes", ["/repo/a.txt"]]]);
+  });
+
+  it("shelves nothing when there are no changes", async () => {
+    lists();
+    useVcs.setState({ status: [] });
+    await shelveSilently();
+    await shelveSilently(["/repo/missing.txt"]);
+    expect(mocks.shelve).not.toHaveBeenCalled();
+  });
+
+  it("stops after a shelf fails so later changelists stay in the working tree", async () => {
+    lists({ "b.txt": "work" });
+    mocks.shelve.mockRejectedValueOnce(new Error("disk full"));
+    await shelveSilently(["/repo/a.txt", "/repo/b.txt"]);
+    expect(mocks.shelve).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores the Changes tab's selection while another Commit tab is shown", async () => {
+    lists();
+    const off = registerHistoryActions();
+    setContext("activeToolWindow", "commit");
+    useCommit.setState({ tab: "stashes", selection: ["/repo/b.txt"] });
+    try {
+      await getAction("vcs.shelveSilently")!.run({ ctx: {} });
+      expect(mocks.shelve).not.toHaveBeenCalled();
+      useCommit.setState({ tab: "changes" });
+      await getAction("vcs.shelveSilently")!.run({ ctx: {} });
+      expect(mocks.shelve.mock.calls).toEqual([["Changes", ["/repo/b.txt"]]]);
+    } finally {
+      off();
+      setContext("activeToolWindow", null);
+      useCommit.setState({ tab: "changes", selection: [] });
+    }
+  });
+
+  it("does nothing for a shelf without files", async () => {
+    lists();
+    await unshelveSilently({ ...entry, files: [] });
+    expect(mocks.unshelve).not.toHaveBeenCalled();
+  });
+
+  it("unshelves into the changelist named like the shelf, without a dialog", async () => {
+    lists();
+    render(<VcsDialogHost />);
+    await act(() => unshelveSilently(entry));
+    expect(mocks.unshelve).toHaveBeenCalledWith("work", false, null);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(useChangelists.getState().state.files).toEqual({ "a.txt": "work" });
+  });
+
+  it("unshelves into the active changelist when no changelist has the shelf's name", async () => {
+    lists({}, "default");
+    await unshelveSilently({ ...entry, name: "Experiment" });
+    expect(useChangelists.getState().state.files).toEqual({ "a.txt": "default" });
+  });
+
+  it("unshelves only the selected file and follows the remove-applied setting", async () => {
+    lists();
+    useProject.setState({ settings: { vcs: { shelf: { removeApplied: true } } } });
+    await unshelveSilently(entry, "b.txt");
+    expect(mocks.unshelve.mock.calls).toEqual([["work", true, "b.txt"]]);
+  });
+
+  it("binds IDEA's shortcuts to the Commit tool window and the focused Shelf", async () => {
+    const off = registerHistoryActions();
+    try {
+      const shelve = getAction("vcs.shelveSilently")!;
+      const unshelveAction = getAction("vcs.unshelveSilently")!;
+      expect(intellijWindows[shelve.id]).toEqual(["Ctrl+Shift+H"]);
+      expect(intellijMacos[shelve.id]).toEqual(["Meta+Shift+H"]);
+      expect(intellijWindows[unshelveAction.id]).toEqual(["Ctrl+Alt+U"]);
+      expect(intellijMacos[unshelveAction.id]).toEqual(["Meta+Alt+U"]);
+      expect(isActionKeyEnabled(shelve, { vcsAvailable: true, activeToolWindow: "commit" })).toBe(true);
+      expect(isActionKeyEnabled(shelve, { vcsAvailable: true, activeToolWindow: "git" })).toBe(true);
+      expect(isActionKeyEnabled(shelve, { vcsAvailable: true, activeToolWindow: "commit", shelfFocus: true })).toBe(
+        false,
+      );
+      expect(isActionKeyEnabled(shelve, { vcsAvailable: true, editorTextFocus: true })).toBe(false);
+      expect(isActionKeyEnabled(unshelveAction, { vcsAvailable: true, shelfFocus: true })).toBe(true);
+      expect(isActionKeyEnabled(unshelveAction, { vcsAvailable: true, editorTextFocus: true })).toBe(false);
+      lists();
+      await unshelveAction.run({ ctx: {}, arg: { id: "work", path: "a.txt" } });
+      expect(mocks.unshelve).toHaveBeenCalledWith("work", false, "a.txt");
+    } finally {
+      off();
+    }
   });
 });

@@ -15,16 +15,19 @@ mod convert;
 mod external_project;
 mod file_ops;
 mod file_watch;
+mod flutter_outline;
 mod go_mod;
 mod go_scope;
 mod handler;
 mod injections;
 mod inspect;
+pub mod java_project;
 pub mod jdtls;
 mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod maven_placeholder;
 mod message_requests;
 mod notebook;
 mod phoxite;
@@ -32,6 +35,7 @@ mod plugin_requests;
 mod pull;
 mod scope;
 mod server;
+mod source_actions;
 mod tcp;
 mod text;
 mod ts_file_moves;
@@ -45,6 +49,7 @@ mod xml_catalog;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
+pub use jdtls::exception_breakpoints::JdtExceptionBreakpoints;
 pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use jdtls::stream_trace::JdtStreamTracer;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
@@ -53,7 +58,7 @@ pub use message_requests::answer as answer_message_request;
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
-pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
+pub use uri::{path_to_uri_string, uri_target, uri_to_path};
 
 use caps::{ServerCaps, SyncKind};
 use convert::{Conv, lsp_range};
@@ -76,7 +81,7 @@ use server::{Conn, Running, Server};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 use text::{DocText, Encoding};
 use types::*;
@@ -84,6 +89,21 @@ use types::*;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 const LONG_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn did_change_content(
+    sync: SyncKind,
+    in_sync: bool,
+    key: u8,
+    events: &HashMap<u8, Vec<Value>>,
+    full: &OnceLock<Value>,
+    text: &str,
+) -> Value {
+    if !in_sync || sync == SyncKind::Full {
+        full.get_or_init(|| json!([{ "text": text }])).clone()
+    } else {
+        Value::Array(events.get(&key).cloned().unwrap_or_default())
+    }
+}
 
 /// How long a server may take to answer `initialize`. Some import the whole
 /// build there (kotlin-lsp, jdtls on a large Gradle project) and need minutes
@@ -129,6 +149,15 @@ struct DocState {
     notebook: Option<PathBuf>,
     /// When the servers last got new text (open or change): diagnostics published before are stale.
     changed: std::time::Instant,
+    flutter_outline: Option<FlutterOutline>,
+}
+
+/// The widget tree last published for a document, valid while that server instance runs.
+/// ponytail: positions lag edits until the server's next publish, which follows each analysis.
+struct FlutterOutline {
+    server: ide_core::ServerId,
+    generation: u64,
+    items: Vec<OutlineItem>,
 }
 
 impl DocState {
@@ -251,7 +280,7 @@ pub struct LspManager {
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
     /// Modification time of the archive behind a cached library class, so a jar
     /// replaced in place (a SNAPSHOT installed again) is read again.
-    virtual_stamps: Mutex<HashMap<String, std::time::SystemTime>>,
+    virtual_stamps: Mutex<HashMap<String, virtual_doc::ArchiveStamp>>,
     injections: injections::State,
     /// Open notebooks by path. Locked before `docs` when both are.
     notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
@@ -649,6 +678,11 @@ impl LspManager {
             .unwrap_or_else(|| self.project_root.clone())
     }
 
+    /// `path` as the project's roots spell it ([`ide_language::project_spelling`]).
+    fn in_project_spelling<'a>(&self, path: &'a Path) -> std::borrow::Cow<'a, Path> {
+        ide_language::project_spelling(path, |p| p.starts_with(self.project_root_for(p)))
+    }
+
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
         let shared = is_local_jdtls(cfg).then(|| self.jdtls_workspace_state());
         let mut servers = self.servers.lock();
@@ -670,10 +704,25 @@ impl LspManager {
             })
         };
         if let Some(s) = servers.iter().find(|s| s.name == cfg.name && s.root == root) {
+            if !path.starts_with(&project) {
+                tracing::debug!(
+                    server = ?s.id,
+                    name = %s.name,
+                    root = %s.root.display(),
+                    "reusing language server for external file"
+                );
+            }
             s.add_language(language);
             return s.clone();
         }
         let server = Arc::new(Server::new(cfg.clone(), root, language.clone()));
+        tracing::debug!(
+            server = ?server.id,
+            name = %server.name,
+            root = %server.root.display(),
+            external = !path.starts_with(&project),
+            "created language server route"
+        );
         servers.push(server.clone());
         server
     }
@@ -684,6 +733,7 @@ impl LspManager {
     /// only files below one, and stands in for no other. One that a server before
     /// it `replaces` is left out while that server serves the file.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
+        let path = &*self.in_project_spelling(path);
         if let Some(servers) = self.arduino_servers(language, path) {
             return servers;
         }
@@ -828,6 +878,9 @@ impl LspManager {
 
     async fn run_instance(self: Arc<Self>, server: Arc<Server>, generation: u64) {
         let Some(cancel) = server.starting_status(generation, &self.sink) else { return };
+        // Includes settings/prepare, blocking-pool queueing, launch and initialize.
+        let started = std::time::Instant::now();
+        tracing::info!(server = ?server.id, generation, name = %server.name, "starting language server");
         let handler = Arc::new(handler::ClientHandler::new(self.me.clone(), server.clone(), generation));
         let me = self.clone();
         let tail = server.clone();
@@ -835,6 +888,9 @@ impl LspManager {
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
+            // The project's direnv environment (a Nix devshell) may hold the server and its
+            // toolchain: start once it has loaded.
+            ide_core::project_env::wait(&tail.root, &launch_cancel);
             if !me.execution_allowed.load(Ordering::Acquire) {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
@@ -946,8 +1002,15 @@ impl LspManager {
         };
         let caps = match result {
             Ok(result) => {
+                tracing::info!(
+                    server = ?server.id,
+                    generation,
+                    name = %server.name,
+                    startup_to_initialize_ms = started.elapsed().as_millis() as u64,
+                    "language server initialized"
+                );
                 if let Some(info) = result.get("serverInfo") {
-                    tracing::info!("{} initialized: {info}", server.name);
+                    tracing::info!(server = ?server.id, generation, "{} initialized: {info}", server.name);
                 }
                 let mut caps_val = result.get("capabilities").cloned().unwrap_or_else(|| json!({}));
                 if server.name == arduino::SERVER {
@@ -988,12 +1051,14 @@ impl LspManager {
         if let Err(e) = peer.notify("initialized", json!({})) {
             tracing::warn!("{}: {e}", server.name);
         }
-        // Servers that don't ask with `workspace/configuration` only learn settings this way.
-        let cfg = server.effective_config();
-        if cfg.settings.is_some()
-            && let Err(e) =
-                peer.notify("workspace/didChangeConfiguration", json!({ "settings": handler::all_settings(&cfg) }))
-        {
+        // Sent even without settings: servers that don't ask with `workspace/configuration`
+        // only learn settings this way, and Pyright, given workspace folders, waits for it
+        // before asking and loading the workspace.
+        let mut settings = handler::all_settings(&server.effective_config());
+        if settings.is_null() {
+            settings = json!({});
+        }
+        if let Err(e) = peer.notify("workspace/didChangeConfiguration", json!({ "settings": settings })) {
             tracing::debug!("{}: didChangeConfiguration: {e}", server.name);
         }
 
@@ -1167,7 +1232,7 @@ impl LspManager {
         {
             return Some(text);
         }
-        let key = path.to_str().filter(|s| is_virtual_uri(s))?;
+        let key = path.to_str().filter(|s| ide_core::is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
     }
 
@@ -1232,6 +1297,7 @@ impl LspManager {
             compose_detected,
             notebook: None,
             changed: std::time::Instant::now(),
+            flutter_outline: None,
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1319,18 +1385,14 @@ impl LspManager {
             tracing::warn!("lsp text copy of {} out of sync; resending full text", d.path.display());
             text.set(&full_text());
         }
-        let full = json!([{ "text": text.as_str() }]);
+        let full = OnceLock::new();
         for (server, run, sync, enc) in targets {
             let key = match enc {
                 Encoding::Utf8 => 8,
                 Encoding::Utf16 => 16,
                 Encoding::Utf32 => 32,
             };
-            let content = if !in_sync || sync == SyncKind::Full {
-                full.clone()
-            } else {
-                Value::Array(events.get(&key).cloned().unwrap_or_default())
-            };
+            let content = did_change_content(sync, in_sync, key, &events, &full, text.as_str());
             let params = json!({
                 "textDocument": { "uri": d.uri, "version": d.version },
                 "contentChanges": content,
@@ -1799,8 +1861,11 @@ impl LspManager {
     /// the same class from its Java model instead, decompiled with method bodies and navigable.
     /// Its documents belong to jdtls ([`Self::virtual_document`] records it).
     async fn jdt_library_classes(&self, snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-        let jar_class = |l: &Location| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"));
-        if !locs.iter().any(jar_class)
+        let lib_class = |u: &str| {
+            (u.starts_with("jar:") && u.ends_with(".class"))
+                || (u.starts_with("jdt://contents/") && u.contains(".class"))
+        };
+        if !locs.iter().any(|l| l.uri.as_deref().is_some_and(lib_class))
             || !self.servers.lock().iter().any(|s| s.name == jdtls::SERVER && s.running().is_some())
         {
             return locs;
@@ -1808,27 +1873,54 @@ impl LspManager {
         let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
         let mut out = Vec::with_capacity(locs.len());
         for loc in locs {
-            let entry = loc.uri.as_deref().filter(|_| jar_class(&loc)).and_then(library_source::parse);
-            let Some(entry) = entry else {
+            let Some(original) = loc.uri.as_deref().filter(|u| lib_class(u)) else {
                 out.push(loc);
                 continue;
             };
-            // The Kotlin server may name the jar by another path than jdtls (its own copy of a
-            // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
-            // of that name.
-            let uri = match self.archive_class(entry.jar, entry.entry, true).await {
-                Ok(uri) => uri,
-                Err(e) => {
-                    tracing::info!("library class stays a stub: {}", e.message);
+            let jdt = original.starts_with("jdt:");
+            let uri = if !jdt {
+                let Some(entry) = library_source::parse(original) else {
                     out.push(loc);
                     continue;
+                };
+                // The Kotlin server may name the jar by another path than jdtls (its own copy of a
+                // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
+                // of that name.
+                match self.archive_class(entry.jar, entry.entry, true).await {
+                    Ok(uri) => uri,
+                    Err(e) => {
+                        tracing::info!("library class stays a stub: {}", e.message);
+                        out.push(loc);
+                        continue;
+                    }
                 }
+            } else {
+                original.to_owned()
             };
-            let range = match (&name, self.virtual_document(&uri).await) {
-                (Some(name), Ok(doc)) => library_source::declaration_range(&doc.text, name),
+            let doc = self.virtual_document(&uri).await.ok();
+            let range = match (&name, &doc) {
+                // jdtls' own class: its range is exact (overloads included) unless it maps a
+                // Lombok-generated member onto the annotation or class header, which doesn't
+                // name the member; only then look the declaration up in the source.
+                (Some(name), Some(doc)) if jdt => {
+                    let line = doc.text.lines().nth(loc.range.start.line as usize).unwrap_or_default();
+                    if library_source::identifier_at(line, loc.range.start.col) == Some(name.as_str()) {
+                        loc.range
+                    } else {
+                        Some(library_source::declaration_range(&doc.text, name))
+                            .filter(|r| *r != Range::default())
+                            .unwrap_or(loc.range)
+                    }
+                }
+                (Some(name), Some(doc)) => library_source::declaration_range(&doc.text, name),
+                _ if jdt => loc.range,
                 _ => Range::default(),
             };
-            out.push(Location { path: uri.clone().into(), range, uri: Some(uri) });
+            out.push(if jdt {
+                Location { range, ..loc }
+            } else {
+                Location { path: uri.clone().into(), range, uri: Some(uri) }
+            });
         }
         out
     }
@@ -1981,21 +2073,10 @@ impl LspManager {
     /// References of the symbol at `pos`. With `project_wide`, files outside
     /// the servers' analysis scope that mention the name are opened for the
     /// search (see [`scope`]); without, only what the servers analyse counts
-    /// (cheap, for bulk scans over many symbols).
-    pub async fn references(
-        &self,
-        doc: DocId,
-        pos: Pos,
-        include_declaration: bool,
-        project_wide: bool,
-        cancel: CancellationToken,
-    ) -> IdeResult<References> {
-        self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
-    }
-
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources
-    /// are searched (`libraries_skipped`); with it and `project_wide`, those found
-    /// there arrive on `partial` before the dependencies and the JDK are searched.
+    /// (cheap, for bulk scans over many symbols). Java: without `libraries`,
+    /// only the workspace's sources are searched (`libraries_skipped`); with
+    /// it and `project_wide`, those found there arrive on `partial` before
+    /// the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -2340,6 +2421,33 @@ impl LspManager {
         out.finish(None)
     }
 
+    /// The document's widget tree, when its running Dart server published one.
+    pub fn flutter_outline(&self, doc: DocId) -> Option<Vec<OutlineItem>> {
+        let docs = self.docs.lock();
+        let d = docs.get(&doc)?;
+        let outline = d.flutter_outline.as_ref()?;
+        d.servers
+            .iter()
+            .any(|a| a.server.id == outline.server && a.server.is_live(outline.generation))
+            .then(|| outline.items.clone())
+    }
+
+    /// Records a published outline; whether what the open documents of `path` show changed.
+    fn set_flutter_outline(
+        &self,
+        path: &Path,
+        server: &Server,
+        generation: u64,
+        items: Option<Vec<OutlineItem>>,
+    ) -> bool {
+        let mut changed = false;
+        for d in self.docs.lock().values_mut().filter(|d| d.path == path) {
+            changed |= d.flutter_outline.is_some() || items.is_some();
+            d.flutter_outline = items.clone().map(|items| FlutterOutline { server: server.id, generation, items });
+        }
+        changed
+    }
+
     pub async fn workspace_symbols(&self, query: &str, cancel: CancellationToken) -> IdeResult<Vec<WorkspaceSymbol>> {
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         let targets = self.ready_targets(&servers, |c| c.has("workspaceSymbolProvider")).await;
@@ -2677,7 +2785,7 @@ impl LspManager {
         })
     }
 
-    /// Renames across the project: like [`Self::references`], files outside the
+    /// Renames across the project: like [`Self::references_streaming`], files outside the
     /// server's analysis scope that mention the name are opened for the request.
     /// Every server that can rename there does: the Angular server adds the
     /// templates to vtsls's edit, whose own edits win where both change the same text.
@@ -2992,7 +3100,12 @@ impl LspManager {
         for s in servers {
             let Some(run) = s.running() else { continue };
             let open = open.get(&(s.id, run.generation)).filter(|_| run.caps.read().sync != SyncKind::None);
+            // jdtls owns its annotation-processor output; javac's copy of those files is not an edit.
+            let jdtls = s.name == "jdtls";
             let send = |p: &PathBuf, change: Change| {
+                if jdtls && jdtls::is_processor_output(p) {
+                    return false;
+                }
                 change == Change::Deleted
                     || !open
                         .is_some_and(|paths| paths.contains(p) || canonical.get(p).is_some_and(|c| paths.contains(c)))
@@ -3064,6 +3177,67 @@ impl LspManager {
     pub async fn can_format(&self, doc: DocId) -> IdeResult<bool> {
         let snap = self.snapshot(doc)?;
         Ok(!self.ready_targets(&snap.servers, |c| c.has("documentFormattingProvider")).await.is_empty())
+    }
+
+    async fn snapshot_targets(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        feature: &str,
+        supports: impl Fn(&ServerCaps) -> bool,
+    ) -> IdeResult<Vec<Target>> {
+        let supports = |caps: &ServerCaps| caps.open_close && supports(caps);
+        let servers = self.servers_for(language, path);
+        for server in &servers {
+            self.ensure_started(server);
+        }
+        let mut targets = self.ready_targets(&servers, supports).await;
+        if targets.is_empty() {
+            // A primary server can become unavailable while it initializes.
+            let candidates = self.servers_for(language, path);
+            if candidates.iter().any(|server| !servers.iter().any(|old| old.id == server.id)) {
+                for server in &candidates {
+                    self.ensure_started(server);
+                }
+                targets = self.ready_targets(&candidates, supports).await;
+            }
+        }
+        if targets.is_empty() {
+            return Err(unsupported(&servers, feature));
+        }
+        Ok(targets)
+    }
+
+    async fn text_format_targets(&self, path: &Path, language: &LanguageId) -> IdeResult<Vec<Target>> {
+        self.snapshot_targets(path, language, "snapshot formatting", |c| c.has("documentFormattingProvider")).await
+    }
+
+    pub async fn can_format_text(&self, path: &Path, language: &LanguageId) -> bool {
+        self.text_format_targets(path, language).await.is_ok()
+    }
+
+    /// Use a transient URI so requests in the editor still see the working buffer.
+    pub async fn format_text(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+        options: FormatOptions,
+    ) -> IdeResult<Vec<TextEdit>> {
+        let path_to_snapshot = scope::snapshot_path(path, "format")?;
+        let targets = self.text_format_targets(path, language).await?;
+        let target = &targets[0];
+        let mut opened = scope::TransientFiles::empty(self, target);
+        opened.hold(&path_to_snapshot, language, text);
+        let params = json!({
+            "textDocument": { "uri": opened.files[0].1 },
+            "options": { "tabSize": options.tab_size, "insertSpaces": options.insert_spaces },
+        });
+        let edits: Option<Vec<lsp::TextEdit>> =
+            self.call(target, "textDocument/formatting", params, None, DEFAULT_TIMEOUT).await?;
+        let text = Arc::new(DocText::new(text));
+        let converter = Conv::new(target.enc(), |_| Some(text.clone()));
+        Ok(converter.text_edits(&path_to_snapshot, edits.unwrap_or_default()))
     }
 
     pub async fn format(&self, doc: DocId, range: Option<Range>, options: FormatOptions) -> IdeResult<Vec<TextEdit>> {
@@ -3225,6 +3399,71 @@ impl LspManager {
             }
         }
         out.finish(Vec::new())
+    }
+
+    /// The colors the servers find in the document (`textDocument/documentColor`), each tagged with
+    /// its server for [`Self::color_presentations`]. An answer for an older version is dropped.
+    pub async fn document_colors(&self, doc: DocId) -> IdeResult<Vec<DocumentColor>> {
+        let (snap, targets) = self.doc_targets(doc, "document colors", |c| c.has("colorProvider")).await?;
+        let requests = targets.iter().map(|t| {
+            let params = json!({ "textDocument": snap.ident() });
+            async move {
+                let colors = self
+                    .call_retrying::<_, Option<Vec<lsp::ColorInformation>>>(
+                        t,
+                        "textDocument/documentColor",
+                        params,
+                        DEFAULT_TIMEOUT,
+                    )
+                    .await;
+                (t, colors)
+            }
+        });
+        let mut out = Outcome::new();
+        for (t, r) in join_all(requests).await {
+            match r {
+                Ok(colors) => {
+                    let conv = self.conv(t.enc());
+                    let acc = out.value.get_or_insert_with(Vec::new);
+                    acc.extend(
+                        colors
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|c| convert::document_color(&conv, &snap.path, t.server.id, c)),
+                    );
+                }
+                Err(e) => out.fail(e),
+            }
+        }
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        out.finish(Vec::new())
+    }
+
+    /// How `color.server` would write `color` at its range (`textDocument/colorPresentation`).
+    pub async fn color_presentations(&self, doc: DocId, color: DocumentColor) -> IdeResult<Vec<ColorPresentation>> {
+        let snap = self.snapshot(doc)?;
+        let Some(server) = snap.servers.iter().find(|s| s.id == color.server) else { return Ok(Vec::new()) };
+        let Some(t) = self.ready_targets(std::slice::from_ref(server), |c| c.has("colorProvider")).await.pop() else {
+            return Ok(Vec::new());
+        };
+        let params = json!({
+            "textDocument": snap.ident(),
+            "color": { "red": color.red, "green": color.green, "blue": color.blue, "alpha": color.alpha },
+            "range": snap.range(&t, color.range),
+        });
+        let list: Option<Vec<lsp::ColorPresentation>> =
+            self.call(&t, "textDocument/colorPresentation", params, None, DEFAULT_TIMEOUT).await?;
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        let conv = self.conv(t.enc());
+        Ok(list
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| convert::color_presentation(&conv, &snap.path, color.range, p))
+            .collect())
     }
 
     pub async fn call_hierarchy(
@@ -3444,6 +3683,16 @@ impl LspManager {
         archives.sort();
         archives.dedup();
         archives
+    }
+
+    /// Drop cached text after JDT LS reopens the archives. A request could have
+    /// read the old attachment while the binary already had its new timestamp.
+    pub fn invalidate_library_archives(&self, archives: &std::collections::HashSet<PathBuf>) {
+        if !archives.is_empty() {
+            self.virtual_docs
+                .lock()
+                .retain(|uri, _| !virtual_doc::archive(uri).is_some_and(|archive| archives.contains(&archive)));
+        }
     }
 
     /// Contents of a virtual document, from the server that owns `uri`:
@@ -4266,5 +4515,116 @@ mod code_action_tests {
         assert!(!source_actions_only(&kinds(&["quickfix"])));
         assert!(!source_actions_only(&kinds(&["source.organizeImports", "refactor"])));
         assert!(!source_actions_only(&kinds(&["sourcefoo"])));
+    }
+}
+
+#[cfg(test)]
+mod did_change_content_tests {
+    use super::*;
+
+    #[test]
+    fn incremental_content_does_not_build_the_full_document() {
+        let full = OnceLock::new();
+        let key = 16;
+        let events = HashMap::from([(
+            key,
+            vec![json!({
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "text": "x"
+            })],
+        )]);
+
+        let content = did_change_content(SyncKind::Incremental, true, key, &events, &full, "1 MB document");
+
+        assert_eq!(content, Value::Array(events[&key].clone()));
+        assert!(full.get().is_none(), "incremental sync must not materialize the full document");
+    }
+
+    #[test]
+    fn full_sync_reuses_the_full_document_payload() {
+        let full = OnceLock::new();
+        let key = 16;
+        let events = HashMap::new();
+
+        let first = did_change_content(SyncKind::Full, true, key, &events, &full, "whole document");
+        let second = did_change_content(SyncKind::Full, true, key, &events, &full, "whole document");
+
+        assert_eq!(first, json!([{ "text": "whole document" }]));
+        assert_eq!(second, first);
+        assert!(full.get().is_some());
+    }
+
+    #[test]
+    fn out_of_sync_incremental_change_sends_the_full_document() {
+        let full = OnceLock::new();
+        let events = HashMap::new();
+
+        let content = did_change_content(SyncKind::Incremental, false, 16, &events, &full, "whole document");
+
+        assert_eq!(content, json!([{ "text": "whole document" }]));
+    }
+}
+
+#[cfg(test)]
+mod external_go_routing_tests {
+    use super::*;
+
+    fn manager(root: &Path) -> Arc<LspManager> {
+        LspManager::new(
+            root.to_owned(),
+            Arc::new(LanguageRegistry::load(None).unwrap()),
+            Arc::new(|_: ide_core::IdeEvent| {}),
+        )
+    }
+
+    fn route(manager: &LspManager, path: &Path) -> Arc<Server> {
+        let language = LanguageId::new("go");
+        let config = manager.languages.get(&language).unwrap();
+        manager.server_for(&config.language_servers[0], &language, path)
+    }
+
+    fn module(root: &Path, name: &str) -> PathBuf {
+        let root = root.join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("go.mod"), format!("module example.test/{name}\n")).unwrap();
+        root.join("main.go")
+    }
+
+    // Characterize the fallback, not a promise that this is the correct consumer
+    // context for a shared dependency. No gopls process is launched in these tests.
+    #[tokio::test]
+    async fn external_go_file_reuses_first_module_without_creating_another_server() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let a = module(workspace.path(), "a");
+        let b = module(workspace.path(), "b");
+        let dependency = cache.path().join("dependency.go");
+        for order in [[&a, &b], [&b, &a]] {
+            let manager = manager(workspace.path());
+            let first = route(&manager, order[0]);
+            let second = route(&manager, order[1]);
+            assert_ne!(first.id, second.id);
+            assert_eq!(route(&manager, &dependency).id, first.id);
+            assert_eq!(route(&manager, &dependency).id, first.id);
+            assert_eq!(manager.servers.lock().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn external_go_file_restored_first_keeps_project_root_fallback() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let a = module(workspace.path(), "a");
+        let dependency = cache.path().join("dependency.go");
+        let manager = manager(workspace.path());
+        let restored = route(&manager, &dependency);
+        assert_eq!(restored.root, workspace.path());
+        let consumer = route(&manager, &a);
+        assert_ne!(restored.id, consumer.id);
+        assert_eq!(route(&manager, &dependency).id, restored.id);
+        assert_eq!(manager.servers.lock().len(), 2);
     }
 }

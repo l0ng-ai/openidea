@@ -3,7 +3,7 @@
 
 use crate::model::{
     AgentCommand, AgentCommandSource, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentCost, AgentLimit,
-    AgentModelPricing, AgentUsage,
+    AgentModelPricing, AgentTokens, AgentUsage,
 };
 use serde_json::{Value, json};
 
@@ -219,6 +219,23 @@ pub(crate) fn set_request(option: &AgentConfigOption, value: &str) -> (&'static 
     }
 }
 
+/// Legacy setters and agents that report the change in a notification may return no model.
+pub(super) fn accepts_model(reply: &Value, id: &str, value: &str) -> bool {
+    reply
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("category").and_then(Value::as_str) == Some("model")
+                    || option.get("id").or_else(|| option.get("configId")).and_then(Value::as_str) == Some(id)
+            })
+        })
+        .and_then(|option| option.get("currentValue"))
+        .or_else(|| reply.pointer("/models/currentModelId"))
+        .and_then(Value::as_str)
+        .is_none_or(|current| current == value)
+}
+
 /// `available_commands_update`.
 pub(crate) fn commands_of(update: &Value, provider: &str) -> Vec<AgentCommand> {
     update
@@ -253,6 +270,18 @@ pub(crate) fn usage_of(update: &Value) -> Option<AgentUsage> {
         }))
     });
     Some(AgentUsage { used: tokens("used")?, size: tokens("size").filter(|s| *s > 0)?, cost })
+}
+
+/// The `usage` of a `session/prompt` result: `{ inputTokens, cachedReadTokens, outputTokens }`.
+pub(crate) fn tokens_of(result: &Value) -> Option<AgentTokens> {
+    let usage = result.get("usage")?;
+    let tokens = |key: &str| usage.get(key).and_then(Value::as_u64).map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+    let tokens = AgentTokens {
+        input: tokens("inputTokens"),
+        cached: tokens("cachedReadTokens"),
+        output: tokens("outputTokens"),
+    };
+    (tokens != AgentTokens::default()).then_some(tokens)
 }
 
 /// The usage-limit windows a [`crate::LIMITS_UPDATE`] carries; malformed entries are skipped.
@@ -349,6 +378,15 @@ mod tests {
 
     fn ids(c: &[AgentConfigOption]) -> Vec<(&str, Option<&str>)> {
         c.iter().map(|o| (o.id.as_str(), o.current.as_deref())).collect()
+    }
+
+    #[test]
+    fn a_hermes_prompt_result_reports_the_turns_tokens() {
+        let result = json!({"stopReason": "end_turn", "usage": {"cachedReadTokens": 51306, "inputTokens": 77284,
+            "outputTokens": 509, "thoughtTokens": 0, "totalTokens": 77793}});
+        assert_eq!(tokens_of(&result), Some(AgentTokens { input: 77284, cached: 51306, output: 509 }));
+        assert_eq!(tokens_of(&json!({"stopReason": "end_turn"})), None);
+        assert_eq!(tokens_of(&json!({"usage": {}})), None);
     }
 
     #[test]

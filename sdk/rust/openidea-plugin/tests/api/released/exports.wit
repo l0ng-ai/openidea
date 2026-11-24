@@ -1,4 +1,4 @@
-package openidea:plugin@1.10.0;
+package openidea:plugin@1.15.0;
 
 interface lifecycle {
     use types.{context, error};

@@ -13,9 +13,6 @@ export const AGENT_SETTINGS_DEFAULTS: ResolvedAgentSettings = {
   foldTurns: true,
   smoothText: true,
   fitWindowWidth: false,
-  playfulStatus: false,
-  playfulAfterSeconds: 0,
-  playfulWords: {},
   thinking: "auto",
   toolCalls: "grouped",
   expandToolOutput: false,
@@ -24,6 +21,7 @@ export const AGENT_SETTINGS_DEFAULTS: ResolvedAgentSettings = {
   newTaskApprovals: "bypass",
   defaults: {},
   mcpServers: {},
+  skills: {},
 };
 
 export function resolveAgentSettings(s: AgentSettings | null | undefined): ResolvedAgentSettings {

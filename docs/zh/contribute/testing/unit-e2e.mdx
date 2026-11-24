@@ -66,4 +66,4 @@ pnpm e2e -g "opens a file"                 # 按测试名
 
 ## 在真实应用中验证
 
-单元测试和 E2E 都不会在 webview 里运行 Rust 后端。UI 或运行时行为的改动，请运行 `pnpm tauri dev` 在应用里检查。debug 构建包含 Tauri MCP bridge，可以用脚本驱动检查；端口用 `pnpm dev:status` 查（见[开发环境](/zh/contribute/setup)）。仓库里的 agent skill `.agents/skills/verify` 描述了这种驱动应用并截图的方式。
+单元测试和 E2E 都不会在 webview 里运行 Rust 后端。UI 或运行时行为的改动，请运行 `pnpm tauri dev` 在应用里检查。debug 构建包含 Tauri MCP bridge，可以用脚本驱动检查；端口用 `pnpm dev:status` 查（见[开发环境](/zh/contribute/setup)）。

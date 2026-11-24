@@ -23,7 +23,7 @@ Only types you add appear here: choose **Add Service › Run Configuration Type*
 - Configuration actions: **Run** (or **Rerun**), **Debug**, **Stop**, **Open in Browser**, **Update Application** (for configurations that support it).
 - Context menu: **Show in Run Tool Window**, **Show in Debug Tool Window**, **Edit Configuration…**, **Remove from Services**.
 
-A configuration that ran shows its console in the detail pane. Reorder configurations within a group by dragging them or with **Move Up** / **Move Down**; the order is saved per project.
+A configuration that ran shows its console in the detail pane; one debugged from here shows the whole debugger there (Threads & Variables, Console, Memory), and a breakpoint keeps the Services tool window in front. Reorder configurations within a group by dragging them or with **Move Up** / **Move Down**; the order is saved per project.
 
 ## Docker
 
@@ -69,9 +69,10 @@ Long operations (pull, prune, Compose) show progress at the top with a **Cancel*
 
 Selecting an item shows tabs in the detail pane:
 
-- **Container**: **Dashboard** (overview, live resource usage, port bindings that open in the browser, mounts, networks, environment variables, labels), **Log** (last 1,000 lines, following while the container runs, with **Timestamps**), **Processes** (`docker top`) and **Inspect** (the raw JSON).
+- **Compose project**: **Dashboard** (project overview, services with live resource usage, named volumes created by the project with live disk usage).
+- **Container**: **Dashboard** (overview, live resource usage, port bindings that open in the browser, mounts with live volume disk usage, networks, environment variables, labels), **Log** (last 1,000 lines, following while the container runs, with **Timestamps**), **Processes** (`docker top`) and **Inspect** (the raw JSON).
 - **Image**: **Dashboard** (tags, containers using it, environment, labels), **Layers** and **Inspect**.
-- **Volume** and **network**: **Dashboard** and **Inspect**.
+- **Volume** and **network**: **Dashboard** (including live volume disk usage) and **Inspect**.
 
 **Open Log in Editor** opens the log in an editor tab with **Timestamps**, **Soft-wrap**, **Find in Logs** and **Clear**.
 

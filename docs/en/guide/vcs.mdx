@@ -40,10 +40,12 @@ It reads repository state (status, diffs, blame, log) in-process, and runs the `
 ## Get a repository
 
 - **Git › Clone…** opens **Clone Repository**. Enter a **URL:** and **Directory:**, and optionally check **Shallow clone with a history truncated to** N commits. The **GitHub** source in the sidebar lists your GitHub repositories (see [GitHub](/en/guide/github)).
+- Cloning includes nested submodules by default. To clone the main repository by itself, turn off **Recursively clone submodules** in **Settings › Version Control › Git**.
+- In a shallow clone, use **Fetch Full History** in the **Git** menu or the **Log** tab to download the missing commits.
 - When creating a project, check **Create Git repository** in the New Project dialog.
 - **Git › Create Git Repository…** runs `git init` in a folder you pick (the project root by default) and registers the new repository right away; a repository created in the terminal is picked up the same way.
 
-OpenIDEA finds the repository that contains the project and nested repositories up to four levels deep (skipping folders such as `node_modules`, `target` and `build`). Status, commit, fetch and update cover all of them; branch and log actions work on the selected repository. Submodules show as nested repositories, without submodule commands.
+OpenIDEA finds the repository that contains the project and nested repositories up to four levels deep (skipping folders such as `node_modules`, `target` and `build`). Status, commit, fetch and update cover all of them; branch operations from the branches popup cover all of them too (see [Branches](#branches)); log actions work on the selected repository. Submodules show as nested repositories. Update Project can update detached submodules with their parent repository.
 
 ## Commit changes
 
@@ -72,7 +74,7 @@ Double-click a file (or press `Enter`) to see its diff; **Preview Diff** shows i
 
 ### Partial commits
 
-To commit only part of a file, open its diff from the Commit tool window. Each changed block has an **Include in commit** checkbox in the gutter; uncheck the blocks to leave out. The file's checkbox in the tree becomes partly checked. OpenIDEA commits the selected blocks through a temporary index, so your working tree and staging area stay as they are. Selection works per block, not per line.
+To commit only part of a file, open its diff from the Commit tool window. Use the **Include in commit** gutter checkbox to include or exclude a whole block. For individual lines, select them in the side-by-side or unified viewer and use **Include Selected Lines in Commit** or **Exclude Selected Lines from Commit** from the context menu. In the unified viewer, drag across deleted and added lines to select both at once. The file's checkbox in the tree shows partial inclusion. OpenIDEA commits the selection through a temporary index, preserving the working file and unrelated staged changes.
 
 The diff toolbar also has **Stage Change (git add hunk)** if you prefer the staging area.
 
@@ -90,9 +92,19 @@ The gear button (**Commit Options**) next to **Commit** has:
 
 - **Author:** to commit as someone else (`Name <email>`), and **Sign-off commit**.
 - **Commit Checks**: **Reformat code**, **Optimize imports**, **Cleanup** (applies fix-all code actions) and **Run Git hooks** (off adds `--no-verify`).
-- **Advanced Commit Checks**: **Analyze code** (errors and warnings from the language servers) and **Check TODO** (TODO and FIXME in added lines).
+- **Advanced Commit Checks**: **Analyze code** (errors and warnings from the language servers) and **Check TODO** (matches from **Settings › Editor › TODO** in changed lines).
 
-Before committing, OpenIDEA also warns about committing in detached HEAD or during a rebase, file names that cause problems on other systems, files larger than 50 MB, and CRLF line endings. A warning stops the commit once; click **Commit Anyway** to go ahead. There is no "run tests" check.
+Create named TODO filters in **Settings › Editor › TODO**. Choose one from **Configure** beside **Check TODO** to check only its patterns. The Commit tool window and TODO tool window save their selections separately for each project. **Review TODOs** opens a tab in the TODO tool window with every finding and a preview of the checked content. Open a finding to jump to its source or diff. If a selected file cannot be checked, the result lists the file and the reason so you can address it before retrying.
+
+In the Commit tool window, choose a run configuration and turn on **Run Tests** to add it to the advanced checks. OpenIDEA saves the selection locally for the project. Tests run against the current working tree, which can include changes outside the commit selection. Choose **Review Run Output** to open the failed run.
+
+**Run advanced checks after commit** lets a local commit finish before code analysis, TODO checks, and tests run in the background. The Push dialog shows their status for outgoing commits. **Commit and Push** and **Run Commit Checks** wait for the enabled checks to finish.
+
+Before committing, OpenIDEA also warns about committing in detached HEAD or during a rebase, file names that cause problems on other systems, files larger than 50 MB, and CRLF line endings. A warning stops the commit once; click **Commit Anyway** to go ahead.
+
+### Sign commits with GPG
+
+Open **Settings › Version Control › Git › Configure GPG Signature** in a trusted project. Choose the repository, enable **Sign commits with GPG**, and select an OpenPGP signing key. OpenIDEA saves the settings to that repository's Git config. Subsequent commits use the repository's configured signer.
 
 ### Modal commit
 
@@ -132,18 +144,21 @@ Other ways to compare:
 
 Click the branch widget in the title bar (or **Git › Branches…**) to open the branches popup. Type to search branches and actions. The popup shows **Recent**, **Local**, **Remote** and **Tags**, and at the top **Update Project…**, **Commit…**, **Push…**, **New Branch…** and **Checkout Tag or Revision…**. The gear button toggles grouping by prefix, recent branches and tags.
 
+**Checkout Tag or Revision…** suggests branches and tags shared by the affected repositories. You can also enter a commit hash or revision expression. With branch synchronization enabled, the top-level action detaches HEAD at the selected revision in each repository. Open the action from a repository submenu to scope it to that repository.
+
 Click the incoming or outgoing marker next to the branch name in the title bar (or **Incoming and Outgoing Commits…** in the branches popup) to list the commits to pull or push, newest first. Click a commit for its diff, or **Open in Git Log** to show it in the Git log.
 
 Select a branch (`→` or `Enter`) for its actions:
 
 - **Checkout**, **New Branch from '…'…**, **Checkout and Rebase onto '…'**
-- **Compare with '…'**, **Show Diff with Working Tree**, **Show History**
+  (local edits are restored after the rebase finishes or is aborted)
+- **Compare with '…'** opens an editor tab with one Git Log for each direction. Each pane has its own filters and commit details. **Show Branch Diff** opens the file differences for the comparison. **Show Diff with Working Tree** and **Show History** are also available.
 - **Rebase '…' onto '…'**, **Merge '…' into '…'**, and for remote branches **Pull into '…' Using Rebase** / **Using Merge**
 - **Update**, **Push…**, **Rename…**, **Add to Favorites**, **Delete**
 
 If local changes block a checkout, you can choose **Smart Checkout** (stash, check out, unstash), **Force Checkout** or **Don't Checkout**. A deleted branch can be brought back with **Restore** in the notification.
 
-With several repositories, the popup shows branches common to all of them, plus a submenu per repository.
+With several repositories, the popup shows branches common to all of them, plus a submenu per repository; an operation on a common branch (Checkout, Checkout and Rebase, Rebase, Merge, Update, Rename, Delete…) runs in every repository, and if it fails in one of them, OpenIDEA offers to roll back the others. When the repositories are on different branches, the popup says **Branches have diverged** and still lists the common branches, so checking one out brings them back in step. Turn off **Execute branch operations on all repositories** in the Git settings to list and act on the selected repository only.
 
 ## Sync with remotes
 
@@ -159,13 +174,17 @@ HTTPS passwords and SSH passphrases are asked for in a dialog and can be remembe
 
 **Git › Merge…** and **Git › Rebase…** open dialogs with the common Git options (`--no-ff`, `--ff-only`, `--squash`, `--no-commit`; `--onto`, `--rebase-merges`, `--keep-empty`). While a merge, rebase, cherry-pick or revert is in progress, the title bar shows a widget with **Resolve Conflicts…** and **Continue** / **Abort**, and the Git menu enables **Abort Merge**, **Continue Rebase**, **Skip Commit**, **Abort Rebase** and the cherry-pick and revert equivalents. A merge is concluded by committing.
 
+In **Git › Rebase…**, enable `--interactive` under **Modify options** to edit the replay plan. For a linear plan, select **Reword** to edit the commit message in the details pane before starting the rebase. OpenIDEA applies the edited messages as Git reaches each commit, including when you continue in the IDE after a conflict. Plans with merge instructions open in a text editor.
+
 When conflicts appear, a notification and the **Conflicts** dialog list the files. For each file choose **Accept Yours**, **Accept Theirs** or **Merge…**.
+
+While the Git operation is paused, the dialog keeps both unresolved and resolved files. Choose **Revert Resolved** in the dialog or the Commit view to reopen selected files. Review your resolutions before continuing the operation or committing the merge.
 
 **Merge…** opens a three-way merge editor: your side, the result and their side.
 
 - Click the arrows in the gutter to accept a change, or the cross to ignore it. Hold the modifier key to resolve the whole conflict with one side.
 - The toolbar applies all non-conflicting changes (from the left, the right or both), **Resolve Simple Conflicts**, compares any two of the versions, and shows how many changes and conflicts remain.
-- Click **Apply** to save the result and mark the file resolved, or **Accept Yours** / **Accept Theirs** for the whole file.
+- Click **Apply** to save an edited text result and mark it resolved. **Accept Yours** and **Accept Theirs** take the entire chosen version, including binary files, file modes and deletions. The binary merge view offers these whole-file choices.
 
 Files with conflict markers show a banner with **Resolve conflicts…**, and the markers are reported as errors. **Accept Yours / Theirs / Both (Conflict at Caret)** resolve one conflict in the text editor.
 
@@ -177,22 +196,33 @@ The **Log** tab of the Git tool window shows the commit graph.
 - **Go to Hash/Branch/Tag** (`⌘F` / `Ctrl+F` in the log).
 - **Graph Options**: sort by date, topologically or incoming first; first parent only; no merges.
 - **View Options**: reference display, details pane, and columns (**Author**, **Date**, **Hash**, **Signature**, **GitHub Commit Checks**).
-- The branches pane on the left filters the log by branch and has branch actions.
+- **View Options › Highlight › Not Cherry-Picked Commits**: choose a source branch or use the log's current branch filter. The log dims commits already present on the checked-out branch and keeps pending commits easy to spot. In **Compare with**, each pane compares its branch with the other branch.
+- The branches pane on the left filters the log by branch and has branch actions. Select several local branches and choose **Update Selected** to fast-forward each to its tracked branch, fetching each remote once; one notification lists the branches that were updated and those that could not be fast-forwarded or have no tracked branch.
+- With several repositories, the branches pane lists each branch once; a branch that only some repositories have shows their names after it in grey, and its actions run in those repositories. **Group by Repository** in the pane's toolbar shows one subtree per repository instead.
 - The details pane shows the changed files, the commit message, who committed it, which branches contain it and its signature.
+- In the **Signature** column, hover over a badge to see the verification result, signer, and key fingerprint when available. After changing your verification keys or trust settings, click **Refresh** in the log toolbar to check again.
 
-Right-click a commit for **Copy Revision Number** (`⌥⇧⌘C` / `Ctrl+Alt+Shift+C`), **Create Patch…**, **Cherry-Pick**, **Checkout Revision**, **Browse Repository at Revision**, **Compare with Local**, **Reset Current Branch to Here…**, **Revert Commit**, **Undo Commit…**, **New Branch…**, **New Tag…**, **View in Browser** and more. With two commits selected, **Compare Versions** diffs them.
+Right-click a commit for **Copy Revision Number** (`⌥⇧⌘C` / `Ctrl+Alt+Shift+C`), **Create Patch…**, **Cherry-Pick**, **Checkout Revision**, **Show Repository at Revision**, **Compare with Local**, **Reset Current Branch to Here…**, **Revert Commit**, **Undo Commit…**, **New Branch…**, **New Tag…**, **View in Browser** and more. With two commits selected, **Compare Versions** diffs them. With the commit list focused, `F2` edits the commit message, `⌥⌘N` / `Ctrl+Alt+N` creates a branch, `←` / `→` go to the child or parent commit, and `F3` / `F11` toggles a commit bookmark (`⌥F3` / `Ctrl+F11` with a mnemonic).
+
+In the changed-files pane, use **Apply Selected Changes** to bring only the selected files' changes into the working tree.
+Use **Extract Selected Changes** on part of a commit to move those files' changes into a new commit immediately after it. The operation preserves the tip's tree, local edits, and staged changes. The success notification offers **Undo** while HEAD still points to the rewritten tip.
+Use **Drop Selected Changes** to remove those files' changes from that commit and replay later commits. If replay stops on a conflict, resolve it and continue the rebase, or abort to restore the original history. A drop that completes directly offers **Undo**.
 
 ### Rewrite history
 
 From the log you can **Edit Commit Message…**, **Fixup…**, **Squash Into…**, **Drop Commit**, **Squash Commits…** and **Interactively Rebase from Here…**. The interactive rebase dialog lets you pick, reword, edit, squash, fixup, drop and reorder commits. These actions also work for commits that are already pushed: rewriting them is confirmed first, and pushing afterwards needs a force push. Commits already pushed from a protected branch cannot be rewritten.
 
-Limits: interactive rebase doesn't support ranges with merge commits, and **Undo Commit…** works only on the latest commit (its changes go back to a changelist).
+**Interactively Rebase from Here…** in the log requires a linear range. **Undo Commit…** works on the latest commit and puts its changes back in a changelist.
 
 ### Tags, reset and worktrees
 
 - **Git › New Tag…** creates a tag on a commit (annotated when you enter a message). **New Tag…** in the log creates a lightweight tag.
+- The tag menu offers **Push to** for each configured remote, including a new remote with no tracking branches. After local deletion, **Restore** recreates the original tag. **Delete on Remote** removes the tag only where it still points to the same commit or annotated tag object.
 - **Git › Reset HEAD…** and **Reset Current Branch to Here…** reset with **Soft**, **Mixed** (default), **Hard** or **Keep**.
-- **Git › New Worktree…** and **Worktrees…** create, list, remove and open worktrees in a new window.
+- Use **Git › New Worktree…** or the menu of a branch or tag to create a worktree. **Create and Open** opens it in a separate window.
+- Use **Create .worktreeinclude…** or **Edit .worktreeinclude…** in **New Worktree** to open the selected repository's include file. List one Git ignore pattern per line. The editor banner can add OpenIDEA project settings and run configurations to an existing file. Choose **Return to New Worktree** to save the file and resume with your branch and path selections. When **Copy local files listed in .worktreeinclude** is selected, matching local files are copied and files already in the new checkout are preserved.
+- Select **Run setup script** and choose an executable script on the project host to initialize the worktree. It runs after configuration is copied and receives the new worktree path as its first argument and working directory. **Skip Setup** stops it and keeps the checkout. A failed or timed-out script also leaves the worktree available.
+- **Git › Worktrees…** opens the **Worktrees** tab. From there you can open, lock, unlock, move or remove a worktree. Select several worktrees of one repository to remove them together, or use **Prune Worktrees…** to clean up Git records for missing directories.
 
 ## Stash, shelf and patches
 
@@ -200,12 +230,14 @@ Limits: interactive rebase doesn't support ranges with merge commits, and **Undo
 
 - **Stash Changes…**: a message, **Keep index** and **Include untracked files**; it stashes the whole working tree. **Stash Selected Files…** in the changes tree's context menu stashes only the selected files.
 - **Unstash Changes…**: apply or pop a stash, reinstate the index, or create a branch from it.
-- The **Stash** tab of the Commit tool window lists stashes with apply, pop and drop.
+- **Git › Uncommitted Changes › Show Stash** opens the stash list. Right-click a stash to apply, pop or drop it, use **Unstash As…** for options on that stash, or use **Clear Stashes…** to clear its repository's stashes.
+- Select a stash to view its changes, including any untracked files, in the adjacent files pane. Select one or more files to show their diffs, compare them with local files, or use **Apply Selected Changes** to restore only those changes and keep the stash.
 
 **Shelf** is managed by the IDE and stored as patches in `.openidea/shelf`:
 
 - **Shelve Changes…** lets you pick files and a name; the changes are then reverted.
 - **Unshelve…** applies a shelf (or one file of it) with a three-way merge, into a changelist you choose.
+- **Shelve Silently** (`⇧⌘H` / `Ctrl+Shift+H`, also on the Changes toolbar) shelves the selected changes, or the active changelist, without the dialog: one shelf per changelist, named after it. **Unshelve Silently** (`⌥⌘U` / `Ctrl+Alt+U` in the Shelf) applies the selected shelf or file into the changelist with the shelf's name, else the active one.
 - The **Shelf** tab shows shelves with diff, compare with local, patch export, rename and delete.
 
 Turn on **Combine stashes and shelves in one tab** in the Git settings to show both in one tab.
@@ -237,20 +269,18 @@ Retention is set in the **Local History** section of **Settings › Appearance &
 
 **Settings › Version Control** has these pages:
 
-| Page                   | Main options                                                                                                                                                                                               |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Commit**             | Non-modal commit interface, clearing the message after commit, message inspections (blank line after subject, subject and body length, right margin), default commit checks.                               |
-| **Confirmation**       | What to do when files are created or deleted, **Show options before Update**, confirm before dropping commits, highlight modified folders in the Project view, history row limit.                          |
-| **Directory Mappings** | The detected repositories (read-only).                                                                                                                                                                     |
-| **Issue Navigation**   | Regex patterns that turn issue IDs in commit messages into links (presets for JIRA, YouTrack and GitHub).                                                                                                  |
-| **Log**                | Reference and time display, visible columns.                                                                                                                                                               |
-| **Shelf**              | Remove applied files from the shelf.                                                                                                                                                                       |
-| **Git**                | Git executable, inline blame, commit warnings, sign-off default, push options and protected branches, update method (merge or rebase), incoming-commit checks, saved passwords, combining stash and shelf. |
-| **GitHub**             | See [GitHub](/en/guide/github).                                                                                                                                                                            |
+| Page                   | Main options                                                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Commit**             | Non-modal commit interface, clearing the message after commit, message inspections (blank line after subject, subject and body length, right margin), default commit checks.                                                                      |
+| **Confirmation**       | What to do when files are created or deleted, **Show options before Update**, confirm before dropping commits, highlight modified folders in the Project view, history row limit.                                                                 |
+| **Directory Mappings** | Add and remove Git repository mappings and exclude auto-detected repositories from Git integration.                                                                                                                                               |
+| **Issue Navigation**   | Regex patterns that turn issue IDs in commit messages into links (presets for JIRA, YouTrack and GitHub).                                                                                                                                         |
+| **Log**                | Reference and time display, visible columns.                                                                                                                                                                                                      |
+| **Shelf**              | Remove applied files from the shelf.                                                                                                                                                                                                              |
+| **Git**                | Git executable, inline blame, commit warnings, sign-off default, push options and protected branches, update method (merge or rebase), incoming-commit checks, saved passwords, combining stash and shelf, branch operations on all repositories. |
+| **GitHub**             | See [GitHub](/en/guide/github).                                                                                                                                                                                                                   |
 
 ## Not supported
 
 - Mercurial, Subversion, Perforce and other systems.
-- Submodule commands and editable directory mappings.
-- Per-line partial commits (block level only).
 - Git LFS beyond the large-file warning.

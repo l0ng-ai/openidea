@@ -20,6 +20,13 @@ export async function readClipboardPlainText(): Promise<string> {
   return (await navigator.clipboard?.readText()) ?? "";
 }
 
+/** The clipboard's image as base64 PNG, read natively; null when it holds none or outside the desktop app. */
+export async function readClipboardPng(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const url = await call(commands.clipboardImage());
+  return url ? url.slice(url.indexOf(",") + 1) : null;
+}
+
 type FormatFiles = (paths: string[]) => string;
 const rawPaths: FormatFiles = (paths) => paths.join("\n");
 

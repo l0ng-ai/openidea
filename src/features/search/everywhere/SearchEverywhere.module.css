@@ -1,7 +1,8 @@
 .dialog {
   --se-bg-header: var(--bg-frame, var(--bg-app));
+  --se-max-height: 600px;
   container-type: inline-size;
-  max-height: 80vh;
+  max-height: min(var(--se-max-height), 80vh);
   margin-top: 9vh;
   background: var(--bg-popup, var(--bg-elev));
   font-family: var(--font-ui);
@@ -75,20 +76,18 @@
 }
 .queryRow {
   flex: none;
-  padding: 6px 8px;
+  margin-inline: var(--space-3);
 }
 .field {
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  height: 32px;
-  padding: 0 10px 0 8px;
-  background: var(--bg-input);
-  border: 2px solid var(--border);
-  border-radius: var(--radius-small);
+  height: 30px;
+  padding-inline: var(--space-0-5);
+  border-bottom: 1px solid var(--border-popup);
 }
 .field:focus-within {
-  border-color: var(--border-strong);
+  border-bottom-color: var(--focus-ring, var(--accent));
 }
 .magnifier {
   flex: none;
@@ -136,7 +135,7 @@
   flex-direction: column;
 }
 .withPreview {
-  height: 532px;
+  height: var(--se-max-height);
 }
 .results {
   /* `auto`, not `1`: without the preview `.content` has no definite height, and a 0% basis there
@@ -189,6 +188,10 @@
   white-space: pre;
   color: var(--fg-strong);
 }
+.fileName {
+  flex-shrink: 0;
+  max-width: 100%;
+}
 .code {
   font-family: var(--font-ui);
   color: var(--fg);
@@ -208,10 +211,30 @@
   white-space: nowrap;
   color: var(--fg-subtle);
 }
+.path {
+  display: inline-flex;
+}
+.pathPart {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pathPrefix {
+  flex-shrink: 1;
+}
 .shortcut {
   flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg-subtle);
   font-family: var(--font-keys);
+  font-size: var(--fs-small);
+  font-weight: 600;
 }
 .right {
   flex: none;
@@ -225,12 +248,29 @@
 .rightActive {
   color: var(--fg-muted);
 }
+.textLocation {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+.textFile {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.textLine {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
 .actionRow {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
+}
+.actionRow > .right {
+  max-width: 30%;
 }
 .disabled .name,
 .disabled .location,
@@ -295,22 +335,71 @@
   gap: var(--space-1);
   padding: 4px 12px 8px;
 }
-.filterGroup + .filterGroup {
-  border-top: 1px solid var(--border-popup);
-  padding-top: 8px;
-}
 .filterTitle {
   color: var(--fg-secondary);
   font-size: var(--fs-small);
 }
-.filterAll {
-  font-weight: 600;
-}
-.filterItems {
+.checklistPopup {
   display: flex;
   flex-direction: column;
-  gap: var(--space-0-5);
-  padding-left: 4px;
+  width: min(280px, calc(100vw - 12px));
+  max-height: min(460px, 70vh);
+  overflow: hidden;
+  font-size: var(--fs-ui);
+}
+.checklistGroup {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.checklistGroup + .checklistGroup {
+  border-block-start: 1px solid var(--border-popup);
+}
+.checklistTitle {
+  flex: none;
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.checklistRows {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 0 var(--space-1) var(--space-1);
+}
+.checklistRow {
+  flex: none;
+  min-height: var(--h-row);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-selection);
+}
+.checklistRow:hover {
+  background: var(--bg-tree-hover);
+}
+.checklistRow:focus-within {
+  background: var(--bg-tree-selected);
+}
+.checklistLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.checklistName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checklistActions {
+  display: flex;
+  flex: none;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-2);
+  border-block-start: 1px solid var(--border-popup);
 }
 .filterMasks {
   display: flex;

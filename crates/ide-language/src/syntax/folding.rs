@@ -118,6 +118,16 @@ pub(super) fn folding(
             });
             return true;
         }
+        // Some languages write documentation as a string-like node rather than a
+        // lexical comment (Python docstrings, Elixir `@doc` / `@moduledoc`). The
+        // generic comment pass above never sees those, so fold them as documentation.
+        if node.is_named()
+            && start != end
+            && let Some(fold) = docstring_fold(spec, &node, kinds, text)
+        {
+            out.push(fold);
+            return false;
+        }
         if start != end && !spec.imports.is_empty() && node.named_child_count() > 1 {
             import_runs(kinds, node, text, &mut out);
         }
@@ -204,6 +214,64 @@ fn visit(cursor: &mut TreeCursor, mut f: impl FnMut(Node) -> bool) {
 
 pub(crate) fn is_comment(kind: &str) -> bool {
     kind.contains("comment") || kind == "Comment"
+}
+
+/// Folds a documentation string written as a non-comment node. Returns `None`
+/// for every other node; the caller skips its subtree only on a match.
+fn docstring_fold(spec: &Spec, node: &Node, kinds: &KindTable, text: &str) -> Option<FoldRange> {
+    let multi_line = |n: &Node| n.start_position().row != n.end_position().row && kinds.has(n, FOLD_NODE);
+    let range = |n: &Node| FoldRange {
+        start_line: n.start_position().row as u32,
+        end_line: last_content_row(n, text) as u32,
+        kind: FoldKind::Comment,
+    };
+    match spec.name {
+        // A bare string as the first statement of a module/class/function body.
+        "python" if node.kind() == "expression_statement" => {
+            let string = node.named_child(0)?;
+            if string.kind() != "string" || !multi_line(&string) {
+                return None;
+            }
+            let parent = node.parent()?;
+            let mut cursor = parent.walk();
+            if parent.named_children(&mut cursor).find(|c| !kinds.has(c, COMMENT)) != Some(*node) {
+                return None;
+            }
+            Some(range(node))
+        }
+        // `@doc """…"""` / `@moduledoc """…"""`: an @-prefixed call whose
+        // argument is a multi-line string (or a sigil like `~S"""`).
+        "elixir" if node.kind() == "unary_operator" => {
+            let operand = node.child_by_field_name("operand")?;
+            if operand.kind() != "call" || !is_elixir_doc_attr(operand, text) {
+                return None;
+            }
+            // The string is the argument of the attribute call: `@doc """…"""`
+            // parses as unary_operator -> call(target: doc) -> arguments -> string.
+            let mut cursor = operand.walk();
+            let doc_string =
+                operand.named_children(&mut cursor).find(|c| c.kind() == "arguments").and_then(|args| {
+                    let mut args_cursor = args.walk();
+                    args.named_children(&mut args_cursor).find(|c| multi_line(c))
+                })?;
+            if !matches!(doc_string.kind(), "string" | "sigil") {
+                return None;
+            }
+            Some(range(&doc_string))
+        }
+        _ => None,
+    }
+}
+
+/// Whether an Elixir `call` is `@doc` / `@moduledoc` / `@typedoc` (the documented
+/// attributes that take a string argument).
+fn is_elixir_doc_attr(call: Node, text: &str) -> bool {
+    let Some(target) = call.child_by_field_name("target") else { return false };
+    let name = text.get(target.byte_range()).unwrap_or_default();
+    if target.kind() != "identifier" {
+        return false;
+    }
+    matches!(name, "doc" | "moduledoc" | "typedoc")
 }
 
 /// Row of the closing token when `node` is delimited by a matching bracket pair.

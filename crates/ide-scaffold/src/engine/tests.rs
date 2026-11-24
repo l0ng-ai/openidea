@@ -108,7 +108,7 @@ fn command_lines() {
             .steps
             .iter()
             .chain(&def.after)
-            .filter(|s| matches(&s.when, &values))
+            .filter(|s| s.applies(&values))
             .map(|s| argv(s, &values).join(" "))
             .collect();
         if !steps.is_empty() {
@@ -137,6 +137,85 @@ fn conditional_arguments() {
     assert!(!argv(&def.steps[0], &values).contains(&"--python".to_owned()));
     values.insert("python".into(), "3.13".into());
     assert!(argv(&def.steps[0], &values).ends_with(&["--python".to_owned(), "3.13".to_owned()]));
+}
+
+#[test]
+fn dotnet_pins_the_sdk_and_creates_a_solution() {
+    let def = def("dotnet").unwrap();
+    assert!(def.steps.is_empty(), "dotnet commands must run after writing global.json");
+    let render = |pairs: &[(&str, &str)]| {
+        let given = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let values = with_defaults(def, "Shop", &given);
+        let project = tempfile::tempdir().unwrap();
+        write_files(def, &values, project.path()).unwrap();
+        let pin = std::fs::read_to_string(project.path().join("global.json"))
+            .ok()
+            .map(|text| serde_json::from_str::<serde_json::Value>(&text).unwrap());
+        let lines =
+            def.after.iter().filter(|s| s.applies(&values)).map(|s| argv(s, &values).join(" ")).collect::<Vec<_>>();
+        (pin, lines)
+    };
+    let (pin, lines) = render(&[("sdk", "8.0.404"), ("solution-name", "Store")]);
+    assert_eq!(pin, Some(serde_json::json!({"sdk": {"version": "8.0.404", "rollForward": "latestFeature"}})));
+    assert_eq!(
+        lines,
+        [
+            "dotnet new sln --name Store",
+            "dotnet new console --name Shop --output Shop --language C#",
+            "dotnet sln add Shop",
+            "dotnet new gitignore",
+        ]
+    );
+    let (pin, lines) = render(&[("solution", "false")]);
+    assert_eq!(pin, None);
+    assert_eq!(lines, ["dotnet new console --name Shop --output . --language C#", "dotnet new gitignore"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_templates_see_the_selected_sdk_before_running() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let inherited = r#"{"sdk":{"version":"8.0.100","rollForward":"disable"}}"#;
+    let parent_pin = tmp.path().join("global.json");
+    std::fs::write(&parent_pin, inherited).unwrap();
+    let tool = tmp.path().join("fake-dotnet");
+    std::fs::write(
+        &tool,
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 10.0.400; exit 0; fi\ngrep -q '10.0.400' global.json\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut def = source_def("dotnet");
+    def.requires[0].program = tool.to_string_lossy().into_owned();
+    for step in def.steps.iter_mut().chain(&mut def.after) {
+        step.program = def.requires[0].program.clone();
+    }
+    let req = request("dotnet", tmp.path(), "Shop", &[("sdk", "10.0.400")]);
+    let project = create_with(&def, &req, &CancellationToken::new(), &|_| {}).unwrap();
+    let pin: serde_json::Value = serde_json::from_slice(&std::fs::read(project.join("global.json")).unwrap()).unwrap();
+    assert_eq!(pin["sdk"]["version"], "10.0.400");
+    assert_eq!(std::fs::read_to_string(parent_pin).unwrap(), inherited);
+}
+
+/// `dotnet` of a runtime-only install: `--version` fails ("No .NET SDKs were found").
+#[cfg(unix)]
+#[test]
+fn a_failing_version_command_does_not_meet_a_minimum() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tempfile::tempdir().unwrap();
+    let tool = bin.path().join("fake-dotnet");
+    std::fs::write(&tool, "#!/bin/sh\necho 'No .NET SDKs were found. Install 8.0 from the site.'\nexit 145\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let search = bin.path().as_os_str().to_owned();
+    let def = |min: &str| -> RequireDef { toml::from_str(&format!("program = \"fake-dotnet\"\n{min}")).unwrap() };
+    let req = requirement(&def(r#"min = "8.0""#), &Values::new(), &search);
+    assert!(!req.satisfied);
+    assert_eq!(req.found, None);
+    // Only a minimum asks for a usable version; the program alone is found.
+    assert!(requirement(&def(""), &Values::new(), &search).satisfied);
 }
 
 fn failing_def(steps: &str) -> Def {
@@ -236,4 +315,20 @@ fn versions_and_ansi() {
     assert!(version_at_least("0.15.1", "0.14"));
     assert_eq!(strip_ansi("\u{1b}[32m✔\u{1b}[0m done\r"), "✔ done");
     assert_eq!(strip_ansi("\u{1b}]8;;http://x\u{7}link\u{1b}]8;;\u{7}"), "link");
+}
+
+#[test]
+fn taken_targets_and_free_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let at = |n: &str| tmp.path().join(n);
+    assert!(!target_taken(&at("untitled")));
+    assert_eq!(free_name(tmp.path(), "untitled"), "untitled");
+
+    std::fs::create_dir(at("untitled")).unwrap();
+    assert!(!target_taken(&at("untitled")), "an empty folder takes the project");
+    std::fs::write(at("untitled/a.txt"), "").unwrap();
+    assert!(target_taken(&at("untitled")));
+    std::fs::write(at("untitled1"), "").unwrap();
+    assert!(target_taken(&at("untitled1")), "a file is in the way");
+    assert_eq!(free_name(tmp.path(), "untitled"), "untitled2");
 }

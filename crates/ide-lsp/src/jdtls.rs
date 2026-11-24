@@ -7,11 +7,13 @@
 
 use crate::LspManager;
 use crate::server::{Running, Server};
-use ide_core::error::ErrorKind;
+use ide_core::error::{ErrorData, ErrorKind};
+use ide_core::event::LspRefreshKind;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use specta::Type;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,9 +22,12 @@ pub(crate) const SERVER: &str = "jdtls";
 const GENERATED_SOURCES: &str = "openidea.java.generatedSources";
 
 pub(crate) mod configuration;
+pub(crate) mod exception_breakpoints;
+mod exception_type;
 mod extract_interface;
 mod formatter;
 mod generated;
+pub(crate) use generated::is_processor_output;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
 mod move_refactoring;
@@ -515,6 +520,30 @@ fn not_imported(e: &IdeError) -> bool {
         || m.contains("cannot find")
 }
 
+const BUILD_FILES: [&str; 5] =
+    ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"];
+
+/// Errors on the build files of `module` and the builds enclosing it, nearest first, as
+/// `path: message` (relative to `root`). When m2e or Buildship can't configure a module (a build
+/// plugin or parent that doesn't resolve), it stays out of the Java model and these say why.
+fn build_file_errors(diagnostics: &[(PathBuf, lsp_types::Diagnostic)], root: &Path, module: &Path) -> Vec<String> {
+    let mut errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|(path, d)| {
+            d.severity == Some(lsp_types::DiagnosticSeverity::ERROR)
+                && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| BUILD_FILES.contains(&n))
+                && path.parent().is_some_and(|dir| module.starts_with(dir))
+        })
+        .map(|(path, d)| {
+            let message = d.message.lines().next().unwrap_or_default().trim().trim_end_matches(':');
+            (path.components().count(), format!("{}: {message}", path.strip_prefix(root).unwrap_or(path).display()))
+        })
+        .collect();
+    errors.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+    let mut seen = HashSet::new();
+    errors.into_iter().map(|(_, e)| e).filter(|e| seen.insert(e.clone())).collect()
+}
+
 /// The java-debug bundle is not loaded into jdtls.
 fn missing_bundle(e: &IdeError) -> bool {
     let m = e.message.to_ascii_lowercase();
@@ -522,7 +551,10 @@ fn missing_bundle(e: &IdeError) -> bool {
 }
 
 /// Cancel local waits without interrupting a shared server's startup or import.
-async fn cancellable_wait<T>(cancel: &CancellationToken, wait: impl std::future::Future<Output = T>) -> IdeResult<T> {
+pub(crate) async fn cancellable_wait<T>(
+    cancel: &CancellationToken,
+    wait: impl std::future::Future<Output = T>,
+) -> IdeResult<T> {
     tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(IdeError::cancelled()),
@@ -640,7 +672,8 @@ impl LspManager {
     /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
     /// change, a Maven sync, other Maven profiles), but does not check open documents
     /// again against the new classpath: their errors would stay until the next edit.
-    /// Generated Maven sources are attached first, so that recheck sees them.
+    /// Open editors may have cached empty tokens or inheritance results during the import.
+    /// Attach generated Maven sources before refreshing either, so both see the new classpath.
     pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let uris: Vec<String> = self
             .docs
@@ -657,6 +690,9 @@ impl LspManager {
         self.runtime.spawn(async move {
             let Some(run) = server.running_gen(generation) else { return };
             mgr.sync_generated_sources(&server, &run).await;
+            for kind in [LspRefreshKind::SemanticTokens, LspRefreshKind::Inheritance] {
+                mgr.sink().emit(ide_core::IdeEvent::LspRefresh { server: server.id, kind });
+            }
             for uri in uris {
                 let params =
                     json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });
@@ -832,6 +868,10 @@ impl LspManager {
         loop {
             match self.jdtls_command_cancellable(path, command, arguments.clone(), cancel).await {
                 Err(e) if not_imported(&e) && Instant::now() < deadline => {
+                    // An import that failed on the build file won't finish by waiting.
+                    if let Some(unconfigured) = self.unconfigured_module(path, cancel).await? {
+                        return Err(unconfigured);
+                    }
                     tracing::debug!("{command}: {e}; waiting for the project import");
                     cancellable_wait(cancel, tokio::time::sleep(Duration::from_millis(1500))).await?;
                 }
@@ -840,37 +880,76 @@ impl LspManager {
         }
     }
 
-    /// Tells jdtls the build files of `uris` changed (`java/projectConfigurationsUpdate`),
-    /// so it re-imports their projects (e.g. after `~/.m2` gained an artifact it could
-    /// not resolve). Best-effort: skipped while jdtls is not already running.
-    pub async fn java_update_project_configs(&self, path: &Path, uris: Vec<String>) -> IdeResult<()> {
-        if uris.is_empty() {
-            return Ok(());
-        }
-        let java = LanguageId::new("java");
-        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
-            return Ok(());
-        };
-        let Some(run) = server.running() else { return Ok(()) };
-        let identifiers: Vec<Value> = uris.iter().map(|u| json!({ "uri": u })).collect();
-        run.peer
-            .notify("java/projectConfigurationsUpdate", json!({ "identifiers": identifiers }))
-            .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
+    /// Why jdtls has no Java project for the module at `path`, when its build files say so.
+    async fn unconfigured_module(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<Option<IdeError>> {
+        let (server, _) = self.jdtls(path, cancel).await?;
+        let problems = build_file_errors(&server.diagnostics_snapshot(), &self.project_root, path);
+        Ok((!problems.is_empty()).then(|| IdeError {
+            kind: ErrorKind::InvalidInput,
+            message: format!("{SERVER}: {} is not a Java project: {}", path.display(), problems.join("; ")),
+            data: Some(ErrorData::JavaBuildProblems { problems }),
+        }))
     }
 
-    /// Asks jdtls to re-read library archives replaced in place (`openidea.java.refreshArchives`):
-    /// a SNAPSHOT installed again keeps its path, and JDT would keep showing the classes it read
-    /// from the old archive. Best-effort: skipped while jdtls is not already running.
-    pub async fn java_refresh_archives(&self, path: &Path, archives: &[PathBuf]) -> IdeResult<()> {
+    fn running_java_projects<'a>(&self, files: &'a [PathBuf]) -> Vec<(Running, Vec<&'a Path>)> {
         let java = LanguageId::new("java");
-        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
-            return Ok(());
-        };
-        if server.running().is_none() {
-            return Ok(());
+        let mut targets = HashMap::new();
+        for file in files {
+            if let Some(server) = self.servers_for(&java, file).into_iter().find(|s| s.name == SERVER)
+                && let Some(run) = server.running()
+            {
+                let (_, paths) = targets.entry(server.id).or_insert_with(|| (run, Vec::new()));
+                paths.push(file.as_path());
+            }
         }
-        let archives = archives.iter().map(|a| Value::String(a.to_string_lossy().into_owned())).collect();
-        self.jdtls_command(path, "openidea.java.refreshArchives", archives).await.map(|_| ())
+        targets.into_values().collect()
+    }
+
+    /// Re-imports projects even when their build files did not change. Wait for
+    /// the Maven configuration job when a source refresh depends on its binaries.
+    pub async fn java_update_project_configs(
+        &self,
+        files: &[PathBuf],
+        wait: Option<&CancellationToken>,
+    ) -> IdeResult<()> {
+        const UPDATE: &str = "openidea.java.updateProjectConfigurations";
+        let mut result = Ok(());
+        for (run, paths) in self.running_java_projects(files) {
+            let uris: Vec<_> = paths.iter().map(|path| crate::path_to_uri_string(path)).collect();
+            let supports_wait = run.caps.read().commands().iter().any(|command| command == UPDATE);
+            let updated = match wait.filter(|_| supports_wait) {
+                Some(cancel) => self
+                    .jdtls_request(
+                        paths[0],
+                        "workspace/executeCommand",
+                        json!({ "command": UPDATE, "arguments": uris }),
+                        BUILD_TIMEOUT,
+                        cancel,
+                    )
+                    .await
+                    .map(|_| ()),
+                None => {
+                    let identifiers: Vec<_> = uris.into_iter().map(|uri| json!({ "uri": uri })).collect();
+                    run.peer
+                        .notify("java/projectConfigurationsUpdate", json!({ "identifiers": identifiers }))
+                        .map_err(|e| crate::rpc_err(SERVER, "java/projectConfigurationsUpdate", e))
+                }
+            };
+            result = result.and(updated);
+        }
+        result
+    }
+
+    /// Asks jdtls to re-read library archives replaced in place.
+    pub async fn java_refresh_archives(&self, files: &[PathBuf], archives: &HashSet<PathBuf>) -> IdeResult<()> {
+        let mut archives: Vec<_> = archives.iter().map(|a| Value::String(a.to_string_lossy().into_owned())).collect();
+        archives.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        let mut result = Ok(());
+        for (_, paths) in self.running_java_projects(files) {
+            let refreshed = self.jdtls_command(paths[0], "openidea.java.refreshArchives", archives.clone()).await;
+            result = result.and(refreshed.map(|_| ()));
+        }
+        result
     }
 
     /// Pause autobuild before resolving the launch classpath. That query takes the
@@ -964,12 +1043,21 @@ impl LspManager {
             };
             let cp = match self.java_classpath(module, test, cancel).await {
                 Ok(cp) => Some(cp),
-                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-                Err(e) if matches!(build, Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed)) => {
-                    tracing::debug!("java.project.getClasspaths: {e}; retaining all compile errors");
-                    None
+                Err(e)
+                    if e.kind == ErrorKind::Cancelled
+                        || matches!(e.data, Some(ErrorData::JavaBuildProblems { .. })) =>
+                {
+                    return Err(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => match self.unconfigured_module(module, cancel).await? {
+                    // The build "fails" on the build file's errors alone, with no compile errors to show.
+                    Some(unconfigured) => return Err(unconfigured),
+                    None if matches!(build, Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed)) => {
+                        tracing::debug!("java.project.getClasspaths: {e}; retaining all compile errors");
+                        None
+                    }
+                    None => return Err(e),
+                },
             };
             let java_home = match self.java_vm_location(module, cancel).await {
                 Ok(home) => home,
@@ -1231,6 +1319,36 @@ mod tests {
         let language: ide_language::LanguageConfig =
             toml::from_str(include_str!("../../../languages/java.toml")).unwrap();
         language.language_servers.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn a_module_without_java_configuration_reports_its_build_file_errors() {
+        let at = |path: &str, severity, message: &str| {
+            let d = lsp_types::Diagnostic { severity: Some(severity), message: message.into(), ..Default::default() };
+            (PathBuf::from(path), d)
+        };
+        use lsp_types::DiagnosticSeverity as S;
+        let diagnostics = [
+            at("/w/pom.xml", S::ERROR, "Non-resolvable import POM"),
+            at(
+                "/w/app-server/pom.xml",
+                S::ERROR,
+                "Could not calculate build plan: Plugin x:y:9.9.9 could not be resolved:\nFailure to find…",
+            ),
+            at("/w/app-server/pom.xml", S::WARNING, "Overriding managed version"),
+            at("/w/app-server/src/main/java/Main.java", S::ERROR, "Main cannot be resolved"),
+            at("/w/app-system/pom.xml", S::ERROR, "Another module's error"),
+            at("/w/app-server/build.gradle", S::ERROR, "Could not run phased build action"),
+        ];
+        assert_eq!(
+            build_file_errors(&diagnostics, Path::new("/w"), Path::new("/w/app-server")),
+            [
+                "app-server/pom.xml: Could not calculate build plan: Plugin x:y:9.9.9 could not be resolved",
+                "app-server/build.gradle: Could not run phased build action",
+                "pom.xml: Non-resolvable import POM",
+            ]
+        );
+        assert!(build_file_errors(&diagnostics, Path::new("/w"), Path::new("/w/app-module")).len() == 1);
     }
 
     #[test]

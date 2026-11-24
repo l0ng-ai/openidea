@@ -3,7 +3,8 @@
  * based theme + syntax colours and lazy language loading through the editor's
  * language pipeline, so colours match the editor.
  */
-import { syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
+import { highlightingFor, language, syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
+import { highlightTree } from "@lezer/highlight";
 import {
   Compartment,
   EditorState,
@@ -31,18 +32,20 @@ import {
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
-import { getChunks, mergeViewSiblings, type Chunk } from "@codemirror/merge";
+import { getChunks, getOriginalDoc, mergeViewSiblings, type Chunk } from "@codemirror/merge";
 import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
+import { inlineBackground } from "@/editor/core/cm/inlineBg";
 import { languageDescriptionFor, loadSupport } from "@/editor/core/cm/languages";
+import { occurrenceSearch } from "@/editor/core/cm/editing";
 import { findExtension } from "@/editor/core/cm/find";
 import { overviewLane } from "@/editor/core/cm/lanes";
 import { LINE_INSET } from "@/editor/core/cm/lineInset";
 import { caretExtension } from "@/editor/core/cm/prefs";
 import { fontExtension, tooltipBounds } from "@/editor/core/cm/setup";
-import { caretStyles, findLocals, findStyles, overviewStyles } from "@/editor/core/cm/theme";
+import { caretStyles, findLocals, findStyles, markWidgetStyles, overviewStyles } from "@/editor/core/cm/theme";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { getDiffInsights, hasInnerFragments } from "./diffOptions";
@@ -245,14 +248,26 @@ export type DiffLayout = "split" | "unified";
  * new ones inserted (createUnifiedChunkHighlighters); the old lines sit above the new ones in a
  * widget, so their mark is a point on top of the inserted lines.
  */
-export function diffScrollbarMarks(state: EditorState, unified: boolean): ScrollbarMark[] {
+export function diffScrollbarMarks(state: EditorState, unified: boolean, unifiedOnLeft = false): ScrollbarMark[] {
   const info = getChunks(state);
   if (!info) return [];
   if (unified)
     return info.chunks.flatMap((c) => {
       const marks: ScrollbarMark[] = [];
-      if (c.fromB !== c.toB) marks.push({ from: c.fromB, to: c.endB, color: stripeColor.inserted, kind: "full" });
-      if (c.fromA !== c.toA) marks.push({ from: c.fromB, color: stripeColor.deleted, kind: "full", priority: 1 });
+      if (c.fromB !== c.toB)
+        marks.push({
+          from: c.fromB,
+          to: c.endB,
+          color: stripeColor[unifiedOnLeft ? "deleted" : "inserted"],
+          kind: "full",
+        });
+      if (c.fromA !== c.toA)
+        marks.push({
+          from: unifiedOnLeft ? c.endB : c.fromB,
+          color: stripeColor[unifiedOnLeft ? "inserted" : "deleted"],
+          kind: "full",
+          priority: 1,
+        });
       return marks;
     });
   const isA = info.side === "a";
@@ -267,12 +282,12 @@ export function diffScrollbarMarks(state: EditorState, unified: boolean): Scroll
 type ChunkMarks = { chunks: readonly Chunk[] | undefined; marks: readonly ScrollbarMark[] };
 
 /** Recomputed when the chunks change, which can happen without a document change (MergeView, `updateOriginalDoc`). */
-const chunkMarks = (unified: boolean) =>
+const chunkMarks = (unified: boolean, unifiedOnLeft: boolean) =>
   StateField.define<ChunkMarks>({
-    create: (state) => ({ chunks: getChunks(state)?.chunks, marks: diffScrollbarMarks(state, unified) }),
+    create: (state) => ({ chunks: getChunks(state)?.chunks, marks: diffScrollbarMarks(state, unified, unifiedOnLeft) }),
     update: (value, tr) => {
       const chunks = getChunks(tr.state)?.chunks;
-      return chunks === value.chunks ? value : { chunks, marks: diffScrollbarMarks(tr.state, unified) };
+      return chunks === value.chunks ? value : { chunks, marks: diffScrollbarMarks(tr.state, unified, unifiedOnLeft) };
     },
     provide: (f) => scrollbarMarks.from(f, (v) => v.marks),
   });
@@ -281,8 +296,96 @@ const chunkMarks = (unified: boolean) =>
  * The overview lane with the diff's changes, over the pane's scrollbar. Every
  * diff pane scrolls itself, so each carries its own lane.
  */
-export function diffOverview(layout: DiffLayout): Extension {
-  return [chunkMarks(layout === "unified"), overviewLane];
+export function diffOverview(layout: DiffLayout, unifiedOnLeft = false): Extension {
+  return [chunkMarks(layout === "unified", unifiedOnLeft), overviewLane];
+}
+
+class WorkingChunk extends WidgetType {
+  constructor(
+    readonly text: string,
+    readonly chunk: Chunk,
+    readonly words: boolean,
+  ) {
+    super();
+  }
+
+  eq(other: WorkingChunk) {
+    return other.chunk === this.chunk && other.text === this.text && other.words === this.words;
+  }
+
+  toDOM(view: EditorView) {
+    const block = document.createElement("div");
+    block.className = "cm-unifiedWorkingChunk";
+    block.dataset.diffFirstLine = String(getOriginalDoc(view.state).lineAt(this.chunk.fromA).number);
+    const makeRow = () => block.appendChild(document.createElement("div"));
+    let row = makeRow();
+    const tokens: Array<{ from: number; to: number; classes: string }> = [];
+    const lang = view.state.facet(language);
+    if (lang && this.text.length <= 3000)
+      highlightTree(
+        lang.parser.parse(this.text),
+        { style: (tags) => highlightingFor(view.state, tags) },
+        (from, to, classes) => {
+          tokens.push({ from, to, classes });
+        },
+      );
+    const words = this.words ? this.chunk.changes.filter((c) => c.fromA < c.toA) : [];
+    let tokenIndex = 0;
+    let wordIndex = 0;
+    for (let at = 0; at < this.text.length;) {
+      while (tokens[tokenIndex] && tokens[tokenIndex]!.to <= at) tokenIndex++;
+      while (words[wordIndex] && words[wordIndex]!.toA <= at) wordIndex++;
+      const token = tokens[tokenIndex];
+      const word = words[wordIndex];
+      const insideToken = token && token.from <= at;
+      const insideWord = word && word.fromA <= at;
+      const end = Math.min(
+        this.text.length,
+        (insideToken ? token.to : token?.from) ?? this.text.length,
+        (insideWord ? word.toA : word?.fromA) ?? this.text.length,
+      );
+      const text = this.text.slice(at, end);
+      const classes = [insideToken && token.classes, insideWord && "cm-unifiedWorkingWord"].filter(Boolean).join(" ");
+      for (const [index, part] of text.split("\n").entries()) {
+        if (index) {
+          if (!row.firstChild) row.appendChild(document.createElement("br"));
+          row = makeRow();
+        }
+        if (!part) continue;
+        if (classes) {
+          const span = row.appendChild(document.createElement("span"));
+          span.className = classes;
+          span.textContent = part;
+        } else row.append(part);
+      }
+      at = end;
+    }
+    if (!row.firstChild) row.appendChild(document.createElement("br"));
+    return block;
+  }
+}
+
+/** CodeMirror stores the editable document on B. Keep the logical right text below the index lines. */
+export function unifiedLeftDiff(words: boolean): Extension {
+  const build = (state: EditorState): DecorationSet => {
+    const original = getOriginalDoc(state);
+    return Decoration.set(
+      (getChunks(state)?.chunks ?? []).flatMap((chunk) => {
+        if (chunk.fromA === chunk.toA) return [];
+        const hasIndexLines = chunk.fromB !== chunk.toB;
+        const at = Math.min(state.doc.length, hasIndexLines ? chunk.endB : chunk.fromB);
+        const widget = new WorkingChunk(original.sliceString(chunk.fromA, chunk.endA), chunk, words);
+        return [Decoration.widget({ widget, block: true, side: hasIndexLines ? 1 : -1 }).range(at)];
+      }),
+      true,
+    );
+  };
+  const decorations = StateField.define<DecorationSet>({
+    create: build,
+    update: (value, tr) => (getChunks(tr.startState)?.chunks === getChunks(tr.state)?.chunks ? value : build(tr.state)),
+    provide: (field) => EditorView.decorations.from(field),
+  });
+  return [decorations, EditorView.editorAttributes.of({ class: "cm-unified-left" })];
 }
 
 /**
@@ -341,6 +444,14 @@ export const viewerTheme = EditorView.theme(
     "&.cm-merge-a .cm-changedLine, &.cm-merge-b .cm-changedLine": { backgroundColor: "transparent" },
     // The unified view's own line tint (cm-inlineChangedLine), keyed to the inserted colour.
     ".cm-inlineChangedLine": { backgroundColor: diffTint("inserted", 70) },
+    "&.cm-unified-left .cm-deletedChunk": { display: "none" },
+    "&.cm-unified-left .cm-inlineChangedLine, &.cm-unified-left .cm-diffLine-inserted": {
+      backgroundColor: diffTint("deleted", 70),
+    },
+    "&.cm-unified-left .cm-inlineChangedLine.cm-diffLine-fine": { backgroundColor: diffTint("deleted", 28) },
+    "&.cm-unified-left .cm-changedText": { background: diffTint("deleted", 85) },
+    ".cm-unifiedWorkingChunk": { paddingInline: `${LINE_INSET}px`, backgroundColor: diffTint("inserted", 70) },
+    ".cm-unifiedWorkingWord": { background: diffTint("inserted", 85) },
     ".cm-line.cm-diffLine-modified": { backgroundColor: diffTint("modified", 70) },
     ".cm-line.cm-diffLine-inserted": { backgroundColor: diffTint("inserted", 70) },
     ".cm-line.cm-diffLine-deleted": { backgroundColor: diffTint("deleted", 70) },
@@ -377,22 +488,58 @@ export const viewerTheme = EditorView.theme(
       margin: "0 -1px",
       verticalAlign: "top",
     },
-    // The unified view: old lines deleted, new lines inserted.
+    // The unified view: old lines deleted, new lines inserted. The old lines of a chunk whose words
+    // were compared sit right above its first new line and take the lighter colour too.
     ".cm-deletedChunk": { backgroundColor: diffTint("deleted", 70) },
-    "&.cm-diffWords .cm-deletedChunk": { backgroundColor: diffTint("deleted", 28) },
-    ".cm-deletedChunk .cm-deletedText": { background: diffTint("deleted", 85) },
+    "&.cm-diffWords .cm-deletedChunk:has(+ .cm-diffLine-fine)": { backgroundColor: diffTint("deleted", 28) },
+    // Full line height, as `.cm-diffWord`.
+    ".cm-deletedChunk .cm-deletedText": { display: "inline-block", background: diffTint("deleted", 85) },
+    ".cm-content .cm-line.cm-unified-commit-selected, .cm-deletedChunk > .cm-unified-commit-selected": {
+      backgroundColor: "var(--bg-editor-selection)",
+      color: "var(--fg-editor-selection)",
+    },
     "&.cm-merge-a .cm-changedText": { background: diffTint("deleted", 85) },
-    "&.cm-merge-b .cm-changedText": { background: diffTint("inserted", 85) },
+    "&.cm-merge-b .cm-changedText": { display: "inline-block", background: diffTint("inserted", 85) },
     ".cm-changeGutter": { width: "3px", paddingLeft: "0" },
     "&.cm-merge-a .cm-changedLineGutter, .cm-deletedLineGutter": { background: "var(--gutter-deleted)" },
     "&.cm-merge-b .cm-changedLineGutter": { background: "var(--gutter-modified)" },
     ".cm-collapsedLines": {
-      padding: "2px 10px",
-      background: "var(--bg-elev)",
-      color: "var(--fg-subtle)",
+      WebkitUserSelect: "none",
+      userSelect: "none",
+      minHeight: "max(27px, var(--openidea-editor-line-height, var(--lh-code)))",
+      padding: "0",
+      background: "var(--bg-editor)",
+    },
+    ".cm-collapsedLines > button": {
+      display: "flex",
+      alignItems: "center",
+      gap: "var(--space-1)",
+      width: "100%",
+      minHeight: "inherit",
+      padding: "0 var(--space-3)",
+      color: "var(--fg-secondary)",
       fontFamily: "var(--font-ui)",
-      fontSize: "var(--fs-small)",
+      fontSize: "var(--fs-ui)",
+      lineHeight: "1.4",
+      textAlign: "start",
       cursor: "pointer",
+    },
+    ".cm-collapsedLines > button:hover, .cm-collapsedLines > button:focus-visible": {
+      backgroundColor: "var(--bg-hover)",
+      color: "var(--fg-strong)",
+    },
+    ".cm-collapsedLines > button:focus-visible": { outlineOffset: "-2px" },
+    ".cm-collapsedLines > button::after": {
+      content: '""',
+      flex: "1",
+      height: "var(--space-1)",
+      marginInlineStart: "var(--space-2)",
+      background: "repeating-linear-gradient(-45deg, var(--diff-separator-wave) 0 1px, transparent 1px 5px)",
+    },
+    ".cm-diffCollapseLabel": {
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
     },
     ".cm-collapsedLines:before": { content: "none" },
     ".cm-collapsedLines:after": { content: "none" },
@@ -409,8 +556,9 @@ export const viewerTheme = EditorView.theme(
       color: "var(--fg-secondary)",
     },
     ".cm-panels": { backgroundColor: "var(--bg-elev)", color: "var(--fg)" },
-    ".cm-searchMatch": { backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent)" },
+    ".cm-searchMatch": inlineBackground("color-mix(in srgb, var(--accent) 22%, transparent)"),
     ...findStyles,
+    ...markWidgetStyles,
   },
   { dark: true },
 );
@@ -449,7 +597,7 @@ function viewerEditorLook(): Extension {
   ];
 }
 
-class LineNumber extends GutterMarker {
+export class LineNumber extends GutterMarker {
   constructor(readonly number: string) {
     super();
   }
@@ -461,7 +609,7 @@ class LineNumber extends GutterMarker {
   }
 }
 
-function maxLineNumber(lines: number): number {
+export function maxLineNumber(lines: number): number {
   let last = 9;
   while (last < lines) last = last * 10 + 9;
   return last;
@@ -515,6 +663,9 @@ export function viewerBase(opts: {
     changedLines,
     EditorState.readOnly.of(opts.readOnly),
     EditorView.editable.of(!opts.readOnly),
+    // Add Selection for Next Occurrence, Clone Caret: several carets, as in the editor.
+    EditorState.allowMultipleSelections.of(true),
+    occurrenceSearch,
     // Non-editable revision panes still need keyboard selection and copy.
     opts.readOnly ? EditorView.contentAttributes.of({ tabindex: "0" }) : [],
   ];

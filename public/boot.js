@@ -136,27 +136,39 @@
     window.removeEventListener("unhandledrejection", onRejection);
     window.removeEventListener("openidea:boot-error", onBootError);
     window.removeEventListener("openidea:boot-ready", onReady);
+    window.removeEventListener("openidea:boot-question", onQuestion);
+    window.removeEventListener("openidea:boot-answer", onAnswer);
     document.removeEventListener("visibilitychange", onVisibility);
   };
-  // The timeout counts only while the window shows: a hidden or covered window gets no
-  // animation frames, and the splash waits for those to finish startup.
+  // The timeout counts only while the window shows and nothing waits for the user: a hidden
+  // or covered window gets no animation frames, and the splash waits for those to finish
+  // startup; a question asked over the splash (Trust Project) holds it until answered.
   let remaining = 60_000;
   let armedAt = 0;
   let timer;
+  let questions = 0;
   const arm = () => {
-    if (failed || ready || timer !== undefined || document.hidden) return;
+    if (failed || ready || timer !== undefined || document.hidden || questions > 0) return;
     armedAt = Date.now();
     timer = window.setTimeout(
       () => show(rejection === undefined ? text.timeout : `${text.timeout}\n\nUnhandled rejection: ${rejection}`),
       remaining,
     );
   };
-  const onVisibility = () => {
-    if (!document.hidden) return arm();
+  const pause = () => {
     if (timer === undefined) return;
     window.clearTimeout(timer);
     timer = undefined;
     remaining -= Date.now() - armedAt;
+  };
+  const onVisibility = () => (document.hidden ? pause() : arm());
+  const onQuestion = () => {
+    questions += 1;
+    pause();
+  };
+  const onAnswer = () => {
+    questions = Math.max(0, questions - 1);
+    arm();
   };
   arm();
   document.addEventListener("visibilitychange", onVisibility);
@@ -164,6 +176,8 @@
   window.addEventListener("unhandledrejection", onRejection);
   window.addEventListener("openidea:boot-error", onBootError);
   window.addEventListener("openidea:boot-ready", onReady);
+  window.addEventListener("openidea:boot-question", onQuestion);
+  window.addEventListener("openidea:boot-answer", onAnswer);
 })();
 
 // Runs before the app's CSS loads: restores the last theme (theme.ts stores it)

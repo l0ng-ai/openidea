@@ -1,7 +1,7 @@
 /** Memory tab of the Debug tool window: live instance counts per class of the debugged JVM, and heap capture. */
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { Checkbox, Icon, IconButton, Input, List, T } from "@/ui";
+import { Icon, IconButton, List, Menu, SearchField, T } from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import type { JvmClassRow, JvmMemorySnapshot } from "@/platform/ipc";
@@ -24,6 +24,7 @@ import { keepKeysOnButton } from "./rowButtonKeys";
 import { columnsOf, formatBytes, formatCount, formatDelta, queryFor, visibleRows, type SortKey } from "./rows";
 import { unavailableText } from "./unavailableText";
 import styles from "./MemoryView.module.css";
+import { useRowHeight } from "@/ui/density";
 
 const COLUMNS: ReadonlyArray<{ key: SortKey; label: string; numeric: boolean }> = [
   { key: "name", label: "Class", numeric: false },
@@ -105,11 +106,14 @@ function ClassRow({
 }
 
 export function MemoryView({ session }: { session: DebugSession }) {
+  const rowHeight = useRowHeight(22);
   // Also re-renders the reason text, which reads the catalog when called.
   const tx = useTx();
   const id = session.id;
   const entry = useMemory((s) => s.bySession[id]);
   const query = entry?.query ?? DEFAULT_QUERY;
+  const optionsButton = useRef<HTMLButtonElement>(null);
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const result = entry?.result ?? null;
   const snapshot = entry?.snapshot ?? null;
   const source = snapshot?.source ?? "histogram";
@@ -159,17 +163,37 @@ export function MemoryView({ session }: { session: DebugSession }) {
           disabled={entry?.loading || !canRefresh}
         />
         <HeapCaptureButton session={session} />
-        <Input
+        <SearchField
           className={styles.filter}
           value={query.filter}
-          onChange={(e) => setMemoryQuery(id, { filter: e.target.value })}
+          onChange={(filter) => setMemoryQuery(id, { filter })}
           placeholder="Filter classes"
           aria-label="Filter classes"
         />
-        <Checkbox
-          checked={query.changedOnly}
-          onChange={(changedOnly) => setMemoryQuery(id, { changedOnly })}
-          label="Changed only"
+        <IconButton
+          ref={optionsButton}
+          icon="settings"
+          title="View Options"
+          size="small"
+          iconSize={16}
+          pressed={query.changedOnly}
+          aria-haspopup="menu"
+          aria-expanded={optionsOpen}
+          onClick={() => setOptionsOpen(!optionsOpen)}
+        />
+        <Menu
+          open={optionsOpen}
+          onClose={() => setOptionsOpen(false)}
+          anchor={optionsButton}
+          placement="bottom-end"
+          aria-label="View Options"
+          items={[
+            {
+              label: "Changed only",
+              checked: query.changedOnly,
+              run: () => setMemoryQuery(id, { changedOnly: !query.changedOnly }),
+            },
+          ]}
         />
       </div>
       {backend && (
@@ -248,7 +272,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
               onActivate={(r, _i, e) => {
                 if (e.type === "keydown" && listsInstances && paused) showInstancesOf(r.name);
               }}
-              rowHeight={22}
+              rowHeight={rowHeight}
               tableBody={{ headerRows: 1 }}
               empty={<span className={styles.note}>{tx("No matches")}</span>}
             />

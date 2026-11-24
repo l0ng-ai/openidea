@@ -15,7 +15,16 @@ import type { EditorView } from "@codemirror/view";
 import { getIndentUnit, indentString } from "@codemirror/language";
 import type { Pos, StructuralRanges, SyntaxError, SyntaxErrors, SyntaxNode } from "@/bindings";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
-import { SEMICOLON_LANGS, codeEnd, completeStatementSpec, lineCommentToken } from "./editing";
+import {
+  BARE_CONDITION,
+  SEMICOLON_LANGS,
+  codeEnd,
+  completeStatementSpec,
+  isBlockHead,
+  lineCommentToken,
+  recordSelectionAfter,
+  unclosedQuote,
+} from "./editing";
 
 /** The document has a real (Lezer) syntax tree, not a stream mode's flat token list or nothing. */
 export function hasLezerTree(state: EditorState): boolean {
@@ -105,6 +114,12 @@ function statementIsInnermost(state: EditorState, r: StructuralRanges): boolean 
   return !r.declaration || contains(offsets(state, r.declaration), offsets(state, r.statement));
 }
 
+/** Without the line breaks a node may end with (Go's `case 1:` branch ends at the next line's start). */
+function trimEnd(state: EditorState, s: Span): Span {
+  const text = state.sliceDoc(s.from, s.to);
+  return { from: s.from, to: s.from + text.trimEnd().length };
+}
+
 /** The node starts its line and nothing but `;`, `,` or a comment follows it on its last line. */
 function ownsLines(state: EditorState, s: Span): boolean {
   const first = state.doc.lineAt(s.from);
@@ -186,10 +201,10 @@ export function planMoveStatement(
   const node = useStatement ? r.statement : r.declaration;
   const sibling = useStatement ? (up ? r.prevStatement : r.nextStatement) : up ? r.prevDeclaration : r.nextDeclaration;
   if (!node) return { kind: "fallback" };
-  const cur = offsets(state, node);
+  const cur = trimEnd(state, offsets(state, node));
   if (!ownsLines(state, cur) || !reliableBounds(state, node, cur, errors)) return { kind: "fallback" };
   if (!sibling) return { kind: "noop" };
-  const sib = offsets(state, sibling);
+  const sib = trimEnd(state, offsets(state, sibling));
   if (!ownsLines(state, sib) || !reliableBounds(state, sibling, sib, errors)) return { kind: "noop" };
   const curLines = lineSpan(state, cur);
   const sibLines = lineSpan(state, sib);
@@ -336,6 +351,16 @@ export function planCompleteStatement(
   }
   const full = line.text.trimEnd();
   const codeTo = line.from + codeEnd(full, lineCommentToken(state, line.from));
+  const lineCode = state.sliceDoc(line.from, codeTo);
+  // A block head gets its body and an open string its quote: the parser's recovery
+  // asks for a `;` there (`if (x);`, `"text;`), which would change what the code means.
+  const nextLine = line.number < state.doc.lines ? state.doc.line(line.number + 1).text.trim() : "";
+  const finishedHead = isBlockHead(lineCode, language) && !unclosedBrackets(lineCode).length && nextLine !== "{";
+  if (
+    SEMICOLON_LANGS.has(language) &&
+    (finishedHead || BARE_CONDITION.test(lineCode) || unclosedQuote(lineCode, language))
+  )
+    return completeStatementSpec(state, language);
   const inserts: ChangeSpec[] = [];
   const lineErrors = errors?.errors.filter((e) => errorTouches(state, e, line.from, line.to)) ?? [];
   let closers = "";
@@ -429,7 +454,8 @@ export async function moveStatementStructural(
   up: boolean,
   q: StructureQueries,
 ): Promise<"done" | "fallback" | "stale"> {
-  return runPlanned(view, async () => {
+  const before = view.state.doc;
+  const result = await runPlanned(view, async () => {
     const line = view.state.doc.lineAt(view.state.selection.main.head);
     if (!line.text.trim()) return null;
     const r = await q.ranges(offsetToPos(view.state.doc, line.from));
@@ -446,6 +472,8 @@ export async function moveStatementStructural(
     const plan = planMoveStatement(view.state, r, up, errors);
     return plan.kind === "move" ? plan.spec : plan.kind === "noop" ? "noop" : null;
   });
+  if (result === "done" && view.state.doc !== before) recordSelectionAfter(view);
+  return result;
 }
 
 export async function completeStatementStructural(

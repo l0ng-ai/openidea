@@ -1,5 +1,5 @@
 /**
- * Settings › Agents › External MCP Servers: multi-level MCP management across Global (`settings.toml`
+ * Settings › Agents › MCP Connections: multi-level MCP management across Global (`settings.toml`
  * + Keychain), Project (`.openidea/settings.toml`), and Agent CLI config directories
  * (`~/.copilot/mcp-config.json`, `~/.claude.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`,
  * `~/.gemini/settings.json`, `~/.jetbrains/mcp/mcp.json`, `.mcp.json`, `.vscode/mcp.json`), with
@@ -42,6 +42,7 @@ import {
 import { IDE_MCP_SETTINGS_PAGE, defaultMcpBackend, useMcpCatalog, type McpBackend } from "./mcpModel";
 import { providerIcon } from "./model";
 import { useAgents } from "./store";
+import page from "./SettingsPage.module.css";
 import styles from "./McpServers.module.css";
 
 export { defaultMcpBackend, type McpBackend };
@@ -69,6 +70,7 @@ const KNOWN_AGENTS: ReadonlyArray<{ id: string; name: string }> = [
   { id: "cursor", name: "Cursor" },
   { id: "gemini", name: "Gemini CLI" },
   { id: "opencode", name: "OpenCode" },
+  { id: "hermes", name: "Hermes Agent" },
 ];
 
 function formatKeyValues(items: readonly McpKeyValue[]): string {
@@ -530,12 +532,12 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
   }, [sources, selectedImports]);
 
   return (
-    <div className={styles.page}>
-      <div className={styles.header}>
-        <h2 className={styles.title}>
-          <T>External MCP Servers</T>
+    <div className={page.page}>
+      <div className={page.header}>
+        <h2 className={page.title}>
+          <T>MCP Connections</T>
         </h2>
-        <div className={styles.headerActions}>
+        <div className={page.headerActions}>
           <Button
             variant="primary"
             onClick={() =>
@@ -576,18 +578,18 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
         </div>
       </div>
 
-      <p className={styles.lead}>
+      <p className={page.lead}>
         <T>
           An open standard that lets AI use external tools and services. MCP servers provide tools for file operations,
           databases, APIs, and more.
         </T>{" "}
-        <button type="button" className={styles.link} onClick={() => void openExternalUrl(MCP_DOCS_URL)}>
+        <button type="button" className={page.link} onClick={() => void openExternalUrl(MCP_DOCS_URL)}>
           <T>Learn more about MCP servers</T>
         </button>
       </p>
 
-      <div className={styles.topControls}>
-        <div className={styles.tabBar}>
+      <div className={page.topControls}>
+        <div className={page.tabBar}>
           <Tabs
             variant="compact"
             aria-label={tx("MCP configuration levels")}
@@ -598,19 +600,19 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                 id: "all",
                 label: tx("All Levels"),
                 text: tx("All Levels"),
-                trailing: <span className={styles.badge}>{servers.length}</span>,
+                trailing: <span className={page.badge}>{servers.length}</span>,
               },
               {
                 id: "user",
                 label: tx("Global"),
                 text: tx("Global"),
-                trailing: <span className={styles.badge}>{servers.filter((s) => s.scope === "user").length}</span>,
+                trailing: <span className={page.badge}>{servers.filter((s) => s.scope === "user").length}</span>,
               },
               {
                 id: "workspace",
                 label: tx("Project"),
                 text: tx("Project"),
-                trailing: <span className={styles.badge}>{servers.filter((s) => s.scope === "workspace").length}</span>,
+                trailing: <span className={page.badge}>{servers.filter((s) => s.scope === "workspace").length}</span>,
               },
               {
                 id: "discovered",
@@ -618,7 +620,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                 text: tx("Agent Configs"),
                 trailing:
                   sources.length > 0 ? (
-                    <span className={clsx(styles.badge, unimportedCount > 0 && styles.tagAccent)}>
+                    <span className={clsx(page.badge, unimportedCount > 0 && page.tagAccent)}>
                       {unimportedCount > 0 ? unimportedCount : sources.reduce((n, s) => n + s.servers.length, 0)}
                     </span>
                   ) : undefined,
@@ -628,7 +630,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
         </div>
 
         <SearchField
-          className={styles.search}
+          className={page.search}
           value={query}
           onChange={setQuery}
           placeholder={tx("Type to search...")}
@@ -637,7 +639,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
       </div>
 
       {error && (
-        <div className={styles.error} role="alert">
+        <div className={page.error} role="alert">
           <Icon name="error" size={14} />
           <span>{error}</span>
         </div>
@@ -656,12 +658,12 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
         <div className={styles.builtinCard}>
           <div className={styles.builtinMain}>
             <div className={styles.builtinHeader}>
-              <span className={clsx(styles.statusDot, ideMcpEnabled && styles.statusOn)} aria-hidden />
+              <span className={clsx(page.statusDot, ideMcpEnabled && page.statusOn)} aria-hidden />
               <span className={styles.serverName}>openidea</span>
-              <span className={styles.tag}>
+              <span className={page.tag}>
                 <T>Built-in IDE</T>
               </span>
-              <span className={styles.tag}>
+              <span className={page.tag}>
                 <T>All agents</T>
               </span>
             </div>
@@ -679,25 +681,25 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
       )}
 
       {visibleScopes.length > 0 && (
-        <div className={styles.sections}>
+        <div className={page.sections}>
           {visibleScopes.map(({ scope, title, hint }) => {
             const items = grouped[scope];
             const isCollapsed = collapsed[scope];
             return (
-              <section key={scope} className={styles.section} aria-label={tx(title)}>
-                <div className={styles.sectionBar}>
+              <section key={scope} className={page.section} aria-label={tx(title)}>
+                <div className={page.sectionBar}>
                   <button
                     type="button"
-                    className={styles.sectionToggle}
+                    className={page.sectionToggle}
                     aria-expanded={!isCollapsed}
                     onClick={() => setCollapsed((prev) => ({ ...prev, [scope]: !prev[scope] }))}
                   >
-                    <Icon name={isCollapsed ? "chevron-right" : "chevron-down"} size={14} className={styles.chevron} />
-                    <span className={styles.sectionTitle}>
+                    <Icon name={isCollapsed ? "chevron-right" : "chevron-down"} size={14} className={page.chevron} />
+                    <span className={page.sectionTitle}>
                       <T>{title}</T>
                     </span>
-                    <span className={styles.badge}>{items.length}</span>
-                    <span className={styles.sectionHint}>{tx(hint)}</span>
+                    <span className={page.badge}>{items.length}</span>
+                    <span className={page.sectionHint}>{tx(hint)}</span>
                   </button>
                   <IconButton
                     icon="plus"
@@ -724,7 +726,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                 )}
 
                 {!isCollapsed && items.length > 0 && (
-                  <div className={styles.sectionBody} role="list">
+                  <div className={page.sectionBody} role="list">
                     {items.map((server) => {
                       const summary = serverSummary(server);
                       const isExpanded = !!expanded[server.id];
@@ -733,52 +735,52 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                       const shadowsGlobal = scope === "workspace" && userServerNames.has(server.name);
                       const shadowedByProject = scope === "user" && workspaceServerNames.has(server.name);
                       return (
-                        <div key={server.id} role="listitem" className={styles.card}>
-                          <div className={styles.cardHeader}>
+                        <div key={server.id} role="listitem" className={page.card}>
+                          <div className={page.cardHeader}>
                             <button
                               type="button"
-                              className={styles.cardExpandBtn}
+                              className={page.cardExpandBtn}
                               aria-expanded={isExpanded}
                               onClick={() => setExpanded((prev) => ({ ...prev, [server.id]: !prev[server.id] }))}
                             >
                               <Icon
                                 name={isExpanded ? "chevron-down" : "chevron-right"}
                                 size={13}
-                                className={styles.chevron}
+                                className={page.chevron}
                               />
-                              <div className={styles.cardMain}>
-                                <div className={styles.cardTitleRow}>
+                              <div className={page.cardMain}>
+                                <div className={page.cardTitleRow}>
                                   <span className={styles.serverName}>{server.name}</span>
-                                  <span className={styles.tag}>{server.transport.toUpperCase()}</span>
+                                  <span className={page.tag}>{server.transport.toUpperCase()}</span>
                                   {shadowsGlobal && (
-                                    <span className={clsx(styles.tag, styles.tagAccent)}>
+                                    <span className={clsx(page.tag, page.tagAccent)}>
                                       <T>Overrides Global</T>
                                     </span>
                                   )}
                                   {shadowedByProject && (
-                                    <span className={styles.tag}>
+                                    <span className={page.tag}>
                                       <T>Overridden by Project</T>
                                     </span>
                                   )}
                                   {server.unapproved && (
-                                    <span className={clsx(styles.tag, styles.tagWarning)}>
+                                    <span className={clsx(page.tag, page.tagWarning)}>
                                       <T>Needs Approval</T>
                                     </span>
                                   )}
                                   {(server.agents ?? []).length === 0 ? (
-                                    <span className={styles.tag}>
+                                    <span className={page.tag}>
                                       <T>All agents</T>
                                     </span>
                                   ) : (
                                     (server.agents ?? []).map((agentId) => (
-                                      <span key={agentId} className={styles.tag}>
+                                      <span key={agentId} className={page.tag}>
                                         <Icon name={providerIcon(agentId)} size={11} />
                                         {agentId}
                                       </span>
                                     ))
                                   )}
                                   {probe?.ok && (
-                                    <span className={clsx(styles.tag, styles.tagSuccess)}>
+                                    <span className={clsx(page.tag, styles.tagSuccess)}>
                                       {formatMessage(tx("{count} MCP tools"), { count: probe.tools.length })}
                                     </span>
                                   )}
@@ -791,7 +793,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                               </div>
                             </button>
 
-                            <div className={styles.rowActions}>
+                            <div className={page.rowActions}>
                               {backend.testServer && (
                                 <IconButton
                                   icon="refresh"
@@ -810,12 +812,12 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                               />
                               <span
                                 className={clsx(
-                                  styles.statusDot,
+                                  page.statusDot,
                                   isProbing
                                     ? styles.statusProbing
                                     : probe && !probe.ok
                                       ? styles.statusError
-                                      : server.enabled && styles.statusOn,
+                                      : server.enabled && page.statusOn,
                                 )}
                                 title={
                                   isProbing
@@ -838,22 +840,22 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                           </div>
 
                           {isExpanded && (
-                            <div className={styles.cardDrawer}>
-                              <div className={styles.metaGrid}>
+                            <div className={page.cardDrawer}>
+                              <div className={page.metaGrid}>
                                 {server.transport === "stdio" ? (
                                   <>
-                                    <span className={styles.metaLabel}>
+                                    <span className={page.metaLabel}>
                                       <T>Command</T>
                                     </span>
-                                    <span className={styles.metaValue}>
+                                    <span className={page.metaValue}>
                                       {[server.command, ...server.args].filter(Boolean).join(" ")}
                                     </span>
                                     {server.env.length > 0 && (
                                       <>
-                                        <span className={styles.metaLabel}>
+                                        <span className={page.metaLabel}>
                                           <T>Env vars</T>
                                         </span>
-                                        <span className={styles.metaValue}>
+                                        <span className={page.metaValue}>
                                           {server.env.map((kv) => `${kv.name}=•••`).join(", ")}
                                         </span>
                                       </>
@@ -861,16 +863,16 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                                   </>
                                 ) : (
                                   <>
-                                    <span className={styles.metaLabel}>
+                                    <span className={page.metaLabel}>
                                       <T>Endpoint</T>
                                     </span>
-                                    <span className={styles.metaValue}>{server.url}</span>
+                                    <span className={page.metaValue}>{server.url}</span>
                                     {server.headers.length > 0 && (
                                       <>
-                                        <span className={styles.metaLabel}>
+                                        <span className={page.metaLabel}>
                                           <T>Headers</T>
                                         </span>
-                                        <span className={styles.metaValue}>
+                                        <span className={page.metaValue}>
                                           {server.headers.map((kv) => `${kv.name}: •••`).join(", ")}
                                         </span>
                                       </>
@@ -923,7 +925,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                                         </span>
                                       )
                                     ) : (
-                                      <div className={styles.error} role="alert">
+                                      <div className={page.error} role="alert">
                                         <Icon name="error" size={14} />
                                         <span>{probe.error ?? tx("Connection failed")}</span>
                                       </div>
@@ -936,8 +938,8 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                                 </div>
                               )}
 
-                              <div className={styles.drawerFooter}>
-                                <div className={styles.drawerButtons}>
+                              <div className={page.drawerFooter}>
+                                <div className={page.drawerButtons}>
                                   <Button
                                     variant="secondary"
                                     onClick={() =>
@@ -1080,7 +1082,7 @@ function DiscoveredSourcesView({
   const selectedCount = Object.values(selected).filter(Boolean).length;
 
   return (
-    <div className={styles.sections}>
+    <div className={page.sections}>
       <div className={styles.importToolbar}>
         <div className={styles.importControls}>
           <Select
@@ -1109,7 +1111,7 @@ function DiscoveredSourcesView({
       </div>
 
       {sources.length === 0 ? (
-        <div className={styles.emptyBox}>
+        <div className={page.emptyBox}>
           <T>
             No external MCP configuration files found in ~/.copilot, ~/.claude.json, ~/.codex, ~/.cursor, ~/.gemini,
             ~/.jetbrains/mcp, or the current project.
@@ -1123,9 +1125,9 @@ function DiscoveredSourcesView({
                 <div className={styles.sourceTitleRow}>
                   <Icon name={source.nativeProvider ? providerIcon(source.nativeProvider) : "plugin"} size={14} />
                   <span>{source.label}</span>
-                  <span className={styles.badge}>{source.servers.length}</span>
+                  <span className={page.badge}>{source.servers.length}</span>
                   {source.nativeProvider && (
-                    <span className={styles.tag}>
+                    <span className={page.tag}>
                       {formatMessage(tx("Native to {agent}"), { agent: source.nativeProvider })}
                     </span>
                   )}
@@ -1203,26 +1205,24 @@ function DiscoveredServerRow({
       <div className={styles.discoveredMain}>
         <Checkbox checked={checked} aria-label={tx`Select ${srv.name}`} onChange={onCheck} />
         <div className={styles.discoveredInfo}>
-          <div className={styles.cardTitleRow}>
+          <div className={page.cardTitleRow}>
             <span className={styles.serverName}>{srv.name}</span>
-            <span className={styles.tag}>{srv.transport.toUpperCase()}</span>
+            <span className={page.tag}>{srv.transport.toUpperCase()}</span>
             {inGlobal && (
-              <span className={clsx(styles.tag, styles.tagSuccess)}>
+              <span className={clsx(page.tag, styles.tagSuccess)}>
                 <T>In Global</T>
               </span>
             )}
             {inProject && (
-              <span className={clsx(styles.tag, styles.tagAccent)}>
+              <span className={clsx(page.tag, page.tagAccent)}>
                 <T>In Project</T>
               </span>
             )}
             {srv.envKeys.length > 0 && (
-              <span className={styles.tag}>{formatMessage(tx("{count} env"), { count: srv.envKeys.length })}</span>
+              <span className={page.tag}>{formatMessage(tx("{count} env"), { count: srv.envKeys.length })}</span>
             )}
             {srv.headerKeys.length > 0 && (
-              <span className={styles.tag}>
-                {formatMessage(tx("{count} headers"), { count: srv.headerKeys.length })}
-              </span>
+              <span className={page.tag}>{formatMessage(tx("{count} headers"), { count: srv.headerKeys.length })}</span>
             )}
           </div>
           {endpoint && (
@@ -1233,7 +1233,7 @@ function DiscoveredServerRow({
         </div>
       </div>
 
-      <div className={styles.rowActions}>
+      <div className={page.rowActions}>
         {!inGlobal && (
           <Button variant="secondary" disabled={importing} onClick={() => onQuickImport("user")}>
             <Icon name="plus" size={12} /> <T>Global</T>
@@ -1372,7 +1372,7 @@ function McpServerModal({
 
       <div className={styles.form}>
         {error && (
-          <div className={`${styles.error} ${styles.formWide}`} role="alert">
+          <div className={`${page.error} ${styles.formWide}`} role="alert">
             <Icon name="error" size={14} />
             <span>{error}</span>
           </div>

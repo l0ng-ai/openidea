@@ -194,14 +194,14 @@ impl AgentCatalogs {
         (shared.paths.models_file.clone(), shared.paths.project_root.clone(), provider.to_owned())
     }
 
-    fn fallback(shared: &Shared, provider: &str) -> CatalogData {
+    /// The catalog saved for this project, for before this run looked anything up.
+    fn saved(shared: &Shared, provider: &str) -> CatalogData {
         let cache = shared.known.lock();
-        let Some(known) = cache.get(provider) else { return CatalogData::default() };
-        known.catalogs.get(&shared.root_key()).map(|saved| saved.catalog.clone()).unwrap_or_else(|| CatalogData {
-            config: known.config.clone(),
-            thought_levels: known.thought_levels.clone(),
-            refreshed_at_ms: None,
-        })
+        cache
+            .get(provider)
+            .and_then(|known| known.catalogs.get(&shared.root_key()))
+            .map(|saved| saved.catalog.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn cached(&self, shared: &Shared, provider: &str) -> CatalogData {
@@ -210,7 +210,14 @@ impl AgentCatalogs {
             .entries
             .get(&Self::key(shared, provider))
             .and_then(|e| e.catalog.clone())
-            .unwrap_or_else(|| Self::fallback(shared, provider))
+            .unwrap_or_else(|| Self::saved(shared, provider))
+    }
+
+    /// The entry a chat may switch to: exactly what the picker offers from the cached catalog,
+    /// however long ago it was read. Refreshing keeps that catalog current; a listed model is
+    /// never refused because the catalog aged.
+    pub(super) fn listed_model(&self, shared: &Shared, provider: &str, model: &str) -> Option<crate::AgentConfigValue> {
+        self.cached(shared, provider).model_option()?.values.iter().find(|value| value.value == model).cloned()
     }
 
     pub(crate) fn levels(&self, shared: &Shared, provider: &str, model: &str) -> Option<Vec<AgentConfigOption>> {
@@ -221,14 +228,39 @@ impl AgentCatalogs {
         }
         drop(state);
         let cache = shared.known.lock();
-        let known = cache.get(provider)?;
-        known
-            .catalogs
-            .get(&shared.root_key())
-            .map(|saved| &saved.catalog.thought_levels)
-            .unwrap_or(&known.thought_levels)
-            .get(model)
-            .cloned()
+        cache.get(provider)?.catalogs.get(&shared.root_key())?.catalog.thought_levels.get(model).cloned()
+    }
+
+    pub(super) async fn load_levels(
+        self: &Arc<Self>,
+        shared: &Arc<Shared>,
+        provider: &str,
+        model: &str,
+    ) -> Result<Vec<AgentConfigOption>, String> {
+        if let Some(levels) = self.levels(shared, provider, model) {
+            return Ok(levels);
+        }
+        let unavailable = || "The agent did not report settings for the selected model".to_owned();
+        let spec = shared.spec(provider).ok_or_else(unavailable)?;
+        let (_, flight) = self.request(shared, spec, false, Some(model));
+        if let Some(mut ready) = flight {
+            while !*ready.borrow_and_update() {
+                if ready.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
+        self.levels(shared, provider, model).ok_or_else(|| {
+            let state = self.state.lock();
+            state
+                .entries
+                .get(&Self::key(shared, provider))
+                .and_then(|entry| {
+                    entry.model_failures.get(model).map(|failure| &failure.error).or(entry.error.as_ref())
+                })
+                .cloned()
+                .unwrap_or_else(unavailable)
+        })
     }
 
     pub(crate) fn evict_if_idle(&self, shared: &Shared, provider: &str) {
@@ -240,7 +272,7 @@ impl AgentCatalogs {
     }
 
     fn snapshot(&self, shared: &Shared, provider: &str, entry: &Entry) -> AgentModelCatalog {
-        let catalog = entry.catalog.clone().unwrap_or_else(|| Self::fallback(shared, provider));
+        let catalog = entry.catalog.clone().unwrap_or_default();
         let model_failure = entry.requested_model.as_ref().and_then(|model| entry.model_failures.get(model));
         let unknown_model = entry
             .requested_model
@@ -325,12 +357,11 @@ impl AgentCatalogs {
                 },
             );
         }
-        let fallback =
-            state.entries.get(&key).filter(|entry| entry.catalog.is_none()).map(|_| Self::fallback(shared, &spec.id));
         state.generation += 1;
         let generation = state.generation;
         let entry = state.entries.get_mut(&key).expect("catalog entry");
-        let catalog = entry.catalog.as_ref().or(fallback.as_ref()).expect("cached catalog");
+        let empty = CatalogData::default();
+        let catalog = entry.catalog.as_ref().unwrap_or(&empty);
         let fresh = entry.successful.is_some_and(|at| now.duration_since(at) < FRESH_FOR);
         let target = model
             .filter(|model| {
@@ -439,7 +470,7 @@ impl AgentCatalogs {
         entry.flight_model = None;
         let success = match result {
             Ok(found) => {
-                let previous = entry.catalog.take().unwrap_or_else(|| Self::fallback(shared, &key.2));
+                let previous = entry.catalog.take().unwrap_or_default();
                 let mut cache = shared.known.lock();
                 let known = cache.entry(key.2.clone()).or_default();
                 let mut catalog = CatalogData {
@@ -453,13 +484,9 @@ impl AgentCatalogs {
                         catalog.thought_levels.insert(model, levels);
                     }
                 }
-                known.config = catalog.config.clone();
-                known.thought_levels = catalog.thought_levels.clone();
                 if let Some(commands) = found.commands {
                     known.commands.insert(shared.root_key(), commands);
                 }
-                known.authoritative = true;
-                known.refreshed_at_ms = catalog.refreshed_at_ms;
                 known.catalogs.insert(
                     shared.root_key(),
                     SavedCatalog { fingerprint: entry.context.fingerprint(), catalog: catalog.clone() },

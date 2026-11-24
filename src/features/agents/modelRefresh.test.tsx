@@ -3,24 +3,33 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type {
   AgentConfigOption,
+  AgentEntry,
   AgentEvent,
   AgentModelCatalog,
   AgentProvider,
+  AgentTask,
   NewAgentTask,
   ProjectInfo,
 } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
+import type { EditorInput } from "@/workbench/contributions";
 import { HomeEditor } from "./HomeEditor";
 import { activate } from "./index";
+import { SESSION_KIND, sessionKey } from "./model";
+import { SessionEditor } from "./SessionEditor";
 import { HOME, connect, savedDraft, updateComposer, useAgents } from "./store";
 
 const backend = vi.hoisted(() => ({
+  activeInput: null as EditorInput | null,
+  tasks: [] as AgentTask[],
   providers: [] as AgentProvider[],
   channel: null as { onmessage: (event: AgentEvent) => void } | null,
   refresh: vi.fn(),
   create: vi.fn(),
+  setConfig: vi.fn(),
+  prompt: vi.fn(),
   notify: vi.fn(),
 }));
 const ok = <T,>(data: T) => ({ status: "ok" as const, data });
@@ -36,7 +45,7 @@ vi.mock("@/platform/ipc", async (original) => ({
   commands: {
     agentSubscribe: async (channel: typeof backend.channel) => {
       backend.channel = channel;
-      return ok([]);
+      return ok(backend.tasks);
     },
     agentProviders: async () => ok(backend.providers),
     agentRefreshModels: (provider: string, force: boolean, model: string | null) =>
@@ -44,16 +53,22 @@ vi.mock("@/platform/ipc", async (original) => ({
     agentProbe: async () => ok(null),
     agentCommands: async () => ok([]),
     vcsBranchInfo: async () => ok({ head: "main" }),
+    vcsConfigGet: async () => ok(null),
+    vcsRemotes: async () => ok([]),
     vcsBranches: async () => ok([]),
     agentCreate: (request: NewAgentTask) => backend.create(request),
+    agentEntries: async () => ok([{ type: "user", text: "Earlier message", attachments: [] }] satisfies AgentEntry[]),
+    agentChanges: async () => ok([]),
+    agentSetConfig: (task: string, id: string, value: string) => backend.setConfig(task, id, value),
+    agentPrompt: backend.prompt,
   },
 }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
-  maybeEditorService: () => ({ activePath: () => null }),
+  maybeEditorService: () => ({ activePath: () => null, activeInput: () => backend.activeInput }),
   editorService: () => ({
     activePath: () => null,
-    activeInput: () => null,
+    activeInput: () => backend.activeInput,
     openTabs: () => [],
     closeInput: () => false,
   }),
@@ -122,6 +137,9 @@ beforeEach(async () => {
   previousProject = useProject.getState().project;
   useProject.setState({ project: { root: "/models", trusted: true } as ProjectInfo });
   setContext("projectOpen", true);
+  backend.activeInput = null;
+  backend.tasks = [];
+  backend.setConfig.mockReset().mockResolvedValue(ok(null));
   backend.providers = [provider("first"), provider("second")];
   backend.refresh.mockReset().mockImplementation(async (id: string) => ok(catalog(id)));
   backend.create
@@ -141,6 +159,136 @@ afterEach(async () => {
   vi.useRealTimers();
   await vi.dynamicImportSettled();
   clearMocks();
+});
+
+it("refreshes an existing chat's searchable model choices and switches through its own option", async () => {
+  const task: AgentTask = {
+    id: "old-task",
+    title: "Old chat",
+    provider: "second",
+    status: "ready",
+    isolation: "local",
+    model: "old",
+    cwd: "/models",
+    branch: null,
+    base: null,
+    baseCommit: null,
+    error: null,
+    createdMs: 0,
+    updatedMs: 0,
+    config: [
+      { ...option("session-model", "model", ["old", "session-only"]), name: "Model" },
+      option("effort", "thought_level", ["low", "high"], "low"),
+      { ...option("mode", "mode", ["plan", "act"]), name: "Mode" },
+    ],
+    commands: [],
+    usage: null,
+    queue: [],
+  };
+  const input = { kind: SESSION_KIND, key: sessionKey(task.id), data: { task: task.id } };
+  backend.providers[1]!.config = [option("catalog-model", "model", ["second-cached"])];
+  backend.tasks = [task];
+  backend.activeInput = input;
+  await connect();
+  const draft = useAgents.getState().draft;
+  const fresh = catalog("second", {
+    config: [option("catalog-model", "model", ["fresh"]), option("catalog-only", "context_tier", ["large"])],
+    thoughtLevels: { old: [option("catalog-effort", "thought_level", ["max"])] },
+  });
+  backend.refresh.mockRejectedValueOnce(new Error("discovery offline"));
+
+  render(<SessionEditor input={input} />);
+  expect(await screen.findByText("Earlier message")).toBeVisible();
+  const modelButton = screen.getByRole("button", { name: "Model" });
+  fireEvent.click(modelButton);
+  expect(await screen.findByRole("alert")).toHaveTextContent("discovery offline");
+  expect(screen.queryByRole("option", { name: "session-only" })).not.toBeInTheDocument();
+  expect(screen.getByRole("option", { name: /^old/ })).toBeVisible();
+  expect(screen.getByRole("option", { name: "second-cached" })).toBeVisible();
+  expect(backend.refresh.mock.calls).toEqual([["second", false, null]]);
+  expect(screen.queryByRole("option", { name: "big" })).not.toBeInTheDocument();
+
+  const pending = deferred<CatalogReply>();
+  backend.refresh.mockReturnValueOnce(pending.promise);
+  fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+  expect(screen.getByRole("button", { name: "Refreshing…" })).toBeDisabled();
+  await act(async () => executeAction("agents.refreshModels"));
+  expect(backend.refresh.mock.calls).toEqual([
+    ["second", false, null],
+    ["second", true, null],
+  ]);
+  await act(async () => pending.resolve(ok(fresh)));
+
+  expect(modelButton).toHaveTextContent("old");
+  expect(screen.queryByRole("option", { name: "session-only" })).not.toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "fresh" })).toBeVisible();
+  expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("low");
+  expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("plan");
+  expect(screen.getByText("Earlier message")).toBeVisible();
+  expect(screen.queryByText("catalog-only")).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(backend.setConfig).not.toHaveBeenCalled();
+  expect(backend.create).not.toHaveBeenCalled();
+  expect(backend.prompt).not.toHaveBeenCalled();
+  expect(useAgents.getState().draft).toBe(draft);
+
+  fireEvent.change(screen.getByPlaceholderText("Search…"), { target: { value: "fresh" } });
+  fireEvent.click(screen.getByRole("option", { name: "fresh" }));
+  expect(backend.setConfig).toHaveBeenCalledExactlyOnceWith("old-task", "session-model", "fresh");
+  expect(modelButton).toHaveTextContent("old");
+  act(() =>
+    backend.channel!.onmessage({
+      type: "task",
+      task: { ...task, config: [{ ...task.config[0]!, current: "fresh" }, task.config[2]!] },
+    }),
+  );
+  expect(modelButton).toHaveTextContent("fresh");
+  expect(screen.queryByRole("button", { name: "Reasoning" })).not.toBeInTheDocument();
+  expect(screen.getByText("Earlier message")).toBeVisible();
+  expect(backend.prompt).not.toHaveBeenCalled();
+
+  await act(async () => executeAction("agents.refreshModels"));
+  expect(backend.refresh).toHaveBeenLastCalledWith("second", true, null);
+  expect(backend.refresh).toHaveBeenCalledTimes(3);
+  expect(useAgents.getState().draft).toBe(draft);
+});
+
+it("recovers a model picker after a Copilot ACP fallback removed the session option", async () => {
+  const task: AgentTask = {
+    id: "fallback-task",
+    title: "Recovered chat",
+    provider: "first",
+    status: "ready",
+    isolation: "local",
+    model: "stale-model",
+    cwd: "/models",
+    branch: null,
+    base: null,
+    baseCommit: null,
+    error: null,
+    createdMs: 0,
+    updatedMs: 0,
+    config: [{ ...option("mode", "mode", ["plan", "act"]), name: "Mode" }],
+    commands: [],
+    usage: null,
+    queue: [],
+  };
+  const input = { kind: SESSION_KIND, key: sessionKey(task.id), data: { task: task.id } };
+  backend.providers[0]!.config = [];
+  backend.tasks = [task];
+  backend.activeInput = input;
+  await connect();
+  backend.refresh.mockResolvedValueOnce(ok(catalog("first", { config: [option("model", "model", ["auto"])] })));
+
+  render(<SessionEditor input={input} />);
+  const modelButton = screen.getByRole("button", { name: "Model" });
+  expect(modelButton).toHaveTextContent("stale-model (unavailable)");
+  fireEvent.click(modelButton);
+  expect(await screen.findByRole("option", { name: "auto" })).toBeVisible();
+  fireEvent.click(screen.getByRole("option", { name: "auto" }));
+
+  expect(backend.refresh).toHaveBeenCalledWith("first", false, null);
+  expect(backend.setConfig).toHaveBeenCalledExactlyOnceWith("fallback-task", "model", "auto");
 });
 
 it("keeps cached choices usable while refreshing and shares the completion/cooldown from another window", async () => {
@@ -217,7 +365,7 @@ it("retains cached model and effort choices after a command failure and retries 
     draft: savedDraft({ provider: "first", config: { model: "big" }, thoughtLevels: { big: { effort: "low" } } }),
   });
   render(<HomeEditor />);
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
+  expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("low");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("connection lost");
   fireEvent.click(screen.getByRole("option", { name: "small" }));
@@ -244,7 +392,7 @@ it("preserves a valid remembered model and effort when discovery changes the def
   render(<HomeEditor />);
   await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("big");
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
+  expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("low");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(screen.getByRole("option", { name: "new" })).toBeVisible();
   fireEvent.keyDown(document, { key: "Escape" });
@@ -363,8 +511,8 @@ it("discovers an uncached model's own settings before its first task and restore
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("option", { name: "small" }));
   await waitFor(() => expect(backend.refresh).toHaveBeenLastCalledWith("first", false, "small"));
-  expect(screen.getByText("Loading model settings…")).toHaveAttribute("role", "status");
-  expect(screen.queryByRole("button", { name: "Reasoning" })).not.toBeInTheDocument();
+  expect(screen.getByRole("status", { name: "Loading model settings…" })).toBeVisible();
+  expect(screen.queryByRole("dialog", { name: "Model" })).not.toBeInTheDocument();
   expect(backend.create).not.toHaveBeenCalled();
   await act(async () =>
     pending.resolve(
@@ -381,18 +529,19 @@ it("discovers an uncached model's own settings before its first task and restore
       ),
     ),
   );
-  expect(screen.queryByText("Loading model settings…")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("medium");
-  fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
-  fireEvent.click(screen.getByRole("option", { name: "max" }));
-  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  expect(screen.queryByRole("status", { name: "Loading model settings…" })).not.toBeInTheDocument();
+  const settings = screen.getByRole("button", { name: /^Model settings:/ });
+  expect(settings).toHaveTextContent("medium");
+  fireEvent.click(settings);
+  fireEvent.click(screen.getByRole("radio", { name: "max" }));
   expect(screen.getByRole("radio", { name: "long_context" })).toBeVisible();
   fireEvent.click(screen.getByRole("radio", { name: "long_context" }));
-  fireEvent.click(screen.getByRole("option", { name: "big" }));
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("high");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
-  fireEvent.click(screen.getByRole("option", { name: "small" }));
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("max");
+  fireEvent.click(screen.getByTitle("big"));
+  expect(settings).toHaveTextContent("high");
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  fireEvent.click(screen.getByTitle("small"));
+  expect(settings).toHaveTextContent("max");
   expect(backend.refresh).toHaveBeenCalledTimes(2);
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
@@ -410,10 +559,10 @@ it("does not rediscover a model that explicitly reports no per-model controls", 
   await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
   for (const model of ["small", "big", "small"]) {
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
-    fireEvent.click(screen.getByRole("option", { name: model }));
+    fireEvent.click(screen.getByTitle(model));
   }
   expect(backend.refresh).toHaveBeenCalledExactlyOnceWith("first", false, "big");
-  expect(screen.queryByText("Loading model settings…")).not.toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "Loading model settings…" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Reasoning" })).not.toBeInTheDocument();
 });
 
@@ -442,7 +591,7 @@ it("waits for an unrelated lookup and discovers only the latest selected model",
       ok(catalog("first", { thoughtLevels: { latest: [option("effort", "thought_level", ["medium", "max"])] } })),
     ),
   );
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("medium");
+  expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("medium");
   expect(backend.refresh).toHaveBeenCalledTimes(2);
   expect(backend.create).not.toHaveBeenCalled();
 });
@@ -483,7 +632,7 @@ it("does not leak a delayed model's levels or failure into a newer selection", a
   backend.refresh.mockReturnValueOnce(pending.promise);
   for (const model of ["small", "big"]) {
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
-    fireEvent.click(screen.getByRole("option", { name: model }));
+    fireEvent.click(screen.getByTitle(model));
   }
   await act(async () =>
     pending.resolve(
@@ -500,7 +649,7 @@ it("does not leak a delayed model's levels or failure into a newer selection", a
     ),
   );
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("big");
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
+  expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("low");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Refresh models" })).toBeEnabled();

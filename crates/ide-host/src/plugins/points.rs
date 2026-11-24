@@ -66,6 +66,7 @@ pub fn register_builtin_points(
     run_detectors: &Arc<super::run_detectors::RunDetectors>,
     java_agents: &Arc<super::java_agents::JavaAgents>,
     providers: &Arc<super::providers::Providers>,
+    skills: &Arc<super::skills::PluginSkills>,
 ) -> Result<(), String> {
     registry.register(Arc::new(UiPoint::new(COMMANDS, ui.clone(), command)))?;
     registry.register(Arc::new(super::theme::ThemesPoint::new(ui.clone())))?;
@@ -73,9 +74,11 @@ pub fn register_builtin_points(
     registry.register(Arc::new(UiPoint::new(super::icons::POINT_ID, ui.clone(), super::icons::icon_theme)))?;
     registry.register(Arc::new(super::run_detectors::RunDetectorsPoint::new(run_detectors.clone())))?;
     registry.register(Arc::new(super::java_agents::JavaAgentsPoint::new(java_agents.clone())))?;
+    registry.register(Arc::new(super::skills::SkillsPoint::new(skills.clone())))?;
     registry.register(Arc::new(super::navigation::IndexersPoint))?;
     registry.register(Arc::new(super::providers::ProvidersPoint::new(providers.clone())))?;
     registry.register(Arc::new(UiPoint::new(super::providers::SECRETS_POINT, ui.clone(), super::providers::secret)))?;
+    registry.register(Arc::new(UiPoint::new(super::search::POINT, ui.clone(), super::search::declaration)))?;
     registry.register(Arc::new(UiPoint::new(super::endpoints::POINT, ui.clone(), super::endpoints::declaration)))?;
     registry.register(Arc::new(UiPoint::new(
         "runConfigurations",

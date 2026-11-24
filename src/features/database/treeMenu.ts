@@ -1,11 +1,20 @@
 /** Menus of the Database tool window, laid out like IDEA's (New ▸, Copy/Paste ▸, SQL Scripts ▸ …). */
+import { choosePath } from "@/platform/choosePath";
 import type { MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { fileSourceName, parseSourceUrl } from "./model";
 import { VENDORS, vendorPreset } from "./vendors";
 import { nodeTarget, objectOf, tableOf, type DbNode } from "./nodes";
 import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } from "./objects";
-import { connectedTargets, openDialog, openSourceDialog, sourceById, useDatabase } from "./store";
+import {
+  connectedTargets,
+  createsDatabases,
+  newSchemaTarget,
+  openDialog,
+  openSourceDialog,
+  sourceById,
+  useDatabase,
+} from "./store";
 import { readClipboardPlainText } from "@/platform/clipboard";
 import { useRemote } from "@/platform/remote";
 import { dumpScope, mysqlDumpScope } from "./dumpTools";
@@ -24,8 +33,7 @@ const act = (
 const sep: MenuItem = { kind: "separator" };
 
 async function sqliteFromFile() {
-  const { open } = await import("@/platform/dialog");
-  const file = await open({ multiple: false, directory: false, title: "SQLite Database File" });
+  const file = await choosePath({ directory: false, title: "SQLite Database File" });
   if (typeof file === "string") openSourceDialog(null, { driver: "sqlite", file, name: fileSourceName(file) });
 }
 
@@ -113,10 +121,22 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
   const rename = act("db.rename", n, { disabled: !(n.kind === "source" || (o && canRename(driver, o))) });
   const drop = act("db.drop", n, { disabled: !o || !canDrop(driver, o) });
   const copyRef = act("db.copyReference", n);
+  const readOnly = !!sourceById(id)?.readOnly;
+  const newSchema = newSchemaTarget(n) ? [act("db.newSchema", n, { disabled: readOnly })] : [];
   const navigation = (extra: MenuItem[] = []): MenuItem => ({
     label: "Navigation",
     submenu: [...extra, act("db.jumpToConsole", n)],
   });
+
+  if (driver === "jdbc" && n.kind !== "source") {
+    return [
+      newConsole,
+      ...(t ? [act("db.editData", n)] : []),
+      refresh,
+      { label: "Copy/Paste", submenu: [copyRef] },
+      navigation(),
+    ];
+  }
 
   switch (n.kind) {
     case "source": {
@@ -124,7 +144,18 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
       return [
         act("db.properties", n, { label: "Properties" }),
         sep,
-        { label: "New", icon: "plus", submenu: [newConsole, sep, ...dataSourceItems()] },
+        {
+          label: "New",
+          icon: "plus",
+          submenu: [
+            newConsole,
+            sep,
+            ...(createsDatabases(n.source) ? [act("db.newDatabase", n, { disabled: readOnly })] : []),
+            ...newSchema,
+            ...(createsDatabases(n.source) || newSchema.length ? [sep] : []),
+            ...dataSourceItems(),
+          ],
+        },
         { label: "Copy/Paste", submenu: [copyRef, act("db.duplicateSource", n)] },
         refresh,
         ...(n.source.driver === "snowflake" ? [act("db.introspect", n)] : []),
@@ -135,8 +166,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         quickDoc,
         navigation(),
         sep,
-        sqlScripts(n, false),
-        act("db.compareSchemas", n),
+        ...(driver === "jdbc" ? [act("db.runSqlScript", n)] : [sqlScripts(n, false), act("db.compareSchemas", n)]),
         ...importExport(dumpItems(n, true)),
         sep,
         act("db.drop", n, { label: "Remove Data Source…" }),
@@ -144,14 +174,16 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
     }
     case "database":
       return [
-        { label: "New", icon: "plus", submenu: [newConsole] },
+        { label: "New", icon: "plus", submenu: [newConsole, ...(newSchema.length ? [sep, ...newSchema] : [])] },
         { label: "Copy/Paste", submenu: [copyRef] },
         refresh,
         act("db.disconnect", n, { disabled: !useDatabase.getState().connected.has(id) || n.current }),
+        ...(createsDatabases(sourceById(id)) ? [sep, act("db.rename", n, { disabled: n.current || readOnly })] : []),
         sep,
         navigation(),
         sqlScripts(n, false),
         ...importExport(dumpItems(n, true)),
+        ...(createsDatabases(sourceById(id)) ? [sep, act("db.drop", n, { disabled: n.current || readOnly })] : []),
       ];
     case "schema":
     case "folder":
@@ -160,7 +192,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         ...(n.kind === "schema" ? [{ label: "Copy/Paste", submenu: [copyRef] }] : []),
         refresh,
         sep,
-        ...(n.kind === "schema" ? [quickDoc] : []),
+        ...(n.kind === "schema" ? [rename, sep, quickDoc] : []),
         navigation(),
         sep,
         sqlScripts(n, false),

@@ -1,15 +1,15 @@
 use super::{Channel, Emit};
 use crate::Host;
 use ide_command::command;
-use ide_core::{IdeResult, TerminalId};
-use ide_terminal::{TerminalInfo, TerminalOptions};
+use ide_core::{IdeResult, IpcBytes, TerminalId};
+use ide_terminal::{TerminalAttach, TerminalInfo, TerminalOptions, TerminalSessionInfo};
 
 mod images;
 
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 #[command(trust = always)]
-pub async fn term_store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: String) -> IdeResult<String> {
+pub async fn term_store_image(host: &Host, id: TerminalId, data: IpcBytes, mime: String) -> IdeResult<String> {
     if data.len() > MAX_IMAGE_BYTES {
         return Err(ide_core::IdeError::invalid("image is too large to paste (limit 20 MB)"));
     }
@@ -53,6 +53,7 @@ pub async fn term_spawn(
         Box::new(move |chunk| {
             let _ = on_output.send(chunk);
         }),
+        None,
     )?;
     if let Some(line) = activation {
         let _ = host.terminals.write(info.id, &format!(" {line}\r"));
@@ -160,6 +161,36 @@ pub fn term_kill(host: &Host, id: TerminalId) -> IdeResult<()> {
     host.terminals.kill(id)
 }
 
+/// Live terminal sessions of this window, for reattaching after a reconnect.
+#[command(trust = always)]
+pub async fn term_list(host: &Host, window: &str) -> Vec<TerminalSessionInfo> {
+    host.terminals.list_key(host.owner_window(window))
+}
+
+/// Reattaches to an existing terminal session `id`, returning its buffered output
+/// and streaming subsequent chunks to `on_output`.
+#[command(trust = always)]
+pub async fn term_attach(
+    host: &Host,
+    window: &str,
+    id: TerminalId,
+    cols: u16,
+    rows: u16,
+    on_output: Channel<String>,
+) -> IdeResult<TerminalAttach> {
+    let key = host.owner_window(window);
+    host.terminals.reattach(
+        id,
+        key,
+        cols,
+        rows,
+        host.window_sink(window),
+        Box::new(move |chunk| {
+            let _ = on_output.send(chunk);
+        }),
+    )
+}
+
 /// Whether the session is running a command (closing its tab asks first). A
 /// `tcgetpgrp` or one process snapshot: async only to stay off the main thread.
 #[command(trust = always)]
@@ -183,28 +214,18 @@ pub fn term_available_shells() -> Vec<String> {
 mod tests {
     use super::*;
     use crate::HostConfig;
-    use ide_core::{NullSink, error::ErrorKind};
-    use std::sync::Arc;
+    use ide_core::error::ErrorKind;
 
     #[tokio::test]
     async fn image_size_limit_is_checked_before_storage() {
         let root = tempfile::tempdir().unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: root.path().join("config"),
-            data_dir: root.path().join("data"),
-            local_data_dir: root.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |window| window,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig::for_test(root.path()));
         let id = TerminalId::next();
-        let error = term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1], "image/png".into()).await.unwrap_err();
+        let error =
+            term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1].into(), "image/png".into()).await.unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidInput);
         assert_eq!(error.message, "image is too large to paste (limit 20 MB)");
-        let error = term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES], "image/png".into()).await.unwrap_err();
+        let error = term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES].into(), "image/png".into()).await.unwrap_err();
         assert_eq!(error.message, "terminal session not found");
         assert!(!host.data_dir.join("terminal-images").exists());
     }
@@ -212,10 +233,12 @@ mod tests {
 
 ide_command::domain!(
     term:
+    term_attach,
     term_available_shells,
     term_default_shell,
     term_is_busy,
     term_kill,
+    term_list,
     term_resize,
     term_spawn,
     term_store_image,

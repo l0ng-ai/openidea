@@ -4,10 +4,13 @@
  * plugin into an OpenIDEA theme plugin package. The mapping covers the main
  * keys only; anything unmapped keeps the built-in value of the base (`kind`).
  *
- * Pure functions without imports: Settings › Plugins › Import IntelliJ Theme
+ * Pure functions, importing only data: Settings › Plugins › Import IntelliJ Theme
  * uses them on what the host read from the plugin (`plugin_read_intellij_theme`),
  * and so does the command line (`scripts/theme/import-intellij-theme.ts`).
  */
+
+import { iclsColor } from "../../platform/iclsColor.ts";
+import { DARCULA_TOKENS } from "./intellijDarcula.ts";
 
 /** OpenIDEA token ← IntelliJ `ui` keys, first present wins. `*.prop` wildcards apply too. */
 export const UI_KEYS: Record<string, string[]> = {
@@ -115,6 +118,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   ADDED_LINES_COLOR: ["--gutter-added"],
   DELETED_LINES_COLOR: ["--gutter-deleted"],
   CONSOLE_BACKGROUND_KEY: ["--bg-console"],
+  DIFF_SEPARATOR_WAVE: ["--diff-separator-wave"],
 };
 
 type Part = "FOREGROUND" | "BACKGROUND" | "EFFECT_COLOR" | "ERROR_STRIPE_COLOR";
@@ -180,8 +184,14 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   MATCHED_BRACE_ATTRIBUTES: [["BACKGROUND", "--bg-matched-brace"]],
   SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-search-result"]],
   TEXT_SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-text-search-result"]],
-  IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret"]],
-  WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret-write"]],
+  IDENTIFIER_UNDER_CARET_ATTRIBUTES: [
+    ["FOREGROUND", "--fg-identifier-under-caret"],
+    ["BACKGROUND", "--bg-identifier-under-caret"],
+  ],
+  WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: [
+    ["FOREGROUND", "--fg-identifier-under-caret-write"],
+    ["BACKGROUND", "--bg-identifier-under-caret-write"],
+  ],
   FOLDED_TEXT_ATTRIBUTES: [
     ["FOREGROUND", "--fg-fold-placeholder"],
     ["BACKGROUND", "--bg-fold-placeholder"],
@@ -295,19 +305,12 @@ function resolveColor(value: string, named: Map<string, string>, depth = 0): str
   return ref !== undefined && depth < 8 ? resolveColor(ref, named, depth + 1) : null;
 }
 
-/** `.icls` hex: RGB without `#`, leading zeros dropped (`"0"` is black, `"ff"` is #0000ff). */
-function iclsColor(value: string): string | null {
-  const v = value.trim().toLowerCase();
-  if (!/^[0-9a-f]{1,8}$/.test(v)) return null;
-  return `#${v.length <= 6 ? v.padStart(6, "0") : v.padStart(8, "0")}`;
-}
-
 const attr = (tag: string, name: string) => new RegExp(`${name}="([^"]*)"`).exec(tag)?.[1];
 
 /** Parses the colours and attributes of an `.icls` file into tokens. */
 export function convertIcls(xml: string): { name: string; dark: boolean | null; tokens: Record<string, string> } {
   const tokens: Record<string, string> = {};
-  const set = (names: string[], color: string | null) => {
+  const set = (names: string[], color: string | undefined) => {
     if (color) for (const n of names) tokens[n] ??= color;
   };
   const schemeTag = /<scheme\b[^>]*>/.exec(xml)?.[0] ?? "";
@@ -337,7 +340,7 @@ export function convertIcls(xml: string): { name: string; dark: boolean | null; 
     }
     attributes.set(m[1]!, parts);
   }
-  const textForeground = iclsColor(attributes.get("TEXT")?.get("FOREGROUND") ?? "");
+  const textForeground = iclsColor(attributes.get("TEXT")?.get("FOREGROUND"));
   for (const [key, parts] of attributes) {
     const map = ICLS_ATTRIBUTES[key];
     if (!map) continue;
@@ -346,11 +349,17 @@ export function convertIcls(xml: string): { name: string; dark: boolean | null; 
       for (const [part, token] of map) if (part === "FOREGROUND") set([token], textForeground);
       continue;
     }
-    for (const [part, token] of map) set([token], iclsColor(parts.get(part) ?? ""));
+    for (const [part, token] of map) set([token], iclsColor(parts.get(part)));
     // FONT_TYPE: 1 bold, 2 italic, 3 bold italic.
     if (key === "DEFAULT_LINE_COMMENT" && parts.has("FONT_TYPE")) {
       tokens["--syn-comment-style"] = Number(parts.get("FONT_TYPE")) & 2 ? "italic" : "normal";
     }
+  }
+  if (parent === "Darcula") {
+    // IntelliJ replaces a parent's attribute as a whole: what the file names, even empty or by baseAttributes, wins.
+    const keys = [...body.matchAll(/<option name="([^"]+)"/g)].map((m) => m[1]!);
+    const own = new Set(keys.flatMap((key) => (ICLS_ATTRIBUTES[key] ?? []).map(([, t]) => t)));
+    for (const [token, value] of Object.entries(DARCULA_TOKENS)) if (!own.has(token)) tokens[token] ??= value;
   }
   if (tokens["--wave-error"]) tokens["--editor-error-decoration"] = `underline wavy ${tokens["--wave-error"]}`;
   if (tokens["--bg-editor"]) tokens["--bg-editor-gutter"] ??= tokens["--bg-editor"];

@@ -35,7 +35,7 @@ export async function dialectOf(text: string): Promise<GherkinDialect> {
 
 /** Whether a change to `path` can change the index: a feature or script file. */
 export function isCucumberSource(path: string): boolean {
-  return /\.(feature|[cm]?[jt]sx?|java|kt)$/i.test(path);
+  return /\.(feature|[cm]?[jt]sx?|java|kt|py)$/i.test(path);
 }
 
 /** Forgets the index, so the next lookup rescans the project. */
@@ -51,7 +51,7 @@ function stepIndex(): Promise<StepIndex> {
         const path = ipcPath(s.path);
         if (s.feature) index.steps.push({ path, text: s.text, items: featureSteps(s.text, await dialectOf(s.text)) });
         else {
-          const items = stepDefinitions(s.text);
+          const items = stepDefinitions(s.text, path);
           if (items.length) index.definitions.push({ path, text: s.text, items });
         }
       }
@@ -110,13 +110,15 @@ export async function undefinedSteps(steps: readonly FeatureStep[]): Promise<Fea
 /** The file a new definition for a step of `featurePath` goes to: the step file named like the feature, else the one with the most definitions. */
 export async function definitionFileFor(featurePath: string): Promise<string | null> {
   const { definitions } = await stepIndex();
-  // `cart.steps.ts`, `CartSteps.java` and `cart_stepdefs.kt` all name the `cart` feature's steps.
+  // `cart.steps.ts`, `CartSteps.java`, `cart_stepdefs.kt` and pytest-bdd's `test_cart.py` all
+  // name the `cart` feature's steps.
   const stem = (path: string) =>
     (path.split("/").pop() ?? "")
       .split(".")[0]!
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "")
-      .replace(/(?:stepdefinitions|stepdefs|steps)$/, "");
+      .replace(/(?:stepdefinitions|stepdefs|steps)$/, "")
+      .replace(/^test(?=.)/, "");
   const feature = stem(featurePath);
   const named = definitions.find((file) => stem(file.path) === feature);
   if (named) return named.path;

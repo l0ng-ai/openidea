@@ -5,6 +5,8 @@
 //! `misbehave`) so tests need no wasm toolchain. Rebuild them with
 //! `plugins/build.sh <dir>` after changing their source or `wit/`.
 
+mod common;
+
 use ide_core::error::ErrorKind;
 use ide_core::ipc_path::to_ipc;
 use ide_host::plugins::*;
@@ -121,6 +123,7 @@ impl PluginWorkspace for TestWorkspace {
             scope: ide_search::SearchScope::Project,
             max_matches: limit,
             context: Default::default(),
+            include_excluded: false,
         };
         let files = Mutex::new(Vec::new());
         let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
@@ -823,6 +826,11 @@ fn plugin_processes_end_with_their_owner() {
             String::from_utf8_lossy(&ps.stdout).lines().any(|line| line.contains(&marker))
         };
         f.run("misbehave", "childkeep", marker.strip_prefix("--path=")).unwrap();
+        // fork+exec is not atomic: `ps` can still report the owner until the child execs.
+        let started = Instant::now() + Duration::from_secs(5);
+        while !alive() && Instant::now() < started {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(alive(), "{mode}: the process started");
         match mode {
             "disable" => f.host.set_enabled("misbehave", false).unwrap(),
@@ -879,16 +887,15 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
     // Room for activation (about 3_100 on macOS, more on Windows). A background task gets ten
     // times it (5 s / 500 ms): enough for each step of `patient` with its CPU work (32_000 to
     // 80_000), not for the whole run without the refill on each report.
-    let f = fixture(Limits {
+    let limits = Limits {
         fuel: 40_000,
         timeout: Duration::from_millis(500),
         background: Duration::from_millis(5_000),
         ..Limits::default()
-    });
+    };
+    let f = fixture(limits);
     f.install(&misbehave_pkg());
-    if f.host.set_capability("misbehave", "process:git", true).is_err() {
-        return;
-    }
+    f.host.set_capability("misbehave", "process:git", true).expect("grant Git capability");
     // Warm up activation in its own call so `patient` starts with a fresh budget.
     assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
 
@@ -897,6 +904,13 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
 
     let err = f.run("misbehave", "spin", None).unwrap_err();
     assert!(err.contains("exceeded its CPU budget (40000 fuel per call)"), "{err}");
+
+    // Beginning a task alone must not renew its scaled budget.
+    let quiet = fixture(limits);
+    quiet.install(&misbehave_pkg());
+    quiet.host.set_capability("misbehave", "process:git", true).expect("grant Git capability");
+    let err = quiet.run("misbehave", "patient", Some("quiet:4000")).unwrap_err();
+    assert!(err.contains("exceeded its CPU budget (400000 fuel per call)"), "{err}");
 }
 
 #[test]
@@ -1553,7 +1567,11 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     // Past the hard deadline: interrupted; the next call gets a new instance.
     assert!(provider.highlights(&mis, "spin").is_none());
     std::thread::sleep(Duration::from_millis(450));
-    host.tick();
+    // A slow runner may interrupt the spinning call a little after its deadline.
+    assert!(eventually(|| {
+        host.tick();
+        host.info_of("misbehave").unwrap().stats.crashes > 0
+    }));
     let info = host.info_of("misbehave").unwrap();
     assert_eq!(info.stats.crashes, 1, "{:?}", info.error);
     assert!(info.error.as_deref().is_some_and(|e| e.contains("timed out after 400ms")), "{:?}", info.error);
@@ -2207,6 +2225,8 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     let agent = info.java_agent.clone().expect("agent metadata");
     assert_eq!(agent.file_name, "fixture agent.jar");
     assert_eq!(agent.args.as_deref(), Some("mode=test"));
+    assert!(agent.vm_options.is_empty());
+    assert!(agent.jdk.is_none());
     assert!(!agent.approved);
     let source = f.host.java_agents();
     let launch = || {
@@ -4854,6 +4874,49 @@ fn plugins_set_their_own_context_keys() {
     assert!(f.host.context_keys(Some("main")).is_empty(), "cleared when the plugin stops");
 }
 
+/// `ui.set-console-rules` (API 1.12) replaces the plugin's rules for every window without a
+/// capability; unknown colours are dropped, an invalid rule keeps the previous list.
+#[test]
+fn plugins_replace_their_console_rules_and_lose_them_when_they_stop() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    f.run("jobs", "console-rules", None).unwrap();
+    let changed: Vec<_> = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, e)| match e {
+            PluginEvent::ConsoleRulesChanged { plugin_id, rules } => Some((client, plugin_id, rules)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed.len(), 1);
+    let (client, plugin_id, rules) = &changed[0];
+    assert_eq!((client.as_deref(), plugin_id.as_str()), (None, "jobs"));
+    assert_eq!(rules.iter().map(|r| r.pattern.as_str()).collect::<Vec<_>>(), [r"\[AUDIT\]", r"job-\d+"]);
+    assert!(
+        rules[0].whole_line && rules[0].styles == ["bold"] && rules[0].foreground.as_deref() == Some("bright-yellow")
+    );
+    assert!(rules[1].ignore_case && rules[1].foreground.as_deref() == Some("cyan") && rules[1].background.is_none());
+    assert_eq!(f.host.console_rules()["jobs"], *rules);
+
+    let err = f.run("jobs", "console-rules", Some("(a+)+b")).unwrap_err();
+    assert!(err.contains("invalid") && err.contains("repeated group"), "{err}");
+    assert!(f.run("jobs", "console-rules", Some(".*a.*b")).unwrap_err().contains("too long"));
+    assert_eq!(f.host.console_rules()["jobs"].len(), 2, "an invalid list keeps the previous one");
+
+    f.run("jobs", "console-rules", Some("")).unwrap();
+    assert!(f.host.console_rules().is_empty());
+
+    f.run("jobs", "console-rules", None).unwrap();
+    f.take_events();
+    f.host.set_enabled("jobs", false).unwrap();
+    assert!(f.host.console_rules().is_empty(), "cleared when the plugin stops");
+    assert!(f.take_events().iter().any(
+        |(_, e)| matches!(e, PluginEvent::ConsoleRulesChanged { plugin_id, rules } if plugin_id == "jobs" && rules.is_empty())
+    ));
+}
+
 #[test]
 fn context_keys_are_capped_and_windows_overlay_global_ones() {
     let f = fixture(Limits::default());
@@ -5292,6 +5355,7 @@ fn document_changes_reach_plugins_relative_to_the_project() {
     let deliver = |path: &str| {
         let change = ide_plugin::DocumentChanged {
             path: to_ipc(&f.project.join(path)),
+            project: None,
             base_version: 1,
             version: 2,
             changes: Vec::new(),
@@ -5305,6 +5369,8 @@ fn document_changes_reach_plugins_relative_to_the_project() {
     // Queued with the absolute path, filtered again at delivery, handed over project-relative.
     deliver("config/app.yaml");
     assert_eq!(f.run("test.path-events", "document", None).unwrap().as_deref(), Some("config/app.yaml"));
+    // With the project it is relative to: another open project may hold the same path.
+    assert_eq!(f.run("test.path-events", "document-project", None).unwrap(), Some(to_ipc(&f.project)));
 }
 
 #[test]
@@ -5639,15 +5705,8 @@ async fn web_ptys_are_capped_across_windows_and_end_with_the_plugin() {
     f.install(&sample("web-pty"));
     let root = tempfile::tempdir().unwrap();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: root.path().join("config"),
-        data_dir: root.path().join("data"),
         local_data_dir: root.path().join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(root.path())
     }));
     let spawn = |window: &str| {
         f.host.spawn_web_pty(
@@ -6328,6 +6387,32 @@ fn api14_window_status_overrides_fall_back_and_are_withdrawn() {
 }
 
 #[test]
+fn a_status_item_menu_reaches_the_ui_and_names_only_declared_commands() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    f.run("api14", "menu-status", Some("App: running")).unwrap();
+    let item = f.host.status_snapshot("main").into_iter().find(|i| i.id == "menu").unwrap().item;
+    assert_eq!(item.text, "App: running");
+    assert_eq!(
+        item.menu,
+        [
+            ide_plugin::StatusMenuEntry::Header { label: "App".into() },
+            ide_plugin::StatusMenuEntry::Action {
+                label: "Open".into(),
+                description: Some("https://app.test".into()),
+                command: "events".into(),
+                argument: Some("web".into()),
+            },
+            ide_plugin::StatusMenuEntry::Separator,
+        ]
+    );
+    let err = f.run("api14", "bad-menu-status", Some("changed")).unwrap_err();
+    assert!(err.contains("undeclared"), "{err}");
+    let item = f.host.status_snapshot("main").into_iter().find(|i| i.id == "menu").unwrap().item;
+    assert_eq!(item.text, "App: running", "a refused menu changes nothing");
+}
+
+#[test]
 fn api14_command_requests_preserve_window_result_and_reject_cycles() {
     let f = Arc::new(fixture(Limits::default()));
     f.install(&sample("api14"));
@@ -6381,6 +6466,7 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
                 mode: "visual".into(),
                 sub: Some("linewise".into()),
             }),
+            E::CaretMoved(ide_plugin::CaretMoved { path: path.clone(), line: 4, col: 2, settled: true }),
         ],
         Some(PluginEditor {
             path: path.clone(),
@@ -6392,7 +6478,7 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert!(f.host.wait_events(Duration::from_secs(5)));
     let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
     let events = received.as_array().unwrap();
-    assert_eq!(events.len(), 4, "{received}");
+    assert_eq!(events.len(), 5, "{received}");
     // The first synthetic post hands over the current keys ("enabled": false);
     // the second is a real diff to true. Keys come from the recomputed
     // snapshot, never from the event payload ("another-plugin-key").
@@ -6401,6 +6487,14 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert_eq!(events[1]["kind"], "settings-changed");
     assert_eq!(events[1]["data"], "[\"enabled\"]");
     assert_eq!(events[3]["kind"], "input-mode-changed");
+    assert_eq!(events[4]["kind"], "caret-moved");
+    let caret: serde_json::Value =
+        serde_json::from_str(events[4]["data"].as_str().expect("caret data is JSON")).unwrap();
+    assert_eq!(caret["path"], path.as_str());
+    assert_eq!(caret["line"], 4);
+    assert_eq!(caret["col"], 2);
+    assert_eq!(caret["settled"], true);
+    assert_eq!(events[4]["editor"][0], path.as_str());
     assert_eq!(events[2]["editor"][0], path);
     assert_eq!(events[2]["editor"][1][0], serde_json::json!([0, 0, 0, 0]));
 }
@@ -7213,4 +7307,113 @@ fn a_freshly_installed_plugin_gets_the_post_install_settings_event() {
         events.iter().any(|e| e["kind"] == "settings-changed"),
         "freshly installed plugin got no post-install event: {received}"
     );
+}
+
+#[test]
+fn contributes_skills_installs_discovers_and_tracks_plugin_lifecycle() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("agent-skills"));
+    assert_eq!(info.status, PluginStatus::Static);
+    assert!(info.warnings.is_empty(), "{:?}", info.warnings);
+    assert!(info.contributions.iter().any(|c| c.point == "skills" && c.label == "/release-notes"));
+
+    let dirs = f.host.skill_dirs(Some(&f.project), true);
+    assert_eq!(dirs.len(), 1);
+    assert!(dirs[0].join("SKILL.md").is_file(), "SKILL.md copied to install dir");
+    assert!(
+        dirs[0].join("references/template.md").is_file(),
+        "bundled supporting files in the skill folder copied to install dir"
+    );
+
+    let discovered = ide_agent::skills::discover_skills_with_plugins(std::slice::from_ref(&f.project), None, &dirs);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].name, "release-notes");
+    assert_eq!(discovered[0].source, ide_agent::AgentSkillSource::Plugin);
+    assert_eq!(discovered[0].hint.as_deref(), Some("[tag]"));
+
+    // Workspace skill with the same name wins; the plugin skill is never silently renamed.
+    let ws_skill = f.project.join(".agents/skills/release-notes");
+    std::fs::create_dir_all(&ws_skill).unwrap();
+    std::fs::write(ws_skill.join("SKILL.md"), "---\nname: release-notes\ndescription: workspace override\n---\n")
+        .unwrap();
+    let clashed = ide_agent::skills::discover_skills_with_plugins(std::slice::from_ref(&f.project), None, &dirs);
+    assert_eq!(clashed.len(), 1);
+    assert_eq!(clashed[0].source, ide_agent::AgentSkillSource::Workspace);
+    assert_eq!(clashed[0].description, "workspace override");
+
+    // Disabling or uninstalling removes the plugin's skill directories immediately.
+    f.host.set_enabled("test.agent-skills", false).unwrap();
+    assert!(f.host.skill_dirs(Some(&f.project), true).is_empty());
+    f.host.set_enabled("test.agent-skills", true).unwrap();
+    assert_eq!(f.host.skill_dirs(Some(&f.project), true).len(), 1);
+    f.host.uninstall("test.agent-skills").unwrap();
+    assert!(f.host.skill_dirs(Some(&f.project), true).is_empty());
+}
+
+#[test]
+fn contributes_skills_needs_api_1_15_and_warns_without_failing_plugin_on_bad_entries() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Older `engines.openidea` is refused at the manifest check.
+    let old_api = tmp.path().join("old-api");
+    copy_dir(&sample("agent-skills"), &old_api);
+    let manifest = std::fs::read_to_string(old_api.join("plugin.toml")).unwrap();
+    std::fs::write(old_api.join("plugin.toml"), manifest.replace("\"^1.15\"", "\"^1.14\"")).unwrap();
+    let err = f.host.install_from_dir(&old_api, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.15"), "{err:?}");
+
+    // Invalid skill entries emit load warnings while valid skills and the plugin itself still load.
+    let pkg = tmp.path().join("mixed-skills");
+    std::fs::create_dir_all(pkg.join("skills/good-skill")).unwrap();
+    std::fs::write(pkg.join("skills/good-skill/SKILL.md"), "---\nname: good-skill\ndescription: valid skill\n---\n")
+        .unwrap();
+    std::fs::create_dir_all(pkg.join("skills/wrong-name")).unwrap();
+    std::fs::write(
+        pkg.join("skills/wrong-name/SKILL.md"),
+        "---\nname: mismatched\ndescription: bad frontmatter name\n---\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(pkg.join("skills/not-skill-md")).unwrap();
+    std::fs::write(pkg.join("skills/not-skill-md/README.md"), "nope\n").unwrap();
+    std::fs::create_dir_all(pkg.join("skills/oversize")).unwrap();
+    std::fs::write(pkg.join("skills/oversize/SKILL.md"), "---\nname: oversize\ndescription: too big\n---\n").unwrap();
+    std::fs::write(pkg.join("skills/oversize/blob.bin"), vec![b'x'; (2 << 20) + 16]).unwrap();
+
+    #[allow(unused_mut)]
+    let mut manifest = String::from(
+        "id = \"acme.mixed-skills\"\n\
+         name = \"Mixed Skills\"\n\
+         version = \"1.0.0\"\n\
+         engines.openidea = \"^1.15\"\n\n\
+         [[contributes.skills]]\npath = \"skills/good-skill/SKILL.md\"\n\
+         [[contributes.skills]]\npath = \"../outside/SKILL.md\"\n\
+         [[contributes.skills]]\npath = \"skills/not-skill-md/README.md\"\n\
+         [[contributes.skills]]\npath = \"skills/wrong-name/SKILL.md\"\n\
+         [[contributes.skills]]\npath = \"skills/oversize/SKILL.md\"\n",
+    );
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "secret\n").unwrap();
+        std::fs::create_dir_all(pkg.join("skills/escape-link")).unwrap();
+        std::fs::write(
+            pkg.join("skills/escape-link/SKILL.md"),
+            "---\nname: escape-link\ndescription: has escaping symlink\n---\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, pkg.join("skills/escape-link/leak.txt")).unwrap();
+        manifest.push_str("[[contributes.skills]]\npath = \"skills/escape-link/SKILL.md\"\n");
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest).unwrap();
+
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "bad skill entries must not fail the plugin");
+    let expected_warnings = if cfg!(unix) { 5 } else { 4 };
+    assert_eq!(info.warnings.len(), expected_warnings, "{:?}", info.warnings);
+    assert!(info.warnings.iter().all(|w| w.starts_with("contributes.skills[")), "{:?}", info.warnings);
+
+    let dirs = f.host.skill_dirs(Some(&f.project), true);
+    assert_eq!(dirs.len(), 1);
+    assert!(dirs[0].ends_with("skills/good-skill"), "{dirs:?}");
 }

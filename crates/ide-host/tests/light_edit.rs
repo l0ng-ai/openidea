@@ -1,22 +1,14 @@
 //! LightEdit: a window editing loose files without a project.
 
-use ide_core::{ChangeSet, NullSink, TextChange};
-use ide_host::{Host, HostConfig, catalogue::TrustClass, ops};
+mod common;
+
+use ide_core::{ChangeSet, TextChange};
+use ide_host::{Host, catalogue::TrustClass, ops};
 use std::sync::Arc;
 use std::time::Duration;
 
 fn host(base: &std::path::Path) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }))
+    Arc::new(Host::new(common::host_config(base)))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -161,7 +153,7 @@ async fn light_notebooks_open_without_interpreter_detection_or_execution() {
     assert!(ops::notebook::notebook_save(&host, "main", notebook.id.clone()).await.is_ok());
     let error = ops::sdk::sdk_detect(&host, "main", ide_sdk::SdkKind::Python).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"));
-    assert!(ops::sdk::sdk_python_effective(&host, "main", None).is_err());
+    assert!(ops::sdk::sdk_python_effective(&host, "main", None).await.is_err());
     assert!(ops::sdk::sdk_locate_tools(&host, "main", vec!["prettier".into()], Some(root)).await.is_err());
     let error = ops::notebook::notebook_restart(&host, "main", notebook.id.clone()).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"));

@@ -1,7 +1,5 @@
 /**
- * Model, effort, mode and approvals controls for a composer's bottom row. The model button
- * opens a searchable model list (pinned models first, context size above it); the effort is
- * its own picker beside it, one click away.
+ * Model and settings controls shared by the New Task and session composers.
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
@@ -9,6 +7,7 @@ import type { AgentConfigOption } from "@/bindings";
 import { useTx } from "@/platform/i18n";
 import { Icon, IconButton, Popup, Select, T, Toggle } from "@/ui";
 import { SelectListbox, type SelectOption } from "@/ui/Select";
+import { Spinner } from "@/ui/Spinner";
 import { isContextOption, mainOptions, modelConfigOptions, modeIcon } from "./composerModel";
 import { togglePinnedModel, useAgents } from "./store";
 import styles from "./Composer.module.css";
@@ -78,11 +77,15 @@ function switchValues(option: AgentConfigOption): { on: string; off: string } | 
 const selected = (option: AgentConfigOption, value: string | null) =>
   option.values.find((v) => v.value === value) ?? null;
 
+type ChangeOption = (option: string, value: string) => void;
+
 interface ModelRefresh {
+  draft?: boolean;
   refreshing: boolean;
   loadingSettings?: boolean;
   retryAtMs: number | null;
   error: string | null;
+  onOpen?: () => void;
   onRefresh: () => void;
 }
 
@@ -95,15 +98,14 @@ export function ConfigPickers({
   config: readonly AgentConfigOption[];
   /** Chosen values that override `current`, by option id. */
   values?: Record<string, string>;
-  onChange: (option: string, value: string) => void;
-  /** Only New Task supplies catalog discovery; session pickers retain their own settings. */
+  onChange: ChangeOption;
   modelRefresh?: ModelRefresh;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const options = mainOptions(config);
-  if (modelRefresh && !options.some((o) => o.category === "model"))
+  if (modelRefresh?.draft && !options.some((o) => o.category === "model"))
     options.unshift({
       id: "model",
       name: "Model",
@@ -118,16 +120,16 @@ export function ConfigPickers({
   const effort = config.find((o) => o.category === "thought_level" && o.values.length > 0);
   const modelConfigs = modelConfigOptions(config);
   const hasCostMeta = model?.values.some((v) => !!v.costCategory || !!v.usageMultiplier || !!v.pricing) ?? false;
-  const combinedModel = model && (modelRefresh || modelConfigs.length > 0 || hasCostMeta);
+  const combinedModel = !!model && (!!modelRefresh || modelConfigs.length > 0 || hasCostMeta || !!effort);
+  const tuckedEffort = combinedModel ? (effort ?? null) : null;
   const tuckedModelConfig = new Set(modelConfigs.map((o) => o.id));
   const mode = options.find((o) => o.category === "mode");
   const allowAll = mode && options.find((o) => switchValues(o));
-  // Effort sits right after the model, as its own one-click picker.
   const inline = options.filter(
     (o) => o !== effort && o !== allowAll && !(combinedModel && tuckedModelConfig.has(o.id)),
   );
-  if (effort) inline.splice(model ? inline.indexOf(model) + 1 : 0, 0, effort);
-  // The compact menu holds everything but the model and effort buttons (and the model's own parameters).
+  if (effort && !tuckedEffort) inline.splice(model ? inline.indexOf(model) + 1 : 0, 0, effort);
+  // The compact menu holds everything but the model, effort, and model-specific parameters.
   const secondary = options.filter(
     (o) => o.category !== "model" && o !== effort && !(combinedModel && tuckedModelConfig.has(o.id)),
   );
@@ -144,8 +146,9 @@ export function ConfigPickers({
             <ModelPicker
               model={o}
               modelValue={valueOf(o)}
-              modelConfigs={modelConfigs}
-              valueOf={valueOf}
+              settings={(tuckedEffort ? [tuckedEffort, ...modelConfigs] : modelConfigs)
+                .filter((opt) => opt.values.length > 0)
+                .map((opt) => ({ ...opt, current: valueOf(opt) }))}
               onChange={onChange}
               modelRefresh={modelRefresh}
             />
@@ -160,11 +163,7 @@ export function ConfigPickers({
           ) : (
             <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} />
           )}
-          {o === model && modelRefresh?.loadingSettings && (
-            <span className={styles.pickerValue} role="status">
-              <T>Loading model settings…</T>
-            </span>
-          )}
+          {o === model && !combinedModel && modelRefresh?.loadingSettings && <LoadingSettingsChip />}
         </span>
       ))}
       {secondary.length > 0 && (
@@ -253,141 +252,218 @@ function ConfigPicker({
   );
 }
 
-/** The model button: a searchable model list, with context size and the model's own settings above it. */
+/** Values a setting shows as a segmented control; a longer list (Codex has six effort levels) is listed. */
+const SEGMENTED_MAX = 5;
+
+function settingName(option: AgentConfigOption) {
+  return option.category === "thought_level"
+    ? "Effort Level"
+    : isContextOption(option.id)
+      ? "Context Size"
+      : option.name;
+}
+
+function settingValue(option: AgentConfigOption) {
+  return selected(option, option.current) ?? option.values[0];
+}
+
+function settingsSummary(options: AgentConfigOption[], tx: ReturnType<typeof useTx>) {
+  return options
+    .map((o) => {
+      const label = settingValue(o)?.name ?? tx("Default");
+      return o.category === "thought_level" || isContextOption(o.id) ? label : `${tx(o.name)}: ${label}`;
+    })
+    .join(" · ");
+}
+
 function ModelPicker({
   model,
   modelValue,
-  modelConfigs,
-  valueOf,
+  settings,
   onChange,
   modelRefresh,
 }: {
   model: AgentConfigOption;
   modelValue: string | null;
-  modelConfigs: AgentConfigOption[];
-  valueOf: (o: AgentConfigOption) => string | null;
-  onChange: (option: string, value: string) => void;
+  settings: AgentConfigOption[];
+  onChange: ChangeOption;
   modelRefresh?: ModelRefresh;
 }) {
   const tx = useTx();
-  const [open, setOpen] = useState(false);
+  // The model chip picks a model; the settings chip next to it holds the model's settings.
+  const [open, setOpen] = useState<"models" | "settings" | null>(null);
   const pinnedModels = useAgents((s) => s.pinnedModels);
-  const anchor = useRef<HTMLButtonElement>(null);
+  const anchor = useRef<HTMLSpanElement>(null);
   const selectedModel = selected(model, modelValue);
-  const unavailable = modelRefresh && modelValue !== null && !selectedModel;
-  const modelName = unavailable ? tx`${modelValue} (unavailable)` : (selectedModel?.name ?? tx("Default"));
-
-  const contextOption = modelConfigs.find((o) => isContextOption(o.id) && o.values.length > 0);
-  const contextValue = contextOption ? valueOf(contextOption) : null;
-  const contextLabel = contextOption ? (selected(contextOption, contextValue)?.name ?? null) : null;
-  const otherModelConfigs = modelConfigs.filter((o) => o !== contextOption);
-  const summary = [
-    contextLabel ? `${tx("Context Size")}: ${contextLabel}` : null,
-    ...otherModelConfigs.map((o) => {
-      const current = selected(o, valueOf(o));
-      return current ? `${tx(o.name)}: ${current.name}` : null;
-    }),
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const unavailable = !!modelRefresh && modelValue !== null && !selectedModel;
+  const modelName = unavailable
+    ? tx`${modelValue} (unavailable)`
+    : (selectedModel?.name ?? (modelRefresh ? modelValue : null) ?? tx("Default"));
+  const shown = settings.filter((o) => o.values.length > 0);
+  const summary = settingsSummary(shown, tx);
+  const toggle = (which: "models" | "settings") => {
+    if (open === which) return setOpen(null);
+    if (which === "models") modelRefresh?.onOpen?.();
+    setOpen(which);
+  };
 
   return (
-    <>
+    <span ref={anchor} className={styles.modelControl}>
       <button
-        ref={anchor}
         type="button"
         className={styles.chip}
         aria-label={tx(model.name)}
         aria-haspopup="dialog"
-        aria-expanded={open}
-        title={`${tx(model.name)}: ${modelName}${summary ? ` · ${summary}` : ""}`}
-        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open === "models"}
+        title={`${tx(model.name)}: ${modelName}`}
+        onClick={() => toggle("models")}
       >
         <span className={styles.chipValue}>{modelName}</span>
-        {contextLabel && <span className={styles.chipDetail}>{contextLabel}</span>}
         <Icon name="chevron-down" size={14} className={styles.chipChevron} />
       </button>
+      {!unavailable && modelRefresh?.loadingSettings ? (
+        <LoadingSettingsChip />
+      ) : (
+        summary &&
+        !unavailable && (
+          <button
+            type="button"
+            className={clsx(styles.chip, styles.modelDetail)}
+            aria-label={tx`Model settings: ${summary}`}
+            title={tx`Configure ${modelName}…`}
+            aria-haspopup="dialog"
+            aria-expanded={open === "settings"}
+            onClick={() => toggle("settings")}
+          >
+            <span className={styles.chipValue}>{summary}</span>
+            <Icon name="chevron-down" size={14} className={styles.chipChevron} />
+          </button>
+        )
+      )}
       <Popup
-        open={open}
+        open={!!open}
         anchor={anchor}
-        onClose={() => setOpen(false)}
-        aria-label={tx("Model")}
+        onClose={() => setOpen(null)}
+        aria-label={tx(open === "settings" ? "Model settings" : "Model")}
         className={styles.modelEffortPopup}
       >
-        {unavailable && (
-          <p className={styles.catalogError} role="alert">
-            <T>Choose another model before starting.</T>
-          </p>
-        )}
-        {(contextOption || otherModelConfigs.length > 0) && (
-          <div className={styles.quickSettings}>
-            {contextOption && (
-              <div className={styles.quickRow}>
-                <span className={styles.quickLabel}>
-                  <T>Context Size</T>
-                </span>
-                <SegmentedControl
-                  ariaLabel={tx("Context Size")}
-                  options={contextOption.values.map((v) => ({
-                    value: v.value,
-                    label: v.name,
-                    description: v.description ?? undefined,
-                  }))}
-                  value={contextValue ?? contextOption.values[0]!.value}
-                  onChange={(v) => onChange(contextOption.id, v)}
-                />
-              </div>
+        {open === "settings" ? (
+          <ModelSettings settings={shown} onChange={onChange} onDone={() => setOpen(null)} />
+        ) : (
+          <>
+            {unavailable && (
+              <p className={styles.catalogError} role="alert">
+                <T>Choose another model before starting.</T>
+              </p>
             )}
-            {otherModelConfigs.map((o) => (
-              <div key={o.id} className={styles.quickRow}>
-                <span className={styles.quickLabel} title={o.description ?? undefined}>
-                  {tx(o.name)}
-                </span>
-                <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} framed />
-              </div>
-            ))}
-          </div>
+            {model.values.length > 0 || !modelRefresh ? (
+              <SelectListbox
+                aria-label={tx(model.name)}
+                value={modelValue}
+                options={configPickerOptions(model, pinnedModels, false)}
+                searchable
+                listClassName={styles.modelList}
+                onChoose={(v) => {
+                  onChange(model.id, v);
+                  setOpen(null);
+                }}
+                renderAction={(opt) => {
+                  const raw = model.values.find((v) => v.value === opt.value);
+                  if (!raw) return null;
+                  const pinned = pinnedModels.includes(raw.value);
+                  return (
+                    <>
+                      <CostBadge category={raw.costCategory} />
+                      <button
+                        type="button"
+                        className={clsx(styles.modelRowConfigure, pinned && styles.pinnedButton)}
+                        aria-label={pinned ? tx("Unpin model") : tx("Pin model")}
+                        aria-pressed={pinned}
+                        title={pinned ? tx("Unpin model") : tx("Pin model")}
+                        onClick={() => togglePinnedModel(raw.value)}
+                      >
+                        <Icon name="pin" size={12} />
+                      </button>
+                    </>
+                  );
+                }}
+              />
+            ) : (
+              <p className={styles.catalogNote} role="status">
+                {modelRefresh?.refreshing ? <T>Loading models…</T> : <T>No models reported by this agent.</T>}
+              </p>
+            )}
+            {modelRefresh && <ModelRefreshFooter key={modelRefresh.retryAtMs} {...modelRefresh} />}
+          </>
         )}
-        {model.values.length > 0 || !modelRefresh ? (
-          <SelectListbox
-            aria-label={tx(model.name)}
-            value={modelValue}
-            options={configPickerOptions(model, pinnedModels, false)}
-            searchable
-            listClassName={styles.modelList}
-            onChoose={(v) => {
-              onChange(model.id, v);
-              setOpen(false);
-            }}
-            renderAction={(opt) => {
-              const raw = model.values.find((v) => v.value === opt.value);
-              if (!raw) return null;
-              const pinned = pinnedModels.includes(raw.value);
-              return (
-                <>
-                  <CostBadge category={raw.costCategory} />
-                  <button
-                    type="button"
-                    className={clsx(styles.modelRowConfigure, pinned && styles.pinnedButton)}
-                    aria-label={pinned ? tx("Unpin model") : tx("Pin model")}
-                    aria-pressed={pinned}
-                    title={pinned ? tx("Unpin model") : tx("Pin model")}
-                    onClick={() => togglePinnedModel(raw.value)}
-                  >
-                    <Icon name="pin" size={12} />
-                  </button>
-                </>
-              );
+      </Popup>
+    </span>
+  );
+}
+
+/**
+ * The current model's settings (effort, context size, fast mode…), each a click away: an on/off
+ * setting as a switch, a short list as a segmented control, a longer one listed. A model with
+ * one setting closes on a choice.
+ */
+function ModelSettings({
+  settings,
+  onChange,
+  onDone,
+}: {
+  settings: AgentConfigOption[];
+  onChange: ChangeOption;
+  onDone: () => void;
+}) {
+  const tx = useTx();
+  const only = settings.length === 1;
+  return (
+    <div className={styles.quickSettings}>
+      {settings.map((o) => {
+        const label = tx(settingName(o));
+        const control = switchValues(o) ? (
+          <ConfigPicker option={o} value={o.current} onChange={onChange} framed />
+        ) : o.values.length <= SEGMENTED_MAX ? (
+          <SegmentedControl
+            ariaLabel={label}
+            options={o.values.map((v) => ({ value: v.value, label: v.name, description: v.description ?? undefined }))}
+            value={settingValue(o)!.value}
+            onChange={(v) => {
+              onChange(o.id, v);
+              if (only) onDone();
             }}
           />
         ) : (
-          <p className={styles.catalogNote} role="status">
-            {modelRefresh?.refreshing ? <T>Loading models…</T> : <T>No models reported by this agent.</T>}
-          </p>
-        )}
-        {modelRefresh && <ModelRefreshFooter key={modelRefresh.retryAtMs} {...modelRefresh} />}
-      </Popup>
-    </>
+          <SelectListbox
+            aria-label={label}
+            value={settingValue(o)?.value ?? null}
+            options={o.values.map((v) => ({ value: v.value, label: v.name, detail: v.description ?? undefined }))}
+            onChoose={(v) => {
+              onChange(o.id, v);
+              if (only) onDone();
+            }}
+          />
+        );
+        return (
+          <div key={o.id} className={styles.quickRow}>
+            <span className={styles.quickLabel} title={o.description ?? undefined}>
+              {label}
+            </span>
+            {control}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Where the model's settings chip appears once they arrive. */
+function LoadingSettingsChip() {
+  const tx = useTx();
+  return (
+    <span className={clsx(styles.chip, styles.chipLoading)} title={tx("Loading model settings…")}>
+      <Spinner size={12} label={tx("Loading model settings…")} />
+    </span>
   );
 }
 
@@ -444,7 +520,7 @@ function CostBadge({ category }: { category: string | null | undefined }) {
 }
 
 /** Accessible segmented pill selector (`role="radiogroup"`) with Left/Right arrow navigation. */
-function SegmentedControl({
+export function SegmentedControl({
   ariaLabel,
   options,
   value,

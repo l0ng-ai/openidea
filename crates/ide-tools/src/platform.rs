@@ -223,6 +223,31 @@ mod tests {
     }
 
     #[test]
+    fn java_analyzer_assets() {
+        let names = [
+            "java-analyzer-macos-aarch64.gz",
+            "java-analyzer-macos-x86_64.gz",
+            "java-analyzer-linux-aarch64.gz",
+            "java-analyzer-linux-x86_64.gz",
+            "java-analyzer-windows-aarch64.zip",
+            "java-analyzer-windows-x86_64.zip",
+            "java-analyzer-macos-aarch64.gz.sha256",
+            "java-analyzer-windows-x86_64.zip.sha256",
+        ];
+        let rules = crate::registry::find("java-analyzer").unwrap().asset_rules();
+        for (os, arch, expected) in [
+            (Os::Mac, Arch::Arm64, names[0]),
+            (Os::Mac, Arch::X64, names[1]),
+            (Os::Linux, Arch::Arm64, names[2]),
+            (Os::Linux, Arch::X64, names[3]),
+            (Os::Windows, Arch::Arm64, names[4]),
+            (Os::Windows, Arch::X64, names[5]),
+        ] {
+            assert_eq!(select_asset(&names, rules, Platform { os, arch }), Some(expected));
+        }
+    }
+
+    #[test]
     fn rosetta_fallback_and_missing() {
         let names = ["zls-x86_64-macos.tar.xz", "zls-x86_64-linux.tar.xz", "zls-x86_64-windows.zip"];
         let rules = crate::registry::find("zls").unwrap().asset_rules();

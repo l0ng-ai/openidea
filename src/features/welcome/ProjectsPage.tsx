@@ -1,4 +1,4 @@
-/** Welcome › Projects: search, New Project / Open / Clone Repository, and the recent projects list. */
+/** Welcome › Projects: search, New Project / Open / Clone Repository / Remote Development, and the recent projects list. */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction, useActions } from "@/platform/actions";
@@ -12,6 +12,8 @@ import {
   Icon,
   IconButton,
   Kbd,
+  Menu,
+  type MenuItem,
   SearchField,
   Spinner,
   isPopupOpen,
@@ -31,36 +33,60 @@ function HeaderButtons() {
   const opening = useProject((s) => s.opening);
   const canCreate = useActions((s) => s.actions.has("file.newProject"));
   const openKey = shortcutLabel("file.openProject");
+  const [moreOpen, setMoreOpen] = useState(false);
+  const more = useRef<HTMLButtonElement>(null);
+  const primary = [
+    { id: "file.newProject", label: "New Project", icon: "plus", available: canCreate, disabled: opening },
+    {
+      id: "file.openProject",
+      label: "Open",
+      icon: "folder-open",
+      title: openKey ? tx`Open (${openKey})` : undefined,
+      available: true,
+      disabled: opening,
+    },
+    { id: "vcs.clone", label: "Clone Repository", icon: "branch", available: canClone },
+    { id: "remote.connect", label: "Remote Development", icon: "remote", available: canRemote, disabled: opening },
+  ];
+  const secondary: MenuItem[] = [
+    { kind: "action", action: "file.newUntitled", label: "New File", disabled: opening },
+    { kind: "action", action: "file.openFile", label: "Open File", disabled: opening },
+  ];
   return (
-    <div className={styles.headerButtons}>
-      <Button disabled={opening} onClick={() => void executeAction("file.newUntitled")}>
-        <T>New File</T>
-      </Button>
-      {canCreate && (
-        <Button disabled={opening} onClick={() => void executeAction("file.newProject")}>
-          <T>New Project</T>
-        </Button>
+    <div className={styles.headerButtons} role="group" aria-label={tx("Project actions")}>
+      {primary.map(
+        ({ id, label, title, icon, available, disabled }) =>
+          available && (
+            <Button
+              key={id}
+              size="small"
+              icon={icon}
+              className={styles.headerAction}
+              title={title ?? label}
+              aria-label={tx(label)}
+              disabled={disabled}
+              onClick={() => void executeAction(id)}
+            >
+              <span className={styles.headerActionLabel}>{tx(label)}</span>
+            </Button>
+          ),
       )}
-      <Button
-        disabled={opening}
-        onClick={() => void executeAction("file.openProject")}
-        title={openKey ? tx`Open (${openKey})` : "Open"}
-      >
-        <T>Open</T>
-      </Button>
-      <Button disabled={opening} onClick={() => void executeAction("file.openFile")}>
-        <T>Open File</T>
-      </Button>
-      {canClone && (
-        <Button onClick={() => void executeAction("vcs.clone")}>
-          <T>Clone Repository</T>
-        </Button>
-      )}
-      {canRemote && (
-        <Button disabled={opening} onClick={() => void executeAction("remote.connect")}>
-          <T>Remote Development</T>
-        </Button>
-      )}
+      <IconButton
+        ref={more}
+        icon="more"
+        title="More Actions"
+        aria-haspopup="menu"
+        aria-expanded={moreOpen}
+        onClick={() => setMoreOpen((open) => !open)}
+      />
+      <Menu
+        open={moreOpen}
+        onClose={() => setMoreOpen(false)}
+        anchor={more}
+        items={secondary}
+        placement="bottom-end"
+        aria-label="More Actions"
+      />
     </div>
   );
 }
@@ -89,7 +115,7 @@ function Landing() {
       <div className={styles.landingActions}>
         <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.newUntitled")}>
           <span className={styles.landingIcon}>
-            <Icon name="plus" size={20} />
+            <Icon name="file-new" size={20} />
           </span>
           <T>New File</T>
         </button>
@@ -139,7 +165,7 @@ function Landing() {
             onClick={() => void executeAction("remote.connect")}
           >
             <span className={styles.landingIcon}>
-              <Icon name="terminal" size={20} />
+              <Icon name="remote" size={20} />
             </span>
             <T>Remote Development</T>
           </button>
@@ -258,7 +284,12 @@ function ProjectRow({
         showContextMenu(e, recentMenu(m.project));
       }}
     >
-      <ProjectBadge name={m.project.name} className={styles.projectBadge} missing={!!m.project.missing} />
+      <ProjectBadge
+        name={m.project.name}
+        path={m.project.path}
+        className={styles.projectBadge}
+        missing={!!m.project.missing}
+      />
       <span className={styles.projectText}>
         <HighlightedText
           className={clsx(styles.projectName, m.project.missing && styles.unavailable)}

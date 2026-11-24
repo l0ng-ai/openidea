@@ -254,12 +254,14 @@ register_plugin!(MyPlugin, run_target_validation);
 
 ## 运行程序
 
-| 函数                                                 | 作用                                                                                     |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `Project::run_process(program, &args, stdin)`        | 在项目根目录运行已固定的程序并等待结束：`{ status, stdout, stderr }`，各 4 MiB。         |
-| `host::run_command(&Command, Some(&project), stdin)` | API 1.3：同上，可用 `Command::env` 追加环境变量。                                        |
-| `host::start(&Command, Some(&project))`              | API 1.3：保持运行的 `Child`：`poll`、`write`、`close_stdin`、`wait`、`kill`。最多 8 个。 |
-| `host::open_terminal(title, program, &args)`         | 运行该程序的终端标签页（见 [视图](/zh/plugins/guides/views)）。                          |
+| 函数                                                           | 作用                                                                                     |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `Project::run_process(program, &args, stdin)`                  | 在项目根目录运行已固定的程序并等待结束：`{ status, stdout, stderr }`，各 4 MiB。         |
+| `host::run_command(&Command, Some(&project), stdin)`           | API 1.3：同上，可用 `Command::env` 追加环境变量。                                        |
+| `host::run_captured(&Command, Some(&project), stdin, options)` | API 1.15：可配置输出上限（每个流最高 128 MiB），stdout 或 stderr 溢出时明确报错。        |
+| `host::start(&Command, Some(&project))`                        | API 1.3：保持运行的 `Child`：`poll`、`write`、`close_stdin`、`wait`、`kill`。最多 8 个。 |
+| `host::start_stream(&Command, Some(&project), options)`        | API 1.15：基于管道背压的有界无损流式传输，超出总预算时明确报错并终止进程。               |
+| `host::open_terminal(title, program, &args)`                   | 运行该程序的终端标签页（见 [视图](/zh/plugins/guides/views)）。                          |
 
 ```rust
 use openidea_plugin::host::{self, Command};
@@ -272,4 +274,9 @@ let out = host::run_command(&Command::new("forge").arg("build").env("FOUNDRY_PRO
 - 环境变量只能追加：名称已存在于准备好的环境中（包括登录 shell 的 `PATH`）会报错。最多 64 项。
 - 调用会随任务或调用一起取消，超时即终止；耗时的工作请放进 `host::begin_task`。丢弃 `Child` 会终止进程，
   禁用或回收插件会结束它启动的所有子进程。
+- `Child` 的 `poll` 和 `wait` 返回上次读取之后的输出；`status` 随包含最后一段输出的那次结果返回，读到它为止。
+  通过 `start` 启动的命令，未读取的输出每个流只保留最后 1 MiB（尾部环形缓冲）。若需无头部丢弃、避免竞态的无损流式传输，
+  请使用 API 1.15 的 `start_stream` 与 `ProcessOptions`（默认每流 256 KiB 缓冲区并施加系统管道背压，总上限 32 MiB）。
+- 当程序在 `run_process`、`run_command` 或 `run_captured` 中超出输出上限，或在 `start_stream` 中超出总流预算时，
+  IDE 会返回明确的错误，绝不静默截断 stdout 或 stderr。
 - 用户可以在 **设置 › 插件** 中为 `process:` 授权全局或按项目选择可执行文件；插件仍使用其声明的程序名调用。

@@ -29,6 +29,7 @@ import {
   maybeEditorService,
   notifications,
   runOutput,
+  SERVICES_WINDOW,
   toolWindowService,
   useDebugRunSessions,
 } from "@/workbench/contributions";
@@ -75,12 +76,23 @@ export interface DebugSession {
   programInput?: boolean;
   /** Process the session is attached to (a Run tab's build tool); stopped with the session. */
   process: RunId | null;
+  /** Stable Debug-tab slot; a restarted session inherits it even though its backend id changes. */
+  tabOrder?: number;
   /** Pinned tab (root sessions): once finished, a later session opens a new tab instead of taking its place. */
   pinned?: boolean;
+  /** Started in place from the Services tool window (root sessions): its stops show it there, not in the Debug window. */
+  inPlace?: boolean;
   status: SessionStatus;
   stoppedThread: number | null;
   stopReason: string | null;
   stopDescription: string | null;
+  /**
+   * Threads stopped alone (a `stopped` event without `allThreadsStopped`), oldest first. Adapters
+   * such as java-debug keep them suspended while another thread runs.
+   */
+  suspendedThreads?: SuspendedThread[];
+  /** The last stop suspended every thread. */
+  allThreadsStopped?: boolean;
   threads: ThreadInfo[];
   selectedThread: number | null;
   frames: StackFrame[];
@@ -94,8 +106,20 @@ export interface DebugSession {
   caps: DebugCapabilities | null;
   /** State of the backend that reads a JVM's objects; absent until the backend reports one. */
   jvmBackend?: JvmBackendState;
+  /** Flutter: the app's VM Service, which DevTools connects to. */
+  vmServiceUri?: string;
+  /** Flutter: the device the app runs on. */
+  flutterDevice?: string | null;
   /** A cancelled JDT build may have lost class-file deltas needed by this session. */
   hotSwapNeedsRestart?: boolean;
+  /** `flutter debug_adapter` reported the app as started: it can take a hot reload. */
+  flutterAppStarted?: boolean;
+}
+
+export interface SuspendedThread {
+  id: number;
+  reason: string;
+  description: string | null;
 }
 
 export interface ConsoleLine {
@@ -105,6 +129,8 @@ export interface ConsoleLine {
   text: string;
   /** `text` styled by its ANSI colours. */
   spans: Span[];
+  /** A carriage return ended the output so far: the next text replaces the line. */
+  cr?: boolean;
 }
 
 interface DebugState {
@@ -130,6 +156,35 @@ export const useDebug = create<DebugState>(() => ({
   stopSeq: 0,
   variablesEpoch: 0,
 }));
+
+let tabOrderSeq = 0;
+
+/** Allocates a Debug-tab slot that is independent of the backend's session ids. */
+function allocateTabOrder() {
+  return ++tabOrderSeq;
+}
+
+/** Visible order key; test fixtures without a slot retain their former id order. */
+export function tabOrderOf(s: Pick<DebugSession, "id" | "tabOrder">): number {
+  return s.tabOrder ?? s.id;
+}
+
+/** Sessions as their Debug tabs show: by their root's slot, so children stay next to their parent. */
+export function inTabOrder<T extends Pick<DebugSession, "id" | "parent" | "tabOrder">>(sessions: readonly T[]): T[] {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const root = (s: T) => {
+    let cur = s;
+    for (let p = byId.get(cur.parent!); cur.parent != null && p; p = byId.get(cur.parent!)) cur = p;
+    return cur;
+  };
+  return [...sessions].sort(
+    (a, b) => tabOrderOf(root(a)) - tabOrderOf(root(b)) || tabOrderOf(a) - tabOrderOf(b) || a.id - b.id,
+  );
+}
+
+function sessionsInTabOrder(sessions: Record<number, DebugSession>): DebugSession[] {
+  return inTabOrder(Object.values(sessions));
+}
 
 /** Execution point of the selected frame, plus the frame's locals for inline values. */
 interface ExecutionPoint {
@@ -180,6 +235,12 @@ function ansiStream(session: DebugSessionId, category: string): AnsiStream {
   return stream;
 }
 
+/** Styled output, keeping a carriage return (and erase-line) for the console to overwrite its line. */
+function outputSpans(session: DebugSessionId, category: string, raw: string): Span[] {
+  const stream = ansiStream(session, category);
+  return stream.spans(stream.clean(raw).replace(/\r\n/g, "\n"));
+}
+
 // --- accessors ---------------------------------------------------------------
 
 export function activeSession(): DebugSession | null {
@@ -189,6 +250,13 @@ export function activeSession(): DebugSession | null {
 
 export function isLive(s: DebugSession | null | undefined): boolean {
   return !!s && s.status !== "terminated";
+}
+
+/** The session the Debug tool window's Stop acts on: the selected one while it runs (any live one when none is selected). */
+export function stopTarget(): DebugSession | null {
+  const s = activeSession();
+  if (s) return isLive(s) ? s : null;
+  return Object.values(useDebug.getState().sessions).find(isLive) ?? null;
 }
 
 /** Whether the session with this id is still there and running, as of now. */
@@ -211,7 +279,7 @@ function patch(id: DebugSessionId, p: Partial<DebugSession>) {
   publishContext();
 }
 
-function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession {
+function blank(id: DebugSessionId, { tabOrder = allocateTabOrder(), ...p }: Partial<DebugSession> = {}): DebugSession {
   return {
     id,
     name: "Debug",
@@ -220,6 +288,7 @@ function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession 
     parent: null,
     launch: null,
     process: null,
+    tabOrder,
     status: "starting",
     stoppedThread: null,
     stopReason: null,
@@ -270,14 +339,28 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   const st = useDebug.getState();
   const existing = st.sessions[id];
   if (existing) return existing;
-  if (owned.has(id)) return null;
+  // `started` is a session's first event, sent once when the backend creates it: never a late event
+  // of a forgotten session, though its id may be one (another backend numbers from 1 again).
+  if (owned.has(id) && event.kind !== "started") return null;
   if (event.kind === "started" && event.parent != null) {
     if (!st.sessions[event.parent]) return null;
     return adoptSession(id, { name: event.name, adapter: event.adapter, parent: event.parent });
   }
   if (pendingStarts === 0) return null;
   provisional.add(id);
-  return event.kind === "started" ? adoptSession(id, { name: event.name, adapter: event.adapter }) : adoptSession(id);
+  // The new root session takes the tab it replaces now, not once `debugStart` returns.
+  const replaced = pendingReplacements[0];
+  const slot = replaced ? { tabOrder: replaced.tabOrder, pinned: replaced.pinned } : {};
+  const s =
+    event.kind === "started"
+      ? adoptSession(id, { name: event.name, adapter: event.adapter, ...slot })
+      : adoptSession(id, slot);
+  if (replaced) {
+    takeReplacement(replaced);
+    useDebug.setState({ active: id });
+    publishContext();
+  }
+  return s;
 }
 
 /**
@@ -309,28 +392,61 @@ function settleStart(id: DebugSessionId | null, discard = false) {
 
 /** The session being rerun: its tab is the one the new session takes, pinned or not. */
 let rerunOf: DebugSessionId | null = null;
+/** Sessions whose Rerun is in progress: their tab stays selected when they terminate. */
+const rerunning = new Set<DebugSessionId>();
+
+interface ReplacedTab {
+  pinned?: boolean;
+  tabOrder?: number;
+  /** The finished tab, kept until the new session takes its place (`defer`). */
+  session?: DebugSessionId;
+}
+
+/** Finished tabs whose starting replacements have no session yet, oldest start first. */
+const pendingReplacements: ReplacedTab[] = [];
+
+/** The new session is shown: the finished tab it replaces gives way. */
+function takeReplacement(r: ReplacedTab | undefined) {
+  if (!r) return;
+  const i = pendingReplacements.indexOf(r);
+  if (i >= 0) pendingReplacements.splice(i, 1);
+  if (r.session != null && useDebug.getState().sessions[r.session]) removeSession(r.session);
+  r.session = undefined;
+}
 
 /**
  * As IDEA reuses run content: a new session takes the place of one finished tab (with its
- * children) that isn't pinned, preferring one named like it, then the selected one; other
- * finished tabs stay. Returns whether the new tab is pinned: as the tab it replaced on a
- * rerun, else per the settings.
+ * children) that isn't pinned, preferring the same configuration id, then its display name,
+ * then the selected one; other finished tabs stay. The returned slot lets the new backend
+ * session keep the tab where the replaced one was.
  */
-function replaceFinished(name: string): boolean | undefined {
+function replaceFinished(name: string, configId?: string, defer = false): ReplacedTab {
   const { sessions, active } = useDebug.getState();
   const own = rerunOf != null ? sessions[rerunOf] : undefined;
   rerunOf = null;
-  if (own && !isLive(own)) {
+  // Rerun's Stop waits for the adapter, even if this window has not handled its terminated event yet.
+  if (own) {
+    const tabOrder = tabOrderOf(own);
+    if (defer) return { pinned: own.pinned, tabOrder, session: own.id };
     removeSession(own.id);
-    return own.pinned;
+    return { pinned: own.pinned, tabOrder };
   }
-  const finished = Object.values(sessions).filter((s) => s.parent == null && !isLive(s) && !s.pinned);
+  const finished = sessionsInTabOrder(sessions).filter(
+    (s) => s.parent == null && !isLive(s) && !s.pinned && !pendingReplacements.some((r) => r.session === s.id),
+  );
   const selected = active != null ? sessions[active] : undefined;
   const ordered =
     selected && finished.includes(selected) ? [selected, ...finished.filter((s) => s !== selected)] : finished;
-  const reused = ordered.find((s) => s.name === name) ?? ordered[0];
-  if (reused) removeSession(reused.id);
-  return workflowSettings().run.pinTabs || undefined;
+  const reused =
+    (configId == null ? undefined : ordered.find((s) => s.runConfig?.id === configId)) ??
+    ordered.find((s) => s.name === name) ??
+    ordered[0];
+  const pinned = workflowSettings().run.pinTabs || undefined;
+  if (!reused) return { pinned };
+  const tabOrder = tabOrderOf(reused);
+  if (defer) return { pinned, tabOrder, session: reused.id };
+  removeSession(reused.id);
+  return { pinned, tabOrder };
 }
 
 /**
@@ -349,7 +465,7 @@ export function justDetached(process: RunId | null | undefined): boolean {
 
 export function publishContext() {
   const s = activeSession();
-  const retained = Object.values(useDebug.getState().sessions);
+  const retained = sessionsInTabOrder(useDebug.getState().sessions);
   useDebugRunSessions.setState({
     serviceSessions: retained.flatMap((session) => {
       if (session.parent != null || !session.runConfig) return [];
@@ -375,7 +491,7 @@ export function publishContext() {
         },
       ];
     }),
-    sessions: Object.values(useDebug.getState().sessions)
+    sessions: retained
       .filter((session) => session.parent == null && isLive(session))
       .map((session) => {
         const paused = Object.values(useDebug.getState().sessions).find(
@@ -399,6 +515,8 @@ export function publishContext() {
   });
   const anyLive = Object.values(useDebug.getState().sessions).some(isLive);
   setContext("debugSessionActive", anyLive);
+  // Stop acts on the selected session tab, so a finished one doesn't stop another session.
+  setContext("debugCanStop", !!stopTarget());
   setContext("debugSessionRunning", s?.status === "running");
   setContext("debugSessionPaused", s?.status === "paused");
   // Dart and Flutter sessions: Hot Reload / Hot Restart.
@@ -408,6 +526,7 @@ export function publishContext() {
     "debugCanHotSwap",
     Object.values(useDebug.getState().sessions).some((x) => isLive(x) && !!x.caps?.hotCodeReplace),
   );
+  setContext("debugHasVmService", !!s && isLive(s) && !!rootOf(s).vmServiceUri);
   // Refresh Memory View acts on the selected session only.
   setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
   setContext("debugHasJsPage", !!s && isLive(s) && sessionSupports("jsPage", s));
@@ -463,7 +582,7 @@ function unfollowProcessOutput(session: DebugSessionId) {
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
   if (!raw) return;
   flushConsoleOutput();
-  const spans = ansiStream(session, category).parse(raw);
+  const spans = outputSpans(session, category, raw);
   const text = spans.map((sp) => sp.text).join("");
   if (!text) return;
   useDebug.setState((s) => {
@@ -506,7 +625,7 @@ function flushConsoleOutput() {
     const consoleBySession = { ...s.console };
     for (const { session, category, raw } of chunks) {
       if (!s.sessions[session]) continue;
-      const spans = ansiStream(session, category).parse(raw);
+      const spans = outputSpans(session, category, raw);
       const text = spans.map((sp) => sp.text).join("");
       if (!text) continue;
       printed.push([session, text]);
@@ -629,26 +748,36 @@ async function openServerPage(server: DebugSession, known: ServerPage, url: stri
   else void stopSession(page);
 }
 
-/** Split styled output at real line breaks, retaining partial lines across events. */
+/**
+ * Split styled output at real line breaks, retaining partial lines across events. As in the
+ * Run console, a carriage return makes the next text replace the line (progress bars).
+ */
 function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[]) {
   const last = lines.at(-1);
   let line =
     last && last.category === category && !last.text.endsWith("\n") ? { ...last, spans: [...last.spans] } : undefined;
   if (line) lines[lines.length - 1] = line;
   for (const span of spans) {
-    let start = 0;
-    while (start < span.text.length) {
-      const newline = span.text.indexOf("\n", start);
-      const end = newline < 0 ? span.text.length : newline + 1;
-      const text = span.text.slice(start, end);
+    for (const piece of span.text.split(/(\r|\n)/)) {
+      if (piece === "\r") {
+        if (line) line.cr = true;
+        continue;
+      }
+      if (!piece) continue;
       if (!line) {
         line = { id: ++lineSeq, category, text: "", spans: [] };
         lines.push(line);
       }
-      line.text += text;
-      line.spans = appendSpans(line.spans, [{ ...span, text }]);
-      if (newline >= 0) line = undefined;
-      start = end;
+      if (line.cr) {
+        line.cr = undefined;
+        if (piece !== "\n") {
+          line.text = "";
+          line.spans = [];
+        }
+      }
+      line.text += piece;
+      line.spans = appendSpans(line.spans, [{ ...span, text: piece }]);
+      if (piece === "\n") line = undefined;
     }
   }
 }
@@ -695,7 +824,7 @@ export async function startPreparedSession(
   const controller = new AbortController();
   preparations.set(id, controller);
   // The new tab takes the place of a finished one while its build runs, not once the adapter starts.
-  const pinned = replaceFinished(config.name);
+  const reused = replaceFinished(config.name, config.id);
   useDebug.setState((s) => ({
     sessions: {
       ...s.sessions,
@@ -703,7 +832,9 @@ export async function startPreparedSession(
         name: config.name,
         adapter: config.debugAdapter ?? "",
         runConfig: config,
-        pinned,
+        pinned: reused.pinned,
+        ...(reused.tabOrder == null ? {} : { tabOrder: reused.tabOrder }),
+        inPlace: options.show === false,
       }),
     },
     console: { ...s.console, [id]: [] },
@@ -757,7 +888,10 @@ export async function startSession(
   // Attaching to a JVM that may be gone: the finished session stays until the attach succeeds.
   const afterDetach = justDetached(options.process);
   const previousActive = useDebug.getState().active;
-  let pinned = !afterDetach && !options.preparation ? replaceFinished(launch.name) : undefined;
+  // The finished tab stays in place until the new session appears there.
+  let replaced =
+    !afterDetach && !options.preparation ? replaceFinished(launch.name, options.runConfig?.id, true) : undefined;
+  if (replaced?.session != null) pendingReplacements.push(replaced);
   try {
     if (options.show !== false && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -772,7 +906,7 @@ export async function startSession(
     const id = await call(commands.debugStart(launch));
     console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
-    if (afterDetach && !options.preparation) pinned = replaceFinished(launch.name);
+    if (afterDetach && !options.preparation) replaced = replaceFinished(launch.name, options.runConfig?.id);
     if (options.preparation?.signal.aborted) {
       await call(commands.debugStop(id)).catch(() => undefined);
       settleStart(id);
@@ -780,6 +914,7 @@ export async function startSession(
       return null;
     }
     flushConsoleOutput();
+    takeReplacement(replaced);
     const preparation = options.preparation && useDebug.getState().sessions[options.preparation.id];
     useDebug.setState((s) => {
       const cur = s.sessions[id] ?? blank(id, { status: "running" });
@@ -804,7 +939,9 @@ export async function startSession(
             adapter: cur.adapter || launch.adapter,
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
-            pinned: preparation ? preparation.pinned : pinned,
+            pinned: preparation ? preparation.pinned : replaced?.pinned,
+            tabOrder: preparation?.tabOrder ?? replaced?.tabOrder ?? cur.tabOrder ?? allocateTabOrder(),
+            inPlace: options.show === false,
             status: cur.status === "starting" ? "running" : cur.status,
           },
         },
@@ -821,6 +958,7 @@ export async function startSession(
     void syncSpecial();
     return id;
   } catch (e) {
+    takeReplacement(replaced);
     settleStart(null, afterDetach);
     if (afterDetach) {
       // The JVM that announced the port ended as its previous debugger detached.
@@ -926,15 +1064,25 @@ export function pinSession(id: DebugSessionId, pinned: boolean) {
   patch(id, { pinned });
 }
 
-/** Forgets a session and its children; a selected one passes the selection to the tab on its left. */
+/**
+ * Forgets a session and its descendants (Node's `pnpm` → `pnpm.cjs` → `rspack.js`); a selected
+ * one passes the selection to the tab on its left.
+ */
 export function removeSession(id: DebugSessionId) {
   const st = useDebug.getState();
   const gone = new Set<DebugSessionId>([id]);
-  for (const s of Object.values(st.sessions)) if (s.parent === id) gone.add(s.id);
+  for (let added = true; added;) {
+    added = false;
+    for (const s of sessionsInTabOrder(st.sessions))
+      if (s.parent != null && gone.has(s.parent) && !gone.has(s.id)) {
+        gone.add(s.id);
+        added = true;
+      }
+  }
 
-  const order = Object.values(st.sessions).map((s) => s.id);
+  const order = sessionsInTabOrder(st.sessions).map((s) => s.id);
   const sessions: Record<number, DebugSession> = {};
-  for (const s of Object.values(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
+  for (const s of sessionsInTabOrder(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
   const console = { ...st.console };
   for (const goneId of gone) delete console[goneId];
   const at = order.indexOf(id);
@@ -966,17 +1114,18 @@ export async function rerunSession(id: DebugSessionId, options: { show?: boolean
   const root = rootOf(s);
   const launch = root.launch;
   if (!root.runConfig && !launch) return;
-  if (isLive(root)) await stopSession(root.id);
-  rerunOf = root.id;
+  rerunning.add(root.id);
   try {
+    if (isLive(root)) await stopSession(root.id);
+    rerunOf = root.id;
+    // A session debugged in place from Services reruns there too.
+    const show = options.show ?? (root.inPlace ? false : undefined);
     if (root.runConfig)
-      await executeAction(
-        "run.debugConfig",
-        options.show === false ? { config: root.runConfig, show: false } : root.runConfig,
-      );
-    else await startSession(launch!, { show: options.show });
+      await executeAction("run.debugConfig", show === false ? { config: root.runConfig, show: false } : root.runConfig);
+    else await startSession(launch!, { show });
   } finally {
     rerunOf = null;
+    rerunning.delete(root.id);
   }
 }
 
@@ -1003,6 +1152,11 @@ export function pausedThread(s: DebugSession): number | null {
   return s.selectedThread ?? s.stoppedThread ?? s.threads[0]?.id ?? null;
 }
 
+export function isThreadSuspended(s: DebugSession, threadId: number): boolean {
+  if (s.status !== "paused") return false;
+  return !!s.allThreadsStopped || s.stoppedThread === threadId || !!s.suspendedThreads?.some((t) => t.id === threadId);
+}
+
 /** The selected frame of the paused session (top frame when none is selected). */
 export function selectedFrame(s: DebugSession): StackFrame | null {
   return s.frames.find((f) => f.id === s.selectedFrame) ?? s.frames[0] ?? null;
@@ -1020,9 +1174,9 @@ function markTerminated(id: DebugSessionId) {
   if (serverPages.delete(id) && page != null) void stopSession(page);
   patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
-  if (st.active === id) {
+  if (st.active === id && !rerunning.has(id)) {
     // Prefer another live session (e.g. the parent of a finished child).
-    const other = Object.values(st.sessions).find(isLive);
+    const other = sessionsInTabOrder(st.sessions).find(isLive);
     if (other) useDebug.setState({ active: other.id });
   }
   if (!Object.values(useDebug.getState().sessions).some(isLive)) {
@@ -1068,7 +1222,8 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
   void loadLocals(id, frameId);
 }
 
-async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean) {
+/** `newStop`: false when returning to an earlier stop, whose breakpoint hit was handled when it happened. */
+async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean, newStop = true) {
   const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
   try {
@@ -1080,7 +1235,7 @@ async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean)
   if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
   patch(id, { frames });
   const top = topFrame(frames);
-  if (top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
+  if (newStop && top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
     void logSuspendingHit(id, top);
     consumeTemporary(top.path, top.line);
   }
@@ -1214,6 +1369,11 @@ export function removeWatch(expression: string) {
   persistWatches();
 }
 
+export function removeAllWatches() {
+  useDebug.setState({ watches: [] });
+  persistWatches();
+}
+
 /** Watches used to be one list for every project; it is only read now, as a project's first list. */
 const SHARED_WATCH_KEY = "openidea.debugger.watches";
 const watchKey = (root: string) => `${SHARED_WATCH_KEY}:${root}`;
@@ -1319,10 +1479,18 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     case "initialized":
       if (s.status === "starting") patch(id, { status: "running" });
       break;
+    case "flutterAppStarted":
+      patch(id, { flutterAppStarted: true });
+      break;
     case "stopped": {
       const isBp = event.reason === "breakpoint" || event.reason === "function breakpoint";
+      const alone = (s.suspendedThreads ?? []).filter((t) => t.id !== event.threadId);
+      if (!event.allThreadsStopped)
+        alone.push({ id: event.threadId, reason: event.reason, description: event.description });
       patch(id, {
         status: "paused",
+        suspendedThreads: event.allThreadsStopped ? [] : alone,
+        allThreadsStopped: event.allThreadsStopped,
         stoppedThread: event.threadId,
         selectedThread: event.threadId,
         stopReason: event.reason,
@@ -1340,7 +1508,8 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       void loadFrames(id, event.threadId, !markTraceStop(id, event.threadId, s.stops + 1));
       const dbg = workflowSettings().debugger;
       try {
-        if (dbg.showOnBreakpoint) toolWindowService().show("debug");
+        // A session debugged in place from Services shows its debugger there (#4773).
+        if (dbg.showOnBreakpoint) toolWindowService().show(rootOf(s).inPlace ? SERVICES_WINDOW : "debug");
       } catch {
         // ignore
       }
@@ -1353,13 +1522,39 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     case "continued": {
       const cur = useDebug.getState().sessions[id]!;
       if (cur.status === "terminated") break;
-      if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) break;
+      const rest = event.allThreadsContinued ? [] : (cur.suspendedThreads ?? []).filter((t) => t.id !== event.threadId);
+      if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) {
+        patch(id, { suspendedThreads: rest });
+        break;
+      }
       stopTaskbarFlash();
+      const next = rest.at(-1);
+      if (next) {
+        // Like IDEA, the session stays suspended on a thread its own breakpoint still holds.
+        patch(id, {
+          status: "paused",
+          suspendedThreads: rest,
+          stoppedThread: next.id,
+          selectedThread: next.id,
+          stopReason: next.reason,
+          stopDescription: next.description,
+          frames: [],
+          selectedFrame: null,
+        });
+        useDebug.setState((st) => ({ stopSeq: st.stopSeq + 1 }));
+        publishContext();
+        updateExecutionPoint();
+        void loadThreads(id);
+        void loadFrames(id, next.id, true, false);
+        break;
+      }
       patch(id, {
         status: "running",
         frames: [],
         selectedFrame: null,
         stoppedThread: null,
+        suspendedThreads: [],
+        allThreadsStopped: false,
       });
       updateExecutionPoint();
       break;
@@ -1391,6 +1586,17 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     case "jsNetwork":
       queueNetworkEvent(id, event.event);
+      break;
+    case "flutterVmService":
+      patch(id, { vmServiceUri: event.uri, flutterDevice: event.device });
+      break;
+    case "flutterNavigate":
+      // Focus stays in the inspector, where the next widget gets picked.
+      void maybeEditorService()?.openFile(event.path, {
+        selection: { line: event.line, col: event.column },
+        preview: true,
+        focus: false,
+      });
       break;
     case "jsNetworkUnavailable":
       setRefused(id, "network", "");

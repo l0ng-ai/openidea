@@ -16,22 +16,28 @@
   border-bottom: 1px solid var(--border);
 }
 .module {
-  min-width: 160px;
-  max-width: 260px;
+  min-width: min(136px, 100%);
+  max-width: min(260px, 100%);
 }
 .search {
   flex: 1 1 140px;
-  min-width: 140px;
+  min-width: min(140px, 100%);
   max-width: 360px;
 }
 .scope {
-  min-width: 110px;
+  min-width: min(96px, 100%);
+  max-width: min(240px, 100%);
 }
-.sep {
-  width: 1px;
-  height: 16px;
-  margin: 0 2px;
-  background: var(--border);
+.toolbarActions,
+.viewActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+}
+.toolbarActions {
+  padding-inline-start: var(--space-1);
+  border-inline-start: 1px solid var(--border);
 }
 .banner {
   flex: none;
@@ -60,13 +66,7 @@
   flex: 1;
   min-width: 0;
 }
-.panel {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-.panel > * {
+.tree {
   flex: 1;
   min-height: 0;
 }
@@ -94,7 +94,6 @@
 }
 .version {
   flex: none;
-  font-family: var(--font-mono);
   font-size: var(--fs-small);
   color: var(--fg-secondary);
 }
@@ -120,22 +119,24 @@
   min-height: 0;
   height: 100%;
 }
-.usagesHeader {
+.paneHeader {
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  min-height: 32px;
+  min-height: calc(var(--h-field) + var(--space-1));
   padding: 0 10px;
   border-bottom: 1px solid var(--border);
 }
-.usagesTitle {
+.paneTitle {
   flex: 1;
   min-width: 0;
+  margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  font-weight: 500;
   color: var(--fg-strong);
 }
 .conflictNote {
@@ -167,7 +168,6 @@
 }
 .usageVersion {
   flex: none;
-  font-family: var(--font-mono);
   color: var(--fg);
 }
 .usageStatus {

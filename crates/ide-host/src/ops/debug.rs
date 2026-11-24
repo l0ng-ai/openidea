@@ -32,14 +32,27 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     } else {
         None
     };
-    let agents = if is_jvm_launch(&config) { ide_run::java_agent::current() } else { Default::default() };
+    let java_exec = java_exec_path(&config);
+    let agents = if is_jvm_launch(&config) {
+        ide_run::java_agent::current_for(java_exec.as_deref())
+    } else {
+        Default::default()
+    };
     let config = add_java_agents(config, &agents.options);
     let mut config = match_java_debug_encoding(start_java_attach_listener(config, cfg!(windows)), cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
         && let Ok(project) = host.project(window)
     {
-        super::python::prepare_debug(&mut config, &super::python::paths(&project))?;
+        let python = super::python::debug_python(&config);
+        let paths = super::python::with_user_paths(
+            super::python::paths(&project),
+            &host.config_dir,
+            &project,
+            python.as_deref(),
+            config.cwd.as_deref(),
+        );
+        super::python::prepare_debug(&mut config, &paths)?;
     }
     let label = window;
     let (sink, flush_output) = output::coalescing_sink(host.window_sink(label));
@@ -113,14 +126,19 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
             })
             .await?;
     }
+    let java_analyzer = java_analyzer_command(host, window, &config)?;
     let custom = |command: &str| {
+        if let Some(binary) = java_analyzer {
+            return Some(binary.to_string_lossy().into_owned());
+        }
         let path = ide_sdk::apply::tool_command(&root, &settings, command)
             .or_else(|| ruby_tools.into_iter().find(|(name, _)| *name == command).map(|(_, path)| path))?;
         Some(path.to_string_lossy().into_owned())
     };
     host.require_trust(window)?;
     let server_port = debug_server_port(&config);
-    let result = host.debugger.start_with(config, owner, custom).await;
+    let exception_classes = server_port.and_then(|port| exception_class_backend(host, window, port));
+    let result = host.debugger.start_with_exception_classes(config, owner, custom, exception_classes).await;
     flush_output();
     if let Ok(id) = &result {
         let sink = host.window_sink(label);
@@ -140,6 +158,28 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         attach_jvm_inspector(host, window, *id, port);
     }
     result
+}
+
+/// For java-analyzer's debugger, the executable of the java-analyzer serving the module
+/// (`projectRoot`, else the working directory), so the session debugs with the server that
+/// analyzes the code.
+fn java_analyzer_command(host: &Host, window: &str, config: &LaunchConfig) -> IdeResult<Option<PathBuf>> {
+    if config.adapter != ide_dap::adapter::JAVA_ANALYZER {
+        return Ok(None);
+    }
+    let project = host.project(window)?;
+    let extra: serde_json::Value =
+        config.extra_json.as_deref().and_then(|e| serde_json::from_str(e).ok()).unwrap_or_default();
+    let module = extra["projectRoot"]
+        .as_str()
+        .map(PathBuf::from)
+        .or_else(|| config.cwd.clone().map(PathBuf::from))
+        .unwrap_or_else(|| project.root.clone());
+    project.lsp.java_analyzer_binary(&module).map(Some).ok_or_else(|| {
+        ide_core::IdeError::unavailable(
+            "No java-analyzer serves this module: configure it as a Java language server to debug without jdtls",
+        )
+    })
 }
 
 fn require_unity_editor(pid: u32) -> IdeResult<()> {
@@ -177,14 +217,35 @@ fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port
     }
 }
 
+/// Given before the session starts, unlike the inspector: the breakpoints are armed before
+/// `configurationDone`, so a throw in `main`'s first line stops.
+fn exception_class_backend(
+    host: &Host,
+    window: &str,
+    port: u16,
+) -> Option<std::sync::Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>> {
+    let project = host.project(window).ok()?;
+    let module = project.lsp.java_debug_server_module(port)?;
+    Some(std::sync::Arc::new(ide_lsp::JdtExceptionBreakpoints::new(project.lsp.clone(), module)))
+}
+
 /// A JVM the debugger starts itself: an Application or Spring Boot configuration, launched by
-/// java-debug or the Kotlin debugger (JAR Application debugs through a run with a JDWP agent).
+/// java-debug, java-analyzer or the Kotlin debugger (JAR Application debugs through a run with a
+/// JDWP agent).
 fn is_jvm_launch(config: &LaunchConfig) -> bool {
-    config.request == "launch" && matches!(config.adapter.as_str(), "java-debug" | ide_dap::kotlin::ADAPTER)
+    config.request == "launch"
+        && matches!(config.adapter.as_str(), "java-debug" | ide_dap::kotlin::ADAPTER | ide_dap::adapter::JAVA_ANALYZER)
+}
+
+/// `javaExec` from the launch extras, for gating contributed `vmOptions` on JetBrains Runtime.
+fn java_exec_path(config: &LaunchConfig) -> Option<std::path::PathBuf> {
+    let extra: serde_json::Value = serde_json::from_str(config.extra_json.as_deref()?).ok()?;
+    extra.get("javaExec").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(std::path::PathBuf::from)
 }
 
 /// Plugins' Java agents ([`ide_run::java_agent`]) after the configuration's VM options:
-/// java-debug's `vmArgs` (one line, or a list) or the Kotlin debugger's `vmArguments` (a list).
+/// java-debug's and java-analyzer's `vmArgs` (one line, or a list) or the Kotlin debugger's
+/// `vmArguments` (a list).
 fn add_java_agents(mut config: LaunchConfig, options: &[String]) -> LaunchConfig {
     if options.is_empty() || !is_jvm_launch(&config) {
         return config;
@@ -194,7 +255,7 @@ fn add_java_agents(mut config: LaunchConfig, options: &[String]) -> LaunchConfig
     else {
         return config;
     };
-    let key = if config.adapter == "java-debug" { "vmArgs" } else { "vmArguments" };
+    let key = if config.adapter == ide_dap::kotlin::ADAPTER { "vmArguments" } else { "vmArgs" };
     let value = match extra.get(key) {
         None | Some(serde_json::Value::Null) if key == "vmArgs" => {
             ide_run::java_agent::add_to_vm_args_text("", options).into()
@@ -303,6 +364,11 @@ pub async fn debug_variables(host: &Host, session: DebugSessionId, reference: i6
 }
 
 #[command(trust = trusted)]
+pub async fn debug_resolve_variable(host: &Host, session: DebugSessionId, variable: Variable) -> IdeResult<Variable> {
+    host.debugger.resolve_variable(session, variable).await
+}
+
+#[command(trust = trusted)]
 pub async fn debug_evaluate(
     host: &Host,
     session: DebugSessionId,
@@ -328,8 +394,8 @@ pub async fn debug_send_input(host: &Host, session: DebugSessionId, text: String
     host.debugger.send_input(session, &text)
 }
 
-pub async fn debug_hot_reload(host: &Host, session: DebugSessionId) -> IdeResult<()> {
-    host.debugger.hot_reload(session).await
+pub async fn debug_hot_reload(host: &Host, session: DebugSessionId, reason: HotReloadReason) -> IdeResult<()> {
+    host.debugger.hot_reload(session, reason).await
 }
 
 pub async fn debug_hot_restart(host: &Host, session: DebugSessionId) -> IdeResult<()> {
@@ -406,6 +472,16 @@ pub async fn debug_set_exception_breakpoints(
     choices: std::collections::BTreeMap<String, bool>,
 ) -> IdeResult<()> {
     host.debugger.set_exception_breakpoints(choices).await
+}
+
+/// Exception breakpoints on chosen classes (all sessions that take them, and later ones).
+#[command(trust = trusted)]
+pub async fn debug_set_exception_class_breakpoints(
+    host: &Host,
+    breakpoints: Vec<ExceptionClassBreakpoint>,
+) -> IdeResult<()> {
+    host.debugger.set_exception_class_breakpoints(breakpoints).await;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -735,6 +811,9 @@ mod tests {
         assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!(["-Xmx1g", agent]));
         let kotlin = launch(ide_dap::kotlin::ADAPTER, "launch", serde_json::json!({}));
         assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!([agent]));
+        let java_analyzer =
+            launch(ide_dap::adapter::JAVA_ANALYZER, "launch", serde_json::json!({"vmArgs": ["-Xmx1g"]}));
+        assert_eq!(vm_args(&add_java_agents(java_analyzer, options)), serde_json::json!(["-Xmx1g", agent]));
         // Attaching (remote debug included), other adapters, and no granted agent: unchanged.
         for config in [
             launch("java-debug", "attach", serde_json::json!({"vmArgs": "-Xmx1g"})),
@@ -791,6 +870,7 @@ ide_command::domain!(
     debug_listen_for_jvm,
     debug_pause,
     debug_redefine_classes,
+    debug_resolve_variable,
     debug_restart_frame,
     debug_resume,
     debug_run_to,
@@ -800,6 +880,7 @@ ide_command::domain!(
     debug_set_breakpoints,
     debug_set_data_breakpoints,
     debug_set_exception_breakpoints,
+    debug_set_exception_class_breakpoints,
     debug_set_function_breakpoints,
     debug_set_variable,
     debug_stack_trace,

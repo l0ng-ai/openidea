@@ -20,15 +20,11 @@ import { countColumn, Facet, RangeSetBuilder, type EditorState, type Extension }
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { getIndentUnit, matchBrackets, syntaxTree } from "@codemirror/language";
 import { LINE_INSET } from "./lineInset";
+import { SPACE, spaceWidth } from "./spaceWidth";
 import { BRACKET_COLORS, LONG_LINE, bracketScanner, type BracketScanner } from "./rainbowBrackets";
 
 /** How far (px) a guide sits left of its column, so a caret in that column is right of it (IDEA's indent guide shift). */
 const GUIDE_SHIFT = 2;
-
-/** One column of indentation: a space in the editor font, as measured by the guides plugin. */
-const SPACE = "var(--openidea-space, 1ch)";
-
-const SPACE_SAMPLE = 64;
 
 /** Number of `--openidea-guide-<n>` rainbow colours; deeper guides repeat them. */
 export const GUIDE_COLORS = 5;
@@ -325,36 +321,19 @@ function build(
 }
 
 export const indentGuides: Extension = [
+  spaceWidth,
   ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
-      private probe: HTMLElement;
       private brackets: BracketCache[] = [];
       /** Guide variables of each decorated line, by its start: code lens rows above it repeat them. */
       private lineVars = new Map<number, { images: string; positions: string }>();
       private scanner: BracketScanner | null;
       constructor(readonly view: EditorView) {
-        // Inherits the editor font from the scroller, outside the content CodeMirror observes;
-        // the measured width goes on the scroller, where lines and code lens rows pick it up.
-        this.probe = document.createElement("span");
-        this.probe.setAttribute("aria-hidden", "true");
-        this.probe.style.cssText = "position: absolute; top: 0; left: 0; visibility: hidden; white-space: pre";
-        this.probe.textContent = " ".repeat(SPACE_SAMPLE);
-        view.scrollDOM.appendChild(this.probe);
         const scanner = bracketScanner(view);
         this.scanner = scanner;
         this.decorations = build(view, scanner, this.brackets, this.lineVars);
-        this.measure();
         this.syncLenses();
-      }
-      measure() {
-        this.view.requestMeasure({
-          key: this,
-          read: (view) => this.probe.getBoundingClientRect().width / (view.scaleX || 1) / SPACE_SAMPLE,
-          write: (width, view) => {
-            if (width > 0) view.scrollDOM.style.setProperty("--openidea-space", `${+width.toFixed(3)}px`);
-          },
-        });
       }
       /** Gives code lens rows the guides of the line they annotate, once they are in the DOM. */
       syncLenses() {
@@ -379,15 +358,12 @@ export const indentGuides: Extension = [
         });
       }
       destroy() {
-        this.probe.remove();
-        this.view.scrollDOM.style.removeProperty("--openidea-space");
         for (const el of this.view.contentDOM.querySelectorAll<HTMLElement>(".cm-openidea-lens")) {
           el.style.removeProperty("--openidea-guide-images");
           el.style.removeProperty("--openidea-guide-positions");
         }
       }
       update(u: ViewUpdate) {
-        if (u.geometryChanged) this.measure();
         const scanner = bracketScanner(u.view);
         // A new scanner (rainbow brackets toggled or reconfigured) may colour blocks differently.
         const bracketsChanged = scanner !== this.scanner;

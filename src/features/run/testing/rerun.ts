@@ -9,8 +9,11 @@ import { formatArgs, parseArgs } from "../configs";
 import { appendScriptArgs } from "../scriptArgs";
 import { djangoTestsOf } from "../djangoTypes";
 import { goTestParts, withoutGoSelection } from "../goArguments";
+import { withMavenTests } from "../mavenTests";
 import { frameworkFor } from "./index";
 import { dotnetFilter } from "./dotnet";
+import { playwrightProject, playwrightTitles } from "./playwright";
+import { withNodeTestNamePattern } from "./nodeTest";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
 
 /** Paths of failed tests: failed leaves, plus failed suites without any failed children reported. */
@@ -85,6 +88,27 @@ function jsArgs(config: RunConfig, paths: string[][]): string[] | null {
   return appendScriptArgs(config.command, args, [...files, ...filter]);
 }
 
+/**
+ * Playwright: the files, `--grep` on the describe chain and title (its grep text is the project,
+ * the file relative to the test directory, the titles and the tags, space separated), and the
+ * project when the run named one (`testsConfigs` splits a selection by project).
+ */
+function playwrightArgs(config: RunConfig, paths: string[][]): string[] | null {
+  const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+  if (!files.length) return null;
+  const titles = unique(paths.map((p) => playwrightTitles(p).join(" ")).filter(Boolean));
+  const project = playwrightProject(paths[0]!);
+  const grep = titles.length ? ["--grep", `(?:^| )(?:${titles.map(escapeRegExp).join("|")})(?: @\\S+)*$`] : [];
+  const { before, after } = splitDashDash(config.args);
+  const flags = ["-g", "--grep", ...(project === null ? [] : ["--project"])];
+  const args = after === null ? dropFlag(before, flags) : [...before, "--", ...dropFlag(after, flags)];
+  return appendScriptArgs(config.command, args, [
+    ...files,
+    ...grep,
+    ...(project === null ? [] : ["--project", project]),
+  ]);
+}
+
 function pytestArgs(base: string[], paths: string[][]): string[] | null {
   const ids = unique(paths.map((p) => p.join("::")));
   if (!ids.length) return null;
@@ -134,7 +158,7 @@ function jvmArgs(config: RunConfig, paths: string[][]): string[] | null {
       ...[...byClass].map(([cls, ms]) => `${cls}#${unique(ms).join("+")}`),
       ...classes.filter((c) => !byClass.has(c)),
     ];
-    return [...config.args.filter((a) => !a.startsWith("-Dtest=")), `-Dtest=${specs.join(",")}`];
+    return withMavenTests(config.args, specs.join(","));
   }
   const filters = [...unique(tests.map((t) => `${t.cls}.${t.method}`)), ...classes];
   return [...dropFlag(config.args, ["--tests"]), ...filters.flatMap((f) => ["--tests", f])];
@@ -167,7 +191,7 @@ export function rerunFailedConfigs(config: RunConfig, paths: string[][]): RunCon
   return testsConfigs(config, paths, `Failed: ${baseName}`);
 }
 
-/** Go filters apply to every package in an invocation, so each package keeps its own selection. */
+/** Go filters apply to every package of an invocation, Playwright's to every project: each keeps its own selection. */
 export function testsConfigs(config: RunConfig, paths: string[][], name: string): RunConfig[] | Promise<RunConfig[]> {
   if (!paths.length) return [];
   if (config.params?.framework === "plugin") {
@@ -176,8 +200,10 @@ export function testsConfigs(config: RunConfig, paths: string[][], name: string)
     return selected instanceof Promise ? selected.then(list) : list(selected);
   }
   const groups = new Map<string, string[][]>();
+  const framework = frameworkFor(config);
   for (const path of paths) {
-    const key = frameworkFor(config) === "go" ? (path[0] ?? "") : "";
+    const key =
+      framework === "go" ? (path[0] ?? "") : framework === "playwright" ? (playwrightProject(path) ?? "") : "";
     const group = groups.get(key) ?? [];
     group.push(path);
     groups.set(key, group);
@@ -234,6 +260,31 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
     case "js":
       args = jsArgs(config, paths);
       break;
+    case "playwright":
+      args = playwrightArgs(config, paths);
+      break;
+    case "node-test": {
+      // The files narrow a script's run when it gives `node --test` no patterns of its own; the names always do.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const env = names.length
+        ? withNodeTestNamePattern(config.env, `^(?:${names.map(escapeRegExp).join("|")})$`)
+        : { ...config.env };
+      return { ...config, args: appendScriptArgs(config.command, config.args, files), name, detected: true, env };
+    }
+    case "mocha": {
+      // Mocha's `--grep` matches a test's full title: its describe chain and name, space separated.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const { before, after } = splitDashDash(config.args);
+      const flags = ["-g", "--grep", "-f", "--fgrep"];
+      const base = after === null ? dropFlag(before, flags) : [...before, "--", ...dropFlag(after, flags)];
+      const grep = names.length ? ["--grep", `^(?:${names.map(escapeRegExp).join("|")})$`] : [];
+      args = appendScriptArgs(config.command, base, [...files, ...grep]);
+      break;
+    }
     case "pytest":
       args = pytestArgs(config.args, paths);
       break;

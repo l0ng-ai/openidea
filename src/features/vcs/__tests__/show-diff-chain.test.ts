@@ -8,11 +8,12 @@ import { useVcs } from "../store";
 import { useCommit } from "../commitStore";
 import { initialChangelists, useChangelists } from "../changelists";
 import { useGitLog } from "../logStore";
-import { compareChangeWithLocal } from "../logChanges";
+import { compareChangesWithLocal, type LogChange } from "../logChanges";
 import { chainNeighbour, openVcsDiff, type DiffData } from "../diffInput";
 
 const opened = vi.hoisted(() => vi.fn());
 const diffWindow = vi.hoisted(() => vi.fn());
+const separateWindow = vi.hoisted(() => vi.fn());
 const project = vi.hoisted(() => ({ paths: [] as string[] }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
@@ -21,6 +22,7 @@ vi.mock("@/workbench/contributions", async (original) => ({
 }));
 vi.mock("../comparePaths", () => ({ showDirectoryWorkingDiff: async () => false }));
 vi.mock("../diffDialog", () => ({ openDiffDialog: diffWindow }));
+vi.mock("../DiffWindow", () => ({ showDiffWindow: separateWindow }));
 
 const status = (name: string): FileStatus => ({
   path: `/repo/${name}`,
@@ -39,6 +41,8 @@ let unregister: () => void;
 
 beforeEach(() => {
   opened.mockClear();
+  diffWindow.mockClear();
+  separateWindow.mockClear();
   project.paths = [];
   setContext("activeToolWindow", "");
   const files = [status("z.ts"), status("b.ts"), status("a.ts"), status("other.ts")];
@@ -145,6 +149,14 @@ it("keeps the editor diff outside the modal interface with the Commit window foc
   expect(opened).toHaveBeenCalled();
 });
 
+it("opens Show Diff in a separate window when Open diff as editor tab is off", async () => {
+  useProject.setState({ settings: { vcs: { diffAsEditorTab: false } } as Settings });
+  await getAction("vcs.showDiff")!.run({ arg: "/repo/b.ts", ctx: { vcsAvailable: true } });
+  expect(separateWindow).toHaveBeenCalledTimes(1);
+  expect(separateWindow.mock.calls[0]![0]).toMatchObject({ path: "/repo/b.ts" });
+  expect(opened).not.toHaveBeenCalled();
+});
+
 it("openVcsDiff opens the front window under the modal interface", async () => {
   modal();
   await openVcsDiff({ path: "/repo/b.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
@@ -160,9 +172,9 @@ it("openVcsDiff keeps editor tabs without the modal interface", async () => {
   expect(opened).toHaveBeenCalled();
 });
 
-it("Compare with Local opens the front window under the modal interface", async () => {
+it("Compare with Local opens selected files as a chain in the front window under the modal interface", async () => {
   modal();
-  await compareChangeWithLocal({
+  const change: LogChange = {
     path: "b.ts",
     repo: "/repo",
     oldPath: null,
@@ -172,9 +184,16 @@ it("Compare with Local opens the front window under the modal interface", async 
     statsFrom: "p",
     statsTo: "c",
     diff: { path: "/repo/b.ts", left: { type: "rev", rev: "p" }, right: { type: "rev", rev: "c" } },
-  });
+  };
+  await compareChangesWithLocal([change, { ...change, path: "z.ts", after: "def456" }]);
   expect(diffWindow).toHaveBeenCalledTimes(1);
-  expect(diffWindow.mock.calls[0]![0]).toMatchObject({ path: "/repo/b.ts" });
+  const data = diffWindow.mock.calls[0]![0];
+  expect(data).toMatchObject({ path: "/repo/b.ts", left: { rev: "abc123" }, right: { type: "worktree" } });
+  expect(chainNeighbour(data, 1)).toMatchObject({
+    path: "/repo/z.ts",
+    left: { rev: "def456" },
+    right: { type: "worktree" },
+  });
 });
 
 it("keeps the hunk's line when Show Diff opens the front window (gutter popup)", async () => {
@@ -230,5 +249,5 @@ it.each<DiffData>([
   { path: "/repo/b.ts", left: { type: "rev", rev: "parent" }, right: { type: "rev", rev: "commit" } },
 ])("keeps the requested diff sides when opening a separate window: %j", async (data) => {
   await getAction("vcs.showDiffInNewWindow")!.run({ arg: data, ctx: { vcsAvailable: true } });
-  expect(opened.mock.calls[0]![0].data).toBe(data);
+  expect(separateWindow.mock.calls[0]![0]).toBe(data);
 });

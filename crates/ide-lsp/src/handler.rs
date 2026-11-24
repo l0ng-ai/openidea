@@ -25,6 +25,17 @@ const PROGRESS_SWEEP: Duration = Duration::from_secs(15);
 /// visible, but stops holding the server busy while the work behind it keeps running.
 const PROGRESS_STALE: Duration = Duration::from_secs(180);
 
+/// How long a cancelled progress task waits for its server to end it.
+const CANCEL_GRACE: Duration = Duration::from_secs(5);
+
+/// The key of progress token `token` in [`Server::progress`].
+fn progress_key(token: &Value) -> String {
+    match token {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Task message after [`PROGRESS_STALE`] of silence: keep the server's last message and
 /// say how long nothing happened.
 fn stalled_message(message: Option<&str>) -> String {
@@ -65,6 +76,28 @@ pub(crate) fn lenient_diagnostics(server: &str, items: Value) -> Vec<lsp::Diagno
     parsed
 }
 
+/// rust-analyzer publishes its own analysis next to `cargo check`'s (flycheck): one type
+/// mismatch then arrives as `rust-analyzer(E0308)` and `rustc(E0308)`. Its own entry is
+/// dropped when the compiler reports the same code and severity over an overlapping range.
+fn drop_compiler_duplicates(diagnostics: &mut Vec<lsp::Diagnostic>) {
+    let overlaps = |a: &lsp::Range, b: &lsp::Range| a.start <= b.end && b.start <= a.end;
+    let compiler: Vec<(lsp::Range, Option<lsp::NumberOrString>, Option<lsp::DiagnosticSeverity>)> = diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("rustc") && d.code.is_some())
+        .map(|d| (d.range, d.code.clone(), d.severity))
+        .collect();
+    if compiler.is_empty() {
+        return;
+    }
+    diagnostics.retain(|d| {
+        d.source.as_deref() != Some("rust-analyzer")
+            || d.code.is_none()
+            || !compiler
+                .iter()
+                .any(|(range, code, severity)| code == &d.code && severity == &d.severity && overlaps(range, &d.range))
+    });
+}
+
 impl ClientHandler {
     pub fn new(mgr: Weak<LspManager>, server: Arc<Server>, generation: u64) -> Self {
         Self { mgr, server, generation }
@@ -75,22 +108,50 @@ impl ClientHandler {
     }
 
     /// Cancelling task `task` asks this server instance to stop the work of progress `token`.
+    /// A server that never ends it (Pyright waiting on a workspace that never loads) would
+    /// leave the task "Cancelling…" for good: after [`CANCEL_GRACE`] the task ends here.
     fn cancel_handle(&self, task: TaskId, token: &Value) -> ide_core::task::CancelHandle {
-        let (server, generation, token) = (self.server.clone(), self.generation, token.clone());
+        let (mgr, server, generation, token) = (self.mgr.clone(), self.server.clone(), self.generation, token.clone());
         ide_core::task::on_cancel(task, move || {
             if let Some(run) = server.initialized_gen(generation)
                 && let Err(e) = run.peer.notify("window/workDoneProgress/cancel", json!({ "token": token }))
             {
                 tracing::debug!("{}: cannot cancel progress: {e}", server.name);
             }
+            let Some(runtime) = mgr.upgrade().map(|m| m.runtime.clone()) else { return };
+            runtime.spawn(async move {
+                tokio::time::sleep(CANCEL_GRACE).await;
+                let Some(mgr) = mgr.upgrade() else { return };
+                let key = progress_key(&token);
+                let ended = {
+                    let mut progress = server.progress.lock();
+                    if progress.get(&key).is_none_or(|p| p.task != task) {
+                        return; // the server ended it, or the token began new work
+                    }
+                    progress.remove(&key)
+                };
+                if let Some(p) = ended {
+                    tracing::info!("{}: progress '{key}' did not end after cancel; ending its task", server.name);
+                    server.emit(
+                        mgr.sink(),
+                        IdeEvent::Task {
+                            id: p.task,
+                            title: p.title,
+                            message: p.message,
+                            fraction: None,
+                            done: true,
+                            cancellable: false,
+                        },
+                    );
+                    server.refresh_busy_status(mgr.sink());
+                    server.progress_ended();
+                }
+            });
         })
     }
 
     fn progress(&self, mgr: &LspManager, params: Value) {
-        let token = match &params["token"] {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
+        let token = progress_key(&params["token"]);
         let value = &params["value"];
         let kind = value.get("kind").and_then(Value::as_str);
         let message = value.get("message").and_then(Value::as_str).map(str::to_owned);
@@ -293,11 +354,23 @@ impl ClientHandler {
             }
         };
         params.diagnostics = lenient_diagnostics(&self.server.name, raw.unwrap_or(Value::Null));
+        drop_compiler_duplicates(&mut params.diagnostics);
         let Some(path) = uri_to_path(params.uri.as_str())
             .or_else(|| crate::notebook::is_cell_uri(params.uri.as_str()).then(|| PathBuf::from(params.uri.as_str())))
         else {
             return;
         };
+        if self.server.redirect_transient_diagnostics(&path, self.generation, params.version, &mut params.diagnostics) {
+            return;
+        }
+        if self.server.name == crate::compose::SERVER {
+            // Maven resource-filtering placeholders (`@profileActive@`) parse as invalid
+            // YAML but are replaced before the file is ever read: their parser error is noise.
+            let text = mgr.docs.lock().values().find(|d| d.path == path).map(|d| d.text.as_str().to_owned());
+            if let Some(text) = text {
+                params.diagnostics.retain(|d| !crate::maven_placeholder::false_positive(&text, d));
+            }
+        }
         if self.server.name == "jdtls"
             && let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
         {
@@ -307,9 +380,8 @@ impl ClientHandler {
             return;
         }
         // Files opened only for a request (references search) are not the user's problems.
-        if (self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
-            && !mgr.docs.lock().values().any(|d| d.path == path))
-            || self.server.suppresses_diagnostics(&path)
+        if self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
+            && !mgr.docs.lock().values().any(|d| d.path == path)
         {
             return;
         }
@@ -322,6 +394,24 @@ impl ClientHandler {
             self.server.set_diagnostics(path.clone(), params.diagnostics)
         };
         mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
+    }
+
+    fn publish_flutter_outline(&self, mgr: &LspManager, params: Value) {
+        let params: crate::flutter_outline::Params = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("{}: bad publishFlutterOutline: {e}", self.server.name);
+                return;
+            }
+        };
+        let Some(path) = uri_to_path(&params.uri) else { return };
+        if !self.server.is_live(self.generation) {
+            return;
+        }
+        let items = crate::flutter_outline::items(&mgr.conv(self.encoding()), &path, params.outline);
+        if mgr.set_flutter_outline(&path, &self.server, self.generation, items) {
+            mgr.sink().emit(IdeEvent::LspRefresh { server: self.server.id, kind: LspRefreshKind::FlutterOutline });
+        }
     }
 
     /// Once per unresolved plugin, whether m2e marked a `pom.xml` or only logged it.
@@ -435,6 +525,14 @@ impl ClientHandler {
                         .find_map(|base| section.split('.').try_fold(base, |v, key| v.get(key)))
                         .cloned()
                         .unwrap_or(Value::Null),
+                    None if self.server.name == "eslint" => {
+                        let mut settings = options.clone();
+                        settings["workspaceFolder"] = json!({
+                            "uri": crate::uri::path_to_uri(&self.server.root),
+                            "name": self.server.root.file_name().map_or_else(|| "root".into(), |name| name.to_string_lossy().into_owned()),
+                        });
+                        settings
+                    }
                     None => options.clone(),
                 })
                 .collect(),
@@ -523,11 +621,12 @@ impl Handler for ClientHandler {
                 }
             }
             "textDocument/publishDiagnostics" => self.publish_diagnostics(&mgr, params),
+            "dart/textDocument/publishFlutterOutline" => self.publish_flutter_outline(&mgr, params),
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 if self.server.config.tsserver_project && tsserver_ran_out_of_memory(text) {
-                    tracing::warn!("[{}] {text}", self.server.name);
+                    tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name);
                     // The tasks of the dead tsserver never see their `end`: end them now
                     // instead of letting them sit as zombies until the stale window, and
                     // stop holding queries back — the restarted instance re-reports.
@@ -554,12 +653,12 @@ impl Handler for ClientHandler {
                 }
                 match params.get("type").and_then(Value::as_u64) {
                     Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
-                        tracing::warn!("[{}] {text}", self.server.name);
+                        tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name);
                         mgr.report_import_failure(self.server.root.clone(), text.to_owned());
                     }
-                    Some(1) => tracing::warn!("[{}] {text}", self.server.name),
-                    Some(2 | 3) => tracing::info!("[{}] {text}", self.server.name),
-                    _ => tracing::debug!("[{}] {text}", self.server.name),
+                    Some(1) => tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
+                    Some(2 | 3) => tracing::info!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
+                    _ => tracing::debug!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
@@ -692,6 +791,28 @@ mod tests {
     use ide_core::{LanguageId, TaskId};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn rust_analyzer_s_own_entry_yields_to_the_compiler_s_for_the_same_error() {
+        let diagnostic = |source: &str, code: &str, line: u32, severity| lsp::Diagnostic {
+            range: lsp::Range::new(lsp::Position::new(line, 21), lsp::Position::new(line, 27)),
+            severity: Some(severity),
+            code: Some(lsp::NumberOrString::String(code.into())),
+            source: Some(source.into()),
+            message: format!("{source} {code}"),
+            ..Default::default()
+        };
+        let error = lsp::DiagnosticSeverity::ERROR;
+        let mut items = vec![
+            diagnostic("rust-analyzer", "E0308", 1, error),
+            diagnostic("rustc", "E0308", 1, error),
+            diagnostic("rust-analyzer", "E0308", 5, error),
+            diagnostic("rust-analyzer", "unused_variables", 1, lsp::DiagnosticSeverity::WARNING),
+        ];
+        drop_compiler_duplicates(&mut items);
+        let left: Vec<_> = items.iter().map(|d| (d.message.as_str(), d.range.start.line)).collect();
+        assert_eq!(left, [("rustc E0308", 1), ("rust-analyzer E0308", 5), ("rust-analyzer unused_variables", 1)]);
+    }
 
     #[test]
     fn tsserver_aborts_are_out_of_memory() {

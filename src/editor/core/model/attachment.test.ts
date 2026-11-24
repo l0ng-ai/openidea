@@ -40,6 +40,25 @@ function setup(files: Record<string, string>, settings: Settings = {}) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("attached document views (editable diff side)", () => {
+  it("edits and saves through an attachment before it mounts a view", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "one\ntwo\n" });
+    const att = await attachDocument(manager, "/p/a.txt");
+    const observer = await attachDocument(manager, "/p/a.txt");
+    const view = new EditorView({ doc: observer.text(), extensions: [observer.extension] });
+    try {
+      att.edit({ from: 4, to: 7, insert: "three" }, "revert");
+      expect(att.text()).toBe("one\nthree\n");
+      expect(view.state.doc.toString()).toBe("one\nthree\n");
+      await att.save({ exact: true });
+      expect(backend.docs.get(att.doc)?.saved).toBe("one\nthree\n");
+    } finally {
+      view.destroy();
+      observer.release();
+      att.release();
+      manager.stop();
+    }
+  });
+
   it.each([
     { autoSave: true, tabOpen: false, ensureFinalNewline: false },
     { autoSave: false, tabOpen: false, ensureFinalNewline: false },

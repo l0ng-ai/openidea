@@ -206,6 +206,36 @@ describe("Build and run using: Gradle", () => {
     expect(unguarded).toEqual([]);
   });
 
+  // Up to Gradle 7.0, a build JVM with its own `org.gradle.jvmargs` gets the command line's `-D`
+  // values only once the settings load: read at an init script's top level, they are null (#4093).
+  it.each([
+    ["gradleRun", RUN_SCRIPT],
+    ["gradleTests", TESTS_SCRIPT],
+    ["gradleBoot", BOOT_SCRIPT],
+  ])("%s reads the launch's -D values in project actions, not at its top level", (_, script) => {
+    const topLevel = script
+      .split("\n")
+      .filter((l) => /^\S/.test(l) && /System\.getProperty|Boolean\.getBoolean|systemPropertiesArgs/.test(l));
+    expect(topLevel).toEqual([]);
+  });
+
+  it.each([
+    // The report: a Spring Boot application in the root project, Gradle wrapper 6.4.1.
+    ["", ":", ":openideaRun"],
+    ["app", ":app", ":app:openideaRun"],
+    [CORE, ":billing:core", ":billing:core:openideaRun"],
+  ])("runs module %j as project %s on a Gradle 6.4.1 wrapper (#4093)", (module, project, task) => {
+    const file = `${module ? `${module}/` : ""}src/main/java/com/example/demo/DemoApplication.java`;
+    const app = applicationConfig({ className: "com.example.demo.DemoApplication", spring: true }, file, []);
+    expect(wrapperGradleVersion("distributionUrl=https\\://x/gradle-6.4.1-bin.zip")).toEqual([6, 4]);
+    // Below Gradle 8.1: no configuration cache.
+    const run = delegatedGradleConfig(app, module, { ...ctx, configurationCache: false })!;
+    expect(run.args).toContain(`-Dopenidea.run.project=${project}`);
+    expect(run.args.at(-1)).toBe(task);
+    // The init script compares each project's identity path with it inside `allprojects`.
+    expect(RUN_SCRIPT).toContain("if (id() != System.getProperty('openidea.run.project')) return");
+  });
+
   it("sets the main class with `main` and creates the task eagerly on old Gradle (#3864)", () => {
     expect(RUN_SCRIPT).toContain("if (t.hasProperty('mainClass')) t.mainClass.set(main) else t.main = main");
     expect(RUN_SCRIPT).toContain("else p.tasks.create('openideaRun', JavaExec, configure)");

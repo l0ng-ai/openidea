@@ -1,15 +1,26 @@
 .page {
   display: flex;
   flex-direction: column;
+  gap: var(--space-2);
   height: 100%;
-  min-height: 420px;
+  min-height: 0;
+  min-width: 0;
 }
-.presetRow {
+.presetRow,
+.toolbar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-2);
+}
+.presetGroup {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 30px;
-  margin-bottom: 6px;
+  flex: 0 1 328px;
+  min-width: 0;
+  gap: var(--space-2);
 }
 .presetLabel {
   flex: none;
@@ -17,45 +28,49 @@
   color: var(--fg);
 }
 .presetSelect {
-  min-width: 220px;
-}
-.spacer {
   flex: 1;
 }
 .modifiedNote {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
+  overflow-wrap: anywhere;
 }
 
-.toolbar {
+.treeActions,
+.filterGroup {
   display: flex;
   align-items: center;
-  gap: var(--space-0-5);
-  margin-bottom: 6px;
+  gap: var(--space-1);
 }
-.search {
-  flex: 1;
-  max-width: 360px;
-  margin-right: 4px;
+.treeActions {
+  flex: none;
 }
+.filterGroup {
+  flex: 1 1 300px;
+  min-width: 0;
+  max-width: 392px;
+}
+.search,
 .shortcutFilter {
   flex: 1;
-  max-width: 360px;
+  min-width: 0;
+}
+.shortcutFilter {
   display: flex;
   align-items: center;
-  gap: var(--space-0-5);
-  height: var(--h-control);
-  margin-right: 4px;
-  padding: 0 2px 0 8px;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
+  gap: var(--space-1);
+  height: var(--h-field);
+  padding: 0 var(--space-1) 0 var(--space-2);
+  background: var(--bg-field);
+  border-radius: var(--radius-control);
+  box-shadow: inset 0 0 0 1px var(--border-button);
 }
 .shortcutFilter:focus-within {
-  box-shadow: inset 0 0 0 1px var(--accent);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
 }
 .leading {
+  flex: none;
   color: var(--fg-subtle);
-  margin-right: 4px;
 }
 .filterRecorder {
   flex: 1;
@@ -67,6 +82,11 @@
   box-shadow: none;
   outline: none;
 }
+.filterRecorder > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .treeWrap {
   flex: 1;
@@ -75,7 +95,7 @@
   flex-direction: column;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border);
-  padding: 2px 0;
+  padding-block: var(--space-0-5);
 }
 .empty {
   padding: 8px 12px;
@@ -97,26 +117,21 @@
 }
 .actionIcon {
   display: inline-flex;
+  flex: none;
   width: 14px;
   color: var(--fg-subtle);
 }
 .actionTitle {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1 0 auto;
 }
 .modified {
   color: var(--accent);
 }
 .bindings {
   display: inline-flex;
-  gap: var(--space-1);
-  padding-right: 10px;
-}
-.kbd {
-  color: var(--fg-muted);
+  flex: none;
+  gap: var(--space-2);
+  padding-inline: var(--space-2);
 }
 
 /* recorder */
@@ -177,59 +192,88 @@
 .recordLabel {
   color: var(--fg);
 }
+.shortcutBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
+}
+.actionSummary {
+  display: grid;
+  gap: var(--space-0-5);
+}
+.actionName {
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.shortcutField {
+  flex: 0 0 auto;
+  background: var(--bg-field);
+}
+.shortcutField > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.secondStroke {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.secondStroke > label {
+  max-width: 55%;
+}
+.secondStroke .shortcutField {
+  flex: 1;
+}
 .recordHint {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
-.conflicts {
-  min-height: 72px;
-  padding: 6px 8px;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border);
-}
-.noConflicts {
-  color: var(--fg-subtle);
+.shortcutStatus {
+  display: grid;
+  gap: var(--space-1);
 }
 .conflictTitle {
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
   color: var(--fg-emphasis);
+  font-weight: 600;
 }
 .conflictIcon {
+  flex: none;
   color: var(--warning);
+  --icon-color: currentColor;
 }
 .conflictList {
   list-style: none;
-  margin: 6px 0 0;
-  padding: 0 0 0 20px;
-  max-height: 120px;
-  overflow: auto;
+  margin: 0;
+  padding: 0;
+  max-height: 132px;
+  overflow-y: auto;
 }
 .conflictList li {
-  display: flex;
-  min-width: 0;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) fit-content(42%);
+  align-items: start;
   gap: var(--space-2);
-  height: var(--h-row);
+  padding-block: var(--space-1);
 }
 .conflictAction {
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
-.conflictCategory {
+.actionPath {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
-
-.toolbarSep {
-  width: 1px;
-  height: 16px;
-  margin: 0 4px;
-  background: var(--border);
-}
-.conflictsLabel {
-  color: var(--fg);
-  padding-top: 4px;
+.conflictBinding {
+  text-align: end;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .nameError {
   color: var(--danger);

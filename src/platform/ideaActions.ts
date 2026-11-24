@@ -38,6 +38,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   HighlightUsagesInFile: "find.highlightUsages",
   ReformatCode: "code.reformat",
   OptimizeImports: "code.optimizeImports",
+  RearrangeCode: "code.rearrange",
   CommentByLineComment: "code.commentLine",
   CommentByBlockComment: "code.commentBlock",
   ShowIntentionActions: "code.showIntentions",
@@ -45,6 +46,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   QuickImplementations: "code.quickDefinition",
   ParameterInfo: "code.parameterInfo",
   CodeCompletion: "code.completion",
+  SmartTypeCompletion: "code.smartTypeCompletion",
   Generate: "code.generate",
   SurroundWith: "code.surroundWith",
   EditorSelectWord: "code.extendSelection",
@@ -99,4 +101,6 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   VcsShowNextChangeMarker: "vcs.nextChange",
   VcsShowPrevChangeMarker: "vcs.prevChange",
   "Compare.SameVersion": "vcs.showDiff",
+  "ChangesView.ShelveSilently": "vcs.shelveSilently",
+  "ChangesView.UnshelveSilently": "vcs.unshelveSilently",
 };

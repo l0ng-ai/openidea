@@ -1,14 +1,16 @@
 /** Which files open in which viewer, and the editor inputs of the viewers. */
 import type { EditorInput } from "@/workbench/contributions";
-import { wildcardMatch } from "@/platform/fileTypes";
+import { hasFileType, wildcardMatch } from "@/platform/fileTypes";
 import type { FileProbe } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
 
 export const IMAGE_KIND = "image";
 export const BINARY_KIND = "binary";
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif"]);
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd", "mkdn", "mdwn"]);
+const MARKDOWN_SOURCE_EXTENSIONS = new Set([...MARKDOWN_EXTENSIONS, "mdx", "ronn", "workbook"]);
 
 function extension(path: string): string {
   const name = path.slice(path.lastIndexOf("/") + 1);
@@ -18,7 +20,16 @@ function extension(path: string): string {
 
 export const isImagePath = (path: string) => IMAGE_EXTENSIONS.has(extension(path));
 export const isSvgPath = (path: string) => extension(path) === "svg";
-export const isMarkdownPath = (path: string) => MARKDOWN_EXTENSIONS.has(extension(path));
+
+/**
+ * Whether `path` gets the Markdown preview under Settings › File Types.
+ * The source check also includes Markdown extensions that open in the editor alone.
+ */
+export function isMarkdownPath(path: string, mode: "preview" | "source" = "preview"): boolean {
+  const { settings, project } = useProject.getState();
+  const extensions = mode === "source" ? MARKDOWN_SOURCE_EXTENSIONS : MARKDOWN_EXTENSIONS;
+  return hasFileType(path, ["markdown"], extensions, settings?.files, project?.root ?? null);
+}
 
 /** Whether the file's name matches one of `patterns` (`*.xlsx`); Windows/macOS match case-insensitively. */
 export function associatedApplication(

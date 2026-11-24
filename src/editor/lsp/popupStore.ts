@@ -1,6 +1,7 @@
 /** State of the React popups the LSP editor features open (rendered by `Popups.tsx`). */
 import { create } from "zustand";
 import type { EditorView } from "@codemirror/view";
+import type { CSSProperties } from "react";
 import type { Location, Markup } from "@/bindings";
 import type { MenuItem } from "@/ui";
 import type { WorkspaceEditSummary } from "./workspaceEdit";
@@ -13,8 +14,14 @@ export interface PopupPoint {
 export interface ListPopupItem {
   id: string;
   label: string;
+  /** Adjacent actions with the same section id share a caption or divider. */
+  section?: { id: string; label?: string };
   /** Muted trailing text (file:line, kind…). */
   detail?: string;
+  /** Container beside the symbol name, and the location aligned to the trailing edge. */
+  target?: { container: string | null; path: string };
+  /** In its own column before the label (for example, a timestamp). */
+  leadingDetail?: string;
   /** Second line / muted text after the label (code preview). */
   preview?: string;
   icon?: string;
@@ -31,8 +38,8 @@ export interface ListPopupItem {
   run: () => void | Promise<void>;
   /** IDEA's right-arrow menu of the row (inspection options of a fix). */
   submenu?: MenuItem[];
-  /** Called when the row becomes the selected one (e.g. highlight what it would act on). */
-  onActive?: () => void;
+  /** Called on selection. May return a cleanup for when the row is no longer active. */
+  onActive?: () => void | (() => void);
 }
 
 /** Side panel content for the selected row of a list popup (intention preview). */
@@ -90,20 +97,26 @@ export type LspPopup =
       targets: DefinitionTarget[];
       index: number;
       themeClasses: string;
+      codeStyle: Pick<CSSProperties, "fontFamily" | "fontSize" | "fontWeight" | "lineHeight" | "tabSize">;
     }
   | {
       kind: "list";
-      anchor: PopupPoint;
+      anchor: PopupPoint | "center";
       title: string;
       items: ListPopupItem[];
+      /** The resizable Copy Path/Reference chooser with trailing path previews. */
+      layout?: "copyPath";
       /** Rows 1-9 get a number; typing it runs the row (IDEA's numbered popups). */
       numbered?: boolean;
+      /** Compact action list, with room for icons only when a row has one. */
+      compact?: boolean;
       /** More rows are still being looked for (`aria-busy`). */
       busy?: boolean;
       /** Header pin button (e.g. "Open in Find Tool Window"). */
       pin?: { label: string; run: () => void };
       /** Side panel for the selected row, fetched lazily; `signal` aborts when the selection moves. */
       preview?: (item: ListPopupItem, signal: AbortSignal) => Promise<ListPreview | null>;
+      themeClasses?: string;
       /** Runs when the popup goes away (closed, replaced or a row ran). */
       onClose?: () => void;
     }
@@ -130,6 +143,14 @@ export type LspPopup =
       onSubmit: (name: string) => void;
     }
   | {
+      kind: "symbolRename";
+      title: string;
+      initial: string;
+      note?: string;
+      themeClasses: string;
+      onSubmit: (name: string) => void;
+    }
+  | {
       kind: "preview";
       title: string;
       summary: WorkspaceEditSummary;
@@ -139,6 +160,8 @@ export type LspPopup =
       warnings?: string[];
       /** Individual occurrences with line previews (single-file syntax-based renames). */
       occurrences?: PreviewOccurrence[];
+      /** The editor theme for a symbol rename and its occurrence snippets. */
+      renameThemeClasses?: string;
     };
 
 export interface PreviewOccurrence {

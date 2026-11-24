@@ -21,11 +21,89 @@ fn root(data_dir: &Path) -> PathBuf {
     data_dir.join("lsp").join("jdtls")
 }
 
-/// Records that jdtls is starting on the workspace of `cfg` (its `-data` folder).
+/// jdtls' temporary folder, inside its workspace.
+const TEMP_DIR: &str = ".tmp";
+
+fn workspace(cfg: &LanguageServerConfig) -> Option<&Path> {
+    cfg.args.iter().position(|a| a == "-data").and_then(|i| cfg.args.get(i + 1)).map(Path::new)
+}
+
+/// jdtls' temporary folder for `workspace`: `<workspace>/.tmp`, or a folder of its own in the
+/// system temporary folder when the workspace path has whitespace (macOS's `Application Support`).
+/// Buildship writes its Gradle init script there and later splits the stored arguments at spaces,
+/// so a path with a space reaches Gradle cut off and every Gradle import fails.
+fn temp_dir(workspace: &Path) -> PathBuf {
+    let own = workspace.join(TEMP_DIR);
+    if !has_whitespace(&own) {
+        return own;
+    }
+    // FNV-1a: stable across builds, so a workspace keeps its folder from one start to the next.
+    let hash = workspace
+        .to_string_lossy()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    let shared = std::env::temp_dir().join(format!("openidea-jdtls-{hash:016x}"));
+    if has_whitespace(&shared) { own } else { shared }
+}
+
+fn has_whitespace(path: &Path) -> bool {
+    path.to_string_lossy().chars().any(char::is_whitespace)
+}
+
+fn temp_arg(workspace: &Path) -> String {
+    format!("-Djava.io.tmpdir={}", temp_dir(workspace).to_string_lossy())
+}
+
+/// Gives jdtls a temporary folder of a workspace of ours ([`temp_dir`]) unless the
+/// user's JVM arguments choose one. JDT APT copies a project's annotation processor jars into a
+/// new `jdt-apt-*` folder for each processor class loader and deletes it only when the JVM exits
+/// normally — never on Windows, where the jars are still open then — so in the system temp
+/// folder they pile up with every start; [`mark_used`] empties this one before each start.
+pub fn use_own_temp(cfg: &mut LanguageServerConfig, data_dir: &Path) {
+    if cfg.name != "jdtls" || cfg.args.iter().any(|a| a.contains("-Djava.io.tmpdir=")) {
+        return;
+    }
+    let Some(arg) = workspace(cfg).filter(|w| w.starts_with(root(data_dir))).map(temp_arg) else { return };
+    // Launched directly, JVM options go before `-jar`; through the script, as `--jvm-arg=`.
+    match cfg.args.iter().position(|a| a == "-jar") {
+        Some(jar) => cfg.args.insert(jar, arg),
+        None => cfg.args.push(format!("--jvm-arg={arg}")),
+    }
+}
+
+/// Empties the temporary folder [`use_own_temp`] gave the workspace. Best effort: files a server
+/// still has open on Windows stay until a later start.
+fn clear_temp(cfg: &LanguageServerConfig, workspace: &Path) {
+    let arg = temp_arg(workspace);
+    if !cfg.args.iter().any(|a| a.strip_prefix("--jvm-arg=").unwrap_or(a) == arg) {
+        return;
+    }
+    let temp = temp_dir(workspace);
+    for entry in std::fs::read_dir(&temp).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let removed = if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(e) = removed {
+            tracing::debug!("jdtls: cannot remove temporary {}: {e}", path.display());
+        }
+    }
+    if let Err(e) = std::fs::create_dir_all(&temp) {
+        tracing::warn!("jdtls: cannot create its temporary folder {}: {e}", temp.display());
+    }
+}
+
+/// Records that jdtls is starting on the workspace of `cfg` (its `-data` folder), and empties
+/// the workspace's temporary folder.
 pub fn mark_used(cfg: &LanguageServerConfig) {
-    let Some(dir) = cfg.args.iter().position(|a| a == "-data").and_then(|i| cfg.args.get(i + 1)) else { return };
-    let dir = Path::new(dir);
-    if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(dir.join(USED_MARKER), b"")) {
+    let Some(dir) = workspace(cfg) else { return };
+    clear_temp(cfg, dir);
+    if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| {
+        let marker = std::fs::File::create(dir.join(USED_MARKER))?;
+        marker.set_modified(SystemTime::now())
+    }) {
         tracing::debug!("jdtls: cannot mark {} as used: {e}", dir.display());
     }
 }
@@ -137,6 +215,62 @@ mod tests {
         mark_used(&cfg(&ws));
         assert!(take_unused(tmp.path(), UNUSED_FOR).is_empty());
         assert!(ws.exists());
+    }
+
+    #[test]
+    fn jdtls_keeps_its_temporary_files_in_its_workspace_and_starts_with_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = root(tmp.path()).join("p");
+        let temp = format!("-Djava.io.tmpdir={}", ws.join(TEMP_DIR).to_string_lossy());
+
+        // Through the launcher script.
+        let mut script = cfg(&ws);
+        use_own_temp(&mut script, tmp.path());
+        assert_eq!(script.args.last(), Some(&format!("--jvm-arg={temp}")));
+        // Launched directly: a JVM option, before `-jar`.
+        let mut direct = cfg(&ws);
+        direct.args.splice(0..0, ["-Xmx2G".to_owned(), "-jar".to_owned(), "launcher.jar".to_owned()]);
+        use_own_temp(&mut direct, tmp.path());
+        assert_eq!(direct.args[..3], ["-Xmx2G".to_owned(), temp.clone(), "-jar".to_owned()]);
+
+        let stale = ws.join(TEMP_DIR).join("jdt-apt-1");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("0_processor.jar"), "").unwrap();
+        std::fs::write(ws.join(TEMP_DIR).join("file.tmp"), "").unwrap();
+        mark_used(&direct);
+        assert!(ws.join(TEMP_DIR).is_dir());
+        assert_eq!(std::fs::read_dir(ws.join(TEMP_DIR)).unwrap().count(), 0);
+
+        // The user's own choice, and a workspace that is not ours, are left alone.
+        let mut own = cfg(&ws);
+        own.args.push("--jvm-arg=-Djava.io.tmpdir=/elsewhere".into());
+        use_own_temp(&mut own, tmp.path());
+        assert_eq!(own.args.iter().filter(|a| a.contains("java.io.tmpdir")).count(), 1);
+        let mut theirs = cfg(&tmp.path().join("their-workspace"));
+        use_own_temp(&mut theirs, tmp.path());
+        assert!(!theirs.args.iter().any(|a| a.contains("java.io.tmpdir")));
+        std::fs::create_dir_all(ws.join(TEMP_DIR).join("kept")).unwrap();
+        mark_used(&cfg(&ws));
+        assert!(ws.join(TEMP_DIR).join("kept").exists());
+    }
+
+    #[test]
+    fn a_workspace_path_with_a_space_keeps_jdtls_temporary_files_out_of_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("Application Support");
+        let ws = root(&data).join("p");
+        let mut cfg = cfg(&ws);
+        use_own_temp(&mut cfg, &data);
+        let arg = cfg.args.last().unwrap().strip_prefix("--jvm-arg=-Djava.io.tmpdir=").unwrap().to_owned();
+        assert!(!arg.contains(' '), "{arg}");
+        assert!(Path::new(&arg).starts_with(std::env::temp_dir()));
+        assert_eq!(temp_dir(&ws), temp_dir(&ws));
+        assert_ne!(temp_dir(&ws), temp_dir(&root(&data).join("q")));
+
+        std::fs::create_dir_all(Path::new(&arg).join("jdt-apt-1")).unwrap();
+        mark_used(&cfg);
+        assert_eq!(std::fs::read_dir(&arg).unwrap().count(), 0);
+        std::fs::remove_dir_all(&arg).unwrap();
     }
 
     #[cfg(unix)]

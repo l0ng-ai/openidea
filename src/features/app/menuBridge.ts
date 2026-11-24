@@ -25,6 +25,7 @@ import { isDistractionFree, useDistractionFree } from "@/workbench/distractionFr
 import { orderStatusItems } from "@/workbench/StatusBar";
 import { statusWidgetRows } from "@/workbench/statusBarWidgets";
 import { useToolWindowLayouts } from "@/workbench/toolwindows/layouts";
+import { toolWindowsRestorable, useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { hostOs, type HostOs } from "./host";
 
 export const MENU_EVENT = "openidea://menu";
@@ -100,8 +101,17 @@ export function menuAccelerator(binding: string): string | undefined {
 export function buildMenuConfig(os: HostOs): MenuConfig {
   const labels: Record<string, string> = {};
   // Per-window state some labels follow (View › Appearance › Enter / Exit Distraction Free Mode).
-  const params = { os, distractionFree: isDistractionFree() ? "on" : "off" };
+  const params = {
+    os,
+    distractionFree: isDistractionFree() ? "on" : "off",
+    toolWindows: toolWindowsRestorable() ? "hidden" : "shown",
+  };
   for (const key of keysWithPrefix("menu.")) labels[key] = t(key, params);
+  labels["menu.layout.applyNamed"] = tx("Apply");
+  labels["menu.layout.restoreNamed"] = tx("Restore");
+  labels["menu.layout.saveNamed"] = tx("Save Changes");
+  labels["menu.layout.renameNamed"] = tx("Rename…");
+  labels["menu.layout.deleteNamed"] = tx("Delete…");
   const accelerators: Record<string, string> = {};
   const seen = new Set<string>();
   for (const [, id] of effectiveBindings()) {
@@ -149,9 +159,13 @@ export function dynamicMenuItems(): Record<string, DynamicItem[]> {
   const toolWindows = [...useContributions.getState().toolWindows.values()]
     .map((tw) => ({ action: `toolwindow.${tw.id}`, arg: null, label: tw.verbatim ? tw.title : tx(tw.title) }))
     .sort((a, b) => a.label.localeCompare(b.label));
-  const layouts = useToolWindowLayouts
-    .getState()
-    .layouts.map((l) => ({ action: "layout.restore", arg: l.name, label: l.name }));
+  const { layouts, active } = useToolWindowLayouts.getState();
+  const namedLayouts = layouts.map(({ name }) => ({
+    action: "layout.restore",
+    arg: name,
+    label: name,
+    checked: name === active,
+  }));
   const slots = Object.fromEntries(
     Object.entries(useMenuSlotItems.getState().slots).map(([slot, items]) => [
       slot,
@@ -160,7 +174,7 @@ export function dynamicMenuItems(): Record<string, DynamicItem[]> {
         .sort((a, b) => a.label.localeCompare(b.label)),
     ]),
   );
-  return { ...slots, toolWindows, toolWindowLayouts: layouts, statusBarWidgets: statusBarWidgetItems() };
+  return { ...slots, toolWindows, toolWindowLayouts: namedLayouts, statusBarWidgets: statusBarWidgetItems() };
 }
 
 /** Action ids of every IDE item in a menu model. */
@@ -264,6 +278,10 @@ export function installMenuBridge(): () => void {
     useKeymap.subscribe(push),
     useDistractionFree.subscribe((s, prev) => {
       if (s.active !== prev.active) push();
+    }),
+    // Window › Hide All Tool Windows reads "Restore Tool Windows" while it would restore them.
+    useToolWindowLayout.subscribe((s, prev) => {
+      if (toolWindowsRestorable(s) !== toolWindowsRestorable(prev)) push();
     }),
     useContributions.subscribe((s, prev) => {
       if (s.toolWindows !== prev.toolWindows || s.statusItems !== prev.statusItems) push();

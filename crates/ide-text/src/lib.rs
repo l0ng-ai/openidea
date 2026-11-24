@@ -93,6 +93,54 @@ fn common_ends(a: &str, b: &str) -> (usize, usize) {
     (prefix, suffix)
 }
 
+/// [`common_ends`] of the rope's text and `b`, walking the rope's chunks instead
+/// of copying it: whole chunks compare as slices, bytes only around the mismatch.
+fn rope_common_ends(rope: &ropey::Rope, b: &str) -> (usize, usize) {
+    let bb = b.as_bytes();
+    let mut prefix = 0;
+    for chunk in rope.chunks() {
+        let n = common_prefix_len(chunk.as_bytes(), &bb[prefix..]);
+        prefix += n;
+        if n < chunk.len() {
+            break;
+        }
+    }
+    prefix = rope.char_to_byte(rope.byte_to_char(prefix));
+    let len = rope.len_bytes();
+    let limit = len.min(bb.len()) - prefix;
+    let mut suffix = 0;
+    let mut chunks = rope.chunks_at_byte(len).0.reversed();
+    while suffix < limit {
+        let Some(chunk) = chunks.next() else { break };
+        let n = common_suffix_len(chunk.as_bytes(), &bb[..bb.len() - suffix]).min(limit - suffix);
+        suffix += n;
+        if n < chunk.len() {
+            break;
+        }
+    }
+    let ch = rope.byte_to_char(len - suffix);
+    if rope.char_to_byte(ch) < len - suffix {
+        suffix = len - rope.char_to_byte(ch + 1);
+    }
+    (prefix, suffix)
+}
+
+fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
+    let n = a.len().min(b.len());
+    if a[..n] == b[..n] {
+        return n;
+    }
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
+fn common_suffix_len(a: &[u8], b: &[u8]) -> usize {
+    let n = a.len().min(b.len());
+    if a[a.len() - n..] == b[b.len() - n..] {
+        return n;
+    }
+    a.iter().rev().zip(b.iter().rev()).take_while(|(x, y)| x == y).count()
+}
+
 /// Byte offset of each line, then the total length.
 fn line_starts(lines: &[&str]) -> Vec<usize> {
     let mut at = 0;
@@ -396,9 +444,8 @@ impl Document {
     /// Past `deadline` the regions get coarser, never wrong.
     fn diff_until(&self, text: &str, deadline: Instant) -> ChangeSet {
         let new = normalize_line_endings(text);
-        let old = self.rope.to_string();
-        let (prefix, suffix) = common_ends(&old, &new);
-        let old_rest = &old[prefix..old.len() - suffix];
+        let (prefix, suffix) = rope_common_ends(&self.rope, &new);
+        let old_rest = String::from(self.rope.byte_slice(prefix..self.rope.len_bytes() - suffix));
         let new_rest = &new[prefix..new.len() - suffix];
 
         let old_lines: Vec<&str> = old_rest.split_inclusive('\n').collect();
@@ -407,7 +454,7 @@ impl Document {
         let new_starts = line_starts(&new_lines);
 
         let mut changes = Vec::new();
-        let mut utf16_at = utf16_len(&old[..prefix]);
+        let mut utf16_at = self.byte_to_offset(prefix);
         let mut old_at = 0;
         let mut region: Option<(LineRange, LineRange)> = None;
         let ops =
@@ -708,6 +755,67 @@ mod tests {
         let old = "😀 one\nsame\n😀 two\n";
         let set = Document::new(old).diff("😀 ONE\nsame\n😀 TWO\n");
         assert_eq!(set.changes, vec![tc(3, 6, "ONE"), tc(15, 18, "TWO")]);
+    }
+
+    /// The rope scan must trim exactly what `common_ends` trims on the copied text.
+    fn assert_rope_ends(old: &str, new: &str) {
+        let doc = Document::new(old);
+        let (prefix, suffix) = rope_common_ends(&doc.rope, new);
+        assert_eq!((prefix, suffix), common_ends(old, new), "{old:?} -> {new:?}");
+        assert_eq!(doc.byte_to_offset(prefix), utf16_len(&old[..prefix]));
+    }
+
+    #[test]
+    fn rope_common_ends_matches_common_ends() {
+        let unit = "héllo 😀 wörld, ©\n";
+        let base = unit.repeat(400);
+        assert!(Document::new(&base).rope.chunks().count() > 4, "spans several chunks");
+        for (old, new) in [("", ""), ("", "abc"), ("abc", ""), ("é", "è"), ("😀", "😁"), ("é", "©")] {
+            assert_rope_ends(old, new);
+        }
+        assert_rope_ends(&base, &base);
+        assert_rope_ends(&base, "");
+        assert_rope_ends("", &base);
+        assert_rope_ends(&base, &format!("{base}tail"));
+        assert_rope_ends(&format!("{base}tail"), &base);
+        assert_rope_ends(&base, &base[unit.len()..]);
+        assert_rope_ends(&"a".repeat(5000), &"a".repeat(4999));
+        assert_rope_ends(&"ab".repeat(3000), &"ab".repeat(3001));
+        assert_rope_ends(&"😀".repeat(2000), &"😀".repeat(1999));
+        let boundaries: Vec<usize> = base.char_indices().map(|(i, _)| i).step_by(7).collect();
+        for at in boundaries {
+            let c = base[at..].chars().next().unwrap();
+            let rest = &base[at + c.len_utf8()..];
+            let swapped = match c {
+                'é' => 'è',   // same lead byte
+                '😀' => '😁', // differs in the last byte only
+                '©' => 'é',   // same trailing byte
+                _ => 'X',
+            };
+            let swap = format!("{}{swapped}{rest}", &base[..at]);
+            assert_rope_ends(&base, &swap);
+            // Deleting a char further on stops the suffix scan far from the prefix.
+            let mut far = at + (swap.len() - at) / 2;
+            while !swap.is_char_boundary(far) {
+                far += 1;
+            }
+            let gone = swap[far..].chars().next().unwrap().len_utf8();
+            assert_rope_ends(&base, &format!("{}{}", &swap[..far], &swap[far + gone..]));
+            assert_rope_ends(&base, &format!("{}{rest}", &base[..at]));
+            assert_rope_ends(&base, &format!("{}é{c}{rest}", &base[..at]));
+        }
+    }
+
+    #[test]
+    fn diff_of_a_large_document_counts_utf16_and_normalizes_crlf() {
+        let old = "😀 héllo\n".repeat(2000);
+        let at = old.len() / 2;
+        let new = format!("{}X{}", &old[..at], &old[at..]);
+        let doc = Document::new(&old);
+        let expected = vec![tc(utf16_len(&old[..at]), utf16_len(&old[..at]), "X")];
+        assert_eq!(doc.diff(&new).changes, expected);
+        assert_eq!(doc.diff(&new.replace('\n', "\r\n")).changes, expected);
+        assert!(doc.diff(&old.replace('\n', "\r\n")).changes.is_empty());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { executeAction, registerAction, allActions, isActionEnabled } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { BuildModel, GradleModel, ProjectInfo, RunConfig } from "@/platform/ipc";
@@ -10,7 +10,8 @@ import { GradleView, MavenView } from "./BuildToolView";
 import { activate } from "./index";
 import { expandableKeys, gradleChildren, gradleRoots, gradleProjectKey } from "./model";
 import { executeBuildLine } from "./runAnything";
-import { classifyPickedPoms, mavenPomForImport, useBuild } from "./store";
+import { classifyPickedPoms, mavenPomForImport, suggestsLoadingPom, useBuild } from "./store";
+import { menuGroupItems, useEditorBanners } from "@/workbench/contributions";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -569,4 +570,47 @@ it("does not link or start Gradle imports in an untrusted project", async () => 
   expect(mocks.open).not.toHaveBeenCalled();
   expect(mocks.link).not.toHaveBeenCalled();
   expect(mocks.sync).not.toHaveBeenCalled();
+});
+
+it("offers Add as Maven Project only for a pom.xml Maven doesn't load, and links it", async () => {
+  const items = (path: string) =>
+    menuGroupItems("projectView", { paths: [path], dirs: [false] }).filter(
+      (i) => i.kind === "action" && i.action === "maven.addFileAsProject",
+    );
+  expect(items("/p/a/pom.xml")).toEqual([]);
+  expect(items("/p/b/build.xml")).toEqual([]);
+  expect(items("/p/b/pom.xml")).toEqual([expect.objectContaining({ action: "maven.addFileAsProject" })]);
+  await act(async () => {
+    await executeAction("maven.addFileAsProject", { path: "/p/b/pom.xml" });
+  });
+  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", '["b/pom.xml"]');
+});
+
+it("shows a banner above an unlinked pom.xml that loads or skips it", async () => {
+  const { useBanner } = useEditorBanners.getState().banners.get("maven.unlinkedPom")!;
+  const banner = (path: string) => renderHook(() => useBanner(path)).result.current;
+  expect(banner("/p/a/pom.xml")).toBeNull();
+  expect(banner("/p/a/target/classes/META-INF/maven/x/y/pom.xml")).toBeNull();
+  expect(banner("/p/a/src/test/resources/pom.xml")).toBeNull();
+  const shown = banner("/p/b/pom.xml")!;
+  expect(shown.text).toBe("This Maven project is not loaded");
+  await act(async () => shown.actions![0]!.run());
+  await waitFor(() =>
+    expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", '["b/pom.xml"]'),
+  );
+  await waitFor(() => expect(useBuild.getState().loading).toBe(false));
+
+  const skip = banner("/p/c/pom.xml")!.actions![1]!;
+  act(() => skip.run());
+  expect(banner("/p/c/pom.xml")).toBeNull();
+  expect(banner("/p/c/sub/pom.xml")).toBeNull();
+  expect(banner("/p/d/pom.xml")).not.toBeNull();
+});
+
+it("stops suggesting a project the user unlinked", async () => {
+  await act(async () => {
+    await executeAction("maven.unlinkProjects", { pom: "a/pom.xml" });
+  });
+  expect(suggestsLoadingPom("a/pom.xml", useBuild.getState().settings.skippedPoms)).toBe(false);
+  expect(suggestsLoadingPom("other/pom.xml", useBuild.getState().settings.skippedPoms)).toBe(true);
 });

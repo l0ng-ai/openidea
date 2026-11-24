@@ -134,6 +134,8 @@ export interface DialogProps {
    * and drag only by a `[data-dialog-drag]` element, such as their title.
    */
   position?: "center" | "top";
+  /** Use lightweight popup chrome even when the dialog is centered. */
+  popup?: boolean;
   className?: string;
   "aria-label"?: string;
   /** Close when clicking outside (default: only for `top` popups). */
@@ -227,6 +229,7 @@ function DialogInner({
   initialSize,
   onResized,
   position = "center",
+  popup: asPopup = false,
   className,
   dismissOnBackdrop,
   closeOnDeactivate,
@@ -240,8 +243,7 @@ function DialogInner({
   const overlayTitleBar = usePlatform((s) => s.overlayTitleBar);
   const given = useGivenTx();
   if (typeof title === "string") title = given(title);
-  // Choosers and untitled dialogs (Recent Files, About) are IDEA popups.
-  const popup = position === "top" || (title == null && !icon);
+  const popup = asPopup || position === "top" || (title == null && !icon);
   const onCloseRef = useRef(onClose);
   const buttonsRef = useRef(buttons);
   const restoreFocusRef = useRef(restoreFocus);
@@ -269,6 +271,21 @@ function DialogInner({
       window.removeEventListener("blur", onBlur);
     };
   }, []);
+
+  useEffect(() => {
+    if (!popup || !resizable) return;
+    const fitPopup = () => {
+      const rect = ref.current?.getBoundingClientRect();
+      if (!rect) return;
+      const left = Math.max(0, Math.min(rect.left, window.innerWidth - rect.width));
+      const top = Math.max(0, Math.min(rect.top, window.innerHeight - rect.height));
+      if (left !== rect.left || top !== rect.top) {
+        setOffset({ x: offset.x + left - rect.left, y: offset.y + top - rect.top });
+      }
+    };
+    window.addEventListener("resize", fitPopup);
+    return () => window.removeEventListener("resize", fitPopup);
+  }, [popup, resizable, offset]);
 
   const cancelOnDeactivate = closeOnDeactivate ?? popup;
   useEffect(() => {

@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   readDir: vi.fn(),
   entryKind: vi.fn(),
   nativeOpen: vi.fn(),
+  nativeSave: vi.fn(),
+  confirm: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -16,9 +18,10 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: { ...real.commands, fsReadDir: mocks.readDir, fsEntryKind: mocks.entryKind },
   };
 });
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.nativeOpen, save: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.nativeOpen, save: mocks.nativeSave }));
+vi.mock("./messages", async (original) => ({ ...(await original<object>()), confirm: mocks.confirm }));
 
-import { choosePath } from "@/platform/choosePath";
+import { choosePath, choosePaths, chooseSavePath } from "@/platform/choosePath";
 import { useRemote } from "@/platform/remote";
 import { InputDialogsHost, parentPath } from "./inputDialogs";
 
@@ -26,6 +29,8 @@ const tree: Record<string, [string, "dir" | "file"][]> = {
   "/srv/app": [
     ["runner", "dir"],
     ["pom.xml", "file"],
+    ["build.xml", "file"],
+    ["README.txt", "file"],
   ],
   "/srv/app/runner": [
     ["plugins", "dir"],
@@ -119,6 +124,58 @@ describe("choosePath in a remote window", () => {
     fireEvent.click(dialog().getByRole("button", { name: "Cancel" }));
     await expect(result).resolves.toBeNull();
   });
+
+  it("selects multiple matching files on the host", async () => {
+    let result!: Promise<string[]>;
+    act(() => {
+      result = choosePaths({
+        directory: false,
+        title: "Add Maven Projects",
+        defaultPath: "/srv/app",
+        filters: [{ name: "XML", extensions: ["xml"] }],
+      });
+    });
+    fireEvent.click(await dialog().findByRole("checkbox", { name: "pom.xml" }));
+    fireEvent.click(dialog().getByRole("checkbox", { name: "build.xml" }));
+    expect(dialog().queryByText("README.txt")).toBeNull();
+    fireEvent.click(dialog().getByRole("button", { name: "OK" }));
+    await expect(result).resolves.toEqual(["/srv/app/pom.xml", "/srv/app/build.xml"]);
+    expect(mocks.nativeOpen).not.toHaveBeenCalled();
+  });
+
+  it("keeps a proposed name while browsing to a new save destination", async () => {
+    let result!: Promise<string | null>;
+    act(() => {
+      result = chooseSavePath({ title: "Save As", defaultPath: "/srv/app/new.txt" });
+    });
+    await dialog().findByText("runner");
+    expect(dialog().getByRole("textbox")).toHaveValue("/srv/app/new.txt");
+    fireEvent.click(dialog().getByText("runner"), { detail: 2 });
+    await dialog().findByText("plugins");
+    expect(dialog().getByRole("textbox")).toHaveValue("/srv/app/runner/new.txt");
+    fireEvent.click(dialog().getByRole("button", { name: "OK" }));
+    await expect(result).resolves.toBe("/srv/app/runner/new.txt");
+    expect(mocks.nativeSave).not.toHaveBeenCalled();
+    expect(mocks.confirm).not.toHaveBeenCalled();
+  });
+
+  it("asks before accepting an existing save destination", async () => {
+    mocks.confirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    let result!: Promise<string | null>;
+    act(() => {
+      result = chooseSavePath({ title: "Save As", defaultPath: "/srv/app/pom.xml" });
+    });
+    await dialog().findByText("runner");
+    const ok = dialog().getByRole("button", { name: "OK" });
+    fireEvent.click(ok);
+    await waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(ok).toBeEnabled());
+    fireEvent.click(ok);
+    await expect(result).resolves.toBe("/srv/app/pom.xml");
+    expect(mocks.confirm).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("pom.xml") }),
+    );
+  });
 });
 
 describe("parentPath", () => {
@@ -127,8 +184,10 @@ describe("parentPath", () => {
     expect(parentPath("/srv")).toBe("/");
     expect(parentPath("/")).toBeNull();
     expect(parentPath("C:\\Users\\me")).toBe("C:\\Users");
+    expect(parentPath("C:/Users\\me")).toBe("C:/Users");
     expect(parentPath("C:\\Users")).toBe("C:\\");
     expect(parentPath("C:\\")).toBeNull();
     expect(parentPath("/srv/app/")).toBe("/srv");
+    expect(parentPath("/srv/app/file\\name")).toBe("/srv/app");
   });
 });

@@ -1,3 +1,5 @@
+mod common;
+
 use ide_core::{CancellationToken, Diagnostic, Pos, Range, Severity};
 use ide_host::plugins::{HostWorkspace, PluginWorkspace};
 use ide_host::{Host, HostConfig};
@@ -16,15 +18,8 @@ impl Harness {
         let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
         std::fs::create_dir_all(&root).unwrap();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
             local_data_dir: tmp.path().join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..common::host_config(tmp.path())
         }));
         host.open_project("main", &root).unwrap();
         host.open_project("second", &root).unwrap();
@@ -471,7 +466,8 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
             f._tmp.path().join("plugins"),
             Arc::new(|_: Option<&str>, _| {}),
             Limits {
-                timeout: Duration::from_millis(200),
+                // Room for a reclaimed instance to start again on a slow runner.
+                timeout: Duration::from_millis(750),
                 idle_timeout: Some(Duration::from_millis(20)),
                 restart_backoff: Duration::ZERO,
                 ..Default::default()

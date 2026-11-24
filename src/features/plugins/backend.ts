@@ -9,6 +9,7 @@ import type {
   ActiveTheme,
   CapabilityInfo,
   CatalogPlugin,
+  ClipboardAnswer,
   CommitAnswer,
   CommandAnswer,
   CommitSelection,
@@ -23,6 +24,8 @@ import type {
   PluginContextKey,
   PluginEditor,
   PluginEndpoint,
+  PluginSearchPage,
+  RequestId,
   PluginEvent,
   PluginInfo,
   PluginOutputLine,
@@ -36,6 +39,8 @@ import type {
   Viewport,
   WorkbenchEvent,
 } from "@/bindings";
+import { toBase64 } from "@/platform/base64";
+import { choosePath } from "@/platform/choosePath";
 import { tx } from "@/platform/i18n";
 import { useRemote } from "@/platform/remote";
 import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
@@ -103,6 +108,8 @@ export interface PluginsBackend {
   finishOperation(id: string, status: number | null, stopped: boolean): Promise<void>;
   contentTabAction(pluginId: string, action: import("@/bindings").ContentTabAction): Promise<void>;
   answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
+  /** This window's clipboard for a plugin's `clipboardRequested`. */
+  answerClipboard(requestId: string, answer: ClipboardAnswer): Promise<void>;
   /** Runs plugins' before-commit checks on what `selection` commits. */
   commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
@@ -134,6 +141,13 @@ export interface PluginsBackend {
   runTargets(): Promise<import("@/bindings").RegisteredRunTarget[]>;
   answerRunTarget(id: string, useTarget: boolean): Promise<import("@/bindings").Settings>;
   endpoints(pluginId: string): Promise<PluginEndpoint[]>;
+  search(
+    pluginId: string,
+    category: string,
+    query: string,
+    limit: number,
+    request: RequestId,
+  ): Promise<PluginSearchPage>;
   /**
    * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
    * lines until it exits (`onExit`) or the returned stop function is called.
@@ -185,12 +199,6 @@ export function webSchemeUrl(path: string, windows = /windows/i.test(navigator.u
   return windows ? `http://openidea-plugin.localhost/${encoded}` : `openidea-plugin://localhost/${encoded}`;
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
-}
-
 function fromBase64(b64: string): Uint8Array {
   const binary = atob(b64);
   const out = new Uint8Array(binary.length);
@@ -215,11 +223,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     return chosen;
   },
   program: (id, program, scope) => call(commands.pluginProgram(id, program, scope)),
-  pickProgram: async () => {
-    const { open } = await import("@/platform/dialog");
-    const picked = await open({ directory: false, multiple: false, title: tx("Choose plugin executable") });
-    return (Array.isArray(picked) ? picked[0] : picked) ?? null;
-  },
+  pickProgram: () => choosePath({ directory: false, title: tx("Choose plugin executable") }),
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
   revokeNetHost: (id, host) => call(commands.pluginRevokeNetHost(id, host)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
@@ -296,6 +300,9 @@ export const tauriPluginsBackend: PluginsBackend = {
   answerCommit: async (requestId, answer) => {
     await commands.pluginAnswerCommit(requestId, answer);
   },
+  answerClipboard: async (requestId, answer) => {
+    await call(commands.pluginAnswerClipboard(requestId, answer));
+  },
   commitChecks: (selection, checks) => call(commands.pluginCommitChecks(selection, checks, nextRequestId())),
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
@@ -336,6 +343,8 @@ export const tauriPluginsBackend: PluginsBackend = {
   runTargets: () => call(commands.pluginRunTargets()),
   answerRunTarget: (id, useTarget) => call(commands.pluginAnswerRunTarget(id, useTarget)),
   endpoints: (pluginId) => call(commands.pluginEndpoints(pluginId)),
+  search: (pluginId, category, query, limit, request) =>
+    call(commands.pluginSearch(pluginId, category, query, limit, request)),
   serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
     const request = nextRequestId();
     const channel = new Channel<PluginOutputLine>();
@@ -370,7 +379,8 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginSetSecret(pluginId, name, value));
   },
   setActiveFile: async (path) => {
-    await commands.pluginSetActiveFile(path);
+    const editor = editorContext();
+    await commands.pluginSetActiveFile(path, editor && editor.path === path ? editor : null);
   },
   setTheme: (pluginId, themeId) => call(commands.pluginSetTheme(pluginId, themeId)),
   setThemeFrame: async (color) => {
@@ -710,6 +720,7 @@ export function createMemoryPluginsBackend(
     runTargets: async () => [],
     answerRunTarget: async () => useProject.getState().settings as import("@/bindings").Settings,
     endpoints: async () => [],
+    search: async () => ({ items: [], hasMore: false }),
     answerCommand: async () => {},
     finishOperation: async () => {},
     closeTerminalSession: async () => {},
@@ -720,6 +731,7 @@ export function createMemoryPluginsBackend(
     selectTests: async () => null,
     contentTabAction: async () => {},
     answerCommit: async () => {},
+    answerClipboard: async () => {},
     commitChecks: async () => [],
     serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {
       onError(`${pluginId} · ${view} · ${key}: logs need the desktop app`);

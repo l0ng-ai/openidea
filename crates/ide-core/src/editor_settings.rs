@@ -197,6 +197,7 @@ pub enum ImportsOnPaste {
 #[serde(default, rename_all = "camelCase")]
 pub struct FoldingSettings {
     pub show_outline: bool,
+    pub outline_visibility: FoldingOutlineVisibility,
     pub file_header: bool,
     pub imports: bool,
     pub doc_comments: bool,
@@ -204,8 +205,22 @@ pub struct FoldingSettings {
 
 impl Default for FoldingSettings {
     fn default() -> Self {
-        Self { show_outline: true, file_header: true, imports: true, doc_comments: false }
+        Self {
+            show_outline: true,
+            outline_visibility: FoldingOutlineVisibility::Hover,
+            file_header: true,
+            imports: true,
+            doc_comments: false,
+        }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum FoldingOutlineVisibility {
+    #[default]
+    Hover,
+    Always,
 }
 
 /// Editor › General › Editor Tabs.
@@ -273,6 +288,8 @@ pub struct SmartKeysSettings {
     pub pair_quotes: bool,
     pub surround_selection: bool,
     pub tab_out_of_pair: bool,
+    /// A `;` typed before the closing `)` of a statement goes to the end of the statement.
+    pub semicolon_at_statement_end: bool,
     /// Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag.
     pub simultaneous_tag_editing: bool,
     /// Reformat on paste: `none` | `indentBlock` | `indentEachLine`.
@@ -294,6 +311,7 @@ impl Default for SmartKeysSettings {
             pair_quotes: true,
             surround_selection: true,
             tab_out_of_pair: true,
+            semicolon_at_statement_end: true,
             simultaneous_tag_editing: true,
             reformat_on_paste: "indentEachLine".into(),
             escape_on_paste: true,
@@ -420,6 +438,9 @@ pub struct TextAttributesOverride {
     pub effect: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effect_color: Option<String>,
+    /// IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_stripe_color: Option<String>,
 }
 
 /// Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit).
@@ -446,6 +467,12 @@ pub struct LanguageCodeStyle {
     /// Comment Code › Add a space at line comment start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_comment_add_space: Option<bool>,
+    /// PHP: align `=>` in multi-line arrays after formatting (other languages ignore it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align_key_value_pairs: Option<bool>,
+    /// PHP: align `=` of consecutive assignment statements after formatting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align_consecutive_assignments: Option<bool>,
 }
 
 /// Editor › Code Style (General tab + per-language overrides).
@@ -534,6 +561,27 @@ mod auto_import_tests {
             let json = serde_json::json!({ "importsOnPaste": mode });
             let settings: AutoImportSettings = serde_json::from_value(json).unwrap();
             assert_eq!(serde_json::to_value(settings).unwrap()["importsOnPaste"], mode);
+        }
+    }
+}
+
+#[cfg(test)]
+mod folding_tests {
+    use super::{FoldingOutlineVisibility, FoldingSettings};
+
+    #[test]
+    fn folding_outline_defaults_to_hover_for_existing_settings() {
+        let settings: FoldingSettings = serde_json::from_str(r#"{"showOutline":false}"#).unwrap();
+        assert!(!settings.show_outline);
+        assert_eq!(settings.outline_visibility, FoldingOutlineVisibility::Hover);
+    }
+
+    #[test]
+    fn folding_outline_visibility_round_trips() {
+        for mode in ["hover", "always"] {
+            let json = serde_json::json!({ "outlineVisibility": mode });
+            let settings: FoldingSettings = serde_json::from_value(json).unwrap();
+            assert_eq!(serde_json::to_value(settings).unwrap()["outlineVisibility"], mode);
         }
     }
 }

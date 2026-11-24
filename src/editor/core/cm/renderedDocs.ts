@@ -61,6 +61,7 @@ import { tx, useI18n } from "@/platform/i18n";
 import { loadMarkdown, markupToHtml } from "@/editor/lsp/markdown";
 import { hasContent, renderDoc, type DocComment, type DocStyle, type RenderedDoc } from "./docRender";
 import { LINE_INSET } from "./lineInset";
+import { SPACE, spaceWidth } from "./spaceWidth";
 
 /** The file's default: render its doc comments or not. */
 export const renderDocComments = Facet.define<boolean, boolean>({
@@ -111,6 +112,10 @@ function adjoins(state: EditorState, from: number, to: number): boolean {
  * block in every language that has them.
  */
 export function docComments(state: EditorState): DocComment[] {
+  // Languages without a CodeMirror grammar (Zig, GDScript…) have no syntax tree to walk.
+  // Find their doc comments from the text instead: a `///` / `//!` run or a `/** */` block
+  // that owns its lines, exactly as the tree walk below would.
+  if (!syntaxTree(state).length) return textDocComments(state);
   const out: DocComment[] = [];
   /** The block comment being assembled, until a node ends it with the closing marker. */
   let open: DocComment | null = null;
@@ -160,6 +165,59 @@ export function docComments(state: EditorState): DocComment[] {
       return false;
     },
   });
+  return out;
+}
+
+/**
+ * Doc comments of a document with no syntax tree, from its lines alone. Zig's `///` and
+ * `//!` and other unparsed languages' doc comments are recognized by the same markers as
+ * the tree walk; `finish` applies the same "owns its line" rule.
+ */
+function textDocComments(state: EditorState): DocComment[] {
+  // Only where the language's own comments use these markers: not plain text, logs or `#` languages.
+  const tokens = state.languageDataAt<{ line?: string; block?: { open: string } }>("commentTokens", 0)[0];
+  const lineDocs = tokens?.line === "//";
+  const blockDocs = tokens?.block?.open === "/*";
+  if (!lineDocs && !blockDocs) return [];
+  const out: DocComment[] = [];
+  const ws = (text: string) => /^[ \t]*/.exec(text)![0].length;
+  const finish = (comment: DocComment) => {
+    comment.text = state.doc.sliceString(comment.from, comment.to);
+    out.push(comment);
+  };
+  let open: DocComment | null = null;
+  for (let n = 1; n <= state.doc.lines; n++) {
+    const line = state.doc.line(n);
+    const indent = ws(line.text);
+    const text = line.text.slice(indent);
+    if (open) {
+      open.to = line.to;
+      if (text.trimEnd().endsWith("*/")) {
+        finish(open);
+        open = null;
+      }
+      continue;
+    }
+    const from = line.from + indent;
+    if (blockDocs && blockDocAt(text)) {
+      const comment: DocComment = { from, to: line.to, style: "block", text: "" };
+      if (text.length > 3 && text.trimEnd().endsWith("*/")) finish(comment);
+      else open = comment;
+      continue;
+    }
+    if (!lineDocs || !lineDocAt(text)) continue;
+    const previous = out.at(-1);
+    if (
+      previous?.style === "line" &&
+      state.doc.lineAt(previous.to).number === n - 1 &&
+      adjoins(state, previous.to, from)
+    ) {
+      previous.to = line.to;
+      previous.text = state.doc.sliceString(previous.from, line.to);
+      continue;
+    }
+    finish({ from, to: line.to, style: "line", text: "" });
+  }
   return out;
 }
 
@@ -263,9 +321,9 @@ class DocWidget extends WidgetType {
     const titles = doc.sections.map(sectionTitle);
     const dom = document.createElement("div");
     dom.className = "cm-openidea-renderedDoc";
-    // In the code's character width, which `docMetrics` keeps current: the DOM stays
-    // right through a font size change or zoom, which does not draw the widget again.
-    const left = `(${this.indent} * var(--openidea-doc-char, 1ch) + ${LINE_INSET}px)`;
+    // In columns of the code's font (`spaceWidth`): the DOM stays right through a font
+    // size change or zoom, which does not draw the widget again.
+    const left = `(${this.indent} * ${SPACE} + ${LINE_INSET}px)`;
     dom.style.marginLeft = `calc${left}`;
     // The content is as wide as its longest line; the comment wraps at the visible width instead.
     dom.style.maxWidth = `calc(var(--openidea-doc-width, 100%) - ${left} - ${DOC_RIGHT_GAP}px)`;
@@ -770,12 +828,10 @@ export function toggleRenderedViewAtCaret(view: EditorView): boolean {
 const DOC_RIGHT_GAP = 24;
 
 /**
- * Publishes on the content the visible width of the text area, `--openidea-doc-width`,
- * and the code's character width, `--openidea-doc-char`. A block widget is as wide as
- * the content, which without soft wraps is as wide as the longest line, so a rendered
- * comment needs the first to wrap where the reader can see, as IDEA's does; it indents
- * by the second, which a font size change or zoom changes. Horizontal scrolling leaves
- * both unchanged.
+ * Publishes on the content the visible width of the text area, `--openidea-doc-width`.
+ * A block widget is as wide as the content, which without soft wraps is as wide as the
+ * longest line, so a rendered comment needs it to wrap where the reader can see.
+ * Scrolling leaves it unchanged, so lines are not restyled while scrolling.
  */
 const docMetrics = ViewPlugin.fromClass(
   class {
@@ -788,18 +844,12 @@ const docMetrics = ViewPlugin.fromClass(
     measure() {
       this.view.requestMeasure({
         key: this,
-        read: (view) => ({
-          width: view.scrollDOM.clientWidth - view.contentDOM.offsetLeft,
-          char: view.defaultCharacterWidth,
-        }),
-        write: ({ width, char }, view) => {
+        read: (view) => view.scrollDOM.clientWidth - view.contentDOM.offsetLeft,
+        write: (width, view) => {
           const style = view.contentDOM.style;
-          const widthValue = `${Math.max(0, Math.floor(width))}px`;
-          if (style.getPropertyValue("--openidea-doc-width") !== widthValue)
-            style.setProperty("--openidea-doc-width", widthValue);
-          const charValue = `${char}px`;
-          if (style.getPropertyValue("--openidea-doc-char") !== charValue)
-            style.setProperty("--openidea-doc-char", charValue);
+          const value = `${Math.max(0, Math.floor(width))}px`;
+          if (style.getPropertyValue("--openidea-doc-width") !== value)
+            style.setProperty("--openidea-doc-width", value);
         },
       });
     }
@@ -890,5 +940,6 @@ export const renderedDocsExtension: Extension = [
   markdownReady,
   languageWatcher,
   docMetrics,
+  spaceWidth,
   docsTheme,
 ];

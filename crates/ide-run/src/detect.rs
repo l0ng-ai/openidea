@@ -88,6 +88,7 @@ pub(crate) fn detect_with_profiles(
     detect_projects(root, &["Makefile", "makefile", "GNUmakefile"], detect_make, &mut out);
     detect_projects(root, &["justfile", "Justfile", ".justfile"], detect_just, &mut out);
     detect_godot(root, &mut out);
+    detect_projects(root, &["pubspec.yaml"], detect_flutter, &mut out);
     crate::external::detect(root, &mut out);
 
     let mut seen = HashSet::new();
@@ -223,27 +224,63 @@ fn first_existing(root: &Path, names: &[&str]) -> Option<PathBuf> {
     names.iter().map(|n| root.join(n)).find(|p| p.is_file())
 }
 
-/// Sorted immediate subdirectories, skipping hidden and vendored ones.
-fn subdirs(dir: &Path) -> Vec<PathBuf> {
-    ide_core::project_roots::children(dir)
-}
-
 fn relative(root: &Path, dir: &Path) -> PathBuf {
     dir.strip_prefix(root).map(Path::to_path_buf).unwrap_or_else(|_| dir.to_path_buf())
 }
 
 // ---------------------------------------------------------------- node
 
-pub(crate) fn package_manager(root: &Path, _pkg: &Json) -> &'static str {
-    ide_core::project_roots::package_manager(root)
-}
-
 pub(crate) fn is_test_script(name: &str) -> bool {
     matches!(name, "test" | "vitest" | "jest") || name.starts_with("test:")
 }
 
-fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>, out: &mut Vec<RunConfig>) {
-    let Some(scripts) = pkg.get("scripts").and_then(Json::as_object) else { return };
+/// The test runner a `package.json` script starts, when its output and test selection differ
+/// from Jest / Vitest's: `playwright test`, `mocha`, or `node --test` (`tsx --test`) with Node's own
+/// reporters (the IDE adds its reporter next to them, which a reporter chosen here would clash with).
+fn script_test_runner(script: &str) -> Option<&'static str> {
+    let tokens: Vec<&str> = script.split(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | ';')).collect();
+    if tokens.windows(2).any(|w| w[0] == "playwright" && w[1] == "test") {
+        return Some("playwright");
+    }
+    if tokens.iter().any(|t| matches!(t.rsplit('/').next(), Some("mocha" | "_mocha"))) {
+        return Some("mocha");
+    }
+    let node = tokens.iter().position(|t| matches!(*t, "node" | "tsx"))?;
+    // Node's own options: up to the script (`node server.js --test` passes `--test` to the program).
+    let mut options = Vec::new();
+    for t in &tokens[node + 1..] {
+        let value = options.last().is_some_and(|o| NODE_VALUE_OPTIONS.contains(o));
+        if !value && !t.starts_with('-') {
+            break;
+        }
+        options.push(*t);
+    }
+    (options.contains(&"--test") && !options.iter().any(|t| t.starts_with("--test-reporter"))).then_some("node-test")
+}
+
+/// Node options whose value is the next argument.
+const NODE_VALUE_OPTIONS: &[&str] =
+    &["-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions", "--env-file"];
+
+const PLAYWRIGHT_CONFIGS: &[&str] = &[
+    "playwright.config.ts",
+    "playwright.config.js",
+    "playwright.config.mts",
+    "playwright.config.mjs",
+    "playwright.config.cts",
+    "playwright.config.cjs",
+];
+
+/// Pushes the package's scripts; returns the test runners they start.
+fn push_scripts(
+    pkg: &Json,
+    pm: &str,
+    prefix: Option<&str>,
+    cwd: Option<PathBuf>,
+    out: &mut Vec<RunConfig>,
+) -> HashSet<&'static str> {
+    let mut runners = HashSet::new();
+    let Some(scripts) = pkg.get("scripts").and_then(Json::as_object) else { return runners };
     let mut names: Vec<&String> = scripts.keys().collect();
     names.sort();
     for script in names {
@@ -253,11 +290,39 @@ fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>
         };
         let mut c = config(id, name, "npm", pm, &["run", script]).in_dir(cwd.clone()).debug("js-debug");
         c.extras.module = cwd.as_deref().map(ide_core::ipc_path::to_ipc);
-        if is_test_script(script) {
+        let runner = scripts[script].as_str().and_then(script_test_runner);
+        if is_test_script(script) || runner.is_some() {
             c = c.test();
+        }
+        if let Some(runner) = runner {
+            c.extras.test_runner = Some(runner.to_owned());
+            runners.insert(runner);
         }
         out.push(c);
     }
+    runners
+}
+
+/// `npx playwright test` for a package with a Playwright configuration that no script runs
+/// (`npm init playwright` adds none).
+fn push_playwright(
+    dir: &Path,
+    runners: &HashSet<&str>,
+    prefix: Option<&str>,
+    cwd: Option<PathBuf>,
+    out: &mut Vec<RunConfig>,
+) {
+    if runners.contains("playwright") || first_existing(dir, PLAYWRIGHT_CONFIGS).is_none() {
+        return;
+    }
+    let (id, name) = match prefix {
+        Some(p) => (format!("playwright:{p}"), format!("{p}: playwright test")),
+        None => ("playwright".to_owned(), "playwright test".to_owned()),
+    };
+    let mut c = config(id, name, "node", "npx", &["playwright", "test"]).in_dir(cwd.clone()).debug("js-debug").test();
+    c.extras.module = cwd.as_deref().map(ide_core::ipc_path::to_ipc);
+    c.extras.test_runner = Some("playwright".to_owned());
+    out.push(c);
 }
 
 fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
@@ -271,10 +336,13 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
             continue;
         }
         let Some(pkg) = read_json(&dir.join("package.json")) else { continue };
-        let pm = package_manager(&dir, &pkg);
+        let pm = ide_core::project_roots::package_manager(&dir);
         let rel = relative(root, &dir);
         let label = ide_core::ipc_path::to_ipc(&rel);
-        push_scripts(&pkg, pm, (dir != root).then_some(label.as_str()), (dir != root).then_some(rel), out);
+        let prefix = (dir != root).then_some(label.as_str());
+        let cwd = (dir != root).then_some(rel);
+        let runners = push_scripts(&pkg, pm, prefix, cwd.clone(), out);
+        push_playwright(&dir, &runners, prefix, cwd, out);
         for member_dir in ide_core::project_roots::node_workspace_members(&dir) {
             if !covered.insert(member_dir.clone()) {
                 continue;
@@ -287,7 +355,8 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
                 .map(str::to_owned)
                 .unwrap_or_else(|| ide_core::ipc_path::to_ipc(&rel));
             let name = if dir == root { name } else { format!("{label}:{name}") };
-            push_scripts(&member, pm, Some(&name), Some(rel), out);
+            let runners = push_scripts(&member, pm, Some(&name), Some(rel.clone()), out);
+            push_playwright(&member_dir, &runners, Some(&name), Some(rel), out);
         }
     }
 }
@@ -450,7 +519,7 @@ fn wrapper(root: &Path, unix: &str, windows: &str, fallback: &str) -> String {
 /// Root build file plus one level of subproject build files.
 fn collect_texts(root: &Path, names: &[&str]) -> Option<String> {
     let mut text = names.iter().find_map(|n| read(&root.join(n)))?;
-    for dir in subdirs(root) {
+    for dir in ide_core::project_roots::children(root) {
         for name in names {
             if let Some(t) = read(&dir.join(name)) {
                 text.push('\n');
@@ -474,10 +543,6 @@ fn applies_application_plugin(text: &str) -> bool {
                 .iter()
                 .any(|p| compact.contains(p))
     })
-}
-
-fn build_dirs(root: &Path, markers: &[&str]) -> Vec<PathBuf> {
-    ide_core::project_roots::discover(root, markers)
 }
 
 /// Ids, names and working directory of the configurations of a build nested in
@@ -510,7 +575,7 @@ const GRADLE_BUILDS: &[&str] = &["build.gradle.kts", "build.gradle"];
 
 fn detect_gradle(root: &Path, out: &mut Vec<RunConfig>) {
     let markers: Vec<&str> = GRADLE_SETTINGS.iter().chain(GRADLE_BUILDS).copied().collect();
-    for dir in build_dirs(root, &markers) {
+    for dir in ide_core::project_roots::discover(root, &markers) {
         detect_gradle_build(root, &dir, out);
     }
 }
@@ -540,7 +605,7 @@ fn detect_gradle_build(root: &Path, dir: &Path, out: &mut Vec<RunConfig>) {
 
 fn collect_texts_from_subdirs(root: &Path, names: &[&str]) -> String {
     let mut text = String::new();
-    for dir in subdirs(root) {
+    for dir in ide_core::project_roots::children(root) {
         for name in names {
             if let Some(t) = read(&dir.join(name)) {
                 text.push_str(&t);
@@ -552,13 +617,30 @@ fn collect_texts_from_subdirs(root: &Path, names: &[&str]) -> String {
 }
 
 fn detect_maven(root: &Path, excluded_poms: &[PathBuf], out: &mut Vec<RunConfig>) {
-    for dir in build_dirs(root, &["pom.xml"]) {
+    for dir in ide_core::project_roots::discover(root, &["pom.xml"]) {
         let pom = dir.join("pom.xml");
         let relative = pom.strip_prefix(root).unwrap_or(&pom);
         if !excluded_poms.iter().any(|excluded| excluded == relative) {
             detect_maven_build(root, &dir, out);
         }
     }
+}
+
+/// Configurations of the Maven / Gradle builds in `dirs`: the builds a user linked explicitly,
+/// however deep below `root` or outside it (ids and working directory then absolute).
+pub(crate) fn detect_builds(root: &Path, dirs: &[PathBuf]) -> Vec<RunConfig> {
+    let mut out = Vec::new();
+    for dir in dirs {
+        if dir.join("pom.xml").is_file() {
+            detect_maven_build(root, dir, &mut out);
+        }
+        if GRADLE_SETTINGS.iter().chain(GRADLE_BUILDS).any(|name| dir.join(name).is_file()) {
+            detect_gradle_build(root, dir, &mut out);
+        }
+    }
+    let mut seen = HashSet::new();
+    out.retain(|c| seen.insert(c.id.clone()));
+    out
 }
 
 fn detect_maven_build(root: &Path, dir: &Path, out: &mut Vec<RunConfig>) {
@@ -588,7 +670,8 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
     let mut modules = vec![build.to_path_buf()];
     let mut level = vec![build.to_path_buf()];
     for _ in 0..ide_core::project_roots::SEARCH_DEPTH {
-        level = level.iter().flat_map(|d| subdirs(d)).filter(|d| !d.ends_with("src")).collect();
+        level =
+            level.iter().flat_map(|d| ide_core::project_roots::children(d)).filter(|d| !d.ends_with("src")).collect();
         modules.extend(level.iter().cloned());
     }
     let mut annotations = BootAnnotations::new(&modules);
@@ -613,9 +696,11 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
     }
 }
 
-/// The module has main sources, and its build applies the Spring Boot plugin: its own build
-/// file, or a build above it in `build` that applies it to its modules (a parent POM's
-/// `<build><plugins>`, Gradle's `subprojects` / `allprojects`).
+/// The module has main sources and Spring Boot on its classpath, as far as its build files
+/// tell: its own build, or a build above it in `build` that hands Spring Boot to its modules,
+/// references it (a dependency, the starter parent, the BOM or the plugin). A Maven module that
+/// depends on Spring Boot through a parent or another module is a Spring Boot application even
+/// without the packaging plugin; only `<pluginManagement>` alone doesn't count.
 fn applies_spring_boot(build: &Path, module: &Path) -> bool {
     if !["java", "kotlin"].iter().any(|l| module.join("src/main").join(l).is_dir()) {
         return false;
@@ -624,20 +709,32 @@ fn applies_spring_boot(build: &Path, module: &Path) -> bool {
         if pom.contains("<packaging>pom</packaging>") {
             return false;
         }
-        if pom.contains("spring-boot-maven-plugin") {
+        if references_spring_boot(&without_plugin_management(&pom)) {
             return true;
         }
-    } else if GRADLE_BUILDS.iter().filter_map(|n| read(&module.join(n))).any(|text| applies_boot_gradle_plugin(&text)) {
+    } else if GRADLE_BUILDS
+        .iter()
+        .filter_map(|n| read(&module.join(n)))
+        .any(|text| applies_boot_gradle_plugin(&text) || text.contains("org.springframework.boot:"))
+    {
         return true;
     }
     module.ancestors().skip(1).take_while(|dir| dir.starts_with(build)).any(|dir| {
         if let Some(pom) = read(&dir.join("pom.xml")) {
-            return without_plugin_management(&pom).contains("spring-boot-maven-plugin");
+            return references_spring_boot(&without_plugin_management(&pom));
         }
         GRADLE_BUILDS.iter().filter_map(|n| read(&dir.join(n))).any(|text| {
             (text.contains("subprojects") || text.contains("allprojects")) && applies_boot_gradle_plugin(&text)
         })
     })
+}
+
+/// A POM (without its `<pluginManagement>`) referencing Spring Boot: a dependency or the parent
+/// (`org.springframework.boot`), a starter, the BOM import or the plugin.
+fn references_spring_boot(pom: &str) -> bool {
+    ["org.springframework.boot", "spring-boot-starter", "spring-boot-dependencies", "spring-boot-maven-plugin"]
+        .iter()
+        .any(|m| pom.contains(m))
 }
 
 /// A Gradle build applying the plugin (`id("org.springframework.boot")`, `apply plugin: '…'`),
@@ -867,7 +964,7 @@ fn is_go_main_package(dir: &Path) -> bool {
 fn detect_go(root: &Path, out: &mut Vec<RunConfig>) {
     if let Some(work) = read(&root.join("go.work")) {
         let mut seen = HashSet::new();
-        for member in crate::go::work_modules(&work) {
+        for member in ide_core::go::work_modules(&work) {
             let dir = root.join(member);
             let dir = dunce::canonicalize(&dir).unwrap_or(dir);
             if dir.join("go.mod").is_file() && seen.insert(dir.clone()) {
@@ -900,7 +997,7 @@ fn detect_go_module(dir: &Path, rel: Option<PathBuf>, out: &mut Vec<RunConfig>) 
     if is_go_main_package(dir) {
         out.push(config(id("go:run"), name("go run ."), "go", "go", &["run", "."]).in_dir(rel.clone()).debug("delve"));
     }
-    for sub in subdirs(&dir.join("cmd")) {
+    for sub in ide_core::project_roots::children(&dir.join("cmd")) {
         if is_go_main_package(&sub) {
             let cmd = sub.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let target = format!("./cmd/{cmd}");
@@ -1113,7 +1210,7 @@ fn detect_python(top: &Path, root: &Path, out: &mut Vec<RunConfig>) {
     }
     let mut modules = Vec::new();
     for base in [root.to_path_buf(), root.join("src")] {
-        for dir in subdirs(&base) {
+        for dir in ide_core::project_roots::children(&base) {
             let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let ident = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
             if ident && !matches!(name.as_str(), "venv" | "tests" | "test") && dir.join("__main__.py").is_file() {
@@ -1485,7 +1582,9 @@ fn detect_rebar(root: &Path, out: &mut Vec<RunConfig>) {
             .flatten()
             .any(|e| e.file_name().to_string_lossy().ends_with("_SUITE.erl"))
     };
-    let mut apps = subdirs(&root.join("apps")).into_iter().chain(subdirs(&root.join("lib")));
+    let mut apps = ide_core::project_roots::children(&root.join("apps"))
+        .into_iter()
+        .chain(ide_core::project_roots::children(&root.join("lib")));
     if suites(&root.join("test")) || apps.any(|app| suites(&app.join("test"))) {
         out.push(config("rebar3:ct", "rebar3 ct", "rebar3", &rebar, &["ct"]).test());
     }
@@ -1525,6 +1624,17 @@ fn detect_godot(root: &Path, out: &mut Vec<RunConfig>) {
             (format!("godot:project:{r}"), format!("Godot Project ({r})"), Some(rel.clone()))
         };
         out.push(config(id, name, "godot", "godot", &["--path", "."]).debug("godot").in_dir(cwd));
+    }
+}
+
+/// A Flutter app: depends on the SDK and has the conventional entry point (packages have none).
+fn detect_flutter(root: &Path, out: &mut Vec<RunConfig>) {
+    if root.join("lib/main.dart").is_file()
+        && read(&root.join("pubspec.yaml")).is_some_and(|pubspec| pubspec.contains("sdk: flutter"))
+    {
+        out.push(
+            config("flutter:run", "flutter run", "flutter", "flutter", &["run", "-t", "lib/main.dart"]).debug("dart"),
+        );
     }
 }
 

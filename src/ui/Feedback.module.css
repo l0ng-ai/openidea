@@ -101,22 +101,26 @@
 }
 
 .toast {
-  position: relative;
-  display: flex;
-  gap: 10px;
-  width: 340px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
+  width: 360px;
   max-width: 100%;
   /* Never grow past the window: the close button must stay reachable. */
   max-height: calc(100vh - 48px);
-  padding: 14px 34px 14px 14px;
+  padding: var(--space-2) var(--space-3);
   background: var(--bg-popup);
   border: 1px solid var(--border-popup);
   border-radius: var(--radius-popup-large, 10px);
   box-shadow: var(--shadow-balloon);
   color: var(--fg);
+  font-size: var(--fs-ui);
 }
 .toastIcon {
-  margin-top: 0;
+  grid-area: 1 / 1;
+  margin-top: var(--space-0-5);
 }
 .level-info {
   color: var(--info);
@@ -130,18 +134,12 @@
 .level-success {
   color: var(--success);
 }
-.toastMain {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
 .toastHead {
+  grid-area: 1 / 2;
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
-  min-height: 16px;
+  min-height: 20px;
 }
 .toastTitle {
   flex: 1;
@@ -155,9 +153,15 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
+.toastBody,
+.toastActions {
+  grid-column: 2 / -1;
+}
 .toastBody {
   color: var(--fg-secondary);
   overflow-wrap: anywhere;
+  /* Bodies list one item per line (compile errors, failed paths). */
+  white-space: pre-line;
   /* A huge message (stack trace, build output) scrolls inside the balloon instead
      of growing past the window and pushing the close button off-screen. */
   max-height: 40vh;
@@ -168,20 +172,60 @@
 .toastActions {
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
-  margin-top: 4px;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-1);
 }
 .link {
   color: var(--link);
   cursor: pointer;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: start;
 }
 .link:hover {
   color: var(--link-hover);
 }
 .toastClose {
-  position: absolute;
-  top: 8px;
-  right: 8px;
+  grid-area: 1 / 3;
+}
+
+.toastHistory {
+  container: toast-history / inline-size;
+  width: 100%;
+  max-height: none;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-selection);
+  background: transparent;
+  box-shadow: none;
+}
+.toastHistory:hover,
+.toastHistory:focus-within {
+  background: var(--bg-tree-hover);
+}
+.toastHistory .toastMeta {
+  font-variant-numeric: tabular-nums;
+}
+.toastHistory .toastBody {
+  max-height: none;
+  overflow: visible;
+  white-space: pre-wrap;
+}
+
+@container toast-history (max-width: 220px) {
+  .toastHistory .toastHead {
+    display: contents;
+  }
+  .toastHistory .toastTitle {
+    grid-area: 1 / 2 / 2 / -1;
+  }
+  .toastHistory .toastMeta {
+    grid-area: 2 / 2;
+    place-self: center end;
+  }
+  .toastHistory .toastClose {
+    grid-area: 2 / 3;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

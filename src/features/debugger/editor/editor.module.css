@@ -1,7 +1,4 @@
-/*
- * Line-number gutter element class; the marker is a pseudo-element that, like
- * IDEA, replaces the number (centred on the element's content box).
- */
+/* The marker replaces the number and shares its trailing edge. */
 .bp {
   position: relative;
   color: transparent !important;
@@ -10,8 +7,9 @@
 .bp::before {
   content: "";
   position: absolute;
-  left: calc(50% + 1px);
+  left: calc(100% - var(--space-1) - 0.5em);
   top: 50%;
+  font-size: var(--openidea-editor-font-size, var(--fs-code));
   width: 1em;
   height: 1em;
   transform: translate(-50%, -50%);
@@ -171,17 +169,45 @@
 
 /* Data Views › Show value tooltip on mouse hover. */
 .valueTooltip {
-  max-width: 520px;
-  padding: 4px 8px;
-  font-family: var(--font-mono);
-  font-weight: var(--fw-code);
-  font-size: var(--fs-code);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  max-width: min(90vw, calc(var(--debug-value-editor-width, 100vw) - var(--space-2)));
+  padding: var(--space-1) var(--space-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  font-weight: 700;
+  line-height: 1.4;
+}
+.valueText {
+  min-width: 0;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.valueGlyph {
+  display: inline-flex;
+  flex: none;
+  margin-top: 1px;
 }
 .valueTooltipTree {
-  padding: 2px 0;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: min(460px, calc(var(--debug-value-editor-width, 100vw) - var(--space-2)));
+  max-width: 100%;
+  height: min(260px, 50vh);
+  padding: 0;
+  font-family: var(--font-ui);
   white-space: normal;
+}
+:global(.cm-lsp-hint):has(> .valueTooltipTree) {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+:global(.cm-lsp-hint):has(> .valueTooltip) {
+  padding: 0;
 }
 .valueExpand {
   display: inline-flex;
@@ -189,13 +215,13 @@
   justify-content: center;
   width: 16px;
   height: 16px;
-  margin-right: 4px;
+  flex: none;
+  margin-top: 1px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-small);
   background: transparent;
   color: var(--fg-muted);
-  vertical-align: -3px;
   cursor: pointer;
 }
 .valueExpand:hover {

@@ -6,6 +6,7 @@
 import { introspectSource } from "./introspection";
 import { writeClipboardText } from "@/platform/clipboard";
 import { call, commands, type DataSource, type DbDriver, type DbTableInfo } from "@/platform/ipc";
+import { readDesktopText } from "@/platform/desktopFiles";
 import { registerActions, type Action } from "@/platform/actions";
 import { editorService, notifications, showServiceView, toolWindowService } from "@/workbench/contributions";
 import { splitTarget } from "./model";
@@ -15,6 +16,7 @@ import {
   DB_TOOL_WINDOW,
   OUTPUT_TAB,
   connect,
+  createsDatabases,
   RESULTS_VIEW,
   detailsKey,
   disconnect,
@@ -24,6 +26,7 @@ import {
   loadSources,
   loadTables,
   consoleFiles,
+  newSchemaTarget,
   newConsole,
   openConsole,
   openConsoleFile,
@@ -198,7 +201,7 @@ async function runScriptFile(id: string) {
   });
   if (typeof file !== "string") return;
   try {
-    const text = await call(commands.fsReadText(file));
+    const text = await readDesktopText(file);
     const statements = await call(commands.dbStatements(id, text, 0, text.length));
     useDatabase.setState({ activeResult: OUTPUT_TAB });
     showServiceView(RESULTS_VIEW, false);
@@ -344,6 +347,9 @@ export function registerDatabaseTreeActions(): () => void {
         if (!n) return;
         const id = nodeTarget(n);
         if (n.kind === "source" && id) return openDialog({ kind: "rename", id, object: null });
+        const source = sourceById(id);
+        if (n.kind === "database" && !n.current && !source?.readOnly && createsDatabases(source))
+          return openDialog({ kind: "renameDatabase", id: splitTarget(n.id).id, database: n.name });
         const o = objectOf(n);
         if (id && o && canRename(driverOf(id), o)) openDialog({ kind: "rename", id, object: o });
       },
@@ -358,6 +364,9 @@ export function registerDatabaseTreeActions(): () => void {
         if (!n) return;
         const id = nodeTarget(n);
         if (n.kind === "source") return void removeSource(n.source);
+        const source = sourceById(id);
+        if (n.kind === "database" && !n.current && !source?.readOnly && createsDatabases(source))
+          return openDialog({ kind: "dropDatabase", id: splitTarget(n.id).id, database: n.name });
         const o = objectOf(n);
         if (id && o && canDrop(driverOf(id), o)) openDialog({ kind: "drop", id, object: o });
       },
@@ -368,7 +377,7 @@ export function registerDatabaseTreeActions(): () => void {
       keywords: ["delete all rows", "empty table"],
       run: ({ arg }) => {
         const n = nodeFrom(arg);
-        if (n?.kind === "table" && n.table.kind === "table")
+        if (n?.kind === "table" && n.table.kind === "table" && driverOf(n.id) !== "jdbc")
           openDialog({ kind: "truncate", id: n.id, schema: n.schema, table: n.table.name });
       },
     }),
@@ -391,6 +400,28 @@ export function registerDatabaseTreeActions(): () => void {
       },
     }),
     tree({
+      id: "db.newDatabase",
+      title: "Database…",
+      icon: "db-database",
+      keywords: ["create database", "new database"],
+      run: ({ arg }) => {
+        const source = sourceOf(nodeFrom(arg));
+        if (source?.id && !source.readOnly && createsDatabases(source))
+          openDialog({ kind: "createDatabase", id: source.id });
+      },
+    }),
+    tree({
+      id: "db.newSchema",
+      title: "Schema…",
+      icon: "db-schema",
+      keywords: ["create schema", "new schema"],
+      run: ({ arg }) => {
+        const n = nodeFrom(arg);
+        const id = n && newSchemaTarget(n);
+        if (id && !sourceById(id)?.readOnly) openDialog({ kind: "createSchema", id });
+      },
+    }),
+    tree({
       id: "db.newTable",
       title: "Table",
       icon: "db-table",
@@ -398,7 +429,7 @@ export function registerDatabaseTreeActions(): () => void {
       run: ({ arg }) => {
         const n = nodeFrom(arg);
         const id = n && nodeTarget(n);
-        if (!n || !id) return;
+        if (!n || !id || driverOf(id) === "jdbc") return;
         const schema =
           "schema" in n && typeof n.schema === "string" ? n.schema : driverOf(id) === "sqlite" ? "main" : null;
         if (schema !== null) openDialog({ kind: "modifyTable", id, schema, table: null });
@@ -414,6 +445,7 @@ export function registerDatabaseTreeActions(): () => void {
         const n = nodeFrom(arg);
         const id = n && nodeTarget(n);
         const schema = n && "schema" in n && typeof n.schema === "string" ? n.schema : null;
+        if (id && driverOf(id) === "jdbc") return;
         openDialog({
           kind: "compareSchemas",
           source: id ? { id, schema: schema ?? (driverOf(id) === "sqlite" ? "main" : "") } : null,
@@ -439,7 +471,12 @@ export function registerDatabaseTreeActions(): () => void {
       keywords: ["csv", "tsv", "load data"],
       run: ({ arg }) => {
         const n = nodeFrom(arg);
-        if (n?.kind === "table" && n.table.kind === "table" && driverOf(n.id) !== "clickhouse")
+        if (
+          n?.kind === "table" &&
+          n.table.kind === "table" &&
+          driverOf(n.id) !== "clickhouse" &&
+          driverOf(n.id) !== "jdbc"
+        )
           openDialog({ kind: "import", id: n.id, schema: n.schema, table: n.table.name });
       },
     }),

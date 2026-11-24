@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorController, openFilePaths, useEditorStatus, useTabs } from "./controller";
+import { EditorController, openFilePaths, useEditorStatus, useTabErrors, useTabs } from "./controller";
 import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
 import { useDocMeta } from "./model/document";
+import { storeSession } from "./model/session";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
+import * as contributions from "@/workbench/contributions";
 import {
   registerEditorKind,
+  registerMenuGroup,
   registerTextEditorWrapper,
   setProjectViewLead,
   useProjectViewLead,
 } from "@/workbench/contributions";
 import { registerActions } from "@/platform/actions";
+import { IpcError, type ErrorKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { hideContextMenu, resolveMenuItems, useContextMenuStore } from "@/ui";
@@ -27,6 +31,75 @@ afterEach(() => {
   ctrl = null;
   useTabs.setState(initialTabsState(), true);
   useEditorStatus.setState({ status: null });
+});
+
+describe("restoring an editor session", () => {
+  const root = "/session-restore";
+  const existing = `${root}/existing.txt`;
+  const unavailable = `${root}/unavailable.txt`;
+  const text = "first\nsecond";
+  let controller: EditorController | undefined;
+
+  afterEach(() => {
+    controller?.stop();
+    controller = undefined;
+    storeSession(root, null);
+    useTabErrors.setState({}, true);
+    vi.restoreAllMocks();
+  });
+
+  async function restoreWithOpenError(kind: ErrorKind, message: string) {
+    storeSession(root, {
+      version: 1,
+      layout: { kind: "pane", tabs: [{ path: existing }, { path: unavailable }], active: 1 },
+      activePane: 0,
+      files: { [existing]: { anchor: 6, head: 6 } },
+    });
+    const backend = createMemoryBackend({ [existing]: text });
+    // For an absent path the memory backend serves sample text, not a disk error.
+    const open = backend.open.bind(backend);
+    vi.spyOn(backend, "open").mockImplementation(async (path) => {
+      if (path === unavailable) throw new IpcError({ kind, message });
+      return open(path);
+    });
+    const editor = (controller = new EditorController(backend));
+    editor.start();
+
+    const restoring = editor.restoreSession(root);
+    const state = useTabs.getState();
+    const selected = state.panes[state.activePane]!.active!;
+    // Restore opens the selected tab in the background. Join the same slot request.
+    await Promise.all([restoring, editor.ensureSlot(selected)]);
+    return { editor, selected };
+  }
+
+  it("silently drops a deleted selected file and restores the remaining tab", async () => {
+    const notify = vi.fn();
+    vi.spyOn(contributions, "notifications").mockReturnValue({ notify });
+    const { editor, selected } = await restoreWithOpenError("notFound", `No such file: ${unavailable}`);
+
+    expect(notify).not.toHaveBeenCalled();
+    expect(useTabErrors.getState()).toEqual({});
+    expect(openFilePaths(useTabs.getState())).toEqual([existing]);
+    expect(editor.slotFor(selected)).toBeNull();
+    expect(editor.activeInput()?.path).toBe(existing);
+
+    // In the app the visible tab's editor host requests this slot after selection changes.
+    const state = useTabs.getState();
+    const slot = await editor.ensureSlot(state.panes[state.activePane]!.active!);
+    expect(slot?.model.path).toBe(existing);
+    expect(slot?.state.doc.toString()).toBe(text);
+    expect(slot?.caret()).toMatchObject({ line: 1, col: 0 });
+  });
+
+  it("keeps a tab and reports its open error when access is denied", async () => {
+    const message = `Permission denied: ${unavailable}`;
+    const { editor, selected } = await restoreWithOpenError("permissionDenied", message);
+
+    expect(openFilePaths(useTabs.getState())).toEqual([existing, unavailable]);
+    expect(editor.activeInput()?.path).toBe(unavailable);
+    expect(useTabErrors.getState()).toEqual({ [selected]: message });
+  });
 });
 
 describe("EditorController", () => {
@@ -128,6 +201,29 @@ describe("EditorController", () => {
       expect(ctrl.activeInput()).toMatchObject({ key: diff.key, data: { line: 7 } });
     } finally {
       dispose();
+    }
+  });
+
+  it("gives the keyboard to the next tab when the focused one closes", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a\n", "/p/b.ts": "b\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const first = ctrl.activeSlot!;
+    await ctrl.openFile("/p/b.ts", { focus: false });
+    const second = ctrl.activeSlot!;
+    const hosts = [document.createElement("div"), document.createElement("div")];
+    document.body.append(...hosts);
+    try {
+      const a = first.mount(hosts[0]!);
+      ctrl.onMounted(first);
+      const b = second.mount(hosts[1]!);
+      ctrl.onMounted(second);
+      b.focus();
+      expect(b.hasFocus).toBe(true);
+      await ctrl.closeActiveTab();
+      expect(a.hasFocus).toBe(true);
+    } finally {
+      hosts.forEach((h) => h.remove());
     }
   });
 
@@ -447,6 +543,42 @@ describe("EditorController", () => {
     }
   });
 
+  it("passes the caret line and the selected line range to Copy Agent Reference", async () => {
+    const path = "/p/a.ts";
+    ctrl = new EditorController(createMemoryBackend({ [path]: "first\nsecond\nthird\n" }));
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    try {
+      for (const [selection, lines] of [
+        [{ anchor: 7 }, { from: 2, to: 2 }],
+        [
+          { anchor: 0, head: 13 },
+          { from: 1, to: 2 },
+        ],
+      ] as const) {
+        view.dispatch({ selection });
+        ctrl.onContextMenu(slot, new MouseEvent("contextmenu"));
+        const copy = useContextMenuStore
+          .getState()
+          .menu!.items.find((item) => "label" in item && item.label === "Copy / Paste Special");
+        expect(copy).toMatchObject({
+          submenu: expect.arrayContaining([
+            expect.objectContaining({ action: "agents.copyAgentReference", arg: [{ path, lines }] }),
+          ]),
+        });
+      }
+    } finally {
+      hideContextMenu();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
   it("builds IDEA's editor tab menu", async () => {
     useProject.setState({
       project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
@@ -484,6 +616,46 @@ describe("EditorController", () => {
     useProject.setState({ project: null, settings: null });
   });
 
+  it("offers contributed Copy Path links in the tab menu like the other copy menus", async () => {
+    useProject.setState({
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
+      settings: {} as never,
+    });
+    const dispose = registerActions(
+      ["project.copyAbsolutePath", "project.copyFileName", "project.copyRelativePath"].map((id) => ({
+        id,
+        title: id,
+        run: () => undefined,
+      })),
+    );
+    const links = registerMenuGroup({
+      id: "test.link",
+      menus: ["copyPath"],
+      items: () => [{ id: "test.copyLink", label: "GitHub Link", verbatim: true, run: () => undefined }],
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const s = useTabs.getState();
+      const pane = s.panes[s.activePane]!;
+      const submenu = resolveMenuItems(ctrl.tabMenu(pane.id, pane.tabs[0]!)).find(
+        (i) => i.label === "Copy Path/Reference…",
+      )!.submenu!;
+      expect(resolveMenuItems(submenu).map((i) => (i.kind === "separator" ? "-" : i.label))).toEqual([
+        "Absolute Path",
+        "File Name",
+        "Path From Content Root",
+        "-",
+        "GitHub Link",
+      ]);
+    } finally {
+      dispose();
+      links();
+      useProject.setState({ project: null, settings: null });
+    }
+  });
+
   it.each(["editor", "tab"])(
     "offers grouped Git actions in the %s menu and preserves action enablement",
     async (menu) => {
@@ -496,7 +668,6 @@ describe("EditorController", () => {
           "vcs.compareWithRevision",
           "vcs.showHistory",
           "vcs.showCurrentRevision",
-          "vcs.showHistoryForSelection",
           "vcs.rollback",
         ],
         ["vcs.push", "vcs.pull", "vcs.fetch"],
@@ -554,7 +725,8 @@ describe("EditorController", () => {
         expect(gitItems()).toContainEqual({
           kind: "action",
           action: "vcs.compareWithBranch",
-          arg: { path: "/p/a.ts" },
+          arg: "/p/a.ts",
+          label: "Compare with Branch…",
         });
 
         setContext("vcsAvailable", false);
@@ -577,6 +749,42 @@ describe("EditorController", () => {
       }
     },
   );
+
+  it("scopes the tab menu's Git entries to its file, like the project view does", async () => {
+    useProject.setState({
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
+      settings: {} as never,
+    });
+    const dispose = registerActions(
+      ["vcs.commit", "vcs.ignoreShared", "vcs.ignoreLocal"].map((id) => ({ id, title: id, run: () => undefined })),
+    );
+    try {
+      setContext("vcsAvailable", true);
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const state = useTabs.getState();
+      const pane = state.panes[state.activePane]!;
+      const git = () => resolveMenuItems(ctrl!.tabMenu(pane.id, pane.tabs[0]!)).find((i) => i.label === "Git")!;
+      expect(git().submenu).toContainEqual({
+        kind: "action",
+        action: "vcs.commit",
+        arg: "/p/a.ts",
+        label: "Commit File…",
+      });
+      const gitMenu = git().submenu!;
+      expect(
+        resolveMenuItems(gitMenu)
+          .filter((i) => i.kind === "item")
+          .some((i) => i.label === "Add to .gitignore" && i.submenu?.length === 2),
+      ).toBe(true);
+      setContext("vcsAvailable", false);
+    } finally {
+      dispose();
+      useProject.setState({ project: null, settings: null });
+      setContext("vcsAvailable", false);
+    }
+  });
 
   it("switches an open image tab to a text tab when a matching text editor wrapper registers", async () => {
     ctrl = new EditorController(createMemoryBackend({ "/p/arch.diagram.svg": "<svg/>" }));

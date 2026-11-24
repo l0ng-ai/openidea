@@ -4,6 +4,7 @@
  * overlay layer. Without an open project the welcome view replaces the frame,
  * or, editing loose files (LightEdit), a frame with the editor only.
  */
+import { useSyncExternalStore } from "react";
 import { useEditorRegistry } from "@/editor/api";
 import { Breadcrumbs } from "@/editor/core";
 import { basename, useProject } from "@/platform/project";
@@ -14,7 +15,7 @@ import projectMark from "../../src-tauri/icons/source/openidea-mark.svg";
 import { useDistractionFree } from "./distractionFree";
 import { EditorArea } from "./EditorArea";
 import { OverlayHost } from "./OverlayHost";
-import { projectColorVars } from "./projectColor";
+import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "./tabColors";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { WindowGroupTabs } from "./WindowGroupTabs";
@@ -59,10 +60,11 @@ function LightEditFrame({ title }: { title?: string }) {
 
 function ProjectOpening({ path }: { path: string }) {
   const t = useT();
-  const label = t("app.project.opening", { name: basename(path) });
+  const label = t("app.project.opening", { name: basename(path) || path });
   return (
     <div className={styles.opening} data-project-opening>
-      <TitleBar bare />
+      <TitleBar />
+      <WindowGroupTabs />
       <div className={styles.openingBody} role="status" aria-label={label}>
         <div className={styles.openingBrand} aria-hidden="true">
           <img className={styles.openingLogo} src={projectMark} alt="" draggable={false} />
@@ -80,6 +82,7 @@ function ProjectOpening({ path }: { path: string }) {
 
 export function Workbench() {
   useApplyTheme();
+  useSyncExternalStore(subscribeTabColors, tabColorsVersion);
   const banners = useContributions((s) => s.workbenchBanners);
   const project = useProject((s) => s.project);
   const lightEdit = useProject((s) => s.lightEdit);
@@ -91,11 +94,13 @@ export function Workbench() {
   const statusBar = useAppearanceFlag("showStatusBar");
   const navBarPosition = useNavigationBarPosition();
   const frame = project ? styles.framed : lightEdit || standaloneTitle ? styles.lightEditFrame : undefined;
+  const tintName = openingPath ? basename(openingPath) || openingPath : project?.name;
+  const tintRoot = openingPath ?? root;
 
   return (
     <div
       className={frame ? `${styles.workbench} ${frame}` : styles.workbench}
-      style={project ? projectColorVars(project.name) : undefined}
+      style={tintName ? tabColorVars(tintName, tintRoot ? tabColorOverride(tintRoot) : null) : undefined}
     >
       <div className={styles.content} inert={openingPath !== null} aria-hidden={openingPath ? true : undefined}>
         {project ? (

@@ -10,6 +10,7 @@ import {
 } from "@codemirror/view";
 import type { BlameLine } from "@/bindings";
 import { HEAVY_LIMIT, onEditorEvent, type EditorDocContext } from "@/editor/api";
+import { foldChipWidth } from "@/editor/core/cm/folding";
 import { executeAction } from "@/platform/actions";
 import { tx, useI18n } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
@@ -126,19 +127,19 @@ class BlameWidget extends WidgetType {
   }
 
   /**
-   * Line-end annotations stack left to right: the code-vision hint, every plugin's line-end
-   * message, then this label. All of them are zero-width anchors with an absolutely positioned
-   * inner box (see codeLens.ts, decorations.module.css), so none takes part in the line's flow
-   * and a soft wrap can never fold one onto a new visual row. Each message steps past its
-   * predecessors itself, so this one steps past the whole chain, as IDEA lays its line-end
-   * inlays out. They can also appear (or go away) after this widget mounted, hence the observer
-   * below.
+   * Line-end annotations stack left to right: a folded chip drawn after this anchor, the
+   * code-vision hint, every plugin's line-end message, then this label. All of them are
+   * zero-width anchors with an absolutely positioned inner box (see codeLens.ts,
+   * decorations.module.css), so none takes part in the line's flow and a soft wrap can never
+   * fold one onto a new visual row. Each message steps past its predecessors itself, so this one
+   * steps past the whole chain, as IDEA lays its line-end inlays out. They can also appear (or
+   * go away) after this widget mounted, hence the observer below.
    */
   private stepPastLineEnd(el: HTMLElement) {
     const line = el.closest(".cm-line");
     const inner = el.firstElementChild as HTMLElement | null;
     if (!line || !inner) return;
-    let width = 0;
+    let width = foldChipWidth(el);
     const hint = line.querySelector<HTMLElement>(".cm-openidea-lensInlineInner");
     // The hint's inner box sits its anchor's `--openidea-hint-offset` past that anchor.
     if (hint) width += Math.round(hint.getBoundingClientRect().width) + offsetOf(hint, "--openidea-hint-offset");
@@ -270,6 +271,9 @@ export const inlineBlameTheme = {
   ".cm-vcs-inline-blame-tooltip": {
     padding: "8px 12px",
     maxWidth: "min(70ch, 80vw)",
+    maxHeight: "min(420px, 55vh)",
+    overflow: "auto",
+    overscrollBehavior: "contain",
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
   },
@@ -318,6 +322,10 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
           }),
           onWorkflowSettingsChange(
             (s) => s.vcs.git.inlineBlame,
+            () => this.invalidate(),
+          ),
+          onWorkflowSettingsChange(
+            (s) => s.vcs.git.annotate,
             () => this.invalidate(),
           ),
           // Only the label's behaviour changes: redraw it from the loaded blame.

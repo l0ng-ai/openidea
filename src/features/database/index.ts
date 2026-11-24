@@ -7,7 +7,7 @@
 import { lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
 import { tx } from "@/platform/i18n";
-import { onIdeEvent } from "@/platform/ipc";
+import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { registerActions, type ActionContext } from "@/platform/actions";
 import { activeCellGrid } from "./cellActions";
 import {
@@ -38,7 +38,7 @@ import {
   DB_TOOL_WINDOW,
   RESULTS_VIEW,
   consoleSource,
-  consoleTints,
+  consoleDecorations,
   inEditorResults,
   setInEditorResults,
   loadSources,
@@ -81,23 +81,58 @@ function tableTarget(arg: unknown): TableCommandTarget {
   return { rows: activeCellGrid()?.selectedRows() ?? [], editor: null };
 }
 
-export { activateSettingsPages } from "./settingsPages";
+/** The Database window, on the stripe by default only while the project has data sources. */
+function registerDatabaseWindow(): () => void {
+  let withSources: boolean | null = null;
+  let dispose = () => {};
+  const sync = (next: boolean) => {
+    if (next === withSources) return;
+    withSources = next;
+    // Registering the same id again replaces the contribution in place.
+    dispose = registerToolWindow({
+      id: DB_TOOL_WINDOW,
+      title: "Database",
+      icon: "toolwindow-database",
+      anchor: "right",
+      order: 20,
+      ...(next ? {} : { stripe: "onUse" as const }),
+      component: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseView)),
+      headerMenu: useDatabaseHeaderMenu,
+      headerActions: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseHeaderActions)),
+    });
+  };
+  // Until the window loads the sources, a quiet probe decides; a failed one leaves it under "…".
+  let probe = 0;
+  const check = () => {
+    const seq = ++probe;
+    sync(false);
+    if (!useProject.getState().project) return;
+    call(commands.dbSources()).then(
+      (sources) => seq === probe && !useDatabase.getState().loaded && sync(sources.length > 0),
+      () => {},
+    );
+  };
+  check();
+  const offSources = useDatabase.subscribe((s) => {
+    if (s.loaded) sync(s.sources.length > 0);
+  });
+  const offProject = useProject.subscribe((s, prev) => {
+    if (s.project?.root !== prev.project?.root) check();
+  });
+  return () => {
+    probe++;
+    offSources();
+    offProject();
+    dispose();
+  };
+}
 
 export function activate(): () => void {
   const disposers = [
     onIdeEvent("dbSourcesChanged", () => {
       void loadSources();
     }),
-    registerToolWindow({
-      id: DB_TOOL_WINDOW,
-      title: "Database",
-      icon: "toolwindow-database",
-      anchor: "right",
-      order: 20,
-      component: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseView)),
-      headerMenu: useDatabaseHeaderMenu,
-      headerActions: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseHeaderActions)),
-    }),
+    registerDatabaseWindow(),
     registerServiceView({
       id: RESULTS_VIEW,
       title: "Database",
@@ -111,6 +146,8 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./TableEditor").then((m) => m.TableEditor)),
       title: tableTitle,
       icon: () => "database",
+      // Switching tabs keeps the rows, filters, page and unsubmitted edits without querying again.
+      keepAlive: true,
     }),
     registerOverlay({
       id: "database.dialogs",
@@ -157,13 +194,14 @@ export function activate(): () => void {
         manualCommit: new Set(),
         pendingTx: new Set(),
         running: {},
+        executions: {},
         dialog: null,
         newMenuOpen: false,
       });
     }),
-    // Consoles of coloured data sources get a tinted tab.
     useDatabase.subscribe((s, prev) => {
-      if (s.consoles !== prev.consoles || s.sources !== prev.sources) setFileDecorations("database", consoleTints(s));
+      if (s.consoles !== prev.consoles || s.sources !== prev.sources)
+        setFileDecorations("database", consoleDecorations(s));
     }),
     () => setFileDecorations("database", new Map()),
     watchIdleConnections(),
@@ -353,6 +391,7 @@ export function activate(): () => void {
         icon: "db-plan",
         keywords: ["query plan", "explain", "sql"],
         when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
+        enabled: () => sourceById(consoleSource(activeEditor()?.ctx.path ?? ""))?.driver !== "jdbc",
         run: async () => {
           const current = projectRequest();
           const e = activeEditor();

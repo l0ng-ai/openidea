@@ -52,7 +52,7 @@ The capability table and limits are documented for plugin authors in [Capabiliti
 
 ### Local servers
 
-- **MCP server** (`crates/ide-mcp`): listens on `127.0.0.1` on a random port, requires a random per-run bearer token, and refuses requests whose `Origin` or `Host` doesn't match (DNS rebinding).
+- **MCP server** (`crates/ide-mcp`): listens on `127.0.0.1` on a random port, requires a random per-run bearer token, and refuses requests whose `Origin` or `Host` doesn't match (DNS rebinding). It opens a folder without a window only when the background-projects setting and the trust store allow it, and an untrusted one opens in Restricted Mode.
 - **Built-in web server** (`crates/ide-web`): serves project files read-only on `127.0.0.1`; every URL starts with a random per-run token and requests with a foreign `Host` are refused.
 - **Tauri MCP bridge** (`tauri-plugin-mcp-bridge`): compiled into debug builds only, bound to `127.0.0.1`.
 

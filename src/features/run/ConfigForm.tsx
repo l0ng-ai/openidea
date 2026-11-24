@@ -6,13 +6,22 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
 import { useRunTargets } from "@/platform/pluginRunTargets";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import clsx from "clsx";
 import { isTauri, type BeforeLaunchTask, type BuildPolicy, type RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { relativePath, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
-import { useTx, useTxTemplate } from "@/platform/i18n";
+import { txPart, useTx, useTxTemplate } from "@/platform/i18n";
 import {
   Button,
   Checkbox,
@@ -33,6 +42,8 @@ import {
 } from "@/ui";
 import { useContributions, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { TASK_LABELS, taskLabel, type BeforeLaunchKind } from "./beforeLaunch";
+import { ExpandableTextarea } from "./ExpandableTextarea";
+import { CWD_MACROS } from "./cwdMacros";
 import {
   commandLine,
   compoundCycle,
@@ -51,6 +62,16 @@ import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
 import { TomcatSettings } from "./TomcatSettings";
 import { toolWindowTitle } from "@/workbench/toolwindows/title";
 import styles from "./Run.module.css";
+
+const TASK_ICONS: Readonly<Partial<Record<string, string>>> = {
+  build: "build-project",
+  buildModule: "build-project",
+  buildArtifacts: "build-rebuild",
+  dotnetBuild: "build-project",
+  run: "run",
+  tool: "settings",
+  command: "terminal",
+};
 
 /**
  * Debug adapters with a real launch template (`debugger/launch.ts`, `debugger/java.ts`),
@@ -244,6 +265,65 @@ function BrowseButton({
   );
 }
 
+const CWD_MACRO_LABELS: Record<(typeof CWD_MACROS)[number], string> = {
+  PROJECT_DIR: "Project root",
+  ContentRoot: "Content root",
+  MODULE_DIR: "Module directory",
+  MODULE_WORKING_DIR: "Module working directory",
+  USER_HOME: "User home directory",
+};
+
+/** Inserts a path macro at the caret of the working directory field. */
+function CwdMacroButton({
+  input,
+  onInsert,
+}: {
+  input: RefObject<HTMLInputElement | null>;
+  onInsert: (v: string) => void;
+}) {
+  const tx = useTx();
+  const ref = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const insert = (macro: string) => {
+    const el = input.current;
+    const value = el?.value ?? "";
+    const from = el?.selectionStart ?? value.length;
+    const to = el?.selectionEnd ?? from;
+    onInsert(value.slice(0, from) + macro + value.slice(to));
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(from + macro.length, from + macro.length);
+    });
+  };
+  return (
+    <>
+      <IconButton
+        ref={ref}
+        icon="plus"
+        size="small"
+        iconSize={14}
+        title={tx("Insert Macro…")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      />
+      <Menu
+        open={open}
+        onClose={() => setOpen(false)}
+        anchor={ref}
+        placement="bottom-end"
+        aria-label={tx("Macros")}
+        items={CWD_MACROS.filter((m) => m !== "USER_HOME" || !isRemoteWindow()).map((m) => ({
+          id: m,
+          label: `$${m}$`,
+          shortcut: tx(CWD_MACRO_LABELS[m]),
+          run: () => insert(`$${m}$`),
+        }))}
+      />
+    </>
+  );
+}
+
 export function ConfigForm({ config, all, type, errors, template, onChange, modifyRequest }: ConfigFormProps) {
   const openByDefault = useWorkflowSettings((s) => s.run.showOnStart);
   const externalTools = useWorkflowSettings((s) => s.externalTools);
@@ -252,6 +332,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const root = useProject((s) => s.project?.root ?? null);
+  const cwdInput = useRef<HTMLInputElement>(null);
   const gradle = useBuildModel((s) => s.model?.gradle);
   const runUsing = useProject((s) => s.settings?.languages?.java?.gradle?.runUsing);
   const delegated =
@@ -270,7 +351,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const [envOpen, setEnvOpen] = useState(false);
   const [modifyOpen, setModifyOpen] = useState(false);
   const [lastRequest, setLastRequest] = useState(modifyRequest);
-  const [taskMenu, setTaskMenu] = useState(false);
+  const [taskMenu, setTaskMenu] = useState<"add" | { index: number; anchor: HTMLButtonElement } | null>(null);
   const modifyRef = useRef<HTMLButtonElement>(null);
   const taskRef = useRef<HTMLButtonElement>(null);
 
@@ -344,23 +425,23 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         run: () => addTask("run", c.id),
       })),
     },
-    { label: TASK_LABELS.build, icon: "build-project", run: () => addTask("build") },
+    { label: TASK_LABELS.build, icon: TASK_ICONS.build, run: () => addTask("build") },
     {
       label: TASK_LABELS.buildModule,
-      icon: "build-project",
+      icon: TASK_ICONS.buildModule,
       disabled: config.module == null,
       run: () => addTask("buildModule", config.module ?? ""),
     },
-    { label: TASK_LABELS.buildArtifacts, icon: "build-rebuild", run: () => addTask("buildArtifacts") },
+    { label: TASK_LABELS.buildArtifacts, icon: TASK_ICONS.buildArtifacts, run: () => addTask("buildArtifacts") },
     ...(config.kind === "dotnet"
-      ? [{ label: TASK_LABELS.dotnetBuild, icon: "build-project", run: () => addTask("dotnetBuild") }]
+      ? [{ label: TASK_LABELS.dotnetBuild, icon: TASK_ICONS.dotnetBuild, run: () => addTask("dotnetBuild") }]
       : []),
     {
       label: TASK_LABELS.tool,
       disabled: !externalTools.length,
       submenu: externalTools.map((t) => ({ label: t.name, verbatim: true, run: () => addTask("tool", t.id) })),
     },
-    { label: TASK_LABELS.command, icon: "terminal", run: () => addTask("command") },
+    { label: TASK_LABELS.command, icon: TASK_ICONS.command, run: () => addTask("command") },
     {
       label: TASK_LABELS.toolWindow,
       submenu: [...toolWindows.values()]
@@ -380,6 +461,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     [next[i], next[j]] = [next[j]!, next[i]!];
     setTasks(next);
   };
+  const taskActions = taskMenu === "add" ? null : taskMenu;
 
   const adapterOptions: SelectOption[] = [
     { value: "", label: "None" },
@@ -445,7 +527,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       {config.kind === "tomcat" ? (
         <TomcatSettings config={config} onChange={onChange} />
       ) : (
-        <>
+        <div className={styles.formSettings}>
           {!noProcess && (
             <Field
               label="Run on"
@@ -565,12 +647,14 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 <Field label="Working directory" error={errors.cwd}>
                   <div className={styles.inputWithButton}>
                     <Input
+                      ref={cwdInput}
                       mono
                       aria-label="Working directory"
                       value={config.cwd ?? ""}
                       placeholder="Project root"
                       onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
                     />
+                    <CwdMacroButton input={cwdInput} onInsert={(cwd) => update({ cwd })} />
                     <BrowseButton
                       directory
                       title="Browse…"
@@ -699,62 +783,104 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
 
           {isShown("beforeLaunch") && (
             <Field label="Before launch" error={errors.beforeLaunch} top>
-              <div className={styles.taskList} role="list" aria-label={tx("Before launch tasks")}>
-                {tasks.map((t, i) => (
-                  <div key={i} role="listitem" className={styles.taskRow}>
-                    {t.kind === "command" ? (
-                      <Input
-                        mono
-                        aria-label={txTemplate(`Before launch command ${i + 1}`)}
-                        value={t.target ?? ""}
-                        placeholder="Shell command, e.g. make generate"
-                        onChange={(e) =>
-                          setTasks(tasks.map((x, j) => (j === i ? { ...x, target: e.target.value } : x)))
-                        }
-                      />
-                    ) : (
-                      <span className={styles.taskLabel} title={txTemplate(taskLabel(t, all))}>
-                        {txTemplate(taskLabel(t, all))}
-                      </span>
-                    )}
-                    <span className={styles.taskActions}>
+              <div className={styles.beforeLaunchTasks} role="list" aria-label={tx("Before launch tasks")}>
+                {tasks.map((t, i) => {
+                  const label = txTemplate(taskLabel(t, all));
+                  const target = t.kind === "run" ? all.find((c) => c.id === t.target) : undefined;
+                  const icon = target ? configIcon(target) : TASK_ICONS[t.kind];
+                  const prefix = (
+                    <>
+                      {icon && <Icon name={icon} size={14} />}
+                      <span className={styles.taskOrder}>{i + 1}.</span>
+                    </>
+                  );
+                  const actions = {
+                    "aria-haspopup": "menu" as const,
+                    "aria-expanded": taskActions?.index === i,
+                    onClick: (e: MouseEvent<HTMLButtonElement>) => setTaskMenu({ index: i, anchor: e.currentTarget }),
+                  };
+                  return (
+                    // oxlint-disable-next-line react/no-array-index-key -- tasks of one kind can repeat; position is the identity
+                    <div key={i} role="listitem" className={styles.taskTag}>
+                      {t.kind === "command" ? (
+                        <>
+                          {prefix}
+                          <Input
+                            mono
+                            className={styles.taskCommand}
+                            aria-label={txTemplate(`Before launch command ${i + 1}`)}
+                            value={t.target ?? ""}
+                            placeholder="Shell command, e.g. make generate"
+                            onChange={(e) =>
+                              setTasks(tasks.map((x, j) => (j === i ? { ...x, target: e.target.value } : x)))
+                            }
+                          />
+                          <IconButton icon="more" title="Task Actions" size="small" {...actions} />
+                        </>
+                      ) : (
+                        <button type="button" className={styles.taskName} title={label} {...actions}>
+                          {prefix}
+                          <span className={styles.taskLabel}>{label}</span>
+                        </button>
+                      )}
                       <IconButton
-                        icon="arrow-up"
-                        size="small"
-                        iconSize={12}
-                        title="Move Up"
-                        disabled={i === 0}
-                        onClick={() => moveTask(i, -1)}
-                      />
-                      <IconButton
-                        icon="arrow-down"
-                        size="small"
-                        iconSize={12}
-                        title="Move Down"
-                        disabled={i === tasks.length - 1}
-                        onClick={() => moveTask(i, 1)}
-                      />
-                      <IconButton
-                        icon="minus"
+                        icon="close"
                         size="small"
                         iconSize={12}
                         title="Remove Task"
                         onClick={() => setTasks(tasks.filter((_, j) => j !== i))}
                       />
-                    </span>
-                  </div>
-                ))}
-                <Button
-                  ref={taskRef}
-                  size="small"
-                  variant="ghost"
-                  icon="plus"
-                  aria-haspopup="menu"
-                  onClick={() => setTaskMenu(true)}
-                >
-                  <T>Add task</T>
-                </Button>
-                <Menu open={taskMenu} anchor={taskRef} items={taskItems} onClose={() => setTaskMenu(false)} />
+                    </div>
+                  );
+                })}
+                <div role="listitem">
+                  {tasks.length ? (
+                    <IconButton
+                      ref={taskRef}
+                      title="Add task"
+                      icon="plus"
+                      size="small"
+                      aria-haspopup="menu"
+                      aria-expanded={taskMenu === "add"}
+                      onClick={() => setTaskMenu("add")}
+                    />
+                  ) : (
+                    <Button
+                      ref={taskRef}
+                      size="small"
+                      variant="ghost"
+                      icon="plus"
+                      aria-haspopup="menu"
+                      aria-expanded={taskMenu === "add"}
+                      onClick={() => setTaskMenu("add")}
+                    >
+                      <T>Add task</T>
+                    </Button>
+                  )}
+                </div>
+                <Menu open={taskMenu === "add"} anchor={taskRef} items={taskItems} onClose={() => setTaskMenu(null)} />
+                {taskActions && (
+                  <Menu
+                    open
+                    anchor={taskActions.anchor}
+                    aria-label={tx("Task Actions")}
+                    items={[
+                      {
+                        label: "Move Up",
+                        icon: "arrow-up",
+                        disabled: taskActions.index === 0,
+                        run: () => moveTask(taskActions.index, -1),
+                      },
+                      {
+                        label: "Move Down",
+                        icon: "arrow-down",
+                        disabled: taskActions.index === tasks.length - 1,
+                        run: () => moveTask(taskActions.index, 1),
+                      },
+                    ]}
+                    onClose={() => setTaskMenu(null)}
+                  />
+                )}
               </div>
             </Field>
           )}
@@ -768,7 +894,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                     icon="close"
                     size="small"
                     iconSize={10}
-                    title={tx`Remove '${OPTION_LABELS[id]}'`}
+                    title={tx`Remove '${txPart(OPTION_LABELS[id])}'`}
                     onClick={() => update(optionPatch(id, false))}
                   />
                 </span>
@@ -796,7 +922,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
               }}
             />
           )}
-        </>
+        </div>
       )}
     </div>
   );
@@ -817,7 +943,6 @@ function TypeField({
   invalid: boolean;
   onChange: (value: string) => void;
 }) {
-  const tx = useTx();
   const root = useProject((s) => s.project?.root ?? null);
   const listId = `run-field-${field.key}`;
   const [loaded, setLoaded] = useState<ReadonlyArray<{ value: string; label: string; detail?: string }>>([]);
@@ -848,14 +973,13 @@ function TypeField({
     return <Checkbox checked={value === "true"} onChange={(on) => onChange(on ? "true" : "")} label={field.label} />;
   if (field.control === "textarea")
     return (
-      <textarea
-        className={clsx(styles.textarea, invalid && styles.textareaInvalid)}
-        aria-label={tx(field.label)}
-        spellCheck={false}
+      <ExpandableTextarea
+        label={field.label}
         value={value}
-        placeholder={tx(field.placeholder)}
-        rows={field.rows ?? 4}
-        onChange={(e) => onChange(e.target.value)}
+        placeholder={field.placeholder}
+        rows={field.rows}
+        invalid={invalid}
+        onChange={onChange}
       />
     );
   const suggestions = field.suggestions?.(all, params) ?? [];

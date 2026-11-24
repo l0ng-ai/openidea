@@ -143,6 +143,9 @@ pub struct DockerConnection {
     pub id: String,
     pub name: String,
     pub endpoint: DockerEndpoint,
+    /// Whether the user explicitly disconnected this connection in Services.
+    #[serde(default)]
+    pub disconnected: bool,
 }
 
 /// A registry to log in to (Docker Hub, GHCR, a private one). The password is stored separately.
@@ -414,6 +417,7 @@ mod tests {
                 id: "c1".into(),
                 name: "Build box".into(),
                 endpoint: DockerEndpoint::Tcp { host: "build:2376".into(), tls_cert_dir: None },
+                disconnected: true,
             }],
             registries: vec![DockerRegistry {
                 id: "r1".into(),
@@ -436,11 +440,33 @@ mod tests {
     }
 
     #[test]
+    fn connection_intent_defaults_to_connected_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(
+            dir.join(SETTINGS_FILE),
+            r#"{"connections":[{"id":"box","name":"Box","endpoint":{"kind":"ssh","config":"build"}}]}"#,
+        )
+        .unwrap();
+        let mut settings = load_settings(dir);
+        assert!(!settings.connections[0].disconnected);
+        for disconnected in [true, false] {
+            settings.connections[0].disconnected = disconnected;
+            save_settings(dir, &settings).unwrap();
+            assert_eq!(load_settings(dir), settings);
+        }
+    }
+
+    #[test]
     fn load_drops_the_injected_default_connection() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        let injected =
-            || DockerConnection { id: "default".into(), name: "Docker".into(), endpoint: DockerEndpoint::Default };
+        let injected = || DockerConnection {
+            id: "default".into(),
+            name: "Docker".into(),
+            endpoint: DockerEndpoint::Default,
+            disconnected: false,
+        };
         let registry =
             DockerRegistry { id: "r1".into(), name: "GHCR".into(), address: "ghcr.io".into(), username: "me".into() };
         // Saved untouched by an older version (e.g. along with a registry): dropped on load.

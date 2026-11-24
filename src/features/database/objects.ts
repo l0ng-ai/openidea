@@ -82,15 +82,19 @@ const exists = (driver: DbDriver, o: DbObjectRef) =>
   driver !== "snowflake" || (o.kind !== "index" && o.kind !== "trigger");
 
 export const canRename = (driver: DbDriver, o: DbObjectRef) =>
-  o.kind === "table" ||
-  o.kind === "column" ||
-  (o.kind === "view" && driver !== "sqlite") ||
-  (o.kind === "index" && driver === "postgres");
+  driver !== "jdbc" &&
+  (o.kind === "table" ||
+    o.kind === "column" ||
+    (o.kind === "view" && driver !== "sqlite") ||
+    (o.kind === "index" && driver === "postgres") ||
+    (o.kind === "schema" && (driver === "postgres" || driver === "snowflake")));
 
 /** The statement renaming `o` to `to`. */
 export function renameSql(driver: DbDriver, o: DbObjectRef, to: string): string {
   const q = qualifiedName(driver, o.schema, o.name);
   switch (o.kind) {
+    case "schema":
+      return `alter schema ${ident(driver, o.name)} rename to ${ident(driver, to)};`;
     case "column":
       return `alter table ${q} rename column ${ident(driver, o.column ?? "")} to ${ident(driver, to)};`;
     case "index":
@@ -116,11 +120,12 @@ export interface DropOptions {
 }
 
 export const canDrop = (driver: DbDriver, o: DbObjectRef) =>
-  driver === "clickhouse"
+  driver !== "jdbc" &&
+  (driver === "clickhouse"
     ? ["table", "view", "materializedView", "column", "schema"].includes(o.kind)
-    : !(o.kind === "schema" && driver === "sqlite") && exists(driver, o);
+    : !(o.kind === "schema" && driver === "sqlite") && exists(driver, o));
 
-export const canModifyTable = (driver: DbDriver) => driver !== "clickhouse";
+export const canModifyTable = (driver: DbDriver) => driver !== "clickhouse" && driver !== "jdbc";
 
 /** IDEA's Confirm Drop preview. */
 export function dropSql(driver: DbDriver, o: DbObjectRef, opts: DropOptions): string {
@@ -178,6 +183,69 @@ export function truncateSql(
   )
     return `truncate table ${q};`;
   return `truncate table ${q}${opts.restartIdentity ? " restart identity" : ""}${opts.cascade ? " cascade" : ""};`;
+}
+
+const literal = (value: string) => `'${value.replace(/'/g, "''")}'`;
+
+/** Options of New › Database / New › Schema; an empty or absent one is left to the server. */
+export interface CreateOptions {
+  owner?: string;
+  template?: string;
+  encoding?: string;
+  tablespace?: string;
+  charset?: string;
+  collation?: string;
+}
+
+/** New › Database (PostgreSQL, SQL Server). */
+export function createDatabaseSql(driver: DbDriver, name: string, opts: CreateOptions): string {
+  const clauses: string[] = [];
+  const add = (keyword: string, value: string | undefined, quote = (v: string) => ident(driver, v)) => {
+    if (value?.trim()) clauses.push(`${keyword} ${quote(value.trim())}`);
+  };
+  if (driver === "postgres") {
+    add("owner", opts.owner);
+    add("template", opts.template);
+    add("encoding", opts.encoding, literal);
+    add("tablespace", opts.tablespace);
+  } else if (driver === "sqlServer") {
+    add("collate", opts.collation, (v) => v);
+  }
+  return `create database ${ident(driver, name)}${clauses.map((c) => ` ${c}`).join("")};`;
+}
+
+/** The database the server copies for New › Database: the chosen template on PostgreSQL, `model` on SQL Server. */
+export function templateOf(driver: DbDriver, opts: CreateOptions): string {
+  return driver === "sqlServer" ? "model" : opts.template?.trim() || "template1";
+}
+
+/** New › Schema; on MySQL a schema is a database, with a character set and collation instead of an owner. */
+export function createSchemaSql(driver: DbDriver, name: string, opts: CreateOptions): string {
+  if (driver === "mysql") {
+    const charset = opts.charset?.trim() ? ` character set ${opts.charset.trim()}` : "";
+    const collation = opts.collation?.trim() ? ` collate ${opts.collation.trim()}` : "";
+    return `create database ${ident(driver, name)}${charset}${collation};`;
+  }
+  const owner = opts.owner?.trim() ? ` authorization ${ident(driver, opts.owner.trim())}` : "";
+  return `create schema ${ident(driver, name)}${owner};`;
+}
+
+/**
+ * Drop on a database node. `force` ends the sessions of other clients first:
+ * `with (force)` on PostgreSQL 13+, single-user mode on SQL Server.
+ */
+export function dropDatabaseSql(driver: DbDriver, name: string, force: boolean): string {
+  const db = ident(driver, name);
+  // One batch: the session that sets single-user mode is the single user, so it must drop too.
+  if (driver === "sqlServer" && force)
+    return `alter database ${db} set single_user with rollback immediate;\ndrop database ${db};`;
+  return `drop database ${db}${force && driver === "postgres" ? " with (force)" : ""};`;
+}
+
+/** The statement renaming database `name` of a server to `to` (PostgreSQL, SQL Server). */
+export function renameDatabaseSql(driver: DbDriver, name: string, to: string): string {
+  if (driver === "sqlServer") return `alter database ${ident(driver, name)} modify name = ${ident(driver, to)};`;
+  return `alter database ${ident(driver, name)} rename to ${ident(driver, to)};`;
 }
 
 export type ScriptKind = "selectAll" | "selectFirst" | "insert" | "update" | "delete";

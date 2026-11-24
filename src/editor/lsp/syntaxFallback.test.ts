@@ -417,6 +417,31 @@ describe("navigation wiring", () => {
     expect(openFile).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["kotlin", "class Library {\n    fun lend(isbn: String) = isbn\n}\n", 24, "/p/Library.kt", "function_declaration"],
+    ["java", "class A {\n  void lend() {}\n}\n", 17, "/p/A.java", "method_declaration"],
+    ["typescript", "class A {}\nfunction lend() {}\n", 20, "/p/a.ts", "function_declaration"],
+  ])(
+    "shows usages on a %s declaration whose server answers no definition there",
+    async (language, text, at, path, declaration) => {
+      // kotlin-language-server answers nothing on a declaration's own name.
+      cmd.lspGoto.mockReturnValueOnce(ok([]));
+      const line = text.slice(0, at).split("\n").length - 1;
+      const col = at - text.lastIndexOf("\n", at - 1) - 1;
+      cmd.syntaxNodeAt.mockReturnValueOnce(
+        ok({
+          node: node("identifier", r(line, col, col + 4), "name"),
+          ancestors: [node(declaration, r(line, 0, col + 20))],
+        }),
+      );
+      const view = editor(text, language, at, path);
+      await gotoTargets(view, "definition");
+      expect(executeAction).toHaveBeenCalledWith("find.showUsages");
+      expect(cmd.navIndexDefinitions).not.toHaveBeenCalled();
+      expect(openFile).not.toHaveBeenCalled();
+    },
+  );
+
   it("shows usages on a declaration a plugin's index links elsewhere, and follows the link from a call", async () => {
     // MyBatis Duo indexes the mapper method's name as a link to its XML statement.
     const xml = { path: "/p/UserMapper.xml", range: r(3, 16, 24) };
@@ -586,9 +611,9 @@ describe("navigation wiring", () => {
     expect(popup.title).toBe("Choose Declaration of run (2 found, based on syntax)");
     expect(popup.pin?.label).toBe("Open in Find Tool Window");
     // Same-named candidates read by their containers.
-    expect(popup.items.map((i) => [i.label, i.symbol, i.detail])).toEqual([
-      ["A", "method", "p/a.ts:4"],
-      ["B", "method", "p/b.ts:4"],
+    expect(popup.items.map((i) => [i.label, i.symbol, i.target])).toEqual([
+      ["A", "method", { container: null, path: "p/a.ts:4" }],
+      ["B", "method", { container: null, path: "p/b.ts:4" }],
     ]);
     expect(openFile).not.toHaveBeenCalled();
   });
@@ -646,8 +671,8 @@ describe("rename wiring", () => {
     const view = editor("const x = 1;\nf({ x });", "typescript", 6);
     await startRename(view);
     const popup = useLspPopup.getState().popup;
-    expect(popup?.kind).toBe("rename");
-    if (popup?.kind !== "rename") return;
+    expect(popup?.kind).toBe("symbolRename");
+    if (popup?.kind !== "symbolRename") return;
     expect(popup.note).toContain("Based on syntax");
     popup.onSubmit("y");
     await vi.waitFor(() => expect(view.state.doc.toString()).toBe("const y = 1;\nf({ x: y });"));
@@ -661,7 +686,7 @@ describe("rename wiring", () => {
     const view = editor("const x = 1;\nx;\nvar x;", "typescript", 6);
     await startRename(view);
     const popup = useLspPopup.getState().popup;
-    if (popup?.kind !== "rename") throw new Error("no rename popup");
+    if (popup?.kind !== "symbolRename") throw new Error("no rename dialog");
     popup.onSubmit("y");
     await vi.waitFor(() => expect(useLspPopup.getState().popup?.kind).toBe("preview"));
     const preview = useLspPopup.getState().popup;
@@ -860,12 +885,12 @@ describe("rename wiring", () => {
     await startRename(view);
     expect(inplaceSession(view.state)?.oldName).toBe("x");
     await startRename(view);
-    expect(useLspPopup.getState().popup?.kind).toBe("rename");
+    expect(useLspPopup.getState().popup?.kind).toBe("symbolRename");
     if (finish === "cancel") closePopup();
     release({ status: "ok", data: r(0, 6, 7) });
     await older;
     expect(inplaceSession(view.state)).toBeNull();
-    expect(useLspPopup.getState().popup?.kind ?? null).toBe(finish === "dialog" ? "rename" : null);
+    expect(useLspPopup.getState().popup?.kind ?? null).toBe(finish === "dialog" ? "symbolRename" : null);
   });
 
   it.each(["text", "document"])("drops pending preparation when the editor %s changes", async (change) => {
@@ -938,7 +963,7 @@ describe("rename wiring", () => {
     );
     cmd.syntaxLocals.mockReturnValueOnce(ok(local({ references: [] })));
     await startRename(view);
-    expect(useLspPopup.getState().popup?.kind).toBe("rename");
+    expect(useLspPopup.getState().popup?.kind).toBe("symbolRename");
   });
 });
 

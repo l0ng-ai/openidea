@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChangeSet, Text } from "@codemirror/state";
-import type { TextChange } from "@/platform/ipc";
+import type { IdeError, TextChange } from "@/platform/ipc";
 import { DocSync, toTextChanges } from "./DocSync";
 import { minimalChanges } from "./diff";
 
@@ -19,7 +19,7 @@ function numberedLines(count: number) {
 }
 
 class OutOfSync extends Error {
-  kind = "outOfSync";
+  readonly kind: IdeError["kind"] = "outOfSync";
 }
 
 /** Backend double: requests are queued and processed explicitly, in order. */

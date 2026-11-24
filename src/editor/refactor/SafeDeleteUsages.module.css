@@ -1,0 +1,16 @@
+.summary {
+  display: grid;
+  gap: var(--space-2);
+}
+.title {
+  margin: 0;
+  font-size: inherit;
+  font-weight: 600;
+}
+.detail {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--fg-secondary);
+}

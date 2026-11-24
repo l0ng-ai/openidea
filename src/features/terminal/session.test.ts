@@ -39,7 +39,6 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
     onmessage: ((chunk: string) => void) | null = null;
   },
 }));
-
 const fileLink = (text: string): Extract<TerminalLink, { kind: "file" }> => {
   const [l] = findTerminalLinks(text);
   if (!l || l.kind !== "file") throw new Error(`not a file link: ${text}`);
@@ -51,16 +50,17 @@ describe("Windows PTY metadata", () => {
   afterEach(() => usePlatform.setState(initialPlatform));
 
   it.each([
-    ["windows", 19045, { backend: "conpty", buildNumber: 19045 }],
-    ["windows", 22631, { backend: "conpty", buildNumber: 22631 }],
-    ["windows", null, { backend: "conpty", buildNumber: undefined }],
-    ["macos", null, {}],
-    ["linux", null, {}],
-  ] as const)("configures %s build %s", (os, windowsBuildNumber, expected) => {
+    ["windows", 19045, { backend: "conpty", buildNumber: 19045 }, false],
+    ["windows", 22631, { backend: "conpty", buildNumber: 22631 }, true],
+    ["windows", null, { backend: "conpty", buildNumber: undefined }, false],
+    ["macos", null, {}, false],
+    ["linux", null, {}, false],
+  ] as const)("configures %s build %s", (os, windowsBuildNumber, expected, reflowCursorLine) => {
     usePlatform.setState({ os, windowsBuildNumber });
     const session = new TerminalSession({ key: "pty-options", cwd: "/repo", onChange() {}, onFocus() {} });
     try {
       expect(session.term.options.windowsPty).toEqual(expected);
+      expect(session.term.options.reflowCursorLine).toBe(reflowCursorLine);
     } finally {
       session.dispose();
     }
@@ -69,11 +69,39 @@ describe("Windows PTY metadata", () => {
   it("updates a restored terminal when platform info arrives and unsubscribes on disposal", () => {
     usePlatform.setState({ os: "windows", windowsBuildNumber: null });
     const session = new TerminalSession({ key: "restored", cwd: "/repo", onChange() {}, onFocus() {} });
+    expect(session.term.options.reflowCursorLine).toBe(false);
     usePlatform.setState({ windowsBuildNumber: 22631 });
     expect(session.term.options.windowsPty).toEqual({ backend: "conpty", buildNumber: 22631 });
+    expect(session.term.options.reflowCursorLine).toBe(true);
     session.dispose();
     usePlatform.setState({ windowsBuildNumber: 19045 });
     expect(session.term.options.windowsPty).toEqual({ backend: "conpty", buildNumber: 22631 });
+    expect(session.term.options.reflowCursorLine).toBe(true);
+  });
+
+  it.each([
+    ["idle prompt", ""],
+    ["wrapped pending input", "Write-Output 'pending input spanning more than one terminal row"],
+  ])("preserves the %s when a ConPTY session narrows and widens", async (_, input) => {
+    usePlatform.setState({ os: "windows", windowsBuildNumber: 26200 });
+    const session = new TerminalSession({ key: "pty-reflow", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      const prompt = "PS C:\\workspace\\a-long-project-directory\\src> ";
+      const content = prompt + input;
+      const { term } = session;
+      const terminalText = () => {
+        const buffer = term.buffer.active;
+        return Array.from({ length: buffer.length }, (_, i) => buffer.getLine(i)?.translateToString(true)).join("");
+      };
+      term.resize(80, 8);
+      await new Promise<void>((resolve) => term.write(content, resolve));
+      term.resize(30, 8);
+      expect(terminalText()).toBe(content);
+      term.resize(80, 8);
+      expect(terminalText()).toBe(content);
+    } finally {
+      session.dispose();
+    }
   });
 });
 
@@ -361,6 +389,58 @@ describe("terminal restart", () => {
   });
 });
 
+describe("terminal startup size", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("resizes a freshly spawned PTY to the grid reached while startup was pending", async () => {
+    let release: ((value: { id: number; title: string }) => void) | undefined;
+    ipc.commands.termSpawn.mockImplementationOnce(
+      () =>
+        new Promise<{ id: number; title: string }>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const session = new TerminalSession({ key: "s-start-size", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      session.term.resize(80, 24);
+      const starting = session.start();
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      expect(ipc.commands.termSpawn).toHaveBeenCalledWith(
+        expect.objectContaining({ cols: 80, rows: 24 }),
+        expect.anything(),
+      );
+      // Resize while startup is still pending.
+      session.term.resize(100, 30);
+      release!({ id: 12, title: "zsh" });
+      await starting;
+      expect(ipc.commands.termResize).toHaveBeenCalledWith(12, 100, 30);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("leaves the PTY alone when the grid did not change during startup", async () => {
+    let release: ((value: { id: number; title: string }) => void) | undefined;
+    ipc.commands.termSpawn.mockImplementationOnce(
+      () =>
+        new Promise<{ id: number; title: string }>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const session = new TerminalSession({ key: "s-start-same", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      session.term.resize(80, 24);
+      const starting = session.start();
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      release!({ id: 13, title: "zsh" });
+      await starting;
+      expect(ipc.commands.termResize).not.toHaveBeenCalled();
+    } finally {
+      session.dispose();
+    }
+  });
+});
+
 describe("terminal open", () => {
   afterEach(() => vi.useRealTimers());
 
@@ -391,6 +471,51 @@ describe("terminal open", () => {
     expect(open).toHaveBeenCalledTimes(1);
     session.dispose();
     container.remove();
+  });
+});
+
+describe("deferred terminal focus", () => {
+  function openable(key: string) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const session = new TerminalSession({ key, cwd: "/tmp", onChange: () => undefined, onFocus: () => undefined });
+    Object.defineProperty(session.host, "offsetWidth", { configurable: true, get: () => 400 });
+    Object.defineProperty(session.host, "offsetHeight", { configurable: true, get: () => 300 });
+    const textarea = document.createElement("textarea");
+    vi.spyOn(session.term, "open").mockImplementation(() => undefined);
+    Object.defineProperty(session.term, "textarea", { configurable: true, get: () => textarea });
+    const focus = vi.spyOn(session.term, "focus").mockImplementation(() => undefined);
+    return { container, session, focus };
+  }
+
+  afterEach(() => vi.useRealTimers());
+
+  it("takes the caret once xterm opens when focus stayed put", () => {
+    vi.useFakeTimers();
+    const { container, session, focus } = openable("s-stay");
+    session.focus();
+    session.attach(container);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
+    expect(focus).toHaveBeenCalledTimes(1);
+    session.dispose();
+    container.remove();
+  });
+
+  it("leaves focus that moved elsewhere before xterm opened", () => {
+    vi.useFakeTimers();
+    const { container, session, focus } = openable("s-moved");
+    const tree = document.createElement("div");
+    tree.tabIndex = 0;
+    document.body.appendChild(tree);
+    session.focus();
+    tree.focus();
+    session.attach(container);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
+    expect(focus).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(tree);
+    session.dispose();
+    container.remove();
+    tree.remove();
   });
 });
 

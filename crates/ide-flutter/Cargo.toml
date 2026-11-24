@@ -1,0 +1,15 @@
+[package]
+name = "ide-flutter"
+description = "Flutter devices from the `flutter daemon` protocol, and the project's DevTools server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-android = { path = "../ide-android" }
+ide-core.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

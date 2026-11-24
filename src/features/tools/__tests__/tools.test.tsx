@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { emitLocalIdeEvent } from "@/platform/ipc";
-import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import {
+  provideNotificationService,
+  SettingsPageFocusContext,
+  type NotificationService,
+} from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
 import { MemoryToolsBackend, sampleTools, setToolsBackend } from "../backend";
 import { cancelInstall, installTool, refreshTools, uninstallTool, useTools } from "../store";
@@ -11,11 +15,14 @@ import { installMissingServerPrompts, installServerWarningPrompts, missingKey, p
 import { resetTestForm, stagedFor, TestSettingsForm } from "./settingsForm";
 
 type Note = Parameters<NotificationService["notify"]>[0];
+const focusConsume = vi.fn();
+const FOCUS_CONTEXT = { focus: "pyrefly", consume: focusConsume } as const;
 let notes: Note[];
 let backend: MemoryToolsBackend;
 
 beforeEach(() => {
   notes = [];
+  focusConsume.mockClear();
   provideNotificationService({ notify: (n) => void notes.push(n) });
   backend = new MemoryToolsBackend(sampleTools(), 1);
   setToolsBackend(backend);
@@ -228,7 +235,7 @@ describe("missing language server prompt", () => {
       alternatives: [],
       companion: false,
     });
-    await promptInstall("ruff", true, new Set(), true);
+    await promptInstall("ruff", true, new Set(), "formatter");
     expect(notes.at(-1)).toMatchObject({
       title: "Ruff is not installed",
       body: "Reformat Code needs Ruff. Install it via uv (virtualenv)?",
@@ -250,6 +257,27 @@ describe("missing language server prompt", () => {
     });
     expect(await promptInstall("pylsp")).toBe(false);
     expect(notes).toEqual([]);
+  });
+
+  it("offers a companion server when one of its refactorings is invoked", async () => {
+    const installed = sampleTools().find((t) => t.name === "basedpyright")!;
+    backend.tools.push({
+      ...installed,
+      name: "pylsp",
+      displayName: "pylsp-rope (Python refactorings)",
+      command: "pylsp",
+      status: "missing",
+      installMethod: "uv (virtualenv)",
+      alternatives: [],
+      companion: true,
+    });
+    // basedpyright (installed) serves Python: the refactoring still needs pylsp-rope.
+    expect(await promptInstall("pylsp", true, new Set(), { refactoring: "Extract Method" })).toBe(true);
+    expect(notes.at(-1)).toMatchObject({
+      title: "pylsp-rope (Python refactorings) is not installed",
+      body: "Extract Method needs pylsp-rope (Python refactorings). Install it via uv (virtualenv)?",
+      key: missingKey("pylsp"),
+    });
   });
 
   it("stays silent when an installed alternative serves the same languages", async () => {
@@ -448,6 +476,20 @@ describe("LanguageServersPage", () => {
     expect(rows.map((r) => r.dataset.tool)).toEqual(["basedpyright", "pyright", "ty", "pyrefly"]);
     await user.click(toolItem("ty"));
     expect(within(screen.getByLabelText("ty (Python) details")).queryByRole("radio")).toBeNull();
+  });
+
+  it("opens on the tool it was asked to show (languages.servers#<tool>)", async () => {
+    render(
+      <SettingsPageFocusContext.Provider value={FOCUS_CONTEXT}>
+        <TestSettingsForm>
+          <LanguageServersPage />
+        </TestSettingsForm>
+      </SettingsPageFocusContext.Provider>,
+    );
+    await waitFor(() => expect(toolItem("pyrefly")).toHaveAttribute("aria-current", "true"));
+    expect(language("Python")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByLabelText("Python tools")).toContainElement(toolItem("pyrefly"));
+    expect(focusConsume).toHaveBeenCalled();
   });
 
   it("jumps to a missing tool from the language's banner", async () => {

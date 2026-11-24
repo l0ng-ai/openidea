@@ -17,7 +17,18 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CommitSelection, FileMatches, Location, SearchQuery, RunConfig, RunId, SymbolKind } from "@/bindings";
+import type {
+  CommitSelection,
+  ConsoleRule,
+  FileMatches,
+  Location,
+  SearchQuery,
+  RunConfig,
+  RunId,
+  SymbolKind,
+} from "@/bindings";
+import { getContext } from "@/platform/context";
+import { getAction } from "@/platform/actions";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -145,6 +156,13 @@ export interface EditorKindContribution {
   onClose?(input: EditorInput): void;
   /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
   navigationInput?(input: EditorInput): EditorInput;
+  /**
+   * "Open in New Window" on its tabs: moves the tab to a lightweight window of this project
+   * (`EditorService.openInWindow`) with whatever state it carries. False when it stayed here.
+   */
+  openInWindow?(input: EditorInput): Promise<boolean>;
+  /** Loads and validates a lightweight window's input before it reports a successful handoff. */
+  prepareWindowInput?(input: EditorInput): Promise<EditorInput>;
   /** Any tab of this kind closed (`tabId` is the closed `Tab.id`, even when split siblings remain). */
   onTabClose?(tabId: string, input: EditorInput): void;
   /**
@@ -158,7 +176,7 @@ export interface EditorKindContribution {
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
    * `input.key` (splits) share one document.
    */
-  document?: EditorDocumentLifecycle;
+  document?: EditorDocumentLifecycle | ((input: EditorInput) => EditorDocumentLifecycle | undefined);
 }
 
 /**
@@ -167,6 +185,8 @@ export interface EditorKindContribution {
  * document. Call `notifyEditorDocumentChanged` whenever `isDirty` may change.
  */
 export interface EditorDocumentLifecycle {
+  /** A clean document can use the preview slot. Any edit promotes its tabs. */
+  allowPreview?: boolean;
   /** Unsaved changes, pending edits not committed yet included. */
   isDirty(input: EditorInput): boolean;
   /** Commits pending edits; rejects when they can't be. */
@@ -185,6 +205,7 @@ export interface EditorDocumentLifecycle {
   /** Releases the document (and its kernel…) once no tab shows it any more. Called once per open. */
   close(input: EditorInput): Promise<void>;
   /** Edit › Undo / Redo while the editor has focus. */
+  handlesHistory?(input: EditorInput): boolean;
   undo?(input: EditorInput): Promise<void>;
   redo?(input: EditorInput): Promise<void>;
 }
@@ -272,6 +293,8 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** Jump to Source (F4 / ⌘↓); a provider without it activates the node instead. */
+  jumpToSource?(item: ServiceTreeItem): void;
   /** A node of this provider became the lead selection. */
   select?(item: ServiceTreeItem): void;
   /** A node of this provider was expanded or collapsed. */
@@ -369,6 +392,27 @@ export function registerGitLogChecks(cell: GitLogChecksCell): () => void {
   useGitLogChecks.setState({ cell });
   return () => {
     if (useGitLogChecks.getState().cell === cell) useGitLogChecks.setState({ cell: null });
+  };
+}
+
+export interface WorktreeReview {
+  title: string;
+  open: () => Promise<void>;
+}
+
+export interface WorktreeReviewQuery {
+  root: string;
+  paths: string[];
+  branches: string[];
+}
+
+type WorktreeReviewProvider = (query: WorktreeReviewQuery) => Promise<ReadonlyMap<string, WorktreeReview>>;
+export const useWorktreeReviewProvider = create<{ lookup: WorktreeReviewProvider | null }>(() => ({ lookup: null }));
+
+export function registerWorktreeReviewProvider(lookup: WorktreeReviewProvider): () => void {
+  useWorktreeReviewProvider.setState({ lookup });
+  return () => {
+    if (useWorktreeReviewProvider.getState().lookup === lookup) useWorktreeReviewProvider.setState({ lookup: null });
   };
 }
 
@@ -555,13 +599,30 @@ export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler
   };
 }
 
+/** Default custom editors that should open in the IDE instead of an associated app. */
+const externalOpenSuppressions = new Map<string, (path: string) => boolean>();
+
+/** Skip associated-application open for paths a default custom editor claims. */
+export function registerExternalOpenSuppression(id: string, matches: (path: string) => boolean): () => void {
+  externalOpenSuppressions.set(id, matches);
+  return () => {
+    if (externalOpenSuppressions.get(id) === matches) externalOpenSuppressions.delete(id);
+  };
+}
+
+function externalOpenSuppressed(path: string): boolean {
+  return [...externalOpenSuppressions.values()].some((matches) => matches(path));
+}
+
 /** Whether opening `path` would hand it to another application. */
 export function opensExternally(path: string): boolean {
+  if (externalOpenSuppressed(path)) return false;
   return [...externalFileOpenHandlers.values()].some((h) => h.matches(path));
 }
 
 /** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
 export async function openFileExternally(path: string): Promise<boolean> {
+  if (externalOpenSuppressed(path)) return false;
   const handlers = [...externalFileOpenHandlers.values()].sort(
     (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
   );
@@ -587,6 +648,8 @@ export interface TextEditorWrapperContribution {
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
   /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
   tabActions?: ComponentType<{ path: string; tabId: string }>;
+  /** Hook: true while the wrapper hides the source editor of `tabId` (a preview-only layout), which drops its code breadcrumbs. */
+  useSourceHidden?: (tabId: string) => boolean;
 }
 
 export const useTextEditorWrappers = create<{ wrappers: Map<string, TextEditorWrapperContribution> }>(() => ({
@@ -681,6 +744,11 @@ export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
+  /**
+   * Shows `input` in a lightweight window of this project instead (its kind must be registered
+   * there, see `editorWindowBoot`); resolves to the window's label once it is shown.
+   */
+  openInWindow?(input: EditorInput): Promise<string>;
   /** File › New File: an editable untitled buffer; Save asks for a path. */
   openUntitled?(options?: OpenOptions): Promise<void>;
   /** Path of the focused text editor, if any. */
@@ -697,12 +765,14 @@ export interface EditorService {
   focus?(): void;
   /** Paths of the documents open in editor tabs (all panes, tab order). */
   openPaths?(): string[];
+  /** Observe tab changes, including open or closed background tabs. */
+  onOpenTabsChange?(fn: () => void): () => void;
   /** Every open tab, files or not, most recently active first (Switcher). */
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
   tabInput?(paneId: string, tabId: string): EditorInput | null;
-  /** Input of the active tab (any kind), if any. */
-  activeInput?(): EditorInput | null;
+  /** Input of the active tab, optionally restricted to the replaceable preview tab. */
+  activeInput?(options?: { previewOnly?: boolean }): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
   onActiveInputChange?(fn: (input: EditorInput | null) => void): () => void;
   /**
@@ -726,6 +796,8 @@ export interface EditorService {
   forgetSavedTabs?(): void;
   /** Writes them again when a close is cancelled after {@link forgetSavedTabs}. */
   keepSavedTabs?(): void;
+  /** Flushes the open editor tabs, splits and caret positions to storage immediately. */
+  flushSession?(): void;
   /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
   documentHistory?(command: "undo" | "redo"): boolean;
   /** Go to Declaration's chooser ("Choose Declaration of `name`") over `targets`, below `anchor`. */
@@ -830,12 +902,27 @@ export interface RunOutputService {
   subscribe(process: RunId, listener: (kind: "stdout" | "stderr" | "system", text: string) => void): () => void;
 }
 
+export interface RunConfigurationCheckResult {
+  name: string;
+  status: "notStarted" | "stopped" | "finished";
+  exitCode?: number | null;
+  failedTests?: number;
+  review?: () => void;
+}
+
+export interface RunConfigurationCheckService {
+  configurations(): readonly RunConfig[];
+  subscribe(listener: () => void): () => void;
+  run(id: string, signal: AbortSignal): Promise<RunConfigurationCheckResult[]>;
+}
+
 const services: {
   editor?: EditorService;
   toolWindows?: ToolWindowService;
   notifications?: NotificationService;
   embeddedTerminal?: EmbeddedTerminalFactory;
   runOutput?: RunOutputService;
+  runConfigurationChecks?: RunConfigurationCheckService;
   hasRunConfiguration?: (kind: string, directory: string) => boolean;
 } = {};
 
@@ -849,6 +936,9 @@ export const provideToolWindowService = (s: ToolWindowService) => void (services
 export const provideNotificationService = (s: NotificationService) => void (services.notifications = s);
 export const provideEmbeddedTerminal = (f: EmbeddedTerminalFactory | undefined) => void (services.embeddedTerminal = f);
 export const provideRunOutput = (s: RunOutputService | undefined) => void (services.runOutput = s);
+export const provideRunConfigurationChecks = (s: RunConfigurationCheckService | undefined) =>
+  void (services.runConfigurationChecks = s);
+export const runConfigurationChecks = () => services.runConfigurationChecks;
 export const provideRunConfigurationLookup = (lookup: typeof services.hasRunConfiguration) =>
   void (services.hasRunConfiguration = lookup);
 export const hasRunConfiguration = (kind: string, directory: string): boolean =>
@@ -1012,6 +1102,24 @@ export function showFindResults(source: FindResultsSource) {
 }
 
 // ---------------------------------------------------------------------------
+// Console highlight rules: plugins supply them, the Run and Debug consoles apply
+// them to process output (`ui/consoleRules`).
+
+export const useConsoleRules = create<{ providers: ReadonlyMap<string, readonly ConsoleRule[]> }>(() => ({
+  providers: new Map(),
+}));
+
+/** Replaces the rules of one provider (a plugin id); an empty list removes them. */
+export function setConsoleRules(provider: string, rules: readonly ConsoleRule[]) {
+  useConsoleRules.setState((s) => {
+    const providers = new Map(s.providers);
+    if (rules.length) providers.set(provider, rules);
+    else if (!providers.delete(provider)) return s;
+    return { providers };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // File decorations: colour / badge / tooltip for a path, shown by the project
 // tree, editor tabs, Search Everywhere, etc. Providers (VCS status, problems)
 // push decorations into this store; consumers read with `useFileDecoration`.
@@ -1036,6 +1144,9 @@ export interface FileDecoration {
   suffixColor?: string;
   /** CSS colour tinting the editor tab (a data source's colour on its console). */
   tint?: string;
+  /** Display name and icon for a specialized file tab. The path still identifies the document. */
+  tabTitle?: string;
+  tabIcon?: string;
   /** Short badge text, e.g. a problem count. */
   badge?: string;
   tooltip?: string;
@@ -1209,6 +1320,28 @@ export function registerSettingsPage(page: SettingsPageContribution): () => void
       const pages = new Map(s.pages);
       pages.delete(page.id);
       return { pages };
+    });
+}
+
+/** Registers a batch of settings pages in one store update; returns a batched disposer. */
+export function registerSettingsPages(list: SettingsPageContribution[]): () => void {
+  if (!list.length) return () => {};
+  const owned = new Map<string, SettingsPageContribution>();
+  for (const page of list) owned.set(page.id, page);
+  useSettingsPages.setState((s) => {
+    const pages = new Map(s.pages);
+    for (const [id, page] of owned) pages.set(id, page);
+    return { pages };
+  });
+  return () =>
+    useSettingsPages.setState((s) => {
+      let next: Map<string, SettingsPageContribution> | null = null;
+      for (const [id, page] of owned) {
+        if (s.pages.get(id) !== page) continue;
+        next ??= new Map(s.pages);
+        next.delete(id);
+      }
+      return next ? { pages: next } : s;
     });
 }
 
@@ -1398,6 +1531,76 @@ export function menuGroupItems(menu: ContextMenuId, ctx: MenuGroupContext): Menu
   return out;
 }
 
+export interface GitMenuContext {
+  /** The file or directory the menu targets (one path, or the selection). */
+  paths: string[];
+  /** Whether any target is a directory (Git menus of folders scope some actions). */
+  dirs?: boolean[];
+  /** Show file-revision actions (Compare with Revision…, Show Current Revision): one file only. */
+  file?: boolean;
+  /** Show Add to .gitignore: the selection excludes the project root (which cannot be ignored). */
+  ignore?: boolean;
+}
+
+/**
+ * Git › shared by the editor, editor tab and project view menus (IDEA keeps the
+ * per-menu groups in sync). Items are plain action rows, so unregistered actions
+ * disappear and `vcsAvailable` gates enablement on its own.
+ */
+export function gitMenuItems({ paths, dirs, file, ignore }: GitMenuContext): MenuItem[] {
+  const arg = paths.length === 1 ? paths[0]! : paths;
+  const some = paths.length > 0;
+  const single = paths.length === 1 ? paths[0]! : null;
+  // Unregistered actions drop out (the project view's submenu() never shows an empty menu).
+  const act = (action: string, label?: string): MenuItem | null =>
+    getAction(action) ? { kind: "action", action, arg, ...(label ? { label } : {}) } : null;
+  const action = (id: string, label?: string): MenuItem | null =>
+    getAction(id) ? { kind: "action", action: id, ...(label ? { label } : {}) } : null;
+  const nonNull = (items: (MenuItem | null)[]): MenuItem[] => items.filter((i): i is MenuItem => i !== null);
+  const ignoreSubmenu = ignore
+    ? nonNull([act("vcs.ignoreShared", ".gitignore"), act("vcs.ignoreLocal", ".git/info/exclude")])
+    : [];
+  const github = nonNull([
+    action("github.pullRequests"),
+    action("github.createPullRequest"),
+    action("github.checkoutPullRequest"),
+    action("github.openInBrowser"),
+  ]);
+  const items: (MenuItem | null)[] = [
+    single && !dirs?.[0] ? act("vcs.commit", "Commit File…") : act("vcs.commit", "Commit…"),
+    act("vcs.addToVcs", "Add"),
+    ...(ignoreSubmenu.length ? [{ label: "Add to .gitignore", submenu: ignoreSubmenu } as MenuItem] : []),
+    { kind: "separator" },
+    ...(file ? ([act("vcs.annotate", "Annotate with Git Blame")] as (MenuItem | null)[]) : []),
+    act("vcs.showDiff", "Show Diff"),
+    ...(some ? ([act("vcs.compareWithBranch", "Compare with Branch…")] as (MenuItem | null)[]) : []),
+    ...(file ? ([act("vcs.compareWithRevision", "Compare with Revision…")] as (MenuItem | null)[]) : []),
+    ...(some ? ([act("vcs.showHistory", "Show History")] as (MenuItem | null)[]) : []),
+    ...(file ? ([act("vcs.showCurrentRevision", "Show Current Revision")] as (MenuItem | null)[]) : []),
+    act("vcs.rollback", "Rollback…"),
+    { kind: "separator" },
+    action("vcs.push", "Push…"),
+    act("vcs.pull", "Pull…"),
+    action("vcs.fetch", "Fetch"),
+    { kind: "separator" },
+    act("vcs.merge", "Merge…"),
+    act("vcs.rebase", "Rebase…"),
+    { kind: "separator" },
+    action("vcs.branches", "Branches…"),
+    action("vcs.newBranch", "New Branch…"),
+    action("vcs.newTag", "New Tag…"),
+    action("vcs.resetHead", "Reset HEAD…"),
+    { kind: "separator" },
+    action("vcs.stash", "Stash Changes…"),
+    action("vcs.unstash", "Unstash Changes…"),
+    { kind: "separator" },
+    ...(github.length ? [{ label: "GitHub", icon: "github", submenu: github } as MenuItem] : []),
+    action("vcs.manageRemotes", "Manage Remotes…"),
+    action("vcs.clone", "Get from Version Control…"),
+  ];
+  return items.filter((i): i is MenuItem => i !== null);
+}
+
 // Project view selection, for actions run outside the project view (Find Action,
 // main menu) right after it had focus. Provided by features/project-tree.
 let projectSelection: (() => string[]) | undefined;
@@ -1412,6 +1615,20 @@ export function provideProjectViewSelection(get: () => string[]): () => void {
 /** Selected project view paths (absolute); empty without a project view. */
 export const projectViewSelection = (): string[] => projectSelection?.() ?? [];
 
+// Commit / Local Changes selection while that tool window has focus. Provided by
+// features/vcs so Deployment (and similar) shortcuts see multi-file picks there.
+let changesSelection: (() => string[]) | undefined;
+
+export function provideChangesViewSelection(get: () => string[]): () => void {
+  changesSelection = get;
+  return () => {
+    if (changesSelection === get) changesSelection = undefined;
+  };
+}
+
+/** Selected change-tree paths (absolute) while Commit/Local Changes is focused. */
+export const changesViewSelection = (): string[] => changesSelection?.() ?? [];
+
 /** The project view node the user last selected; `dir` decides the icon and popup of the last crumb. */
 export interface ProjectViewLead {
   path: string;
@@ -1424,6 +1641,11 @@ export interface ProjectViewLead {
  * editor takes over (focus, tab switch). `null` = the editor is the context.
  */
 export const useProjectViewLead = create<{ lead: ProjectViewLead | null }>(() => ({ lead: null }));
+
+/** The Project view lead while the editor does not have focus. */
+export function projectViewContextLead(): ProjectViewLead | null {
+  return getContext().editorFocus ? null : useProjectViewLead.getState().lead;
+}
 
 export function setProjectViewLead(lead: ProjectViewLead | null) {
   const prev = useProjectViewLead.getState().lead;
@@ -1768,6 +1990,11 @@ export interface RunAnythingProvider {
   items(query: string): RunAnythingItem[];
   /** Runs `line` when it belongs to this provider (`mvn clean`); false leaves it to the next one. */
   execute?(line: string): boolean | Promise<boolean>;
+  /**
+   * Whether `execute` runs `line` as a command this provider recognizes (cheap,
+   * synchronous): Markdown offers run icons for such lines in code blocks.
+   */
+  accepts?(line: string): boolean;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();
@@ -1834,9 +2061,15 @@ export function registerEndpointProvider(p: EndpointProvider): () => void {
   };
 }
 
-export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
+/** Endpoints of every provider, or of those `provider` accepts (by provider id). */
+export async function searchEndpoints(
+  root: string | null,
+  provider: (id: string) => boolean = () => true,
+): Promise<EndpointEntry[]> {
   if (!root) return [];
-  const results = await Promise.allSettled([...endpointProviders.values()].map(async (p) => p.endpoints(root)));
+  const results = await Promise.allSettled(
+    [...endpointProviders.values()].filter((p) => provider(p.id)).map(async (p) => p.endpoints(root)),
+  );
   return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 }
 
@@ -1891,7 +2124,9 @@ export const useDebugRunSessions = create<{
   sessions: DebugRunSession[];
   serviceSessions: DebugServiceSession[];
   Console: ComponentType<{ sessionId: number }> | null;
-}>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+  /** The whole debugger of a session (Services shows it in place); `console` replaces its Console tab. */
+  View: ComponentType<{ sessionId: number; console?: ReactNode }> | null;
+}>(() => ({ sessions: [], serviceSessions: [], Console: null, View: null }));
 
 /**
  * The Services tool window's badge: how many of its listed services are running.
@@ -2110,4 +2345,42 @@ export const useContributedSnippets = create<{ snippets: ContributedSnippet[] }>
 export function addContributedSnippets(snippets: ContributedSnippet[]): () => void {
   useContributedSnippets.setState((s) => ({ snippets: [...s.snippets, ...snippets] }));
   return () => useContributedSnippets.setState((s) => ({ snippets: s.snippets.filter((x) => !snippets.includes(x)) }));
+}
+
+// ---------------------------------------------------------------------------
+// Search Everywhere categories. Custom categories are opt-in tabs, never All sources.
+export type SearchCategoryId = `plugin:${string}:${string}`;
+export interface SearchCategory {
+  id: SearchCategoryId;
+  title: string;
+  search(
+    request: import("@/bindings").RequestId,
+    query: string,
+    limit: number,
+  ): Promise<import("@/bindings").PluginSearchPage>;
+  /** Resolve within this provider, rather than looking up an ambiguous global action id. */
+  command(id: string): import("@/platform/actions").Action | undefined;
+}
+const searchCategoryProviders = new Map<SearchCategoryId, SearchCategory>();
+const searchCategoryListeners = new Set<() => void>();
+export function searchCategories(): readonly SearchCategory[] {
+  return [...searchCategoryProviders.values()];
+}
+export function onSearchCategoriesChanged(listener: () => void): () => void {
+  searchCategoryListeners.add(listener);
+  return () => {
+    searchCategoryListeners.delete(listener);
+  };
+}
+function searchCategoriesChanged() {
+  notifyEach(searchCategoryListeners, (listener) => listener(), "search categories changed");
+}
+export function registerSearchCategory(category: SearchCategory): () => void {
+  searchCategoryProviders.set(category.id, category);
+  searchCategoriesChanged();
+  return () => {
+    if (searchCategoryProviders.get(category.id) !== category) return;
+    searchCategoryProviders.delete(category.id);
+    searchCategoriesChanged();
+  };
 }

@@ -78,4 +78,15 @@ describe("lookupSymbols", () => {
     await lookupSymbols("/elsewhere", ["load"]).get("load");
     expect(asked).toEqual([["FooView", "load"], ["BarView"], ["load"]]);
   });
+
+  it("answers every name of one request even when it exceeds the per-folder limit", async () => {
+    mockIPC((cmd, args) => {
+      if (cmd !== "find_symbols_named") return null;
+      const { names } = args as { names: string[] };
+      return names.map((name) => symbol(name, `/repo/${name}.ts`));
+    });
+    const requested = Array.from({ length: 2001 }, (_, i) => `Name${i}`);
+    const found = lookupSymbols("/large", requested);
+    expect((await found.get("Name0"))!.map((match) => match.name)).toEqual(["Name0"]);
+  });
 });

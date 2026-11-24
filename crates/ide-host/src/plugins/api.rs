@@ -10,7 +10,7 @@ use ide_extension::ledger::{Ledger, Subject};
 use ide_language::ProgramPin;
 use ide_plugin::{
     CommitChange, CommitDraft, EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel,
-    ProcessChunk, ProcessCommand, ProcessOutput, Prompt, RepositoryStatus, StatusItem,
+    ProcessChunk, ProcessCommand, ProcessOptions, ProcessOutput, Prompt, RepositoryStatus, StatusItem,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -136,6 +136,10 @@ pub trait PluginWorkspace: Send + Sync {
     fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError>;
     /// Code from the project may run (git hooks and config on fetch).
     fn trusted(&self, root: &Path) -> bool;
+    /// The git executable of the project at `root` (see [`crate::Project::git_executable`]).
+    fn git_executable(&self, _root: &Path) -> Option<PathBuf> {
+        None
+    }
     /// Root of the project open in `window`.
     fn project_of(&self, window: &str) -> Option<PathBuf>;
     /// Windows showing the open project at `root`, the most recently focused first.
@@ -200,8 +204,14 @@ impl SecretStore for FileSecretStore {
 
 /// Largest response body a plugin receives.
 const MAX_RESPONSE: usize = 16 << 20;
-/// Largest stdout / stderr kept from a process.
+/// Largest stdout / stderr kept from a process by default.
 const MAX_OUTPUT: usize = 16 << 20;
+/// Hard ceiling for configurable process output capture.
+const MAX_ALLOWED_OUTPUT: usize = 128 << 20;
+/// Default in-flight stream buffer for lossless streaming backpressure.
+const DEFAULT_STREAM_BUFFER: usize = 256 << 10;
+/// Default total lifetime stream output limit for lossless streaming.
+const DEFAULT_STREAM_MAX_TOTAL: usize = 32 << 20;
 /// Most processes one plugin keeps running at once.
 const MAX_PROCESSES: usize = 8;
 /// Most output one stream of a handle holds until the plugin reads it.
@@ -285,13 +295,50 @@ pub(super) enum Waiter {
     Prompt(std::sync::mpsc::SyncSender<Option<Vec<String>>>),
     Commit(std::sync::mpsc::SyncSender<CommitAnswer>),
     Command(std::sync::mpsc::SyncSender<super::CommandAnswer>),
+    Clipboard(std::sync::mpsc::SyncSender<super::ClipboardAnswer>),
 }
 
-/// A process a plugin started and has not released (API 1.3 `process.start`).
+/// What a window read from its clipboard, as `ui.read-clipboard` returns it. Oversized text
+/// or images fail here, before the base64 is decoded.
+fn clipboard_content(answer: super::ClipboardAnswer) -> Result<ide_plugin::ClipboardContent, HostError> {
+    use base64::Engine;
+    let (text, png) = match answer {
+        super::ClipboardAnswer::Content { text, png } => (text, png),
+        super::ClipboardAnswer::Refused => return Err(HostError::Denied("clipboard.read (the user refused)".into())),
+        super::ClipboardAnswer::Failed { message } => return Err(HostError::Failed(message)),
+    };
+    let max = ide_plugin::MAX_CLIPBOARD_BYTES;
+    let too_large = || HostError::Failed(format!("the clipboard holds more than {} MiB", max >> 20));
+    // The longest base64 of `max` bytes.
+    if text.as_ref().is_some_and(|t| t.len() > max) || png.as_ref().is_some_and(|p| p.len() > max.div_ceil(3) * 4) {
+        return Err(too_large());
+    }
+    let image = match png.filter(|p| !p.is_empty()) {
+        Some(png) => Some(
+            base64::engine::general_purpose::STANDARD
+                .decode(png)
+                .map_err(|e| HostError::Failed(format!("the clipboard image is not valid base64: {e}")))?,
+        ),
+        None => None,
+    };
+    if image.as_ref().is_some_and(|i| i.len() > max) {
+        return Err(too_large());
+    }
+    Ok(ide_plugin::ClipboardContent { text: text.filter(|t| !t.is_empty()), image })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StreamMode {
+    Tail,
+    Lossless,
+}
+
+/// A process a plugin started and has not released (API 1.3 `process.start`, API 1.15 `process.start-stream`).
 /// Two reader threads copy its output into bounded buffers; the handle lives
 /// as long as the plugin instance that started it.
 struct Proc {
     client: Option<String>,
+    can_read: parking_lot::Condvar,
     state: Mutex<ProcState>,
 }
 
@@ -305,6 +352,29 @@ struct ProcState {
     status: Option<i32>,
     /// Reader threads still copying its pipes into the buffers above.
     readers: usize,
+    /// Active wait_process callers. While positive, reader threads buffer up to
+    /// max_total instead of buffer_limit so producers emitting more than the chunk
+    /// buffer do not deadlock waiting for process exit.
+    waiters: usize,
+    mode: StreamMode,
+    buffer_limit: usize,
+    max_total: usize,
+    total_stdout: usize,
+    total_stderr: usize,
+    overflow_err: Option<String>,
+    stopped: bool,
+}
+
+impl ProcState {
+    /// Ends a child whose output went over the limit. `kill_tree` reaps it, so its status
+    /// is noted here: a later reap must not wait on a process id that is already gone.
+    fn stop_overflowed(&mut self) {
+        self.stdin = None;
+        ide_core::process::kill_tree(&mut self.child);
+        if self.status.is_none() {
+            self.status = Some(self.child.try_wait().ok().flatten().and_then(|s| s.code()).unwrap_or(-1));
+        }
+    }
 }
 
 /// Which pipe a reader thread drains.
@@ -316,34 +386,100 @@ enum Stream {
 
 impl Proc {
     /// Copies `pipe` into the matching buffer until it closes, keeping the last
-    /// [`MAX_PENDING`] bytes, then notes that the reader finished.
+    /// [`MAX_PENDING`] bytes (in tail mode) or pausing on backpressure (in lossless mode),
+    /// then notes that the reader finished.
     fn read(self: &Arc<Self>, mut pipe: impl Read + Send + 'static, stream: Stream) {
         self.state.lock().readers += 1;
         let this = Arc::clone(self);
         std::thread::spawn(move || {
             let mut buf = [0u8; 8 << 10];
             loop {
+                {
+                    let mut state = this.state.lock();
+                    while state.mode == StreamMode::Lossless
+                        && !state.stopped
+                        && state.overflow_err.is_none()
+                        && match stream {
+                            Stream::Out => {
+                                // While wait_process is active, allow readers to buffer up to max_total
+                                // to prevent pipe write backpressure from hanging the child process.
+                                if state.waiters > 0 {
+                                    state.stdout.len() >= state.max_total
+                                } else {
+                                    state.stdout.len() >= state.buffer_limit
+                                }
+                            }
+                            Stream::Err => {
+                                if state.waiters > 0 {
+                                    state.stderr.len() >= state.max_total
+                                } else {
+                                    state.stderr.len() >= state.buffer_limit
+                                }
+                            }
+                        }
+                    {
+                        this.can_read.wait(&mut state);
+                    }
+                    if state.stopped || state.overflow_err.is_some() {
+                        break;
+                    }
+                }
+
                 match pipe.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         let mut state = this.state.lock();
-                        let out = match stream {
-                            Stream::Out => &mut state.stdout,
-                            Stream::Err => &mut state.stderr,
-                        };
-                        out.extend_from_slice(&buf[..n]);
-                        let over = out.len().saturating_sub(MAX_PENDING);
-                        if over > 0 {
-                            out.drain(..over);
-                            let continuation = out.iter().take_while(|b| (**b & 0xC0) == 0x80).count();
-                            out.drain(..continuation);
+                        if state.stopped || state.overflow_err.is_some() {
+                            break;
+                        }
+                        if state.mode == StreamMode::Lossless {
+                            match stream {
+                                Stream::Out => {
+                                    state.total_stdout = state.total_stdout.saturating_add(n);
+                                    if state.total_stdout > state.max_total {
+                                        let limit_mib = (state.max_total + (1 << 20) - 1) >> 20;
+                                        state.overflow_err =
+                                            Some(format!("process stdout exceeded {limit_mib} MiB limit"));
+                                        state.stop_overflowed();
+                                        this.can_read.notify_all();
+                                        break;
+                                    }
+                                    state.stdout.extend_from_slice(&buf[..n]);
+                                }
+                                Stream::Err => {
+                                    state.total_stderr = state.total_stderr.saturating_add(n);
+                                    if state.total_stderr > state.max_total {
+                                        let limit_mib = (state.max_total + (1 << 20) - 1) >> 20;
+                                        state.overflow_err =
+                                            Some(format!("process stderr exceeded {limit_mib} MiB limit"));
+                                        state.stop_overflowed();
+                                        this.can_read.notify_all();
+                                        break;
+                                    }
+                                    state.stderr.extend_from_slice(&buf[..n]);
+                                }
+                            }
+                        } else {
+                            let out = match stream {
+                                Stream::Out => &mut state.stdout,
+                                Stream::Err => &mut state.stderr,
+                            };
+                            out.extend_from_slice(&buf[..n]);
+                            let over = out.len().saturating_sub(MAX_PENDING);
+                            if over > 0 {
+                                out.drain(..over);
+                                let continuation = out.iter().take_while(|b| (**b & 0xC0) == 0x80).count();
+                                out.drain(..continuation);
+                            }
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }
             }
-            this.state.lock().readers -= 1;
+            let mut state = this.state.lock();
+            state.readers -= 1;
+            this.can_read.notify_all();
         });
     }
 
@@ -367,6 +503,7 @@ impl Proc {
     /// does nothing.
     fn kill(&self) {
         let mut state = self.state.lock();
+        state.stopped = true;
         state.stdin = None;
         if state.status.is_none() {
             ide_core::process::kill_tree(&mut state.child);
@@ -374,17 +511,23 @@ impl Proc {
                 state.status = Some(status.code().unwrap_or(-1));
             }
         }
+        self.can_read.notify_all();
     }
 
-    /// What it printed since the last call, each stream at most `max` bytes.
-    fn chunk(&self, max: usize) -> ProcessChunk {
+    /// What it printed since the last call, each stream at most `max` bytes. The status
+    /// comes with the last chunk only: once it ended, its pipes reached the end and
+    /// nothing is left to read, so a caller can stop at the first chunk that has one.
+    fn chunk(&self, max: usize) -> Result<ProcessChunk, HostError> {
         let mut state = self.state.lock();
-        let eof = state.readers == 0;
-        ProcessChunk {
-            stdout: take_text(&mut state.stdout, max, eof),
-            stderr: take_text(&mut state.stderr, max, eof),
-            status: state.status,
+        if let Some(err) = state.overflow_err.clone() {
+            return Err(HostError::Failed(err));
         }
+        let eof = state.readers == 0;
+        let stdout = take_text(&mut state.stdout, max, eof);
+        let stderr = take_text(&mut state.stderr, max, eof);
+        let drained = eof && state.stdout.is_empty() && state.stderr.is_empty();
+        self.can_read.notify_all();
+        Ok(ProcessChunk { stdout, stderr, status: state.status.filter(|_| drained) })
     }
 }
 
@@ -538,6 +681,8 @@ pub(super) struct Shared {
     /// (plugin, item id) → item, for windows opened later.
     output: Mutex<BTreeMap<(String, String), String>>,
     decorations: Mutex<BTreeMap<String, Vec<super::DecorationSet>>>,
+    /// plugin → its console highlight rules, in order.
+    console_rules: Mutex<BTreeMap<String, Vec<ide_plugin::ConsoleRule>>>,
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
     setting_snapshots: Mutex<SettingSnapshots>,
     window_status: Mutex<BTreeMap<(String, String, String), StatusItem>>,
@@ -618,6 +763,7 @@ impl Shared {
             status: Mutex::default(),
             output: Mutex::default(),
             decorations: Mutex::default(),
+            console_rules: Mutex::default(),
             window_status: Mutex::default(),
             setting_snapshots: Mutex::default(),
             contexts: Mutex::default(),
@@ -844,6 +990,9 @@ impl Shared {
         if self.decorations.lock().remove(plugin).is_some() {
             self.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: plugin.into(), sets: Vec::new() });
         }
+        if self.console_rules.lock().remove(plugin).is_some() {
+            self.sink.emit(None, PluginEvent::ConsoleRulesChanged { plugin_id: plugin.into(), rules: Vec::new() });
+        }
         self.withdraw_prompts(plugin);
         self.net_prompts.lock().remove(plugin);
         self.session_net_hosts.lock().remove(plugin);
@@ -950,6 +1099,17 @@ impl Shared {
             return false;
         }
         let Some(PromptEntry { answer: Waiter::Command(tx), .. }) = prompts.remove(&id) else { return false };
+        tx.try_send(answer).is_ok()
+    }
+
+    /// The window a [`PluginEvent::ClipboardRequested`] went to answered it.
+    pub fn answer_clipboard(&self, client: &str, id: u64, answer: super::ClipboardAnswer) -> bool {
+        let mut prompts = self.prompts.lock();
+        if !matches!(prompts.get(&id), Some(PromptEntry { client: window, answer: Waiter::Clipboard(_), .. }) if window == client)
+        {
+            return false;
+        }
+        let Some(PromptEntry { answer: Waiter::Clipboard(tx), .. }) = prompts.remove(&id) else { return false };
         tx.try_send(answer).is_ok()
     }
 
@@ -1301,6 +1461,7 @@ pub(super) fn commit_draft(
         };
         // Both callers have checked that the window's project is trusted.
         r.set_execution_allowed(true);
+        r.set_git_executable(workspace.git_executable(&repo.root.0).as_deref());
         let backend = &r as &dyn ide_vcs::Backend;
         let pending = backend
             .pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path)))
@@ -1665,6 +1826,18 @@ impl HostApi for PluginApi {
     fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
         self.set_file_icon_decorations(set, items)
     }
+    fn console_rules(&self, rules: Vec<ide_plugin::ConsoleRule>) -> Result<(), HostError> {
+        let rules = super::console_rules::normalize(rules).map_err(HostError::Invalid)?;
+        let mut all = self.shared.console_rules.lock();
+        if rules.is_empty() {
+            all.remove(self.id());
+        } else {
+            all.insert(self.id().into(), rules.clone());
+        }
+        // Emitted under the lock so replacements cannot arrive out of order.
+        self.shared.sink.emit(None, PluginEvent::ConsoleRulesChanged { plugin_id: self.id().into(), rules });
+        Ok(())
+    }
     fn vcs_log(
         &self,
         root: &Path,
@@ -1888,6 +2061,49 @@ impl HostApi for PluginApi {
         Ok(())
     }
 
+    fn read_clipboard(
+        &self,
+        client: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ide_plugin::ClipboardContent, HostError> {
+        let id = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
+        let (answer, answers) = std::sync::mpsc::sync_channel(1);
+        {
+            let closed = self.shared.closed_clients.lock();
+            let blocked = self.shared.prompts_blocked.lock();
+            if closed.contains(client) || blocked.contains(self.id()) {
+                return Err(HostError::Cancelled);
+            }
+            self.shared.prompts.lock().insert(
+                id,
+                PromptEntry {
+                    plugin: self.id().to_owned(),
+                    client: client.to_owned(),
+                    answer: Waiter::Clipboard(answer),
+                },
+            );
+        }
+        let request_id = id.to_string();
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::ClipboardRequested { plugin_id: self.id().to_owned(), request_id: request_id.clone() },
+        );
+        // A remote window asks the user first, so there is no deadline: the call's own
+        // cancellation, the plugin stopping or the window closing ends the wait.
+        let answer = loop {
+            match answers.recv_timeout(Duration::from_millis(100)) {
+                Ok(answer) => break answer,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !cancel.is_cancelled() => {}
+                Err(_) => {
+                    self.shared.prompts.lock().remove(&id);
+                    self.shared.sink.emit(Some(client), PluginEvent::PromptClosed { prompt_id: request_id });
+                    return Err(HostError::Cancelled);
+                }
+            }
+        };
+        clipboard_content(answer)
+    }
+
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let client = from_window(client, "open a URL")?;
         self.shared.sink.emit(Some(client), PluginEvent::OpenUrl { plugin_id: self.id().to_owned(), url });
@@ -2012,6 +2228,23 @@ impl HostApi for PluginApi {
         self.shared
             .sink
             .emit(None, PluginEvent::StatusItemChanged { plugin_id: self.id().to_owned(), id: id.to_owned(), item });
+    }
+
+    fn check_status_menu(&self, menu: &[ide_plugin::StatusMenuEntry]) -> Result<(), HostError> {
+        let actions: Vec<ide_plugin::NotificationAction> = menu
+            .iter()
+            .filter_map(|entry| match entry {
+                ide_plugin::StatusMenuEntry::Action { label, command, argument, .. } => {
+                    Some(ide_plugin::NotificationAction {
+                        label: label.clone(),
+                        command: command.clone(),
+                        argument: argument.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        check_actions(self, &actions)
     }
 
     fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
@@ -2548,6 +2781,22 @@ impl HostApi for PluginApi {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError> {
+        self.run_process_with_options(cmd, cwd, stdin, cancel, timeout, None)
+    }
+
+    fn run_process_with_options(
+        &self,
+        cmd: ProcessCommand,
+        cwd: Option<&Path>,
+        stdin: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+        options: Option<ProcessOptions>,
+    ) -> Result<ProcessOutput, HostError> {
+        let max_output = options
+            .and_then(|o| o.max_output_bytes)
+            .map(|b| (b as usize).clamp(1 << 10, MAX_ALLOWED_OUTPUT))
+            .unwrap_or(MAX_OUTPUT);
         let binary = self.approved_program_in_project(&cmd.program, cwd.or(cmd.approval_root.as_deref()))?;
         let cwd = self.spawn_dir(cwd);
         let mut command = StdCommand::new(&binary);
@@ -2574,15 +2823,15 @@ impl HostApi for PluginApi {
                 let mut overflow = false;
                 if let Some(p) = pipe {
                     let mut p = p;
-                    let _ = p.by_ref().take((MAX_OUTPUT + 1) as u64).read_to_end(&mut out);
-                    if out.len() > MAX_OUTPUT {
+                    let _ = p.by_ref().take((max_output + 1) as u64).read_to_end(&mut out);
+                    if out.len() > max_output {
                         overflow = true;
-                        out.truncate(MAX_OUTPUT);
+                        out.truncate(max_output);
                     }
                     let _ = std::io::copy(&mut p, &mut std::io::sink());
                 }
                 let mut text = String::from_utf8_lossy(&out).into_owned();
-                let mut end = text.len().min(MAX_OUTPUT);
+                let mut end = text.len().min(max_output);
                 while !text.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -2608,15 +2857,35 @@ impl HostApi for PluginApi {
             std::thread::sleep(Duration::from_millis(10));
         };
         let (stdout, stdout_overflow) = stdout.join().unwrap_or_default();
-        let (stderr, _) = stderr.join().unwrap_or_default();
-        if stdout_overflow {
+        let (stderr, stderr_overflow) = stderr.join().unwrap_or_default();
+        if options.is_some() {
+            // run_captured fails explicitly if either stdout or stderr exceeds the configured limit.
+            if stdout_overflow || stderr_overflow {
+                let stream = match (stdout_overflow, stderr_overflow) {
+                    (true, true) => "stdout and stderr",
+                    (true, false) => "stdout",
+                    (false, true) => "stderr",
+                    (false, false) => unreachable!(),
+                };
+                let limit_mib = (max_output + (1 << 20) - 1) >> 20;
+                tracing::warn!(
+                    plugin = %self.id(),
+                    program = %cmd.program,
+                    limit_mib,
+                    "process {stream} exceeded limit"
+                );
+                return Err(HostError::Failed(format!("{} {stream} exceeded {} MiB limit", cmd.program, limit_mib)));
+            }
+        } else if stdout_overflow {
+            // Documented legacy behavior for run / run-command: stdout overflow fails, but
+            // stderr overflow is silently truncated to 16 MiB.
             tracing::warn!(
                 plugin = %self.id(),
                 program = %cmd.program,
-                limit_mib = MAX_OUTPUT >> 20,
+                limit_mib = (max_output >> 20),
                 "process stdout exceeded limit"
             );
-            return Err(HostError::Failed(format!("{} stdout exceeded {} MiB limit", cmd.program, MAX_OUTPUT >> 20)));
+            return Err(HostError::Failed(format!("{} stdout exceeded 16 MiB limit", cmd.program)));
         }
         Ok(ProcessOutput { status: status.code(), stdout, stderr })
     }
@@ -2641,6 +2910,16 @@ impl HostApi for PluginApi {
         }
     }
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError> {
+        self.start_process_stream(cmd, cwd, client, None)
+    }
+
+    fn start_process_stream(
+        &self,
+        cmd: ProcessCommand,
+        cwd: Option<&Path>,
+        client: Option<&str>,
+        options: Option<ProcessOptions>,
+    ) -> Result<u64, HostError> {
         let binary = self.approved_program_in_project(&cmd.program, cwd.or(cmd.approval_root.as_deref()))?;
         let cwd = self.spawn_dir(cwd);
         if client.is_some_and(|c| self.shared.closed_clients.lock().contains(c)) {
@@ -2670,8 +2949,21 @@ impl HostApi for PluginApi {
             .spawn()
             .map_err(|e| HostError::Failed(format!("{}: {e}", binary.display())))?;
         let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+        let (mode, buffer_limit, max_total) = match options {
+            Some(opts) => {
+                let buf =
+                    opts.buffer_bytes.map(|b| (b as usize).clamp(4 << 10, 4 << 20)).unwrap_or(DEFAULT_STREAM_BUFFER);
+                let total = opts
+                    .max_output_bytes
+                    .map(|b| (b as usize).clamp(1 << 20, MAX_ALLOWED_OUTPUT))
+                    .unwrap_or(DEFAULT_STREAM_MAX_TOTAL);
+                (StreamMode::Lossless, buf, total)
+            }
+            None => (StreamMode::Tail, MAX_PENDING, usize::MAX),
+        };
         let proc = Arc::new(Proc {
             client: client.map(str::to_owned),
+            can_read: parking_lot::Condvar::new(),
             state: Mutex::new(ProcState {
                 stdin: child.stdin.take(),
                 child,
@@ -2679,6 +2971,14 @@ impl HostApi for PluginApi {
                 stderr: Vec::new(),
                 status: None,
                 readers: 0,
+                waiters: 0,
+                mode,
+                buffer_limit,
+                max_total,
+                total_stdout: 0,
+                total_stderr: 0,
+                overflow_err: None,
+                stopped: false,
             }),
         });
         if let Some(pipe) = stdout {
@@ -2702,7 +3002,7 @@ impl HostApi for PluginApi {
     fn poll_process(&self, id: u64, max: usize) -> Result<ProcessChunk, HostError> {
         let proc = self.process(id)?;
         proc.reap()?;
-        Ok(proc.chunk(max))
+        proc.chunk(max)
     }
 
     fn write_process(
@@ -2782,13 +3082,32 @@ impl HostApi for PluginApi {
         cancel: &CancellationToken,
     ) -> Result<ProcessChunk, HostError> {
         let proc = self.process(id)?;
+        // Track active waiters and wake reader threads so lossless streams continue
+        // draining into the retained buffer up to max_total without pipe deadlock.
+        struct WaitGuard<'a>(&'a Proc);
+        impl Drop for WaitGuard<'_> {
+            fn drop(&mut self) {
+                let mut state = self.0.state.lock();
+                state.waiters = state.waiters.saturating_sub(1);
+                self.0.can_read.notify_all();
+            }
+        }
+        let _guard = {
+            let mut state = proc.state.lock();
+            state.waiters += 1;
+            proc.can_read.notify_all();
+            WaitGuard(&proc)
+        };
         let deadline = Instant::now() + timeout;
         loop {
             proc.reap()?;
-            let (ended, readers) = {
+            let (ended, readers, overflow) = {
                 let state = proc.state.lock();
-                (state.status.is_some(), state.readers)
+                (state.status.is_some(), state.readers, state.overflow_err.clone())
             };
+            if let Some(err) = overflow {
+                return Err(HostError::Failed(err));
+            }
             // Its output is only complete once its pipes reached the end too.
             if ended && readers == 0 {
                 break;
@@ -2801,7 +3120,7 @@ impl HostApi for PluginApi {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        Ok(proc.chunk(max))
+        proc.chunk(max)
     }
 
     fn task_begin(&self, client: Option<&str>, title: String, cancellable: bool, cancel: CancellationToken) -> u64 {
@@ -2937,6 +3256,10 @@ impl HostApi for PluginApi {
         let files = data.join("files");
         ide_vfs::create_private_dir(&files).map_err(failed)?;
         dunce::canonicalize(files).map_err(failed)
+    }
+
+    fn install_dir(&self) -> Result<PathBuf, HostError> {
+        dunce::canonicalize(&self.pkg.dir).map_err(failed)
     }
 
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
@@ -3192,6 +3515,7 @@ impl PluginWorkspace for HostWorkspace {
             scope: ide_search::SearchScope::Project,
             max_matches: limit.min(10_000).saturating_add(1),
             context: Default::default(),
+            include_excluded: false,
         };
         query.exclude.extend(project.search_excludes());
         let files = Mutex::new(Vec::new());
@@ -3403,6 +3727,10 @@ impl PluginWorkspace for HostWorkspace {
     fn trusted(&self, root: &Path) -> bool {
         // A workspace member is as trusted as the group's project it was opened with.
         HostWorkspace::project_covering(self, root).is_some_and(|p| p.is_trusted())
+    }
+
+    fn git_executable(&self, root: &Path) -> Option<PathBuf> {
+        HostWorkspace::project_covering(self, root)?.git_executable()
     }
 
     fn project_of(&self, window: &str) -> Option<PathBuf> {
@@ -3626,6 +3954,19 @@ mod tests {
             api.write_bytes_file(&path, b"bytes").unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), b"bytes");
         }
+    }
+
+    #[test]
+    fn install_dir_is_the_canonical_package_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("acme.lint");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("readme.pdf"), b"%PDF").unwrap();
+        let api = api(&pkg, Arc::default());
+        let install = api.install_dir().unwrap();
+        assert_eq!(install, dunce::canonicalize(&pkg).unwrap());
+        assert!(install.join("readme.pdf").is_file());
+        assert_ne!(install, api.plugin_dir().unwrap());
     }
 
     #[test]
@@ -4006,6 +4347,202 @@ mod tests {
         api.release_process(id);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_status_comes_with_the_last_of_the_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = shell_api(tmp.path());
+        let token = CancellationToken::new();
+        let id = api.start_process(shell("printf 'abcdefghij'; printf 'xyz' >&2"), None, None).unwrap();
+        let first = api.wait_process(id, 4, Duration::from_secs(5), &token).unwrap();
+        assert_eq!((first.stdout.as_str(), first.stderr.as_str(), first.status), ("abcd", "xyz", None));
+        let mut stdout = first.stdout;
+        let status = loop {
+            let chunk = api.poll_process(id, 4).unwrap();
+            stdout.push_str(&chunk.stdout);
+            if let Some(status) = chunk.status {
+                break status;
+            }
+        };
+        assert_eq!((stdout.as_str(), status), ("abcdefghij", 0));
+        api.release_process(id);
+    }
+
+    fn test_proc_api(dir: &Path) -> (PluginApi, impl Fn(&str, &str) -> ProcessCommand) {
+        let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
+        #[cfg(unix)]
+        let (prog, path) = ("sh", PathBuf::from("/bin/sh"));
+        #[cfg(windows)]
+        let (prog, path) = {
+            let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+            ("powershell", PathBuf::from(sysroot).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
+        };
+
+        pins.write().insert(("acme.lint".into(), format!("process:{prog}")), ProgramPin::approve(&path).unwrap());
+        let api = api(dir, pins);
+        let cmd = move |unix_script: &str, win_script: &str| {
+            #[cfg(unix)]
+            {
+                let _ = win_script;
+                ProcessCommand {
+                    program: prog.into(),
+                    args: vec!["-c".into(), unix_script.into()],
+                    env: Vec::new(),
+                    approval_root: None,
+                }
+            }
+            #[cfg(windows)]
+            {
+                let _ = unix_script;
+                ProcessCommand {
+                    program: prog.into(),
+                    args: vec!["-NoProfile".into(), "-Command".into(), win_script.into()],
+                    env: Vec::new(),
+                    approval_root: None,
+                }
+            }
+        };
+        (api, cmd)
+    }
+
+    #[test]
+    fn start_stream_lossless_backpressure_fast_producer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (api, make_cmd) = test_proc_api(tmp.path());
+        let cmd = make_cmd("head -c 65536 /dev/zero | tr '\\0' 'A'", "[Console]::Out.Write('A' * 65536)");
+        let options = ProcessOptions { buffer_bytes: Some(4096), max_output_bytes: Some(1 << 20) };
+        let id = api.start_process_stream(cmd, None, None, Some(options)).unwrap();
+        let mut total_out = String::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            let chunk = api.poll_process(id, 1024).unwrap();
+            total_out.push_str(&chunk.stdout);
+            if let Some(status) = chunk.status {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for process completion");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(status, 0);
+        assert_eq!(total_out.len(), 65536);
+        assert!(total_out.chars().all(|c| c == 'A'));
+        api.release_process(id);
+    }
+
+    #[test]
+    fn start_stream_dual_stream_concurrency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (api, make_cmd) = test_proc_api(tmp.path());
+        let cmd = make_cmd(
+            "head -c 10000 /dev/zero | tr '\\0' 'O'; head -c 10000 /dev/zero | tr '\\0' 'E' >&2",
+            "[Console]::Out.Write('O' * 10000); [Console]::Error.Write('E' * 10000)",
+        );
+        let options = ProcessOptions { buffer_bytes: Some(4096), max_output_bytes: Some(1 << 20) };
+        let id = api.start_process_stream(cmd, None, None, Some(options)).unwrap();
+        let mut total_stdout = String::new();
+        let mut total_stderr = String::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            let chunk = api.poll_process(id, 1024).unwrap();
+            total_stdout.push_str(&chunk.stdout);
+            total_stderr.push_str(&chunk.stderr);
+            if let Some(status) = chunk.status {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for dual streams");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(status, 0);
+        assert_eq!(total_stdout.len(), 10000);
+        assert_eq!(total_stderr.len(), 10000);
+        assert!(total_stdout.chars().all(|c| c == 'O'));
+        assert!(total_stderr.chars().all(|c| c == 'E'));
+        api.release_process(id);
+    }
+
+    #[test]
+    fn start_stream_total_limit_overflow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (api, make_cmd) = test_proc_api(tmp.path());
+        let cmd = make_cmd("head -c 2097152 /dev/zero | tr '\\0' 'X'", "[Console]::Out.Write('X' * 2097152)");
+        let options = ProcessOptions { buffer_bytes: Some(4096), max_output_bytes: Some(1 << 20) };
+        let id = api.start_process_stream(cmd, None, None, Some(options)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut err = None;
+        while Instant::now() < deadline {
+            match api.poll_process(id, 65536) {
+                Ok(chunk) => {
+                    if chunk.status.is_some() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let err = err.expect("expected overflow error");
+        assert!(matches!(err, HostError::Failed(ref msg) if msg.contains("exceeded 1 MiB limit")), "{err}");
+        api.release_process(id);
+    }
+
+    #[test]
+    fn run_captured_configurable_limits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (api, make_cmd) = test_proc_api(tmp.path());
+        let token = CancellationToken::new();
+        let cmd = make_cmd("head -c 2097152 /dev/zero | tr '\\0' 'Z'", "[Console]::Out.Write('Z' * 2097152)");
+        let opts_ok = ProcessOptions { max_output_bytes: Some(4 << 20), buffer_bytes: None };
+        let out = api
+            .run_process_with_options(cmd.clone(), None, None, &token, Duration::from_secs(10), Some(opts_ok))
+            .unwrap();
+        assert_eq!(out.status, Some(0));
+        assert_eq!(out.stdout.len(), 2097152);
+
+        let opts_fail = ProcessOptions { max_output_bytes: Some(1 << 20), buffer_bytes: None };
+        let err = api
+            .run_process_with_options(cmd, None, None, &token, Duration::from_secs(10), Some(opts_fail))
+            .unwrap_err();
+        assert!(matches!(err, HostError::Failed(ref msg) if msg.contains("stdout exceeded 1 MiB limit")), "{err}");
+
+        // Stderr overflow in run_captured also fails explicitly
+        let cmd_err = make_cmd("head -c 2097152 /dev/zero >&2", "[Console]::Error.Write('E' * 2097152)");
+        let err = api
+            .run_process_with_options(cmd_err, None, None, &token, Duration::from_secs(10), Some(opts_fail))
+            .unwrap_err();
+        assert!(matches!(err, HostError::Failed(ref msg) if msg.contains("stderr exceeded 1 MiB limit")), "{err}");
+    }
+
+    #[test]
+    fn start_stream_wait_drains_producer_larger_than_buffer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (api, make_cmd) = test_proc_api(tmp.path());
+        let token = CancellationToken::new();
+        // Emits 64 KiB, which is 16x larger than the 4 KiB buffer. Calling wait drains without blocking on pipe.
+        let cmd = make_cmd("head -c 65536 /dev/zero | tr '\\0' 'W'", "[Console]::Out.Write('W' * 65536)");
+        let options = ProcessOptions { buffer_bytes: Some(4096), max_output_bytes: Some(1 << 20) };
+        let id = api.start_process_stream(cmd, None, None, Some(options)).unwrap();
+        let chunk = api.wait_process(id, 100_000, Duration::from_secs(10), &token).unwrap();
+        assert_eq!(chunk.status, Some(0));
+        assert_eq!(chunk.stdout.len(), 65536);
+        assert!(chunk.stdout.chars().all(|c| c == 'W'));
+        api.release_process(id);
+    }
+
+    #[test]
+    fn start_stream_cancellation_terminates_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (api, make_cmd) = test_proc_api(tmp.path());
+        let cmd = make_cmd("sleep 60", "Start-Sleep -Seconds 60");
+        let id = api.start_process_stream(cmd, None, None, None).unwrap();
+        let proc = api.process(id).unwrap();
+        api.kill_process(id).unwrap();
+        assert!(proc.state.lock().child.try_wait().unwrap().is_some());
+        api.release_process(id);
+    }
+
     #[test]
     fn programs_run_only_as_approved() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4200,8 +4737,12 @@ impl PluginApi {
     /// no upstream. The other reads use [`Self::read_repo`] and never execute.
     fn repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
         let repo = ide_vcs::Repo::discover(root).map_err(failed)?;
-        if let Some(repo) = &repo {
-            repo.set_execution_allowed(self.shared.workspace().is_some_and(|w| w.trusted(root)));
+        if let Some(repo) = &repo
+            && let Some(workspace) = self.shared.workspace()
+            && workspace.trusted(root)
+        {
+            repo.set_execution_allowed(true);
+            repo.set_git_executable(workspace.git_executable(root).as_deref());
         }
         Ok(repo)
     }
@@ -4356,6 +4897,9 @@ fn decoration_style(style: &str) -> bool {
 impl Shared {
     pub(super) fn decoration_sets(&self) -> BTreeMap<String, Vec<super::DecorationSet>> {
         self.decorations.lock().clone()
+    }
+    pub(super) fn console_rules(&self) -> BTreeMap<String, Vec<ide_plugin::ConsoleRule>> {
+        self.console_rules.lock().clone()
     }
 }
 
@@ -4526,6 +5070,34 @@ mod workbench_tests {
         assert!(api.file_icon_decorations("icons", vec![(path.clone(), "BAD ID".into())]).is_err());
         api.shared.clear_plugin("test", true);
         assert!(api.shared.decoration_sets().is_empty());
+    }
+    #[test]
+    fn console_rules_replace_keep_the_last_valid_list_and_go_with_the_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), false, None);
+        let rule = |pattern: &str| ide_plugin::ConsoleRule {
+            pattern: pattern.into(),
+            ignore_case: false,
+            foreground: Some("bright-yellow".into()),
+            background: Some("navy".into()),
+            styles: vec!["bold".into()],
+            whole_line: true,
+            enabled: true,
+        };
+        // No capability, and no trusted project, is needed: the rules read nothing.
+        api.console_rules(vec![rule(r"\[AUDIT\]"), rule(r"JOB-\d+")]).unwrap();
+        let rules = &api.shared.console_rules()["test"];
+        assert_eq!(rules.len(), 2);
+        assert_eq!((rules[0].foreground.as_deref(), rules[0].background.as_deref()), (Some("bright-yellow"), None));
+        assert!(matches!(api.console_rules(vec![rule("(a+)+b")]), Err(HostError::Invalid(_))));
+        assert_eq!(api.shared.console_rules()["test"].len(), 2);
+        api.console_rules(vec![rule("x")]).unwrap();
+        assert_eq!(api.shared.console_rules()["test"].len(), 1);
+        api.console_rules(Vec::new()).unwrap();
+        assert!(api.shared.console_rules().is_empty());
+        api.console_rules(vec![rule("x")]).unwrap();
+        api.shared.clear_plugin("test", true);
+        assert!(api.shared.console_rules().is_empty());
     }
     #[test]
     fn decoration_styles_keep_the_severity_palette_the_editor_renders() {

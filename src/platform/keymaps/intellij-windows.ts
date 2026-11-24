@@ -78,6 +78,7 @@ export const intellijWindows: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": ["Ctrl+Shift+Space"],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Ctrl+Right"],
@@ -90,6 +91,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.showIntentions": ["Alt+Enter"],
   "code.applyQuickFix": ["Alt+Shift+Enter"],
   "code.reformat": ["Ctrl+Alt+L"],
+  "code.rearrange": [],
   "code.reformatDialog": ["Ctrl+Alt+Shift+L"],
   "code.optimizeImports": ["Ctrl+Alt+O"],
   "code.commentLine": ["Ctrl+/"],
@@ -322,9 +324,17 @@ export const intellijWindows: Record<string, string[]> = {
   "runAnything.show": ["Ctrl Ctrl"],
   "view.quickSwitchScheme": ["Ctrl+`"],
   "vcs.changelist.move": ["Alt+Shift+M"],
+  "vcs.shelveSilently": ["Ctrl+Shift+H"],
+  "vcs.unshelveSilently": ["Ctrl+Alt+U"],
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Ctrl+Alt+Shift+C"],
   "vcs.log.goToRef": ["Ctrl+F"],
+  "vcs.log.editMessage": ["F2", "Shift+F6"],
+  "vcs.log.newBranch": ["Ctrl+Alt+N"],
+  "vcs.log.goToChild": ["Left"],
+  "vcs.log.goToParent": ["Right"],
+  "vcs.log.toggleBookmark": ["F11"],
+  "vcs.log.toggleBookmarkWithMnemonic": ["Ctrl+F11"],
   // View › Appearance › Zoom IDE
   "view.zoomIn": ["Alt+Shift+="],
   "view.zoomOut": ["Alt+Shift+-"],
@@ -370,6 +380,7 @@ export const intellijWindows: Record<string, string[]> = {
   "db.openValueWindow": [],
   "db.findInValue": ["Ctrl+F"],
   "db.execute": ["Ctrl+Enter"],
+  "python.console.executeSelection": ["Alt+Shift+E"],
   "db.nextResultTab": ["Alt+Right"],
   "db.previousResultTab": ["Alt+Left"],
   // Table editor with pending changes (after `vcs.rollback`, so Ctrl+Alt+Z reverts the table's edits there).
@@ -393,6 +404,8 @@ export const intellijWindows: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Agents task list (when it has focus)
+  "agents.archiveTasks": ["Ctrl+Shift+E"],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
   "db.openConsole": ["Ctrl+Shift+Q"],
   "db.newDataSource": [],

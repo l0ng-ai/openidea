@@ -72,6 +72,86 @@ pub(crate) mod syntax_bindings {
     });
 }
 
+/// The optional `hover-actions` export, bound on its own when present.
+pub(crate) mod hover_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "plugin-hover-actions",
+        path: "../../wit",
+        imports: { default: trappable },
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/log": super::bindings::openidea::plugin::log,
+            "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
+            "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+            "openidea:plugin/events": super::bindings::openidea::plugin::events,
+            "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/net": super::bindings::openidea::plugin::net,
+            "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+            "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
+            "openidea:plugin/views": super::bindings::openidea::plugin::views,
+            "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
+        },
+    });
+}
+
+/// The optional `completion-list-provider` export (API 1.16), bound on its own when present.
+pub(crate) mod completion_list_bindings {
+    wasmtime::component::bindgen!({
+        world: "plugin-completion-list",
+        path: "../../wit",
+        imports: { default: trappable },
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/log": super::bindings::openidea::plugin::log,
+            "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
+            "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+            "openidea:plugin/events": super::bindings::openidea::plugin::events,
+            "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/net": super::bindings::openidea::plugin::net,
+            "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+            "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
+            "openidea:plugin/views": super::bindings::openidea::plugin::views,
+            "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
+        },
+    });
+}
+
 /// The optional `providers` export.
 pub(crate) mod providers_bindings {
     wasmtime::component::bindgen!({
@@ -273,11 +353,11 @@ impl StoreData {
 
     /// `path` as the real path an `fs.read:…` grant covers, or what the plugin
     /// should be told instead (`denied` naming the capability to declare).
+    /// The private plugin-dir and the install directory are readable without a
+    /// grant; writing still needs `fs.write` or the private dir.
     fn granted_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
         let mut granted = self.granted.clone();
-        if let Ok(dir) = self.host.plugin_dir() {
-            granted.push(Capability::FsRead(to_ipc(&dir)));
-        }
+        granted.extend(self.builtin_read_roots());
         sandbox::resolve_granted(&granted, path).map_err(Into::into)
     }
 
@@ -289,6 +369,19 @@ impl StoreData {
             granted.push(Capability::FsWrite(to_ipc(&dir)));
         }
         sandbox::resolve_writable(&granted, path).map_err(Into::into)
+    }
+
+    /// Private plugin-dir and install directory: readable without an `fs.read`
+    /// grant; `editor.open` / `open-location` may use them without project.read.
+    fn builtin_read_roots(&self) -> Vec<Capability> {
+        let mut roots = Vec::new();
+        if let Ok(dir) = self.host.plugin_dir() {
+            roots.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        if let Ok(dir) = self.host.install_dir() {
+            roots.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        roots
     }
 
     fn client(&self) -> Option<&str> {
@@ -353,7 +446,7 @@ impl StoreData {
     /// their window; background and scheduled calls ask nobody, so only an
     /// already-allowed host connects there.
     fn ask_net(&mut self, host: &str) -> Result<Option<bool>, wit::Error> {
-        let client = self.net_interactive.then(|| self.invocation.client.clone()).flatten();
+        let client = self.user_invoked.then(|| self.invocation.client.clone()).flatten();
         let subject = self.subject.clone();
         let started = Instant::now();
         let answer = self.host.net_ask(&subject, client.as_deref(), host, &self.cancel.token());
@@ -387,6 +480,22 @@ impl StoreData {
         self.ask(Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple })
     }
 
+    /// A status item with its checked menu (`ui.set-status-item-menu`).
+    fn status_item_with_menu(
+        &self,
+        item: ui::StatusItem,
+        menu: Vec<ui::StatusMenuEntry>,
+    ) -> Result<StatusItem, wit::Error> {
+        let menu = status_menu(menu)?;
+        self.host.check_status_menu(&menu).map_err(to_wit)?;
+        Ok(StatusItem {
+            text: clip(item.text, MAX_STATUS_TEXT),
+            tooltip: item.tooltip.map(|t| clip(t, 1024)),
+            command: item.command.map(|c| clip(c, 128)),
+            menu,
+        })
+    }
+
     fn require_window(&self) -> Result<(), wit::Error> {
         self.require_interactive()?;
         if self.invocation.client.is_none() {
@@ -402,6 +511,47 @@ impl StoreData {
         }
         Err(wit::Error::Invalid("can only ask the user from a command or event".into()))
     }
+}
+
+/// Checks a status item's menu (`ui.set-status-item-menu`); the host checks that its commands are declared.
+fn status_menu(entries: Vec<ui::StatusMenuEntry>) -> Result<Vec<crate::StatusMenuEntry>, wit::Error> {
+    const MAX_ENTRIES: usize = 64;
+    if entries.len() > MAX_ENTRIES {
+        return Err(wit::Error::Invalid(format!("a status item menu has at most {MAX_ENTRIES} entries")));
+    }
+    let line = |text: &str, what: &str| {
+        if text.trim().is_empty() || text.len() > 256 || text.chars().any(char::is_control) {
+            Err(wit::Error::Invalid(format!("invalid menu {what} {text:?}")))
+        } else {
+            Ok(())
+        }
+    };
+    let mut checked = Vec::with_capacity(entries.len());
+    for entry in entries {
+        checked.push(match entry {
+            ui::StatusMenuEntry::Action(a) => {
+                line(&a.label, "label")?;
+                if let Some(description) = &a.description {
+                    line(description, "description")?;
+                }
+                if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+                    return Err(wit::Error::Invalid("a menu argument is limited to 64 KiB".into()));
+                }
+                crate::StatusMenuEntry::Action {
+                    label: a.label,
+                    description: a.description,
+                    command: a.command,
+                    argument: a.argument,
+                }
+            }
+            ui::StatusMenuEntry::Separator => crate::StatusMenuEntry::Separator,
+            ui::StatusMenuEntry::Header(label) => {
+                line(&label, "header")?;
+                crate::StatusMenuEntry::Header { label }
+            }
+        });
+    }
+    Ok(checked)
 }
 
 /// Checks `ui.notify` buttons; the host checks that their commands are declared.
@@ -473,6 +623,7 @@ impl ui::Host for StoreData {
             text: clip(item.text, MAX_STATUS_TEXT),
             tooltip: item.tooltip.map(|t| clip(t, 1024)),
             command: item.command.map(|c| clip(c, 128)),
+            menu: Vec::new(),
         };
         self.host.status_item(&clip(id, 64), Some(item));
         Ok(())
@@ -491,6 +642,38 @@ impl ui::Host for StoreData {
             text: clip(item.text, MAX_STATUS_TEXT),
             tooltip: item.tooltip.map(|t| clip(t, 1024)),
             command: item.command.map(|c| clip(c, 128)),
+            menu: Vec::new(),
+        };
+        Ok(self
+            .host
+            .window_status_item(self.invocation.client.as_deref().expect("checked"), &clip(id, 64), Some(item))
+            .map_err(to_wit))
+    }
+    fn set_status_item_menu(
+        &mut self,
+        id: String,
+        item: ui::StatusItem,
+        menu: Vec<ui::StatusMenuEntry>,
+    ) -> Fallible<()> {
+        let item = match self.status_item_with_menu(item, menu) {
+            Ok(item) => item,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.host.status_item(&clip(id, 64), Some(item));
+        Ok(Ok(()))
+    }
+    fn set_window_status_item_menu(
+        &mut self,
+        id: String,
+        item: ui::StatusItem,
+        menu: Vec<ui::StatusMenuEntry>,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let item = match self.status_item_with_menu(item, menu) {
+            Ok(item) => item,
+            Err(e) => return Ok(Err(e)),
         };
         Ok(self
             .host
@@ -505,6 +688,21 @@ impl ui::Host for StoreData {
             .host
             .window_status_item(self.invocation.client.as_deref().expect("checked"), &clip(id, 64), None)
             .map_err(to_wit))
+    }
+    fn set_console_rules(&mut self, rules: Vec<ui::ConsoleRule>) -> Fallible<()> {
+        let rules = rules
+            .into_iter()
+            .map(|r| crate::ConsoleRule {
+                pattern: r.pattern,
+                ignore_case: r.ignore_case,
+                foreground: r.foreground,
+                background: r.background,
+                styles: r.styles,
+                whole_line: r.whole_line,
+                enabled: r.enabled,
+            })
+            .collect();
+        Ok(self.host.console_rules(rules).map_err(to_wit))
     }
     fn set_context(&mut self, key: String, value: ui::ContextValue) -> Fallible<()> {
         let valid_key =
@@ -542,6 +740,37 @@ impl ui::Host for StoreData {
         }
         let client = self.invocation.client.clone();
         Ok(self.host.copy_to_clipboard(client.as_deref(), clip(text, crate::runtime::MAX_TEXT)).map_err(to_wit))
+    }
+
+    fn read_clipboard(&mut self) -> Fallible<ui::ClipboardContent> {
+        if let Err(e) = self.require(Capability::ClipboardRead) {
+            return Ok(Err(e));
+        }
+        // Never unattended: not from an event handler, a web view message or a command
+        // another plugin ran through `command-runner` (its chain is not empty).
+        let client = match &self.invocation.client {
+            Some(client) if self.user_invoked && self.invocation.command_chain.is_empty() => client.clone(),
+            _ => {
+                let why = "clipboard.read (only in a command or view action the user ran)";
+                return Ok(Err(wit::Error::Denied(why.into())));
+            }
+        };
+        let started = Instant::now();
+        let content = self.host.read_clipboard(&client, &self.cancel.token());
+        // The window may ask the user first: the wait doesn't count against the call's budget.
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        let content = match content {
+            Ok(content) => content,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        let max = crate::runtime::MAX_CLIPBOARD_BYTES;
+        if content.text.as_ref().is_some_and(|t| t.len() > max) || content.image.as_ref().is_some_and(|i| i.len() > max)
+        {
+            return Ok(Err(wit::Error::Failed(format!("the clipboard holds more than {} MiB", max >> 20))));
+        }
+        Ok(Ok(ui::ClipboardContent { text: content.text, image: content.image }))
     }
 
     fn open_url(&mut self, url: String) -> Fallible<()> {
@@ -968,9 +1197,7 @@ impl StoreData {
         sandbox::resolve_in_root(root, path).map_err(wit::Error::Invalid)
     }
     fn openable_path(&self, path: &str) -> Result<PathBuf, wit::Error> {
-        if let Ok(dir) = self.host.plugin_dir()
-            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], path)
-        {
+        if let Ok(real) = sandbox::resolve_granted(&self.builtin_read_roots(), path) {
             return Ok(real);
         }
         self.require(Capability::ProjectRead)?;
@@ -1675,6 +1902,10 @@ fn to_output(output: crate::types::ProcessOutput) -> process::Output {
     process::Output { status: output.status, stdout: output.stdout, stderr: output.stderr }
 }
 
+fn to_process_options(opts: process::ProcessOptions) -> crate::types::ProcessOptions {
+    crate::types::ProcessOptions { max_output_bytes: opts.max_output_bytes, buffer_bytes: opts.buffer_bytes }
+}
+
 impl process::Host for StoreData {
     fn run(
         &mut self,
@@ -1724,6 +1955,47 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let id = match self.host.start_process(cmd, cwd.as_deref(), self.invocation.client.as_deref()) {
+            Ok(id) => id,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        self.push(ChildRes { id, host: self.host.clone() }).map(Ok)
+    }
+
+    fn run_captured(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        stdin: Option<String>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<process::Output> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let token = self.cancel.token();
+        let timeout = self.io_timeout();
+        let opts = options.map(to_process_options);
+        let outcome = self.host.run_process_with_options(cmd, cwd.as_deref(), stdin, &token, timeout, opts);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
+    }
+
+    fn start_stream(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<Resource<ChildRes>> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let opts = options.map(to_process_options);
+        let id = match self.host.start_process_stream(cmd, cwd.as_deref(), self.invocation.client.as_deref(), opts) {
             Ok(id) => id,
             Err(e) => return Ok(Err(to_wit(e))),
         };
@@ -1902,9 +2174,7 @@ impl views::Host for StoreData {
     }
 
     fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
-        if let Ok(dir) = self.host.plugin_dir()
-            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], &path)
-        {
+        if let Ok(real) = sandbox::resolve_granted(&self.builtin_read_roots(), &path) {
             if let Err(e) = self.require_interactive() {
                 return Ok(Err(e));
             }
@@ -2137,6 +2407,18 @@ pub(crate) mod inlay_bindings {
 pub(crate) mod endpoints_bindings {
     wasmtime::component::bindgen!({
         world: "endpoints", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
+pub(crate) mod search_bindings {
+    wasmtime::component::bindgen!({
+        world: "search", path: "../../wit",
         with: {
             "openidea:plugin/types": super::bindings::openidea::plugin::types,
             "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,

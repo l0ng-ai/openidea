@@ -17,6 +17,8 @@ import {
 } from "./store";
 import type { SessionSnapshot } from "./session";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
+import type { Settings } from "@/bindings";
 import { buildTheme, mix, parseColor, terminalFont, toHex } from "./theme";
 
 describe("theme", () => {
@@ -198,6 +200,19 @@ describe("terminal keys", () => {
     } finally {
       usePlatform.setState({ os: "macos" });
     }
+  });
+
+  it("pastes on plain Ctrl+V only on Windows", () => {
+    const ctrlV = key({ key: "v", code: "KeyV", ctrlKey: true });
+    try {
+      usePlatform.setState({ os: "windows" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "paste" });
+      usePlatform.setState({ os: "linux" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+    expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
   });
 
   it("keeps Ctrl+C as interrupt on macOS even with a selection", () => {
@@ -410,11 +425,12 @@ describe("terminalFont", () => {
   it("prefers the terminal's fallback over the editor's", () => {
     const font = terminalFont(
       { ...t, fallbackFontFamily: "Sarasa Mono SC" },
-      { ...editor, fallbackFont: "PingFang SC" },
+      { ...editor, fallbackFont: "Source Code Pro" },
       BASE,
     );
     expect(font.family).toContain('"Sarasa Mono SC"');
-    expect(font.family).not.toContain("PingFang SC");
+    // The CJK faces are always named (see the test below), so the editor's pick must not be one.
+    expect(font.family).not.toContain("Source Code Pro");
   });
 
   it("follows the editor's Typography Settings weights with Use editor font", () => {
@@ -443,6 +459,13 @@ describe("terminalFont", () => {
   it("turns the column width into letter spacing", () => {
     expect(terminalFont({ ...t, useEditorFont: false }, editor, BASE).letterSpacing).toBe(0);
     expect(terminalFont({ ...t, useEditorFont: false, columnWidth: 1.5 }, editor, BASE).letterSpacing).toBe(3);
+  });
+  it("names CJK faces after the icon fonts so a wide character keeps two cells", () => {
+    const { family } = terminalFont(t, editor, BASE);
+    // After the icon fonts: they must win their own glyphs, and only CJK falls through to these.
+    expect(family.indexOf('"Microsoft YaHei"')).toBeGreaterThan(family.indexOf('"Symbols Nerd Font"'));
+    expect(family).toContain('"PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC"');
+    expect(family.endsWith(', "Source Han Sans SC", monospace')).toBe(true);
   });
 });
 
@@ -476,6 +499,19 @@ describe("terminal tab titles", () => {
     expect(tabFullTitle(tab, snap(long))).toBe(long);
   });
 
+  it("uses the program's title always or never, per Settings › Terminal", () => {
+    const set = (appTitleAsTabName: string) =>
+      useProject.setState({ settings: { terminal: { appTitleAsTabName } } as unknown as Settings });
+    try {
+      set("always");
+      expect(tabTitle(tab, snap("claude", false))).toBe("claude");
+      set("off");
+      expect(tabTitle(tab, snap("vim notes.md"))).toBe("Local");
+    } finally {
+      useProject.setState({ settings: null });
+    }
+  });
+
   it("keeps a name the user gave the tab", () => {
     const renamed = { ...tab, customName: "Server" };
     expect(tabTitle(renamed, snap("top"))).toBe("Server");
@@ -496,6 +532,7 @@ describe("fit scheduling", () => {
     const fit = vi.fn();
     const f = fitScheduler(fit);
     f.schedule();
+    f.schedule();
     vi.advanceTimersToNextFrame();
     expect(fit).toHaveBeenCalledTimes(1);
     for (let i = 0; i < 30; i++) {
@@ -510,6 +547,19 @@ describe("fit scheduling", () => {
     f.cancel();
     vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
     expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a new terminal on the frame schedule until it can measure its grid", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const scheduler = fitScheduler(fit);
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    scheduler.schedule();
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("fits a lone second request after it settles without needing another request", () => {

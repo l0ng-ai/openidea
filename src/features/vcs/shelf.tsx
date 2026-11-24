@@ -4,9 +4,18 @@
  * merge UI), rename and delete.
  */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { choosePaths } from "@/platform/choosePath";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import clsx from "clsx";
 import { create } from "zustand";
-import type { ApplyOutcome, ChangedFile, FileStatus, ShelvedChangeList, ShelfDiffFile } from "@/bindings";
+import type {
+  ApplyOutcome,
+  ChangedFile,
+  ChangelistState,
+  FileStatus,
+  ShelvedChangeList,
+  ShelfDiffFile,
+} from "@/bindings";
 import { setContext } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
 import { openDiff, openVcsDiff, withChain, type DiffData } from "./diffInput";
@@ -14,7 +23,21 @@ import { showCreatePatchForShelf } from "./patches";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { Checkbox, Dialog, Icon, IconButton, Input, Select, Tree, fileIconName, showContextMenu, T } from "@/ui";
+import {
+  Checkbox,
+  Dialog,
+  Icon,
+  IconButton,
+  Input,
+  Select,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Tree,
+  fileIconName,
+  showContextMenu,
+  T,
+} from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { groupOf } from "./changes";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
@@ -38,6 +61,7 @@ import { conflictedFiles, currentRepo, refreshNow, useVcs } from "./store";
 import { repositoryPath } from "./repositoryPaths";
 import styles from "./common.module.css";
 import viewStyles from "./CommitView.module.css";
+import shelfStyles from "./Shelf.module.css";
 import { tx } from "@/platform/i18n";
 
 interface ShelfState {
@@ -88,6 +112,13 @@ export function defaultChangeFiles(paths?: readonly string[]): FileStatus[] {
   );
 }
 
+/** Name a shelf of `list`'s changes gets by default: the list's name once the project has several. */
+function shelfName(state: ChangelistState, list: string): string {
+  return state.lists.length > 1
+    ? (state.lists.find((l) => l.id === list) ?? activeList(state)).name
+    : "Uncommitted changes";
+}
+
 export function shelveChanges(paths?: readonly string[]) {
   const files = defaultChangeFiles(paths);
   if (!files.length) {
@@ -95,8 +126,42 @@ export function shelveChanges(paths?: readonly string[]) {
     return;
   }
   const state = useChangelists.getState().state;
-  const name = state.lists.length > 1 ? activeList(state).name : "Uncommitted changes";
-  openDialog((close) => <ShelveDialog files={files} initialName={name} onClose={close} />);
+  openDialog((close) => <ShelveDialog files={files} initialName={shelfName(state, state.active)} onClose={close} />);
+}
+
+/** IDEA's Shelve Silently: no dialog, one shelf per changelist the changes belong to, named after it. */
+export async function shelveSilently(paths?: readonly string[]) {
+  // Without a dialog to review the files, pick them after unsaved edits reach the disk.
+  await saveAll();
+  await refreshNow();
+  const files = defaultChangeFiles(paths);
+  if (!files.length) {
+    notifications().notify({ group: "vcs", level: "info", title: "No changes to shelve" });
+    return;
+  }
+  const state = useChangelists.getState().state;
+  const byList = new Map<string, string[]>();
+  for (const f of files) {
+    const list = listOf(state, relOf(f.path));
+    const own = byList.get(list);
+    if (own) own.push(stripSlash(f.path));
+    else byList.set(list, [stripSlash(f.path)]);
+  }
+  for (const [list, chosen] of byList) if (!(await shelveFiles(shelfName(state, list), chosen))) return;
+}
+
+async function shelveFiles(name: string, paths: string[]): Promise<ShelvedChangeList | undefined> {
+  const entry = await runOp(tx`Shelve changes “${name}”`, () => call(commands.vcsShelve(name, paths)));
+  void loadShelves().catch(() => undefined);
+  if (!entry) return undefined;
+  notifications().notify({
+    group: "vcs",
+    level: "info",
+    title: `Shelved ${entry.files.length} file${entry.files.length === 1 ? "" : "s"}`,
+    body: entry.name,
+    actions: [{ label: "Show Shelf", run: showShelf }],
+  });
+  return entry;
 }
 
 /** Files of `node` and everything below it. */
@@ -121,6 +186,7 @@ function ChangeChecklist<F>({
   selected,
   onChange,
   label,
+  className,
 }: {
   files: readonly F[];
   keyOf: (f: F) => string;
@@ -132,6 +198,7 @@ function ChangeChecklist<F>({
   selected: ReadonlySet<string>;
   onChange: (next: Set<string>) => void;
   label: string;
+  className?: string;
 }) {
   const tree: FileTreeNode<F>[] = [
     { key: "r:", name: rootName, file: null, children: buildFileTree(files, relPath), count: files.length },
@@ -148,7 +215,7 @@ function ChangeChecklist<F>({
     onChange(next);
   };
   return (
-    <div className={styles.fileTree}>
+    <div className={clsx(styles.fileTree, className)}>
       <Tree<FileTreeNode<F>>
         roots={tree}
         getKey={(n) => n.key}
@@ -163,6 +230,7 @@ function ChangeChecklist<F>({
         renderNode={(n) => {
           const below = filesBelow(n);
           const on = below.filter((f) => selected.has(keyOf(f))).length;
+          const path = n.file ? relPath(n.file) : undefined;
           return (
             <span className={styles.fileTreeRow}>
               <Checkbox
@@ -172,8 +240,8 @@ function ChangeChecklist<F>({
                 indeterminate={on > 0 && on < below.length}
                 onChange={() => toggle(n)}
               />
-              <Icon name={n.file ? fileIconName(n.name, relPath(n.file)) : "folder"} size={14} />
-              <span className={styles.fileName} style={{ color: n.file ? colorOf(n.file) : undefined }}>
+              <Icon name={path === undefined ? "folder" : fileIconName(n.name, path)} size={14} />
+              <span className={styles.fileName} style={{ color: n.file ? colorOf(n.file) : undefined }} title={path}>
                 {n.name}
               </span>
               <span className={styles.fileDir}>{n.file ? (detailOf?.(n.file) ?? "") : fileCount(n.count)}</span>
@@ -191,11 +259,13 @@ export function FileChecklist({
   selected,
   onChange,
   label,
+  className,
 }: {
   files: readonly FileStatus[];
   selected: ReadonlySet<string>;
   onChange: (next: Set<string>) => void;
   label: string;
+  className?: string;
 }) {
   const root = useVcs((s) => s.root) ?? "";
   return (
@@ -208,6 +278,7 @@ export function FileChecklist({
       selected={selected}
       onChange={onChange}
       label={label}
+      className={className}
     />
   );
 }
@@ -227,16 +298,7 @@ function ShelveDialog({
     if (!chosen.length || !name.trim()) return;
     onClose();
     await saveAll();
-    const entry = await runOp(tx`Shelve changes “${name.trim()}”`, () => call(commands.vcsShelve(name.trim(), chosen)));
-    if (!entry) return;
-    void loadShelves().catch(() => undefined);
-    notifications().notify({
-      group: "vcs",
-      level: "info",
-      title: `Shelved ${entry.files.length} file${entry.files.length === 1 ? "" : "s"}`,
-      body: entry.name,
-      actions: [{ label: "Show Shelf", run: showShelf }],
-    });
+    await shelveFiles(name.trim(), chosen);
   };
   return (
     <Dialog
@@ -271,17 +333,25 @@ function ShelveDialog({
 }
 
 /** Opens the merge UI for conflicts an apply left, or reports success. */
-export async function reportApply(outcome: ApplyOutcome, what: string) {
+export async function reportApply(
+  outcome: ApplyOutcome,
+  what: string,
+  repositories?: string[],
+  afterRefresh?: () => Promise<void>,
+) {
   await refreshNow();
-  if (outcome.conflicts.length || conflictedFiles().length) {
+  await afterRefresh?.();
+  if (outcome.conflicts.length || (!repositories && conflictedFiles().length)) {
+    const resolve = () =>
+      repositories ? executeAction("vcs.resolveConflicts", { repositories }) : executeAction("vcs.resolveConflicts");
     notifications().notify({
       group: "vcs",
       level: "warning",
       title: `${what}: ${outcome.conflicts.length} file${outcome.conflicts.length === 1 ? "" : "s"} with conflicts`,
       body: outcome.conflicts.slice(0, 3).join(", "),
-      actions: [{ label: "Resolve…", run: () => void executeAction("vcs.resolveConflicts") }],
+      actions: [{ label: "Resolve…", run: () => void resolve() }],
     });
-    void executeAction("vcs.resolveConflicts");
+    void resolve();
     return;
   }
   const n = outcome.applied.length;
@@ -304,11 +374,38 @@ async function unshelveFiles(entry: ShelvedChangeList, paths: readonly string[],
   return outcome;
 }
 
+/** Unshelves `paths` of `entry` into the `target` changelist. */
+async function applyShelf(entry: ShelvedChangeList, paths: readonly string[], remove: boolean, target: string) {
+  const outcome = await runOp(tx`Unshelve “${entry.name}”`, () => unshelveFiles(entry, paths, remove), {
+    refresh: false,
+  });
+  await refreshNow();
+  void loadShelves().catch(() => undefined);
+  if (!outcome) return;
+  const base = shelfPathBase(entry);
+  const rels = [...outcome.applied, ...outcome.conflicts].map((p) => relOf(repositoryPath(base, p)));
+  updateChangelists((s) => moveFiles(s, rels, target));
+  await reportApply(outcome, `Unshelved “${entry.name}”`);
+}
+
+/**
+ * IDEA's Unshelve Silently: no dialog; into the changelist named like the shelf, else the active one,
+ * removing applied files from the shelf as the Shelf setting says.
+ */
+export async function unshelveSilently(entry: ShelvedChangeList, path?: string) {
+  const paths = path === undefined ? entry.files.map((f) => f.path) : [path];
+  if (!paths.length) return;
+  const state = useChangelists.getState().state;
+  const target = state.lists.find((l) => l.name === entry.name)?.id ?? state.active;
+  await saveAll();
+  await applyShelf(entry, paths, workflowSettings().vcs.shelf.removeApplied, target);
+}
+
 function UnshelveDialog({ entry, path, onClose }: { entry: ShelvedChangeList; path?: string; onClose: () => void }) {
   const lists = useChangelists((s) => s.state);
   const [target, setTarget] = useState(lists.active);
   const [remove, setRemove] = useState(() => workflowSettings().vcs.shelf.removeApplied);
-  const repo = shelfRepository(entry);
+  const base = shelfPathBase(entry);
   const files = useMemo<ChangedFile[]>(() => {
     if (path === undefined) return entry.files;
     const own = entry.files.filter((f) => f.path === path);
@@ -316,21 +413,13 @@ function UnshelveDialog({ entry, path, onClose }: { entry: ShelvedChangeList; pa
   }, [entry, path]);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set(files.map((f) => f.path)));
   const projectRoot = useVcs((s) => s.root);
-  const root = repo ?? projectRoot ?? "";
+  const root = base ?? projectRoot ?? "";
   const run = async () => {
     const chosen = files.filter((f) => selected.has(f.path)).map((f) => f.path);
     if (!chosen.length) return;
     onClose();
     await saveAll();
-    const outcome = await runOp(tx`Unshelve “${entry.name}”`, () => unshelveFiles(entry, chosen, remove), {
-      refresh: false,
-    });
-    if (!outcome) return;
-    await refreshNow();
-    const rels = [...outcome.applied, ...outcome.conflicts].map((p) => relOf(repositoryPath(repo, p)));
-    updateChangelists((s) => moveFiles(s, rels, target));
-    void loadShelves().catch(() => undefined);
-    await reportApply(outcome, `Unshelved “${entry.name}”`);
+    await applyShelf(entry, chosen, remove, target);
   };
   return (
     <Dialog
@@ -402,7 +491,7 @@ export async function renameShelf(entry: ShelvedChangeList) {
 
 export async function copyShelfPatch(entry: ShelvedChangeList, path?: string) {
   try {
-    await writeClipboardText(await call(commands.vcsShelfPatch(entry.id, path ?? null)));
+    await writeClipboardText(await call(commands.vcsShelfPatch(entry.id, path ?? null, null)));
     notifications().notify({ group: "vcs", level: "info", title: "Patch copied to the clipboard" });
   } catch (e) {
     logConsole("err", errorMessage(e));
@@ -415,7 +504,6 @@ interface ShelfNode {
   key: string;
   entry: ShelvedChangeList;
   file?: ShelvedChangeList["files"][number];
-  children?: ShelfNode[];
 }
 
 export interface ShelfTarget {
@@ -437,14 +525,14 @@ export function shelfTarget(arg?: unknown): { entry: ShelvedChangeList; path?: s
 }
 
 /** Legacy shelves were created in the primary repository, regardless of the selected one. */
-function shelfRepository(entry?: ShelvedChangeList): string | null {
+function shelfPathBase(entry?: ShelvedChangeList): string | null {
   const state = useVcs.getState();
   return entry?.repo ?? state.roots[0] ?? state.root;
 }
 
 export function shelfDiffs(target: ShelfTarget, local = false): DiffData[] {
   const state = useShelf.getState();
-  const root = shelfRepository(state.shelves.find((entry) => entry.id === target.id));
+  const root = shelfPathBase(state.shelves.find((entry) => entry.id === target.id));
   if (!root) return [];
   return (state.diffs[target.id] ?? [])
     .filter((f) => (!target.path || f.path === target.path) && f.before !== null && f.after !== null)
@@ -494,12 +582,8 @@ export async function showShelfDiff(arg?: unknown, local = false, newTab = false
 export async function importShelfPatches(paths?: string[]) {
   const repo = currentRepo();
   const picked =
-    paths ??
-    (await import("@/platform/dialog").then(({ open }) =>
-      open({ multiple: true, directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }),
-    ));
-  if (!picked) return;
-  for (const path of typeof picked === "string" ? [picked] : picked) {
+    paths ?? (await choosePaths({ directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }));
+  for (const path of picked) {
     await runOp(
       tx("Import patches"),
       async () => call(commands.vcsShelfImport(repo, baseName(path), await call(commands.fsReadText(path)))),
@@ -542,31 +626,130 @@ export function createShelfPatch(arg?: unknown) {
   if (target) showCreatePatchForShelf(target.entry, target.path);
 }
 
+function ShelfTree({
+  nodes,
+  kind,
+  selectedKey,
+  empty,
+}: {
+  nodes: ShelfNode[];
+  kind: "changes" | "files";
+  selectedKey: string | null;
+  empty: string;
+}) {
+  const selected = useMemo(() => new Set(selectedKey ? [selectedKey] : []), [selectedKey]);
+  const filePane = kind === "files";
+  return (
+    <Tree<ShelfNode>
+      roots={nodes}
+      getKey={(n) => n.key}
+      getLabel={(n) => (n.file ? baseName(n.file.path) : n.entry.name)}
+      getChildren={() => undefined}
+      isExpandable={() => false}
+      selected={selected}
+      onSelectionChange={(sel) => useCommit.setState({ selectedShelf: [...sel][0] ?? null })}
+      horizontalScroll={filePane}
+      rowHeight={filePane ? 40 : undefined}
+      multiSelect={false}
+      onActivate={(n) => {
+        void executeAction(n.file ? "vcs.shelf.showDiff" : "vcs.unshelve", { id: n.entry.id, path: n.file?.path });
+      }}
+      onContextMenu={(node, _sel, e: MouseEvent) => {
+        if (!node) return;
+        e.preventDefault();
+        useCommit.setState({ selectedShelf: node.key });
+        const point = { x: e.clientX, y: e.clientY };
+        const target = { id: node.entry.id, path: node.file?.path };
+        void Promise.all(
+          shelfDiffs(target, true).map(async (d) => {
+            try {
+              return !(await call(commands.fsProbe(d.path))).binary;
+            } catch {
+              return false;
+            }
+          }),
+        ).then((supported) => showContextMenu(point, shelfMenu(node, supported.some(Boolean))));
+      }}
+      aria-label={filePane ? "Shelved files" : "Shelved changes"}
+      empty={<span className={viewStyles.empty}>{tx(empty)}</span>}
+      renderNode={(n) => {
+        const file = n.file;
+        if (file) {
+          const directory = dirName(file.path);
+          return (
+            <>
+              <Icon name={fileIconName(baseName(file.path), file.path)} size={16} className={viewStyles.icon} />
+              <span className={shelfStyles.fileText} title={file.path}>
+                <span style={{ color: KIND_COLOR[file.kind === "untracked" ? "added" : file.kind] }}>
+                  {baseName(file.path)}
+                </span>
+                {directory && <span className={shelfStyles.detail}>{directory}</span>}
+              </span>
+            </>
+          );
+        }
+        const time = n.entry.timeMs ? formatTime(n.entry.timeMs) : null;
+        return (
+          <>
+            <Icon name="shelve" size={16} className={viewStyles.icon} />
+            <span className={shelfStyles.patchName} title={n.entry.name}>
+              {n.entry.name}
+            </span>
+            <span className={shelfStyles.detail}>{fileCount(n.entry.files.length)}</span>
+            {time && (
+              <span className={shelfStyles.date} title={time}>
+                {time}
+              </span>
+            )}
+          </>
+        );
+      }}
+    />
+  );
+}
+
 /** The Shelf tab of the Commit tool window. */
 export function ShelfPanel() {
   const shelves = useShelf((s) => s.shelves);
   const loaded = useShelf((s) => s.loaded);
   const root = useVcs((s) => s.root);
-  useShelf((s) => s.diffs);
   const selectedShelf = useCommit((s) => s.selectedShelf);
-  const selected = useMemo(() => new Set(selectedShelf ? [selectedShelf] : []), [selectedShelf]);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(true);
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const measure = () => setStacked(panel.clientWidth < 560);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     void loadShelves().catch(() => undefined);
     return () => setContext("shelfFocus", false);
   }, [root]);
-  const roots = useMemo<ShelfNode[]>(
-    () =>
-      shelves.map((entry) => ({
-        key: entry.id,
-        entry,
-        children: entry.files.map((file) => ({ key: `${entry.id}\u0000${file.path}`, entry, file })),
-      })),
-    [shelves],
+  const selectedId = selectedShelf?.split("\u0000", 1)[0];
+  const entry = shelves.find((s) => s.id === selectedId);
+  const patches = useMemo<ShelfNode[]>(() => shelves.map((s) => ({ key: s.id, entry: s })), [shelves]);
+  const files = useMemo<ShelfNode[]>(
+    () => entry?.files.map((file) => ({ key: `${entry.id}\u0000${file.path}`, entry, file })) ?? [],
+    [entry],
   );
-  const current = shelfTarget([...selected][0]);
+  const current = selectedShelf ? shelfTarget(selectedShelf) : null;
+  const patchTree = (
+    <ShelfTree
+      nodes={patches}
+      kind="changes"
+      selectedKey={entry?.id ?? null}
+      empty={loaded ? "No shelved changes" : "Loading…"}
+    />
+  );
   return (
     <div
       className={viewStyles.changes}
+      ref={panelRef}
       data-shelf-panel
       onFocusCapture={() => setContext("shelfFocus", true)}
       onBlurCapture={(e) => {
@@ -594,64 +777,32 @@ export function ShelfPanel() {
           }
         />
       </div>
-      <div className={viewStyles.treeWrap}>
-        <Tree<ShelfNode>
-          roots={roots}
-          getKey={(n) => n.key}
-          getLabel={(n) => (n.file ? baseName(n.file.path) : n.entry.name)}
-          getChildren={(n) => n.children}
-          isExpandable={(n) => !n.file}
-          selected={selected}
-          onSelectionChange={(sel) => {
-            const key = [...sel][0];
-            useCommit.setState({ selectedShelf: key ?? null });
-          }}
-          multiSelect={false}
-          onActivate={(n) => {
-            void executeAction(n.file ? "vcs.shelf.showDiff" : "vcs.unshelve", { id: n.entry.id, path: n.file?.path });
-          }}
-          onContextMenu={(node, _sel, e: MouseEvent) => {
-            if (!node) return;
-            e.preventDefault();
-            const point = { x: e.clientX, y: e.clientY };
-            const target = { id: node.entry.id, path: node.file?.path };
-            void Promise.all(
-              shelfDiffs(target, true).map(async (d) => {
-                try {
-                  return !(await call(commands.fsProbe(d.path))).binary;
-                } catch {
-                  return false;
-                }
-              }),
-            ).then((supported) => showContextMenu(point, shelfMenu(node, supported.some(Boolean))));
-          }}
-          aria-label="Shelved changes"
-          empty={<span className={viewStyles.empty}>{loaded ? tx("No shelved changes") : tx("Loading…")}</span>}
-          renderNode={(n) =>
-            n.file ? (
-              <>
-                <Icon name={fileIconName(baseName(n.file.path), n.file.path)} size={16} className={viewStyles.icon} />
-                <span
-                  className={viewStyles.label}
-                  style={{ color: KIND_COLOR[n.file.kind === "untracked" ? "added" : n.file.kind] }}
-                >
-                  {baseName(n.file.path)}
-                </span>
-                <span className={viewStyles.detail}>{dirName(n.file.path)}</span>
-              </>
-            ) : (
-              <>
-                <Icon name="shelve" size={16} className={viewStyles.icon} />
-                <span className={viewStyles.label}>{n.entry.name}</span>
-                <span className={viewStyles.detail}>
-                  {fileCount(n.entry.files.length)}
-                  {n.entry.timeMs ? ` · ${formatTime(n.entry.timeMs)}` : ""}
-                </span>
-              </>
-            )
-          }
-        />
-      </div>
+      {patches.length ? (
+        <SplitGroup
+          id="shelf-panes"
+          className={shelfStyles.split}
+          orientation={stacked ? "vertical" : "horizontal"}
+          storageKey={`openidea.vcs.shelf.layout.${stacked ? "stacked" : "sideBySide"}`}
+        >
+          <SplitPanel id="shelf-changes" defaultSize="50%" minSize="25%">
+            {patchTree}
+          </SplitPanel>
+          <SplitHandle aria-label={tx("Resize shelf panes")} />
+          <SplitPanel id="shelf-files" defaultSize="50%" minSize="25%">
+            <div className={shelfStyles.filesHeader}>
+              <T>Shelved files</T>
+            </div>
+            <ShelfTree
+              nodes={files}
+              kind="files"
+              selectedKey={current?.path ? selectedShelf : null}
+              empty={entry ? "No files" : "Select a shelf to view its files"}
+            />
+          </SplitPanel>
+        </SplitGroup>
+      ) : (
+        <div className={viewStyles.treeWrap}>{patchTree}</div>
+      )}
     </div>
   );
 }

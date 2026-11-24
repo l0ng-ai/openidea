@@ -25,6 +25,7 @@ import {
   shift,
   size as sizeMw,
   useFloating,
+  type Middleware,
   type Placement,
   type VirtualElement,
 } from "@floating-ui/react-dom";
@@ -36,7 +37,13 @@ import styles from "./Popup.module.css";
 /** Layer ids of the popups a component is rendered inside: a dialog opened there leaves them open. */
 export const PopupAncestry = createContext<readonly RefObject<number | null>[]>([]);
 
-export type PopupAnchor = Element | VirtualElement | RefObject<Element | null> | { x: number; y: number } | null;
+export type PopupAnchor =
+  | Element
+  | VirtualElement
+  | RefObject<Element | null>
+  | { x: number; y: number }
+  | "center"
+  | null;
 
 export interface PopupProps {
   open: boolean;
@@ -49,6 +56,7 @@ export interface PopupProps {
   style?: CSSProperties;
   role?: string;
   "aria-label"?: string;
+  "aria-describedby"?: string;
   /** Keep Tab inside the popup. */
   trapFocus?: boolean;
   /** Focus on open: `true` = first `[data-autofocus]`/focusable/the popup itself; `false` = leave focus. */
@@ -59,6 +67,8 @@ export interface PopupProps {
   closeOnDeactivate?: boolean;
   /** Match the anchor's width (dropdowns). */
   matchWidth?: boolean;
+  /** Limit an anchored popup to its anchor's width plus this many pixels. */
+  maxWidthOverAnchor?: number;
   /** Plain surface without border/shadow styling. */
   unstyled?: boolean;
   /**
@@ -78,8 +88,42 @@ export interface PopupProps {
 type ResizeEdge = "right" | "bottom" | "corner";
 const EDGE_CURSOR = { right: "ew-resize", bottom: "ns-resize", corner: "nwse-resize" } as const;
 
+const measureNaturalHeight: Middleware = {
+  name: "measureNaturalHeight",
+  fn({ elements, middlewareData }) {
+    // Keep the new cap through internal flip/size restarts, not through the next update.
+    if (middlewareData.measureNaturalHeight) return {};
+    const scrollTop = elements.floating.scrollTop;
+    const previousLimit = elements.floating.style.removeProperty("max-height");
+    return { data: { scrollTop }, reset: previousLimit ? { rects: true } : undefined };
+  },
+};
+
+function watchPopupSize(reference: Element | VirtualElement, floating: HTMLElement, update: () => void) {
+  // Positioning writes the popup's size limits. Defer those writes outside the resize observer's delivery.
+  let frame = 0;
+  let placed = false;
+  const stop = autoUpdate(reference, floating, () => {
+    // The first placement runs at once, so the popup opens where it stays.
+    if (!placed) {
+      placed = true;
+      update();
+      return;
+    }
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      update();
+    });
+  });
+  return () => {
+    stop();
+    cancelAnimationFrame(frame);
+  };
+}
+
 function toReference(anchor: PopupAnchor): Element | VirtualElement | null {
-  if (!anchor) return null;
+  if (!anchor || anchor === "center") return null;
   if ("current" in anchor) return anchor.current;
   if ("getBoundingClientRect" in anchor) return anchor;
   const { x, y } = anchor;
@@ -108,6 +152,7 @@ function PopupInner({
   closeOnOutsideClick = true,
   closeOnDeactivate = true,
   matchWidth = false,
+  maxWidthOverAnchor,
   unstyled = false,
   resizable,
   minWidth = 200,
@@ -116,23 +161,33 @@ function PopupInner({
   onResized,
   ...aria
 }: PopupProps) {
+  const centered = anchor === "center";
   const reference = toReference(anchor);
+  const hasInlineMaxHeight = style?.maxHeight != null && style.maxHeight !== "";
   const middleware = useMemo(
     () => [
       offsetMw(offset),
+      hasInlineMaxHeight ? null : measureNaturalHeight,
       flip({ padding: 6 }),
       shift({ padding: 6 }),
       sizeMw({
         padding: 6,
-        apply({ rects, elements, availableHeight, availableWidth }) {
-          elements.floating.style.maxHeight = `${Math.max(120, availableHeight)}px`;
-          const width = Math.max(0, availableWidth);
-          elements.floating.style.maxWidth = `${width}px`;
-          if (matchWidth) elements.floating.style.minWidth = `${Math.min(rects.reference.width, width)}px`;
+        apply({ rects, elements, availableHeight, availableWidth, middlewareData }) {
+          const floatingStyle = elements.floating.style;
+          const maxHeight = Math.max(120, availableHeight);
+          if (!hasInlineMaxHeight && (rects.floating.height > maxHeight || floatingStyle.maxHeight)) {
+            floatingStyle.maxHeight = `${maxHeight}px`;
+            const scrollTop = middlewareData.measureNaturalHeight?.scrollTop;
+            if (scrollTop) elements.floating.scrollTop = scrollTop;
+          }
+          const anchorLimit = maxWidthOverAnchor === undefined ? Infinity : rects.reference.width + maxWidthOverAnchor;
+          const width = Math.max(0, Math.min(availableWidth, anchorLimit));
+          floatingStyle.maxWidth = `${width}px`;
+          if (matchWidth) floatingStyle.minWidth = `${Math.min(rects.reference.width, width)}px`;
         },
       }),
     ],
-    [offset, matchWidth],
+    [hasInlineMaxHeight, offset, matchWidth, maxWidthOverAnchor],
   );
   const { refs, floatingStyles, isPositioned } = useFloating({
     placement,
@@ -140,7 +195,7 @@ function PopupInner({
     transform: false,
     middleware,
     elements: { reference },
-    whileElementsMounted: autoUpdate,
+    whileElementsMounted: resizable || maxWidthOverAnchor !== undefined ? watchPopupSize : autoUpdate,
   });
   const elRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -243,11 +298,12 @@ function PopupInner({
       data-popup=""
       role={role}
       aria-label={aria["aria-label"]}
+      aria-describedby={aria["aria-describedby"]}
       tabIndex={-1}
-      className={clsx(styles.popup, !unstyled && styles.surface, className)}
-      data-positioned={isPositioned || undefined}
+      className={clsx(styles.popup, centered && styles.centered, !unstyled && styles.surface, className)}
+      data-positioned={centered || isPositioned || undefined}
       data-resized={size ? "" : undefined}
-      style={{ ...floatingStyles, ...(size && { width: size.w, height: size.h }), ...style }}
+      style={{ ...(!centered && floatingStyles), ...(size && { width: size.w, height: size.h }), ...style }}
     >
       <PopupAncestry.Provider value={ancestry}>{children}</PopupAncestry.Provider>
       {resizable && (

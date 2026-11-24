@@ -10,12 +10,20 @@
 import { useId, useState } from "react";
 import { Button, Checkbox, Input, type SelectOption, T } from "@/ui";
 import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
+import { choosePath } from "@/platform/choosePath";
 import { ENCODING_CHOICES, lineCommentDefaults, type LanguageCodeStyle } from "@/platform/editorSettings";
 import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
-import { NumberInput, Row, Select } from "../../components/Form";
+import { FormGroup, NumberInput, Row, Select, Toggle } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import type { PageSpec } from "../spec";
-import { CODE_STYLE_SCOPE, CodeStyleMain, SchemeRow, formatterLabels } from "./codeStyleScheme";
+import {
+  CODE_STYLE_SCOPE,
+  CodeStyleMain,
+  CodeStyleTabs,
+  SchemeRow,
+  formatterLabels,
+  type CodeStyleTab,
+} from "./codeStyleScheme";
 import { editorPage, sectionLabels, type EditorSection } from "./kit";
 import styles from "./Editor.module.css";
 import { tx } from "@/platform/i18n";
@@ -131,7 +139,19 @@ const OTHER = {
   ...SCHEME_SCOPE,
 };
 
-/** Tabs and Indents of one language: overrides on top of the language definition. */
+const INDENTS = {
+  id: "indents",
+  label: "Tabs and Indents",
+  keywords: ["Tab size", "Indent", "Use tab character"],
+};
+const WRAPPING = { id: "wrapping", label: "Wrapping", keywords: ["Hard wrap at"] };
+const COMMENTS = {
+  id: "comments",
+  label: "Comment Code",
+  keywords: ["Line comment at first column", "Add a space at line comment start"],
+};
+
+/** Code Style overrides on top of the language definition. */
 function LanguageStyle({ lang }: { lang: LanguageInfo }) {
   const [all, setAll] = useSetting<Record<string, LanguageCodeStyle>>("editor.codeStyle.languages");
   const [tabSize] = useSetting<number>("editor.tabSize");
@@ -156,42 +176,38 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
     delete next[lang.id];
     setAll(next);
   };
-  return (
-    <div className={styles.page}>
-      <SchemeRow />
-      {lang.id === "java" && <JavaFormatter style={own} onChange={set} />}
-      <section aria-label={tx("Tabs and Indents")}>
-        <div className={styles.previewTitle}>
-          <T>Tabs and Indents</T>
-        </div>
-        <div className={styles.check}>
-          <Checkbox checked={eff.useTab} onChange={(v) => set({ useTab: v })} label="Use tab character" />
-        </div>
-        <Row label="Tab size">
-          <NumberInput
-            value={eff.tabSize}
-            onChange={(n) => set({ tabSize: n })}
-            min={1}
-            max={16}
-            integer
-            aria-label="Tab size"
-          />
-        </Row>
-        <Row label="Indent">
-          <NumberInput
-            value={eff.indent}
-            onChange={(n) => set({ indent: n })}
-            min={1}
-            max={16}
-            integer
-            aria-label="Indent"
-          />
-        </Row>
-      </section>
-      <section aria-label={tx("Wrapping")}>
-        <div className={styles.previewTitle}>
-          <T>Wrapping</T>
-        </div>
+  const tabs: CodeStyleTab[] = [
+    {
+      ...INDENTS,
+      content: (
+        <FormGroup>
+          <Toggle checked={eff.useTab} onChange={(v) => set({ useTab: v })} label="Use tab character" />
+          <Row label="Tab size">
+            <NumberInput
+              value={eff.tabSize}
+              onChange={(n) => set({ tabSize: n })}
+              min={1}
+              max={16}
+              integer
+              aria-label="Tab size"
+            />
+          </Row>
+          <Row label="Indent">
+            <NumberInput
+              value={eff.indent}
+              onChange={(n) => set({ indent: n })}
+              min={1}
+              max={16}
+              integer
+              aria-label="Indent"
+            />
+          </Row>
+        </FormGroup>
+      ),
+    },
+    {
+      ...WRAPPING,
+      content: (
         <Row label="Hard wrap at" hint="Shown as the right margin guide in the editor.">
           <NumberInput
             value={eff.hardWrapAt}
@@ -203,25 +219,63 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
             unit="columns"
           />
         </Row>
-      </section>
-      {lang.lineComment && (
-        <section aria-label={tx("Comment Code")}>
+      ),
+    },
+  ];
+  if (lang.lineComment) {
+    tabs.push({
+      ...COMMENTS,
+      content: (
+        <>
+          <Toggle
+            checked={eff.lineCommentAtFirstColumn}
+            onChange={(v) => set({ lineCommentAtFirstColumn: v })}
+            label="Line comment at first column"
+          />
+          <Toggle
+            checked={eff.lineCommentAddSpace}
+            onChange={(v) => set({ lineCommentAddSpace: v })}
+            label="Add a space at line comment start"
+          />
+        </>
+      ),
+    });
+  }
+  return (
+    <div className={styles.page}>
+      <SchemeRow />
+      {lang.id === "java" && <JavaFormatter style={own} onChange={set} />}
+      <CodeStyleTabs tabs={tabs} />
+      {lang.id === "python" && (
+        <div className={styles.note}>
+          {tx(
+            "Ruff formats with the indent, tab character and hard wrap set here, and Black with the hard wrap, when no Ruff or Black configuration of the project or user applies. A file's .editorconfig values come first, as in the editor.",
+          )}
+        </div>
+      )}
+      {lang.id === "php" && (
+        <section aria-label={tx("Alignment")}>
           <div className={styles.previewTitle}>
-            <T>Comment Code</T>
+            <T>Alignment</T>
           </div>
           <div className={styles.check}>
             <Checkbox
-              checked={eff.lineCommentAtFirstColumn}
-              onChange={(v) => set({ lineCommentAtFirstColumn: v })}
-              label="Line comment at first column"
+              checked={own.alignKeyValuePairs ?? false}
+              onChange={(v) => set({ alignKeyValuePairs: v })}
+              label="Align key-value pairs"
             />
           </div>
           <div className={styles.check}>
             <Checkbox
-              checked={eff.lineCommentAddSpace}
-              onChange={(v) => set({ lineCommentAddSpace: v })}
-              label="Add a space at line comment start"
+              checked={own.alignConsecutiveAssignments ?? false}
+              onChange={(v) => set({ alignConsecutiveAssignments: v })}
+              label="Align consecutive assignments"
             />
+          </div>
+          <div className={styles.note}>
+            {tx(
+              "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.",
+            )}
           </div>
         </section>
       )}
@@ -254,9 +308,8 @@ function JavaFormatter({
 }) {
   const id = useId();
   const browse = async () => {
-    const { open } = await import("@/platform/dialog");
-    const path = await open({
-      multiple: false,
+    const path = await choosePath({
+      directory: false,
       title: tx("Eclipse formatter XML"),
       filters: [{ name: "XML", extensions: ["xml"] }],
     });
@@ -311,16 +364,14 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
       ...SCHEME_SCOPE,
       keywords: [
         "Scheme",
-        "Tabs and Indents",
-        "Tab size",
-        "Indent",
-        "Use tab character",
-        "Hard wrap at",
-        "Comment Code",
-        "Line comment at first column",
+        ...[INDENTS, WRAPPING, ...(lang.lineComment ? [COMMENTS] : [])].flatMap(({ label, keywords }) => [
+          label,
+          ...keywords,
+        ]),
         ...(lang.id === "java"
           ? ["Formatting profile", "IntelliJ IDEA", "Custom Eclipse formatter XML", "Eclipse formatter XML"]
           : []),
+        ...(lang.id === "php" ? ["Alignment", "Align key-value pairs", "Align consecutive assignments"] : []),
       ],
       component: () => <LanguageStyle lang={lang} />,
     }));

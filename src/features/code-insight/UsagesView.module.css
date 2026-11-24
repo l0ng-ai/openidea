@@ -17,23 +17,26 @@
   gap: var(--space-0-5);
   padding: 4px 0;
   border-right: 1px solid var(--border);
+  overflow-y: auto;
+  scrollbar-width: none;
 }
 .toolbarSep {
+  flex: none;
   width: 16px;
   height: 1px;
   margin: 3px 0;
   background: var(--border);
 }
 .summary {
-  height: 26px;
+  min-height: 26px;
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-1-5);
-  padding: 0 10px;
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-1-5);
+  padding: var(--space-0-5) 10px;
   font-size: var(--fs-ui);
   color: var(--fg-subtle);
-  white-space: nowrap;
 }
 .groupLabel {
   color: var(--fg);
@@ -42,12 +45,13 @@
   color: var(--danger);
 }
 .link {
-  flex: none;
+  max-width: 100%;
   border: none;
   background: none;
   padding: 0;
   font: inherit;
   color: var(--link);
+  text-align: left;
   cursor: pointer;
 }
 .link:hover {
@@ -65,7 +69,6 @@
   flex: 1;
   min-height: 0;
 }
-.body > [role="toolbar"],
 .body > .summary {
   flex: 0 0 auto;
 }
@@ -81,28 +84,40 @@
   flex: none;
 }
 .file {
+  flex: none;
+  max-width: 56%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg);
 }
-.muted,
+.directory {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}
 .count {
   flex: none;
   color: var(--fg-subtle);
 }
+.occurrence {
+  gap: var(--space-1);
+}
 .line {
   flex: none;
-  min-width: 3ch;
-  text-align: right;
-  font-family: var(--font-mono);
-  font-size: var(--fs-ui);
-  color: var(--fg-line-number);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-subtle);
 }
 .preview {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--font-mono);
-  font-size: var(--fs-ui);
+  font-size: var(--fs-code);
   color: var(--fg);
+}
+.occurrence .preview {
+  font: inherit;
 }
 .match {
   background: var(--bg-search-match);
@@ -134,4 +149,19 @@
 .panel > * {
   flex: 1;
   min-height: 0;
+}
+.splitFrame {
+  display: flex;
+  min-width: 0;
+}
+.sourcePreview {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+}
+.sourcePreview .sourceText[role="region"] {
+  font: inherit;
+  font-weight: var(--fw-code);
 }

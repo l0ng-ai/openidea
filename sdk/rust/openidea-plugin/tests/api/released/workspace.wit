@@ -1,4 +1,4 @@
-package openidea:plugin@1.10.0;
+package openidea:plugin@1.15.0;
 
 interface workspace {
     use types.{error, location};
@@ -123,8 +123,9 @@ interface editor {
     record open-editor { path: string, language: string, dirty: bool, active: bool }
     /// Only from commands/events of a window. Requires editor.read.
     open-editors: func() -> result<list<open-editor>, error>;
-    /// Open a project file (project.read) or a file in plugin-dir, selecting a range.
-    /// Only from commands/events of a window. Paths follow views.open-location.
+    /// Open a project file (project.read), a file in plugin-dir, or a file in
+    /// the plugin's install directory, selecting a range. Only from
+    /// commands/events of a window. Paths follow views.open-location.
     open: func(path: string, selection: option<range>) -> result<_, error>;
 
     /// Current version and text of an open project document. Unlike
