@@ -275,6 +275,12 @@ pub fn run() {
     })
     .on_window_event(|window, event| match event {
         tauri::WindowEvent::CloseRequested { .. } => {
+            // A dead web engine never answers the page's close handler: close the window here.
+            #[cfg(windows)]
+            if windows_webview_recovery::browser_failed(window.app_handle()) {
+                let _ = window.destroy();
+                return;
+            }
             #[cfg(target_os = "linux")]
             linux_window_state::save_before_close(window.app_handle());
             if let Some(w) = window.try_state::<WindowsState>() {
