@@ -137,8 +137,17 @@ fn commit_time_ms(repo: &gix::Repository, id: gix::ObjectId) -> f64 {
     repo.find_commit(id).ok().and_then(|c| c.time().ok()).map(|t| t.seconds as f64 * 1000.0).unwrap_or(0.0)
 }
 
-pub(crate) fn branches(r: &Repo) -> IdeResult<Vec<Branch>> {
-    let repo = r.gix()?;
+#[cfg(test)]
+thread_local!(static BRANCH_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
+#[cfg(test)]
+pub(crate) fn branch_scans() -> usize {
+    BRANCH_SCANS.get()
+}
+
+pub(crate) fn branches(repo: &gix::Repository) -> IdeResult<Vec<Branch>> {
+    #[cfg(test)]
+    BRANCH_SCANS.set(BRANCH_SCANS.get() + 1);
     let head_name = repo.head_name().map_err(gx)?;
     let platform = repo.references().map_err(gx)?;
     let remotes = repo.remote_names();
@@ -161,20 +170,20 @@ pub(crate) fn branches(r: &Repo) -> IdeResult<Vec<Branch>> {
             ahead: 0,
             behind: 0,
             outgoing: None,
-            last_commit_ms: commit_time_ms(&repo, id),
+            last_commit_ms: commit_time_ms(repo, id),
             commit: id.to_string(),
         };
         let mut counted_upstream = None;
-        if let Some((up, up_id)) = upstream_of(&repo, full.as_ref()) {
+        if let Some((up, up_id)) = upstream_of(repo, full.as_ref()) {
             branch.upstream = Some(up);
-            branch.tracked_tip = configured_upstream(&repo, full.as_ref())
+            branch.tracked_tip = configured_upstream(repo, full.as_ref())
                 .map(|tracking| TrackedTip { tracking, commit: up_id.to_string() });
-            let (a, b) = ahead_behind(&repo, id, up_id)?;
+            let (a, b) = ahead_behind(repo, id, up_id)?;
             branch.ahead = a;
             branch.behind = b;
             counted_upstream = Some((up_id, a));
         }
-        branch.outgoing = crate::push_preview::outgoing_commits(&repo, &remotes, full.as_ref(), id, counted_upstream);
+        branch.outgoing = crate::push_preview::outgoing_commits(repo, &remotes, full.as_ref(), id, counted_upstream);
         out.push(branch);
     }
     for reference in platform.remote_branches().map_err(gx)? {
@@ -194,7 +203,7 @@ pub(crate) fn branches(r: &Repo) -> IdeResult<Vec<Branch>> {
             ahead: 0,
             behind: 0,
             outgoing: None,
-            last_commit_ms: commit_time_ms(&repo, id),
+            last_commit_ms: commit_time_ms(repo, id),
             commit: id.to_string(),
         });
     }

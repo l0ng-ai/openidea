@@ -637,6 +637,8 @@ export const commands = {
 	dockerSettings: () => typedError<DockerSettings, IdeError>(__TAURI_INVOKE("docker_settings")),
 	/**  Availability plus containers, images, volumes and networks. */
 	dockerSnapshot: (endpoint: DockerEndpoint) => typedError<DockerSnapshot, IdeError>(__TAURI_INVOKE("docker_snapshot", { endpoint })),
+	/**  Disk usage per volume name (`docker system df -v`). */
+	dockerVolumeSizes: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_volume_sizes", { endpoint })),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
@@ -6648,7 +6650,12 @@ report?: PushReport | null } |
 /**  Git updated some refs before a later ref or push URL failed. */
 { type: "pushPartiallyApplied"; report: PushReport } | 
 /**  A conflicted history replay left an amend commit ready to keep separately. */
-{ type: "amendConflict"; commit: string };
+{ type: "amendConflict"; commit: string } | 
+/**
+ *  jdtls could not set a module up as a Java project: the errors on its build files and
+ *  the builds enclosing it (`path: message`, the path relative to the project), nearest first.
+ */
+{ type: "javaBuildProblems"; problems: string[] };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  The requested state is stale; the UI must use the current snapshot. */

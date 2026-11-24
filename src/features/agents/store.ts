@@ -369,6 +369,11 @@ function setUnread(task: string, value: boolean) {
   useAgents.setState({ unread });
 }
 
+/** Marks tasks read or unread from the list's menu. */
+export function setTasksUnread(tasks: readonly string[], value: boolean) {
+  for (const task of tasks) setUnread(task, value);
+}
+
 function markUnread(task: string) {
   const current = useAgents.getState().tasks.get(task);
   if (current && current.status !== "archived" && !viewing(task) && !quietTasks.has(task)) setUnread(task, true);

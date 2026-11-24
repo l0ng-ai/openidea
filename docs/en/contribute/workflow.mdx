@@ -80,12 +80,12 @@ See [Unit and E2E tests](/en/contribute/testing/unit-e2e) for details.
 
 `.github/workflows/ci.yml` first classifies the changed files, so a docs-only or frontend-only PR skips the jobs it can't affect:
 
-- **Rust** on macOS, Ubuntu 22.04 and Windows: `cargo fmt --check` (Linux), clippy with `-D warnings`, `cargo nextest run --workspace`, and a check that `src/bindings.ts` is up to date.
+- **Rust** on macOS, Ubuntu and Windows: `cargo fmt --check` (Linux), clippy with `-D warnings`, `cargo nextest run --workspace`, and a check that `src/bindings.ts` is up to date.
 - **Remote server**: a static Linux (musl) build of `openidea-server`.
 - **Plugins**: format, clippy (host and `wasm32-wasip2`) and tests of the SDK, the official plugins and the test fixtures; plugin web pages typechecked and tested; `plugins/build.sh --check`.
 - **Cargo deny**: `cargo deny check` (licences, advisories, sources).
 - **Frontend**: typecheck, lint, format check, knip, tests, build.
-- **E2E**: `pnpm e2e` in the Playwright container.
+- **E2E**: `pnpm e2e` in Chromium.
 
 `.github/workflows/language-smoke.yml` runs the [language smoke tests](/en/contribute/testing/smoke) when crates, `languages/`, `fixtures/`, the run/debugger features, `src/platform/` or `smoke/` change.
 

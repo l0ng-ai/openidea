@@ -53,7 +53,9 @@ fn copy_dir(from: &Path, to: &Path) {
 async fn open(fixture: &str) -> Opened {
     let tmp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(tmp.path()).unwrap().join(fixture);
-    copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(fixture), &root);
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    copy_dir(&manifest_dir.join("../../fixtures").join(fixture), &root);
     let app = tmp.path().join("app");
     let host = Arc::new(Host::new(common::host_config(&app)));
     host.trust.decide(&root, true, false).unwrap();

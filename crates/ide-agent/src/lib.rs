@@ -4305,11 +4305,24 @@ fn file_uri(path: &Path) -> String {
     out
 }
 
-/// The title of a task: the first line of the prompt that says something. A pasted Markdown
-/// block opens with a code fence (```` ```text ````), which names no task.
+/// The title of a task: the first line of the prompt that says something. Text inside a code
+/// fence (```` ```text ````) is pasted material, so a line outside the fences wins; a prompt
+/// that is all one pasted block still names its task from inside it.
 fn title_of(prompt: &AgentPrompt) -> String {
     let is_fence = |l: &str| l.starts_with("```") || l.starts_with("~~~");
-    let line = prompt.text.lines().map(str::trim).find(|l| !l.is_empty() && !is_fence(l));
+    let (mut outside, mut inside, mut fenced) = (None, None, false);
+    for l in prompt.text.lines().map(str::trim) {
+        if is_fence(l) {
+            fenced = !fenced;
+        } else if !l.is_empty() {
+            let slot = if fenced { &mut inside } else { &mut outside };
+            slot.get_or_insert(l);
+            if outside.is_some() {
+                break;
+            }
+        }
+    }
+    let line = outside.or(inside);
     let line = match line {
         Some(l) => l.to_owned(),
         None => prompt.files.first().map(|f| file_name(&f.0)).unwrap_or_else(|| "Image".into()),
