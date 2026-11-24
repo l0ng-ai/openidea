@@ -491,6 +491,17 @@ export function registerDeploymentActions(): () => void {
       },
     },
     {
+      id: "deployment.uploadFolder",
+      title: "Upload Folder…",
+      category: CATEGORY,
+      hidden: true,
+      run: async ({ arg }) => {
+        const value = arg as { server: string; target: string } | undefined;
+        const server = value && resolveServer(deployment(), value.server);
+        if (server && value?.target) await (await import("./remoteHost")).chooseUploadFolder(server, value.target);
+      },
+    },
+    {
       id: "deployment.uploadToDefault",
       title: "Upload to Default Server",
       description: "Upload the selected files and folders to the default deployment server",

@@ -1,6 +1,13 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_DEPLOYMENT_SERVER } from "@/platform/remoteSettings";
-import { chooseUploadFiles, downloadTo, downloadToProject, ensureRoot, uploadLocalInto } from "./remoteHost";
+import {
+  chooseUploadFiles,
+  chooseUploadFolder,
+  downloadTo,
+  downloadToProject,
+  ensureRoot,
+  uploadLocalInto,
+} from "./remoteHost";
 import { useDeployment } from "./store";
 
 const ipc = vi.hoisted(() => ({
@@ -143,6 +150,26 @@ it("reloads a server's tree when changing its filesystem type or root", async ()
   await ensureRoot({ ...local, rootPath: "/mounted" });
   expect(ipc.list).toHaveBeenLastCalledWith({ kind: "local" }, "/mounted");
   expect(useDeployment.getState().trees.existing?.root).toBe("/mounted");
+});
+
+it("Upload Folder… picks a directory and uploads it under its own name, with cancellation leaving it untouched", async () => {
+  ipc.openDialog.mockResolvedValueOnce("/outside/photos");
+  await chooseUploadFolder(uploadServer, "/srv/assets");
+  expect(ipc.openDialog).toHaveBeenCalledWith(
+    expect.objectContaining({ title: "Upload Folder", directory: true, multiple: false }),
+  );
+  expect(ipc.upload).toHaveBeenCalledWith(
+    expect.anything(),
+    ["/outside/photos"],
+    "/srv/assets",
+    false,
+    expect.any(Number),
+  );
+  ipc.list.mockClear();
+  ipc.openDialog.mockResolvedValueOnce(null);
+  await chooseUploadFolder(uploadServer, "/srv/assets");
+  expect(ipc.upload).toHaveBeenCalledTimes(1);
+  expect(ipc.list).not.toHaveBeenCalled();
 });
 
 it("refreshes resolved mappings when the local mapping changes", async () => {

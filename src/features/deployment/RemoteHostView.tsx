@@ -90,6 +90,13 @@ export function RemoteHostView() {
         run: () => target && void executeAction("deployment.uploadFiles", { server: server.id, target }),
       },
       {
+        id: "uploadFolder",
+        label: "Upload Folder…",
+        icon: "folder",
+        disabled: !target,
+        run: () => target && void executeAction("deployment.uploadFolder", { server: server.id, target }),
+      },
+      {
         id: "open",
         label: "Open",
         icon: "edit",

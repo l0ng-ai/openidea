@@ -10095,5 +10095,7 @@
   "Replace Existing Files?": "替换现有文件？",
   "{count} items already exist in {path}. Replace files and merge folders?": "{path} 中已有 {count} 个同名项目。是否替换文件并合并文件夹？",
   "Cannot upload files": "无法上传文件",
-  "Desktop uploads are not available in a remote development window": "远程开发窗口暂不支持从本机桌面上传文件"
+  "Desktop uploads are not available in a remote development window": "远程开发窗口暂不支持从本机桌面上传文件",
+  "Upload Folder…": "上传文件夹…",
+  "Upload Folder": "上传文件夹"
 }

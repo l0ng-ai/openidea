@@ -1,5 +1,5 @@
 /** Direct uploads use fictional SFTP listings and the production Project / Remote Host trees. */
-import { test, expect } from "./fixtures";
+import { test, expect, ipcCalls, stubDesktop } from "./fixtures";
 import type { Locator, Page } from "@playwright/test";
 
 async function showRemoteHost(page: Page) {
@@ -147,4 +147,36 @@ test("desktop drops use file parents or blank root space and avoid opening edito
     { paths: ["C:/Demo Downloads/notes.txt"], target: "/srv/demo", replace: false },
   ]);
   await expect(page.getByRole("tab", { name: "banner.svg", exact: true })).toHaveCount(0);
+});
+
+test("Upload Folder… opens a directory picker and cancellation leaves the server untouched", async ({
+  workbench: page,
+}) => {
+  await showRemoteHost(page);
+  await stubDesktop(page);
+  await page.evaluate(() => {
+    let picked = false;
+    window.__ipc.handlers["plugin:dialog|open"] = () => {
+      if (picked) return null;
+      picked = true;
+      return "C:/Demo Downloads/photos";
+    };
+  });
+  const remote = page.getByRole("tree", { name: "Remote files" });
+  const folder = remote.getByRole("treeitem", { name: "assets", exact: true });
+  await folder.dblclick();
+  await folder.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Upload Files…", exact: true })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Upload Folder…", exact: true }).click();
+  await expect(remote.getByRole("treeitem", { name: "photos", exact: true })).toBeVisible();
+  expect(await ipcCalls(page, "plugin:dialog|open")).toEqual([
+    expect.objectContaining({ options: expect.objectContaining({ directory: true, multiple: false }) }),
+  ]);
+  expect(await uploads(page)).toEqual([
+    { paths: ["C:/Demo Downloads/photos"], target: "/srv/demo/assets", replace: false },
+  ]);
+  await folder.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Upload Folder…", exact: true }).click();
+  await expect.poll(async () => (await ipcCalls(page, "plugin:dialog|open")).length).toBe(2);
+  expect(await uploads(page)).toHaveLength(1);
 });

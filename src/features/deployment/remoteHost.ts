@@ -259,3 +259,8 @@ export async function chooseUploadFiles(server: DeploymentServerValid, target: s
   const paths = await choosePaths({ directory: false, title: tx("Upload Files") });
   await uploadLocalInto(server, paths, target);
 }
+
+export async function chooseUploadFolder(server: DeploymentServerValid, target: string) {
+  const path = await choosePath({ directory: true, title: tx("Upload Folder") });
+  if (path) await uploadLocalInto(server, [path], target);
+}
