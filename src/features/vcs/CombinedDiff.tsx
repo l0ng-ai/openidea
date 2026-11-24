@@ -11,7 +11,7 @@ import { relativeDir, useProject } from "@/platform/project";
 import { Icon, IconButton, T, fileIconName } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { combinedDiffDocumentOwner, setAllInOneDiff, type CombinedDiffData } from "./allInOneDiff";
-import { ResolvedDiffEditor } from "./DiffEditor";
+import { ResolvedDiffEditor, type DiffViewState } from "./DiffEditor";
 import { diffInput, hasGitlink, openDiff, withChain, type DiffData } from "./diffInput";
 import { loadDiffOptions, saveDiffOptions } from "./diffOptions";
 import { useGitDiffEntries, type DiffEntriesCache } from "./gitDiffEntries";
@@ -39,6 +39,7 @@ function Block({
   mode,
   tabKey,
   heights,
+  viewStates,
   entriesCache,
 }: {
   item: DiffData;
@@ -50,6 +51,8 @@ function Block({
   tabKey: string;
   /** Height of each block's loaded diff, by layout and diff, kept while blocks are unmounted. */
   heights: Map<string, number>;
+  /** Each block's selection and expanded unchanged lines, by layout and diff, kept the same way. */
+  viewStates: Map<string, DiffViewState>;
   /** Git entries of the blocks, so a block back in view shows without asking Git again. */
   entriesCache: DiffEntriesCache;
 }) {
@@ -65,6 +68,10 @@ function Block({
   const bodyRef = useRef<HTMLDivElement>(null);
   const heightKey = `${mode}\0${input.key}`;
   const [hold, setHold] = useState(() => heights.get(heightKey) ?? 0);
+  const viewState = useMemo(() => {
+    if (!viewStates.has(heightKey)) viewStates.set(heightKey, {});
+    return viewStates.get(heightKey)!;
+  }, [viewStates, heightKey]);
   useEffect(() => {
     const content = bodyRef.current?.firstElementChild;
     if (!(content instanceof HTMLElement)) return;
@@ -137,6 +144,7 @@ function Block({
             diff={diff}
             input={input}
             documentOwner={combinedDiffDocumentOwner(tabKey, input.key)}
+            viewState={viewState}
             fit
           />
         </div>
@@ -152,6 +160,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const [mode, setMode] = useState(() => loadDiffOptions().mode);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [heights] = useState(() => new Map<string, number>());
+  const [viewStates] = useState(() => new Map<string, DiffViewState>());
   const [entriesCache] = useState<DiffEntriesCache>(() => new Map());
   // A partially staged file is listed twice (staged and unstaged), so blocks go by diff, not path.
   const keys = useMemo(() => items.map((item) => diffInput(item).key), [items]);
@@ -284,6 +293,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
                   mode={mode}
                   tabKey={input.key}
                   heights={heights}
+                  viewStates={viewStates}
                   entriesCache={entriesCache}
                 />
               </div>
