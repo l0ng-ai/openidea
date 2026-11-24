@@ -188,14 +188,14 @@ pub async fn db_finish_transaction(host: &Host, window: &str, id: String, commit
 }
 
 #[command(trust = trusted)]
-pub async fn db_disconnect(host: &Host, window: &str, id: String) -> IdeResult<()> {
+pub async fn db_disconnect(host: &Host, window: &str, id: String, whole_source: Option<bool>) -> IdeResult<()> {
     // A source-level Deactivate includes databases still opening in the background.
     let db = host.project(window)?.db.clone();
     let (source, database) = ide_db::split_target(&id);
-    if database.is_some() {
-        db.disconnect(&id).await;
-    } else {
+    if whole_source == Some(true) && database.is_none() {
         db.disconnect_source(source).await;
+    } else {
+        db.disconnect(&id).await;
     }
     Ok(())
 }

@@ -706,7 +706,11 @@ export async function disconnect(id: string): Promise<void> {
   forget(id);
   useDatabase.setState((s) => ({ treeExpanded: collapseTarget(s.treeExpanded, id) }));
   try {
-    await Promise.all(targets.map((t) => call(commands.dbDisconnect(t))));
+    if (!splitTarget(id).database && sourceById(id)?.externalTunnel) {
+      await call(commands.dbDisconnect(id, true));
+    } else {
+      await Promise.all(targets.map((t) => call(commands.dbDisconnect(t, null))));
+    }
   } catch (e) {
     if (current() && connectionIntents.get(id) === intent && !alreadyPaused) pauseConsoleMetadata(id, false);
     throw e;

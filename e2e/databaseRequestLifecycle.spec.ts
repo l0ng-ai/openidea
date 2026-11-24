@@ -88,7 +88,13 @@ test("deactivation keeps an open console idle until the user requests metadata",
     const { editorService, toolWindowService } = await import(contributionsPath);
     const id = "console-lifecycle";
     const path = "/app-data/consoles/db/console-lifecycle/console.sql";
-    const source = { id, name: "Console database", driver: "postgres", database: "app" };
+    const source = {
+      id,
+      name: "Console database",
+      driver: "postgres",
+      database: "app",
+      externalTunnel: { executable: "/opt/example/forwarder", arguments: ["{localPort}"] },
+    };
     let firstSchemas = true;
     let finishSchemas!: (schemas: string[]) => void;
     const pendingSchemas = new Promise<string[]>((resolve) => {
@@ -125,7 +131,7 @@ test("deactivation keeps an open console idle until the user requests metadata",
 
   await panel.getByRole("treeitem").filter({ hasText: "Console database" }).click();
   await panel.getByRole("button", { name: /^Deactivate/ }).click();
-  await expect.poll(async () => (await ipcCalls(page, "db_disconnect")).length).toBe(1);
+  await expect.poll(() => ipcCalls(page, "db_disconnect")).toEqual([{ id: "console-lifecycle", wholeSource: true }]);
   await page.evaluate(async () => {
     await new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())));
     window.__releaseConsoleDeactivate!();

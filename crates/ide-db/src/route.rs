@@ -198,12 +198,12 @@ impl DbManager {
     async fn open_connection(&self, id: &str) -> IdeResult<Connection> {
         let (source_id, database) = split_target(id);
         let mut source = self.source(source_id)?;
+        let password = self.password(&source).await;
         // The approval belongs to the configured source, including its login database.
         // Sibling database selection changes only the driver's target after routing.
         let (mut target, route) = self.endpoint(&source, None, RouteUse::Connect).await?;
         target.select_database(database);
         source.select_database(database);
-        let password = self.password(&source).await;
         self.restore_sso(&source).await;
         let result = self.open_pool(&target, password.as_deref(), false).await;
         self.keep_sso(&source).await;
