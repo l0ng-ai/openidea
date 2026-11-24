@@ -34,6 +34,7 @@ export const eclipseWindows: Record<string, string[]> = {
   "debug.jumpToSource": ["F12", "Shift+Ctrl+E"],
   "diff.jumpToSource": ["F12", "Shift+Ctrl+E"],
   "find.popup.openResult": ["F12", "Shift+Ctrl+E"],
+  "agents.archiveTasks": [],
   "editor.codeBlockEnd": ["Ctrl+]"],
   "code.deleteLine": ["Ctrl+D"],
   "code.duplicateLine": [],

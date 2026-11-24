@@ -2,7 +2,7 @@
 
 Runs _N_ persistent, isolated GitHub Actions runners via Docker Compose on a single Docker named volume (`runner-persist`) without requiring repository admin Personal Access Tokens.
 
-In `.github/workflows/ci.yml`, the Linux leg of `Rust (${{ matrix.os }})` routes to `["self-hosted", "openidea-selfhosted"]` on trusted events (`push`, `merge_group`, `workflow_dispatch`, and same-repo pull requests) while the `SELFHOSTED_RUNNERS` repository variable is `true`. Fork pull requests, and every run while the variable is unset, use GitHub-hosted runners.
+In `.github/workflows/ci.yml` and `.github/workflows/language-smoke.yml`, every Linux job routes to `["self-hosted", "openidea-selfhosted"]` on trusted events (`push`, `merge_group`, `workflow_dispatch`, and same-repo pull requests) while the `SELFHOSTED_RUNNERS` repository variable is `true`. Fork pull requests, and every run while the variable is unset, fall back to `ubuntu-latest`. Workflows triggered on `pull_request_target` with write-scoped `GITHUB_TOKEN` permissions (`pr-check.yml`, `cancel-on-close.yml`) stay on `ubuntu-latest`.
 
 > **Availability requirement:** GitHub Actions `runs-on` cannot fall back to GitHub-hosted runners when no matching self-hosted runner is online; jobs stay queued until one connects. Set `SELFHOSTED_RUNNERS=true` (**Settings → Secrets and variables → Actions → Variables**) only once the runners are up, and delete it before taking the host down.
 

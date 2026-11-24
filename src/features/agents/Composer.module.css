@@ -470,6 +470,7 @@
   border: 0;
   border-radius: 50%;
   background: var(--bg-popup);
+  box-shadow: 0 0 0 1px var(--border);
   color: var(--fg);
   cursor: pointer;
   opacity: 0;
@@ -477,6 +478,11 @@
 .image:hover .removeImage,
 .removeImage:focus-visible {
   opacity: 1;
+}
+/* Opaque on hover too: the icon button's own hover fill is translucent over the image. */
+.image .removeImage:not(:disabled):hover {
+  background: color-mix(in srgb, var(--fg-strong) 8%, var(--bg-popup));
+  color: var(--fg-strong);
 }
 
 /* Attached files and the current-file suggestion: one height, like the chips in the text. */

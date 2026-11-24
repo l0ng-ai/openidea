@@ -152,7 +152,6 @@ export function MarkdownEditor({
     <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
       <SplitGroup
         orientation={stacked ? "vertical" : "horizontal"}
-        disableCursor
         className={styles.group}
         storageKey={mode === "split" ? storageKey : undefined}
         defaultLayout={mode === "split" ? DEFAULT_SPLIT_LAYOUT : undefined}
@@ -190,7 +189,7 @@ export function MarkdownEditor({
 }
 
 const blocksOf = (root: HTMLElement) =>
-  [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((el) => ({
+  [...root.querySelectorAll<HTMLElement>(":scope > [data-preview-blocks] > [data-line]")].map((el) => ({
     line: Number(el.dataset.line),
     get top() {
       return el.offsetTop;
@@ -354,6 +353,64 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     ro.observe(root);
     return () => ro.disconnect();
   }, [path, sync]);
+
+  useEffect(() => {
+    const root = ref.current;
+    if (!root || !window.IntersectionObserver || !window.ResizeObserver) return;
+    const visibility = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) entry.target.toggleAttribute("data-in-viewport", entry.isIntersecting);
+      },
+      { root, rootMargin: "100% 0px" },
+    );
+    for (const block of root.querySelectorAll(":scope > [data-preview-blocks] > [data-line]"))
+      visibility.observe(block);
+
+    let width = 0;
+    let settled = 0;
+    let timer: number | undefined;
+    const apply = () => {
+      if (!width || width === settled) return;
+      const top = root.scrollTop;
+      const atBottom = top > 0 && top + root.clientHeight >= root.scrollHeight - 1;
+      const line = top > 0 ? previewLineAtOffset(blocks.current, top) : -1;
+      const block = line >= 0 ? blocks.current.find((b) => b.line === line) : undefined;
+      const within = block ? top - block.top : 0;
+      settled = width;
+      root.removeAttribute("data-constrain-blocks");
+      root.style.setProperty("--markdown-block-width", `${width}px`);
+      if (atBottom) root.scrollTop = root.scrollHeight;
+      else if (block) root.scrollTop = block.top + within;
+    };
+    const schedule = () => {
+      if (width === settled) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (!document.querySelector('[data-drag-cursor-surface$="resize"], [data-separator="active"]')) apply();
+      }, 150);
+    };
+    const sizes = new ResizeObserver(([entry]) => {
+      if (!entry || width === entry.contentRect.width) return;
+      width = entry.contentRect.width;
+      root.toggleAttribute("data-constrain-blocks", width < settled);
+      if (!settled) apply();
+      else schedule();
+    });
+    sizes.observe(root);
+    document.addEventListener("pointerup", schedule, true);
+    document.addEventListener("pointercancel", schedule, true);
+    window.addEventListener("blur", schedule);
+    return () => {
+      visibility.disconnect();
+      sizes.disconnect();
+      window.clearTimeout(timer);
+      document.removeEventListener("pointerup", schedule, true);
+      document.removeEventListener("pointercancel", schedule, true);
+      window.removeEventListener("blur", schedule);
+      root.style.removeProperty("--markdown-block-width");
+      root.removeAttribute("data-constrain-blocks");
+    };
+  }, [html]);
 
   // The preview's own scroll offset: tab switches and mode toggles unmount the
   // preview, so Preview Only would otherwise start over at the top. Writes made
@@ -604,7 +661,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       aria-label={tx("Markdown preview")}
       onClick={onClick}
       onScroll={onScroll}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    >
+      <div data-preview-blocks="" dangerouslySetInnerHTML={{ __html: html }} />
+    </div>
   );
 }

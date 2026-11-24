@@ -298,3 +298,27 @@ async fn dumps_and_restores_with_the_client_tools() -> IdeResult<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn later_pages_continue_the_result_where_the_previous_page_stopped() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp, "").await else { return Ok(()) };
+    let c = CancellationToken::new();
+    let query = "WITH RECURSIVE n(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM n WHERE id < 1000) \
+                 SELECT id, REPEAT('x', 10) AS pad FROM n ORDER BY id";
+    // Forward, back, and jumping: every page holds its own rows whichever cursor served it.
+    for page in [0, 1, 2, 3, 1, 7, 8, 9, 4, 0] {
+        let r = db.execute_from("m", query, page * 100, 100, &c, None).await?;
+        let ids: Vec<_> = r.rows.iter().map(|row| row[0].clone().unwrap()).collect();
+        let want: Vec<_> = (page * 100 + 1..=page * 100 + 100).map(|n| n.to_string()).collect();
+        assert_eq!(ids, want, "page {page}");
+        assert_eq!(r.has_more, page < 9, "page {page}");
+    }
+    // A pool of 4 connections: cursors that were left open must not exhaust it.
+    for _ in 0..8 {
+        db.execute_from("m", query, 100, 100, &c, None).await?;
+        db.release_result("m", query, None);
+        assert_eq!(db.execute("m", "SELECT 1", 1, &c).await?.rows[0][0].as_deref(), Some("1"));
+    }
+    Ok(())
+}

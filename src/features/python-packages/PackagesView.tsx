@@ -166,6 +166,49 @@ function usePypi(name: string | null, delay: number) {
   };
 }
 
+/**
+ * PyPI project names containing `query`. The first search downloads PyPI's name list, which
+ * takes a while: `slow` tells the two apart.
+ */
+function useNames(query: string | null) {
+  const [state, setState] = useState<{ query: string; names: string[]; failed: boolean } | null>(null);
+  const [slow, setSlow] = useState<string | null>(null);
+  useEffect(() => {
+    if (!query) return;
+    let live = true;
+    let running = false;
+    const request = nextRequestId();
+    const timer = setTimeout(() => {
+      running = true;
+      call(commands.pypiSearch(query, request))
+        .then(
+          (names) => live && setState({ query, names, failed: false }),
+          (e: unknown) => live && !isCancelled(e) && setState({ query, names: [], failed: true }),
+        )
+        .finally(() => (running = false));
+    }, 300);
+    const slowTimer = setTimeout(() => live && setSlow(query), 1800);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      clearTimeout(slowTimer);
+      if (running) void commands.cancelRequest(request);
+    };
+  }, [query]);
+  const current = query && state?.query === query ? state : null;
+  return {
+    names: current?.names ?? NO_NAMES,
+    failed: !!current?.failed,
+    loading: !!query && !current,
+    downloading: !!query && !current && slow === query,
+  };
+}
+
+const NO_NAMES: string[] = [];
+
+/** PyPI matches listed; the backend sends one more, to tell when there are others. */
+const SHOWN_NAMES = 50;
+
 export function PackagesView() {
   const tx = useTx();
   const { root, container, python, snapshot, resolved, retry } = useInterpreter();
@@ -186,9 +229,12 @@ export function PackagesView() {
   const name = query.trim();
   const searchable = !container && isPackageName(name);
   const search = usePypi(searchable && (auto || asked === name) ? name : null, 300);
+  // Searching the local copy of PyPI's name list sends nothing, but with another index its
+  // results wait for the same click: a public namesake of a private package is one of them.
+  const names = useNames(!container && name.length >= 2 && (auto || asked === name) ? name : null);
   const rows = useMemo(
-    () => listRows(packages ?? [], local.newer, search.found, query),
-    [packages, local.newer, search.found, query],
+    () => listRows(packages ?? [], local.newer, search.found, names.names.slice(0, SHOWN_NAMES), query),
+    [packages, local.newer, search.found, names.names, query],
   );
   // By name, so a package stays selected when installing it moves it out of the PyPI section.
   const active = rows.findIndex((r) => r.kind !== "section" && normalize(r.name) === selected);
@@ -239,6 +285,7 @@ export function PackagesView() {
   }
 
   const loading = !resolved || local.loading || !!snapshot?.updating;
+  const searching = search.loading || names.loading;
   return (
     <SplitGroup orientation="horizontal" id="python-packages-split" storageKey="openidea.pythonPackages.split">
       <SplitPanel id="list" minSize={220} defaultSize="35%" className={styles.listPane}>
@@ -262,12 +309,10 @@ export function PackagesView() {
               {relativeTo(root, python)}
             </span>
           )}
-          {(loading || local.checking || search.loading) && (
+          {(loading || local.checking || searching) && (
             <Spinner
               size={14}
-              label={tx(
-                loading ? "Loading packages" : search.loading ? "Searching PyPI" : "Checking for newer versions",
-              )}
+              label={tx(loading ? "Loading packages" : searching ? "Searching PyPI" : "Checking for newer versions")}
             />
           )}
         </div>
@@ -292,7 +337,7 @@ export function PackagesView() {
                 <span>
                   {loading ? (
                     <T>Loading packages…</T>
-                  ) : search.loading ? (
+                  ) : searching ? (
                     <T>Searching PyPI…</T>
                   ) : name ? (
                     <T>No packages match</T>
@@ -345,6 +390,21 @@ export function PackagesView() {
             <Button size="small" variant="ghost" onClick={search.retry}>
               <T>Retry</T>
             </Button>
+          </div>
+        )}
+        {names.names.length > SHOWN_NAMES && (
+          <div className={styles.note}>
+            <T>Only the first 50 PyPI matches are listed. Type more of the name to narrow them.</T>
+          </div>
+        )}
+        {names.downloading && (
+          <div className={styles.note}>
+            <T>Downloading the list of PyPI package names…</T>
+          </div>
+        )}
+        {names.failed && (
+          <div className={styles.note}>
+            <T>Could not load the list of PyPI package names. Type a package's exact name to look it up.</T>
           </div>
         )}
       </SplitPanel>

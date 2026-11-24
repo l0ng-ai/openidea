@@ -221,6 +221,7 @@ describe("fileIconName", () => {
     ["index.jsp", "file-jsp"],
     ["footer.jspf", "file-jsp"],
     ["card.tag", "file-jsp"],
+    ["orders.ftl", "file-freemarker"],
     ["styles.scss", "file-scss"],
     ["styles.sass", "file-sass"],
     ["styles.less", "file-less"],

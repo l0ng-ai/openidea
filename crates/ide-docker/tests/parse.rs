@@ -2,7 +2,7 @@
 
 use ide_docker::{
     PS_FORMAT, parse_container_stats, parse_container_top, parse_containers, parse_image_history, parse_images,
-    parse_networks, parse_volumes,
+    parse_networks, parse_volume_sizes, parse_volumes,
 };
 
 const PS: &str = include_str!("fixtures/ps.jsonl");
@@ -113,4 +113,12 @@ fn image_history_top_and_stats() {
     assert_eq!(stats.net_io, "12kB / 8kB");
     assert_eq!(stats.block_io, "1.2MB / 0B");
     assert_eq!(stats.pids, "14");
+
+    let df_volumes = r#"[{"Availability":"N/A","Driver":"local","Links":"4","Mountpoint":"/var/lib/docker/volumes/selfhost_runner-persist/_data","Name":"selfhost_runner-persist","Scope":"local","Size":"145.4kB"},{"Name":"unused_anon","Size":"0B"},{"Name":"remote_nfs","Size":"N/A"}]"#;
+    let volume_sizes = parse_volume_sizes(df_volumes);
+    assert_eq!(volume_sizes.get("selfhost_runner-persist").map(String::as_str), Some("145.4kB"));
+    assert_eq!(volume_sizes.get("unused_anon").map(String::as_str), Some("0B"));
+    assert!(!volume_sizes.contains_key("remote_nfs"));
+    assert!(parse_volume_sizes("null\n").is_empty());
+    assert!(parse_volume_sizes("").is_empty());
 }

@@ -265,8 +265,10 @@
   color: var(--fg-muted);
   cursor: pointer;
 }
-.jumpToLatest:hover {
+/* Over the stream's text: keep it opaque against the icon button's translucent hover fill. */
+.streamArea .jumpToLatest:not(:disabled):hover {
   background: var(--bg-hover);
+  color: var(--fg-strong);
 }
 /* Your message with its actions, shown on hover. */
 .message {
@@ -408,6 +410,8 @@
 
 .reply {
   position: relative;
+  /* Keep WebKit's selection gap fill from extending across reply boundaries. */
+  transform: translateX(0);
 }
 .replyFooter {
   position: absolute;
@@ -513,12 +517,21 @@
      it doesn't leave light boxes the way an opaque near-white fill does. */
   --md-code-bg: color-mix(in srgb, var(--fg) 7%, transparent);
 }
+/* Each text block paints its own selection: WebKit otherwise fills the gap under a block's
+   last selected line across the whole block, a stripe below the unselected start of the line.
+   Not inside SVG (Mermaid labels): WebKit draws transformed foreignObject content at the origin. */
+.markdown :global(:is(p, li, h1, h2, h3, h4, h5, h6):not(foreignObject *)) {
+  transform: translateX(0);
+}
 .markdown :global(code) {
   font-family: var(--font-mono);
   font-size: var(--agent-fs-small, var(--fs-small));
-  padding: 0 2px;
   border-radius: 3px;
   background: var(--md-code-bg);
+  /* Side insets as shadows, not padding: a selection leaves inline padding unpainted. */
+  box-shadow:
+    -2px 0 0 var(--md-code-bg),
+    2px 0 0 var(--md-code-bg);
 }
 .markdown :global(pre) {
   margin: 0 0 8px;
@@ -529,8 +542,8 @@
 }
 .markdown :global(pre code) {
   display: block;
-  padding: 0;
   background: none;
+  box-shadow: none;
 }
 .codeBlock {
   position: relative;
@@ -1201,14 +1214,13 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
-.toolImages,
-.toolImages .imageItem,
-.toolImages .imageButton {
-  max-width: 100%;
-}
+/* Images a tool read (screenshots, crops): one row height whatever their size; a click shows the whole image. */
 .toolImages .image {
-  max-width: min(100%, 640px);
-  max-height: 320px;
+  width: auto;
+  height: 96px;
+  max-width: 200px;
+  object-fit: cover;
+  object-position: top left;
 }
 .removeImage {
   position: absolute;
@@ -1222,8 +1234,14 @@
   border: 0;
   border-radius: 50%;
   background: var(--bg-popup);
+  box-shadow: 0 0 0 1px var(--border);
   color: var(--fg);
   cursor: pointer;
+}
+/* Opaque on hover too: the icon button's own hover fill is translucent over the image. */
+.imageItem .removeImage:not(:disabled):hover {
+  background: color-mix(in srgb, var(--fg-strong) 8%, var(--bg-popup));
+  color: var(--fg-strong);
 }
 
 .attachments {

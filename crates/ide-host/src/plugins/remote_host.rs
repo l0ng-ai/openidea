@@ -20,6 +20,7 @@
 
 use super::{Consent, HostWorkspace, PluginEvent, PluginHost, PluginSource, SecretStore};
 use crate::catalogue::TrustClass;
+use crate::ops::blocking;
 use crate::rpc::{Dispatcher, PeerHandle};
 use base64::Engine as _;
 use ide_core::{IdeError, IdeResult};
@@ -449,10 +450,6 @@ impl RemotePlugins {
             }
         });
     }
-}
-
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 fn spawn_supervision(host: Weak<PluginHost>) -> IdeResult<()> {

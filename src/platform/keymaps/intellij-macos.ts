@@ -406,6 +406,8 @@ export const intellijMacos: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Agents task list (when it has focus)
+  "agents.archiveTasks": ["Meta+Shift+E"],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
   "db.openConsole": ["Meta+Shift+L"],
   "db.newDataSource": [],

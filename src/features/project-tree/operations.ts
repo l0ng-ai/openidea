@@ -938,9 +938,3 @@ export function reformatNodes(nodes: readonly ProjectNode[]): boolean {
     directories: targets.filter((n) => n.dir).map((n) => n.path),
   });
 }
-
-/** Argument for VCS actions: one path or several. */
-export function vcsArg(nodes: ProjectNode[] = selectedNodes()): string | string[] {
-  const paths = nodes.map((n) => n.path);
-  return paths.length === 1 ? paths[0]! : paths;
-}

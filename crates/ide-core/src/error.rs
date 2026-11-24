@@ -41,6 +41,11 @@ pub enum ErrorData {
     AmendConflict {
         commit: String,
     },
+    /// jdtls could not set a module up as a Java project: the errors on its build files and
+    /// the builds enclosing it (`path: message`, the path relative to the project), nearest first.
+    JavaBuildProblems {
+        problems: Vec<String>,
+    },
 }
 
 /// Git's reported result for each destination ref. A remote with several push URLs can

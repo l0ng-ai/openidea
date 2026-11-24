@@ -506,6 +506,7 @@ export const viewerTheme = EditorView.theme(
     ".cm-collapsedLines": {
       WebkitUserSelect: "none",
       userSelect: "none",
+      minHeight: "max(27px, var(--openidea-editor-line-height, var(--lh-code)))",
       padding: "0",
       background: "var(--bg-editor)",
     },
@@ -514,7 +515,7 @@ export const viewerTheme = EditorView.theme(
       alignItems: "center",
       gap: "var(--space-1)",
       width: "100%",
-      minHeight: "max(27px, var(--openidea-editor-line-height, var(--lh-code)))",
+      minHeight: "inherit",
       padding: "0 var(--space-3)",
       color: "var(--fg-secondary)",
       fontFamily: "var(--font-ui)",

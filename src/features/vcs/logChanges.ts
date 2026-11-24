@@ -8,6 +8,8 @@ import type { ChangedFile, Commit, FileLineStats, LinkTarget, RevisionChange } f
 import { call, commands } from "@/platform/ipc";
 import { editorService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
+import { workflowSettings } from "@/platform/workflowSettings";
+import { combinedOf } from "./allInOneDiff";
 import {
   commitFileDiffData,
   openDiff,
@@ -255,9 +257,12 @@ export async function showChangesDiff(
     Math.max(0, chain.indexOf(first)),
   );
   // Selection preview stays a preview tab even under the modal interface; an explicit
-  // diff opens where the commit interface puts it.
-  if (preview) await openDiff(data, { preview: true, focus: false });
-  else await openVcsDiff(data, { preview: true });
+  // diff opens where the commit interface puts it. With "Open diff as editor tab" off
+  // (and no all-in-one diff) that is a separate window, so there is no tab to preview in.
+  if (preview) {
+    if (!vcsDiffInFront() && !workflowSettings().vcs.diffAsEditorTab && !combinedOf(data)) return;
+    await openDiff(data, { preview: true, focus: false });
+  } else await openVcsDiff(data, { preview: true });
 }
 
 /** Compare the selected files' saved revisions with their working copies. */
