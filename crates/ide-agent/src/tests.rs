@@ -1334,14 +1334,17 @@ async fn a_turn_saves_the_task_file_once_per_stop() {
     let _shut_down = ShutDown(&mgr);
     let stops = Arc::new(Mutex::new(Vec::<Stop>::new()));
     let (sink, dir) = (stops.clone(), tmp.path().to_path_buf());
-    mgr.subscribe(Arc::new(move |event| {
-        if let AgentEvent::Task { task } = event
-            && matches!(task.status, AgentStatus::NeedsInput | AgentStatus::Ready)
-        {
-            let path = task_file(&dir, &task.id);
-            sink.lock().push(Stop { status: task.status, saves: saves(&path), file: saved_task(&path) });
-        }
-    }));
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |event| {
+            if let AgentEvent::Task { task } = event
+                && matches!(task.status, AgentStatus::NeedsInput | AgentStatus::Ready)
+            {
+                let path = task_file(&dir, &task.id);
+                sink.lock().push(Stop { status: task.status, saves: saves(&path), file: saved_task(&path) });
+            }
+        }),
+    );
     let task = mgr
         .create(NewAgentTask {
             prompt: text("Fix the lexer"),
@@ -1664,13 +1667,16 @@ async fn a_failed_turn_is_saved_before_the_window_hears_of_it() {
         let _shut_down = ShutDown(&mgr);
         let told = Arc::new(Mutex::new(None));
         let (sink, dir) = (told.clone(), tmp.path().to_path_buf());
-        mgr.subscribe(Arc::new(move |event| {
-            if let AgentEvent::Task { task } = event
-                && task.status == status
-            {
-                *sink.lock() = Some(saved_task(&task_file(&dir, &task.id)).map(|(status, _)| status));
-            }
-        }));
+        mgr.subscribe_as(
+            "",
+            Arc::new(move |event| {
+                if let AgentEvent::Task { task } = event
+                    && task.status == status
+                {
+                    *sink.lock() = Some(saved_task(&task_file(&dir, &task.id)).map(|(status, _)| status));
+                }
+            }),
+        );
         let task = mgr
             .create(NewAgentTask {
                 prompt: text(message),
