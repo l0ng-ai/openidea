@@ -288,6 +288,7 @@ describe("catalogs", () => {
     "ID:",
     "Code Vision",
     "JUnit",
+    "HotSwap",
     "⌘Enter",
     "Fork",
     "Shell",
