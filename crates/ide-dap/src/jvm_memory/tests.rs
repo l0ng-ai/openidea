@@ -1506,6 +1506,27 @@ async fn run_dump_of_a_debugged_jvm_asks_for_no_json_while_the_session_holds_it(
 }
 
 #[tokio::test]
+async fn run_dump_through_a_linked_session_whose_jvm_is_not_located_asks_for_no_json_while_stopped() {
+    // Gradle bootRun Debug after an earlier run dump opened the listener: the session's pid is still 0.
+    let bare = stopped_attach(0);
+    let fake = Arc::new(dumping_threads(555, vec![Ok(THREADS.into())]));
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let dump = ready_dump(known_pid_dump(&bare.session, |_| probe, 555, Some(json_dir().into())).await.unwrap());
+    assert_eq!((dump.pid, dump.taken_while_suspended), (555, true));
+    assert_eq!((dump.virtual_json, dump.virtual_note), (None, Some(VirtualThreadsNote::WhileSuspended)));
+    assert_eq!(*fake.commands.lock(), ["thread_print"]);
+
+    // Running, the same session gets the JSON dump too.
+    let bare = bare_session("attach");
+    let fake = Arc::new(dumping_threads(555, vec![Ok(THREADS.into())]));
+    *fake.json_dumps.lock() = vec![Ok(VIRTUAL_JSON.into())].into();
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let dump = ready_dump(known_pid_dump(&bare.session, |_| probe, 555, Some(json_dir().into())).await.unwrap());
+    assert_eq!((dump.virtual_json.as_deref(), dump.virtual_note), (Some(VIRTUAL_JSON), None));
+    assert_eq!(*fake.commands.lock(), ["ensure_listener", "thread_print", "thread_dump_json"]);
+}
+
+#[tokio::test]
 async fn run_dump_of_a_debugged_jvm_waits_for_the_session_turn() {
     let bare = bare_session("attach");
     bare.session.jvm_pid.store(4242, Ordering::Release);
