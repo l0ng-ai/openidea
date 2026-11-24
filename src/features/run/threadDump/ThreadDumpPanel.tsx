@@ -14,7 +14,16 @@ import { ConsoleModel } from "../console";
 import { ConsoleView } from "../ConsoleView";
 import { updateThreadDump } from "../stackTrace";
 import type { DeadlockLink, ThreadDump } from "./parse";
-import { stateCounts, threadStackText, visibleThreads, type ThreadDumpTab } from "./store";
+import {
+  stateCounts,
+  threadRows,
+  threadStackText,
+  visibleThreads,
+  type ThreadDumpTab,
+  type ThreadRow,
+  type ThreadSection,
+  type VirtualNote,
+} from "./store";
 import runStyles from "../Run.module.css";
 import styles from "./ThreadDump.module.css";
 
@@ -40,6 +49,27 @@ async function saveDump(tab: ThreadDumpTab) {
     });
   }
 }
+
+function virtualNoteText(note: VirtualNote): string {
+  switch (note) {
+    case "noLockOwners":
+      return tx("Lock owners of virtual threads need Java 25 or later.");
+    case "whileSuspended":
+      return tx("Virtual threads are not listed while the debugger stops the program.");
+    case "tooLarge":
+      return tx("Virtual threads are not listed: there are too many to read.");
+    case "failed":
+      return tx("Virtual threads are not listed: the JVM could not report them.");
+  }
+}
+
+function sectionText(row: ThreadSection): string {
+  if (row.section === "container") return row.name;
+  const { count } = row;
+  return tx`Virtual threads (${count})`;
+}
+
+const isSection = (row: ThreadRow): row is ThreadSection => typeof row !== "number";
 
 function DeadlockBanner({ dump, onSelect }: { dump: ThreadDump; onSelect: (name: string) => void }) {
   if (!dump.deadlocks.length) return null;
@@ -76,6 +106,7 @@ export function ThreadDumpPanel({ tab }: { tab: ThreadDumpTab }) {
   const { dump, filter, hideJvm, selected, refresh } = tab;
   const shown = useMemo(() => visibleThreads(dump, filter, hideJvm), [dump, filter, hideJvm]);
   const counts = useMemo(() => stateCounts(dump.threads, shown), [dump, shown]);
+  const rows = useMemo(() => threadRows(dump.threads, shown), [dump, shown]);
   const thread = selected === null ? undefined : dump.threads[selected];
   const model = useMemo(() => {
     const m = new ConsoleModel();
@@ -153,15 +184,32 @@ export function ThreadDumpPanel({ tab }: { tab: ThreadDumpTab }) {
                 <span key={state}>{`${state} ${n}`}</span>
               ))}
             </div>
+            {tab.virtualNote && (
+              <div role="note" className={styles.note}>
+                {virtualNoteText(tab.virtualNote)}
+              </div>
+            )}
             <List
               className={styles.list}
               aria-label={tx("Threads")}
-              items={shown}
-              getKey={(i) => String(i)}
-              activeIndex={selected === null ? -1 : shown.indexOf(selected)}
-              onActiveChange={(i) => set({ selected: shown[i] ?? null })}
-              renderItem={(i) => {
-                const t = dump.threads[i]!;
+              items={rows}
+              getKey={(row) =>
+                isSection(row) ? `${row.section}:${row.section === "container" ? row.name : ""}` : String(row)
+              }
+              isSection={isSection}
+              renderSection={(row) =>
+                isSection(row) && (
+                  <span className={row.section === "container" ? styles.container : undefined}>{sectionText(row)}</span>
+                )
+              }
+              activeIndex={selected === null ? -1 : rows.indexOf(selected)}
+              onActiveChange={(i) => {
+                const row = rows[i];
+                set({ selected: typeof row === "number" ? row : null });
+              }}
+              renderItem={(row) => {
+                if (isSection(row)) return null;
+                const t = dump.threads[row]!;
                 return (
                   <>
                     <Icon name={t.state === "RUNNABLE" ? "thread-running" : "thread-suspended"} label={t.state} />

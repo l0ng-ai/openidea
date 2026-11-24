@@ -2,7 +2,7 @@
 import { registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
-import { call, commands, type JvmThreadsResult, type RunConfig } from "@/platform/ipc";
+import { call, commands, type JvmThreadDump, type JvmThreadsResult, type RunConfig } from "@/platform/ipc";
 import { isJvmApplication } from "@/platform/javaLaunch";
 import { useProject } from "@/platform/project";
 import { notifications, toolWindowService } from "@/workbench/contributions";
@@ -44,31 +44,32 @@ function jvmRunSession(id?: string): RunSession | undefined {
   return s && s.status === "running" && s.runId !== null && isJvmRun(s.config) ? s : undefined;
 }
 
-/** The dump's text; a dump that was not taken throws why. */
-async function dumpText(take: () => Promise<JvmThreadsResult>): Promise<string> {
+/** A dump that was not taken throws why. */
+async function takeDump(take: () => Promise<JvmThreadsResult>): Promise<JvmThreadDump> {
   const result = await take().catch((e: unknown): JvmThreadsResult => ({
     status: "unavailable",
     reason: { kind: "failed", message: e instanceof Error ? e.message : String(e) },
   }));
-  if (result.status === "ready") return result.dump.text;
+  if (result.status === "ready") return result.dump;
   throw new Error(threadsUnavailableText(result.reason));
 }
 
 async function openThreadDump({ title, source, take }: ThreadDumpRequest) {
-  let text: string;
+  let dump: JvmThreadDump;
   try {
-    text = await dumpText(take);
+    dump = await takeDump(take);
   } catch (e) {
     notifications().notify({ group: "run", level: "warning", title: "Dump Threads", body: (e as Error).message });
     return;
   }
-  const id = addThreadDump(text, { title, source });
+  const id = addThreadDump(dump.text, { title, source, virtual: dump });
   // A debug session's dump opens here too, so the Run tool window may be hidden.
   toolWindowService().show("run", true);
   // The tab reports a failed refresh itself, so this one only throws.
   const refresh = async () => {
-    const next = normalizeTrace(await dumpText(take));
-    updateThreadDump(id, (t) => withDumpText(t, next));
+    const next = await takeDump(take);
+    const text = normalizeTrace(next.text);
+    updateThreadDump(id, (t) => withDumpText(t, text, next));
   };
   updateThreadDump(id, (t) => ({ ...t, refresh }));
 }
