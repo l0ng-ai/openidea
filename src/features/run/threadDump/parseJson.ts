@@ -24,6 +24,7 @@ const STATES = new Set<string>(["RUNNABLE", "BLOCKED", "WAITING", "TIMED_WAITING
 // JDK 21 marks no thread as virtual and omits the state, but every virtual thread's stack ends in
 // this frame. Carrier threads (ForkJoinPool workers) sit in non-root containers too, so the
 // container cannot tell them apart.
+// A JDK 21 virtual thread with an empty stack is not recognised: nothing marks it (deliberate).
 const VIRTUAL_BOTTOM_FRAME = /^java\.base\/java\.lang\.VirtualThread\.run\(/;
 
 function strings(value: unknown): string[] {
@@ -37,7 +38,8 @@ function isVirtual(thread: JsonThread, stack: string[]): boolean {
 }
 
 function toDumpThread(thread: JsonThread, container: string, stack: string[]): DumpThread {
-  const tid = typeof thread.tid === "string" || typeof thread.tid === "number" ? Number(thread.tid) : NaN;
+  const rawTid = typeof thread.tid === "string" ? thread.tid.trim() : thread.tid;
+  const tid = (typeof rawTid === "string" && rawTid !== "") || typeof rawTid === "number" ? Number(rawTid) : NaN;
   const owned = Array.isArray(thread.monitorsOwned) ? (thread.monitorsOwned as { locks?: unknown }[]) : [];
   const waitsOn = [thread.blockedOn, thread.parkBlocker?.object, thread.waitingOn].find(
     (v): v is string => typeof v === "string",
@@ -79,15 +81,23 @@ export function virtualThreads(json: string): DumpThread[] {
   return result;
 }
 
-/** Cycles in the wait-for graph built from monitor ownership; each thread waits on at most one lock. */
+/**
+ * Cycles in the wait-for graph of monitor contention; each thread waits on at most one lock.
+ * Only BLOCKED threads (`blockedOn`) have an edge: a thread in wait() or parked waits for a
+ * notify or unpark, which is no deadlock. The same thread still lists the monitor it wait()s on
+ * as owned, so that listing does not make it the owner.
+ */
 export function monitorCycles(threads: DumpThread[]): DeadlockLink[][] {
   const ownerOf = new Map<string, number>();
   threads.forEach((t, i) => {
-    for (const lock of t.holds) if (!ownerOf.has(lock)) ownerOf.set(lock, i);
+    for (const lock of t.holds) {
+      if (lock === t.waitsOn && t.state !== "BLOCKED") continue;
+      if (!ownerOf.has(lock)) ownerOf.set(lock, i);
+    }
   });
 
   const next = threads.map((t, i) => {
-    const owner = t.waitsOn === null ? undefined : ownerOf.get(t.waitsOn);
+    const owner = t.state === "BLOCKED" && t.waitsOn !== null ? ownerOf.get(t.waitsOn) : undefined;
     return owner === undefined || owner === i ? -1 : owner;
   });
 
