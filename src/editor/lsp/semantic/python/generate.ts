@@ -9,6 +9,7 @@ import type { GenerateEntry } from "../languages";
 import {
   ID,
   classMembers,
+  classHeader,
   codeLines,
   enclosingClass,
   implementPythonAbstractMethods,
@@ -25,6 +26,8 @@ export interface PythonField {
   annotation: string | null;
   /** Default value text (a class field's value). */
   value: string | null;
+  /** 1-based line declaring a class field. */
+  line?: number;
 }
 
 const NAME = new RegExp(`^(${ID})\\s*`, "u");
@@ -63,7 +66,7 @@ export function classFields(lines: readonly string[], header: number): PythonFie
   const body = codeLines(lines, header);
   const indent = body[0] ? indentOf(body[0].text) : -1;
   const out: PythonField[] = [];
-  for (const { text } of body) {
+  for (const { n, text } of body) {
     if (indentOf(text) !== indent) continue;
     const trimmed = text.trim();
     const name = NAME.exec(trimmed);
@@ -72,7 +75,7 @@ export function classFields(lines: readonly string[], header: number): PythonFie
     if (!parts) continue;
     const annotation = parts.annotation.replace(/^:\s*/, "") || null;
     if (annotation && /^(typing\.)?ClassVar\b/.test(annotation)) continue;
-    out.push({ name: name[1]!, annotation, value: parts.value });
+    out.push({ name: name[1]!, annotation, value: parts.value, line: n });
   }
   return out;
 }
@@ -82,7 +85,7 @@ export function classFields(lines: readonly string[], header: number): PythonFie
  * dict or pydantic model base, or a dataclass / attrs decorator.
  */
 export function generatesOwnInit(lines: readonly string[], header: number): boolean {
-  const bases = /\((.*)\)/.exec(lines[header - 1]!)?.[1] ?? "";
+  const bases = /\(([\s\S]*)\)/.exec(classHeader(lines, header).text)?.[1] ?? "";
   if (bases.split(",").some((b) => OWN_INIT_BASE.test(b.replace(/\[.*$/, "").trim()))) return true;
   for (let n = header - 1; n >= 1 && lines[n - 1]!.trim().startsWith("@"); n--)
     if (OWN_INIT_DECORATOR.test(lines[n - 1]!.trim())) return true;
@@ -111,6 +114,16 @@ export function instanceAttributes(lines: readonly string[], header: number): Py
     else if (!known.annotation) known.annotation = annotation;
   }
   return [...out.values()];
+}
+
+/**
+ * What Generate › Property offers: the class fields (not in classes that make their own `__init__`,
+ * whose fields a property would replace), then the attributes assigned on `self`.
+ */
+export function propertyAttributes(lines: readonly string[], header: number): PythonField[] {
+  const fields = generatesOwnInit(lines, header) ? [] : classFields(lines, header);
+  const names = new Set(fields.map((f) => f.name));
+  return [...fields, ...instanceAttributes(lines, header).filter((a) => !names.has(a.name))];
 }
 
 /** An `__init__` taking `fields` (those with a value last, keeping it as the default) and assigning them. */
@@ -192,7 +205,7 @@ export async function generatePythonProperties(view: EditorView): Promise<void> 
   if (!cls) return;
   const { lines, header } = cls;
   const taken = new Set(classMembers(lines, header).map((m) => m.name));
-  const attrs = instanceAttributes(lines, header).filter((a) => !taken.has(a.name.replace(/^_+/, "") || a.name));
+  const attrs = propertyAttributes(lines, header).filter((a) => !taken.has(a.name.replace(/^_+/, "") || a.name));
   if (!attrs.length) {
     showHint(view, "No attributes to generate properties for");
     return;
@@ -208,7 +221,22 @@ export async function generatePythonProperties(view: EditorView): Promise<void> 
   });
   if (!ids?.length || view.state.doc.toJSON().join("\n") !== lines.join("\n")) return;
   const chosen = ids.map((id) => attrs[Number(id)]!);
-  insertMembers(view, lines, header, (indent, unit) => chosen.map((a) => propertyText(a, indent, unit)).join("\n\n"));
+  // A public class field becomes the property's private field (`x = 0` → `_x = 0`): the property
+  // would otherwise replace it, losing its value.
+  const renames = chosen.flatMap((a) => {
+    if (!a.line || a.name.startsWith("_")) return [];
+    const line = view.state.doc.line(a.line);
+    return [{ from: line.from + indentOf(line.text), insert: "_" }];
+  });
+  insertMembers(
+    view,
+    lines,
+    header,
+    (indent, unit) => chosen.map((a) => propertyText(a, indent, unit)).join("\n\n"),
+    [],
+    false,
+    renames,
+  );
 }
 
 /** Generate (⌘N) in a Python class: `__init__`, properties, Override / Implement Methods. */

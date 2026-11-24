@@ -4,7 +4,7 @@
   "Create method '{name}' in '{owner}'": "在 '{owner}' 中创建方法 '{name}'",
   "Dataclasses, enums, named tuples, typed dicts and models get __init__ on their own": "数据类、枚举、具名元组、TypedDict 和模型会自动获得 __init__",
   "Constructor (__init__)…": "构造函数 (__init__)…",
-  "Property…": "Property…",
+  "Property…": "属性 (property)…",
   "Choose Fields to Initialize by Constructor": "选择由构造函数初始化的字段",
   "Choose Attributes to Generate Properties For": "选择要生成 property 的属性",
   "The class already defines __init__": "该类已定义 __init__",

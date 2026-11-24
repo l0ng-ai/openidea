@@ -5,6 +5,7 @@
  * `pass` stubs, overrides call `super()`, at the end of the class body.
  */
 import { indentUnit } from "@codemirror/language";
+import type { ChangeSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { commands } from "@/platform/ipc";
 import type { ContributedIntention } from "@/editor/api";
@@ -235,7 +236,7 @@ export async function implementPythonAbstractMethods(view: EditorView): Promise<
 
 /**
  * Inserts `text(indent, unit)` at the end of the body of the class headed at `header` (1-based),
- * or with `beforeMethods`, before its first method (after its fields).
+ * or with `beforeMethods`, before its first method (after its fields), along with `extra` changes.
  */
 export function insertMembers(
   view: EditorView,
@@ -244,6 +245,7 @@ export function insertMembers(
   text: (indent: string, unit: string) => string,
   imports: readonly string[] = [],
   beforeMethods = false,
+  extra: readonly ChangeSpec[] = [],
 ) {
   const state = view.state;
   const end = bodyEnd(lines, header);
@@ -290,7 +292,7 @@ export function insertMembers(
         : { from: state.doc.length, insert: `\n${added.join("\n")}` },
     );
   }
-  view.dispatch({ changes: [...importChanges, changes], userEvent: "input.complete", scrollIntoView: true });
+  view.dispatch({ changes: [...importChanges, ...extra, changes], userEvent: "input.complete", scrollIntoView: true });
 }
 
 /** A base class of the class at the caret and the methods it declares. */

@@ -1,9 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { indentUnit } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { classFields, generatesOwnInit, initText, instanceAttributes, propertyText } from "./generate";
+import {
+  classFields,
+  generatePythonInit,
+  generatePythonProperties,
+  generatesOwnInit,
+  initText,
+  instanceAttributes,
+  propertyAttributes,
+  propertyText,
+} from "./generate";
 import { insertMembers } from "./members";
+
+// The chooser picks every member offered.
+vi.mock("../../memberChooser", () => ({
+  chooseMembers: async (_view: unknown, { members }: { members: Array<{ id: string }> }) => members.map((m) => m.id),
+}));
 
 const src = `from typing import ClassVar
 
@@ -33,9 +47,9 @@ class Point:
 describe("python generate", () => {
   it("lists the class fields, not class variables, dunders or docstring text", () => {
     expect(classFields(src, 4)).toEqual([
-      { name: "x", annotation: "float", value: null },
-      { name: "y", annotation: "float", value: "0.0" },
-      { name: "label", annotation: null, value: '"p"' },
+      { name: "x", annotation: "float", value: null, line: 12 },
+      { name: "y", annotation: "float", value: "0.0", line: 13 },
+      { name: "label", annotation: null, value: '"p"', line: 14 },
     ]);
   });
 
@@ -115,10 +129,10 @@ describe("python generate review cases", () => {
       "    ok: bool = x == y",
     ];
     expect(classFields(lines, 1)).toEqual([
-      { name: "color", annotation: null, value: '"#fff"' },
-      { name: "prefix", annotation: "str", value: '"#"' },
-      { name: "größe", annotation: "int", value: "1" },
-      { name: "ok", annotation: "bool", value: "x == y" },
+      { name: "color", annotation: null, value: '"#fff"', line: 2 },
+      { name: "prefix", annotation: "str", value: '"#"', line: 3 },
+      { name: "größe", annotation: "int", value: "1", line: 9 },
+      { name: "ok", annotation: "bool", value: "x == y", line: 10 },
     ]);
   });
 
@@ -159,5 +173,76 @@ describe("python generate review cases", () => {
     expect(generatesOwnInit(["@dataclass(frozen=True)", "class D:", "    x: int"], 2)).toBe(true);
     expect(generatesOwnInit(["@attrs.define", "class D:", "    x: int"], 2)).toBe(true);
     expect(generatesOwnInit(["class Plain(Base):", "    x: int"], 1)).toBe(false);
+  });
+});
+
+describe("python generate fixes", () => {
+  const run = async (doc: string, line: number, generate: (view: EditorView) => Promise<void>) => {
+    const view = new EditorView({ state: EditorState.create({ doc, extensions: indentUnit.of("    ") }) });
+    view.dispatch({ selection: { anchor: view.state.doc.line(line).from } });
+    await generate(view);
+    return view.state.doc.toString();
+  };
+
+  it("offers class attributes besides instance attributes, not in enums", () => {
+    const lines = [
+      "class Counter:",
+      "    count = 0",
+      "    _step: int = 1",
+      "    def bump(self):",
+      "        self.total = 1",
+    ];
+    expect(propertyAttributes(lines, 1).map((a) => a.name)).toEqual(["count", "_step", "total"]);
+    expect(propertyAttributes(["class C(Enum):", "    A = 1"], 1)).toEqual([]);
+  });
+
+  it("turns a public class attribute into the property's private field", async () => {
+    const doc = [
+      "class Counter:",
+      "    count = 0",
+      "    _step: int = 1",
+      "",
+      "    def bump(self):",
+      "        self.count += self._step",
+    ];
+    expect(await run(doc.join("\n"), 2, generatePythonProperties)).toBe(
+      [
+        "class Counter:",
+        "    _count = 0",
+        "    _step: int = 1",
+        "",
+        "    def bump(self):",
+        "        self.count += self._step",
+        "",
+        "    @property",
+        "    def count(self):",
+        "        return self._count",
+        "",
+        "    @count.setter",
+        "    def count(self, value):",
+        "        self._count = value",
+        "",
+        "    @property",
+        "    def step(self) -> int:",
+        "        return self._step",
+        "",
+        "    @step.setter",
+        "    def step(self, value: int) -> None:",
+        "        self._step = value",
+      ].join("\n"),
+    );
+  });
+
+  it("splits a one-line class before writing __init__", async () => {
+    expect(await run("class Inline: pass", 1, generatePythonInit)).toBe(
+      "class Inline:\n    def __init__(self):\n        pass",
+    );
+    expect(await run("class Inline:\n    x: int = 0", 1, generatePythonInit)).toBe(
+      "class Inline:\n    x: int = 0\n\n    def __init__(self, x: int = 0):\n        self.x = x",
+    );
+  });
+
+  it("reads the bases of a header spanning lines", () => {
+    expect(generatesOwnInit(["class C(", "    Base,", "    Enum,", "):", "    A = 1"], 1)).toBe(true);
   });
 });
