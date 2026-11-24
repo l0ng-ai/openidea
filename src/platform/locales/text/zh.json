@@ -975,6 +975,7 @@
   "Comment with Line Comment": "使用行注释",
   "Comment with Block Comment": "使用块注释",
   "Duplicate Line or Selection": "复制行或选区",
+  "Duplicate Entire Lines": "复制整行",
   "Delete Line": "删除行",
   "Move Line Up": "上移行",
   "Move Line Down": "下移行",

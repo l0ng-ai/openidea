@@ -99,6 +99,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.extendSelection": ["Ctrl+W"],
   "code.shrinkSelection": ["Ctrl+Shift+W"],
   "code.duplicateLine": ["Ctrl+D"],
+  "code.duplicateEntireLines": [],
   "code.deleteLine": ["Ctrl+Y"],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
