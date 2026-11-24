@@ -235,10 +235,14 @@ function revealPos(v: EditorView, pos: number) {
 
 function keepViewState(state: DiffViewState, side: Side): Extension {
   return EditorView.updateListener.of((u) => {
+    const uncollapsed = u.transactions.flatMap((tr) =>
+      tr.effects.filter((e) => e.is(uncollapseUnchanged)).map((e) => e.value as number),
+    );
+    // A pane nobody touched keeps nothing, so its doc isn't held for the tab's lifetime.
+    if (!u.docChanged && !u.selectionSet && !uncollapsed.length) return;
     const saved = state[side];
     const expanded = saved?.doc === u.startState.doc ? saved.expanded.map((pos) => u.changes.mapPos(pos)) : [];
-    for (const tr of u.transactions) for (const e of tr.effects) if (e.is(uncollapseUnchanged)) expanded.push(e.value);
-    state[side] = { doc: u.state.doc, selection: u.state.selection, expanded };
+    state[side] = { doc: u.state.doc, selection: u.state.selection, expanded: [...expanded, ...uncollapsed] };
   });
 }
 

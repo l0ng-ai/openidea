@@ -22,11 +22,12 @@ const rules = () =>
 
 // A theme created per editor adds its rules to the page again, and the browser then restyles every
 // element: in the all-in-one diff that was about 90 ms per file block mounted while scrolling.
-it("adds no style rules to the page for another diff", async () => {
-  render(<DiffEditor input={input("diff:first")} />);
+it.each([false, true])("adds no style rules to the page for another diff (fit: %s)", async (fit) => {
+  render(<DiffEditor input={input("diff:first")} fit={fit} />);
   await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(2));
   const before = rules();
-  render(<DiffEditor input={input("diff:second")} />);
-  await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(4));
+  render(<DiffEditor input={input("diff:second")} fit={fit} />);
+  render(<DiffEditor input={input("diff:third")} fit={fit} />);
+  await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(6));
   expect(rules()).toBe(before);
 });

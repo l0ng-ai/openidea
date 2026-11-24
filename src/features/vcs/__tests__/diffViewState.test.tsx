@@ -7,15 +7,18 @@ import { DiffEditor, type DiffViewState } from "../DiffEditor";
 afterEach(cleanup);
 
 const lines = Array.from({ length: 40 }, (_, i) => `line ${i}`);
-const input = {
-  kind: "diff",
-  key: "diff:view-state",
-  data: {
-    path: "",
-    left: { type: "text", text: [...lines, "old end"].join("\n"), label: "" },
-    right: { type: "text", text: [...lines, "new end"].join("\n"), label: "" },
-  },
-} as unknown as EditorInput;
+const inputFor = (mode: "split" | "unified") =>
+  ({
+    kind: "diff",
+    key: `diff:view-state:${mode}`,
+    data: {
+      path: "",
+      mode,
+      left: { type: "text", text: [...lines, "old end"].join("\n"), label: "" },
+      right: { type: "text", text: [...lines, "new end"].join("\n"), label: "" },
+    },
+  }) as unknown as EditorInput;
+const input = inputFor("split");
 
 const pane = (index: number) =>
   EditorView.findFromDOM(document.querySelectorAll<HTMLElement>(".cm-mergeViewEditor .cm-editor")[index]!)!;
@@ -35,4 +38,21 @@ it("keeps a remounted diff's selection and expanded unchanged lines", async () =
   await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
   expect(collapsed()).toBe(0);
   expect(pane(1).state.selection.main).toMatchObject({ anchor: 3, head: 10 });
+});
+
+it("keeps them in the unified viewer too", async () => {
+  const viewState: DiffViewState = {};
+  const unified = inputFor("unified");
+  const view = () => EditorView.findFromDOM(document.querySelector<HTMLElement>(".cm-editor")!)!;
+  const first = render(<DiffEditor input={unified} viewState={viewState} fit />);
+  await waitFor(() => expect(collapsed()).toBe(1));
+  act(() => (document.querySelector(".cm-collapsedLines") as HTMLElement).click());
+  expect(collapsed()).toBe(0);
+  act(() => view().dispatch({ selection: { anchor: 3, head: 10 } }));
+  first.unmount();
+
+  render(<DiffEditor input={unified} viewState={viewState} fit />);
+  await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(1));
+  expect(collapsed()).toBe(0);
+  expect(view().state.selection.main).toMatchObject({ anchor: 3, head: 10 });
 });
