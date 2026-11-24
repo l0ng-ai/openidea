@@ -707,6 +707,81 @@ pub fn explode(war: &Path, destination: &Path, resources_only: bool) -> IdeResul
     remove_stale(destination, destination, &expected, resources_only)
 }
 
+/// A single web application deployed into a local Tomcat server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TomcatDeployment {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_descriptor: Option<String>,
+}
+
+/// Returns all configured deployments for a Tomcat run configuration.
+/// Reads `params["deployments"]` (JSON array) when present; otherwise falls back to legacy
+/// single-deployment fields (`deployment`, `artifact`, `deploymentPath`, etc.).
+pub fn configured_deployments(config: &RunConfig) -> IdeResult<Vec<TomcatDeployment>> {
+    let p = &config.extras.params;
+    if let Some(raw) = p.get("deployments").map(String::as_str).filter(|s| !s.trim().is_empty()) {
+        return serde_json::from_str::<Vec<TomcatDeployment>>(raw)
+            .map_err(|e| invalid(format!("Invalid Tomcat deployments configuration: {e}")));
+    }
+    Ok(vec![TomcatDeployment {
+        kind: p.get("deployment").cloned().unwrap_or_else(|| "artifact".into()),
+        artifact: p.get("artifact").filter(|s| !s.is_empty()).cloned(),
+        artifact_name: p.get("artifactName").filter(|s| !s.is_empty()).cloned(),
+        module: config.cwd.as_ref().map(|c| c.0.to_string_lossy().into_owned()).filter(|s| !s.is_empty()),
+        deployment_path: p.get("deploymentPath").filter(|s| !s.is_empty()).cloned(),
+        context_path: p.get("contextPath").filter(|s| !s.is_empty()).cloned(),
+        context_descriptor: p.get("contextDescriptor").filter(|s| !s.is_empty()).cloned(),
+    }])
+}
+
+fn deployment_slot_key(dep: &TomcatDeployment, index: usize) -> String {
+    let raw = dep
+        .artifact
+        .as_deref()
+        .or(dep.deployment_path.as_deref())
+        .or(dep.artifact_name.as_deref())
+        .unwrap_or("deployment");
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in raw.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let slug: String = dep
+        .artifact_name
+        .as_deref()
+        .or_else(|| Path::new(raw).file_stem().and_then(|s| s.to_str()))
+        .unwrap_or("app")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .take(24)
+        .collect();
+    let slug = if slug.is_empty() { format!("app-{index}") } else { slug };
+    format!("{slug}-{hash:08x}")
+}
+
+/// Returns `(metadata_dir, exploded_dir)` for deployment `dep`.
+/// Single-deployment configurations keep the legacy layout (`base` and `base/deployment`);
+/// multi-deployment configurations isolate each entry under `base/deployments/<slot>/`.
+pub fn deployment_dirs(base: &Path, dep: &TomcatDeployment, index: usize, total: usize) -> (PathBuf, PathBuf) {
+    if total <= 1 {
+        return (base.to_path_buf(), base.join("deployment"));
+    }
+    let slot = base.join("deployments").join(deployment_slot_key(dep, index));
+    (slot.clone(), slot.join("exploded"))
+}
+
 /// Updates the exploded artifact deployment from the module's own class output directories and
 /// its web resources ([`web_sources`]), file by file and only what changed, instead of
 /// rebuilding and re-exploding the WAR. `module` and `class_paths` are absolute.
@@ -714,9 +789,49 @@ pub fn explode(war: &Path, destination: &Path, resources_only: bool) -> IdeResul
 /// isn't on the classpath, or a module it depends on was compiled since the last update, whose
 /// archive in `WEB-INF/lib` would be stale) — rebuild the WAR instead.
 pub fn sync_outputs(base: &Path, module: &Path, class_paths: &[PathBuf], resources_only: bool) -> IdeResult<bool> {
-    let dest = base.join("deployment");
-    let manifest = base.join("synced-files.json");
-    let since = [base.join("artifact-path.txt"), manifest.clone()]
+    sync_outputs_in(base, &base.join("deployment"), module, class_paths, resources_only)
+}
+
+/// Syncs compiled outputs for the deployment matching `module` in `config` (single or multi-deployment).
+pub fn sync_outputs_for(
+    root: &Path,
+    base: &Path,
+    config: &RunConfig,
+    module: &Path,
+    class_paths: &[PathBuf],
+    resources_only: bool,
+) -> IdeResult<bool> {
+    let deps = configured_deployments(config)?;
+    let total = deps.len();
+    if total <= 1 {
+        if deps.first().is_some_and(|d| d.kind != "artifact") {
+            return Ok(false);
+        }
+        return sync_outputs(base, module, class_paths, resources_only);
+    }
+    for (idx, dep) in deps.iter().enumerate() {
+        if dep.kind != "artifact" {
+            continue;
+        }
+        let dep_module = deployment_module_dir(root, config, dep, total);
+        let canon = dunce::canonicalize(&dep_module).unwrap_or(dep_module);
+        if canon == module {
+            let (meta_dir, dest) = deployment_dirs(base, dep, idx, total);
+            return sync_outputs_in(&meta_dir, &dest, module, class_paths, resources_only);
+        }
+    }
+    Ok(false)
+}
+
+fn sync_outputs_in(
+    meta_dir: &Path,
+    dest: &Path,
+    module: &Path,
+    class_paths: &[PathBuf],
+    resources_only: bool,
+) -> IdeResult<bool> {
+    let manifest = meta_dir.join("synced-files.json");
+    let since = [meta_dir.join("artifact-path.txt"), manifest.clone()]
         .iter()
         .filter_map(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
         .max();
@@ -863,16 +978,25 @@ fn module_dir(root: &Path, module: Option<&Path>) -> PathBuf {
     }
 }
 
-/// The module directory a Tomcat config's WAR belongs to. Created configs carry it as `cwd`
-/// (set from the selected artifact); when it is missing, the selected artifact id still names
-/// the module — `maven:<pom>` its POM, `gradle:…` its build — instead of falling back to the
-/// project root, whose own `src` rarely exists and would make every launch look current.
+/// The module directory a Tomcat config's primary WAR belongs to.
+#[cfg(test)]
 fn artifact_module_dir(root: &Path, config: &RunConfig) -> PathBuf {
-    if config.cwd.is_some() {
+    let deps = configured_deployments(config).unwrap_or_default();
+    match deps.first() {
+        Some(dep) => deployment_module_dir(root, config, dep, deps.len()),
+        None => root.to_path_buf(),
+    }
+}
+
+/// The module directory a Tomcat deployment's WAR belongs to.
+fn deployment_module_dir(root: &Path, config: &RunConfig, dep: &TomcatDeployment, total: usize) -> PathBuf {
+    if let Some(m) = dep.module.as_deref().filter(|s| !s.is_empty()) {
+        return module_dir(root, Some(Path::new(m)));
+    }
+    if total <= 1 && config.cwd.is_some() {
         return module_dir(root, config.cwd.as_ref().map(|c| c.0.as_path()));
     }
-    let selected = config.extras.params.get("artifact").filter(|s| !s.is_empty());
-    if let Some(id) = selected {
+    if let Some(id) = dep.artifact.as_deref().filter(|s| !s.is_empty()) {
         if let Some(pom) = id.strip_prefix("maven:") {
             // `maven:pom.xml` is the root module itself.
             return match Path::new(pom).parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -942,22 +1066,23 @@ fn find_built_war(root: &Path, module: Option<&Path>) -> Option<PathBuf> {
     newest.map(|(_, path)| path)
 }
 
-/// Whether the WAR a Tomcat config deploys is newer than the module's sources, so its
-/// "Before launch › Build" task can be skipped (IDEA's up-to-date check). Conservative:
-/// a missing WAR or a newer source/build file means it is not current. Besides the WAR
-/// module's sources, web resources and build files, the sources and build files of every
-/// module in `modules` (project-relative build modules) are inspected: a mapper XML or
-/// class in a module the WAR depends on is packaged into it as a JAR.
-pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig, modules: &[PathBuf]) -> bool {
-    let p = &config.extras.params;
-    if p.get("deployment").map(String::as_str).unwrap_or("artifact") != "artifact" {
+/// Whether the WAR for a single deployment entry is newer than the module's sources.
+pub fn artifact_is_current_for(
+    root: &Path,
+    meta_dir: &Path,
+    config: &RunConfig,
+    dep: &TomcatDeployment,
+    total: usize,
+    modules: &[PathBuf],
+) -> bool {
+    if dep.kind != "artifact" {
         return true;
     }
-    let module = artifact_module_dir(root, config);
-    let selected = p.get("artifact").filter(|s| !s.is_empty());
-    let recorded_id = fs::read_to_string(base.join("artifact-id.txt")).ok();
-    let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id.as_str()));
-    let recorded = fs::read_to_string(base.join("artifact-path.txt")).ok().map(|s| PathBuf::from(s.trim()));
+    let module = deployment_module_dir(root, config, dep, total);
+    let selected = dep.artifact.as_deref().filter(|s| !s.is_empty());
+    let recorded_id = fs::read_to_string(meta_dir.join("artifact-id.txt")).ok();
+    let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id));
+    let recorded = fs::read_to_string(meta_dir.join("artifact-path.txt")).ok().map(|s| PathBuf::from(s.trim()));
     let war = match recorded.filter(|_| id_matches) {
         Some(war) if war.is_file() && is_war(&war) => war,
         _ => match find_built_war(root, Some(&module)) {
@@ -996,18 +1121,38 @@ pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig, modules
     newest.is_none_or(|time| time <= war_time)
 }
 
-pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: bool) -> IdeResult<PathBuf> {
-    let p = &config.extras.params;
-    match p.get("deployment").map(String::as_str).unwrap_or("artifact") {
+/// Whether all artifact WARs a Tomcat config deploys are newer than the project's sources, so
+/// "Before launch › Build" can be skipped (IDEA's up-to-date check). Conservative: a missing WAR
+/// or a newer source/build file means it is not current.
+pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig, modules: &[PathBuf]) -> bool {
+    let Ok(deps) = configured_deployments(config) else { return false };
+    let total = deps.len();
+    deps.iter().enumerate().all(|(idx, dep)| {
+        let (meta_dir, _) = deployment_dirs(base, dep, idx, total);
+        artifact_is_current_for(root, &meta_dir, config, dep, total, modules)
+    })
+}
+
+pub fn resolve_deployment(
+    root: &Path,
+    base: &Path,
+    config: &RunConfig,
+    dep: &TomcatDeployment,
+    index: usize,
+    total: usize,
+    resources_only: bool,
+) -> IdeResult<PathBuf> {
+    match dep.kind.as_str() {
         "artifact" => {
             // A build run this launch records its archive here. Without one (Before launch ›
             // Build removed, as IDEA allows), reuse the last build's archive, or an archive a
             // build tool already left in the module output, instead of rebuilding.
-            let selected = p.get("artifact").filter(|s| !s.is_empty());
-            let recorded_id = fs::read_to_string(base.join("artifact-id.txt")).ok();
-            let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id.as_str()));
-            let recorded = fs::read_to_string(base.join("artifact-path.txt")).ok().map(|s| PathBuf::from(s.trim()));
-            let module = artifact_module_dir(root, config);
+            let (meta_dir, dest) = deployment_dirs(base, dep, index, total);
+            let selected = dep.artifact.as_deref().filter(|s| !s.is_empty());
+            let recorded_id = fs::read_to_string(meta_dir.join("artifact-id.txt")).ok();
+            let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id));
+            let recorded = fs::read_to_string(meta_dir.join("artifact-path.txt")).ok().map(|s| PathBuf::from(s.trim()));
+            let module = deployment_module_dir(root, config, dep, total);
             let war = match recorded.filter(|_| id_matches) {
                 Some(war) => {
                     if war.is_file() && is_war(&war) {
@@ -1020,13 +1165,13 @@ pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: 
                     invalid("No built WAR artifact found - build the project first, or add 'Build' to Before launch")
                 })?,
             };
-            let dest = base.join("deployment");
             explode(&war, &dest, resources_only)?;
             Ok(dest)
         }
         kind @ ("war" | "directory") => {
-            let value = p
-                .get("deploymentPath")
+            let value = dep
+                .deployment_path
+                .as_deref()
                 .filter(|v| !v.trim().is_empty())
                 .ok_or_else(|| invalid("Choose a WAR file or exploded directory"))?;
             let path = root.join(value);
@@ -1043,16 +1188,30 @@ pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: 
     }
 }
 
-pub fn effective_context(config: &RunConfig, doc: &Path) -> String {
-    config.extras.params.get("contextPath").filter(|s| !s.is_empty()).cloned().unwrap_or_else(|| {
-        let name = config
-            .extras
-            .params
-            .get("artifactName")
-            .cloned()
+pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: bool) -> IdeResult<PathBuf> {
+    let deps = configured_deployments(config)?;
+    let first = deps.first().ok_or_else(|| invalid("Choose a WAR artifact, WAR file, or exploded directory"))?;
+    resolve_deployment(root, base, config, first, 0, deps.len(), resources_only)
+}
+
+pub fn effective_deployment_context(dep: &TomcatDeployment, doc: &Path) -> String {
+    dep.context_path.as_deref().filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_else(|| {
+        let name = dep
+            .artifact_name
+            .clone()
             .unwrap_or_else(|| doc.file_stem().unwrap_or_default().to_string_lossy().into_owned());
         if name == "ROOT" { "/".into() } else { format!("/{name}") }
     })
+}
+
+pub fn effective_context(config: &RunConfig, doc: &Path) -> String {
+    if let Ok(deps) = configured_deployments(config)
+        && let Some(first) = deps.first()
+    {
+        return effective_deployment_context(first, doc);
+    }
+    let name = doc.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    if name == "ROOT" { "/".into() } else { format!("/{name}") }
 }
 
 /// Platform-neutral plan; Windows uses the process manager's raw cmd quoting for batch scripts.
@@ -1138,17 +1297,44 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
         TomcatPorts { http: port, https, ajp, shutdown },
         &secret,
     )?;
-    // Build runs before prepare; retain its archive identity while recreating the runtime.
-    let metadata: Vec<_> = ["artifact-path.txt", "artifact-id.txt", "artifact-project.txt"]
-        .into_iter()
-        .filter_map(|name| fs::read(base.join(name)).ok().map(|bytes| (name, bytes)))
-        .collect();
+    // Build runs before prepare; retain archive identities (single and multi-deployment) while recreating the runtime.
+    let mut retained: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let retain_dir = |rel_root: &Path, abs_root: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>| {
+        for name in ["artifact-path.txt", "artifact-id.txt", "artifact-project.txt"] {
+            if let Ok(bytes) = fs::read(abs_root.join(name)) {
+                out.push((rel_root.join(name), bytes));
+            }
+        }
+        if let Ok(entries) = fs::read_dir(abs_root.join("artifact")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && let Ok(bytes) = fs::read(&path)
+                {
+                    out.push((rel_root.join("artifact").join(entry.file_name()), bytes));
+                }
+            }
+        }
+    };
+    retain_dir(Path::new(""), &base, &mut retained);
+    if let Ok(slots) = fs::read_dir(base.join("deployments")) {
+        for slot in slots.flatten() {
+            if slot.file_type().is_ok_and(|t| t.is_dir()) {
+                let rel = PathBuf::from("deployments").join(slot.file_name());
+                retain_dir(&rel, &slot.path(), &mut retained);
+            }
+        }
+    }
     if base.exists() {
         fs::remove_dir_all(&base)?;
     }
     fs::create_dir_all(&base)?;
-    for (name, bytes) in metadata {
-        fs::write(base.join(name), bytes)?;
+    for (rel, bytes) in retained {
+        let dst = base.join(rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(dst, bytes)?;
     }
     copy_tree(&source.join("conf"), &base.join("conf"))?;
     let deploy_apps = config.extras.params.get("deployTomcatApps").is_some_and(|v| v == "true");
@@ -1172,15 +1358,27 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     if deploy_apps && source.join("webapps").is_dir() {
         copy_tree(&source.join("webapps"), &base.join("webapps"))?;
     }
-    let doc = deployment(root, &base, config, false)?;
-    let context = context_name(&effective_context(config, &doc))?;
+    let deps = configured_deployments(config)?;
+    if deps.is_empty() {
+        return Err(invalid("Choose a WAR artifact, WAR file, or exploded directory"));
+    }
     let contexts = base.join("conf/Catalina/localhost");
     fs::write(base.join("conf/server.xml"), server)?;
     let debug = config.extras.params.get("tomcatDebug").is_some_and(|v| v == "true");
-    let custom_descriptor =
-        config.extras.params.get("contextDescriptor").map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| root.join(s));
-    let context_xml_content = deployed_context_xml_with_descriptor(&doc, custom_descriptor.as_deref(), !debug)?;
-    fs::write(contexts.join(format!("{context}.xml")), context_xml_content)?;
+    let total = deps.len();
+    let mut seen_contexts = std::collections::HashSet::new();
+    for (idx, dep) in deps.iter().enumerate() {
+        let doc = resolve_deployment(root, &base, config, dep, idx, total, false)?;
+        let ctx_path = effective_deployment_context(dep, &doc);
+        let context = context_name(&ctx_path)?;
+        if !seen_contexts.insert(context.clone()) {
+            return Err(invalid(format!("Duplicate Tomcat context path: {ctx_path}")));
+        }
+        let custom_descriptor =
+            dep.context_descriptor.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| root.join(s));
+        let context_xml_content = deployed_context_xml_with_descriptor(&doc, custom_descriptor.as_deref(), !debug)?;
+        fs::write(contexts.join(format!("{context}.xml")), context_xml_content)?;
+    }
     if let Some(jre) = config.extras.params.get("jre").filter(|s| !s.trim().is_empty()) {
         let jre = dunce::canonicalize(root.join(jre))?;
         config.env.insert("JAVA_HOME".into(), jre.to_string_lossy().into_owned());
@@ -1273,15 +1471,22 @@ pub fn update(root: &Path, cache: &Path, config: &RunConfig, mode: &str) -> IdeR
         return Err(invalid("Unknown Tomcat update operation"));
     }
     let base = effective_base_dir(root, cache, config)?;
-    let doc = deployment(root, &base, config, mode == "resources")?;
-    let context = context_name(&effective_context(config, &doc))?;
-    let file = base.join("conf/Catalina/localhost").join(format!("{context}.xml"));
-    if !file.is_file() {
-        return Err(invalid("Start this Tomcat configuration before updating it"));
+    let deps = configured_deployments(config)?;
+    if deps.is_empty() {
+        return Err(invalid("Choose a WAR artifact, WAR file, or exploded directory"));
     }
-    if mode == "redeploy" {
-        let content = fs::read(&file)?;
-        fs::write(file, content)?;
+    let total = deps.len();
+    for (idx, dep) in deps.iter().enumerate() {
+        let doc = resolve_deployment(root, &base, config, dep, idx, total, mode == "resources")?;
+        let context = context_name(&effective_deployment_context(dep, &doc))?;
+        let file = base.join("conf/Catalina/localhost").join(format!("{context}.xml"));
+        if !file.is_file() {
+            return Err(invalid("Start this Tomcat configuration before updating it"));
+        }
+        if mode == "redeploy" {
+            let content = fs::read(&file)?;
+            fs::write(file, content)?;
+        }
     }
     Ok(())
 }
@@ -2237,5 +2442,127 @@ mod tests {
         assert_eq!(info.https_port, Some(8443));
         assert_eq!(info.ajp_port, Some(8009));
         assert_eq!(info.shutdown_port, Some(8005));
+    }
+
+    #[test]
+    fn prepares_and_updates_multiple_deployments_in_isolated_slots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("tomcat");
+        fs::create_dir_all(home.join("bin")).unwrap();
+        fs::create_dir_all(home.join("conf")).unwrap();
+        fs::write(home.join("bin/catalina.sh"), "").unwrap();
+        fs::write(home.join("bin/catalina.bat"), "").unwrap();
+        archive(
+            &home.join("lib/catalina.jar"),
+            &[("org/apache/catalina/util/ServerInfo.properties", "server.info=Apache Tomcat/10.1.61\n")],
+        );
+        fs::write(
+            home.join("conf/server.xml"),
+            "<Server port=\"8005\" shutdown=\"SHUTDOWN\"><Service><Connector port=\"8080\" protocol=\"HTTP/1.1\"/></Service></Server>",
+        )
+        .unwrap();
+        archive(&root.join("service/target/service.war"), &[("WEB-INF/web.xml", "<web-app/>"), ("svc.txt", "v1")]);
+        archive(&root.join("webapp/target/webapp.war"), &[("WEB-INF/web.xml", "<web-app/>"), ("index.html", "v1")]);
+        fs::write(root.join("svc-context.xml"), "<Context><Parameter name=\"role\" value=\"service\"/></Context>")
+            .unwrap();
+
+        let deps = vec![
+            TomcatDeployment {
+                kind: "artifact".into(),
+                artifact: Some("maven:service/pom.xml".into()),
+                artifact_name: Some("service".into()),
+                module: Some("service".into()),
+                deployment_path: None,
+                context_path: Some("/service".into()),
+                context_descriptor: Some("svc-context.xml".into()),
+            },
+            TomcatDeployment {
+                kind: "artifact".into(),
+                artifact: Some("maven:webapp/pom.xml".into()),
+                artifact_name: Some("webapp".into()),
+                module: Some("webapp".into()),
+                deployment_path: None,
+                context_path: Some("/".into()),
+                context_descriptor: None,
+            },
+        ];
+
+        let mut c = config();
+        c.extras.params.insert("tomcatHome".into(), "tomcat".into());
+        c.extras.params.insert("deployments".into(), serde_json::to_string(&deps).unwrap());
+
+        let cache = root.join("cache");
+        prepare(root, &cache, &mut c).unwrap();
+
+        let base = base_dir(&cache, &c.id);
+        let svc_xml = fs::read_to_string(base.join("conf/Catalina/localhost/service.xml")).unwrap();
+        let root_xml = fs::read_to_string(base.join("conf/Catalina/localhost/ROOT.xml")).unwrap();
+        assert!(svc_xml.contains("role=\"service\"") || svc_xml.contains("value=\"service\""));
+        assert!(svc_xml.contains("deployments"));
+        assert!(root_xml.contains("deployments"));
+
+        let (_, svc_exploded) = deployment_dirs(&base, &deps[0], 0, 2);
+        let (_, web_exploded) = deployment_dirs(&base, &deps[1], 1, 2);
+        assert_ne!(svc_exploded, web_exploded);
+        assert_eq!(fs::read_to_string(svc_exploded.join("svc.txt")).unwrap(), "v1");
+        assert_eq!(fs::read_to_string(web_exploded.join("index.html")).unwrap(), "v1");
+
+        // Update re-explodes both WARs and preserves both context descriptors.
+        archive(&root.join("service/target/service.war"), &[("WEB-INF/web.xml", "<web-app/>"), ("svc.txt", "v2")]);
+        archive(&root.join("webapp/target/webapp.war"), &[("WEB-INF/web.xml", "<web-app/>"), ("index.html", "v2")]);
+        update(root, &cache, &c, "redeploy").unwrap();
+        assert_eq!(fs::read_to_string(svc_exploded.join("svc.txt")).unwrap(), "v2");
+        assert_eq!(fs::read_to_string(web_exploded.join("index.html")).unwrap(), "v2");
+    }
+
+    #[test]
+    fn rejects_duplicate_context_paths_across_multiple_deployments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("tomcat");
+        fs::create_dir_all(home.join("bin")).unwrap();
+        fs::create_dir_all(home.join("conf")).unwrap();
+        fs::write(home.join("bin/catalina.sh"), "").unwrap();
+        fs::write(home.join("bin/catalina.bat"), "").unwrap();
+        archive(
+            &home.join("lib/catalina.jar"),
+            &[("org/apache/catalina/util/ServerInfo.properties", "server.info=Apache Tomcat/10.1.61\n")],
+        );
+        fs::write(
+            home.join("conf/server.xml"),
+            "<Server port=\"8005\" shutdown=\"SHUTDOWN\"><Service><Connector port=\"8080\" protocol=\"HTTP/1.1\"/></Service></Server>",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("app1")).unwrap();
+        fs::create_dir_all(root.join("app2")).unwrap();
+
+        let deps = vec![
+            TomcatDeployment {
+                kind: "directory".into(),
+                artifact: None,
+                artifact_name: None,
+                module: None,
+                deployment_path: Some("app1".into()),
+                context_path: Some("/same".into()),
+                context_descriptor: None,
+            },
+            TomcatDeployment {
+                kind: "directory".into(),
+                artifact: None,
+                artifact_name: None,
+                module: None,
+                deployment_path: Some("app2".into()),
+                context_path: Some("/same".into()),
+                context_descriptor: None,
+            },
+        ];
+
+        let mut c = config();
+        c.extras.params.insert("tomcatHome".into(), "tomcat".into());
+        c.extras.params.insert("deployments".into(), serde_json::to_string(&deps).unwrap());
+
+        let err = prepare(root, &root.join("cache"), &mut c).unwrap_err().to_string();
+        assert!(err.contains("Duplicate Tomcat context path"), "{err}");
     }
 }

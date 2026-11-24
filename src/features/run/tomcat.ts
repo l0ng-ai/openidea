@@ -143,37 +143,148 @@ export const tomcatType: RunConfigTypeContribution = {
   },
 };
 
-export async function buildTomcatArtifact(config: RunConfig): Promise<void> {
-  const build = await call(commands.runTomcatBuild(config));
-  if (!build) return;
-  await runUpdateBuild(build);
+export interface TomcatDeployment {
+  kind: "artifact" | "war" | "directory";
+  artifact?: string;
+  artifactName?: string;
+  module?: string;
+  deploymentPath?: string;
+  contextPath?: string;
+  contextDescriptor?: string;
 }
 
 /**
- * Updates a running artifact deployment without rebuilding the WAR: compiles the WAR module
+ * Reads all deployments configured on a Tomcat run config.
+ * Uses `params.deployments` (JSON array) when present; otherwise falls back to legacy
+ * single-deployment params (`deployment`, `artifact`, `deploymentPath`, etc.).
+ */
+export function getTomcatDeployments(config: RunConfig): TomcatDeployment[] {
+  const p = config.params ?? {};
+  if (p.deployments !== undefined) {
+    try {
+      const parsed = JSON.parse(p.deployments);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (d): d is TomcatDeployment =>
+            !!d && typeof d === "object" && (d.kind === "artifact" || d.kind === "war" || d.kind === "directory"),
+        );
+      }
+    } catch {
+      // fall back to legacy single-deployment params
+    }
+  }
+  const kind = (p.deployment ?? "artifact") as TomcatDeployment["kind"];
+  if (kind === "artifact") {
+    if (!p.artifact) return [];
+    return [
+      {
+        kind: "artifact",
+        artifact: p.artifact,
+        ...(p.artifactName ? { artifactName: p.artifactName } : {}),
+        ...(config.cwd ? { module: config.cwd } : {}),
+        ...(p.contextPath ? { contextPath: p.contextPath } : {}),
+        ...(p.contextDescriptor ? { contextDescriptor: p.contextDescriptor } : {}),
+      },
+    ];
+  }
+  if (!p.deploymentPath?.trim()) return [];
+  return [
+    {
+      kind,
+      deploymentPath: p.deploymentPath,
+      ...(p.contextPath ? { contextPath: p.contextPath } : {}),
+      ...(p.contextDescriptor ? { contextDescriptor: p.contextDescriptor } : {}),
+    },
+  ];
+}
+
+/**
+ * Returns a params patch that persists `deployments` as JSON while mirroring the first
+ * entry into legacy single-deployment keys for backward compatibility.
+ */
+export function tomcatDeploymentsParams(deployments: TomcatDeployment[]): Record<string, string> {
+  const first = deployments[0];
+  return {
+    deployments: JSON.stringify(deployments),
+    deployment: first?.kind ?? "artifact",
+    artifact: first?.kind === "artifact" ? (first.artifact ?? "") : "",
+    artifactName: first?.kind === "artifact" ? (first.artifactName ?? "") : "",
+    deploymentPath: first && first.kind !== "artifact" ? (first.deploymentPath ?? "") : "",
+    contextPath: first?.contextPath ?? "",
+    contextDescriptor: first?.contextDescriptor ?? "",
+  };
+}
+
+export async function buildTomcatArtifact(config: RunConfig): Promise<void> {
+  const deployments = getTomcatDeployments(config);
+  if (deployments.length <= 1) {
+    const build = await call(commands.runTomcatBuild(config));
+    if (!build) return;
+    await runUpdateBuild(build);
+    return;
+  }
+  for (let i = 0; i < deployments.length; i++) {
+    if (deployments[i]!.kind !== "artifact") continue;
+    const single: RunConfig = {
+      ...config,
+      params: { ...(config.params ?? {}), buildDeploymentIndex: String(i) },
+    };
+    const build = await call(commands.runTomcatBuild(single));
+    if (build) await runUpdateBuild(build);
+  }
+}
+
+/**
+ * Updates running artifact deployments without rebuilding the WARs: compiles each WAR module
  * incrementally and copies its changed classes, resources and web files into the deployment.
  * `false` when that isn't possible (other deployment kinds, no Java language server, a changed
- * dependency module): the caller rebuilds the WAR.
+ * dependency module): the caller rebuilds the WARs.
  */
 export async function syncTomcatOutputs(config: RunConfig, resourcesOnly: boolean): Promise<boolean> {
   const p = config.params ?? {};
-  if ((p.deployment ?? "artifact") !== "artifact") return false;
+  const deployments = getTomcatDeployments(config);
+  const artifactDeps = deployments.filter((d) => d.kind === "artifact");
+  if (artifactDeps.length === 0) {
+    // Legacy config with `deployment: "artifact"` and no explicit `artifact` id falls back to artifacts[0].
+    if (p.deployments !== undefined || (p.deployment ?? "artifact") !== "artifact") return false;
+    const artifacts = await call(commands.runTomcatArtifacts());
+    const artifact = p.artifact ? artifacts.find((a) => a.id === p.artifact) : artifacts[0];
+    if (!artifact) return false;
+    const info = await call(commands.javaResolveLaunch(artifact.module, false, "make", nextRequestId())).catch(
+      () => null,
+    );
+    if (!info) return false;
+    if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
+      throw updateBuildError(info);
+    return call(commands.runTomcatSync(config, artifact.module, info.classPaths, resourcesOnly));
+  }
   const artifacts = await call(commands.runTomcatArtifacts());
-  const artifact = p.artifact ? artifacts.find((a) => a.id === p.artifact) : artifacts[0];
-  if (!artifact) return false;
-  const info = await call(commands.javaResolveLaunch(artifact.module, false, "make", nextRequestId())).catch(
-    () => null,
-  );
-  if (!info) return false;
-  if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
-    throw updateBuildError(info);
-  return call(commands.runTomcatSync(config, artifact.module, info.classPaths, resourcesOnly));
+  for (const dep of artifactDeps) {
+    const artifact = dep.artifact ? artifacts.find((a) => a.id === dep.artifact) : artifacts[0];
+    if (!artifact) return false;
+    const info = await call(commands.javaResolveLaunch(artifact.module, false, "make", nextRequestId())).catch(
+      () => null,
+    );
+    if (!info) return false;
+    if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
+      throw updateBuildError(info);
+    const synced = await call(commands.runTomcatSync(config, artifact.module, info.classPaths, resourcesOnly));
+    if (!synced) return false;
+  }
+  return true;
 }
 
 export function tomcatBrowserUrl(config: RunConfig): string {
   const p = config.params ?? {};
+  const first = getTomcatDeployments(config)[0];
   const host = "localhost";
   const name =
+    first?.artifactName ||
+    first?.deploymentPath
+      ?.replace(/\\/g, "/")
+      .split("/")
+      .pop()
+      ?.replace(/\.war$/i, "") ||
     p.artifactName ||
     p.deploymentPath
       ?.replace(/\\/g, "/")
@@ -181,6 +292,6 @@ export function tomcatBrowserUrl(config: RunConfig): string {
       .pop()
       ?.replace(/\.war$/i, "") ||
     "";
-  const context = p.contextPath || (name && name !== "ROOT" ? `/${name}` : "/");
+  const context = first?.contextPath || p.contextPath || (name && name !== "ROOT" ? `/${name}` : "/");
   return p.browserUrl || `http://${host}:${p.httpPort || "8080"}${context === "/" ? "/" : `${context}/`}`;
 }

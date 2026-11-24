@@ -303,25 +303,39 @@ pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<id
 #[command(trust = trusted)]
 pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> IdeResult<Option<RunConfig>> {
     host.require_trust(window)?;
-    if config.extras.params.get("deployment").is_some_and(|v| v != "artifact") {
+    let deps = ide_run::tomcat::configured_deployments(&config)?;
+    let target_idx = config
+        .extras
+        .params
+        .get("buildDeploymentIndex")
+        .and_then(|s| s.parse::<usize>().ok())
+        .or_else(|| deps.iter().position(|d| d.kind == "artifact"));
+    let Some(idx) = target_idx else {
+        return Ok(None);
+    };
+    let Some(dep) = deps.get(idx).cloned() else {
+        return Ok(None);
+    };
+    if dep.kind != "artifact" {
         return Ok(None);
     }
+    let total = deps.len();
     let project = host.project(window)?;
     tokio::task::spawn_blocking(move || {
         let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &project.settings.effective());
         let artifacts = ide_build::web::artifacts(&project.root, &model);
-        let id = config
-            .extras
-            .params
-            .get("artifact")
+        let id = dep
+            .artifact
+            .as_deref()
             .filter(|s| !s.is_empty())
-            .or_else(|| artifacts.first().map(|a| &a.id))
+            .or_else(|| artifacts.first().map(|a| a.id.as_str()))
             .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
         let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
+        let (meta_dir, _) = ide_run::tomcat::deployment_dirs(&base, &dep, idx, total);
         if let Some(name) = id.strip_prefix(PROJECT_ARTIFACT) {
             let settings = project.settings.effective();
             let detected = project.detected_roots.read().clone();
-            build_project_war(&project.root, &settings, &detected, name, &base, &project.build_cache_dir())?;
+            build_project_war(&project.root, &settings, &detected, name, &meta_dir, &project.build_cache_dir())?;
             return Ok(None);
         }
         // "Build before launch" is skipped when the built WAR is already newer than the
@@ -334,14 +348,14 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
             .chain(model.gradle.iter().flat_map(|g| g.projects.iter().map(|p| p.dir.as_str())))
             .map(std::path::PathBuf::from)
             .collect();
-        if ide_run::tomcat::artifact_is_current(&project.root, &base, &config, &modules) {
+        if ide_run::tomcat::artifact_is_current_for(&project.root, &meta_dir, &config, &dep, total, &modules) {
             return Ok(None);
         }
-        let mut plan = ide_build::web::build(&project.root, &model, id, &base)?;
+        let mut plan = ide_build::web::build(&project.root, &model, id, &meta_dir)?;
         plan.env.extend(config.env.clone());
         let mut build = RunConfig {
             id: format!("tomcat-build:{}", config.id),
-            name: format!("Build {}", config.name),
+            name: format!("Build {}", dep.artifact_name.as_deref().unwrap_or(&config.name)),
             kind: if id.starts_with("maven:") { "maven" } else { "gradle" }.into(),
             command: plan.command.clone(),
             args: vec![],
@@ -397,7 +411,8 @@ pub async fn run_tomcat_sync(
     if !host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
         return Err(IdeError::invalid("Start this Tomcat configuration before updating it"));
     }
-    if config.extras.params.get("deployment").is_some_and(|v| v != "artifact") {
+    let deps = ide_run::tomcat::configured_deployments(&config)?;
+    if !deps.iter().any(|d| d.kind == "artifact") {
         return Ok(false);
     }
     tokio::task::spawn_blocking(move || {
@@ -405,7 +420,7 @@ pub async fn run_tomcat_sync(
         let class_paths: Vec<_> =
             class_paths.iter().filter_map(|p| dunce::canonicalize(project.root.join(p)).ok()).collect();
         let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
-        ide_run::tomcat::sync_outputs(&base, &module, &class_paths, resources_only)
+        ide_run::tomcat::sync_outputs_for(&project.root, &base, &config, &module, &class_paths, resources_only)
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?

@@ -7,7 +7,7 @@ import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { isRemoteWindow } from "@/platform/remote";
 import { Button, Checkbox, Dialog, Icon, IconButton, Input, Menu, Select, Tabs, T, type MenuItem } from "@/ui";
 import { useTx } from "@/platform/i18n";
-import { tomcatBrowserUrl } from "./tomcat";
+import { getTomcatDeployments, tomcatBrowserUrl, tomcatDeploymentsParams, type TomcatDeployment } from "./tomcat";
 import styles from "./Run.module.css";
 
 type TomcatTab = "server" | "deployment" | "logs" | "startup";
@@ -95,6 +95,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
   const [error, setError] = useState("");
   const [startupRunner, setStartupRunner] = useState<StartupRunnerId>("run");
   const [selectedEnvIdx, setSelectedEnvIdx] = useState<number>(0);
+  const [selectedDeployIdx, setSelectedDeployIdx] = useState<number>(0);
   const [beforeLaunchOpen, setBeforeLaunchOpen] = useState(true);
   const deployAddRef = useRef<HTMLButtonElement>(null);
   const jreBtnRef = useRef<HTMLButtonElement>(null);
@@ -123,19 +124,64 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
     });
   };
 
-  const select = (artifact: WebArtifact) => {
+  const setDeployments = (next: TomcatDeployment[], nextSelectedIdx?: number) => {
     const { config } = latest.current;
+    const patch = tomcatDeploymentsParams(next);
+    const nextParams = { ...(config.params ?? {}) };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v || k === "deployments") nextParams[k] = v;
+      else delete nextParams[k];
+    }
+    const firstArtifact = next.find((d) => d.kind === "artifact");
     publish({
       ...config,
-      cwd: artifact.module || null,
-      params: {
-        ...config.params,
-        deployment: "artifact",
-        artifact: artifact.id,
-        artifactName: artifact.name,
-        contextPath: config.params?.contextPath || `/${artifact.name}`,
-      },
+      cwd: firstArtifact?.module || null,
+      params: nextParams,
     });
+    if (nextSelectedIdx !== undefined) {
+      setSelectedDeployIdx(next.length === 0 ? 0 : Math.max(0, Math.min(nextSelectedIdx, next.length - 1)));
+    }
+  };
+
+  const addArtifact = (artifact: WebArtifact) => {
+    const { config } = latest.current;
+    const current = getTomcatDeployments(config);
+    const existingIdx = current.findIndex((d) => d.kind === "artifact" && d.artifact === artifact.id);
+    if (existingIdx >= 0) {
+      setSelectedDeployIdx(existingIdx);
+      return;
+    }
+    const nextDep: TomcatDeployment = {
+      kind: "artifact",
+      artifact: artifact.id,
+      artifactName: artifact.name,
+      ...(artifact.module ? { module: artifact.module } : {}),
+      contextPath: current.length === 0 && config.params?.contextPath ? config.params.contextPath : `/${artifact.name}`,
+    };
+    setDeployments([...current, nextDep], current.length);
+  };
+
+  const addExternalDeployment = (kind: "war" | "directory", picked: string) => {
+    const { config } = latest.current;
+    const current = getTomcatDeployments(config);
+    const existingIdx = current.findIndex((d) => d.kind === kind && d.deploymentPath === picked);
+    if (existingIdx >= 0) {
+      setSelectedDeployIdx(existingIdx);
+      return;
+    }
+    const name =
+      picked
+        .replace(/\\/g, "/")
+        .replace(/\/+$/, "")
+        .split("/")
+        .pop()
+        ?.replace(/\.war$/i, "") || "app";
+    const nextDep: TomcatDeployment = {
+      kind,
+      deploymentPath: picked,
+      contextPath: current.length === 0 && config.params?.contextPath ? config.params.contextPath : `/${name}`,
+    };
+    setDeployments([...current, nextDep], current.length);
   };
 
   useEffect(() => {
@@ -179,8 +225,16 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
       .then((items) => {
         if (!live) return;
         setArtifacts(items);
+        const current = getTomcatDeployments(latest.current.config);
         const params = latest.current.config.params;
-        if ((params?.deployment ?? "artifact") === "artifact" && !params?.artifact && items[0]) select(items[0]);
+        if (
+          current.length === 0 &&
+          params?.deployments === undefined &&
+          (params?.deployment ?? "artifact") === "artifact" &&
+          items[0]
+        ) {
+          addArtifact(items[0]);
+        }
       })
       .catch((e) => {
         if (live) setError(String(e));
@@ -236,10 +290,35 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
     });
   }
 
-  const deploymentKind = config.params?.deployment ?? "artifact";
-  const noArtifactConfigured =
-    (deploymentKind === "artifact" && !config.params?.artifact) ||
-    (deploymentKind !== "artifact" && !config.params?.deploymentPath?.trim());
+  const deployments = getTomcatDeployments(config);
+  const effectiveDeployIdx = deployments.length === 0 ? -1 : Math.min(selectedDeployIdx, deployments.length - 1);
+  const selectedDeployment = effectiveDeployIdx >= 0 ? deployments[effectiveDeployIdx] : undefined;
+  const noArtifactConfigured = deployments.length === 0;
+  const hasArtifactDeployment =
+    deployments.length > 0
+      ? deployments.some((d) => d.kind === "artifact")
+      : (config.params?.deployment ?? "artifact") === "artifact";
+
+  const updateSelectedDeployment = (patch: Partial<TomcatDeployment>) => {
+    if (effectiveDeployIdx < 0) return;
+    const next = deployments.map((d, i) => (i === effectiveDeployIdx ? { ...d, ...patch } : d));
+    setDeployments(next);
+  };
+
+  const removeSelectedDeployment = () => {
+    if (effectiveDeployIdx < 0) return;
+    const next = deployments.filter((_, i) => i !== effectiveDeployIdx);
+    setDeployments(next, Math.min(effectiveDeployIdx, Math.max(0, next.length - 1)));
+  };
+
+  const moveSelectedDeployment = (delta: -1 | 1) => {
+    const targetIdx = effectiveDeployIdx + delta;
+    if (effectiveDeployIdx < 0 || targetIdx < 0 || targetIdx >= deployments.length) return;
+    const next = [...deployments];
+    const [moved] = next.splice(effectiveDeployIdx, 1);
+    next.splice(targetIdx, 0, moved!);
+    setDeployments(next, targetIdx);
+  };
 
   const useDefaultStartup = config.params?.useDefaultStartup !== "false";
   const useDefaultShutdown = config.params?.useDefaultShutdown !== "false";
@@ -286,7 +365,8 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
             label: itemLabel,
             verbatim: true,
             icon: "file-archive",
-            run: () => select(a),
+            disabled: deployments.some((d) => d.kind === "artifact" && d.artifact === a.id),
+            run: () => addArtifact(a),
           };
         })
       : []),
@@ -296,14 +376,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
       run: () => {
         void pickLocalPath(deployment === "directory").then((picked) => {
           if (!picked) return;
-          const name =
-            picked
-              .replace(/\\/g, "/")
-              .replace(/\/+$/, "")
-              .split("/")
-              .pop()
-              ?.replace(/\.war$/i, "") || "app";
-          setParams({ deployment, deploymentPath: picked, contextPath: config.params?.contextPath || `/${name}` });
+          addExternalDeployment(deployment, picked);
         });
       },
     })),
@@ -606,13 +679,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   size="small"
                   iconSize={14}
                   title="Add"
-                  onClick={() => {
-                    if (artifacts.length > 0 && !isTauri()) {
-                      select(artifacts[0]!);
-                      return;
-                    }
-                    setDeployMenuOpen((v) => !v);
-                  }}
+                  onClick={() => setDeployMenuOpen((v) => !v)}
                 />
                 <Menu
                   open={deployMenuOpen}
@@ -627,7 +694,23 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   iconSize={14}
                   title="Remove"
                   disabled={noArtifactConfigured}
-                  onClick={() => setParams({ artifact: "", artifactName: "", deploymentPath: "" })}
+                  onClick={removeSelectedDeployment}
+                />
+                <IconButton
+                  icon="arrow-up"
+                  size="small"
+                  iconSize={14}
+                  title="Move Up"
+                  disabled={effectiveDeployIdx <= 0}
+                  onClick={() => moveSelectedDeployment(-1)}
+                />
+                <IconButton
+                  icon="arrow-down"
+                  size="small"
+                  iconSize={14}
+                  title="Move Down"
+                  disabled={effectiveDeployIdx < 0 || effectiveDeployIdx >= deployments.length - 1}
+                  onClick={() => moveSelectedDeployment(1)}
                 />
               </div>
               {noArtifactConfigured ? (
@@ -635,21 +718,32 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   <T>Nothing to deploy</T>
                 </div>
               ) : (
-                <div className={styles.appServersList}>
-                  <div className={clsx(styles.editItem, styles.editItemSelected)}>
-                    <Icon name="file-archive" size={13} className={styles.chooserIcon} />
-                    <span className={styles.chooserName}>
-                      {deploymentKind === "artifact"
-                        ? `${config.params?.artifactName || config.params?.artifact}:war exploded`
-                        : config.params?.deploymentPath}
-                    </span>
-                    <span className={styles.chooserMuted}>{config.params?.contextPath || "/"}</span>
-                  </div>
+                <div className={styles.appServersList} role="listbox" aria-label={tx("Deploy at the server startup")}>
+                  {deployments.map((dep, idx) => {
+                    const selected = idx === effectiveDeployIdx;
+                    const label =
+                      dep.kind === "artifact"
+                        ? `${dep.artifactName || dep.artifact}:war exploded`
+                        : (dep.deploymentPath ?? "");
+                    return (
+                      <div
+                        key={`${dep.kind}:${dep.artifact ?? dep.deploymentPath ?? idx}`}
+                        role="option"
+                        aria-selected={selected}
+                        className={clsx(styles.editItem, selected && styles.editItemSelected)}
+                        onClick={() => setSelectedDeployIdx(idx)}
+                      >
+                        <Icon name="file-archive" size={13} className={styles.chooserIcon} />
+                        <span className={styles.chooserName}>{label}</span>
+                        <span className={styles.chooserMuted}>{dep.contextPath || "/"}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
 
-            {!noArtifactConfigured && (
+            {selectedDeployment && (
               <>
                 <div className={styles.tomcatFormRow}>
                   <span className={styles.tomcatRowLabel}>
@@ -658,9 +752,9 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   <Input
                     mono
                     aria-label="Context path"
-                    value={config.params?.contextPath ?? "/"}
+                    value={selectedDeployment.contextPath ?? "/"}
                     placeholder="/"
-                    onChange={(e) => setParams({ contextPath: e.target.value })}
+                    onChange={(e) => updateSelectedDeployment({ contextPath: e.target.value })}
                   />
                 </div>
                 <div className={styles.tomcatFormRow}>
@@ -671,9 +765,9 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                     <Input
                       mono
                       aria-label="Context descriptor"
-                      value={config.params?.contextDescriptor ?? ""}
+                      value={selectedDeployment.contextDescriptor ?? ""}
                       placeholder="META-INF/context.xml from application"
-                      onChange={(e) => setParams({ contextDescriptor: e.target.value })}
+                      onChange={(e) => updateSelectedDeployment({ contextDescriptor: e.target.value })}
                     />
                     {isTauri() && !isRemoteWindow() && (
                       <IconButton
@@ -683,9 +777,11 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                         title="Browse…"
                         className={styles.tomcatInlineIconBtn}
                         onClick={() =>
-                          void pickLocalPath(false, config.params?.contextDescriptor || undefined).then((picked) => {
-                            if (picked) setParams({ contextDescriptor: picked });
-                          })
+                          void pickLocalPath(false, selectedDeployment.contextDescriptor || undefined).then(
+                            (picked) => {
+                              if (picked) updateSelectedDeployment({ contextDescriptor: picked });
+                            },
+                          )
                         }
                       />
                     )}
@@ -983,7 +1079,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
           </div>
           {beforeLaunchOpen && (
             <>
-              {deploymentKind === "artifact" && (
+              {hasArtifactDeployment && (
                 <div className={clsx(styles.tomcatBoxPanel, styles.tomcatBoxSmall)}>
                   <div className={styles.appServersToolbar} role="toolbar" aria-label={tx("Before launch tasks")}>
                     <IconButton
@@ -1042,7 +1138,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
             icon="bulb-fix"
             onClick={() => {
               setActiveTab("deployment");
-              if (artifacts[0]) select(artifacts[0]);
+              if (artifacts[0]) addArtifact(artifacts[0]);
               else setParams({ deployment: "directory" });
             }}
           >

@@ -1,11 +1,12 @@
+import { useState } from "react";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup, fireEvent, within } from "@testing-library/react";
 import { newConfigOfType, missingParams } from "./types";
-import { tomcatType, tomcatBrowserUrl, syncTomcatOutputs } from "./tomcat";
+import { tomcatType, tomcatBrowserUrl, syncTomcatOutputs, getTomcatDeployments } from "./tomcat";
 import { jdwpLaunch } from "./javaDebug";
 import { TomcatSettings } from "./TomcatSettings";
 import { typeRows } from "./AddConfigPopup";
-import { commands } from "@/platform/ipc";
+import { commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
 vi.mock("@/platform/ipc", async (importOriginal) => ({
@@ -296,5 +297,81 @@ describe("updating a running Tomcat deployment", () => {
       data: { build: "withErrors", classPaths: [] },
     } as never);
     await expect(syncTomcatOutputs(config({ deployment: "artifact" }), false)).rejects.toThrow();
+  });
+
+  it("incrementally syncs every artifact deployment when multiple deployments are configured", async () => {
+    vi.mocked(commands.javaResolveLaunch).mockClear();
+    vi.mocked(commands.runTomcatSync).mockClear();
+    const c = config({
+      deployments: JSON.stringify([
+        { kind: "artifact", artifact: "maven:pom.xml", artifactName: "hello", contextPath: "/hello" },
+        { kind: "artifact", artifact: "maven:web/pom.xml", artifactName: "web", module: "web", contextPath: "/web" },
+      ]),
+    });
+    expect(await syncTomcatOutputs(c, false)).toBe(true);
+    expect(commands.javaResolveLaunch).toHaveBeenCalledTimes(2);
+    expect(commands.runTomcatSync).toHaveBeenCalledTimes(2);
+    expect(commands.runTomcatSync).toHaveBeenNthCalledWith(1, c, "", ["/p/web/target/classes", "/m2/lib.jar"], false);
+    expect(commands.runTomcatSync).toHaveBeenNthCalledWith(
+      2,
+      c,
+      "web",
+      ["/p/web/target/classes", "/m2/lib.jar"],
+      false,
+    );
+  });
+});
+
+describe("Tomcat multiple deployments UI", () => {
+  it("adds, edits independently, reorders, and removes multiple deployments", async () => {
+    const initial = {
+      ...newConfigOfType(tomcatType, []),
+      params: {
+        ...newConfigOfType(tomcatType, []).params,
+        tomcatHome: "/tomcat",
+      },
+    };
+    const handleChange = vi.fn();
+    function Harness() {
+      const [cfg, setCfg] = useState<RunConfig>(initial);
+      return (
+        <TomcatSettings
+          config={cfg}
+          onChange={(next) => {
+            handleChange(next);
+            setCfg(next);
+          }}
+        />
+      );
+    }
+    render(<Harness />);
+    await waitFor(() => expect(handleChange).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("tab", { name: "Deployment" }));
+    expect(screen.getByRole("option", { name: /hello:war exploded/ })).toBeTruthy();
+
+    // Add second artifact via the "+" menu
+    const toolbar = screen.getByRole("toolbar", { name: "Deploy at the server startup" });
+    fireEvent.click(within(toolbar).getByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByText("web:war exploded"));
+
+    expect(screen.getByRole("option", { name: /hello:war exploded/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /web:war exploded/ })).toBeTruthy();
+
+    // Edit context path of the newly selected second deployment independently
+    fireEvent.change(screen.getByLabelText("Context path"), { target: { value: "/api" } });
+    const afterEdit = getTomcatDeployments(handleChange.mock.calls.at(-1)![0]);
+    expect(afterEdit).toHaveLength(2);
+    expect(afterEdit[0]!.contextPath).toBe("/hello");
+    expect(afterEdit[1]!.contextPath).toBe("/api");
+
+    // Move second deployment up
+    fireEvent.click(within(toolbar).getByRole("button", { name: "Move Up" }));
+    const afterMove = getTomcatDeployments(handleChange.mock.calls.at(-1)![0]);
+    expect(afterMove.map((d) => d.artifactName)).toEqual(["web", "hello"]);
+
+    // Remove the selected deployment ("web")
+    fireEvent.click(within(toolbar).getByRole("button", { name: "Remove" }));
+    const afterRemove = getTomcatDeployments(handleChange.mock.calls.at(-1)![0]);
+    expect(afterRemove.map((d) => d.artifactName)).toEqual(["hello"]);
   });
 });
