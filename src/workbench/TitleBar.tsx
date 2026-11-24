@@ -33,6 +33,7 @@ import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
 import { useDocumentTitle } from "./documentTitle";
 import { windowDragRegion } from "./window-drag";
+import { useToolbarCenter } from "./toolbarCenter";
 import { useToolbarLabelWidth } from "./toolbarLabelWidth";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
@@ -139,13 +140,18 @@ function VcsFallback() {
  * dialog and Restore Default. Also the title bar's context menu.
  */
 export function customizeToolbarItems(
-  shown: { left: string[]; right: string[] },
+  shown: { left: string[]; center?: string[]; right: string[] },
   hidden: readonly string[],
   items: ReadonlyMap<string, TitleItemContribution>,
   toggle: (id: string) => void,
   reset: () => void,
 ): MenuItem[] {
-  const entries = [...shown.left, ...shown.right, ...hidden.filter((id) => !isActionEntry(id))];
+  const entries = [
+    ...shown.left,
+    ...(shown.center ?? []),
+    ...shown.right,
+    ...hidden.filter((id) => !isActionEntry(id)),
+  ];
   return [
     ...entries.map<MenuItem>((id) => ({
       id: `toolbar.${id}`,
@@ -327,6 +333,8 @@ export function TitleBar({
   useNativeTitlebar(bar);
   const toolbar = !minimal && !lightEdit && !compact && !bare;
   useToolbarLabelWidth(toolbar ? bar : null);
+  const centered = toolbar && !menuExpanded && !minimal && shown.center.length > 0;
+  useToolbarCenter(bar, centered);
   const className = clsx(
     styles.bar,
     overlay && styles.overlay,
@@ -371,7 +379,20 @@ export function TitleBar({
         </span>
       )}
       {toolbar && !menuExpanded && shown.left.map(entry)}
-      <div className={styles.drag} {...windowDragRegion} data-toolbar-spacer="" />
+      <div
+        className={styles.drag}
+        {...windowDragRegion}
+        data-toolbar-spacer=""
+        data-toolbar-center-spacer={centered ? "" : undefined}
+      />
+      {centered && (
+        <>
+          <div className={styles.centerGroup} data-toolbar-center="">
+            {shown.center.map(entry)}
+          </div>
+          <div className={styles.drag} {...windowDragRegion} data-toolbar-spacer="" />
+        </>
+      )}
       {!minimal && (
         <>
           {toolbar && !menuExpanded && shown.right.map(entry)}
