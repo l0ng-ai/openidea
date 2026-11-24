@@ -519,6 +519,93 @@ fn a_mirror_prefix_carries_plugin_packages_and_only_bytes_that_check() {
     );
 }
 
+/// A mirror serving a tampered package is a source that fails its checks — and the unpacked
+/// bytes it served must not be left behind where the install page reads from.
+///
+/// The index has no hash of the archive itself (only `package_digest` of the unpacked
+/// contents), so the bytes have to be unpacked before they can be checked; the test therefore
+/// watches the staging folders, not the archive.
+#[test]
+fn a_tampered_package_from_a_mirror_is_refused_and_leaves_nothing_behind() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (package, mut entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    entry.download = format!(
+        "https://github.com/acme/openidea-hello/releases/download/v1.0.0/{}",
+        package.file_name().unwrap().to_string_lossy()
+    );
+    let url = write_index(&market, &key, vec![entry.clone()], vec![], false);
+    f.host.set_market_url(Some(url));
+    f.host.refresh_market().unwrap();
+
+    // A package whose manifest was changed after signing: its digest disagrees with the index,
+    // and it carries no signature at all.
+    let tampered = {
+        let dir = f.work.join("tampered-src");
+        std::fs::create_dir_all(&dir).unwrap();
+        let unpacked = f.host.unpack_package(&package).unwrap();
+        copy_dir(&unpacked, &dir.join("pkg"));
+        let manifest = std::fs::read_to_string(dir.join("pkg/plugin.toml")).unwrap();
+        std::fs::write(dir.join("pkg/plugin.toml"), manifest.replace("Sample plugin", "Totally safe plugin")).unwrap();
+        let files = f.host.package_files_of(&dir.join("pkg")).unwrap();
+        let out = dir.join("tampered.oiplugin");
+        package::pack(&dir.join("pkg"), &files, &out, None).unwrap();
+        out
+    };
+
+    let mirror_paths: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mirror = serve_bytes(std::fs::read(&tampered).unwrap(), mirror_paths.clone());
+    let downloads = f.plugins_dir.join(".downloads");
+    // Browsing the package above went through `unpack_package`, which stages a folder of its
+    // own: clear what that left so the baseline is this attempt's alone.
+    for dir in staging_dirs(&downloads) {
+        let _ = std::fs::remove_dir_all(downloads.join(dir));
+    }
+    let staging_before = staging_dirs(&downloads);
+    assert!(staging_before.is_empty(), "{staging_before:?}");
+
+    // The mirror answers with the tampered package, and it is the only source configured: the
+    // download must fail rather than install what the mirror served.
+    f.host.set_downloads(download_sources(&mirror));
+    let err = f.host.download_market_plugin("acme.hello").unwrap_err();
+    assert!(err.message.contains("could not download"), "{}", err.message);
+    assert!(err.message.contains("does not match the marketplace's entry"), "{}", err.message);
+    assert_eq!(mirror_paths.lock().len(), 1, "the mirror was asked once");
+
+    // Nothing the mirror served stays where the install page reads from, and the staging folder
+    // of the refused attempt is gone.
+    assert_eq!(staging_dirs(&downloads), staging_before, "a refused package left its staging folder");
+    let leftovers: Vec<PathBuf> = std::fs::read_dir(&downloads)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().contains("acme.hello"))
+        .collect();
+    assert!(leftovers.is_empty(), "a refused package left files behind: {leftovers:?}");
+
+    // The official host, serving the real package, still installs.
+    let official_paths: Arc<Mutex<Vec<String>>> = Arc::default();
+    let official = serve_bytes(std::fs::read(&package).unwrap(), official_paths.clone());
+    f.host.set_downloads(download_sources(&official));
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    assert_eq!(f.host.preview_install(&dir).unwrap().version, "1.0.0");
+    assert_eq!(official_paths.lock().len(), 1);
+}
+
+/// The staging folders under `<plugins>/.downloads`: one per unpacked package, `<stem>-<pid>`.
+fn staging_dirs(downloads: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(downloads) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 /// An index is read up to the size an index may have, whatever its server says or sends:
 /// the marketplace is read again every day, with nobody asking.
 #[test]
