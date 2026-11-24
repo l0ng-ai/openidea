@@ -9035,6 +9035,7 @@
   "Method '{name}' may be static": "方法 '{name}' 可以是静态的",
   "Make method static": "将方法设为静态",
   "Cannot make '{name}' static: its usages could not be searched": "无法将 '{name}' 设为静态：无法搜索其用法",
+  "Cannot make '{name}' static: 1 usage may call it through a class": "无法将 '{name}' 设为静态：有 1 处用法可能通过类调用它",
   "Cannot make '{name}' static: {count} usages may call it through a class": "无法将 '{name}' 设为静态：有 {count} 处用法可能通过类调用它",
   "Import Module from Existing Sources…": "导入已有模块…",
   "{name} (copy)": "{name}（副本）",

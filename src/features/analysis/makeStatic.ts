@@ -87,8 +87,10 @@ export async function makeMethodStatic(view: EditorView, path: string, doc: numb
     return;
   }
   const count = breaking.length;
-  showHint(view, tx`Cannot make '${fix.name}' static: ${count} usages may call it through a class`, {
-    tone: "warning",
-  });
+  const message =
+    count === 1
+      ? tx`Cannot make '${fix.name}' static: 1 usage may call it through a class`
+      : tx`Cannot make '${fix.name}' static: ${count} usages may call it through a class`;
+  showHint(view, message, { tone: "warning" });
   void executeAction("find.showUsageResults", { symbol: fix.name, locations: breaking });
 }

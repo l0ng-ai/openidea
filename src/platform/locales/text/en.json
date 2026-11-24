@@ -2667,6 +2667,7 @@
   "Method '{name}' may be static": "Method '{name}' may be static",
   "Make method static": "Make method static",
   "Cannot make '{name}' static: its usages could not be searched": "Cannot make '{name}' static: its usages could not be searched",
+  "Cannot make '{name}' static: 1 usage may call it through a class": "Cannot make '{name}' static: 1 usage may call it through a class",
   "Cannot make '{name}' static: {count} usages may call it through a class": "Cannot make '{name}' static: {count} usages may call it through a class",
   "All Configurations": "All Configurations",
   "'{name}' keeps running without the debugger: {message}": "'{name}' keeps running without the debugger: {message}",
