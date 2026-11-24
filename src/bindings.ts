@@ -12488,6 +12488,11 @@ export type SearchQuery = {
 	 *  adds none of the project's exclusions either).
 	 */
 	includeExcluded?: boolean,
+	/**
+	 *  Leave out files over [`MAX_CODE_INSIGHT_FILE_BYTES`], as IDEA's TODO and word indexes do:
+	 *  a background scan never reads a log or a database dump.
+	 */
+	skipLargeFiles?: boolean,
 };
 
 export type SearchScope = { kind: "project" } | { kind: "directory"; path: IpcPath } | { kind: "files"; paths: IpcPath[] } | 
