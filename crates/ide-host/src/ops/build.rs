@@ -1124,11 +1124,39 @@ pub async fn build_run(
     Ok(outcome)
 }
 
-/// Build › Compile File: compiles one Java source of a linked Maven module with
-/// `javac`, streaming the console and messages on `on_event`; cancellable with
-/// `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
-/// build) are cleared first; the new messages are published as `build`
-/// diagnostics.
+fn plan_compile_file(
+    root: &Path,
+    cache: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+    file: &Path,
+    cancel: &CancellationToken,
+    on_progress: &dyn Fn(String),
+) -> IdeResult<compile::BuildPlan> {
+    if file.extension().is_none_or(|ext| !ext.eq_ignore_ascii_case("java")) {
+        return Err(IdeError::invalid("only Java sources can be compiled as a single file"));
+    }
+    if !file.is_file() {
+        return Err(IdeError::not_found("no Java source found for single-file compilation"));
+    }
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let model = with_profiles(load(root, cache, settings), cache);
+    if compile::single_file_target(root, &model, file).is_ok() {
+        on_progress(format!("Resolving classpath for {name}…"));
+        return compile::compile_file_plan_cancellable(root, &model, file, cancel);
+    }
+    if compile::has_gradle_file_target(root, &model, file) {
+        on_progress(format!("Resolving classpath for {name}…"));
+        return compile::gradle_compile_file_plan(root, &model, file, cache, cancel);
+    }
+    let (ps, roots, jdk) = structure_inputs(root, settings, detected);
+    compile::structure_compile_file_plan(root, &ps, &roots, jdk.as_ref(), &settings.languages.java.language_level, file)
+}
+
+/// Build › Recompile: compiles one Java source file with `javac`, streaming the
+/// console and messages on `on_event`; cancellable with `cancel_request(request)`.
+/// Diagnostics of `clear` (the files of the previous build) are cleared first;
+/// the new messages are published as `build` diagnostics.
 #[command(trust = trusted)]
 pub async fn build_compile_file(
     host: &Host,
@@ -1140,8 +1168,19 @@ pub async fn build_compile_file(
 ) -> IdeResult<BuildResult> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
-    let settings = project.settings.effective();
+    let file = ide_core::project_roots::resolve(&project.root, &file);
+    let scope = {
+        let (project, file) = (project.clone(), file.clone());
+        tokio::task::spawn_blocking(move || workspace::scope_for(&project, &file)).await.map_err(join_err)??
+    };
+    let scope_root = scope.root.clone();
+    let detected = if scope.root == project.root {
+        project.detected_roots.read().clone()
+    } else {
+        let root = scope.root.clone();
+        tokio::task::spawn_blocking(move || ide_workspace::roots::detect(&root)).await.map_err(join_err)?
+    };
+    let sink = project.sink.clone();
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         for path in clear {
@@ -1151,8 +1190,11 @@ pub async fn build_compile_file(
                 items: Vec::new(),
             });
         }
-        let plan = compile::compile_file_plan(&root, &with_profiles(load(&root, &cache, &settings), &cache), &file)?;
-        let result = compile::run(&root, &plan, &token, &|e| {
+        let plan =
+            plan_compile_file(&scope.root, &scope.cache, &scope.settings, &detected, &file, &token, &|message| {
+                let _ = on_event.send(BuildEvent::Progress { message, fraction: None });
+            })?;
+        let result = compile::run(&scope.root, &plan, &token, &|e| {
             let _ = on_event.send(e);
         })?;
         for (path, items) in compile::diagnostics(&result.messages) {
@@ -1165,7 +1207,7 @@ pub async fn build_compile_file(
     host.end_request(request);
     let outcome = result??;
     if outcome.system == ide_build::compile::BuildSystem::Maven {
-        project.lsp.sync_maven_generated_sources(&project.root).await;
+        project.lsp.sync_maven_generated_sources(&scope_root).await;
     }
     Ok(outcome)
 }
@@ -1389,6 +1431,60 @@ mod build_tool_settings_tests {
         );
         assert_eq!(model.env["JAVA_HOME"], root.join("jdk21").to_string_lossy());
         assert_eq!(model.env["GRADLE_USER_HOME"], root.join("user-home").to_string_lossy());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_file_plan_falls_back_to_project_structure_and_resolves_workspace_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let plain = base.join("plain");
+        let java_file = plain.join("src/Main.java");
+        std::fs::create_dir_all(java_file.parent().unwrap()).unwrap();
+        std::fs::write(&java_file, "class Main {}").unwrap();
+        let detected = ide_workspace::roots::detect(&plain);
+        let plan = plan_compile_file(
+            &plain,
+            &base.join("cache"),
+            &Settings::default(),
+            &detected,
+            &java_file,
+            &ide_core::CancellationToken::new(),
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(plan.system, compile::BuildSystem::Javac);
+        assert_eq!(plan.title, "Compile Main.java");
+
+        let txt = plain.join("notes.txt");
+        std::fs::write(&txt, "hi").unwrap();
+        assert!(
+            plan_compile_file(
+                &plain,
+                &base.join("cache"),
+                &Settings::default(),
+                &detected,
+                &txt,
+                &ide_core::CancellationToken::new(),
+                &|_| {},
+            )
+            .is_err()
+        );
+
+        let host =
+            Host::new(crate::HostConfig { local_data_dir: base.join("local"), ..crate::HostConfig::for_test(&base) });
+        let member_a = base.join("member-a");
+        let member_b = base.join("member-b");
+        for m in [&member_a, &member_b] {
+            std::fs::create_dir_all(m.join("src")).unwrap();
+            std::fs::write(m.join("src/App.java"), "class App {}").unwrap();
+        }
+        let ws = base.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        ide_workspace::workspace::Workspace::save(&ws, "WS", vec![member_a.clone(), member_b.clone()], true).unwrap();
+        let project = host.open_project("win", &ws).unwrap();
+        let scope = workspace::scope_for(&project, &member_b.join("src/App.java")).unwrap();
+        assert_eq!(scope.root, member_b);
+        host.close_project("win");
     }
 }
 
