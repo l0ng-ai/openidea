@@ -5,7 +5,9 @@
 //! any origin to read it (module scripts and fonts are fetched in CORS mode),
 //! and is immutable: the revision in the URL changes with the installed
 //! package. HTML gets a CSP of its own, in case a page navigates its frame to
-//! one: still sandboxed, still no network.
+//! one: still sandboxed, still no network. A page whose declaration lists
+//! `frames` (API 1.16) may also embed those origins the user granted; its HTML
+//! is revalidated, since the grants can change while the revision stays.
 //!
 //! [`FRAME_HOST_PATH`] is the page that the `html` bodies plugin code renders are
 //! written into. A `srcdoc` frame would inherit the workbench's CSP, whose
@@ -26,6 +28,15 @@ const HTML_CSP: &str = "sandbox allow-scripts; default-src 'none'; \
     font-src openidea-plugin: http://openidea-plugin.localhost data:; \
     media-src openidea-plugin: http://openidea-plugin.localhost data: blob:; \
     connect-src openidea-plugin: http://openidea-plugin.localhost data: blob:";
+
+/// [`HTML_CSP`], with a `frame-src` of `frames` when the page declares some.
+fn html_csp(frames: Option<&[String]>) -> String {
+    match frames {
+        None => HTML_CSP.to_owned(),
+        Some([]) => format!("{HTML_CSP}; frame-src 'none'"),
+        Some(origins) => format!("{HTML_CSP}; frame-src {}", origins.join(" ")),
+    }
+}
 
 /// The host page of `html` bodies: it tells the workbench it is ready and writes
 /// the document it gets back (`frameDocument` in src/features/plugins/views/frame.ts).
@@ -93,14 +104,15 @@ fn serve(plugins: &ide_host::plugins::PluginHost, path: &str) -> Response<Vec<u8
     let Some((plugin, rest)) = decoded.split_once('/') else { return status(StatusCode::NOT_FOUND) };
     match plugins.web_file(plugin, rest) {
         Ok(file) => {
+            let cache = if file.frames.is_some() { "no-cache" } else { "public, max-age=31536000, immutable" };
             let mut response = Response::builder()
                 .header(header::CONTENT_TYPE, file.mime)
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                .header(header::CACHE_CONTROL, cache)
                 .header("X-Content-Type-Options", "nosniff");
             let mut body = file.bytes;
             if file.mime.starts_with("text/html") {
-                response = response.header(header::CONTENT_SECURITY_POLICY, HTML_CSP);
+                response = response.header(header::CONTENT_SECURITY_POLICY, html_csp(file.frames.as_deref()));
                 body = with_bridge(&body);
             }
             response.body(body).unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR))
@@ -136,6 +148,17 @@ mod tests {
         assert!(out.contains("})(null);</script>"), "{out}");
         let bare = String::from_utf8(with_bridge(b"<p>x</p>")).unwrap();
         assert!(bare.starts_with("<script>(") && bare.ends_with("<p>x</p>"));
+    }
+
+    #[test]
+    fn declared_frames_extend_only_frame_src() {
+        assert_eq!(html_csp(None), HTML_CSP);
+        assert!(!HTML_CSP.contains("frame-src"));
+        assert_eq!(html_csp(Some(&[])), format!("{HTML_CSP}; frame-src 'none'"));
+        let origins = ["https://example.com".to_owned(), "http://localhost:5173".to_owned()];
+        let csp = html_csp(Some(&origins));
+        assert_eq!(csp.strip_prefix(HTML_CSP).unwrap(), "; frame-src https://example.com http://localhost:5173");
+        assert!(csp.starts_with("sandbox allow-scripts; default-src 'none';"), "{csp}");
     }
 
     #[test]

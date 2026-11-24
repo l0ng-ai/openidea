@@ -121,6 +121,10 @@ pub(super) struct WebPtySession {
 pub struct WebFile {
     pub bytes: Vec<u8>,
     pub mime: &'static str,
+    /// The origins a page may embed: `None` when no web page whose directory holds
+    /// the file declares `frames` (API 1.16), else the declared origins the user has
+    /// granted (`net:` / `net.http:`), possibly none.
+    pub frames: Option<Vec<String>>,
 }
 
 impl PluginHost {
@@ -324,6 +328,32 @@ impl PluginHost {
         })
     }
 
+    /// `frames` of the web pages whose directory holds `rel`, kept to those `granted`.
+    fn web_frames(&self, plugin: &str, rel: &str, granted: &[ide_extension::Capability]) -> Option<Vec<String>> {
+        let declared: Vec<String> = super::ui_points::WEB_POINTS
+            .iter()
+            .flat_map(|point| self.ui.items(point, Some(plugin)))
+            .filter(|item| {
+                let dir = item.decl.get("web").and_then(|w| w.as_str()).and_then(|e| e.rsplit_once('/'));
+                dir.is_some_and(|(dir, _)| rel.starts_with(&format!("{dir}/")))
+            })
+            .filter_map(|item| item.decl.get("frames").and_then(|f| f.as_array()).cloned())
+            .flatten()
+            .filter_map(|f| f.as_str().map(str::to_owned))
+            .collect();
+        if declared.is_empty() {
+            return None;
+        }
+        let mut allowed = Vec::new();
+        for origin in declared {
+            let ok = ide_plugin::net_capability(&origin).is_ok_and(|cap| granted.iter().any(|g| g.covers(&cap)));
+            if ok && !allowed.contains(&origin) {
+                allowed.push(origin);
+            }
+        }
+        Some(allowed)
+    }
+
     /// The web roots `plugin` declares (entry directories, package-relative, `/`-terminated).
     fn web_dirs(&self, plugin: &str) -> Vec<String> {
         super::ui_points::WEB_POINTS
@@ -376,7 +406,14 @@ impl PluginHost {
             return Err(IdeError::not_found(format!("{rel}: not part of a web view")));
         }
         let bytes = plugin.pkg.read_bytes(rel_path).map_err(IdeError::not_found)?;
-        Ok(WebFile { bytes, mime: mime(rel) })
+        let mime = mime(rel);
+        let frames = if mime.starts_with("text/html") {
+            let granted = plugin.meta.lock().granted.clone();
+            self.web_frames(plugin_id, rel, &granted)
+        } else {
+            None
+        };
+        Ok(WebFile { bytes, mime, frames })
     }
 }
 
