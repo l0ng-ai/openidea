@@ -161,6 +161,8 @@ export const intellijWindows: Record<string, string[]> = {
   "code.sortLines": [],
   "code.reverseLines": [],
   "code.fillParagraph": [],
+  "code.convertIndentsToSpaces": [],
+  "code.convertIndentsToTabs": [],
   "code.unwrap": ["Ctrl+Shift+Delete"],
   "code.foldSelection": ["Ctrl+."],
   "editor.toggleColumnSelection": ["Alt+Shift+Insert"],
@@ -252,6 +254,10 @@ export const intellijWindows: Record<string, string[]> = {
   "toolwindow.hideActive": ["Shift+Escape"],
   "toolwindow.focusEditor": ["Escape"],
   "editor.toggleZen": [],
+  "editor.toggleLineNumbers": [],
+  "editor.toggleIndentGuides": [],
+  "editor.toggleStickyLines": [],
+  "editor.toggleWhitespaces": [],
 
   // Build
   "build.buildProject": ["Ctrl+F9"],

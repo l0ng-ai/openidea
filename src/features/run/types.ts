@@ -673,6 +673,8 @@ export function newConfigOfType(
     local: true,
     ...(folder ? { folder } : {}),
   };
+  // A new Shell Script runs in a terminal, as IDEA's "Execute in the terminal" does by default.
+  if (type.id === "shell") base.emulateTerminal = true;
   const copied: Partial<RunConfig> = {};
   if (template) {
     for (const key of TEMPLATE_KEYS) {

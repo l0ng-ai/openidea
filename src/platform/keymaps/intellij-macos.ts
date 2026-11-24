@@ -159,6 +159,8 @@ export const intellijMacos: Record<string, string[]> = {
   "code.sortLines": [],
   "code.reverseLines": [],
   "code.fillParagraph": [],
+  "code.convertIndentsToSpaces": [],
+  "code.convertIndentsToTabs": [],
   "code.unwrap": ["Meta+Shift+Delete"],
   "code.foldSelection": ["Meta+."],
   "editor.toggleColumnSelection": ["Meta+Shift+8"],
@@ -258,6 +260,10 @@ export const intellijMacos: Record<string, string[]> = {
   // (ToggleDistractionFreeMode has no default). ⌃⌘D is macOS's system-wide
   // "Look Up in Dictionary" hotkey, which never reaches the webview.
   "editor.toggleZen": [],
+  "editor.toggleLineNumbers": [],
+  "editor.toggleIndentGuides": [],
+  "editor.toggleStickyLines": [],
+  "editor.toggleWhitespaces": [],
 
   // Build
   "build.buildProject": ["Meta+F9"],

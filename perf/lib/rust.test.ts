@@ -35,10 +35,10 @@ afterEach(() => {
 });
 
 describe("Rust workload contract", () => {
-  it("owns 41 unique IDs and exactly seven observe-only metrics", () => {
+  it("owns 44 unique IDs and exactly ten observe-only metrics", () => {
     const ids = Object.values(RUST_BENCHMARKS).flat();
-    expect(ids).toHaveLength(41);
-    expect(new Set(ids).size).toBe(41);
+    expect(ids).toHaveLength(44);
+    expect(new Set(ids).size).toBe(44);
     const budgets = JSON.parse(readFileSync(resolve(import.meta.dirname, "../budgets.json"), "utf8")).rust;
     const selected = rustBudgets(selectRustPackages(), budgets);
     expect(Object.keys(selected)).toHaveLength(34);
@@ -50,6 +50,9 @@ describe("Rust workload contract", () => {
       "index_100k/find_symbols/renderView",
       "startup_20k/reopen_wait_idle",
       "search_excluded_subtrees/5k_dependencies",
+      "search_long_line/1mb",
+      "search_long_line/5mb",
+      "search_long_line/20mb",
     ]);
     expect(Object.keys(rustBudgets(["ide-text"], budgets))).toHaveLength(9);
     const missing = { ...budgets };
@@ -96,7 +99,7 @@ describe("Rust workload contract", () => {
   it("accepts a complete full workload and converts nanoseconds to microseconds", () => {
     const root = fixture();
     complete(root, selectRustPackages());
-    expect(Object.keys(collectRustMetrics(root, selectRustPackages()))).toHaveLength(41);
+    expect(Object.keys(collectRustMetrics(root, selectRustPackages()))).toHaveLength(44);
     expect(collectRustMetrics(root, ["ide-text"])["text/open_1mb"]).toBe(1);
   });
 
@@ -117,6 +120,7 @@ describe("Rust workload contract", () => {
     ["ide-index", "index_100k/find_symbols/renderView"],
     ["ide-index", "startup_20k/reopen_wait_idle"],
     ["ide-search", "search_excluded_subtrees/5k_dependencies"],
+    ["ide-search", "search_long_line/20mb"],
   ])("requires observe-only metric %s / %s", (p, id) => {
     const root = fixture();
     complete(root, [p]);

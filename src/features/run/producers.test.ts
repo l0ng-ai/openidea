@@ -207,6 +207,11 @@ describe("single-file producers (scratches)", () => {
       command: "/bin/bash",
       args: ["a.sh"],
     });
+    // Run in a terminal so the script can prompt (`read`) and see a TTY; other interpreters keep pipes.
+    const terminal = (i: ContextInput) => produceContext(i, ALL)!.config!.emulateTerminal;
+    expect(terminal(scratch("a.sh", "#!/usr/bin/env bash\nread x"))).toBe(true);
+    expect(terminal(scratch("a.sh", "read x"))).toBe(true);
+    expect(terminal(scratch("tool", "#!/usr/bin/env ruby\nputs 1"))).toBeFalsy();
     expect(run(scratch("a.sh", "#!/bin/zsh -f\necho"))).toMatchObject({ command: "/bin/zsh", args: ["-f", "a.sh"] });
     expect(run(scratch("a.sh", "echo"))).toMatchObject({ command: "/bin/sh" });
     expect(run(scratch("a.zsh", "echo"))).toMatchObject({ command: "/bin/zsh" });

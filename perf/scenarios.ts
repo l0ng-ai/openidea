@@ -256,7 +256,9 @@ const consoleLongLines: Scenario = {
     if (longBox) {
       await h.page.mouse.move(longBox.x + longBox.width / 2, longBox.y + longBox.height / 2);
       for (let i = 0; i < 6; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- wheel steps scroll the log one after another while it streams
         await h.page.mouse.wheel(0, -180);
+        // oxlint-disable-next-line no-await-in-loop -- spaces the wheel steps out
         await h.page.waitForTimeout(40);
       }
     }
@@ -301,6 +303,7 @@ const consoleLongLines: Scenario = {
       const steps = 12;
       for (let i = 1; i <= steps; i++) {
         el.scrollLeft = Math.round((maxLeft * i) / steps);
+        // oxlint-disable-next-line no-await-in-loop -- one horizontal scroll position per frame
         await new Promise(requestAnimationFrame);
       }
       el.scrollLeft = 0;
@@ -921,6 +924,69 @@ const projectTree: Scenario = {
   },
 };
 
+/**
+ * Selects from `item<first>.json` of the 10 000-entry folder to the end of the tree (speed search,
+ * Escape, Shift+End), then presses Copy and Delete. `items`: the count the Delete dialog shows;
+ * `copyMs`: key → next frame; `deleteMs`: key → dialog shown (then cancelled).
+ */
+async function copyAndDelete(h: Harness, first: number) {
+  const tree = h.page.getByRole("tree", { name: "Project" });
+  await h.page.keyboard.type(`item${first}.json`);
+  await tree.getByRole("treeitem", { name: `item${first}.json`, exact: true, selected: true }).waitFor();
+  await h.page.keyboard.press("Escape");
+  await h.page.keyboard.press("Shift+End");
+  await h.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  // Hold the modifiers first: only the main key's keydown is measured.
+  const [copyKey] = await h.keysFor("project.copy");
+  const mods = copyKey!.split("+");
+  const key = mods.pop()!;
+  // oxlint-disable-next-line no-await-in-loop -- modifiers go down (and up) one at a time
+  for (const m of mods) await h.page.keyboard.down(m);
+  const [copyMs] = await h.pressMeasured([key], 50);
+  // oxlint-disable-next-line no-await-in-loop -- modifiers go down (and up) one at a time
+  for (const m of mods) await h.page.keyboard.up(m);
+  const deleteMs = await h.measure(
+    () => h.pressAction("project.delete"),
+    '[role="dialog"]',
+    "Items are moved to the Trash.",
+    120_000,
+  );
+  const dialog = h.page.getByRole("dialog", { name: "Delete", exact: true });
+  const text = (await dialog.textContent()) ?? "";
+  const items = Number(/Delete (\d+) items/.exec(text)?.[1]);
+  if (!items) throw new Error(`unexpected Delete dialog: ${text}`);
+  await h.page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+  return { items, copyMs: copyMs!, deleteMs };
+}
+
+/** Project tree: Copy and Delete on about 10, 1 000, 5 000 and 10 000 selected rows. */
+const projectTreeSelection: Scenario = {
+  id: "projectTreeSelection",
+  title: "Copy and Delete thousands of selected tree rows",
+  async run(h) {
+    const generated = h.page.locator('[role="treeitem"][aria-level="2"]', { hasText: "generated" }).first();
+    await generated.click();
+    await generated.and(h.page.locator('[aria-selected="true"]')).waitFor();
+    await h.page.keyboard.press("ArrowRight");
+    await h.page.getByRole("treeitem", { name: "item1.json", exact: true }).waitFor();
+    const out: Metrics = {};
+    for (const [label, first] of [
+      ["10", 9995],
+      ["1k", 9001],
+      ["5k", 5001],
+      ["All", 1],
+    ] as const) {
+      // oxlint-disable-next-line no-await-in-loop -- one selection at a time in the same tree
+      const m = await copyAndDelete(h, first);
+      out[`items${label}`] = m.items;
+      out[`copy${label}Ms`] = m.copyMs;
+      out[`delete${label}Ms`] = m.deleteMs;
+    }
+    return out;
+  },
+};
+
 /** Files in the `combinedDiff` scenarios (`OPENIDEA_PERF_COMBINED_FILES`). */
 const COMBINED_FILES = Number(process.env.OPENIDEA_PERF_COMBINED_FILES ?? 500);
 /** Farthest the wheel pass scrolls before turning back: about 100 files of 40 lines. */
@@ -1090,6 +1156,7 @@ export const SCENARIOS: Scenario[] = [
   popups,
   toolWindows,
   projectTree,
+  projectTreeSelection,
   combinedDiff,
   combinedDiffStress,
   leaks,
