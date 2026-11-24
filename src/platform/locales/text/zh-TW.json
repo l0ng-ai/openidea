@@ -9236,5 +9236,11 @@
   "Change Project Icon…": "變更專案圖示…",
   "Reset Project Icon": "重設專案圖示",
   "Cannot change the project icon": "無法變更專案圖示",
-  "Cannot reset the project icon": "無法重設專案圖示"
+  "Cannot reset the project icon": "無法重設專案圖示",
+  "Case": "大小寫",
+  "Keywords": "關鍵字",
+  "To upper": "轉為大寫",
+  "To lower": "轉為小寫",
+  "Do not change": "不變更",
+  "Unquoted table, column and alias names; ClickHouse names keep their case.": "未加引號的表名、欄名和別名；ClickHouse 的名稱保持原有大小寫。"
 }
