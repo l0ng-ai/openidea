@@ -150,29 +150,61 @@ function trackContainers(raw: string, open: string[]) {
   }
 }
 
-/** The preview's blocks: each top-level block, or run of blocks inside one HTML container, as unsanitized HTML. */
-function blocks(text: string): { line: number; html: string }[] {
+type MarkdownBlock = { line: number; endLine: number; html: string };
+
+function lexBlocks(body: string): TokensList {
+  // Marked repeatedly scans the remaining input for block boundaries. Keep the bytes of
+  // standalone embedded images out of those scans and restore their URLs before rendering.
+  const prefix = "openidea-embedded-image-";
+  if (!body.includes(";base64,") || body.includes(prefix)) return marked.lexer(body);
+  const urls: string[] = [];
+  const compact = body.replace(
+    /^!\[\]\((data:image\/[\w.+-]+;base64,[A-Za-z0-9+/]{256,}={0,2})\)(?=[ \t]*\r?$)/gm,
+    (_, url: string) => {
+      urls.push(url);
+      return `![](${prefix}${urls.length - 1})`;
+    },
+  );
+  const tokens = marked.lexer(compact);
+  let restored = 0;
+  for (const token of tokens) {
+    if (restored === urls.length) break;
+    if (!token.raw.includes(prefix)) continue;
+    const image = token.type === "paragraph" && token.tokens?.length === 1 && token.tokens[0];
+    if (!image || image.type !== "image" || image.href !== prefix + restored || token.raw.trimEnd() !== image.raw)
+      return marked.lexer(body);
+    image.href = urls[restored++]!;
+  }
+  return restored === urls.length ? tokens : marked.lexer(body);
+}
+
+/** Top-level source ranges; an open HTML container groups its enclosed blocks. */
+function blocks(text: string): MarkdownBlock[] {
   const front = frontMatter(text);
   const body = front ? text.split("\n").slice(front.lines).join("\n") : text;
-  const tokens = marked.lexer(body);
+  const tokens = lexBlocks(body);
   const slugs = new Map<string, number>();
   let line = front?.lines ?? 0;
-  const out = front ? [{ line: 0, html: frontMatterTable(front.fields) }] : [];
+  const out = front ? [{ line: 0, endLine: front.lines, html: frontMatterTable(front.fields) }] : [];
   // Blocks inside an HTML container left open (`<details>`, `<div>`…) share its wrapper up to
   // the close: a wrapper per block would end the container early and spill its content out.
   const open: string[] = [];
-  let group: { line: number; html: string } | null = null;
+  let group: MarkdownBlock | null = null;
   for (const token of tokens) {
     const start = line;
     line += countLines(token.raw);
     if (token.type === "space" || token.type === "footnoteDefinition") continue;
     const list = Object.assign([token], { links: tokens.links }) as TokensList;
     let body = marked.parser(list);
+    if (token.type === "table") {
+      body = body.replace(/^<table>/, '<table data-markdown-table="">');
+    }
     if (token.type === "heading") {
       const id = headingId(slugs, (token as Token & { text: string }).text);
       body = body.replace(/^<h(\d)>/, `<h$1 id="${ANCHOR_PREFIX}${id}">`);
     }
-    group ??= { line: start, html: "" };
+    group ??= { line: start, endLine: start, html: "" };
+    group.endLine = start + countLines(token.raw.trimEnd()) + 1;
     group.html += body;
     if (token.type === "html") trackContainers(token.raw, open);
     if (open.length) continue;
@@ -181,23 +213,24 @@ function blocks(text: string): { line: number; html: string }[] {
   }
   if (group) out.push(group);
   const footnotes = renderFootnotes(marked, tokens);
-  if (footnotes) out.push({ line: countLines(text), html: footnotes });
+  if (footnotes) out.push({ line: countLines(text), endLine: countLines(text) + 1, html: footnotes });
   return out;
 }
 
 const SANITIZE = {
   USE_PROFILES: { html: true },
-  ADD_ATTR: ["data-src", "data-line", "data-front-matter", "data-math"],
+  ADD_ATTR: ["data-src", "data-line", "data-end-line", "data-markdown-table", "data-front-matter", "data-math"],
   // The preview shares the IDE's document: a `<style>` in a file would restyle the whole IDE.
   // `srcset` and `<source>` would pick an image past the one the preview loads.
   FORBID_TAGS: ["style", "form", "source"],
   FORBID_ATTR: ["style", "srcset"],
 };
 
-const wrap = (line: number, html: string) => `<div data-line="${line}">${html}</div>`;
+const wrap = (line: number, endLine: number, html: string) =>
+  `<div data-line="${line}" data-end-line="${endLine}">${html}</div>`;
 
-const sanitizeWhole = (all: readonly { line: number; html: string }[]) =>
-  purify().sanitize(all.map((b) => wrap(b.line, b.html)).join(""), SANITIZE);
+const sanitizeWhole = (all: readonly MarkdownBlock[]) =>
+  purify().sanitize(all.map((b) => wrap(b.line, b.endLine, b.html)).join(""), SANITIZE);
 
 /**
  * 0-based source line of the heading the preview gives the anchor `anchor` (with or without
@@ -242,11 +275,11 @@ export function createMarkdownRenderer(): (text: string) => string {
     cache = kept;
     const parts = all.map((b) => cache.get(b.html));
     if (parts.some((part) => typeof part !== "string")) return sanitizeWhole(all);
-    return all.map((b, i) => wrap(b.line, parts[i]!)).join("");
+    return all.map((b, i) => wrap(b.line, b.endLine, parts[i]!)).join("");
   };
 }
 
-const WRAPPER_OPEN = '<div data-line="0">';
+const WRAPPER_OPEN = '<div data-line="0" data-end-line="1">';
 // Tags that change how the parser reads the blocks after them without moving the markers.
 const PARSER_STATE = /<(?:form|frameset)(?=[\s/>]|$)/i;
 
@@ -280,7 +313,7 @@ function sanitizeApart(blocks: readonly string[], cache: Map<string, string | nu
   p.addHook("beforeSanitizeElements", checkParse);
   let html: string;
   try {
-    html = p.sanitize(blocks.map((b) => wrap(0, b) + marker).join(""), SANITIZE);
+    html = p.sanitize(blocks.map((b) => wrap(0, 1, b) + marker).join(""), SANITIZE);
   } finally {
     p.removeHook("beforeSanitizeElements", checkParse);
   }
@@ -340,20 +373,37 @@ export function resolveLink(file: string, href: string): LinkTarget | null {
  * between the blocks around it (`blocks` sorted by line, with their offsets).
  */
 export function previewOffsetForLine(
-  blocks: ReadonlyArray<{ line: number; top: number }>,
+  blocks: ReadonlyArray<{ line: number; top: number; endLine?: number; bottom?: number }>,
   line: number,
   end: number,
+  sourceOffsets?: readonly number[],
 ): number {
   if (!blocks.length) return 0;
-  let i = 0;
-  while (i + 1 < blocks.length && blocks[i + 1]!.line <= line) i++;
-  const a = blocks[i]!;
+  let lo = 0,
+    hi = blocks.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (blocks[mid]!.line <= line) lo = mid + 1;
+    else hi = mid;
+  }
+  const a = blocks[Math.max(0, lo - 1)]!;
   if (line <= a.line) return a.top;
-  const b = blocks[i + 1];
-  const nextLine = b?.line ?? a.line + 1;
-  const nextTop = b?.top ?? end;
-  const t = Math.min(1, (line - a.line) / Math.max(1, nextLine - a.line));
-  return a.top + t * (nextTop - a.top);
+  const b = blocks[lo];
+  const endLine = a.endLine ?? b?.line ?? a.line + 1;
+  const bottom = a.bottom ?? b?.top ?? end;
+  if (line < endLine) {
+    let progress = (line - a.line) / Math.max(1, endLine - a.line);
+    if (sourceOffsets && endLine < sourceOffsets.length) {
+      const row = Math.floor(line);
+      const start = sourceOffsets[a.line]!;
+      const length = sourceOffsets[endLine]! - start;
+      const offset = sourceOffsets[row]! + (line - row) * (sourceOffsets[row + 1]! - sourceOffsets[row]!);
+      if (length > 0) progress = (offset - start) / length;
+    }
+    return a.top + progress * (bottom - a.top);
+  }
+  if (!b || b.line <= endLine) return bottom;
+  return bottom + ((line - endLine) / (b.line - endLine)) * (b.top - bottom);
 }
 
 /** Source line of the block at the top of a preview scrolled to `offset`: the first one if none is above it. */
