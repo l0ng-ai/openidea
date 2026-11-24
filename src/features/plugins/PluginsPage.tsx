@@ -106,6 +106,7 @@ const POINT_TITLES: Record<string, string> = {
   javaAgents: "Java Agents",
   skills: "Agent Skills",
   locales: "Translations",
+  cloneSources: "Clone Sources",
 };
 
 const pointTitle = (point: string) => uiPoint(point)?.title ?? POINT_TITLES[point] ?? point;

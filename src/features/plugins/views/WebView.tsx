@@ -260,6 +260,11 @@ export interface WebViewProps {
   doc?: number | null;
   /** The text editor an editor panel follows; none elsewhere. */
   editor?: FrameEditor | null;
+  /**
+   * Text the page posted. Returning true means it was handled here and does not
+   * reach the plugin's code (the Clone dialog's sources use it for `clone-url`).
+   */
+  onText?: (text: string) => boolean;
 }
 
 export function WebView({
@@ -270,6 +275,7 @@ export function WebView({
   document = null,
   doc = null,
   editor = null,
+  onText,
 }: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
@@ -285,6 +291,10 @@ export function WebView({
     anyActionRef.current = anyAction;
   }, [anyAction]);
   const frame = useRef<HTMLIFrameElement>(null);
+  const onTextRef = useRef(onText);
+  useEffect(() => {
+    onTextRef.current = onText;
+  }, [onText]);
 
   const post = useCallback((message: object, transfer: Transferable[] = []) => {
     frame.current?.contentWindow?.postMessage({ tag: FRAME_TAG, ...message }, "*", transfer);
@@ -501,6 +511,7 @@ export function WebView({
           (err: unknown) => post({ reply: id, error: errorText(err) }),
         );
       } else if (typeof m.text === "string") {
+        if (onTextRef.current?.(m.text)) return;
         if (handleLogTabMessage(m.text)) return;
         if (handleContentTabMessage(m.text)) return;
         if (handleDiffMessage(m.text)) return;

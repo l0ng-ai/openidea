@@ -81,8 +81,10 @@ pub const SETTINGS: &str = "settings";
 pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const EDITOR_PANELS: &str = "editorPanels";
+/// Entries of the Clone Repository dialog's source list, each a web page.
+pub const CLONE_SOURCES: &str = "cloneSources";
 /// The points whose declarations can name a `web` page (served, messaged, sent view events).
-pub const WEB_POINTS: [&str; 3] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS];
+pub const WEB_POINTS: [&str; 4] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS, CLONE_SOURCES];
 pub const FILE_ICONS: &str = "fileIcons";
 pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
@@ -806,6 +808,33 @@ pub(super) fn editor_panel(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
     }
     let files = super::web::web_files(pkg, &d.web, &what)?;
     let mut out = UiDecl::new(d.id.clone(), d.id.clone(), json(&d)?);
+    out.files = files;
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CloneSourceDecl {
+    id: String,
+    label: String,
+    /// An IDE icon name (`branch`, `git-pull`); a package SVG is not part of v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+    /// The page that lists repositories and posts the chosen clone URL.
+    /// Required: the dialog has nothing else to show for a source.
+    web: String,
+}
+
+pub(super) fn clone_source(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: CloneSourceDecl = decode(CLONE_SOURCES, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{CLONE_SOURCES}"), 15)?;
+    validate_item_id(&d.id, "clone source id")?;
+    title(CLONE_SOURCES, &d.label)?;
+    let what = format!("clone source {:?}", d.id);
+    let files = super::web::web_files(pkg, &d.web, &what)?;
+    // The key is namespaced with the point: a source's page is served, messaged
+    // and sent view events under it, and it cannot collide with a view's id.
+    let mut out = UiDecl::new(format!("{CLONE_SOURCES}/{}", d.id), d.label.clone(), json(&d)?);
     out.files = files;
     Ok(out)
 }
