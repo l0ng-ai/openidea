@@ -16,11 +16,13 @@ import {
 vi.mock("./session", () => ({
   TerminalSession: class {
     key: string;
-    state: { cwd: string; status: string };
+    state: { cwd: string; status: string; terminalId?: number | null };
     command:
       | { program: string; args: string[]; shell?: boolean; onExit?: (code: number | null, closed: boolean) => void }
       | undefined;
     fallbackRoot: string | undefined;
+    attachTerminalId: number | null | undefined;
+    disposedWithKill: boolean | undefined;
     constructor(opts: {
       key: string;
       cwd: string;
@@ -31,17 +33,23 @@ vi.mock("./session", () => ({
         onExit?: (code: number | null, closed: boolean) => void;
       };
       fallbackRoot?: string;
+      attachTerminalId?: number | null;
     }) {
       this.key = opts.key;
-      this.state = { cwd: opts.cwd, status: "idle" };
+      this.state = { cwd: opts.cwd, status: "idle", terminalId: opts.attachTerminalId ?? null };
       this.command = opts.command;
       this.fallbackRoot = opts.fallbackRoot;
+      this.attachTerminalId = opts.attachTerminalId;
+    }
+    get persistedTerminalId() {
+      return this.state.terminalId ?? this.attachTerminalId ?? null;
     }
     async start() {
       this.state.status = "running";
     }
-    dispose() {
-      this.command?.onExit?.(null, true);
+    dispose(kill = true) {
+      this.disposedWithKill = kill;
+      if (kill) this.command?.onExit?.(null, true);
     }
   },
 }));
@@ -178,5 +186,42 @@ describe("terminal tab memory", () => {
     const restored = sessionOf(state().tabs[0]!.session)!;
     expect(restored.state.cwd).toBe("/repo/gone");
     expect(restored.fallbackRoot).toBe("/repo");
+  });
+
+  it("reattaches live remote terminal ids without killing them on unbind and keeps two remote hosts apart", () => {
+    const scopeA = "ssh://devbox-a/home/coder/repo";
+    const scopeB = "ssh://devbox-b/home/coder/repo";
+
+    syncTerminalProject("/home/coder/repo", scopeA);
+    const tabA = newTab("/home/coder/repo");
+    renameTab(tabA.id, "watch date");
+    const sessionA = getSession(tabA.session) as unknown as {
+      state: { cwd: string; terminalId: number | null };
+      disposedWithKill?: boolean;
+    };
+    sessionA.state.terminalId = 41;
+    useTerminals.setState((s) => ({
+      sessions: { ...s.sessions, [tabA.session]: { ...s.sessions[tabA.session]!, terminalId: 41 } },
+    }));
+
+    // Leaving a remote project detaches without killing the remote PTY.
+    unbindTerminals();
+    expect(sessionA.disposedWithKill).toBe(false);
+
+    // Another remote host with the same `/home/coder/repo` path has its own tab layout.
+    syncTerminalProject("/home/coder/repo", scopeB);
+    expect(state().tabs).toEqual([]);
+    const tabB = newTab("/home/coder/repo");
+    renameTab(tabB.id, "docker compose");
+
+    // Reopening `devbox-a` restores `watch date` and reattaches to PTY 41.
+    syncTerminalProject("/home/coder/repo", scopeA);
+    expect(names()).toEqual(["watch date"]);
+    const restoredA = getSession(state().tabs[0]!.session) as unknown as {
+      attachTerminalId?: number | null;
+      state: { status: string };
+    };
+    expect(restoredA.attachTerminalId).toBe(41);
+    expect(restoredA.state.status).toBe("running");
   });
 });

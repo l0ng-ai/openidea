@@ -58,7 +58,7 @@ export interface ConnectionState {
   snapshot: DockerSnapshot | null;
   loading: boolean;
   error: string | null;
-  /** Disconnected for this session: no snapshots, events or polling until Connect. */
+  /** Explicitly disconnected: no snapshots, events or polling until Connect. */
   disconnected?: boolean;
   /** Containers with a start / stop / … / remove in progress, by id: the operation. */
   busy?: Record<string, ContainerOp | "remove">;
@@ -128,9 +128,18 @@ export function loadSettings(): Promise<void> {
     return Promise.resolve();
   }
   settingsLoad ??= call(commands.dockerSettings())
-    .then((s: DockerSettings) =>
-      useServices.setState({ settings: { connections: s.connections ?? [], registries: s.registries ?? [] } }),
-    )
+    .then((s: DockerSettings) => {
+      const connections = s.connections ?? [];
+      useServices.setState((state) => ({
+        settings: { connections, registries: s.registries ?? [] },
+        conns: {
+          ...state.conns,
+          ...Object.fromEntries(
+            connections.filter((c) => c.disconnected).map((c) => [c.id, { ...IDLE, disconnected: true }]),
+          ),
+        },
+      }));
+    })
     .catch((e) => {
       settingsLoad = null;
       notifications().notify({
@@ -143,32 +152,43 @@ export function loadSettings(): Promise<void> {
   return settingsLoad;
 }
 
-async function saveSettings(settings: Settings): Promise<boolean> {
-  try {
-    if (isTauri()) await call(commands.dockerSaveSettings(settings));
-    useServices.setState({ settings });
-    return true;
-  } catch (e) {
-    notifications().notify({
-      group: "run",
-      level: "error",
-      title: "Cannot save Docker settings",
-      body: errorMessage(e),
-    });
-    return false;
-  }
+let settingsWrite = Promise.resolve(true);
+
+function saveSettings(update: (current: Settings) => Settings): Promise<boolean> {
+  // Each write replaces the settings file, so derive it after the previous save.
+  settingsWrite = settingsWrite.then(async () => {
+    try {
+      const current = useServices.getState().settings ?? { connections: [], registries: [] };
+      const settings = update(current);
+      if (settings === current) return true;
+      if (isTauri()) await call(commands.dockerSaveSettings(settings));
+      useServices.setState({ settings });
+      return true;
+    } catch (e) {
+      notifications().notify({
+        group: "run",
+        level: "error",
+        title: "Cannot save Docker settings",
+        body: errorMessage(e),
+      });
+      return false;
+    }
+  });
+  return settingsWrite;
 }
 
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /** Adds or replaces (same id) a connection; the tree picks it up right away. */
-export async function saveConnection(c: DockerConnection): Promise<boolean> {
+export async function saveConnection(c: Pick<DockerConnection, "id" | "name" | "endpoint">): Promise<boolean> {
   await loadSettings();
-  const s = useServices.getState().settings ?? { connections: [], registries: [] };
-  const old = s.connections.find((x) => x.id === c.id)?.endpoint;
-  const ok = await saveSettings({
-    ...s,
-    connections: old ? s.connections.map((x) => (x.id === c.id ? c : x)) : [...s.connections, c],
+  let old: DockerEndpoint | undefined;
+  const ok = await saveSettings((s) => {
+    old = s.connections.find((x) => x.id === c.id)?.endpoint;
+    return {
+      ...s,
+      connections: old ? s.connections.map((x) => (x.id === c.id ? { ...x, ...c } : x)) : [...s.connections, c],
+    };
   });
   if (ok) {
     stopEvents(c.id);
@@ -183,7 +203,7 @@ export async function removeConnection(id: string): Promise<void> {
   if (!s) return;
   stopEvents(id);
   const endpoint = endpointOf(id);
-  if (await saveSettings({ ...s, connections: s.connections.filter((c) => c.id !== id) })) {
+  if (await saveSettings((s) => ({ ...s, connections: s.connections.filter((c) => c.id !== id) }))) {
     useServices.setState((st) => {
       const conns = { ...st.conns };
       delete conns[id];
@@ -196,11 +216,12 @@ export async function removeConnection(id: string): Promise<void> {
 /** Adds or replaces a registry; `password` undefined keeps the saved one, null forgets it. */
 export async function saveRegistry(r: DockerRegistry, password: string | null | undefined): Promise<boolean> {
   await loadSettings();
-  const s = useServices.getState().settings ?? { connections: [], registries: [] };
-  const exists = s.registries.some((x) => x.id === r.id);
-  const ok = await saveSettings({
-    ...s,
-    registries: exists ? s.registries.map((x) => (x.id === r.id ? r : x)) : [...s.registries, r],
+  const ok = await saveSettings((s) => {
+    const exists = s.registries.some((x) => x.id === r.id);
+    return {
+      ...s,
+      registries: exists ? s.registries.map((x) => (x.id === r.id ? r : x)) : [...s.registries, r],
+    };
   });
   if (ok && password !== undefined && isTauri()) {
     try {
@@ -219,7 +240,18 @@ export async function saveRegistry(r: DockerRegistry, password: string | null | 
 
 export async function removeRegistry(id: string): Promise<void> {
   const s = useServices.getState().settings;
-  if (s) await saveSettings({ ...s, registries: s.registries.filter((r) => r.id !== id) });
+  if (s) await saveSettings((s) => ({ ...s, registries: s.registries.filter((r) => r.id !== id) }));
+}
+
+function saveConnectionDisconnected(id: string, disconnected: boolean): Promise<boolean> {
+  return saveSettings((s) => {
+    const existing = s.connections.find((c) => c.id === id);
+    if (!existing || (existing.disconnected ?? false) === disconnected) return s;
+    return {
+      ...s,
+      connections: s.connections.map((c) => (c.id === id ? { ...c, disconnected } : c)),
+    };
+  });
 }
 
 /** Test login; resolves to docker's answer, rejects with its error. */
@@ -311,7 +343,9 @@ export function watch(): () => void {
   if (watchers === 1) {
     pollTimer = setInterval(() => {
       for (const c of connections()) {
-        const ready = connectionState(c.id).snapshot?.availability.kind === "ready";
+        const state = connectionState(c.id);
+        if (state.disconnected) continue;
+        const ready = state.snapshot?.availability.kind === "ready";
         if (!ready || !events.has(c.id)) void refresh(c.id);
       }
     }, 10_000);
@@ -327,21 +361,24 @@ export function watch(): () => void {
 
 /**
  * Disconnect: stops talking to the connection's daemon (its event stream and polling; for an
- * SSH connection, its tunnel and SSH connection) until Connect. Not saved: a new session connects.
+ * SSH connection, its tunnel and SSH connection) until Connect, even across restarts.
  */
-export function disconnectConnection(id: string): void {
+export async function disconnectConnection(id: string): Promise<void> {
   stopEvents(id);
   clearTimeout(debounces.get(id));
   again.delete(id);
   patchConn(id, { snapshot: null, error: null, loading: false, disconnected: true });
   closeEndpoint(id, endpointOf(id));
+  await saveConnectionDisconnected(id, true);
 }
 
 export async function connectConnection(id: string): Promise<void> {
   patchConn(id, { disconnected: false });
+  const saving = saveConnectionDisconnected(id, false);
   // A tunnel being closed would take this connection's next snapshot down with it.
   await closing.get(id);
-  return refresh(id);
+  await refresh(id);
+  await saving;
 }
 
 /** The SSH configuration an endpoint tunnels through (as the backend keys its tunnels). */

@@ -3,7 +3,7 @@ use crate::Host;
 use ide_command::command;
 use ide_core::remote_settings::RunTargetKind;
 use ide_core::{IdeError, IdeResult, RunId};
-use ide_run::{OutputChunk, RunConfig, RunInfo, StartOptions};
+use ide_run::{OutputChunk, RunAttach, RunConfig, RunInfo, StartOptions};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -644,6 +644,19 @@ pub fn run_list(host: &Host) -> Vec<RunInfo> {
     runs
 }
 
+/// Reattaches to a running process `id` on this host, returning its buffered output
+/// and configuration while streaming subsequent chunks to `on_output`.
+#[command(trust = always)]
+pub async fn run_attach(host: &Host, window: &str, id: RunId, on_output: Channel<OutputChunk>) -> IdeResult<RunAttach> {
+    host.processes.reattach(
+        id,
+        host.window_sink(window),
+        Box::new(move |chunk| {
+            let _ = on_output.send(chunk);
+        }),
+    )
+}
+
 pub mod commands;
 pub(crate) mod container;
 pub use commands::*;
@@ -816,6 +829,7 @@ mod ownership_tests {
 ide_command::domain!(
     run:
     run_apply_settings,
+    run_attach,
     run_close_stdin,
     run_configs,
     run_list,

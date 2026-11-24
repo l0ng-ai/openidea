@@ -174,7 +174,8 @@ export function useExpressionCompletion(
         <div ref={list} className={styles.list} role="listbox" aria-label={tx("Completions")}>
           {shown.map((item, i) => (
             <div
-              key={`${item.label}\u0000${i}`}
+              // oxlint-disable-next-line react/no-array-index-key -- completions can repeat; position is the identity
+              key={i}
               data-index={i}
               role="option"
               aria-selected={i === index}

@@ -13,7 +13,11 @@ export function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemov
   return (
     <div className={styles.images}>
       {images.map((img, i) => (
-        <span key={i} className={styles.imageItem}>
+        <span
+          // oxlint-disable-next-line react/no-array-index-key -- identical images can repeat; position is the identity
+          key={i}
+          className={styles.imageItem}
+        >
           <button
             type="button"
             className={styles.imageButton}

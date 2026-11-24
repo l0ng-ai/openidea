@@ -29,7 +29,7 @@ pub fn find(custom: Option<PathBuf>) -> Option<PathBuf> {
 pub(crate) fn find_in(search: &OsStr, locations: &[PathBuf]) -> Option<PathBuf> {
     PATH_NAMES
         .iter()
-        .find_map(|n| ide_run::which::find_executable(n, search))
+        .find_map(|n| ide_core::process::find_executable(n, search))
         .or_else(|| locations.iter().find(|p| p.is_file()).cloned())
 }
 

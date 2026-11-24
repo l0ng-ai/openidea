@@ -147,7 +147,9 @@ export function DuplicatesView() {
         </div>
         <div className={styles.fragments}>
           {group ? (
-            group.fragments.map((f, i) => <FragmentPane key={`${selected}:${i}`} fragment={f} />)
+            group.fragments.map((f) => (
+              <FragmentPane key={`${selected}:${f.path}:${f.range.start.line}:${f.range.start.col}`} fragment={f} />
+            ))
           ) : (
             <EmptyState title={report?.groups.length ? "Select a group" : undefined} />
           )}

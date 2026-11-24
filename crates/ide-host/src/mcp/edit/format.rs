@@ -10,6 +10,7 @@
 use super::diff::{ChangedFileText, MAX_DIFF_LINES, build_unified_diff};
 use super::{edits_for, open_document, requested_files, whole_range};
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
+use crate::ops::lsp::RUFF_ORGANIZE_IMPORTS;
 use ide_core::{DocId, IdeError, IdeResult};
 use std::path::Path;
 
@@ -157,7 +158,7 @@ async fn format(call: &Call, doc: DocId, info: &ide_workspace::DocumentInfo) -> 
     .await
 }
 
-/// Runs the `source.organizeImports` code action of the document's language server.
+/// Runs the document's `source.organizeImports` code action, including the host's Ruff fallback.
 /// Nothing offered: nothing to do, unless the server says it has no such action at all.
 pub(super) async fn organize_imports(call: &Call, doc: DocId, path: &Path) -> IdeResult<()> {
     let host = call.host();
@@ -173,12 +174,20 @@ pub(super) async fn organize_imports(call: &Call, doc: DocId, path: &Path) -> Id
         }
     };
     let organizes = |kind: &str| kind == ORGANIZE_IMPORTS || kind.starts_with("source.organizeImports.");
+    let ruff_unavailable = query
+        .actions
+        .iter()
+        .find(|a| a.kind.as_deref() == Some(RUFF_ORGANIZE_IMPORTS))
+        .and_then(|a| a.disabled_reason.clone());
     let action = query
         .actions
         .into_iter()
         .filter(|a| a.disabled_reason.is_none() && a.kind.as_deref().is_some_and(organizes))
         .max_by_key(|a| a.is_preferred);
     let Some(action) = action else {
+        if let Some(reason) = ruff_unavailable {
+            return Err(IdeError::unavailable(reason));
+        }
         let offered = query.advertised_kinds.is_none_or(|kinds| kinds.iter().any(|k| k == "source" || organizes(k)));
         return if offered {
             Ok(())

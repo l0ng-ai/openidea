@@ -1430,17 +1430,8 @@ mod maven_completion_tests {
         let path = root.join("pom.xml");
         std::fs::write(&path, text).unwrap();
 
-        let host = Host::new(crate::HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host =
+            Host::new(crate::HostConfig { local_data_dir: base.join("local"), ..crate::HostConfig::for_test(&base) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
 

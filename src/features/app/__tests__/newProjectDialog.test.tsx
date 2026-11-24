@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   taken: vi.fn(),
   create: vi.fn(),
   open: vi.fn(),
+  detect: vi.fn(),
 }));
 const empty: GeneratorInfo = {
   id: "empty",
@@ -19,6 +20,22 @@ const empty: GeneratorInfo = {
   git: true,
   fields: [],
   dynamic: false,
+};
+const dotnet: GeneratorInfo = {
+  ...empty,
+  id: "dotnet",
+  name: ".NET",
+  group: ".NET",
+  fields: [
+    {
+      id: "sdk",
+      label: "SDK version:",
+      kind: { type: "sdk", sdk: "dotnet", version: true, min: "8.0" },
+      default: "",
+      visible: {},
+      hint: "",
+    },
+  ],
 };
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...(await original<typeof import("@tauri-apps/api/core")>()),
@@ -32,7 +49,8 @@ vi.mock("@/platform/ipc", async (original) => {
     ...actual,
     commands: {
       ...actual.commands,
-      scaffoldCatalog: () => Promise.resolve([empty]),
+      scaffoldCatalog: () => Promise.resolve([empty, dotnet]),
+      sdkDetect: mocks.detect,
       scaffoldRequirements: () => Promise.resolve({ status: "ok", data: [] }),
       scaffoldFreeName: mocks.freeName,
       scaffoldTargetTaken: mocks.taken,
@@ -94,5 +112,62 @@ describe("File › New Project… name and location", () => {
     fireEvent.click(createButton());
     await waitFor(() => expect(mocks.open).toHaveBeenCalled());
     expect(localStorage.getItem("openidea.newProject.location")).toBe("/elsewhere");
+  });
+});
+
+describe("File › New Project… SDK fields", () => {
+  beforeEach(() => {
+    localStorage.setItem("openidea.newProject.location", "/work/projects");
+    mocks.freeName.mockImplementation(() => ok("untitled"));
+    mocks.taken.mockImplementation(() => ok(false));
+    mocks.create.mockImplementation(() => ok("/work/projects/untitled"));
+    mocks.open.mockResolvedValue(undefined);
+    mocks.detect.mockImplementation(() =>
+      ok([
+        {
+          path: "/dotnet/sdk/10.0.401",
+          name: ".NET 10.0",
+          version: "10.0.401",
+          source: "dotnet",
+          home: null,
+          extra: null,
+        },
+        {
+          path: "/dotnet/sdk/8.0.404",
+          name: ".NET 8.0",
+          version: "8.0.404",
+          source: "dotnet",
+          home: null,
+          extra: null,
+        },
+        {
+          path: "/dotnet/sdk/7.0.410",
+          name: ".NET 7.0",
+          version: "7.0.410",
+          source: "dotnet",
+          home: null,
+          extra: null,
+        },
+      ]),
+    );
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it("offers the installed .NET SDKs from its minimum and submits the chosen version", async () => {
+    render(<NewProjectOverlay />);
+    act(() => showNewProject());
+    fireEvent.click(await screen.findByRole("option", { name: ".NET" }));
+    await waitFor(() => expect(mocks.detect).toHaveBeenCalledWith("dotnet"));
+    fireEvent.click(screen.getByRole("button", { name: "SDK version:" }));
+    const sdk8 = await screen.findByRole("option", { name: /\.NET 8\.0/ });
+    expect(screen.queryByRole("option", { name: /\.NET 7\.0/ })).toBeNull();
+    fireEvent.click(sdk8);
+    await waitFor(() => expect(createButton()).toBeEnabled());
+    fireEvent.click(createButton());
+    await waitFor(() => expect(mocks.create).toHaveBeenCalled());
+    expect(mocks.create.mock.calls[0]?.[0]).toMatchObject({ generator: "dotnet", values: { sdk: "8.0.404" } });
   });
 });

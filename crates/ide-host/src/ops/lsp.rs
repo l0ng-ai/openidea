@@ -3,7 +3,9 @@ use crate::Host;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use ide_command::command;
 use ide_core::error::ErrorKind;
-use ide_core::{DocId, IdeError, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
+use ide_core::{
+    CancellationToken, DocId, IdeError, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit,
+};
 use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
 use std::path::Path;
@@ -150,7 +152,7 @@ fn merge_language_highlights(
     server
 }
 
-/// Items from plugins carry no server: commands don't apply, and a code
+/// Items from plugins (and the host's own Ruff Optimize Imports) carry no server: commands don't apply, and a code
 /// action is resolved by the plugin named in its `data` ([`PluginActionRef`]).
 const PLUGIN_SERVER: ServerId = ServerId(0);
 
@@ -909,6 +911,7 @@ pub async fn lsp_code_actions(
     let target = position_document(host, window, doc, range.start).await?;
     let range = project.lsp.injected_request_range(target, range);
     let result = project.lsp.code_actions(target, range, only.clone()).await;
+    let result = with_ruff_organize_imports(host, window, doc, &only, result, CancellationToken::new()).await;
     let plugin_actions = match plugin_providers(host, window, doc, ProviderKind::CodeActions) {
         Some((plugins, d)) => plugin_call(move || plugins.provide_code_actions(&d, range)).await.unwrap_or_default(),
         None => Vec::new(),
@@ -929,6 +932,76 @@ pub async fn lsp_code_actions(
         out
     };
     prepare_actions(project, doc, version, actions).await
+}
+
+const ORGANIZE_IMPORTS: &str = "source.organizeImports";
+pub(crate) const RUFF_ORGANIZE_IMPORTS: &str = "source.organizeImports.ruff";
+
+/// `result` and, when organize imports is asked for and no server offers it, Ruff's Optimize
+/// Imports for a Python file: for the editor and for the MCP tools alike.
+async fn with_ruff_organize_imports(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    only: &[String],
+    result: IdeResult<Vec<CodeAction>>,
+    cancel: CancellationToken,
+) -> IdeResult<Vec<CodeAction>> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    if !only.iter().any(|k| k == ORGANIZE_IMPORTS) || result.as_ref().is_ok_and(|a| a.iter().any(organizes_imports)) {
+        return result;
+    }
+    // A missing provider permits a fallback. Stale, invalid and cancelled requests must still fail.
+    if result.as_ref().is_err_and(|e| !matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable)) {
+        return result;
+    }
+    match ruff_organize_imports(host, window, doc, cancel).await? {
+        Some(action) => {
+            let mut actions = result.unwrap_or_default();
+            actions.push(action);
+            Ok(actions)
+        }
+        None => result,
+    }
+}
+
+fn organizes_imports(action: &CodeAction) -> bool {
+    action.kind.as_deref().is_some_and(|k| k == ORGANIZE_IMPORTS || k.starts_with("source.organizeImports."))
+}
+
+/// Optimize Imports with Ruff's CLI for a Python file no language server organizes; a missing Ruff
+/// is a disabled action that says so. Like a plugin's, the action carries its edit and is applied as is.
+async fn ruff_organize_imports(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    cancel: CancellationToken,
+) -> IdeResult<Option<CodeAction>> {
+    let (edit, disabled_reason) = match crate::formatter::python_import_edits(host, window, doc, cancel).await {
+        Ok(None) => return Ok(None),
+        Ok(Some((path, edits))) => {
+            let files = vec![ide_core::FileEdit::Edit { path, edits, version: None }];
+            (Some(WorkspaceEdit { files, preconditions: Vec::new() }), None)
+        }
+        Err(e) if matches!(e.data, Some(ide_core::error::ErrorData::Tool { missing: true, .. })) => {
+            (None, Some("Install Ruff to optimize imports in Python files".to_owned()))
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(Some(CodeAction {
+        title: "Optimize Imports (Ruff)".into(),
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
+        kind: Some(RUFF_ORGANIZE_IMPORTS.into()),
+        is_preferred: true,
+        disabled_reason,
+        edit,
+        command: None,
+        data: None,
+        server: PLUGIN_SERVER,
+    }))
 }
 
 /// Where a plugin's code action may change or open files: the project root and its content
@@ -1063,11 +1136,19 @@ pub async fn lsp_code_action_query(
     let version = blocking(move || documents.version(doc)).await?;
     let (target, cancel) = begin_position_request(host, window, request, doc, range.start).await?;
     let range = project.lsp.injected_request_range(target, range);
-    let result = project.lsp.code_action_query(target, range, only, cancel).await;
+    let result = async {
+        let result = project.lsp.code_action_query(target, range, only.clone(), cancel.clone()).await;
+        let (actions, advertised_kinds) = match result {
+            Ok(query) => (Ok(query.actions), query.advertised_kinds),
+            Err(e) => (Err(e), None),
+        };
+        let actions = with_ruff_organize_imports(host, window, doc, &only, actions, cancel).await?;
+        let actions = prepare_actions(project, doc, version, actions).await?;
+        Ok(CodeActionQuery { actions, advertised_kinds })
+    }
+    .await;
     host.end_request(request);
-    let mut result = result?;
-    result.actions = prepare_actions(project, doc, version, result.actions).await?;
-    Ok(result)
+    result
 }
 
 /// Resolves a code action's edit without applying it (intention preview).
@@ -1753,6 +1834,23 @@ pub async fn lsp_document_links(host: &Host, window: &str, doc: DocId) -> IdeRes
     Ok(out)
 }
 
+/// Colors in a document from its language servers (Tailwind classes, CSS values…).
+#[command(trust = trusted)]
+pub async fn lsp_document_colors(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<DocumentColor>> {
+    host.project(window)?.lsp.document_colors(doc).await
+}
+
+/// How the server that reported `color` writes it with new components.
+#[command(trust = trusted)]
+pub async fn lsp_color_presentations(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    color: DocumentColor,
+) -> IdeResult<Vec<ColorPresentation>> {
+    host.project(window)?.lsp.color_presentations(doc, color).await
+}
+
 #[command(trust = trusted)]
 pub async fn lsp_call_hierarchy(
     host: &Host,
@@ -2126,6 +2224,117 @@ pub fn plugin_formatters() -> IdeResult<Vec<crate::plugins::language_features::F
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn python_optimize_imports_without_a_server_runs_ruff_on_the_unsaved_text() {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        let file = root.join("main.py");
+        std::fs::write(&file, "import os\n").unwrap();
+        std::fs::write(root.join("notes.txt"), "import sys\n").unwrap();
+        // A stand-in Ruff that checks its arguments and removes the unused import.
+        let ruff = base.join("ruff");
+        std::fs::write(
+            &ruff,
+            "#!/bin/sh\n[ \"$1 $2 $3 $4 $5\" = \"check --extend-select I --fixable I,F401\" ] || exit 2\nsed '/^import sys$/d'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&ruff, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let host = crate::Host::new(crate::HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: std::sync::Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: std::sync::Arc::default(),
+            sink_for: Box::new(|_| std::sync::Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        host.trust.decide(&root, true, false).unwrap();
+        let project = host.open_project("main", &root).unwrap();
+        project
+            .settings
+            .set(
+                ide_workspace::settings::SettingsScope::Project,
+                "languages.ruff.path",
+                ruff.to_string_lossy().into_owned().into(),
+            )
+            .unwrap();
+        let doc = project.documents.open(&file).unwrap().id;
+        project
+            .documents
+            .apply_edits(
+                doc,
+                &[TextEdit { range: Range::new(Pos::default(), Pos::default()), new_text: "import sys\n".into() }],
+            )
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let only = [ORGANIZE_IMPORTS.to_owned()];
+        // A server that offers organize imports keeps the request to itself.
+        let server = CodeAction { kind: Some(ORGANIZE_IMPORTS.into()), ..action_stub() };
+        let kept =
+            with_ruff_organize_imports(&host, "main", doc, &only, Ok(vec![server]), cancel.clone()).await.unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].server, ServerId(7));
+        // No server: the Ruff action, for the editor and the MCP tools alike.
+        let no_server = Err(ide_core::IdeError::unavailable("no server"));
+        let mut actions =
+            with_ruff_organize_imports(&host, "main", doc, &only, no_server, cancel.clone()).await.unwrap();
+        assert_eq!(actions.len(), 1);
+        let action = actions.remove(0);
+        assert_eq!(action.kind.as_deref(), Some("source.organizeImports.ruff"));
+        assert!(organizes_imports(&action) && action.disabled_reason.is_none());
+        let Some(ide_core::FileEdit::Edit { edits, .. }) = action.edit.unwrap().files.into_iter().next() else {
+            panic!("no edit")
+        };
+        // "import sys\nimport os\n" loses "sys\nimport " and keeps "import os\n".
+        assert_eq!(edits, [TextEdit { range: Range::new(Pos::new(0, 7), Pos::new(1, 7)), new_text: String::new() }]);
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "import os\n");
+        let imports_only = root.join("imports_only.py");
+        std::fs::write(&imports_only, "import sys\n").unwrap();
+        let imports_only = project.documents.open(&imports_only).unwrap().id;
+        let (_, edits) =
+            crate::formatter::python_import_edits(&host, "main", imports_only, cancel.clone()).await.unwrap().unwrap();
+        assert_eq!(edits, [TextEdit { range: Range::new(Pos::default(), Pos::new(1, 0)), new_text: String::new() }]);
+        let text = project.documents.open(&root.join("notes.txt")).unwrap().id;
+        assert!(ruff_organize_imports(&host, "main", text, cancel.clone()).await.unwrap().is_none());
+        assert!(
+            with_ruff_organize_imports(&host, "main", doc, &[], Ok(Vec::new()), cancel.clone())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        for kind in [ErrorKind::Cancelled, ErrorKind::OutOfSync, ErrorKind::InvalidInput] {
+            let error = IdeError::new(kind, "must propagate");
+            let result = with_ruff_organize_imports(&host, "main", doc, &only, Err(error), cancel.clone()).await;
+            assert_eq!(result.unwrap_err().kind, kind);
+        }
+        cancel.cancel();
+        let result = with_ruff_organize_imports(&host, "main", doc, &only, Ok(Vec::new()), cancel).await;
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+    }
+
+    #[cfg(unix)]
+    fn action_stub() -> CodeAction {
+        CodeAction {
+            title: String::new(),
+            diagnostics: Vec::new(),
+            original_diagnostics: None,
+            kind: None,
+            is_preferred: false,
+            disabled_reason: None,
+            edit: None,
+            command: None,
+            data: None,
+            server: ServerId(7),
+        }
+    }
+
     #[test]
     fn language_features_merge_without_overwriting_lsp_ranges_or_masking_errors() {
         use super::*;
@@ -2855,7 +3064,9 @@ ide_command::domain!(
     lsp_code_action_query,
     lsp_code_actions,
     lsp_code_lens,
+    lsp_color_presentations,
     lsp_completion,
+    lsp_document_colors,
     lsp_document_highlights,
     lsp_document_links,
     lsp_exception_class_at,

@@ -18,6 +18,7 @@ import {
   type Requirement,
   type ScaffoldEvent,
   type Sdk,
+  type SdkKind,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useTx, useTxTemplate } from "@/platform/i18n";
@@ -35,7 +36,7 @@ import {
   T,
   hasIcon,
 } from "@/ui";
-import { effectiveValues, fieldError, isVisible, type Values } from "./newProjectTemplate";
+import { effectiveValues, fieldError, isVisible, versionAtLeast, type Values } from "./newProjectTemplate";
 import { defaultProjectDirectory, openProjectInWindow } from "./windows";
 import styles from "./newProject.module.css";
 
@@ -150,7 +151,9 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [dynamic, setDynamic] = useState<{ id: string; key: string; fields: Field[] } | null>(null);
   const [dynamicError, setDynamicError] = useState<string | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
-  const [jdks, setJdks] = useState<Sdk[] | null>(null);
+  /** Installed SDKs by kind, once detected. */
+  const [sdks, setSdks] = useState<Partial<Record<string, Sdk[]>>>({});
+  const detecting = useRef(new Set<string>());
   const [job, setJob] = useState<Job | null>(null);
   const layout = useRef<HTMLDivElement>(null);
   const [stacked, setStacked] = useState(false);
@@ -224,13 +227,17 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     };
   }, [generator, valuesKey]);
 
-  const needsJdk = fields.some((f) => f.kind.type === "sdk" && f.kind.sdk === "jdk");
+  const sdkKinds = [...new Set(fields.flatMap((f) => (f.kind.type === "sdk" ? [f.kind.sdk] : [])))].join(",");
   useEffect(() => {
-    if (!needsJdk || jdks) return;
-    call(commands.sdkDetect("jdk"))
-      .then(setJdks)
-      .catch(() => setJdks([]));
-  }, [needsJdk, jdks]);
+    for (const kind of sdkKinds.split(",")) {
+      if (!kind || sdks[kind] || detecting.current.has(kind)) continue;
+      detecting.current.add(kind);
+      const found = (list: Sdk[]) => setSdks((all) => ({ ...all, [kind]: list }));
+      call(commands.sdkDetect(kind as SdkKind))
+        .then(found)
+        .catch(() => found([]));
+    }
+  }, [sdkKinds, sdks]);
 
   const setValue = (id: string, value: string) =>
     setEdited((all) => ({ ...all, [selected]: { ...(all[selected] ?? {}), [id]: value } }));
@@ -452,7 +459,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                   field={f}
                   value={values[f.id] ?? ""}
                   onChange={(v) => setValue(f.id, v)}
-                  jdks={jdks}
+                  sdks={f.kind.type === "sdk" ? (sdks[f.kind.sdk] ?? null) : null}
                 />
               ))}
               {loadingDynamic && (
@@ -492,12 +499,12 @@ function FieldRow({
   field,
   value,
   onChange,
-  jdks,
+  sdks,
 }: {
   field: Field;
   value: string;
   onChange: (value: string) => void;
-  jdks: Sdk[] | null;
+  sdks: Sdk[] | null;
 }) {
   const tx = useTx();
   const id = `np-field-${field.id}`;
@@ -543,14 +550,16 @@ function FieldRow({
     );
   else if (kind.type === "sdk") {
     const options: SelectOption[] = [
-      { value: "", label: jdks === null ? "Detecting…" : "Automatic" },
-      ...(jdks ?? []).map((s) => ({
-        value: s.home ?? s.path,
-        label: s.name,
-        detail: s.version ?? undefined,
-        verbatim: true,
-      })),
-    ];
+      { value: "", label: sdks === null ? "Detecting…" : "Automatic" },
+      ...(sdks ?? [])
+        .filter((s) => !kind.min || versionAtLeast(s.version ?? "", kind.min))
+        .map((s) => ({
+          value: kind.version ? (s.version ?? "") : (s.home ?? s.path),
+          label: s.name,
+          detail: s.version ?? undefined,
+          verbatim: true,
+        })),
+    ].filter((o, i) => i === 0 || o.value);
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
     control = (
       <Select
@@ -672,6 +681,7 @@ function ProgressView({ job, onBack, onClose }: { job: Job; onBack: () => void; 
       <div className={styles.progress}>
         <ol className={styles.steps}>
           {job.steps.map((s, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- step labels can repeat; position is the identity
             <li key={i} aria-current={i === job.steps.length - 1 && !failed ? "step" : undefined}>
               {tx(s)}
             </li>

@@ -1,16 +1,21 @@
 id = "helm-template"
 name = "Helm Template"
-# `.tpl` is Smarty, Terraform and other template engines too: only charts claim it (below).
-extensions = ["gotmpl"]
 line-comment = "#"
 block-comment = ["{{/*", "*/}}"]
 indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "Helm Template"
 
-# Helm charts: YAML, template and notes files in a `templates` folder.
-# No YAML formatter or strict YAML language server: Go `{{ … }}` actions are
-# not valid YAML until rendered by `helm template`.
+# Helm charts: YAML, templates and notes in the chart's `templates` folder.
 [[framework-files]]
 folder = "templates"
-extensions = ["yaml", "yml", "tpl", "txt"]
+extensions = ["yaml", "yml", "json", "tpl", "txt", "gotmpl", "tmpl"]
 root-markers = ["Chart.yaml", "Chart.yml"]
+root-marker-in-parent = true
+
+[[language-servers]]
+name = "helm-ls"
+command = "helm_ls"
+args = ["serve"]
+root-markers = ["Chart.yaml"]
+require-root-marker = true
+install-hint = "https://github.com/mrjosh/helm-ls/releases/tag/v0.5.4"

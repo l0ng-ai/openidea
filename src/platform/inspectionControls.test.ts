@@ -46,6 +46,11 @@ describe("inspection controls", () => {
     });
     expect(diagnosticInspection("phpstan", { code: null })).toEqual({ id: "builtin:phpstan", name: "PHPStan" });
     expect(diagnosticInspection("build", { code: "E0308" })).toEqual({ id: "builtin:build", name: "Build problems" });
+    // The Python inheritance checks publish under one producer, each with its inspection id as the code.
+    expect(diagnosticInspection("Python", { code: "builtin:python-abstract-method" })).toEqual({
+      id: "builtin:python-abstract-method",
+      name: "Abstract method not implemented",
+    });
   });
 
   it("writes to the profile in effect, at its level", async () => {

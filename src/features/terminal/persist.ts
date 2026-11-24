@@ -3,11 +3,12 @@
  * working directory and rename, and how the tab groups were split. Shell
  * scrollback is not kept; a tab comes back as a new session in that directory.
  */
+import { parseRemoteLocation } from "@/platform/remote";
 import type { GroupLayout, SplitOrientation } from "./store";
 
 const STORAGE_PREFIX = "openidea.terminal.tabs.v1:";
 
-interface StoredTab {
+export interface StoredTab {
   id: string;
   name: string;
   customName: string | null;
@@ -15,6 +16,8 @@ interface StoredTab {
   group: string;
   /** Predefined shell program. A one-shot command is not replayed. */
   shell: string | null;
+  /** Backend PTY id for reattaching across persistent remote sessions. */
+  terminalId?: number | null;
 }
 
 export interface StoredTerminals {
@@ -33,7 +36,10 @@ export function storageKey(root: string): string {
 
 export function readStored(root: string): StoredTerminals | null {
   try {
-    return decode(JSON.parse(localStorage.getItem(storageKey(root)) ?? "null"));
+    const raw =
+      localStorage.getItem(storageKey(root)) ??
+      (parseRemoteLocation(root) ? localStorage.getItem(storageKey(parseRemoteLocation(root)!.path)) : null);
+    return decode(JSON.parse(raw ?? "null"));
   } catch {
     return null;
   }
@@ -83,7 +89,17 @@ function decodeTab(item: unknown, groups: Set<string>, fallback: string): Stored
   const group = typeof t.group === "string" && groups.has(t.group) ? t.group : fallback;
   const customName = typeof t.customName === "string" && t.customName.trim() ? t.customName.trim() : null;
   const shell = typeof t.shell === "string" && t.shell ? t.shell : null;
-  return { id: t.id, name: t.name.trim(), customName, cwd: t.cwd, group, shell };
+  const terminalId =
+    typeof t.terminalId === "number" && Number.isInteger(t.terminalId) && t.terminalId > 0 ? t.terminalId : null;
+  return {
+    id: t.id,
+    name: t.name.trim(),
+    customName,
+    cwd: t.cwd,
+    group,
+    shell,
+    ...(terminalId !== null ? { terminalId } : {}),
+  };
 }
 
 function decodeLayout(raw: unknown): GroupLayout | null {

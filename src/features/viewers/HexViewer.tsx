@@ -147,15 +147,18 @@ export function HexViewer({ input }: { input: EditorInput }) {
         </span>
         <span className={styles.hexAscii}>
           {bytes &&
-            [...bytes].map((b, i) => (
-              <span
-                key={i}
-                className={clsx(styles.hexChar, selected === base + i && styles.selectedByte)}
-                onMouseDown={() => setSelected(base + i)}
-              >
-                {asciiChar(b)}
-              </span>
-            ))}
+            [...bytes].map((b, i) => {
+              const offset = base + i;
+              return (
+                <span
+                  key={offset}
+                  className={clsx(styles.hexChar, selected === offset && styles.selectedByte)}
+                  onMouseDown={() => setSelected(offset)}
+                >
+                  {asciiChar(b)}
+                </span>
+              );
+            })}
         </span>
       </div>,
     );

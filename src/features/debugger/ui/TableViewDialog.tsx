@@ -142,7 +142,10 @@ export function TableViewDialog({
                 <tr>
                   <th className={styles.index} />
                   {page.headers.map((h, i) => (
-                    <th key={i}>
+                    <th
+                      // oxlint-disable-next-line react/no-array-index-key -- headers can repeat; position is the identity
+                      key={i}
+                    >
                       {h}
                       {page.kind === "frame" && <span className={styles.dtype}>{page.dtypes[i]}</span>}
                     </th>
@@ -151,12 +154,20 @@ export function TableViewDialog({
               </thead>
               <tbody>
                 {page.cells.map((row, r) => (
-                  <tr key={r}>
+                  <tr
+                    // oxlint-disable-next-line react/no-array-index-key -- index labels and cells can repeat; position is the identity
+                    key={r}
+                  >
                     <th scope="row" className={styles.index}>
                       {page.index[r]}
                     </th>
                     {row.map((cell, c) => (
-                      <td key={c}>{cell}</td>
+                      <td
+                        // oxlint-disable-next-line react/no-array-index-key -- cell values repeat; position is the identity
+                        key={c}
+                      >
+                        {cell}
+                      </td>
                     ))}
                   </tr>
                 ))}

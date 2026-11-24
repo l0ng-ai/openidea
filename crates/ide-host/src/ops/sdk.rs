@@ -364,8 +364,19 @@ pub async fn sdk_locate_tools(
     .await
 }
 
-/// Creates a Python environment with `tool` (`venv` / `uv` / `poetry` / `pipenv`); output streams through
-/// `on_output`. `install_packages` also installs what the project's `Pipfile` declares (pipenv).
+/// The environments the window's project defines for Hatch, `default` first (hatch must be on PATH).
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_hatch_envs(host: &Host, window: &str, request: RequestId) -> IdeResult<Vec<String>> {
+    host.require_trust_if_project(window)?;
+    let root = host.project(window)?.root.clone();
+    let cancel = host.begin_project_request(window, request);
+    let result = blocking(move || ide_sdk::python::hatch_envs(&root, &cancel)).await;
+    host.end_request(request);
+    result
+}
+
+/// Creates a Python environment and streams its output through `on_output`.
+/// With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
 #[allow(clippy::too_many_arguments)]
 #[command(trust = outside_restricted)]
 pub async fn sdk_python_create_venv(
@@ -395,11 +406,28 @@ pub async fn sdk_python_packages(
     host: &Host,
     window: &str,
     python: PathBuf,
+    outdated: bool,
     request: RequestId,
 ) -> IdeResult<Vec<PythonPackage>> {
     host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result = blocking(move || ide_sdk::python::list_packages(&python, &cancel)).await;
+    let result = blocking(move || ide_sdk::python::list_packages(&python, outdated, &cancel)).await;
+    host.end_request(request);
+    result
+}
+
+/// A package index other than PyPI that installing from `python` uses; `None` for PyPI.
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_package_index(
+    host: &Host,
+    window: &str,
+    python: PathBuf,
+    request: RequestId,
+) -> IdeResult<Option<String>> {
+    host.require_trust_if_project(window)?;
+    let project_root = host.project(window).ok().map(|p| p.root.clone());
+    let cancel = host.begin_project_request(window, request);
+    let result = blocking(move || ide_sdk::python::configured_index(&python, project_root.as_deref(), &cancel)).await;
     host.end_request(request);
     result
 }
@@ -447,7 +475,6 @@ mod tests {
     use super::*;
     use crate::HostConfig;
     use std::path::Path;
-    use std::sync::Arc;
 
     fn fake_venv(root: &Path, name: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -473,17 +500,7 @@ mod tests {
         let (main_python, own_python) = (fake_venv(&root, ".venv"), fake_venv(&own, ".venv"));
         ide_workspace::workspace::Workspace::attach(&root, "ws", vec![root.clone(), bare.clone(), own.clone()])
             .unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
         let project = host.project("main").unwrap();
@@ -537,17 +554,7 @@ mod tests {
         let base = dunce::canonicalize(temp.path()).unwrap();
         let root = base.join("project");
         std::fs::create_dir(&root).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
 
@@ -601,17 +608,7 @@ mod tests {
         ]);
         std::fs::write(config.join("recent.json"), serde_json::to_vec(&recent).unwrap()).unwrap();
 
-        let host = Host::new(HostConfig {
-            config_dir: config,
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
 
@@ -640,8 +637,10 @@ ide_command::domain!(
     sdk_project_libraries,
     sdk_python_create_venv,
     sdk_python_effective,
+    sdk_python_hatch_envs,
     sdk_python_interpreter,
     sdk_python_packages,
+    sdk_python_package_index,
     sdk_python_pip,
     sdk_python_project_interpreters,
     sdk_python_sys_path,

@@ -76,6 +76,16 @@ describe("Flutter DevTools windows", () => {
     const dispose = registerDevToolsWindows();
     await waitFor(() => expect(ids()).toEqual(expect.arrayContaining(DEVTOOLS_WINDOWS.map((w) => w.id))));
     expect(getContext().flutterDevTools).toBe(true);
+    // One stripe button: the others wait under "…" until first opened.
+    const stripes = Object.fromEntries(
+      DEVTOOLS_WINDOWS.map((w) => [w.id, useContributions.getState().toolWindows.get(w.id)?.stripe]),
+    );
+    expect(stripes).toEqual({
+      "flutter-deep-links": "onUse",
+      "flutter-devtools": "onUse",
+      "flutter-devtools-extensions": "onUse",
+      "flutter-inspector": undefined,
+    });
 
     useProject.setState({ project: { root: "/tool" } as never });
     await waitFor(() => expect(ids()).not.toContain("flutter-inspector"));
