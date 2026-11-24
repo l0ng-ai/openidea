@@ -134,7 +134,8 @@ describe("project view context menu", () => {
     );
     try {
       const git = resolveMenuItems(contextMenuItems([node(`${ROOT}/a.py`)])).find((r) => r.label === "Git")!;
-      const subs = git.submenu!.find((i) => "label" in i && i.label === "GitHub")?.submenu;
+      const isLabelled = (i: MenuItem): i is Extract<MenuItem, { kind?: "item" }> => "label" in i;
+      const subs = git.submenu!.filter(isLabelled).find((i) => i.label === "GitHub")?.submenu;
       expect(subs && resolveMenuItems(subs).map((i) => i.key)).toEqual([
         "github.pullRequests",
         "github.createPullRequest",
