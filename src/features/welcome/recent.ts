@@ -125,7 +125,18 @@ function failure(e: unknown): { kind?: unknown; message: string } {
 }
 
 /** Opens a project from the recent list; offers to remove entries whose folder is gone. */
-export async function openRecent(project: Pick<RecentProject, "path" | "name">): Promise<boolean> {
+const openingRecent = new Map<string, Promise<boolean>>();
+
+/** A second click (or double click) while the same project is still opening joins that attempt instead of connecting again. */
+export function openRecent(project: Pick<RecentProject, "path" | "name">): Promise<boolean> {
+  const pending = openingRecent.get(project.path);
+  if (pending) return pending;
+  const attempt = openRecentNow(project).finally(() => openingRecent.delete(project.path));
+  openingRecent.set(project.path, attempt);
+  return attempt;
+}
+
+async function openRecentNow(project: Pick<RecentProject, "path" | "name">): Promise<boolean> {
   if (!isTauri()) {
     notifications().notify({
       level: "warning",

@@ -18,27 +18,36 @@ let generation = 0;
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const unsaved = () => maybeEditorService()?.dirtyDocumentIds?.().length ?? 0;
 
-function notifyLost(host: string, error?: unknown) {
+function notifyLost(host: string, error?: unknown, takenOver = false) {
   notifications().notify({
     key: KEY,
     group: "remote",
-    level: "error",
-    title: tx`Lost the connection to ${host}`,
-    body: error === undefined ? undefined : errorText(error),
+    level: takenOver ? "warning" : "error",
+    title: takenOver ? tx("Another window took over this remote session") : tx`Lost the connection to ${host}`,
+    body:
+      error !== undefined
+        ? errorText(error)
+        : takenOver
+          ? tx`Your project is still running on ${host}. This window will not reconnect automatically.`
+          : undefined,
     actions: [{ label: tx("Reconnect"), run: () => void reconnectNow() }],
   });
 }
 
 /** Reconnect to Remote Host: asks first when reopening the project would drop unsaved edits. */
 export async function reconnectNow(): Promise<void> {
-  const { lost, reconnecting } = useRemote.getState();
+  const { lost, reconnecting, takenOver } = useRemote.getState();
   if (!lost || reconnecting) return;
   const count = unsaved();
   if (
-    count > 0 &&
+    (takenOver || count > 0) &&
     !(await confirm({
       title: tx("Reconnect to Remote Host"),
-      message: tx`Reconnecting opens the project again. Unsaved changes in ${count} files can't be saved to ${lost} and will be lost.`,
+      message: takenOver
+        ? count > 0
+          ? tx`Reconnecting disconnects the other window. Unsaved edits in ${count} files in this window may be lost.`
+          : tx("Reconnecting takes over the remote session and disconnects the other window.")
+        : tx`Reconnecting opens the project again. Unsaved changes in ${count} files can't be saved to ${lost} and will be lost.`,
       ok: tx("Reconnect"),
       icon: "warning",
     }))
@@ -49,7 +58,7 @@ export async function reconnectNow(): Promise<void> {
   try {
     await reconnectRemote();
   } catch (e) {
-    notifyLost(lost, e);
+    notifyLost(lost, e, takenOver);
   }
 }
 
@@ -76,13 +85,19 @@ export function installReconnect(
   wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): () => void {
   const offEvent = onIdeEvent("remoteConnectionLost", (e) => {
-    if (!useRemote.getState().session) return;
-    useRemote.setState({ lost: e.host });
-    void retry(e.host, ++generation, wait);
+    const state = useRemote.getState();
+    if (state.session?.host !== e.host || state.takenOver) return;
+    const takenOver = e.takenOver === true;
+    ++generation;
+    useRemote.setState({ lost: e.host, takenOver });
+    if (!takenOver) void retry(e.host, generation, wait);
   });
-  const offState = useRemote.subscribe((s, prev) => {
-    if (s.lost !== prev.lost) setContext("remoteConnectionLost", s.lost !== null);
-  });
+  const sync = (s: ReturnType<typeof useRemote.getState>, prev?: ReturnType<typeof useRemote.getState>) => {
+    if (s.lost !== prev?.lost) setContext("remoteConnectionLost", s.lost !== null);
+    if (s.lost && s.takenOver && (!prev?.takenOver || s.lost !== prev.lost)) notifyLost(s.lost, undefined, true);
+  };
+  sync(useRemote.getState());
+  const offState = useRemote.subscribe(sync);
   return () => {
     generation++;
     offEvent();

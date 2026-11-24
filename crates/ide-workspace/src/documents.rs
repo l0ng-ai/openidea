@@ -668,6 +668,44 @@ impl Documents {
         }
     }
 
+    /// Releases client-held document references when a remote window disconnects:
+    /// clean documents close so external changes on disk are picked up cleanly on
+    /// reopen, while dirty buffers remain registered (`refs = 0`) so reconnecting
+    /// after a dropped connection keeps unsaved edits without leaking refcounts.
+    pub fn release_client_refs(&self) {
+        let _operation = self.operations.lock();
+        let mut to_close = Vec::new();
+        {
+            let mut reg = self.registry.lock();
+            let ids: Vec<DocId> = reg.docs.keys().copied().collect();
+            for id in ids {
+                let dirty = reg.docs.get(&id).is_some_and(|e| e.slot.lock().dirty);
+                if dirty {
+                    if let Some(entry) = reg.docs.get_mut(&id) {
+                        entry.refs = 0;
+                    }
+                } else if let Some(entry) = reg.docs.remove(&id) {
+                    for k in &entry.keys {
+                        if reg.by_key.get(k) == Some(&id) {
+                            reg.by_key.remove(k);
+                        }
+                    }
+                    to_close.push((id, entry.slot));
+                }
+            }
+        }
+        let observers = self.observers();
+        for (doc, slot) in to_close {
+            let mut st = slot.lock();
+            st.closed = true;
+            if st.observed {
+                for o in &observers {
+                    o.closed(doc, &st.path);
+                }
+            }
+        }
+    }
+
     fn set_dirty(&self, doc: DocId, st: &mut DocState, dirty: bool) {
         if st.dirty != dirty {
             st.dirty = dirty;
@@ -939,6 +977,10 @@ impl Documents {
             }
             Ok(info)
         })
+    }
+
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.registry.lock().docs.values().any(|entry| entry.slot.lock().dirty)
     }
 
     /// Saves every dirty document; reports the first failure after trying all.

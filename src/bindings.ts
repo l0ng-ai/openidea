@@ -1456,6 +1456,8 @@ export const commands = {
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 } | null>("remote_current"),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
@@ -1473,6 +1475,11 @@ export const commands = {
 	remoteForwardPort: (remotePort: number) => typedError<ForwardedPort, IdeError>(__TAURI_INVOKE("remote_forward_port", { remotePort })),
 	/**  The remote ports this window forwards to this machine. */
 	remoteForwardedPorts: () => __TAURI_INVOKE<ForwardedPort[]>("remote_forwarded_ports"),
+	/**
+	 *  Read the same host-wide value for the close dialog and the idle timer: another project's
+	 *  daemon may have edited the file since this host loaded its settings.
+	 */
+	remoteIdleTimeoutMinutes: () => typedError<number, IdeError>(__TAURI_INVOKE("remote_idle_timeout_minutes")),
 	/**  A client OS file belongs to this machine even when its destination is remote. */
 	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
 	/**
@@ -1486,6 +1493,11 @@ export const commands = {
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
+	/**
+	 *  Stops the persistent `openidea-server` daemon for this window's remote project,
+	 *  terminating its terminals, runs, language servers and agent sessions, then disconnects.
+	 */
+	remoteStopBackend: () => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_backend")),
 	/**  Stops forwarding `remote_port` of `host` (`None`: the remote host itself). */
 	remoteStopForwarding: (remotePort: number, host: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort, host })),
 	/**  Records the user's trust decision for the window's remote project on this machine. */
@@ -1514,6 +1526,11 @@ export const commands = {
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
 	/**  Kept temporary configurations with the current settings applied. */
 	runApplySettings: (configs: RunConfig_Deserialize[]) => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_apply_settings", { configs })),
+	/**
+	 *  Reattaches to a running process `id` on this host, returning its buffered output
+	 *  and configuration while streaming subsequent chunks to `on_output`.
+	 */
+	runAttach: (id: RunId, onOutput: Channel<OutputChunk>) => typedError<RunAttach_Serialize, IdeError>(__TAURI_INVOKE("run_attach", { id, onOutput })),
 	runCloseStdin: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_close_stdin", { id })),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
@@ -1853,6 +1870,11 @@ export const commands = {
 	 *  already registered to another app. Empty everywhere but Windows.
 	 */
 	systemProbeHotkeys: (combos: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("system_probe_hotkeys", { combos })),
+	/**
+	 *  Reattaches to an existing terminal session `id`, returning its buffered output
+	 *  and streaming subsequent chunks to `on_output`.
+	 */
+	termAttach: (id: TerminalId, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalAttach, IdeError>(__TAURI_INVOKE("term_attach", { id, cols, rows, onOutput })),
 	/**  Installed shells for the Terminal's "New Predefined Session" menu. */
 	termAvailableShells: () => __TAURI_INVOKE<string[]>("term_available_shells"),
 	/**  Shell used when Settings › Terminal › Shell path is empty. */
@@ -1863,6 +1885,8 @@ export const commands = {
 	 */
 	termIsBusy: (id: TerminalId) => typedError<boolean, IdeError>(__TAURI_INVOKE("term_is_busy", { id })),
 	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),
+	/**  Live terminal sessions of this window, for reattaching after a reconnect. */
+	termList: () => __TAURI_INVOKE<TerminalSessionInfo[]>("term_list"),
 	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
 	/**
 	 *  Async to stay off the main thread: forking the IDE (its whole address space)
@@ -7967,11 +7991,8 @@ export type IdeEvent =
 { type: "mcpBackgroundProjectsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
-/**
- *  This remote window's connection to its host ended on its own (network loss, the host or
- *  its server went away); the window's project is unreachable until it reconnects.
- */
-{ type: "remoteConnectionLost"; host: string } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+/**  This remote window's connection ended or another window took over the session. */
+{ type: "remoteConnectionLost"; host: string; takenOver?: boolean } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**
  *  The project's direnv environment (`.envrc`) could not be loaded, or a file it is read
  *  from changed and it can be reloaded.
@@ -11719,6 +11740,12 @@ export type Remote = {
 	resolvedUrl?: string | null,
 };
 
+/**  Tools › Remote Development. This is a user setting on the remote host. */
+export type RemoteDevelopmentSettings = {
+	/**  Zero disables idle shutdown. Positive values from older configurations keep their meaning. */
+	idleTimeoutMinutes?: number,
+};
+
 /**  Manage Remotes edits. */
 export type RemoteEdit = { op: "add"; name: string; url: string } | { op: "remove"; name: string } | 
 /**  Renames `name` to `new_name` (when different) and sets its URL. */
@@ -11736,6 +11763,11 @@ export type RemoteEntry = {
 	mtime: number | null,
 	/**  `rwxr-xr-x`. */
 	permissions: string,
+};
+
+/**  Advertised only by a persistent backend with an editable idle timeout. */
+export type RemoteIdlePolicy = {
+	overrideSeconds: number | null,
 };
 
 /**  A project folder on an SSH host, in a WSL distribution or in a dev container. */
@@ -11790,6 +11822,7 @@ export type RemoteProject_Deserialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Deserialize,
@@ -11802,18 +11835,34 @@ export type RemoteProject_Serialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
 };
 
-export type RemoteSession = {
+export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;
+
+export type RemoteSession_Deserialize = {
 	target: RemoteTarget,
 	root: string,
 	host: string,
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
+};
+
+export type RemoteSession_Serialize = {
+	target: RemoteTarget,
+	root: string,
+	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
+	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 };
 
 export type RemoteSkillBrowseResult = {
@@ -11990,6 +12039,23 @@ export type RouteSource = {
 export type RubySettings = {
 	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
 	interpreter?: string,
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach = RunAttach_Serialize | RunAttach_Deserialize;
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Deserialize = {
+	info: RunInfo,
+	config: RunConfig_Deserialize,
+	buffered: OutputChunk[],
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Serialize = {
+	info: RunInfo,
+	config: RunConfig_Serialize,
+	buffered: OutputChunk[],
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
@@ -12501,7 +12567,7 @@ export type SettingsWindowInit = SettingsWindowInit_Serialize | SettingsWindowIn
 
 export type SettingsWindowInit_Deserialize = {
 	launch: Launch_Deserialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Deserialize | null,
 	project: ProjectInfo_Deserialize | null,
 	globalSettings: Settings_Deserialize,
 	updates: boolean,
@@ -12509,7 +12575,7 @@ export type SettingsWindowInit_Deserialize = {
 
 export type SettingsWindowInit_Serialize = {
 	launch: Launch_Serialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Serialize | null,
 	project: ProjectInfo_Serialize | null,
 	globalSettings: Settings_Serialize,
 	updates: boolean,
@@ -12570,6 +12636,7 @@ export type Settings_Deserialize = {
 	spelling?: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh?: SshSettings,
+	remoteDevelopment?: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -12646,6 +12713,7 @@ export type Settings_Serialize = {
 	spelling: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh: SshSettings,
+	remoteDevelopment: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -13311,6 +13379,12 @@ export type TableSort = {
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
 
+/**  Snapshot and live binding returned when reattaching to an existing session. */
+export type TerminalAttach = {
+	session: TerminalSessionInfo,
+	buffered: string,
+};
+
 /**  TerminalExited data exchanged with the IDE. */
 export type TerminalExited = {
 	id: string,
@@ -13338,6 +13412,16 @@ export type TerminalOptions = {
 	rows: number,
 	/**  Make zsh / bash / fish report their working directory (OSC 7) at every prompt. */
 	shellIntegration?: boolean,
+};
+
+/**  Live terminal session state for reattaching across window reconnects. */
+export type TerminalSessionInfo = {
+	id: TerminalId,
+	title: string,
+	pid: number | null,
+	cwd: string,
+	appTitle: string | null,
+	commandRunning: boolean,
 };
 
 /**  Tools › Terminal. */

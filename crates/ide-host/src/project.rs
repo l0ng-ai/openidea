@@ -106,6 +106,14 @@ impl Host {
             && current.root == root
             && !current.light
         {
+            let status = current.index.status();
+            if status.indexing {
+                current.sink.emit(IdeEvent::IndexState {
+                    indexing: true,
+                    files: status.files,
+                    symbols: status.symbols,
+                });
+            }
             return Ok(current);
         }
         // A window takes the root over from the MCP server's background project, whose

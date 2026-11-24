@@ -9,9 +9,27 @@ language servers, terminals, runs, debugging, build tools and Git. The desktop w
 commands to it.
 
 You don't start it yourself. When you open a remote project ([SSH](/en/guide/remote/ssh),
-[Containers](/en/guide/remote/containers)), the desktop app installs the server on the host if needed, starts it as
-`openidea-server --stdio` over the SSH connection (or `wsl.exe` / `docker exec`) and talks to it over stdin and
-stdout. The server serves one desktop window and exits when that window disconnects.
+[Containers](/en/guide/remote/containers)), the desktop app installs the server on the host if needed, runs
+`openidea-server --attach <project>` over the SSH connection (or `wsl.exe` / `docker exec`) to attach to a persistent
+per-project daemon over a private Unix socket, and talks to it over stdin and stdout.
+
+## Closing or stopping a remote backend
+
+- **Keep Backend Running** (the default when closing a remote window) disconnects the window without interrupting
+  terminal sessions, runs, indexing or agent turns. Reopen the same project to reattach. A network drop also leaves
+  the backend running.
+- **Stop Backend** on close, or **File › Stop Remote Backend**, shuts down the IDE backend and its workloads.
+  Active Run configurations with a stop command, such as `docker compose down`, run that command first. Stopping the
+  IDE backend in a dev container does not stop the dev container itself.
+- By default, a backend stops after **3 hours** with no connected window, live terminal, run, debug session, or agent
+  work. In a connected window, open **Settings › Tools › Remote Development › Stop backend when idle**. Pick a
+  preset, choose **Custom…** to enter minutes, hours, or days, or choose **Never** to keep an idle project running.
+  **Apply** saves the choice for your user on that host. It takes effect the next time a backend becomes idle, without a restart.
+  **Never** does not prevent **Stop Backend**, and backends that never opened a project still clean themselves up.
+- The close dialog shows what **Keep Backend Running** means for this host. A positive
+  `OPENIDEA_SERVER_IDLE_TIMEOUT_SECONDS` set at server startup takes precedence, even over **Never**;
+  Settings shows that value read-only. Reconnecting resets the idle timer. Save
+  your edits before leaving a project idle: unsaved buffers retained after a network drop are kept only in memory.
 
 ## Supported hosts
 
@@ -35,8 +53,10 @@ On every connection the desktop app checks whether the host already has the serv
    desktop's local data directory under `server/<version>/<os>-<arch>/`.
 3. It uploads the binary to the host and removes older builds of the same version.
 
-The desktop and the server always run the same version. After you update OpenIDEA, the next connection installs the
-new server next to the old one.
+After you update OpenIDEA, the next connection replaces the old backend for that project if it has no connected
+window, live work, or unsaved documents. Otherwise OpenIDEA asks you to finish or save your work using the previous
+build and stop that backend before upgrading. Two windows on the same build can use the same project in turn; the
+previous window shows that another window took over and does not reconnect automatically.
 
 ## Files on the host
 
@@ -45,6 +65,12 @@ new server next to the old one.
 | `~/.openidea/server/<version>/<build>/openidea-server` | The installed server binaries, one folder per version and build.                             |
 | `~/.openidea/config/`                                  | The host's settings, including custom language definitions in `languages/`.                  |
 | `~/.openidea/data/`                                    | Tools OpenIDEA installs on the host (language servers, debuggers, JDKs), caches and indexes. |
+| `~/.openidea/logs/server-<key>.log`                    | Backend log for each project (under `OPENIDEA_SERVER_HOME` if set).                          |
+
+To stop all of your backends by hand, open a shell on the remote host, WSL distribution, or dev container and list
+your processes with `ps -u "$(id -un)" -o pid=,args=`. Review the rows for `openidea-server --daemon`, then run
+`kill -TERM <pid>` for each of those daemon PIDs. Save any open work first: this shuts down those backends even if
+a window is still connected. It does not stop unrelated processes.
 
 To free space, delete old version folders under `~/.openidea/server/`. After deleting `~/.openidea/data/`, OpenIDEA
 installs its tools again when they are needed.
@@ -95,7 +121,8 @@ The flags are meant for the desktop app, but `--version` is handy for checking a
 | Flag                            | Meaning                                                                                                        |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | `--version`                     | Print the server version and protocol version, then exit.                                                      |
-| `--stdio`                       | Serve one desktop client over stdin / stdout. Logs go to stderr.                                               |
+| `--attach <project>`            | Start or attach to the persistent per-project daemon and bridge stdin / stdout to its Unix socket.             |
+| `--stdio`                       | Serve a single desktop client directly over stdin / stdout and exit on EOF. Logs go to stderr.                 |
 | `--mcp-stdio [--project <dir>]` | Relay stdio MCP traffic to the running `openidea-server` MCP server on this host.                              |
 | `--connect <host> <port>`       | Relay one TCP connection to `<host>:<port>` over stdin / stdout. Used for port forwarding into dev containers. |
 

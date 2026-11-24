@@ -16,7 +16,6 @@ use ide_extension::{Package, check_relative};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
 /// Most files under one web root.
 const MAX_FILES: usize = 4096;
@@ -169,7 +168,7 @@ impl PluginHost {
         plugin_id: &str,
         window: &str,
         output: crate::ops::Emit<String>,
-        completion: Option<Arc<dyn Fn(Option<i32>) + Send + Sync>>,
+        completion: Option<ide_terminal::TerminalExitHook>,
         options: impl FnOnce() -> IdeResult<ide_terminal::TerminalOptions>,
     ) -> IdeResult<ide_terminal::TerminalInfo> {
         let _guard = self.lifecycle.lock();
@@ -184,20 +183,12 @@ impl PluginHost {
             return Err(IdeError::invalid("a plugin may own at most 8 PTYs"));
         }
         let cwd = options.cwd.0.clone();
-        let previous = host.window_sink(window);
-        let sink: Arc<dyn ide_core::EventSink> = Arc::new(move |event: ide_core::IdeEvent| {
-            if let ide_core::IdeEvent::TerminalExited { code, .. } = &event
-                && let Some(completion) = &completion
-            {
-                completion(*code);
-            }
-            previous.emit(event);
-        });
         let info = host.terminals.spawn_program(
             options,
             host.owner_window(window).to_owned(),
-            sink,
+            host.window_sink(window),
             Box::new(move |data| output(data)),
+            completion,
         )?;
         if !self
             .shared

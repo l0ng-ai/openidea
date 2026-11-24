@@ -8,6 +8,7 @@
  * TabsState with new ids.
  */
 import { ipcPath } from "@/platform/paths";
+import { parseRemoteLocation } from "@/platform/remote";
 import type { EditorInput } from "@/workbench/contributions";
 import { initialTabsState, paneIds, type LayoutNode, type Pane, type Tab, type TabsState } from "./tabs";
 
@@ -198,8 +199,12 @@ export function restoreTabsState(session: EditorSession, fileKey: (path: string)
 
 export function loadSession(root: string): EditorSession | null {
   try {
-    // Sessions saved under the backslash spelling of a Windows root are picked up too.
-    const raw = localStorage.getItem(STORAGE_PREFIX + root) ?? legacyWindowsSession(root);
+    const legacyRemote = parseRemoteLocation(root)?.path;
+    // Sessions saved under the backslash spelling of a Windows root or bare remote path are picked up too.
+    const raw =
+      localStorage.getItem(STORAGE_PREFIX + root) ??
+      (legacyRemote ? localStorage.getItem(STORAGE_PREFIX + legacyRemote) : null) ??
+      legacyWindowsSession(root);
     return raw ? parseSession(JSON.parse(raw)) : null;
   } catch {
     return null;
