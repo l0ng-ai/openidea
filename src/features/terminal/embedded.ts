@@ -74,6 +74,9 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
         noteCopySource(text, { kind: "terminal", title: "Terminal" });
         void writeClipboardText(text).catch(() => undefined);
       }
+    } else if (action.kind === "paste") {
+      // Keep xterm from sending Ctrl+V as ^V; the native paste reaches its textarea.
+      return false;
     } else {
       return true;
     }
