@@ -7,6 +7,9 @@ import { DEFAULT_SETTINGS } from "../model/schema";
 import { stagedValue, useSettingsDialog } from "../model/staging";
 import { EXECUTION_PAGES } from "../pages/execution";
 
+const MAVEN_PAGE = EXECUTION_PAGES.find((p) => p.id === "build.maven")!;
+const MAVEN_CONTEXT = { pageId: MAVEN_PAGE.id, scope: MAVEN_PAGE.defaultScope! } as const;
+
 beforeEach(() => {
   useSettingsDialog.setState({
     base: structuredClone(DEFAULT_SETTINGS),
@@ -25,12 +28,12 @@ beforeEach(() => {
 afterEach(cleanup);
 
 it("chooses an installed Maven runner JRE in project scope and returns to Project JDK", () => {
-  const page = EXECUTION_PAGES.find((p) => p.id === "build.maven")!;
+  const page = MAVEN_PAGE;
   expect(page.projectScope).toBe(true);
   expect(page.defaultScope).toBe("project");
   expect(page.keywords).toEqual(expect.arrayContaining(["JRE", "runner", "JDK", "JAVA_HOME"]));
   render(
-    <PageContext.Provider value={{ pageId: page.id, scope: page.defaultScope! }}>
+    <PageContext.Provider value={MAVEN_CONTEXT}>
       <MavenPage />
     </PageContext.Provider>,
   );

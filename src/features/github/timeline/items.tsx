@@ -144,6 +144,7 @@ function SimpleEventItem({ group }: { group: SimpleGroup }) {
       {paragraphs.length === 1
         ? paragraphs[0]
         : paragraphs.map((p, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- paragraphs can repeat; position is the identity
             <p key={i} className={styles.paragraph}>
               {p}
             </p>

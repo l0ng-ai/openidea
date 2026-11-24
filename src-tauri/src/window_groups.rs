@@ -35,10 +35,14 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
         .filter_map(|label| {
             let window = app.get_webview_window(label)?;
             let project = host.project(label).ok();
-            let name = project
-                .as_ref()
-                .map(|p| ide_host::ops::project::info(p).display_name)
-                .unwrap_or_else(|| window.title().unwrap_or_default());
+            let name = project.as_ref().map(|p| ide_host::ops::project::info(p).display_name).unwrap_or_else(|| {
+                // Taken its launch but not finished opening: name the tab after that project.
+                state
+                    .pending(label)
+                    .and_then(|launch| launch.project)
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| window.title().unwrap_or_default())
+            });
             Some(WindowTab {
                 label: label.clone(),
                 name,

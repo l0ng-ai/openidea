@@ -150,6 +150,7 @@
   "menu.code.parameterInfo": "参数信息",
   "menu.code.quickDocumentation": "快速文档",
   "menu.code.reformat": "重新格式化代码",
+  "menu.code.rearrange": "重新排列代码",
   "menu.code.showIntentions": "显示上下文操作",
   "menu.code.shrinkSelection": "缩小选区",
   "menu.code.surroundWith": "包围…",

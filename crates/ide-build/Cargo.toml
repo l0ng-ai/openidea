@@ -17,6 +17,4 @@ serde_json.workspace = true
 specta.workspace = true
 tracing.workspace = true
 dirs.workspace = true
-
-[dev-dependencies]
 tempfile.workspace = true

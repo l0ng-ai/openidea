@@ -25,6 +25,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import { useProject } from "@/platform/project";
+import { provideToolWindowService, type ToolWindowService } from "@/workbench/contributions";
 import { commitChangelist, commitFiles } from "../changelistsUi";
 import { checksForList, initialChangelists, useChangelists } from "../changelists";
 import { gitTabs, shownTab, stashTabOf, stashTabs } from "../gitTabs";
@@ -357,6 +358,62 @@ describe("Commit… from Local Changes with the modal interface", () => {
     commitFromContext();
     await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
     expect(useCommit.getState().checks.size).toBe(0);
+  });
+});
+
+describe("Commit… from a Project view directory", () => {
+  const status: FileStatus[] = [
+    { path: "/p/module/a.ts", relPath: "module/a.ts", staged: null, unstaged: "modified", renamedFrom: null },
+    { path: "/p/module/sub/b.ts", relPath: "module/sub/b.ts", staged: null, unstaged: "modified", renamedFrom: null },
+    {
+      path: "/p/module/new-file.ts",
+      relPath: "module/new-file.ts",
+      staged: null,
+      unstaged: "untracked",
+      renamedFrom: null,
+    },
+    { path: "/p/module/new-dir/", relPath: "module/new-dir/", staged: null, unstaged: "untracked", renamedFrom: null },
+    {
+      path: "/p/module/conflict.ts",
+      relPath: "module/conflict.ts",
+      staged: "conflicted",
+      unstaged: null,
+      renamedFrom: null,
+    },
+    { path: "/p/module-old/a.ts", relPath: "module-old/a.ts", staged: null, unstaged: "modified", renamedFrom: null },
+    { path: "/p/other.ts", relPath: "other.ts", staged: null, unstaged: "modified", renamedFrom: null },
+  ];
+
+  beforeEach(() => {
+    showCommitDialog.mockClear();
+    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
+    useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status });
+    useCommit.setState({ checks: new Map([["/p/other.ts", "all"]]), message: "", selection: [] });
+  });
+
+  it("opens the modal dialog with every tracked and unversioned change below the directory checked", async () => {
+    commitFromContext({ arg: "/p/module" });
+    await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
+
+    const checks = useCommit.getState().checks;
+    for (const path of ["/p/module/a.ts", "/p/module/sub/b.ts", "/p/module/new-file.ts", "/p/module/new-dir/"])
+      expect(checks.get(path)).toBe("all");
+    expect(checks.get("/p/module-old/a.ts")).toBe("none");
+    expect(checks.get("/p/other.ts")).toBe("none");
+    expect(checks.has("/p/module/conflict.ts")).toBe(false);
+  });
+
+  it("applies the same directory scope in the non-modal Commit tool window", () => {
+    const show = vi.fn();
+    provideToolWindowService({ show } as unknown as ToolWindowService);
+    useProject.setState({ settings: { vcs: { commit: { nonModal: true } } } as Settings });
+
+    commitFromContext({ arg: "/p/module" });
+
+    expect(showCommitDialog).not.toHaveBeenCalled();
+    expect(show).toHaveBeenCalledWith("commit", true);
+    expect(useCommit.getState().checks.get("/p/module/sub/b.ts")).toBe("all");
+    expect(useCommit.getState().checks.get("/p/module-old/a.ts")).toBe("none");
   });
 });
 

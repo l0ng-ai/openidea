@@ -6,7 +6,14 @@
  */
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { fontWeightOf } from "@/platform/editorSettings";
-import { fontsLoaded, monoStack, nerdFontFaces, resolveMonoFont } from "@/platform/fonts";
+import {
+  CJK_FALLBACK_FACES,
+  fontsLoaded,
+  monoStack,
+  nerdFontFaces,
+  quoteFontFamily,
+  resolveMonoFont,
+} from "@/platform/fonts";
 import { computedTokenColor, parseColor, type Rgba } from "@/platform/cssColor";
 
 export { parseColor, type Rgba };
@@ -178,9 +185,14 @@ export interface TerminalFont {
   boldWeight: number;
 }
 
-/** Nerd Fonts before the generic family, so per-glyph fallback finds prompt icons. */
+/**
+ * Nerd Fonts before the generic family, so per-glyph fallback finds prompt icons, then the CJK
+ * faces: a wide character xterm only finds through the webview's own fallback measures one way and
+ * draws another (see `CJK_FALLBACK_FACES`), which drifts any row that mixes CJK with a background.
+ */
 function withNerdFonts(family: string): string {
-  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${nerdFontFaces().join(", ")}, monospace`;
+  const cjk = CJK_FALLBACK_FACES.map(quoteFontFamily).join(", ");
+  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${nerdFontFaces().join(", ")}, ${cjk}, monospace`;
 }
 
 /**

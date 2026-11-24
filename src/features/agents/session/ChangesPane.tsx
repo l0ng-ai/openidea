@@ -4,14 +4,13 @@ import { repositoryPath } from "@/features/vcs/repositoryPaths";
 import { tx } from "@/platform/i18n";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, dirname, relativeDir } from "@/platform/project";
-import { fileIconName, Icon, IconButton, showContextMenu, Spinner, T, Tree } from "@/ui";
+import { fileIconName, Icon, IconButton, showContextMenu, Spinner, T, Tabs, Tree } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChangesResizer } from "../ChangesResizer";
 import styles from "../Session.module.css";
 import { setChangesOptions, type ChangesScope } from "../changesOptions";
-import { SegmentedControl } from "../ConfigPickers";
 import { formatSentAt } from "../conversation";
 import { branchLabel } from "../model";
 import { acceptChanges, refreshChanges, rollbackChanges, useAgents } from "../store";
@@ -386,20 +385,21 @@ export function ChangesPane({
         )}
         {!docked && <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />}
       </div>
-      <div className={styles.changesScope}>
-        <SegmentedControl
-          ariaLabel={tx("Changes to show")}
-          options={[
-            { value: "task", label: tx("Whole Task") },
-            { value: "turn", label: tx("Last Turn") },
-          ]}
-          value={scope}
-          onChange={(value) => {
-            setChangesOptions({ scope: value === "turn" ? "turn" : "task" });
-            void refreshChanges(task.id);
-          }}
-        />
-      </div>
+      <Tabs
+        variant="compact"
+        className={styles.changesScope}
+        aria-label="Changes to show"
+        activeId={scope}
+        onSelect={(id) => {
+          if (id === scope) return;
+          setChangesOptions({ scope: id === "turn" ? "turn" : "task" });
+          void refreshChanges(task.id);
+        }}
+        items={[
+          { id: "task", label: "Whole Task" },
+          { id: "turn", label: "Last Turn" },
+        ]}
+      />
       {(scope === "turn" || grouped || head || task.base) && (
         <div className={styles.changesSummary}>
           {scope === "turn" ? (

@@ -11,7 +11,7 @@
 
 use ide_core::{Range, SymbolKind};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Bit set of the (lower-cased) ASCII letters/digits/punctuation present in a
@@ -588,6 +588,9 @@ pub(crate) struct IndexData {
     free: Vec<u32>,
     pub file_count: u32,
     pub symbol_count: u32,
+    /// Full passes over `by_path` made to remove folders.
+    #[cfg(test)]
+    pub key_scans: usize,
 }
 
 impl IndexData {
@@ -792,9 +795,15 @@ impl IndexData {
         Some(old)
     }
 
-    /// Removes every file at or below `dir`; returns their paths.
-    pub(crate) fn remove_tree(&mut self, dir: &Path) -> Vec<PathBuf> {
-        let doomed: Vec<PathBuf> = self.by_path.keys().filter(|p| p.starts_with(dir)).cloned().collect();
+    /// Removes every file at or below any of `dirs` in a single pass over the
+    /// indexed paths; returns their paths.
+    pub(crate) fn remove_trees(&mut self, dirs: &HashSet<PathBuf>) -> Vec<PathBuf> {
+        #[cfg(test)]
+        {
+            self.key_scans += 1;
+        }
+        let doomed: Vec<PathBuf> =
+            self.by_path.keys().filter(|p| p.ancestors().any(|a| dirs.contains(a))).cloned().collect();
         doomed.into_iter().filter(|p| self.remove(p).is_some()).collect()
     }
 
@@ -865,6 +874,10 @@ mod tests {
             ..Default::default()
         };
         FileEntry::new(PathBuf::from("/r").join(path), path.to_owned(), record)
+    }
+
+    fn path_set(paths: &[&str]) -> HashSet<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
     }
 
     fn insert(d: &mut IndexData, path: &str, symbols: usize) {
@@ -944,8 +957,22 @@ mod tests {
         d.remove(Path::new("/r/a/b/c.rs"));
         assert!(!d.dirs.contains_key("a/b/"));
         assert_consistent(&d);
-        d.remove_tree(Path::new("/r/a"));
+        d.remove_trees(&path_set(&["/r/a"]));
         assert!(d.dirs.is_empty());
+        assert_consistent(&d);
+    }
+
+    #[test]
+    fn remove_trees_takes_only_files_below_the_given_folders() {
+        let mut d = IndexData::default();
+        for path in ["a/x.rs", "a/b/y.rs", "ab/z.rs", "c/d/w.rs", "c/keep.rs", "top.rs"] {
+            insert(&mut d, path, 1);
+        }
+        let mut gone = d.remove_trees(&path_set(&["/r/a", "/r/a/b", "/r/c/d", "/r/missing"]));
+        gone.sort();
+        assert_eq!(gone, ["/r/a/b/y.rs", "/r/a/x.rs", "/r/c/d/w.rs"].map(PathBuf::from));
+        assert_eq!(d.file_count, 3);
+        assert!(["/r/ab/z.rs", "/r/c/keep.rs", "/r/top.rs"].iter().all(|p| d.get(Path::new(p)).is_some()));
         assert_consistent(&d);
     }
 
@@ -964,7 +991,7 @@ mod tests {
         insert(&mut d, "d.rs", 0);
         assert_eq!(d.files.len(), 2, "slot reused");
         assert_consistent(&d);
-        assert_eq!(d.remove_tree(Path::new("/r/a")), vec![PathBuf::from("/r/a/b.rs")]);
+        assert_eq!(d.remove_trees(&path_set(&["/r/a"])), vec![PathBuf::from("/r/a/b.rs")]);
         assert_eq!((d.file_count, d.symbol_count), (1, 0));
         let e = d.get(Path::new("/r/d.rs")).unwrap();
         assert_eq!((e.name(), e.dir()), ("d.rs", ""));
@@ -1039,7 +1066,7 @@ mod tests {
         insert(&mut d, "a/b/two.rs", 3);
         insert(&mut d, "a/three.rs", 1);
         insert(&mut d, "elsewhere/four.rs", 1);
-        assert_eq!(d.remove_tree(Path::new("/r/a")).len(), 3);
+        assert_eq!(d.remove_trees(&path_set(&["/r/a"])).len(), 3);
         assert_consistent(&d);
         assert_eq!(d.hot.rows.iter().filter(|r| r.live).count(), 1);
         assert!(d.hot.row(0).is_none(), "removed slots have no live row");

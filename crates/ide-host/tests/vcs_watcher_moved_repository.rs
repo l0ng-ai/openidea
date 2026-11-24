@@ -2,9 +2,10 @@
 //! the folder brings no `.git` event of its own, so the watcher's "created path" is what the
 //! rescan has to answer to (the open scan already ran).
 
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig};
-use std::{path::Path, sync::Arc, time::Duration};
+mod common;
+
+use ide_host::Host;
+use std::{path::Path, time::Duration};
 
 fn git_init(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
@@ -30,17 +31,7 @@ async fn moving_a_repository_into_the_project_registers_it() {
     let prepared = base.join("prepared");
     git_init(&prepared);
 
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
     // The scan on project open runs in the background: wait for it before moving anything in.

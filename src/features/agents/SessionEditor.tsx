@@ -36,9 +36,24 @@ export function SessionEditor({ input, docked = false }: { input: EditorInput; d
   return <TaskSession key={id} id={id} docked={docked} />;
 }
 
+/**
+ * What `select` reads from the store while this tab is `shown`. Hidden behind another tab, it keeps
+ * what it had when it was hidden: a conversation streaming in the background renders nothing here,
+ * and the tab catches up in one render when it is shown again.
+ */
+function useAgentsWhileShown<T>(shown: boolean, select: (s: ReturnType<typeof useAgents.getState>) => T): T {
+  const held = useRef<{ value: T } | null>(null);
+  return useAgents((s) => {
+    if (shown || !held.current) held.current = { value: select(s) };
+    return held.current.value;
+  });
+}
+
 function TaskSession({ id, docked }: { id: string; docked: boolean }) {
+  // A kept-alive tab stays mounted behind the shown one: it isn't read there, nor searched.
+  const shown = useEditorShown();
   const task = useAgents((s) => s.tasks.get(id));
-  const entries = useAgents((s) => s.entries.get(id));
+  const entries = useAgentsWhileShown(shown, (s) => s.entries.get(id));
   // Grouping needs commits of the task's own: local checkouts keep the flat list.
   const isolation = useAgents((s) => s.tasks.get(id)?.isolation);
   const grouped = useChangesOptions((s) => s.groupByCommit) && isolation === "worktree";
@@ -58,10 +73,11 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
-  const viewEntries = useAgents((s) => s.entries.get(entriesKey(id, view)));
+  const viewEntries = useAgentsWhileShown(shown, (s) => s.entries.get(entriesKey(id, view)));
   const loadError = useAgents((s) => s.entryLoads.get(entriesKey(id, view))?.error);
   // Each subagent's card, from its parent's conversation.
-  const cards = useAgents(
+  const cards = useAgentsWhileShown(
+    shown,
     useShallow((s) => path.map((sub, i) => findSubagent(s.entries.get(entriesKey(id, path[i - 1] ?? null)), sub))),
   );
   // Connecting to the project's agents clears what was loaded before: a tab restored with the
@@ -87,8 +103,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
       scheduleChanges(id);
     });
   }, [id, connected, refreshRoot]);
-  // A kept-alive tab stays mounted behind the shown one: it isn't read there, nor searched.
-  const shown = useEditorShown();
   useEffect(() => {
     if (shown && (!docked || !changesOpen)) return markVisible(id);
   }, [id, docked, changesOpen, shown]);

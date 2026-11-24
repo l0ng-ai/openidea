@@ -137,8 +137,8 @@ export function MergeSchemePreview({ input }: { input: EditorInput }) {
   return (
     <div className={styles.mergeDiff}>
       <div className={styles.mergeDiffLabels}>
-        {data.labels.map((label, i) => (
-          <span key={i}>{label}</span>
+        {data.labels.map((label) => (
+          <span key={label}>{label}</span>
         ))}
       </div>
       <div className={styles.mergeDiffPanes} ref={host} />

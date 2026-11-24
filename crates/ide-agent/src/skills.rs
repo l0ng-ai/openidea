@@ -406,7 +406,7 @@ fn copilot_installed_plugin_roots(copilot_dir: &Path) -> Vec<(PathBuf, AgentSkil
     };
 
     if let Ok(text) = std::fs::read_to_string(copilot_dir.join("config.json"))
-        && let Ok(root) = serde_json::from_str::<serde_json::Value>(&crate::mcp::strip_jsonc(&text))
+        && let Ok(root) = serde_json::from_str::<serde_json::Value>(&ide_core::jsonc::strip(&text))
         && let Some(installed) = root.get("installedPlugins").and_then(serde_json::Value::as_array)
     {
         for entry in installed {

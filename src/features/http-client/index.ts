@@ -8,8 +8,8 @@
 import { activeEditor, registerEditorContribution, registerLanguageMode } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { call, commands, emitLocalIdeEvent, IpcError, isTauri } from "@/platform/ipc";
-import { appDataDir } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
+import { scratchesDir } from "@/platform/scratchesDir";
 import {
   editorService,
   notifications,
@@ -116,11 +116,13 @@ function directoryArg(arg: unknown): string | null {
 /** New HTTP Request: `requests[_n].http` in `directory`, else a scratch, with an example request. */
 async function newRequest(directory?: string) {
   try {
-    const dir = directory ?? `${await appDataDir()}/scratches`;
-    try {
-      await call(commands.fsCreateDir(dir));
-    } catch (e) {
-      if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
+    const dir = directory ?? (await scratchesDir());
+    if (directory) {
+      try {
+        await call(commands.fsCreateDir(dir));
+      } catch (e) {
+        if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
+      }
     }
     const names = new Set((await call(commands.fsReadDir(dir))).map((e) => e.name.toLowerCase()));
     let name = "requests.http";

@@ -1,6 +1,6 @@
 //! Folds ACP `session/update` notifications into a task's entries.
 
-use crate::model::{AgentEntry, AgentPlanItem, AgentSubagentStatus, AgentToolDiff, AgentToolStatus};
+use crate::model::{AgentEntry, AgentImage, AgentPlanItem, AgentSubagentStatus, AgentToolDiff, AgentToolStatus};
 use ide_core::IpcPath;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -84,6 +84,7 @@ impl Timeline {
                     status: tool_status(update.get("status")).unwrap_or(AgentToolStatus::Pending),
                     locations: locations(update.get("locations")),
                     output: None,
+                    images: Vec::new(),
                     diffs: Vec::new(),
                     started_ms: Some(crate::now_ms()),
                     ended_ms: None,
@@ -150,7 +151,7 @@ impl Timeline {
     }
 
     fn merge_tool(&mut self, index: usize, update: &Value) {
-        let AgentEntry::Tool { title, kind, status, locations: locs, output, diffs, ended_ms, .. } =
+        let AgentEntry::Tool { title, kind, status, locations: locs, output, images, diffs, ended_ms, .. } =
             &mut self.entries[index]
         else {
             return;
@@ -173,10 +174,20 @@ impl Timeline {
         let Some(content) = update.get("content").and_then(Value::as_array) else { return };
         let mut text = String::new();
         let mut new_diffs = Vec::new();
+        let mut new_images = Vec::new();
         for item in content {
             match item.get("type").and_then(Value::as_str) {
                 Some("content") => {
-                    if let Some(t) = content_text(item.get("content")) {
+                    let content = item.get("content");
+                    if let Some(image) = content.filter(|c| c.get("type").and_then(Value::as_str) == Some("image"))
+                        && let (Some(data), Some(mime)) =
+                            (image.get("data").and_then(Value::as_str), image.get("mimeType").and_then(Value::as_str))
+                        && !data.is_empty()
+                        && mime.starts_with("image/")
+                    {
+                        new_images.push(AgentImage { mime_type: mime.into(), data: data.into(), name: None });
+                    }
+                    if let Some(t) = content_text(content) {
                         if !text.is_empty() {
                             text.push('\n');
                         }
@@ -202,6 +213,9 @@ impl Timeline {
         }
         if !new_diffs.is_empty() {
             *diffs = new_diffs;
+        }
+        if !new_images.is_empty() {
+            *images = new_images;
         }
     }
 
@@ -437,6 +451,31 @@ mod tests {
         }
         assert!(t.apply(&update).changed.is_empty());
         assert!(matches!(&t.entries[0], AgentEntry::Question { chosen: Some(answer), .. } if answer == "One"));
+    }
+
+    #[test]
+    fn tool_images_survive_updates_text_truncation_and_serialization() {
+        use base64::Engine;
+        let mut t = Timeline::default();
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "preview", "title": "Render", "kind": "execute"}));
+        let mut old = serde_json::to_value(&t.entries[0]).unwrap();
+        old.as_object_mut().unwrap().remove("images");
+        let legacy: AgentEntry = serde_json::from_value(old).unwrap();
+        assert!(matches!(legacy, AgentEntry::Tool { images, .. } if images.is_empty()));
+        let data = base64::engine::general_purpose::STANDARD.encode(vec![0; MAX_OUTPUT]);
+        let update = json!({"sessionUpdate": "tool_call_update", "toolCallId": "preview", "content": [
+            {"type": "content", "content": {"type": "text", "text": "x".repeat(MAX_OUTPUT + 100)}},
+            {"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": data}}
+        ]});
+        t.apply(&update);
+        t.apply(&update);
+        t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "preview", "status": "completed"}));
+        let AgentEntry::Tool { images, output, status, .. } = &t.entries[0] else { panic!() };
+        assert_eq!(images, &vec![AgentImage { mime_type: "image/png".into(), data, name: None }]);
+        assert!(output.as_ref().unwrap().len() < MAX_OUTPUT + 100);
+        assert_eq!(*status, AgentToolStatus::Completed);
+        let saved = serde_json::to_string(&t.entries[0]).unwrap();
+        assert_eq!(serde_json::from_str::<AgentEntry>(&saved).unwrap(), t.entries[0]);
     }
 
     #[test]

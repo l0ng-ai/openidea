@@ -169,9 +169,12 @@ fn make_manager_at(root: &Path, models_file: &Path, catalogs: Arc<AgentCatalogs>
 
 fn events(manager: &AgentManager) -> mpsc::UnboundedReceiver<AgentEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
-    manager.subscribe(Arc::new(move |event| {
-        let _ = tx.send(event);
-    }));
+    manager.subscribe_as(
+        "",
+        Arc::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    );
     rx
 }
 
@@ -489,7 +492,7 @@ async fn switch_chat_model(scenario: ChatSwitch) {
                 set.reply.send(Err("Sign in required".into())).unwrap();
                 let error = switching.await.unwrap_err().to_string();
                 assert!(error.contains("Sign in required"), "{error}");
-                assert_eq!(manager.subscribe(Arc::new(|_| {})).remove(0).config, before_config);
+                assert_eq!(manager.subscribe_as("", Arc::new(|_| {})).remove(0).config, before_config);
                 assert!(harness.pending.try_recv().is_err());
                 manager.shutdown();
                 return;
@@ -498,7 +501,7 @@ async fn switch_chat_model(scenario: ChatSwitch) {
                 manager.set_config(&task.id, "model", "old".into()).await.unwrap();
                 set.reply.send(Ok(response(&["new", "old"], &["quick", "thorough"]))).unwrap();
                 switching.await.unwrap();
-                let task = manager.subscribe(Arc::new(|_| {})).remove(0);
+                let task = manager.subscribe_as("", Arc::new(|_| {})).remove(0);
                 assert_eq!(task.config.iter().find(|o| o.id == "model").unwrap().current.as_deref(), Some("old"));
                 assert_eq!(task.config.iter().find(|o| o.id == "effort").unwrap().current.as_deref(), Some("low"));
                 assert!(harness.pending.try_recv().is_err());
@@ -529,7 +532,7 @@ async fn switch_chat_model(scenario: ChatSwitch) {
         let effort = update.config.iter().find(|o| o.id == "effort").unwrap();
         assert_eq!(effort.values.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["quick", "thorough"]);
     }
-    let snapshot = |manager: &AgentManager| manager.subscribe(Arc::new(|_| {})).remove(0);
+    let snapshot = |manager: &AgentManager| manager.subscribe_as("", Arc::new(|_| {})).remove(0);
     let current = snapshot(&manager);
     assert_eq!(current.config.iter().find(|o| o.id == "model").unwrap().current.as_deref(), Some("new"));
     assert_eq!(current.model.as_deref(), Some(if live { "new" } else { "old" }));

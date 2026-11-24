@@ -8,7 +8,7 @@
  * Keys are matched by physical position (`KeyboardEvent.code`), so ⌥-letter
  * combos work on macOS where `event.key` would be a symbol. Mouse shortcuts
  * name the button 1-based (`Button1` = left, `Button4` = back side button, `Button5` = forward),
- * optionally with modifiers (`Alt+Button4`); they are single strokes.
+ * or the wheel direction (`WheelUp`, `WheelDown`), optionally with modifiers.
  */
 import { create } from "zustand";
 import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
@@ -79,24 +79,45 @@ interface KeymapState {
 export const useKeymap = create<KeymapState>(() => ({ preset: defaultPreset(), overrides: {}, extensions: {} }));
 
 const MOUSE_KEY_RE = /^Button(\d+)$/i;
+const WHEEL_KEY_RE = /^Wheel(Up|Down)$/i;
+type ModifierKeys = Pick<MouseEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">;
 
-/** A mouse shortcut (`Button4`, `Shift+Button5`) rather than a keystroke. */
+export function isWheelBinding(binding: string): boolean {
+  const b = binding.trim();
+  return !/\s/.test(b) && WHEEL_KEY_RE.test(b.split("+").pop()!);
+}
+
+/** A mouse button or wheel shortcut. */
 export function isMouseBinding(binding: string): boolean {
   const b = binding.trim();
-  return !/\s/.test(b) && MOUSE_KEY_RE.test(b.split("+").pop()!);
+  const key = b.split("+").pop()!;
+  return !/\s/.test(b) && (MOUSE_KEY_RE.test(key) || WHEEL_KEY_RE.test(key));
+}
+
+/** Editor mouse-selection actions require a button and pointer position. */
+export function supportsWheelShortcut(actionId: string): boolean {
+  return actionId !== "editor.createRectangularSelectionOnMouseDrag" && actionId !== "editor.addOrRemoveCaret";
+}
+
+function modifiedStroke(e: ModifierKeys, key: string): string {
+  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta"].filter(Boolean);
+  return [...mods, key].join("+");
 }
 
 /**
  * Middle/side buttons, or a left click with Ctrl/Alt/Meta. Plain and Shift-only
  * left clicks keep selection semantics; right clicks keep the context menu.
  */
-export function mouseStrokeOf(
-  e: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
-): string | null {
+export function mouseStrokeOf(e: Pick<MouseEvent, "button"> & ModifierKeys): string | null {
   if (!Number.isInteger(e.button) || e.button < 0) return null;
   if (e.button === 2 || (e.button === 0 && !(e.ctrlKey || e.altKey || e.metaKey))) return null;
-  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta"].filter(Boolean);
-  return [...mods, `Button${e.button + 1}`].join("+");
+  return modifiedStroke(e, `Button${e.button + 1}`);
+}
+
+/** Recognizes vertical wheel input for both capture and dispatch. */
+export function wheelStrokeOf(e: Pick<WheelEvent, "deltaX" | "deltaY"> & ModifierKeys): string | null {
+  if (!e.deltaY || Math.abs(e.deltaY) < Math.abs(e.deltaX)) return null;
+  return modifiedStroke(e, e.deltaY < 0 ? "WheelUp" : "WheelDown");
 }
 
 const STROKE_RE = /^(?:(?:Ctrl|Alt|Shift|Meta)\+)*[^\s+]+$|^(?:(?:Ctrl|Alt|Shift|Meta)\+)*\+$/i;
@@ -118,8 +139,9 @@ export function parseDoubleModifier(binding: string): { modifier: Modifier; key:
 export function isValidBinding(binding: unknown): binding is string {
   if (typeof binding !== "string") return false;
   const b = binding.trim();
-  if (parseDoubleModifier(b)) return true;
   const strokes = b.split(/\s+/);
+  if (strokes.some(isWheelBinding)) return strokes.length === 1 && STROKE_RE.test(b);
+  if (parseDoubleModifier(b)) return true;
   if (strokes.some((s) => /swipe(left|right)$/i.test(s))) {
     return strokes.length === 1 && /^swipe(left|right)$/i.test(b);
   }
@@ -298,8 +320,10 @@ export function normalizeBinding(binding: string): string {
       const key = parts.pop()!;
       const mods = MOD_ORDER.filter((m) => parts.some((p) => p.toLowerCase() === m.toLowerCase()));
       const mouse = MOUSE_KEY_RE.exec(key);
+      const wheel = WHEEL_KEY_RE.exec(key);
       const swipe = /^swipe(left|right)$/i.exec(key);
       if (swipe) return `Swipe${swipe[1]!.toLowerCase() === "left" ? "Left" : "Right"}`;
+      if (wheel) return [...mods, wheel[1]!.toLowerCase() === "up" ? "WheelUp" : "WheelDown"].join("+");
       return [...mods, mouse ? `Button${mouse[1]}` : key.length === 1 ? key.toUpperCase() : key].join("+");
     })
     .join(" ");
@@ -366,8 +390,7 @@ export function strokeOf(
     if (["Shift", "Meta", "Control", "Alt"].includes(e.key)) return null;
     key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
   }
-  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta"].filter(Boolean);
-  return [...mods, key].join("+");
+  return modifiedStroke(e, key);
 }
 
 const SYMBOLS: Record<string, string> = {
@@ -404,8 +427,12 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
   if (isMouseBinding(binding)) {
     const parts = normalizeBinding(binding).split("+");
     const key = parts.pop();
-    const button = key === "Button1" ? "Left Click" : key === "Button2" ? tx("Middle Click") : `${key} Click`;
-    return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + button : [...parts, button].join("+");
+    let label = `${key} Click`;
+    if (key === "WheelUp") label = tx("Wheel Up");
+    if (key === "WheelDown") label = tx("Wheel Down");
+    if (key === "Button1") label = "Left Click";
+    if (key === "Button2") label = tx("Middle Click");
+    return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + label : [...parts, label].join("+");
   }
   if (!mac)
     return normalizeBinding(binding)
@@ -444,6 +471,13 @@ const CHORD_TIMEOUT = 2000;
 const DOUBLE_TAP_STEP_MS = 300;
 /** A modifier tap this soon after typing another key is part of typing, not a gesture. */
 const DOUBLE_TAP_TYPING_GUARD_MS = 100;
+const WHEEL_GESTURE_GAP_MS = 150;
+
+function isDiscreteWheelEvent(e: WheelEvent): boolean {
+  // WebViews also send mouse notches in pixel mode, with legacy ticks in units of 120.
+  const ticks = (e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY;
+  return e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL || (!!ticks && ticks % 120 === 0);
+}
 
 const KEY_MODIFIER: Record<string, Modifier> = { Shift: "Shift", Control: "Ctrl", Alt: "Alt", Meta: "Meta" };
 
@@ -669,6 +703,7 @@ export function installKeyboardDispatcher(
 ): () => void {
   let pending: string[] = [];
   let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  let wheelGesture: { direction: number; at: number; binding: string | null } | null = null;
   const doubleModifier = createDoubleModifierRecognizer(now);
 
   const reset = () => {
@@ -819,6 +854,39 @@ export function installKeyboardDispatcher(
     for (const id of ids.reverse()) if (runIfEnabled(id)) return;
   };
 
+  const onWheel = (e: WheelEvent) => {
+    doubleModifier.reset();
+    if (suspended > 0 || e.defaultPrevented) {
+      wheelGesture = null;
+      return;
+    }
+    const stroke = wheelStrokeOf(e);
+    if (!stroke) return;
+    const consume = () => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const direction = Math.sign(e.deltaY);
+    // Treat a continuous burst as one gesture, including momentum. Modifiers pressed
+    // during the burst must not turn an ordinary scroll into a shortcut.
+    if (wheelGesture?.direction === direction && e.timeStamp - wheelGesture.at <= WHEEL_GESTURE_GAP_MS) {
+      wheelGesture.at = e.timeStamp;
+      if (wheelGesture.binding === stroke) consume();
+      return;
+    }
+    wheelGesture = isDiscreteWheelEvent(e) ? null : { direction, at: e.timeStamp, binding: null };
+    const match = effectiveBindings().findLast(([binding, id]) => {
+      if (binding !== stroke || !supportsWheelShortcut(id)) return false;
+      const action = getAction(id);
+      return !!action && isActionKeyEnabled(action);
+    });
+    if (!match) return;
+    if (wheelGesture) wheelGesture.binding = stroke;
+    consume();
+    reset();
+    void executeActionFrom("keyboard", match[1]);
+  };
+
   /** The release of a side button: swallowed so the webview doesn't navigate its own history. */
   const onMouseRelease = (e: MouseEvent) => {
     if (e.button < 3) return;
@@ -832,6 +900,7 @@ export function installKeyboardDispatcher(
   const onBlur = () => {
     reset();
     doubleModifier.reset();
+    wheelGesture = null;
   };
 
   const onSwipe = (event: Event) => {
@@ -848,6 +917,7 @@ export function installKeyboardDispatcher(
   target.addEventListener("keydown", onKeyDown, true);
   target.addEventListener("keyup", onKeyUp, true);
   target.addEventListener("mousedown", onMouseDown, true);
+  target.addEventListener("wheel", onWheel, { capture: true, passive: false });
   target.addEventListener("mouseup", onMouseRelease, true);
   target.addEventListener("auxclick", onMouseRelease, true);
   target.addEventListener("webkitmouseforcewillbegin", onForceWillBegin, true);
@@ -857,6 +927,7 @@ export function installKeyboardDispatcher(
     target.removeEventListener("keydown", onKeyDown, true);
     target.removeEventListener("keyup", onKeyUp, true);
     target.removeEventListener("mousedown", onMouseDown, true);
+    target.removeEventListener("wheel", onWheel, true);
     target.removeEventListener("mouseup", onMouseRelease, true);
     target.removeEventListener("auxclick", onMouseRelease, true);
     target.removeEventListener("webkitmouseforcewillbegin", onForceWillBegin, true);

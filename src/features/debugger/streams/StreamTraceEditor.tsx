@@ -81,8 +81,8 @@ function TraceView({ session, entry }: { session: DebugSessionId; entry: TraceEn
       )}
       {result?.status === "ready" && (
         <>
-          {result.banners.map((b, i) => (
-            <div key={i} className={styles.banner} role="status">
+          {result.banners.map((b) => (
+            <div key={b.kind} className={styles.banner} role="status">
               {bannerText(b, result, tx)}
             </div>
           ))}

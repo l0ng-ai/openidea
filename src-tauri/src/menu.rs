@@ -519,6 +519,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("code.reformat", "Reformat Code"),
             act("code.autoIndentLines", "Auto-Indent Lines"),
             act("code.optimizeImports", "Optimize Imports"),
+            act("code.rearrange", "Rearrange Code"),
             act("code.cleanup", "Code Cleanup…"),
             SEP,
             act("code.commentLine", "Comment with Line Comment"),

@@ -44,16 +44,16 @@ export function MatchText({
     const matched = text.slice(s, e);
     if (replacement != null && query) {
       parts.push(
-        <del key={`d${i}`} className={styles.removed}>
+        <del key={`d:${s}:${e}`} className={styles.removed}>
           {matched}
         </del>,
-        <ins key={`i${i}`} className={styles.inserted}>
+        <ins key={`i:${s}:${e}`} className={styles.inserted}>
           {previewReplacement(matched, query, replacement, preserveCase)}
         </ins>,
       );
     } else {
       parts.push(
-        <mark key={i} className={styles.match}>
+        <mark key={`m:${s}:${e}`} className={styles.match}>
           {tokenSpans(text, s, e, tokens, "")}
         </mark>,
       );
@@ -260,6 +260,7 @@ export function ReplaceDiffPreview({ lines, line }: { lines: readonly PreviewLin
       <pre className={styles.pre}>
         {shown.map((l, i) => (
           <div
+            // oxlint-disable-next-line react/no-array-index-key -- diff lines repeat; position in the window is the identity
             key={from + i}
             data-focus={from + i === focus ? "" : undefined}
             data-kind={l.kind}

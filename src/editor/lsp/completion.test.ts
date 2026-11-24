@@ -297,6 +297,23 @@ describe("applying completions", () => {
     await vi.waitFor(() => expect(view.state.selection.main.head).toBe(17));
   });
 
+  it("edits repeated LSP placeholders from one selection", () => {
+    const { view, req } = setup("lo|", "", [EditorState.allowMultipleSelections.of(true)]);
+    const completion = makeCompletion(
+      item({ kind: "snippet", insertText: "log(${1:value}, $1, ${2:label})$0", isSnippet: true }),
+      req,
+    );
+    apply(view, completion, 0);
+    expect(view.state.selection.ranges).toHaveLength(1);
+    expect(view.state.doc.toString()).toBe("log(value, value, label)");
+    view.dispatch(view.state.replaceSelection("name"));
+    expect(view.state.doc.toString()).toBe("log(name, name, label)");
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Enter" }), "editor")).toBe(false);
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor")).toBe(true);
+    const { from, to } = view.state.selection.main;
+    expect(view.state.sliceDoc(from, to)).toBe("label");
+  });
+
   it("leaves an item its server inserts to the server, and puts the caret after what it inserted", async () => {
     const executed: string[] = [];
     setInvokeRoute((cmd) => {

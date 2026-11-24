@@ -95,7 +95,7 @@ function FileGroup({
         <span className={styles.previewCount}>{count === 1 ? tx`${count} occurrence` : tx`${count} occurrences`}</span>
       </div>
       <ul className={styles.previewOccurrences}>
-        {sorted.slice(0, 50).map((e, i) => {
+        {sorted.slice(0, 50).map((e) => {
           const line = lines?.[e.range.start.line] ?? "";
           const text = line.trimStart();
           const lead = line.length - text.length;
@@ -105,7 +105,7 @@ function FileGroup({
           const left = Math.max(0, from - PREVIEW_CONTEXT);
           const right = Math.min(text.length, to + PREVIEW_CONTEXT);
           return (
-            <li key={i} className={styles.previewLineRow}>
+            <li key={`${e.range.start.line}:${e.range.start.col}:${e.new_text}`} className={styles.previewLineRow}>
               <span className={styles.previewLineNo}>{e.range.start.line + 1}</span>
               <span className={styles.previewCode}>
                 {left > 0 && "…"}

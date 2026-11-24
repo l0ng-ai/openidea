@@ -260,18 +260,20 @@
 }
 .propRow {
   display: grid;
-  grid-template-columns: 140px 1fr;
+  grid-template-columns: 140px minmax(0, 1fr);
   gap: var(--space-2);
-  align-items: baseline;
+  align-items: start;
   padding: 5px 12px;
   border-bottom: 1px solid var(--border);
 }
 .propName {
   color: var(--fg-secondary);
   font-size: var(--fs-small);
+  line-height: 20px;
 }
 .propVal {
   min-width: 0;
+  line-height: 20px;
   overflow-wrap: anywhere;
   color: var(--fg);
 }
@@ -285,14 +287,85 @@
   font-family: var(--font-mono);
   font-size: var(--fs-code);
 }
-.codeInline {
-  display: inline-block;
+.commandField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.commandHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.commandPreview {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 1px 6px;
   border-radius: var(--radius-small);
   background: var(--bg-elev);
   font-family: var(--font-mono);
   font-size: var(--fs-code);
+  line-height: 18px;
+}
+.commandToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-tiny);
+  line-height: 1;
+  cursor: pointer;
+}
+.commandToggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.commandToggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.commandBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  max-height: 180px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.commandSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+}
+.commandSectionLabel {
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  line-height: 14px;
+  color: var(--fg-subtle);
+}
+.commandPre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: 18px;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
+  color: var(--fg);
 }
 .mutedMeta {
   color: var(--fg-subtle);
@@ -499,5 +572,67 @@ button.entityChip:not(:disabled):hover {
 }
 .layerSizeCell {
   min-width: 96px;
+  white-space: nowrap;
+}
+.composeTableWrap {
+  overflow-x: auto;
+}
+.composeServicesTable th {
+  position: static;
+  background: transparent;
+  padding: 4px 8px;
+}
+.composeServicesTable td {
+  padding: 4px 8px;
+  vertical-align: middle;
+}
+.composeServicesTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+.composeServicesTable th:first-child,
+.composeServicesTable td:first-child {
+  padding-left: 12px;
+}
+.composeServicesTable th:last-child,
+.composeServicesTable td:last-child {
+  padding-right: 12px;
+}
+.composeServiceCell {
+  white-space: nowrap;
+}
+.composeServiceCell > .mutedMeta {
+  margin-left: var(--space-1-5);
+}
+.nowrapCell {
+  white-space: nowrap;
+}
+.composeMetricCell {
+  min-width: 76px;
+  white-space: nowrap;
+}
+.composeMemoryCell {
+  min-width: 148px;
+  white-space: nowrap;
+}
+.composeMetric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+}
+.volumeChip {
+  max-width: 100%;
+  min-width: 0;
+}
+.volumeChipIcon {
+  flex: none;
+}
+.volumeChipName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.volumeChipMeta {
+  flex: none;
   white-space: nowrap;
 }

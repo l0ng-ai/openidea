@@ -1,5 +1,5 @@
 /**
- * Settings › Agents › External MCP Servers: multi-level MCP management across Global (`settings.toml`
+ * Settings › Agents › MCP Connections: multi-level MCP management across Global (`settings.toml`
  * + Keychain), Project (`.openidea/settings.toml`), and Agent CLI config directories
  * (`~/.copilot/mcp-config.json`, `~/.claude.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`,
  * `~/.gemini/settings.json`, `~/.jetbrains/mcp/mcp.json`, `.mcp.json`, `.vscode/mcp.json`), with
@@ -535,7 +535,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
     <div className={page.page}>
       <div className={page.header}>
         <h2 className={page.title}>
-          <T>External MCP Servers</T>
+          <T>MCP Connections</T>
         </h2>
         <div className={page.headerActions}>
           <Button

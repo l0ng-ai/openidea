@@ -38,7 +38,7 @@ pub use skill_installer::{
 };
 
 use conversation::{Conversation, SavedSubagent, Session};
-use ide_core::{IdeError, IdeResult, IpcPath};
+use ide_core::{IdeError, IdeResult, IpcPath, error::ErrorKind};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use ide_vcs::Repo;
 use parking_lot::{Mutex, RwLock};
@@ -95,6 +95,8 @@ const MAX_EMBED: u64 = 256 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long deleting a task waits for its agent to exit before removing the worktree.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
+/// Change lists can each open several Git pipes; leave room for interactive VCS operations.
+const MAX_CHANGE_READS: usize = 4;
 
 /// The agent tasks of one project.
 pub struct AgentManager {
@@ -189,6 +191,7 @@ struct Shared {
     new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
     workspace_roots: RwLock<Option<WorkspaceRootsHook>>,
     git_executable: RwLock<Option<GitExecutableHook>>,
+    change_reads: Arc<tokio::sync::Semaphore>,
     known: Arc<Mutex<HashMap<String, Known>>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -604,6 +607,7 @@ impl AgentManager {
             new_task_approvals: RwLock::new(None),
             workspace_roots: RwLock::new(None),
             git_executable: RwLock::new(None),
+            change_reads: Arc::new(tokio::sync::Semaphore::new(MAX_CHANGE_READS)),
             known,
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -643,12 +647,8 @@ impl AgentManager {
         Self { shared, tasks: RwLock::new(tasks) }
     }
 
-    /// Routes events to `sink` (replacing the previous subscriber); returns every task.
-    pub fn subscribe(&self, sink: AgentSink) -> Vec<AgentTask> {
-        self.subscribe_as("", sink)
-    }
-
-    /// Routes events to `sink` too, replacing only the sink `subscriber` (a view of the project) had.
+    /// Routes events to `sink`, replacing only the sink `subscriber` (a view of the project) had;
+    /// returns every task.
     pub fn subscribe_as(&self, subscriber: &str, sink: AgentSink) -> Vec<AgentTask> {
         self.shared.sinks.write().insert(subscriber.to_owned(), sink);
         let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.state.lock().snapshot()).collect();
@@ -1168,35 +1168,14 @@ impl AgentManager {
 
     /// Drops a queued message.
     pub fn unqueue(&self, id: &str, queued: &str) -> IdeResult<AgentQueued> {
-        let task = self.task(id)?;
-        let item = {
-            let mut s = task.state.lock();
-            let i =
-                s.task.queue.iter().position(|q| q.id == queued).ok_or_else(|| IdeError::not_found("already sent"))?;
-            s.task.queue.remove(i)
-        };
-        task.persist();
-        task.emit_task();
-        Ok(item)
+        self.task(id)?.take_queued(queued, false).map(|(item, _)| item)
     }
 
     /// Sends queued message `queued` now: into the running turn when the agent takes
     /// messages mid-turn, else next, cancelling the current turn if there is one.
     pub async fn send_queued_now(&self, id: &str, queued: &str) -> IdeResult<()> {
         let task = self.task(id)?;
-        let (item, busy) = {
-            let mut s = task.state.lock();
-            let i =
-                s.task.queue.iter().position(|q| q.id == queued).ok_or_else(|| IdeError::not_found("already sent"))?;
-            let item = s.task.queue.remove(i);
-            let busy = s.busy;
-            if !busy {
-                s.busy = true;
-            }
-            (item, busy)
-        };
-        task.persist();
-        task.emit_task();
+        let (item, busy) = task.take_queued(queued, true)?;
         if !busy {
             self.shared.runtime.spawn(async move { task.run(item.prompt).await });
             return Ok(());
@@ -1847,7 +1826,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        vcs(&self.shared, move || Ok(worktree::made_by_task(at.changes(&before)?, touched.as_deref()))).await
+        read_changes(&self.shared, move || at.changes(&before, touched.as_deref())).await
     }
 
     /// The task's uncommitted changes and, for a worktree task, the commits made since it
@@ -1856,7 +1835,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        vcs(&self.shared, move || {
+        read_changes(&self.shared, move || {
             let mut grouped = at.grouped_changes(&before)?;
             grouped.uncommitted = worktree::made_by_task(grouped.uncommitted, touched.as_deref());
             Ok(grouped)
@@ -1869,7 +1848,7 @@ impl AgentManager {
     pub async fn turn_changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
         let (cwd, turn, dir) = self.task(id)?.last_turn();
         let Some(turn) = turn else { return Ok(Vec::new()) };
-        vcs(&self.shared, move || {
+        read_changes(&self.shared, move || {
             let changed = match &turn.changed {
                 Some(changed) => changed.clone(),
                 None => worktree::changed_in_turn(&cwd, &turn)?.1,
@@ -1926,7 +1905,7 @@ impl AgentManager {
         let (restamped, restored) = vcs(&self.shared, move || {
             let (changes, rev) = match view {
                 AgentChangesView::Group => (at.grouped_changes(&before)?.uncommitted, worktree::head_commit(at.cwd())?),
-                AgentChangesView::SinceStart | AgentChangesView::LastTurn => (at.changes(&before)?, at.rev()?),
+                AgentChangesView::SinceStart | AgentChangesView::LastTurn => (at.changes(&before, None)?, at.rev()?),
             };
             let changes = worktree::made_by_task(changes, touched.as_deref());
             let sources = match rev.as_deref() {
@@ -2341,6 +2320,23 @@ impl Task {
         self.shared.emit(AgentEvent::Task { task: Box::new(task) });
     }
 
+    /// Takes the item and, for Send now, claims an idle turn under the same lock.
+    fn take_queued(&self, id: &str, for_send: bool) -> IdeResult<(AgentQueued, bool)> {
+        let mut s = self.state.lock();
+        let Some(index) = s.task.queue.iter().position(|item| item.id == id) else {
+            drop(s);
+            self.emit_task();
+            return Err(IdeError::new(ErrorKind::OutOfSync, "Message is no longer queued"));
+        };
+        let item = s.task.queue.remove(index);
+        let was_busy = s.busy;
+        s.busy |= for_send;
+        drop(s);
+        self.persist();
+        self.emit_task();
+        Ok((item, was_busy))
+    }
+
     /// Shows (or clears) the agent's pending retry; emitted only when it changes.
     fn set_retry(&self, retry: Option<AgentRetry>) {
         {
@@ -2549,7 +2545,10 @@ impl Task {
                 self.push_entry(AgentEntry::Error { message: "The agent declined to continue.".into() });
             }
             match (next, result) {
-                (Some(queued), _) => prompt = queued.prompt,
+                (Some(queued), _) => {
+                    self.emit_task();
+                    prompt = queued.prompt;
+                }
                 (None, Ok(stop)) => {
                     self.set_status(AgentStatus::Ready, None);
                     if stop != "cancelled" {
@@ -4231,8 +4230,11 @@ fn file_uri(path: &Path) -> String {
     out
 }
 
+/// The title of a task: the first line of the prompt that says something. A pasted Markdown
+/// block opens with a code fence (```` ```text ````), which names no task.
 fn title_of(prompt: &AgentPrompt) -> String {
-    let line = prompt.text.lines().map(str::trim).find(|l| !l.is_empty());
+    let is_fence = |l: &str| l.starts_with("```") || l.starts_with("~~~");
+    let line = prompt.text.lines().map(str::trim).find(|l| !l.is_empty() && !is_fence(l));
     let line = match line {
         Some(l) => l.to_owned(),
         None => prompt.files.first().map(|f| file_name(&f.0)).unwrap_or_else(|| "Image".into()),
@@ -4268,6 +4270,19 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
 async fn vcs<T: Send + 'static>(shared: &Shared, f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
     let git = shared.git_executable.read().as_ref().and_then(|hook| hook());
     blocking(move || ide_vcs::with_git_executable(git.as_deref(), f)).await
+}
+
+async fn read_changes<T: Send + 'static>(
+    shared: &Shared,
+    f: impl FnOnce() -> IdeResult<T> + Send + 'static,
+) -> IdeResult<T> {
+    let permit = shared.change_reads.clone().acquire_owned().await.map_err(|e| IdeError::internal(e.to_string()))?;
+    vcs(shared, move || {
+        // Dropping the caller doesn't cancel a blocking job. Keep the slot with the work.
+        let _permit = permit;
+        f()
+    })
+    .await
 }
 
 #[cfg(test)]
