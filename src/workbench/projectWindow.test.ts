@@ -1,9 +1,12 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
-import { chooseProjectWindow, openPolicy } from "./projectWindow";
+import type { RemoteTarget } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
+import { chooseProjectWindow, openPolicy, openRemoteProject, projectWindowOverride } from "./projectWindow";
 import { ask } from "./messages";
 import { commands } from "@/platform/ipc";
 
+const windowOpenRemote = vi.fn();
 vi.mock("./messages", () => ({ ask: vi.fn() }));
 vi.mock("@/platform/remote", () => ({
   isRemoteWindow: () => false,
@@ -11,8 +14,10 @@ vi.mock("@/platform/remote", () => ({
 }));
 vi.mock("@/platform/ipc", () => ({
   call: (p: unknown) => p,
+  isTauri: () => true,
   commands: {
     settingsSet: vi.fn(async () => ({ general: { openProjectIn: "attach" } })),
+    windowOpenRemote: (...a: unknown[]) => windowOpenRemote(...a),
   },
 }));
 beforeEach(() => {
@@ -64,4 +69,39 @@ it("opens a project tab by policy, or a new window when this one can't take one"
   useProject.setState({ project: null, lightEdit: true });
   expect(await chooseProjectWindow("B")).toBe("new");
   expect(ask).not.toHaveBeenCalled();
+});
+
+describe("a recent project opened with a modifier key", () => {
+  const mods = { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false };
+  const target: RemoteTarget = { kind: "wsl", distro: "Ubuntu" };
+
+  it("sends Shift or Ctrl to a new window and Alt to this one", () => {
+    expect(projectWindowOverride(mods)).toBeNull();
+    expect(projectWindowOverride({ ...mods, shiftKey: true })).toBe("new");
+    expect(projectWindowOverride({ ...mods, ctrlKey: true })).toBe("new");
+    expect(projectWindowOverride({ ...mods, altKey: true })).toBe("same");
+  });
+
+  it("takes ⌘ on macOS, where Ctrl+click is a right-click, and nowhere else", () => {
+    const os = usePlatform.getState().os;
+    usePlatform.setState({ os: "macos" });
+    expect(projectWindowOverride({ ...mods, metaKey: true })).toBe("new");
+    usePlatform.setState({ os: "windows" });
+    expect(projectWindowOverride({ ...mods, metaKey: true })).toBeNull();
+    usePlatform.setState({ os });
+  });
+
+  it("opens a remote project in that window without asking", async () => {
+    windowOpenRemote.mockResolvedValue({ kind: "opened" });
+    const here = vi.fn(async () => {});
+    useProject.setState({ settings: { general: { openProjectIn: "same" } } as never });
+    expect(await openRemoteProject(target, "/home/me/app", here, "new")).toBe(true);
+    expect(windowOpenRemote).toHaveBeenLastCalledWith(target, "/home/me/app", true);
+    expect(here).not.toHaveBeenCalled();
+    useProject.setState({ settings: { general: { openProjectIn: "new" } } as never });
+    expect(await openRemoteProject(target, "/home/me/app", here, "same")).toBe(true);
+    expect(windowOpenRemote).toHaveBeenLastCalledWith(target, "/home/me/app", false);
+    expect(here).toHaveBeenCalledOnce();
+    expect(ask).not.toHaveBeenCalled();
+  });
 });
