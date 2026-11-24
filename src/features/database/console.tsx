@@ -19,6 +19,7 @@ import {
 } from "@codemirror/autocomplete";
 import {
   Compartment,
+  EditorSelection,
   EditorState,
   Facet,
   Prec,
@@ -32,9 +33,11 @@ import {
   Decoration,
   EditorView,
   GutterMarker,
+  RectangleMarker,
   ViewPlugin,
   WidgetType,
   gutter,
+  layer,
   showPanel,
   showTooltip,
   type Panel,
@@ -396,27 +399,84 @@ const previewField = StateField.define<readonly { from: number; to: number }[]>(
     }
     return next;
   },
-  provide: (f) =>
-    EditorView.decorations.compute([f, runField], (state) => {
-      const ex = state.field(runField).executing;
-      // A run in progress keeps its submitted range bordered, whatever the caret does.
-      const spans = ex?.spans.length
-        ? [{ from: ex.spans[0]!.from, to: ex.spans[ex.spans.length - 1]!.to }]
-        : state.field(f);
-      return Decoration.set(
-        spans
-          .filter((r) => r.from < r.to)
-          .map((r) => Decoration.mark({ class: "cm-openidea-db-preview" }).range(r.from, r.to)),
-        true,
-      );
-    }),
 });
+
+/** The bordered ranges: a run in progress keeps its submitted range, whatever the caret does. */
+export function previewRanges(state: EditorState): readonly { from: number; to: number }[] {
+  const ex = state.field(runField, false)?.executing;
+  const ranges = ex?.spans.length
+    ? [{ from: ex.spans[0]!.from, to: ex.spans[ex.spans.length - 1]!.to }]
+    : (state.field(previewField, false) ?? []);
+  return ranges.filter((r) => r.from < r.to);
+}
+
+const PREVIEW_CLASS = "cm-openidea-db-preview";
+
+/**
+ * One box around each statement's text: the union of its lines' text (indentation and trailing
+ * blanks left out), as tall as the statement even where it runs out of view.
+ */
+function previewBoxes(view: EditorView): RectangleMarker[] {
+  const { doc } = view.state;
+  const boxes: RectangleMarker[] = [];
+  for (const r of previewRanges(view.state)) {
+    let left = Infinity;
+    let right = -Infinity;
+    let offset: number | null = null;
+    for (const visible of view.visibleRanges) {
+      const from = Math.max(r.from, visible.from);
+      const to = Math.min(r.to, visible.to);
+      if (from >= to) continue;
+      for (let pos = from; pos <= to;) {
+        const line = doc.lineAt(pos);
+        const text = line.text;
+        let start = Math.max(from, line.from) - line.from;
+        let end = Math.min(to, line.to) - line.from;
+        while (start < end && /\s/.test(text[start]!)) start++;
+        while (end > start && /\s/.test(text[end - 1]!)) end--;
+        if (start < end)
+          for (const m of RectangleMarker.forRange(
+            view,
+            PREVIEW_CLASS,
+            EditorSelection.range(line.from + start, line.from + end),
+          )) {
+            left = Math.min(left, m.left);
+            right = Math.max(right, m.left + (m.width ?? 0));
+            offset ??= m.top - view.lineBlockAt(line.from).top;
+          }
+        pos = line.to + 1;
+      }
+    }
+    if (offset == null || right <= left) continue;
+    const top = view.lineBlockAt(r.from).top + offset;
+    const bottom = view.lineBlockAt(r.to).bottom + offset;
+    boxes.push(new RectangleMarker(PREVIEW_CLASS, left - 2, top, right - left + 4, bottom - top));
+  }
+  return boxes;
+}
+
+const previewLayer = layer({
+  above: false,
+  markers: previewBoxes,
+  update: (u) =>
+    u.docChanged ||
+    u.viewportChanged ||
+    u.geometryChanged ||
+    u.startState.field(previewField, false) !== u.state.field(previewField, false) ||
+    u.startState.field(runField, false)?.executing !== u.state.field(runField, false)?.executing,
+});
+
+/** How long typing pauses before the preview is split again (until then it follows the edit). */
+const PREVIEW_TYPING_DELAY_MS = 150;
 
 /** Re-splits the caret's (or the selection's) range for the preview, as `executeConsole` does. */
 const previewSync = ViewPlugin.define((view) => {
   const path = view.state.facet(consolePath);
   let run = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const preview = () => {
+    clearTimeout(timer);
+    timer = undefined;
     const id = consoleSource(path);
     if (!id) return;
     const sent = view.state.doc;
@@ -436,7 +496,16 @@ const previewSync = ViewPlugin.define((view) => {
       const executing = (s: EditorState) => !!s.field(runField, false)?.executing;
       if (executing(u.startState) && !executing(u.state)) preview();
       // While a run is in progress its submitted range stays; the caret is not followed.
-      else if ((u.docChanged || u.selectionSet) && !executing(u.state)) preview();
+      else if (executing(u.state)) return;
+      // Typing sends the whole text each time: wait for a pause, the mapped preview meanwhile.
+      else if (u.docChanged) {
+        clearTimeout(timer);
+        timer = setTimeout(preview, PREVIEW_TYPING_DELAY_MS);
+      } else if (u.selectionSet) preview();
+    },
+    destroy() {
+      clearTimeout(timer);
+      run++;
     },
   };
 });
@@ -1274,6 +1343,7 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     runField,
     runGutter,
     previewField,
+    previewLayer,
     previewSync,
     inlineField,
     syncInline,

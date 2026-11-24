@@ -3,7 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
-import { consoleExtension, executeInView } from "./console";
+import { consoleExtension, executeInView, previewRanges } from "./console";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { streamExecution } from "./executeStream.fixture";
 import { useDatabase } from "./store";
@@ -112,9 +112,8 @@ function makeView(doc: string, anchor: number, head = anchor) {
   return view;
 }
 
-/** The text each part of the execution-range border covers. */
-const bordered = (view: EditorView) =>
-  [...view.dom.querySelectorAll(".cm-openidea-db-preview")].map((e) => e.textContent);
+/** The text each execution-range box surrounds (jsdom has no layout to draw the boxes in). */
+const bordered = (view: EditorView) => previewRanges(view.state).map((r) => view.state.sliceDoc(r.from, r.to));
 
 describe("the execution range preview", () => {
   it("borders the statement the caret is in, asking the splitter the run asks", async () => {
@@ -188,6 +187,29 @@ describe("the execution range preview", () => {
           await pending;
         });
       view.destroy();
+    }
+  });
+
+  it("waits for a pause in typing before splitting again, following the edit meanwhile", async () => {
+    vi.useFakeTimers();
+    const view = makeView("SELECT 1;\nSELECT 2;", 18); // After "SELECT 2".
+    try {
+      await act(async () => {});
+      expect(bordered(view)).toEqual(["SELECT 2"]);
+      const asked = backend.statements.mock.calls.length;
+      for (const ch of "0, 3") act(() => view.dispatch(view.state.replaceSelection(ch)));
+      await act(async () => {});
+      // No request per keystroke; the border is the old one, mapped through the edits.
+      expect(backend.statements.mock.calls.length).toBe(asked);
+      expect(bordered(view)).toEqual(["SELECT 2"]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      expect(backend.statements.mock.calls.length).toBe(asked + 1);
+      expect(bordered(view)).toEqual(["SELECT 20, 3"]);
+    } finally {
+      view.destroy();
+      vi.useRealTimers();
     }
   });
 
