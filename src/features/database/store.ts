@@ -653,6 +653,7 @@ export async function withConnection<T>(id: string, op: () => Promise<T>): Promi
   const current = databaseRequest(id);
   for (;;) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- the retry loop must finish op before updating connection state or deciding to retry
       const r = await op();
       // A completed write keeps its result, but must not revive an old connection.
       if (!current()) return r;
@@ -674,6 +675,7 @@ export async function withConnection<T>(id: string, op: () => Promise<T>): Promi
     } catch (e) {
       if (!current()) throw new IpcError({ kind: "cancelled", message: "Cancelled", data: null });
       const source = sourceById(id);
+      // oxlint-disable-next-line no-await-in-loop -- credential/host-key prompts must resolve before deciding whether to retry the connection
       if (!source || !(await resolveConnectError(e, source))) throw e;
       if (!current()) throw new IpcError({ kind: "cancelled", message: "Cancelled", data: null });
     }
@@ -900,6 +902,7 @@ export async function schemaSnapshot(id: string, schema: string, signal?: AbortS
     while (next < tables.length) {
       if (signal?.aborted) return;
       const t = tables[next++]!;
+      // oxlint-disable-next-line no-await-in-loop -- bounded worker pool: each of up to 4 workers claims the next table via the shared index and checks the abort signal
       const details = await call(commands.dbTableDetails(id, schema, t.name));
       out.push({ name: t.name, kind: t.kind, ...details });
     }
@@ -1450,6 +1453,7 @@ export async function openConsoleWith(id: string, text: string): Promise<void> {
       view.focus();
       return;
     }
+    // oxlint-disable-next-line no-await-in-loop -- polling waits 50ms between attempts for the editor view to mount
     await new Promise((r) => setTimeout(r, 50));
   }
 }

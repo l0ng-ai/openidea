@@ -196,16 +196,19 @@ export function memberStubs(members: readonly PythonMember[], indent: string, un
 async function abstractMembersOfBases(view: EditorView, header: number): Promise<PythonMember[]> {
   const doc = docOf(view)!;
   const out = new Map<string, PythonMember>();
-  for (const base of classBases(view.state.doc.toJSON(), header)) {
-    const pos = { line: base.line, col: base.col };
-    const [loc] = await lspRequest(() => commands.lspGoto(doc.doc, pos, "definition"));
-    if (!loc) continue;
-    const lines = await readFileLines(loc.path);
-    if (!lines) continue;
-    const target = enclosingClass(lines, loc.range.start.line + 1);
-    if (!target) continue;
-    for (const m of classMembers(lines, target)) if (m.abstract && !out.has(m.name)) out.set(m.name, m);
-  }
+  // Bases resolve independently; merge in declaration order so the first base declaring a name still wins.
+  const perBase = await Promise.all(
+    classBases(view.state.doc.toJSON(), header).map(async (base) => {
+      const pos = { line: base.line, col: base.col };
+      const [loc] = await lspRequest(() => commands.lspGoto(doc.doc, pos, "definition"));
+      if (!loc) return [];
+      const lines = await readFileLines(loc.path);
+      if (!lines) return [];
+      const target = enclosingClass(lines, loc.range.start.line + 1);
+      return target ? classMembers(lines, target) : [];
+    }),
+  );
+  for (const members of perBase) for (const m of members) if (m.abstract && !out.has(m.name)) out.set(m.name, m);
   return [...out.values()];
 }
 

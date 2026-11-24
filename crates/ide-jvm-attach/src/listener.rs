@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::socket::AttachError;
 #[cfg(unix)]
 use crate::socket::{check_socket, has_listener, has_listener_at, socket_path, temp_dir};
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", all(unix, test)))]
 use std::time::UNIX_EPOCH;
 #[cfg(unix)]
 use std::{
@@ -204,7 +204,7 @@ fn process_start(_pid: u32) -> Option<SystemTime> {
 
 /// `/proc/<pid>/stat` field 22 is the start in clock ticks since boot; `btime` in `/proc/stat`
 /// is the boot time in seconds since the epoch.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(unix, test)))]
 fn start_from_proc(stat: &str, system: &str, ticks_per_sec: u64) -> Option<SystemTime> {
     // The command name (field 2) may contain spaces and parentheses; the fields after it start at 3.
     let ticks: u64 = stat.rsplit_once(')')?.1.split_whitespace().nth(22 - 3)?.parse().ok()?;

@@ -3,8 +3,25 @@ import { t, tx } from "@/platform/i18n";
 import { call, commands, type RemoteTarget } from "@/platform/ipc";
 import { confirmLeaveProject, useProject } from "@/platform/project";
 import { connectRemote, isRemoteWindow } from "@/platform/remote";
+import { isMacHost } from "@/platform/keymap";
 import { ask } from "./messages";
 import { maybeEditorService } from "./contributions";
+
+/** The window a modifier key picks for opening a recent project, whatever "Open project in" says. */
+export type ProjectWindowOverride = "new" | "same";
+
+/** The modifier keys of a click or a key press. */
+export type ModifierKeys = Pick<KeyboardEvent | MouseEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey">;
+
+/**
+ * The window a recent project opens in when it is picked with a modifier key, as in IntelliJ IDEA:
+ * Shift or Ctrl (⌘ on macOS, where Ctrl+click is a right-click) is a new window, Alt this one.
+ * `null`: no modifier, so "Open project in" decides.
+ */
+export function projectWindowOverride(e: ModifierKeys): ProjectWindowOverride | null {
+  if (e.shiftKey || e.ctrlKey || (isMacHost() && e.metaKey)) return "new";
+  return e.altKey ? "same" : null;
+}
 
 /** "Open project in": `new` | `same` | `ask`. */
 export function openPolicy(): "ask" | "new" | "same" | "tab" {
@@ -65,15 +82,16 @@ export async function chooseProjectWindow(
 /**
  * Opens folder `path` of `target` (an SSH host or a WSL distribution): focuses the
  * window that has it, else opens it in a new window or (`here`) this one per
- * "Open project in". `false`: cancelled.
+ * "Open project in", or where `override` says. `false`: cancelled.
  */
 export async function openRemoteProject(
   target: RemoteTarget,
   path: string,
   here: () => Promise<unknown> = () => connectRemote(target, path),
+  override?: ProjectWindowOverride | null,
 ): Promise<boolean> {
   if ((await call(commands.windowOpenRemote(target, path, false))).kind === "focused") return true;
-  const mode = await chooseProjectWindow(path.replace(/\/+$/, "").split("/").pop() || path, false);
+  const mode = override ?? (await chooseProjectWindow(path.replace(/\/+$/, "").split("/").pop() || path, false));
   if (!mode) return false;
   if (mode === "new") {
     await call(commands.windowOpenRemote(target, path, true));

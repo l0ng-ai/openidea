@@ -121,6 +121,7 @@ export async function runBranchRebases(plans: readonly PlannedRebase[], feedback
       if (!active()) break;
       const repo = repoName(root);
       const checkout = operation.op === "checkoutRebase" ? operation.plan.base : null;
+      // oxlint-disable-next-line no-await-in-loop -- rollbacks replay in reverse order and each checks cancellation first
       await runOp(tx`Rollback (${repo})`, () =>
         call(commands.vcsRestoreHead(root, state.original.commit, after.commit, state.original.branch, checkout)),
       );
@@ -196,6 +197,7 @@ export async function runBranchRebases(plans: readonly PlannedRebase[], feedback
               const { root, operation } = attempted;
               const op = { ...operation, shelfBatch: batch.id };
               logConsole("cmd", `git ${describeOperation(op, root)}${plans.length > 1 ? ` (${repoName(root)})` : ""}`);
+              // oxlint-disable-next-line no-await-in-loop -- rebases share one request/channel and advance the index with cancellation checks
               const result = await call(commands.vcsOperation(root, request, op, output()));
               if (!result || !("rebased" in result) || !result.rebased)
                 throw new Error(tx("The rebase result is unavailable"));

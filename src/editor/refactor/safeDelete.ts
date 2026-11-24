@@ -501,6 +501,7 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
   for (const path of paths) {
     if (signal?.aborted) throw cancelled();
     try {
+      // oxlint-disable-next-line no-await-in-loop -- paths are searched in order; cancellation is checked per path
       await withDoc(path, async (doc) => {
         const outline = await call(commands.docOutline(doc));
         for (const item of declaredSymbols(outline).slice(0, MAX_SYMBOLS)) {
@@ -508,19 +509,19 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
           let refs: Location[];
           try {
             // Every symbol of every file: the server's own scope (a project search each would be too slow).
-            refs = (
-              await lspRequest(() =>
-                commands.lspReferences(
-                  nextRequestId(),
-                  doc,
-                  item.selection_range.start,
-                  false,
-                  false,
-                  false,
-                  new Channel(),
-                ),
-              )
-            ).locations;
+            // oxlint-disable-next-line no-await-in-loop -- symbols searched in order; searched/reason/found are shared
+            const searchedRefs = await lspRequest(() =>
+              commands.lspReferences(
+                nextRequestId(),
+                doc,
+                item.selection_range.start,
+                false,
+                false,
+                false,
+                new Channel(),
+              ),
+            );
+            refs = searchedRefs.locations;
           } catch (e) {
             if (isUnavailable(e)) {
               reason = errorText(e);

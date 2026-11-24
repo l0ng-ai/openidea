@@ -4228,6 +4228,7 @@ export type CodeEditingSettings = {
 	/**  Next / previous error goes to errors only (skips warnings). */
 	nextErrorErrorsOnly?: boolean,
 	stickyLinesMax?: number,
+	stickyLinesDisabledLanguages?: string[],
 };
 
 export type CodeLens = {
@@ -5701,6 +5702,11 @@ export type Decoration = {
 	style: string,
 	hover: string | null,
 	after: string | null,
+	/**
+	 *  Markdown rendered in the editor's hover card (API 1.16); `hover` is the
+	 *  plain-text fallback shown when this is absent.
+	 */
+	markdownHover: string | null,
 };
 
 /**  A plugin-owned editor or project-tree decoration set for one file. */
@@ -8863,6 +8869,10 @@ export type LanguageCodeStyle_Deserialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -8883,6 +8893,10 @@ export type LanguageCodeStyle_Serialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -9396,6 +9410,8 @@ export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" |
 
 export type MainToolbarSettings = {
 	left?: string[],
+	/**  Centred in the toolbar (between the other two groups when they leave too little room). */
+	center?: string[],
 	right?: string[],
 	/**  Widgets the user removed. */
 	hidden?: string[],

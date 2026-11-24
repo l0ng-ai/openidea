@@ -71,8 +71,10 @@ async function move(view: EditorView, kind: string, request: MoveRequest) {
   let moved: ServerRefactored;
   try {
     for (;;) {
+      // oxlint-disable-next-line no-await-in-loop -- sync before each confirmation round
       await whenSynced(view);
       const token: string | null = confirmation;
+      // oxlint-disable-next-line no-await-in-loop -- request carries the previous confirmation
       moved = await lspRequest(() =>
         commands.lspJavaMove(nextRequestId(), ctx.doc, kind, JSON.stringify(request), token),
       );
@@ -82,6 +84,7 @@ async function move(view: EditorView, kind: string, request: MoveRequest) {
         return;
       }
       if (!moved.confirmation) break;
+      // oxlint-disable-next-line no-await-in-loop -- the confirmation gates the next request
       if (!(await confirmProblems(moved.problems.map((p) => p.message)))) return;
       confirmation = moved.confirmation;
     }

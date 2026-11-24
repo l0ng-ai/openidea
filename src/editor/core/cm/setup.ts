@@ -229,10 +229,11 @@ export function wrapExtension(
   return (override ?? softWrapActive(settings?.softWrap, prefsOf(settings), path)) ? EditorView.lineWrapping : [];
 }
 
-export function stickyExtension(settings: EditorSettings | undefined): Extension {
-  return settings?.stickyScroll === false || isDistractionFree()
+export function stickyExtension(settings: EditorSettings | undefined, language: string): Extension {
+  const { stickyLinesMax, stickyLinesDisabledLanguages } = prefsOf(settings).codeEditing;
+  return settings?.stickyScroll === false || isDistractionFree() || stickyLinesDisabledLanguages.includes(language)
     ? []
-    : [stickyScroll, stickyMaxLines.of(prefsOf(settings).codeEditing.stickyLinesMax)];
+    : [stickyScroll, stickyMaxLines.of(stickyLinesMax)];
 }
 
 const matchingBracket = Decoration.mark({ class: "cm-matchingBracket" });
@@ -429,7 +430,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info), o.formatIndent)),
     compartments.readOnly.of(readOnlyExtension(o.ctx.readOnly)),
     compartments.wrap.of(wrapExtension(o.settings, o.ctx.path, o.wrapOverride)),
-    compartments.sticky.of(stickyExtension(o.settings)),
+    compartments.sticky.of(stickyExtension(o.settings, o.ctx.language)),
     compartments.heavy.of(heavyExtension(o.docLength, o.settings)),
     compartments.prefs.of(
       prefsFor({

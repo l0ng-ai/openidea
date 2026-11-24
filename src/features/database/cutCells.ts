@@ -119,6 +119,7 @@ export async function loadCells(tab: ResultTab, cells: ReadonlyArray<{ row: numb
   const cut = cells.filter((c) => cutLength(r, c.row, c.col) !== null);
   const rows = [...new Set(cut.map((c) => c.row))].sort((a, b) => a - b);
   if (rows.length > ROWWISE_LIMIT) adopt(r, 0, r.rows.length, await readResultPage(tab));
+  // oxlint-disable-next-line no-await-in-loop -- readResultRow goes through withConnection, which can prompt for credentials; parallel reads could raise several prompts
   else for (const row of rows) adopt(r, row, 1, await readResultRow(tab, firstRow(tab) + row));
   return cells.map((c) => cellOf(r, c.row, c.col));
 }

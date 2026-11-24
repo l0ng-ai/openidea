@@ -70,6 +70,10 @@
   cursor: col-resize;
 }
 .rowNumber {
+  /* Frozen at the left edge: only vertical scrolling moves the numbers. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -79,6 +83,9 @@
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   user-select: none;
+}
+.rowNumberSelected {
+  color: var(--fg-line-number-current);
 }
 .cell {
   display: flex;

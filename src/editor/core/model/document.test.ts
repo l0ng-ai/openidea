@@ -27,6 +27,7 @@ const testTooltip: Tooltip = {
 };
 
 async function settle() {
+  // oxlint-disable-next-line no-await-in-loop -- each tick flushes work scheduled during the previous tick
   for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
@@ -403,8 +404,9 @@ describe("DocumentManager + slots", () => {
       const unregister = registerSaveParticipant({ id: "test.save", beforeSave: participant });
       const save = vi.spyOn(backend, "save");
       try {
-        const slots = [];
-        for (const path of Object.keys(files)) slots.push(new EditorSlot(await manager.acquire(path), path, host));
+        const slots = await Promise.all(
+          Object.keys(files).map(async (path) => new EditorSlot(await manager.acquire(path), path, host)),
+        );
         const edited = slots.at(-1)!;
         edited.dispatchLocal({ changes: { from: 0, insert: "// edited\n" } });
         await manager.saveAll(reason);

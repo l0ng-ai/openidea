@@ -33,6 +33,7 @@ import {
   setFocusedToolWindow,
   toolWindowServiceImpl,
 } from "./toolwindows/store";
+import { TabColorPicker } from "./TabColorPicker";
 
 export function activateWorkbench(): () => void {
   provideToolWindowService(toolWindowServiceImpl);
@@ -83,6 +84,7 @@ export function activateWorkbench(): () => void {
     installFileDrop(),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),
     registerOverlay({ id: "workbench.backgroundTasks", component: BackgroundTasksHost }),
+    registerOverlay({ id: "workbench.projectColor", component: TabColorPicker }),
     registerStatusItem({ id: "workbench.tasks", align: "right", priority: 0, component: TaskStatus, lightEdit: true }),
     registerStatusItem({ id: "workbench.info", align: "left", priority: 5, component: StatusInfo, lightEdit: true }),
     registerToolWindow({

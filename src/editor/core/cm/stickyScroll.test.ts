@@ -7,7 +7,7 @@ import { languages } from "@codemirror/language-data";
 import { completedSyntaxState } from "@/test/syntax";
 import { BracketScanner, DEFAULT_RAINBOW_OPTIONS } from "./rainbowBrackets";
 import { renderLineContent } from "./renderLineContent";
-import { selectedSpans, stickyMaxLines, stickyScroll, stickyTopMargin } from "./stickyScroll";
+import { selectedSpans, stickyMaxLines, stickyScroll, stickyScrollMargin, stickyTopMargin } from "./stickyScroll";
 
 describe("selectedSpans", () => {
   // the sticky line `def run():` at 100..110
@@ -104,9 +104,22 @@ describe("sticky rows and scrolling the caret into view", () => {
   it("keeps room for the headers that would stick above the caret's line", () => {
     const v = view(doc.indexOf("target"));
     expect(stickyTopMargin(v)).toBe(3 * v.defaultLineHeight);
-    expect(v.state.facet(EditorView.scrollMargins).map((f) => f(v))).toContainEqual({
-      top: 3 * v.defaultLineHeight,
-    });
+    v.destroy();
+  });
+
+  it("reserves the caret's rows only while the caret is above where they would stick", () => {
+    // The caret at 200 with three rows (60) to stick above it, nothing showing yet.
+    expect(stickyScrollMargin(200, 160, 60, 0)).toBe(60);
+    expect(stickyScrollMargin(200, 300, 60, 0)).toBe(60);
+    // Visible below them: only what sticks now covers the top, so hovers there still show.
+    expect(stickyScrollMargin(200, 0, 60, 0)).toBe(0);
+    expect(stickyScrollMargin(200, 100, 60, 40)).toBe(40);
+    expect(stickyScrollMargin(200, 160, 20, 40)).toBe(40);
+  });
+
+  it("covers nothing at the top of the file while the caret is further down", () => {
+    const v = view(doc.indexOf("target"));
+    expect(v.state.facet(EditorView.scrollMargins).map((f) => f(v))).toContainEqual({ top: 0 });
     v.destroy();
   });
 

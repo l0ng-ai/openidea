@@ -19,6 +19,17 @@ export function openTabColorPicker(target: TabColorTarget): void {
   useTabColorPicker.setState({ target });
 }
 
+/** Where the pointer last went down: a menu item's picker opens where the item was. */
+let lastPointer: { x: number; y: number } | null = null;
+if (typeof window !== "undefined")
+  window.addEventListener("pointerdown", (e) => (lastPointer = { x: e.clientX, y: e.clientY }), { capture: true });
+
+/** Change Project Color… from a menu: the picker opens at the chosen item (the window centre from the keyboard). */
+export function openProjectColorPicker(root: string, name: string): void {
+  const at = lastPointer ?? { x: window.innerWidth / 2 - 110, y: window.innerHeight / 3 };
+  openTabColorPicker({ root, name, ...at });
+}
+
 const PRESETS = [
   { slot: "1", label: "Orange" },
   { slot: "2", label: "Yellow" },

@@ -110,6 +110,7 @@ describe("useGitDiffEntries", () => {
     for (let i = 1; i <= 2; i++) {
       const view = renderHook(() => useGitDiffEntries(data));
       expect(view.result.current.loading).toBe(true);
+      // oxlint-disable-next-line no-await-in-loop -- this mount must finish loading before it is unmounted and the call count asserted
       await waitFor(() => expect(view.result.current.loading).toBe(false));
       view.unmount();
       expect(vcsDiffEntries).toHaveBeenCalledTimes(i);

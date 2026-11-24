@@ -44,6 +44,29 @@ export interface LanguageCodeStyle {
   alignKeyValuePairs?: boolean;
   /** PHP: align `=` of consecutive assignment statements after formatting. */
   alignConsecutiveAssignments?: boolean;
+  /** SQL › Case: Reformat Code's case for keywords and unquoted identifiers. */
+  keywordCase?: SqlWordCase;
+  identifierCase?: SqlWordCase;
+}
+
+/** IDEA's SQL word case: To upper / To lower / Do not change. */
+export type SqlWordCase = "upper" | "lower" | "keep";
+
+export interface SqlCaseStyle {
+  keywords: SqlWordCase;
+  identifiers: SqlWordCase;
+}
+
+/** SQL › Case of Code Style; unset, keywords become upper case and identifiers stay as written (IDEA's defaults). */
+export function sqlCaseStyle(prefs: EditorExtras): SqlCaseStyle {
+  return sqlCaseOf(prefs.codeStyle.languages.sql);
+}
+
+/** The SQL › Case of the SQL code style `own`, defaults filled in. */
+export function sqlCaseOf(own: LanguageCodeStyle | undefined): SqlCaseStyle {
+  const pick = (v: unknown, def: SqlWordCase): SqlWordCase =>
+    v === "upper" || v === "lower" || v === "keep" ? v : def;
+  return { keywords: pick(own?.keywordCase, "upper"), identifiers: pick(own?.identifierCase, "keep") };
 }
 
 /**
@@ -194,6 +217,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     quickDocDelay: 500,
     nextErrorErrorsOnly: true,
     stickyLinesMax: 5,
+    stickyLinesDisabledLanguages: [] as string[],
   },
   inlay: {
     types: true,

@@ -68,6 +68,7 @@ mod tests {
         panic!("not reached")
     }
 
+    #[cfg(unix)]
     fn proc(pid: u32, ppid: u32, command: &str) -> ProcEntry {
         ProcEntry { pid, ppid, command: command.into() }
     }

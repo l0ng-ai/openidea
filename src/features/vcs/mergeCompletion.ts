@@ -53,9 +53,11 @@ export async function trackMergeCompletion(
           for (const { root, branch, before, target } of merges) {
             if (!active || cancelled()) break;
             if (finished.has(root)) continue;
+            // oxlint-disable-next-line no-await-in-loop -- merges finish one at a time; active/cancelled/finished state is checked before each
             await call(
               commands.vcsOperation(root, request, { op: "finishMerge", branch, head: before, target }, output()),
             );
+            // oxlint-disable-next-line no-await-in-loop -- refresh after each merge so the next iteration observes the updated repository state
             await refreshNow();
           }
           return null;

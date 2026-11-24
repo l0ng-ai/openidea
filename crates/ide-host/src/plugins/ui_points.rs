@@ -798,6 +798,8 @@ struct CustomEditorDecl {
     /// Origins the web page may embed (API 1.16).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     frames: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binary: Option<bool>,
 }
 
 fn default_priority() -> String {
@@ -834,6 +836,12 @@ pub(super) fn custom_editor(pkg: &Package, decl: toml::Value) -> Result<UiDecl, 
     }
     if !["tab", "split", "preview"].contains(&d.layout.as_str()) {
         return Err(format!("{what}: `layout` is tab, split or preview"));
+    }
+    if let Some(binary) = d.binary {
+        pkg.manifest.needs_api("contributes.customEditors.binary", 16)?;
+        if binary && (d.web.is_none() || d.layout != "tab") {
+            return Err(format!("{what}: `binary` requires a web editor with `layout = \"tab\"`"));
+        }
     }
     let mut out = UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?);
     out.files = files;
@@ -1400,6 +1408,40 @@ mod tests {
         // Declared as optional, the capability is still shown at install.
         let optional = source.replace("required = [", "optional = [");
         assert!(check(&optional).is_ok());
+    }
+
+    #[test]
+    fn binary_custom_editor_requires_api_1_16() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("web")).unwrap();
+        std::fs::write(dir.path().join("web/view.html"), "").unwrap();
+        let check = |engine: &str, binary: &str| {
+            let source = format!(
+                r#"id = "p"
+name = "P"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.customEditors]]
+id = "data"
+title = "Data"
+patterns = ["*.bin"]
+web = "web/view.html"
+{binary}
+"#
+            );
+            let manifest = ide_extension::Manifest::parse(&source)?;
+            let decl = manifest.declarations(CUSTOM_EDITORS).into_iter().next().unwrap();
+            custom_editor(&Package::new(manifest, dir.path().to_path_buf()), decl)
+        };
+        for value in [true, false] {
+            let field = format!("binary = {value}");
+            assert_eq!(check("^1.16", &field).unwrap().json["binary"], value);
+            assert_eq!(
+                check("^1.15", &field).unwrap_err(),
+                r#"contributes.customEditors.binary is new in plugin API 1.16: set engines.openidea to "^1.16""#
+            );
+        }
+        assert!(check("^1.15", "").unwrap().json.get("binary").is_none());
     }
 
     #[test]
