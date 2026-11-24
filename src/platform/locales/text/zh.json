@@ -1013,6 +1013,8 @@
   "Unselect Occurrence": "取消选择匹配项",
   "Paste from History…": "从历史记录粘贴…",
   "Sort Lines": "排序行",
+  "Convert Indents to Spaces": "将缩进转换为空格",
+  "Convert Indents to Tabs": "将缩进转换为制表符",
   "Reverse Lines": "反转行序",
   "Fill Paragraph": "填充段落",
   "Unwrap/Remove…": "解包/移除…",

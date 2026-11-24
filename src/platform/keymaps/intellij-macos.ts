@@ -159,6 +159,8 @@ export const intellijMacos: Record<string, string[]> = {
   "code.sortLines": [],
   "code.reverseLines": [],
   "code.fillParagraph": [],
+  "code.convertIndentsToSpaces": [],
+  "code.convertIndentsToTabs": [],
   "code.unwrap": ["Meta+Shift+Delete"],
   "code.foldSelection": ["Meta+."],
   "editor.toggleColumnSelection": ["Meta+Shift+8"],

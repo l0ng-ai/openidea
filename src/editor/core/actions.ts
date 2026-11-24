@@ -50,7 +50,7 @@ import {
   unfoldAtCaret,
 } from "./cm/folding";
 import { fillParagraph } from "./cm/fillParagraph";
-import { reverseLines, sortLines } from "./cm/lines";
+import { convertIndentsToSpaces, convertIndentsToTabs, reverseLines, sortLines } from "./cm/lines";
 import { hardWrapAt } from "./cm/setup";
 import { customRegions } from "./cm/regions";
 import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
@@ -998,6 +998,14 @@ export function registerEditorActions(): () => void {
         keywords: ["wrap", "reflow", "rewrap comment"],
       },
     ),
+    edit("code.convertIndentsToSpaces", "Convert Indents to Spaces", (v) => convertIndentsToSpaces(v), {
+      category: "Edit",
+      keywords: ["tabs", "indentation"],
+    }),
+    edit("code.convertIndentsToTabs", "Convert Indents to Tabs", (v) => convertIndentsToTabs(v), {
+      category: "Edit",
+      keywords: ["spaces", "indentation"],
+    }),
     text("code.unwrap", "Unwrap/Remove…", (_v, slot) => void unwrapAtCaret(slot), {
       keywords: ["unwrap", "remove if"],
     }),

@@ -74,6 +74,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Convert Indents to Spaces / to Tabs", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="ConvertIndentsToSpaces"><keyboard-shortcut first-keystroke="shift meta 8"/></action><action id="ConvertIndentsToTabs"><keyboard-shortcut first-keystroke="shift meta 9"/></action></keymap>`,
+    );
+    expect(k.overrides["code.convertIndentsToSpaces"]).toEqual([normalizeBinding("Shift+Meta+8")]);
+    expect(k.overrides["code.convertIndentsToTabs"]).toEqual([normalizeBinding("Shift+Meta+9")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("rejects other XML", () => {
     expect(() => parseIdeaKeymap("<scheme name='x'/>")).toThrow(/keymap/);
   });

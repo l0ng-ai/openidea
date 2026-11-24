@@ -178,6 +178,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.sortLines": [],
   "code.reverseLines": [],
   "code.fillParagraph": [],
+  "code.convertIndentsToSpaces": [],
+  "code.convertIndentsToTabs": [],
   "code.unwrap": [],
   "code.foldSelection": [],
   "editor.toggleColumnSelection": [],

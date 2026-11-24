@@ -9249,5 +9249,7 @@
   "Gradle project sync failed": "Gradle 專案同步失敗",
   "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. Cause: {cause}": "Gradle 無法同步 {project}。建置同步成功前，Java 程式碼分析可能無法正常運作。請修正建置，然後重新載入 Gradle 專案。原因：{cause}",
   "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project.": "Gradle 無法同步 {project}。建置同步成功前，Java 程式碼分析可能無法正常運作。請修正建置，然後重新載入 Gradle 專案。",
-  "Fill Paragraph": "填充段落"
+  "Fill Paragraph": "填充段落",
+  "Convert Indents to Spaces": "將縮排轉換為空格",
+  "Convert Indents to Tabs": "將縮排轉換為定位字元"
 }
