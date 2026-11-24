@@ -28,7 +28,7 @@ pub use syntax::{
     VueComponentImport, VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_kinds, merge_visibility,
     set_external_syntax, shift_pos, shift_range,
 };
-pub use syntax::{MethodBody, PhpAlignment, PythonClassFacts, PythonFacts, PythonMethodFacts};
+pub use syntax::{MethodBody, PhpAlignment, PythonClassFacts, PythonFacts, PythonMethodFacts, PythonSuppression};
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
 #[derive(Clone, Debug, Serialize, Deserialize)]

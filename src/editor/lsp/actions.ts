@@ -8,7 +8,8 @@ import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { validateLanguages } from "@/platform/languageSettings";
 import type { Settings } from "@/bindings";
-import { explicitCompletion } from "./completion";
+import { basicCompletion, smartTypeCompletion } from "./completion";
+import { SMART_TYPE_LANGUAGES } from "./smartCompletion";
 import { triggerSignatureHelp } from "./signature";
 import { quickDefinition, quickDocumentation } from "./hover";
 import { expressionTypeInfo } from "./typeInfo";
@@ -269,9 +270,13 @@ export function registerActionsOnSave(): () => void {
 
 export function registerLspActions(): () => void {
   return registerActions([
-    editorAction("code.completion", "Basic", "Code Completion", (v) => explicitCompletion(v), {
+    editorAction("code.completion", "Basic", "Code Completion", (v) => basicCompletion(v), {
       icon: "list",
       keywords: ["code completion", "basic completion", "autocomplete"],
+    }),
+    editorAction("code.smartTypeCompletion", "Smart Type", "Code Completion", smartTypeCompletion, {
+      when: `${EDITOR_WHEN} && (${[...SMART_TYPE_LANGUAGES].map((id) => `editorLangId == ${id}`).join(" || ")})`,
+      keywords: ["smart completion", "smart type completion", "expected type"],
     }),
     editorAction("code.parameterInfo", "Parameter Info", "Code", (v) => triggerSignatureHelp(v, true)),
     editorAction("code.quickDocumentation", "Quick Documentation", "Code", quickDocumentation, {
