@@ -26,6 +26,10 @@ interface ClassSpec {
   name: string;
   line: number;
   col?: number;
+  /** The line the *index* saw (defaults to `line`): an unsaved edit has moved the class. */
+  indexedLine?: number;
+  /** Typed since the graph was indexed: the graph lacks it. */
+  unindexed?: boolean;
   /** The bases the *index* saw (defaults to `bases`). */
   indexedBases?: string[];
   bases: string[];
@@ -103,7 +107,14 @@ class Fixture {
         bases: spec.bases,
         methods,
       });
-      this.graph.push({ path, line: spec.line, col, name: spec.name, bases: spec.indexedBases ?? spec.bases });
+      if (!spec.unindexed)
+        this.graph.push({
+          path,
+          line: spec.indexedLine ?? spec.line,
+          col,
+          name: spec.name,
+          bases: spec.indexedBases ?? spec.bases,
+        });
       this.outlines.set(path, [...(this.outlines.get(path) ?? []), classItem(spec, col, methods)]);
     }
     this.facts.set(path, { classes: [...(this.facts.get(path)?.classes ?? []), ...classFacts], suppressions: [] });
@@ -355,6 +366,30 @@ it("skips a class whose header no longer matches the indexed graph", async () =>
     { name: "Base", line: 0, bases: [] },
   ]);
   expect(await project.run()).toEqual([]);
+});
+
+it("keeps checking classes an unsaved edit moved off their indexed lines", async () => {
+  // A comment typed above `One` moved it and `Two` down a line; the graph still has the saved lines.
+  const project = new Fixture("/p/a.py").add("/p/a.py", [
+    { name: "Base", line: 2, bases: ["ABC"], methods: [{ name: "report", line: 4, abstract: true }] },
+    { name: "One", line: 7, indexedLine: 6, bases: ["Base"] },
+    { name: "Two", line: 10, indexedLine: 9, bases: ["Base"] },
+    { name: "Done", line: 13, indexedLine: 12, bases: ["Base"], methods: [{ name: "report", line: 14 }] },
+  ]);
+  expect(codes(await project.run())).toEqual([
+    ["builtin:python-abstract-method", "warning", 7],
+    ["builtin:python-abstract-method", "warning", 10],
+  ]);
+});
+
+it("pairs moved classes by position only once their names no longer line up", async () => {
+  // A class was added above `Two` since the graph was indexed: `Two` stays where it was indexed.
+  const project = new Fixture("/p/a.py").add("/p/a.py", [
+    { name: "Base", line: 0, bases: [], methods: [{ name: "report", line: 1, abstract: true }] },
+    { name: "New", line: 3, unindexed: true, bases: ["Base"] },
+    { name: "Two", line: 6, bases: ["Base"] },
+  ]);
+  expect(codes(await project.run())).toEqual([["builtin:python-abstract-method", "warning", 6]]);
 });
 
 it("runs only the producers that are enabled", async () => {
