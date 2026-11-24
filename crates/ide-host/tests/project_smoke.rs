@@ -7,7 +7,9 @@
 //! java, kotlin and python jobs):
 //! `cargo test -p ide-host --test project_smoke -- --ignored`.
 
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_host::{Host, ops};
 use ide_index::SymbolFilter;
 use ide_workspace::roots::RootKind;
 use std::path::{Path, PathBuf};
@@ -51,19 +53,11 @@ fn copy_dir(from: &Path, to: &Path) {
 async fn open(fixture: &str) -> Opened {
     let tmp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(tmp.path()).unwrap().join(fixture);
-    copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(fixture), &root);
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    copy_dir(&manifest_dir.join("../../fixtures").join(fixture), &root);
     let app = tmp.path().join("app");
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: app.join("config"),
-        data_dir: app.join("data"),
-        local_data_dir: app.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(|_| {})),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(&app)));
     host.trust.decide(&root, true, false).unwrap();
     ops::project::open(&host, WINDOW, &root).await.unwrap();
     Opened { host, root, _tmp: tmp }

@@ -3,7 +3,7 @@ use crate::Host;
 use ide_command::command;
 use ide_core::remote_settings::RunTargetKind;
 use ide_core::{IdeError, IdeResult, RunId};
-use ide_run::{OutputChunk, RunConfig, RunInfo, StartOptions};
+use ide_run::{OutputChunk, RunAttach, RunConfig, RunInfo, StartOptions};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +13,7 @@ use std::time::Duration;
 pub async fn run_configs(host: &Arc<Host>, window: &str) -> IdeResult<Vec<RunConfig>> {
     // Detection reads build files (and Spring Boot sources): off the command thread.
     let (host, window) = (host.clone(), window.to_owned());
-    super::doc::blocking(move || configs(&host, &window)).await
+    super::blocking(move || configs(&host, &window)).await
 }
 
 #[command(trust = trusted)]
@@ -25,7 +25,7 @@ pub async fn run_save_configs(
 ) -> IdeResult<()> {
     let (host, window) = (host.clone(), window.to_owned());
     let removed = removed_detected_ids.unwrap_or_default();
-    super::doc::blocking(move || save_configs(&host, &window, &configs, &removed)).await
+    super::blocking(move || save_configs(&host, &window, &configs, &removed)).await
 }
 
 /// Detected configs followed by user-defined ones (user ids win on conflict).
@@ -263,7 +263,7 @@ fn settings_only(
 #[command(trust = trusted)]
 pub async fn run_without_derived(host: &Arc<Host>, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
     let (host, window) = (host.clone(), window.to_owned());
-    super::doc::blocking(move || without_derived(&host, &window, configs)).await
+    super::blocking(move || without_derived(&host, &window, configs)).await
 }
 
 /// Without what settings derived (toolchain commands, Maven options, `JAVA_HOME`…), so they
@@ -287,7 +287,7 @@ fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeRes
 #[command(trust = trusted)]
 pub async fn run_apply_settings(host: &Arc<Host>, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
     let (host, window) = (host.clone(), window.to_owned());
-    super::doc::blocking(move || apply_settings(&host, &window, configs)).await
+    super::blocking(move || apply_settings(&host, &window, configs)).await
 }
 
 /// Today's settings applied, as [`configs`] lists the others.
@@ -644,6 +644,19 @@ pub fn run_list(host: &Host) -> Vec<RunInfo> {
     runs
 }
 
+/// Reattaches to a running process `id` on this host, returning its buffered output
+/// and configuration while streaming subsequent chunks to `on_output`.
+#[command(trust = always)]
+pub async fn run_attach(host: &Host, window: &str, id: RunId, on_output: Channel<OutputChunk>) -> IdeResult<RunAttach> {
+    host.processes.reattach(
+        id,
+        host.window_sink(window),
+        Box::new(move |chunk| {
+            let _ = on_output.send(chunk);
+        }),
+    )
+}
+
 pub mod commands;
 pub(crate) mod container;
 pub use commands::*;
@@ -816,6 +829,7 @@ mod ownership_tests {
 ide_command::domain!(
     run:
     run_apply_settings,
+    run_attach,
     run_close_stdin,
     run_configs,
     run_list,

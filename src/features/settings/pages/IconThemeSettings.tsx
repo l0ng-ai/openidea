@@ -149,9 +149,10 @@ export function IconThemeSettings({ themeKey, details }: { themeKey: string; det
   const [all, setAll] = useSetting<Record<string, Options> | undefined>("appearance.fileIconThemeOptions");
   const options = validateIconThemeOptions(all?.[themeKey]);
   const set = (patch: Partial<Options>) => setAll({ ...all, [themeKey]: { ...options, ...patch } });
-  return details.settings.map((section, i) => (
-    <Section key={i} title={section.title}>
+  return details.settings.map((section) => (
+    <Section key={section.title} title={section.title}>
       {section.items.map((item, j) => (
+        // oxlint-disable-next-line react/no-array-index-key -- items can repeat; position is the identity
         <Item key={j} item={item} details={details} options={options} set={set} />
       ))}
     </Section>

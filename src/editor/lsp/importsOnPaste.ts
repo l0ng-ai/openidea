@@ -290,6 +290,7 @@ const importsOnPastePlugin = ViewPlugin.fromClass(
           p.abort.signal.addEventListener("abort", cancel, { once: true });
           let actions: CodeAction[];
           try {
+            // oxlint-disable-next-line no-await-in-loop -- cancellation and liveness are re-checked per diagnostic; a fix changes the pasted edits
             const result = await abortable(
               lspRequest(
                 () => commands.lspCodeActionQuery(id, doc.doc, d.range, ["quickfix"]),
@@ -306,6 +307,7 @@ const importsOnPastePlugin = ViewPlugin.fromClass(
           if (!fix) continue;
           fix = withCommandEdit(fix, doc.path);
           if (!fix.edit)
+            // oxlint-disable-next-line no-await-in-loop -- resolves only the chosen fix before merging, all under the same abort signal
             fix = await abortable(
               lspRequest(
                 () => commands.lspResolveCodeAction(doc.doc, fix!),

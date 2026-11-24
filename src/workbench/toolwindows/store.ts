@@ -7,6 +7,7 @@
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
+import { parseRemoteLocation } from "@/platform/remote";
 import {
   useContributions,
   type ToolWindowAnchor,
@@ -241,7 +242,8 @@ function storageKey(scope: string) {
 
 function readStorage(scope: string): Record<string, unknown> | null {
   try {
-    const raw = localStorage.getItem(storageKey(scope));
+    const legacy = parseRemoteLocation(scope)?.path;
+    const raw = localStorage.getItem(storageKey(scope)) ?? (legacy ? localStorage.getItem(storageKey(legacy)) : null);
     const v: unknown = raw ? JSON.parse(raw) : null;
     return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
   } catch {

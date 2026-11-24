@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { useMemo } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction } from "@/platform/actions";
@@ -31,15 +32,17 @@ const run = (name: string) =>
   act(async () => {
     await executeAction(`editor.colorScheme.${name}`);
   });
-const schemePage = (id: string) => {
+function SchemePage({ id }: { id: string }) {
   const page = COLOR_SCHEME_PAGES.find((p) => p.id === id)!;
   const Page = page.component!;
-  render(
-    <PageContext.Provider value={{ pageId: page.id, scope: "project" }}>
+  const value = useMemo(() => ({ pageId: id, scope: "project" as const }), [id]);
+  return (
+    <PageContext.Provider value={value}>
       <Page />
-    </PageContext.Provider>,
+    </PageContext.Provider>
   );
-};
+}
+const schemePage = (id: string) => render(<SchemePage id={id} />);
 
 beforeAll(() => preloadBuiltinPage("editor.colorScheme"));
 beforeEach(() => {

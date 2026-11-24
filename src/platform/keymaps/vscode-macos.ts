@@ -128,6 +128,7 @@ export const vscodeMacos: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": [],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Meta+Right"],
@@ -141,6 +142,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.applyQuickFix": [],
   "code.generate": [],
   "code.reformat": ["Alt+Shift+F"],
+  "code.rearrange": [],
   "code.reformatDialog": [],
   "code.optimizeImports": ["Alt+Shift+O"],
   "code.commentLine": ["Meta+/"],
@@ -148,6 +150,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.extendSelection": ["Ctrl+Shift+Meta+Right"],
   "code.shrinkSelection": ["Ctrl+Shift+Meta+Left"],
   "code.duplicateLine": ["Alt+Shift+Down"],
+  "code.duplicateEntireLines": [],
   "code.deleteLine": ["Meta+Shift+K"],
   "code.moveLineUp": ["Alt+Up"],
   "code.moveLineDown": ["Alt+Down"],
@@ -170,6 +173,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.startNewLineBefore": ["Meta+Shift+Enter"],
   "code.joinLines": ["Ctrl+J"],
   "code.toggleCase": [],
+  "code.cycleCase": [],
   "code.pasteFromHistory": [],
   "code.sortLines": [],
   "code.reverseLines": [],
@@ -272,6 +276,7 @@ export const vscodeMacos: Record<string, string[]> = {
   // Build (Terminal › Run Build Task)
   "build.buildProject": ["Meta+Shift+B"],
   "build.buildModule": [],
+  "build.compileFile": [],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 
@@ -434,6 +439,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Agents task list (when it has focus)
+  "agents.archiveTasks": ["Meta+Shift+E"],
   // Python Console: VS Code's Shift+Enter would shadow typing in Python files, so unbound.
   "python.console.executeSelection": [],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.

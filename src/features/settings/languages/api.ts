@@ -123,7 +123,7 @@ function streamed<T>(
 }
 
 /** Tool that creates a new Python environment (`VenvTool` in `ide-sdk`). */
-export type VenvTool = "venv" | "uv" | "poetry" | "conda" | "pipenv";
+export type VenvTool = "venv" | "uv" | "poetry" | "conda" | "pipenv" | "hatch";
 
 export function createVenv(
   tool: VenvTool,
@@ -137,6 +137,19 @@ export function createVenv(
     (req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, installPackages, req, ch)),
     onLine,
   );
+}
+
+/**
+ * The open project's Hatch environments, or an empty list when Hatch is unconfigured.
+ * Hatch may install plugins first, so the caller cancels it when it no longer needs it.
+ */
+export function hatchEnvs(): Streamed<string[]> {
+  if (!isTauri()) return { promise: Promise.resolve([]), cancel: () => {} };
+  const request = nextRequestId();
+  return {
+    promise: call(commands.sdkPythonHatchEnvs(request)),
+    cancel: () => void commands.cancelRequest(request),
+  };
 }
 
 /** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */
@@ -164,10 +177,6 @@ export function pythonUserPathProblems(paths: string[]): Promise<(UserPathProble
 /** Interpreters of the other recently opened projects, each with the project it belongs to. */
 export function pythonProjectInterpreters(): Promise<ProjectInterpreter[]> {
   return isTauri() ? call(commands.sdkPythonProjectInterpreters()) : Promise.resolve([]);
-}
-
-export function listPackages(python: string): Promise<PythonPackage[]> {
-  return call(commands.sdkPythonPackages(python, nextRequestId()));
 }
 
 export function pip(

@@ -769,7 +769,7 @@ pub struct AgentModelCatalog {
     pub error: Option<String>,
 }
 
-/// Streamed to the window that subscribed (`AgentManager::subscribe`).
+/// Streamed to the window that subscribed (`AgentManager::subscribe_as`).
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentEvent {
@@ -795,6 +795,16 @@ pub enum AgentEvent {
     /// Text was appended to entry `index` (an agent message or a thought): it read the first
     /// `from` UTF-16 units of its text when the previous event for it was sent.
     Append {
+        task: String,
+        subagent: Option<String>,
+        index: u32,
+        from: u32,
+        text: String,
+    },
+    /// Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+    /// units of its output when the previous event for it was sent. Any other change of the
+    /// tool (status, title, diffs…) arrives as an `Entry`.
+    ToolOutput {
         task: String,
         subagent: Option<String>,
         index: u32,

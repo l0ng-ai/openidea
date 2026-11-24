@@ -45,7 +45,7 @@ describe("Python string formatting conversions", () => {
   });
 
   it("offers nothing when the result could behave differently or be invalid", async () => {
-    for (const expr of [
+    const exprs = [
       `b"%s" % x`,
       `"%s %s" % (a,)`,
       `"%s" % (*a,)`,
@@ -60,8 +60,9 @@ describe("Python string formatting conversions", () => {
       `"{x[key]}".format(x=d)`,
       `"{}".format(d["key"])`,
       `"{}".format("\\n".join(lines))`,
-    ])
-      expect(await convert(expr), expr).toEqual({});
+    ];
+    const results = await Promise.all(exprs.map(convert));
+    for (const [i, expr] of exprs.entries()) expect(results[i], expr).toEqual({});
     expect((await convert(`'{}'.format(d["key"])`)).fString).toBe(`f'{d["key"]}'`);
   });
 
@@ -92,14 +93,15 @@ describe("Python string formatting conversions", () => {
   });
 
   it("does not rewrite format expressions with missing or inconsistent field references", async () => {
-    for (const expr of [
+    const exprs = [
       `"%(name)s" % {"other": value}`,
       `"%(name)s" % {}`,
       `"{}{0}".format(a)`,
       `"{0}{}".format(a, b)`,
       `"{name}".format(name=)`,
-    ])
-      expect(await convert(expr), expr).toEqual({});
+    ];
+    const results = await Promise.all(exprs.map(convert));
+    for (const [i, expr] of exprs.entries()) expect(results[i], expr).toEqual({});
   });
 
   it("uses valid Python syntax for field accessors", async () => {

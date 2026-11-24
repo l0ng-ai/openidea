@@ -67,6 +67,7 @@ describe("PHP language constructs", () => {
       () => gotoTargets(view, "declaration"),
       () => quickDefinition(view),
     ]) {
+      // oxlint-disable-next-line no-await-in-loop -- each navigation overwrites the shared popup; it is asserted before the next one
       await action();
       const popup = useLspPopup.getState().popup;
       expect(popup?.kind).toBe("doc");

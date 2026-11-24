@@ -249,6 +249,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("remote.connect", "Remote Development…"),
         act("remote.reopenInContainer", "Reopen in Container"),
         act("remote.disconnect", "Disconnect from Remote Host"),
+        act("remote.stopBackend", "Stop Remote Backend"),
         act("remote.reloadEnvironment", "Reload Environment"),
         SEP,
         act("file.save", "Save All"),
@@ -495,6 +496,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 "Code Completion",
                 vec![
                     act("code.completion", "Basic"),
+                    act("code.smartTypeCompletion", "Smart Type"),
                     SEP,
                     act("code.cyclicExpandWord", "Cyclic Expand Word"),
                     act("code.cyclicExpandWordBackward", "Cyclic Expand Word (Backward)"),
@@ -518,6 +520,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("code.reformat", "Reformat Code"),
             act("code.autoIndentLines", "Auto-Indent Lines"),
             act("code.optimizeImports", "Optimize Imports"),
+            act("code.rearrange", "Rearrange Code"),
             act("code.cleanup", "Code Cleanup…"),
             SEP,
             act("code.commentLine", "Comment with Line Comment"),
@@ -614,6 +617,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         vec![
             act("build.buildProject", "Build Project"),
             act("build.buildModule", "Build Module"),
+            act("build.compileFile", "Recompile"),
             act("build.rebuildProject", "Rebuild Project"),
             SEP,
             act("build.buildArtifacts", "Build Artifacts"),
@@ -2529,9 +2533,40 @@ mod tests {
                 "toolwindow.hideActive",
                 "editor.closeOtherTabs",
                 "toolbar.customize",
+                "build.compileFile",
             ] {
                 assert!(ids.contains(&required), "{required} missing on {os:?}");
             }
         }
+    }
+
+    #[test]
+    fn build_menu_lists_recompile_and_patches_its_label() {
+        for os in ALL_OS {
+            let entries = spec(os);
+            let Entry::Submenu { children, .. } =
+                entries.iter().find(|e| matches!(e, Entry::Submenu { id: "build", .. })).unwrap()
+            else {
+                panic!("Build menu missing")
+            };
+            assert_eq!(
+                action_ids(children),
+                [
+                    "build.buildProject",
+                    "build.buildModule",
+                    "build.compileFile",
+                    "build.rebuildProject",
+                    "build.buildArtifacts",
+                ],
+                "{os:?}"
+            );
+            assert!(!fires_natively(&entries, "build.compileFile"));
+        }
+        let entries = spec(Os::Mac);
+        let mut base = MenuConfig::default();
+        base.labels.insert("menu.build.compileFile".into(), "Recompile".into());
+        let mut active = base.clone();
+        active.labels.insert("menu.build.compileFile".into(), "Recompile 'Main.java'".into());
+        assert_eq!(changed_menus(&render_bar(&entries, &base, &[]), &render_bar(&entries, &active, &[])), ["build"]);
     }
 }

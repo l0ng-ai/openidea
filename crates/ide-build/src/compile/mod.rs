@@ -15,12 +15,12 @@ pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
 pub use launch_resources::process_launch_resources;
 pub use modules::record_module_build;
 pub use single::{
-    SingleFileTarget, compile_file_plan, find_javac, javac_step, module_classpath, module_classpaths,
-    single_file_classpath, single_file_target,
+    SingleFileTarget, compile_file_plan, compile_file_plan_cancellable, find_javac, gradle_compile_file_plan,
+    has_gradle_file_target, javac_step, module_classpath, module_classpaths, single_file_classpath, single_file_target,
 };
 pub use structure::{
-    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_outputs, structure_plan,
-    structure_war_plan, structure_web_artifacts,
+    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_compile_file_plan,
+    structure_outputs, structure_plan, structure_war_plan, structure_web_artifacts,
 };
 pub use up_to_date::{menu_up_to_date, record_menu_build};
 
@@ -483,11 +483,6 @@ fn go_module_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
     vec![s]
 }
 
-/// `pnpm` / `yarn` / `bun` / `npm`, from the lock file next to `package.json` or above it.
-fn package_manager(dir: &Path) -> &'static str {
-    ide_core::project_roots::package_manager(dir)
-}
-
 fn has_build_script(dir: &Path) -> bool {
     std::fs::read(dir.join("package.json"))
         .ok()
@@ -525,7 +520,12 @@ fn dotnet_steps(dir: &Path, kind: BuildKind) -> IdeResult<Vec<BuildStep>> {
 fn ts_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
     let script = has_build_script(dir);
     if script && (kind == BuildKind::Artifacts || !dir.join("tsconfig.json").is_file()) {
-        return vec![BuildStep::new(package_manager(dir), &["run", "build"], dir, Format::Tsc)];
+        return vec![BuildStep::new(
+            ide_core::project_roots::package_manager(dir),
+            &["run", "build"],
+            dir,
+            Format::Tsc,
+        )];
     }
     let local = dir.ancestors().map(|d| d.join("node_modules/.bin/tsc")).find(|p| p.is_file());
     let program = local.map_or_else(|| "tsc".to_owned(), |p| p.to_string_lossy().into_owned());

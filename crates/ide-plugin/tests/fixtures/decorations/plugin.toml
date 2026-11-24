@@ -1,10 +1,10 @@
 id = "decorations"
 name = "Decoration example"
 version = "0.1.0"
-description = "Minimal plugin API 1.15 example: line-end labels with Markdown hover cards."
+description = "Minimal plugin API 1.16 example: line-end labels with Markdown hover cards."
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
-engines.openidea = "^1.15"
+engines.openidea = "^1.16"
 wasm = "dist/plugin.wasm"
 activation = ["on-command:*"]
 

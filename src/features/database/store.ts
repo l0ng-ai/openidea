@@ -22,6 +22,7 @@ import {
   type DbObjectKind,
   type DbPlanNode,
   type DbSchemaObjects,
+  type DbQueryResult,
   type DbStatementOutcome,
   type DbTableDetails,
   type DbTableInfo,
@@ -75,6 +76,11 @@ const CONSOLE_SCHEMAS_KEY = "openidea.database.consoleSchemas";
 const VIEW_OPTIONS_KEY = "openidea.database.viewOptions";
 const MAX_TABS = 12;
 const RESULT_DELIVERY_TIMEOUT_MS = 15_000;
+/**
+ * The longest cell text (UTF-16 units) a page of a result carries. A cut cell shows a marker
+ * and its whole value is read when it is expanded, copied, exported or edited.
+ */
+export const CELL_LIMIT = 8192;
 
 export interface ResultTab {
   id: number;
@@ -300,6 +306,23 @@ export const useDatabase = create<DatabaseState>(() => ({
   manualCommit: new Set(),
   pendingTx: new Set(),
 }));
+
+/**
+ * A result's later pages continue a cursor the backend keeps open on the server; it closes when
+ * no result tab shows the statement any more (the backend also closes idle ones).
+ */
+const resultKey = (tab: ResultTab) =>
+  JSON.stringify([tab.sourceId, tab.outcome.statement.text, tab.schema ?? consoleSchema(tab.path)]);
+useDatabase.subscribe((state, previous) => {
+  if (state.results === previous.results && state.inline === previous.inline) return;
+  const shown = [...state.results, ...state.inline];
+  const keys = new Set(shown.map(resultKey));
+  for (const tab of [...previous.results, ...previous.inline]) {
+    if (tab.plan || keys.has(resultKey(tab))) continue;
+    const schema = tab.schema ?? consoleSchema(tab.path);
+    void call(commands.dbReleaseResult(tab.sourceId, tab.outcome.statement.text, schema || null)).catch(() => {});
+  }
+});
 
 export function toggleSeparateProceduresAndFunctions() {
   const separateProceduresAndFunctions = !useDatabase.getState().separateProceduresAndFunctions;
@@ -610,6 +633,7 @@ export async function withConnection<T>(id: string, op: () => Promise<T>): Promi
   const current = databaseRequest(id);
   for (;;) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- the retry loop must finish op before updating connection state or deciding to retry
       const r = await op();
       // A completed write keeps its result, but must not revive an old connection.
       if (!current()) return r;
@@ -623,6 +647,7 @@ export async function withConnection<T>(id: string, op: () => Promise<T>): Promi
     } catch (e) {
       if (!current()) throw new IpcError({ kind: "cancelled", message: "Cancelled", data: null });
       const source = sourceById(id);
+      // oxlint-disable-next-line no-await-in-loop -- credential/host-key prompts must resolve before deciding whether to retry the connection
       if (!source || !(await resolveConnectError(e, source))) throw e;
       if (!current()) throw new IpcError({ kind: "cancelled", message: "Cancelled", data: null });
     }
@@ -837,6 +862,7 @@ export async function schemaSnapshot(id: string, schema: string, signal?: AbortS
     while (next < tables.length) {
       if (signal?.aborted) return;
       const t = tables[next++]!;
+      // oxlint-disable-next-line no-await-in-loop -- bounded worker pool: each of up to 4 workers claims the next table via the shared index and checks the abort signal
       const details = await call(commands.dbTableDetails(id, schema, t.name));
       out.push({ name: t.name, kind: t.kind, ...details });
     }
@@ -1209,15 +1235,18 @@ async function run(
 ): Promise<DbStatementOutcome[]> {
   const current = databaseRequest(id);
   const wasConnected = useDatabase.getState().connected.has(id);
+  // Only a query that is safe to run again has its cells cut: the whole value is read by running it again.
+  const driver = sourceById(id)?.driver ?? "sqlite";
+  const cellLimit = statements.every((s) => isReadOnlyQuery(s.text, driver)) ? CELL_LIMIT : null;
   const outcomes = await withConnection(id, async () => {
     const execute = async () => {
       progress?.emit({ type: "started", index: 0 });
-      const outcomes = await call(commands.dbExecute(request, id, statements, skip, maxRows, schema || null)).catch(
-        (error: unknown) => {
-          if (isCancelled(error)) progress?.onStatementCancelled();
-          throw error;
-        },
-      );
+      const outcomes = await call(
+        commands.dbExecute(request, id, statements, skip, maxRows, schema || null, cellLimit),
+      ).catch((error: unknown) => {
+        if (isCancelled(error)) progress?.onStatementCancelled();
+        throw error;
+      });
       outcomes.forEach((outcome, index) => progress?.emit({ type: "completed", index, outcome }));
       return outcomes;
     };
@@ -1253,7 +1282,7 @@ async function run(
     });
     try {
       // Large channel frames can arrive after the reply. Bound only this delivery wait.
-      await call(commands.dbExecuteStream(request, id, statements, maxRows, schema || null, channel));
+      await call(commands.dbExecuteStream(request, id, statements, maxRows, schema || null, cellLimit, channel));
       acknowledged = true;
       waitForDelivery();
       const result = await done;
@@ -1383,6 +1412,7 @@ export async function openConsoleWith(id: string, text: string): Promise<void> {
       view.focus();
       return;
     }
+    // oxlint-disable-next-line no-await-in-loop -- polling waits 50ms between attempts for the editor view to mount
     await new Promise((r) => setTimeout(r, 50));
   }
 }
@@ -1734,6 +1764,26 @@ export async function rerunResult(tabId: number): Promise<void> {
 /** Whether result tab `tab` can show other pages: running its query again only reads. */
 export function pageable(tab: ResultTab): boolean {
   return !tab.plan && isReadOnlyQuery(tab.outcome.statement.text, sourceById(tab.sourceId)?.driver ?? "sqlite");
+}
+
+/** Row `row` (from 0, over all pages) of result tab `tab`'s query, with its cells whole. */
+export async function readResultRow(tab: ResultTab, row: number): Promise<DbQueryResult> {
+  const schema = tab.schema ?? consoleSchema(tab.path);
+  return withConnection(tab.sourceId, () =>
+    call(commands.dbResultRow(nextRequestId(), tab.sourceId, tab.outcome.statement, row, schema || null)),
+  );
+}
+
+/** The rows of the page result tab `tab` shows, with their cells whole. */
+export async function readResultPage(tab: ResultTab): Promise<DbQueryResult> {
+  const schema = tab.schema ?? consoleSchema(tab.path);
+  const rows = Math.max(tab.outcome.result?.rows.length ?? 0, 1);
+  const { skip } = pageFetch(tab.page ?? 0, tab.pageSize ?? rows);
+  const [outcome] = await withConnection(tab.sourceId, () =>
+    call(commands.dbExecute(nextRequestId(), tab.sourceId, [tab.outcome.statement], skip, rows, schema || null, null)),
+  );
+  if (!outcome?.result) throw new Error(outcome?.error ?? "The statement returned no result");
+  return outcome.result;
 }
 
 /** Result tab `tabId`, in the Services view or in an editor. */

@@ -814,7 +814,7 @@ pub struct Decoration {
     pub hover: Option<String>,
     pub after: Option<String>,
 }
-/// An editor annotation whose hover is rendered as Markdown (API 1.15).
+/// An editor annotation whose hover is rendered as Markdown (API 1.16).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MarkdownDecoration {
     pub range: Range,

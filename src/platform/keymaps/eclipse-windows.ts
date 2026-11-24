@@ -15,6 +15,8 @@ export const eclipseWindows: Record<string, string[]> = {
   "refactor.changeSignature": ["Shift+Alt+C"],
   "db.modifyTable": ["Shift+Alt+C"],
   "vcs.commit": [],
+  // Eclipse gives ⌃⇧Space to Parameter Info / Quick Documentation.
+  "code.smartTypeCompletion": [],
   "editor.closeTab": ["Ctrl+W"],
   "toolwindow.closeContent": ["Ctrl+W"],
   "editor.closeAllTabs": ["Shift+Ctrl+F4", "Shift+Ctrl+W"],
@@ -32,6 +34,7 @@ export const eclipseWindows: Record<string, string[]> = {
   "debug.jumpToSource": ["F12", "Shift+Ctrl+E"],
   "diff.jumpToSource": ["F12", "Shift+Ctrl+E"],
   "find.popup.openResult": ["F12", "Shift+Ctrl+E"],
+  "agents.archiveTasks": [],
   "editor.codeBlockEnd": ["Ctrl+]"],
   "code.deleteLine": ["Ctrl+D"],
   "code.duplicateLine": [],

@@ -78,6 +78,7 @@ export const intellijWindows: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": ["Ctrl+Shift+Space"],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Ctrl+Right"],
@@ -90,6 +91,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.showIntentions": ["Alt+Enter"],
   "code.applyQuickFix": ["Alt+Shift+Enter"],
   "code.reformat": ["Ctrl+Alt+L"],
+  "code.rearrange": [],
   "code.reformatDialog": ["Ctrl+Alt+Shift+L"],
   "code.optimizeImports": ["Ctrl+Alt+O"],
   "code.commentLine": ["Ctrl+/"],
@@ -97,6 +99,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.extendSelection": ["Ctrl+W"],
   "code.shrinkSelection": ["Ctrl+Shift+W"],
   "code.duplicateLine": ["Ctrl+D"],
+  "code.duplicateEntireLines": [],
   "code.deleteLine": ["Ctrl+Y"],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
@@ -153,6 +156,7 @@ export const intellijWindows: Record<string, string[]> = {
   "editor.toggleInsertState": ["Insert"],
   "code.joinLines": ["Ctrl+Shift+J"],
   "code.toggleCase": ["Ctrl+Shift+U"],
+  "code.cycleCase": ["Alt+Shift+U"],
   "code.pasteFromHistory": ["Ctrl+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],
@@ -250,7 +254,8 @@ export const intellijWindows: Record<string, string[]> = {
 
   // Build
   "build.buildProject": ["Ctrl+F9"],
-  "build.buildModule": ["Ctrl+Shift+F9"],
+  "build.buildModule": [],
+  "build.compileFile": ["Ctrl+Shift+F9"],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 
@@ -402,6 +407,8 @@ export const intellijWindows: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Agents task list (when it has focus)
+  "agents.archiveTasks": ["Ctrl+Shift+E"],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
   "db.openConsole": ["Ctrl+Shift+Q"],
   "db.newDataSource": [],

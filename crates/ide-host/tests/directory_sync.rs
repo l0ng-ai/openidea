@@ -1,6 +1,8 @@
-use ide_core::{NullSink, RequestId};
+mod common;
+
+use ide_core::RequestId;
 use ide_host::{
-    Host, HostConfig,
+    Host,
     ops::{Channel, fs::fs_synchronize_directories},
 };
 use ide_vfs::{DirectorySyncAction as Action, DirectorySyncOperation, DirectorySyncProgress};
@@ -18,17 +20,7 @@ fn op(path: &str, action: Action, overwrite: bool) -> DirectorySyncOperation {
 }
 
 fn host(base: &Path) -> Host {
-    Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    })
+    Host::new(common::host_config(base))
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,4 +1,4 @@
-//! Minimal plugin API 1.15 example: push a line-end label whose hover is Markdown.
+//! Minimal plugin API 1.16 example: push a line-end label whose hover is Markdown.
 
 use openidea_plugin::{Error, Invocation, MarkdownDecoration, Plugin, Position, Range, host, register_plugin};
 

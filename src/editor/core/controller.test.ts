@@ -543,6 +543,42 @@ describe("EditorController", () => {
     }
   });
 
+  it("passes the caret line and the selected line range to Copy Agent Reference", async () => {
+    const path = "/p/a.ts";
+    ctrl = new EditorController(createMemoryBackend({ [path]: "first\nsecond\nthird\n" }));
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    try {
+      for (const [selection, lines] of [
+        [{ anchor: 7 }, { from: 2, to: 2 }],
+        [
+          { anchor: 0, head: 13 },
+          { from: 1, to: 2 },
+        ],
+      ] as const) {
+        view.dispatch({ selection });
+        ctrl.onContextMenu(slot, new MouseEvent("contextmenu"));
+        const copy = useContextMenuStore
+          .getState()
+          .menu!.items.find((item) => "label" in item && item.label === "Copy / Paste Special");
+        expect(copy).toMatchObject({
+          submenu: expect.arrayContaining([
+            expect.objectContaining({ action: "agents.copyAgentReference", arg: [{ path, lines }] }),
+          ]),
+        });
+      }
+    } finally {
+      hideContextMenu();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
   it("builds IDEA's editor tab menu", async () => {
     useProject.setState({
       project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
@@ -632,7 +668,7 @@ describe("EditorController", () => {
           "vcs.compareWithRevision",
           "vcs.showHistory",
           "vcs.showCurrentRevision",
-          "vcs.showHistoryForSelection",
+          ...(menu === "editor" ? ["vcs.showHistoryForSelection"] : []),
           "vcs.rollback",
         ],
         ["vcs.push", "vcs.pull", "vcs.fetch"],
@@ -647,9 +683,9 @@ describe("EditorController", () => {
         "github.checkoutPullRequest",
         "github.openInBrowser",
       ];
-      const ids = [...groups.flat().filter((id) => id !== "GitHub"), ...github];
+      const ids = new Set([...groups.flat().filter((id) => id !== "GitHub"), ...github, "vcs.showHistoryForSelection"]);
       const dispose = registerActions(
-        ids.map((id) => ({
+        [...ids].map((id) => ({
           id,
           title: id,
           when: id === "vcs.clone" ? undefined : id.startsWith("github.") ? "projectOpen" : "vcsAvailable",
@@ -690,7 +726,8 @@ describe("EditorController", () => {
         expect(gitItems()).toContainEqual({
           kind: "action",
           action: "vcs.compareWithBranch",
-          arg: { path: "/p/a.ts" },
+          arg: "/p/a.ts",
+          label: "Compare with Branch…",
         });
 
         setContext("vcsAvailable", false);
@@ -713,6 +750,42 @@ describe("EditorController", () => {
       }
     },
   );
+
+  it("scopes the tab menu's Git entries to its file, like the project view does", async () => {
+    useProject.setState({
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
+      settings: {} as never,
+    });
+    const dispose = registerActions(
+      ["vcs.commit", "vcs.ignoreShared", "vcs.ignoreLocal"].map((id) => ({ id, title: id, run: () => undefined })),
+    );
+    try {
+      setContext("vcsAvailable", true);
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const state = useTabs.getState();
+      const pane = state.panes[state.activePane]!;
+      const git = () => resolveMenuItems(ctrl!.tabMenu(pane.id, pane.tabs[0]!)).find((i) => i.label === "Git")!;
+      expect(git().submenu).toContainEqual({
+        kind: "action",
+        action: "vcs.commit",
+        arg: "/p/a.ts",
+        label: "Commit File…",
+      });
+      const gitMenu = git().submenu!;
+      expect(
+        resolveMenuItems(gitMenu)
+          .filter((i) => i.kind === "item")
+          .some((i) => i.label === "Add to .gitignore" && i.submenu?.length === 2),
+      ).toBe(true);
+      setContext("vcsAvailable", false);
+    } finally {
+      dispose();
+      useProject.setState({ project: null, settings: null });
+      setContext("vcsAvailable", false);
+    }
+  });
 
   it("switches an open image tab to a text tab when a matching text editor wrapper registers", async () => {
     ctrl = new EditorController(createMemoryBackend({ "/p/arch.diagram.svg": "<svg/>" }));

@@ -1,4 +1,4 @@
-package openidea:plugin@1.15.0;
+package openidea:plugin@1.16.0;
 
 /// Editor and project-tree decorations (API 1.4). Requires project.read. An editor set
 /// follows its file: the file's own project, or the nearest one when it is outside them all.
@@ -9,7 +9,7 @@ interface decorations {
     use types.{error, range};
     /// An editor annotation; after is plain text shown after the range.
     record decoration { range: range, style: string, hover: option<string>, after: option<string> }
-    /// An editor annotation whose hover is rendered as Markdown (API 1.15).
+    /// An editor annotation whose hover is rendered as Markdown (API 1.16).
     /// `hover` stays the plain-text fallback for hosts that do not render it.
     record markdown-decoration {
         range: range,
@@ -26,7 +26,7 @@ interface decorations {
     /// Metadata is bounded to 4 MiB per plugin. Unknown styles are ignored.
     set: func(path: string, set-id: string, items: list<decoration>) -> result<_, error>;
     /// Like `set`, with each item's Markdown hover rendered as a hover card
-    /// (API 1.15). Same limits and set-id replacement rules as `set`; `clear`
+    /// (API 1.16). Same limits and set-id replacement rules as `set`; `clear`
     /// removes a set regardless of which call created it.
     set-markdown: func(path: string, set-id: string, items: list<markdown-decoration>) -> result<_, error>;
     /// Remove this editor set from every file/project.

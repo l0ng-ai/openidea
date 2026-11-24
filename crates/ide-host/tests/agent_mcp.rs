@@ -1,30 +1,21 @@
 //! External MCP servers in Settings › Agents, as the host stores and lists them.
 
+mod common;
+
 use ide_agent::{McpScope, McpServer, McpServerInput};
-use ide_core::NullSink;
 use ide_core::settings::McpTransport;
+use ide_host::Host;
 use ide_host::ops::agent::{
     agent_mcp_import as mcp_import, agent_mcp_list as mcp_list, agent_mcp_save as mcp_save,
     agent_mcp_set_enabled as mcp_set_enabled,
 };
-use ide_host::{Host, HostConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn open(base: &Path) -> (Arc<Host>, PathBuf) {
     let root = dunce::canonicalize(base).unwrap().join("project");
     std::fs::create_dir_all(root.join(".openidea")).unwrap();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(base)));
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     (host, root)

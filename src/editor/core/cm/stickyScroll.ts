@@ -356,6 +356,20 @@ class StickyScroll {
     this.dom.remove();
   }
 }
-export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll);
+/**
+ * Room the sticky rows take above the caret's line once it sits right below them: they show its
+ * enclosing headers. Scrolling the caret into view (search, vim `N`, Go to Line) keeps it out
+ * from under them, as in IDEA.
+ */
+export function stickyTopMargin(view: EditorView): number {
+  const caretBlock = view.lineBlockAt(view.state.selection.main.head);
+  const line = view.state.doc.lineAt(caretBlock.from).number;
+  const rows = Math.min(enclosingHeaders(view.state, line).length, view.state.facet(stickyMaxLines));
+  return rows * view.defaultLineHeight;
+}
+
+export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll, {
+  provide: () => EditorView.scrollMargins.of((view) => ({ top: stickyTopMargin(view) })),
+});
 
 export { renderLineContent as renderContextLine };

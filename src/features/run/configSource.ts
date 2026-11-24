@@ -61,6 +61,7 @@ async function file(path: string | null, pattern?: RegExp): Promise<ConfigSource
 
 async function firstFile(dir: string, names: string[], pattern?: RegExp): Promise<ConfigSource | null> {
   for (const name of names) {
+    // oxlint-disable-next-line no-await-in-loop -- candidate names are priority ordered; stop at the first file that exists
     const found = await file(joinPath(dir, name), pattern);
     if (found) return found;
   }

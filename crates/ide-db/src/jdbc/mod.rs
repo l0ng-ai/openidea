@@ -606,6 +606,7 @@ fn decode(data: &[u8], sql: &str, elapsed_ms: f64) -> IdeResult<QueryResult> {
         affected: (affected >= 0).then_some(affected as f64),
         elapsed_ms,
         execution_ms: elapsed_ms,
+        truncated: Vec::new(),
     })
 }
 

@@ -598,6 +598,7 @@ function MappingsTab({
             )}
             {mappings.map((m, i) => (
               <tr
+                // oxlint-disable-next-line react/no-array-index-key -- mapping fields are edited in place; position is the identity
                 key={i}
                 aria-selected={selected === i}
                 className={clsx(selected === i && styles.selectedRow)}

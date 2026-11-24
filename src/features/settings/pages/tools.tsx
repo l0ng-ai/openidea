@@ -359,7 +359,7 @@ const SAVE_ACTIONS = [
   {
     k: "actionsOnSave.optimizeImports",
     label: "Optimize imports",
-    hint: "Runs the language server's Organize Imports action.",
+    hint: "Uses the language server or a tool such as Ruff to organize imports.",
   },
   {
     k: "actionsOnSave.cleanup",

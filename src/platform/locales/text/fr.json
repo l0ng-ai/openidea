@@ -67,6 +67,7 @@
   "Clone Caret Below": "Dupliquer le curseur en dessous",
   "Join Lines": "Joindre les lignes",
   "Toggle Case": "Changer la casse",
+  "Cycle Identifier Case": "Alterner la casse de l'identifiant",
   "Add Carets to Ends of Selected Lines": "Ajouter des curseurs à la fin des lignes sélectionnées",
   "Unselect Occurrence": "Désélectionner l'occurrence",
   "Paste from History…": "Coller depuis l'historique…",
@@ -1796,7 +1797,6 @@
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "Exécute Optimiser les imports lorsque le fichier ne contient pas d'erreur, sauf si cela modifie la ligne du curseur.",
   "Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…).": "Exécute les scripts npm et les serveurs de langage basés sur Node (vtsls, eslint, pyright…).",
   "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled.": "Exécute la synchronisation, les builds et les configurations d'exécution Maven. Un répertoire choisi remplace le mvnw du projet. Ignoré lorsque le démon Maven est activé.",
-  "Runs the language server's Organize Imports action.": "Exécute l'action Organiser les imports du serveur de langage.",
   "Runs the language server's formatter before an explicit save (Actions on Save).": "Exécute le formateur du serveur de langage avant un enregistrement explicite (Actions à l'enregistrement).",
   "Search history": "Historique de recherche",
   "Search history ({previous} / {next})": "Historique de recherche ({previous} / {next})",
@@ -5733,5 +5733,7 @@
   "Methods pulled up to an interface are declared abstract there.": "Les méthodes remontées dans une interface y sont déclarées abstraites.",
   "The file changed; open the dialog again": "Le fichier a changé ; rouvrez la boîte de dialogue",
   "Replace preview": "Aperçu du remplacement",
-  "Select files in the Project view, Commit tool window, or open a file in the editor": "Sélectionnez des fichiers dans la vue Projet, la fenêtre Commit, ou ouvrez un fichier dans l'éditeur"
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Sélectionnez des fichiers dans la vue Projet, la fenêtre Commit, ou ouvrez un fichier dans l'éditeur",
+  "Agent Reference": "Référence d'agent",
+  "Copy Agent Reference": "Copier la référence d'agent"
 }

@@ -548,6 +548,7 @@ async function startAll(kind: string, restart: boolean, folder?: string): Promis
     const running = serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions);
     if (running.some((s) => s.config.id === config.id && liveServiceSession(s))) continue;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- project changes cancel the loop and each iteration rechecks live sessions before starting
       await startRun(config, undefined, undefined, { show: false });
     } catch (e) {
       notifications().notify({ group: "run", level: "error", title: tx`Cannot run '${config.name}'`, body: String(e) });

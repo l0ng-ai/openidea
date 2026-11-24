@@ -2,7 +2,7 @@
   "name": "openidea",
   "private": true,
   "description": "An open-source IDE inspired by IntelliJ IDEA",
-  "version": "0.1.50",
+  "version": "0.1.51",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -34,9 +34,9 @@
     "perf:rust": "node perf/rust.ts",
     "eval": "node evals/run.ts",
     "release:prepare": "node scripts/release-prepare.ts",
-    "dogfood:build": "node scripts/dogfood.ts build",
-    "dogfood:install": "node scripts/dogfood.ts install",
-    "dogfood:remote": "node scripts/dogfood-remote.ts"
+    "dogfood:local": "node scripts/dogfood.ts local",
+    "dogfood:remote": "node scripts/dogfood-remote.ts",
+    "dogfood:all": "node scripts/dogfood.ts all"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"

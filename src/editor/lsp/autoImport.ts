@@ -91,9 +91,11 @@ const autoImportPlugin = ViewPlugin.fromClass(
         const key = `${d.range.start.line}:${d.range.start.col}:${d.message}`;
         if (this.tried.has(key)) continue;
         this.tried.add(key);
+        // oxlint-disable-next-line no-await-in-loop -- stops at the first usable fix; later diagnostics are only tried if this one has none
         const actions = await lspRequest(() => commands.lspCodeActions(doc.doc, d.range, ["quickfix"]));
         const fix = unambiguousImport(actionsForDiagnostic(actions, d));
         if (fix && !editTouchesLine(fix, doc.path, caretLine)) {
+          // oxlint-disable-next-line no-await-in-loop -- applying an edit invalidates the remaining diagnostics' ranges
           await applyCodeAction(this.view, fix);
           return;
         }

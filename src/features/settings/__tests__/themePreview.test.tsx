@@ -9,6 +9,7 @@ import { BEHAVIOR_PAGES } from "../pages/behavior";
 
 const root = document.documentElement;
 const shown = () => [root.dataset.theme, root.dataset.colorTheme ?? null];
+const APPEARANCE_CONTEXT = { pageId: "appearance", scope: "global" } as const;
 
 function renderThemeRow() {
   const page = BEHAVIOR_PAGES.find((p) => p.id === "appearance")!;
@@ -16,7 +17,7 @@ function renderThemeRow() {
   if (option?.kind !== "custom") throw new Error("no Theme row");
   const Row = option.component;
   return render(
-    <PageContext.Provider value={{ pageId: page.id, scope: "global" }}>
+    <PageContext.Provider value={APPEARANCE_CONTEXT}>
       <Row />
     </PageContext.Provider>,
   );

@@ -49,7 +49,10 @@ export async function gitlinkDiffSides(data: DiffData): Promise<[DiffSide, DiffS
   return entries ? [resolveSide(sides[0], entries[0]), resolveSide(sides[1], entries[1])] : [data.left, data.right];
 }
 
-export function useGitDiffEntries(data: DiffData, enabled = true) {
+/** Loaded entries by query, for a host that mounts the same diffs again (the all-in-one diff's blocks). */
+export type DiffEntriesCache = Map<string, { version: number; entries: (DiffEntry | null)[] }>;
+
+export function useGitDiffEntries(data: DiffData, cache?: DiffEntriesCache) {
   const version = useVcs((s) => s.version);
   const status = data.middle && statusOf(data.path);
   const versions = useMemo(() => (status ? stagingVersions(status) : undefined), [status]);
@@ -58,20 +61,24 @@ export function useGitDiffEntries(data: DiffData, enabled = true) {
   const middle = current.middle && diffSideSource(current.middle);
   const right = diffSideSource(current.right);
   const requests = [request(data.path, left), request(data.path, middle), request(data.path, right)];
-  const query = enabled && requests.some(Boolean) ? JSON.stringify(requests) : "";
+  const query = requests.some(Boolean) ? JSON.stringify(requests) : "";
+  const hit = query ? cache?.get(query) : undefined;
+  const cached = hit?.version === version ? hit.entries : undefined;
   const [loaded, setLoaded] = useState<{ query: string; entries: (DiffEntry | null)[] | null }>();
   useEffect(() => {
-    if (!query) return;
+    if (!query || cache?.get(query)?.version === version) return;
     let alive = true;
     const requests = JSON.parse(query) as (DiffEntryRequest | null)[];
     void entriesFor(requests).then((entries) => {
+      if (entries && cache && useVcs.getState().version === version) cache.set(query, { version, entries });
       if (alive) setLoaded({ query, entries });
     });
     return () => {
       alive = false;
     };
-  }, [query, version]);
-  const entries = loaded?.query === query ? loaded.entries : null;
+  }, [query, version, cache]);
+  // While a repository change reloads them, the entries of the last version stay shown.
+  const entries = cached ?? (loaded?.query === query ? loaded.entries : (hit?.entries ?? null));
   const resolved = useMemo(() => {
     if (!entries?.some((entry) => entry?.mode === GITLINK_MODE)) return data;
     return {
@@ -81,5 +88,5 @@ export function useGitDiffEntries(data: DiffData, enabled = true) {
       right: resolveSide(right, entries[2]),
     };
   }, [data, entries, left, middle, right]);
-  return { data: resolved, entries, loading: !!query && loaded?.query !== query };
+  return { data: resolved, entries, loading: !!query && !hit && loaded?.query !== query };
 }

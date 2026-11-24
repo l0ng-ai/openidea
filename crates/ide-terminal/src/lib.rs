@@ -2,10 +2,9 @@
 //! such as an SSH shell. Rendering is xterm.js.
 
 mod integration;
-mod utf8;
+mod scrollback;
 
-pub use utf8::Utf8Decoder;
-
+use ide_core::utf8::Utf8Decoder;
 use ide_core::{IdeError, IdeEvent, IdeResult, SharedSink, TerminalId};
 use parking_lot::{Condvar, Mutex};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -132,6 +131,26 @@ pub struct TerminalInfo {
     pub pid: Option<u32>,
 }
 
+/// Live terminal session state for reattaching across window reconnects.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSessionInfo {
+    pub id: TerminalId,
+    pub title: String,
+    pub pid: Option<u32>,
+    pub cwd: String,
+    pub app_title: Option<String>,
+    pub command_running: bool,
+}
+
+/// Snapshot and live binding returned when reattaching to an existing session.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalAttach {
+    pub session: TerminalSessionInfo,
+    pub buffered: String,
+}
+
 /// A terminal whose shell runs elsewhere (an SSH channel). Its output and exit
 /// arrive through the [`TerminalFeed`] paired with it by [`feed`].
 pub trait TerminalChannel: Send + Sync {
@@ -209,11 +228,18 @@ enum Io {
     },
 }
 
+struct OutputState {
+    scrollback: scrollback::Scrollback,
+    on_output: Box<dyn Fn(String) + Send>,
+}
+
 struct Session {
     /// The window that opened it: closing that window's project closes its terminals.
     key: String,
     info: TerminalInfo,
     io: Io,
+    output: Arc<Mutex<OutputState>>,
+    sink: Arc<Mutex<SharedSink>>,
     exited: Arc<AtomicBool>,
     started: Instant,
     /// The first input was logged (startup diagnostics, see `spawn`).
@@ -232,6 +258,9 @@ enum Msg {
     Exited(Option<i32>),
 }
 
+/// Runs when a PTY exits, before the exit event is forwarded to the current sink.
+pub type TerminalExitHook = Arc<dyn Fn(Option<i32>) + Send + Sync>;
+
 impl TerminalManager {
     pub fn new() -> Self {
         Self::default()
@@ -239,15 +268,16 @@ impl TerminalManager {
 
     /// Starts a shell; output goes to `on_output` from a reader thread, batched
     /// (~4ms) to limit IPC chatter and always split on UTF-8 boundaries.
-    /// Emits `IdeEvent::TerminalExited` to `sink` (the starter's) only.
+    /// Calls `on_exit` if supplied and emits `IdeEvent::TerminalExited` to the current sink.
     pub fn spawn(
         &self,
         options: TerminalOptions,
         key: String,
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
+        on_exit: Option<TerminalExitHook>,
     ) -> IdeResult<TerminalInfo> {
-        self.spawn_impl(options, key, sink, on_output, false)
+        self.spawn_impl(options, key, sink, on_output, on_exit, false)
     }
 
     /// Runs an approved absolute executable with exact arguments and cwd.
@@ -258,6 +288,7 @@ impl TerminalManager {
         key: String,
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
+        on_exit: Option<TerminalExitHook>,
     ) -> IdeResult<TerminalInfo> {
         if !options.shell.as_deref().is_some_and(|p| Path::new(p).is_absolute())
             || !options.cwd.is_absolute()
@@ -265,7 +296,7 @@ impl TerminalManager {
         {
             return Err(IdeError::invalid("a program PTY requires an absolute executable and an existing cwd"));
         }
-        self.spawn_impl(options, key, sink, on_output, true)
+        self.spawn_impl(options, key, sink, on_output, on_exit, true)
     }
 
     fn spawn_impl(
@@ -274,6 +305,7 @@ impl TerminalManager {
         key: String,
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
+        on_exit: Option<TerminalExitHook>,
         exact: bool,
     ) -> IdeResult<TerminalInfo> {
         let size = pty_size(options.cols, options.rows);
@@ -353,10 +385,17 @@ impl TerminalManager {
             let _ = child.kill();
             let _ = child.wait();
         })?;
+        let output = Arc::new(Mutex::new(OutputState {
+            scrollback: scrollback::Scrollback::new(cwd.to_string_lossy().into_owned()),
+            on_output,
+        }));
+        let sink = Arc::new(Mutex::new(sink));
         let session = Arc::new(Session {
             key,
             info: info.clone(),
             io: Io::Pty { writer, master: Mutex::new(pair.master), killer: Mutex::new(child.clone_killer()) },
+            output: output.clone(),
+            sink: sink.clone(),
             exited: exited.clone(),
             started: Instant::now(),
             input_logged: AtomicBool::new(false),
@@ -365,7 +404,7 @@ impl TerminalManager {
 
         let (tx, rx) = mpsc::channel::<Msg>();
         let budget = ByteBudget::default();
-        let out = OutputSender { tx: tx.clone(), budget: budget.clone() };
+        let out = OutputSender { tx, budget: budget.clone() };
         let spawned = spawn_reader(
             id,
             reader,
@@ -377,15 +416,16 @@ impl TerminalManager {
         .and_then(|_| {
             spawn_pump(
                 id,
-                OutputReceiver { rx, budget },
-                on_output,
+                OutputReceiver { rx, budget: budget.clone() },
+                output,
                 exited,
                 self.sessions.clone(),
                 sink,
-                Instant::now(),
+                on_exit,
             )
         });
         if let Err(e) = spawned {
+            budget.close();
             if let Some(s) = self.sessions.lock().remove(&id) {
                 terminate(&s);
             }
@@ -413,18 +453,23 @@ impl TerminalManager {
         let id = TerminalId::next();
         let info = TerminalInfo { id, title, pid: None };
         let exited = Arc::new(AtomicBool::new(false));
+        let output =
+            Arc::new(Mutex::new(OutputState { scrollback: scrollback::Scrollback::new(String::new()), on_output }));
+        let sink = Arc::new(Mutex::new(sink));
         let session = Arc::new(Session {
             key,
             info: info.clone(),
             io: Io::Channel { channel, size: Mutex::new(size) },
+            output: output.clone(),
+            sink: sink.clone(),
             exited: exited.clone(),
             started: Instant::now(),
             input_logged: AtomicBool::new(false),
         });
         self.sessions.lock().insert(id, session);
-        let output = feed.into_parts();
-        let budget = output.budget.clone();
-        if let Err(e) = spawn_pump(id, output, on_output, exited, self.sessions.clone(), sink, Instant::now()) {
+        let receiver = feed.into_parts();
+        let budget = receiver.budget.clone();
+        if let Err(e) = spawn_pump(id, receiver, output, exited, self.sessions.clone(), sink, None) {
             budget.close();
             if let Some(s) = self.sessions.lock().remove(&id) {
                 terminate(&s);
@@ -500,6 +545,85 @@ impl TerminalManager {
         let mut out: Vec<TerminalInfo> = self.sessions.lock().values().map(|s| s.info.clone()).collect();
         out.sort_by_key(|i| i.id);
         out
+    }
+
+    /// Live sessions belonging to `key`, with their current working directory,
+    /// running-program title and busy state.
+    pub fn list_key(&self, key: &str) -> Vec<TerminalSessionInfo> {
+        let sessions: Vec<Arc<Session>> = self
+            .sessions
+            .lock()
+            .values()
+            .filter(|s| s.key == key && !s.exited.load(Ordering::Acquire))
+            .cloned()
+            .collect();
+        let mut out: Vec<TerminalSessionInfo> = sessions.iter().map(|s| session_info(s)).collect();
+        out.sort_by_key(|i| i.id);
+        out
+    }
+
+    /// Rebinds `id`'s output stream to `on_output`, returning its buffered scrollback
+    /// and current state without dropping or duplicating bytes between them.
+    pub fn reattach(
+        &self,
+        id: TerminalId,
+        key: &str,
+        cols: u16,
+        rows: u16,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(String) + Send>,
+    ) -> IdeResult<TerminalAttach> {
+        let session = self.session(id)?;
+        if session.key != key || session.exited.load(Ordering::Acquire) {
+            return Err(not_found(id));
+        }
+        *session.sink.lock() = sink;
+        let (buffered, cwd, app_title, osc_running, alt_screen) = {
+            let mut out = session.output.lock();
+            let buffered = out.scrollback.snapshot();
+            let cwd = out.scrollback.cwd.clone();
+            let app_title = out.scrollback.app_title.clone();
+            let osc_running = out.scrollback.command_running;
+            let alt_screen = out.scrollback.is_alt_screen();
+            out.on_output = on_output;
+            (buffered, cwd, app_title, osc_running, alt_screen)
+        };
+        if cols > 0 && rows > 0 {
+            let _ = self.resize(id, cols, rows);
+        }
+        #[cfg(unix)]
+        if alt_screen
+            && let Io::Pty { master, .. } = &session.io
+            && let Some(fg) = master.lock().process_group_leader().filter(|&fg| fg > 0)
+        {
+            // Full-screen TUIs (`watch`, `vim`, `htop`) repaint on SIGWINCH even when cols×rows matched.
+            unsafe {
+                libc::kill(-fg, libc::SIGWINCH);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = alt_screen;
+        let busy = session.info.pid.is_some_and(|pid| foreground_busy(&session, pid));
+        Ok(TerminalAttach {
+            session: TerminalSessionInfo {
+                id: session.info.id,
+                title: session.info.title.clone(),
+                pid: session.info.pid,
+                cwd,
+                app_title,
+                command_running: osc_running || busy,
+            },
+            buffered,
+        })
+    }
+
+    /// Drops live client output callbacks when a remote window disconnects, while
+    /// keeping the PTYs and their scrollback buffers running.
+    pub fn detach_output(&self) {
+        let sessions: Vec<Arc<Session>> = self.sessions.lock().values().cloned().collect();
+        for s in sessions {
+            s.output.lock().on_output = Box::new(|_| {});
+        }
     }
 
     /// Current PTY size of a session (for diagnostics and tests).
@@ -713,25 +837,44 @@ fn spawn_waiter(
     Ok(())
 }
 
+fn session_info(session: &Session) -> TerminalSessionInfo {
+    let (cwd, app_title, osc_running) = {
+        let out = session.output.lock();
+        (out.scrollback.cwd.clone(), out.scrollback.app_title.clone(), out.scrollback.command_running)
+    };
+    let busy = session.info.pid.is_some_and(|pid| foreground_busy(session, pid));
+    TerminalSessionInfo {
+        id: session.info.id,
+        title: session.info.title.clone(),
+        pid: session.info.pid,
+        cwd,
+        app_title,
+        command_running: osc_running || busy,
+    }
+}
+
 fn spawn_pump(
     id: TerminalId,
-    output: OutputReceiver,
-    on_output: Box<dyn Fn(String) + Send>,
+    receiver: OutputReceiver,
+    output: Arc<Mutex<OutputState>>,
     exited: Arc<AtomicBool>,
     sessions: Sessions,
-    sink: SharedSink,
-    started: Instant,
+    sink: Arc<Mutex<SharedSink>>,
+    on_exit: Option<TerminalExitHook>,
 ) -> std::io::Result<()> {
+    let started = Instant::now();
     std::thread::Builder::new().name(format!("openidea-term-pump-{}", id.0)).spawn(move || {
         let first_output = std::cell::Cell::new(true);
-        let on_output = move |text: String| {
+        let emit_output = |text: String| {
             if first_output.replace(false) {
                 // ConPTY asks for the cursor position (`ESC[6n`) and waits for the answer.
                 let cursor_query = text.contains("\x1b[6n");
                 let ms = started.elapsed().as_millis();
                 tracing::info!(%id, ms, bytes = text.len(), cursor_query, "terminal first output");
             }
-            on_output(text)
+            let mut out = output.lock();
+            out.scrollback.push(&text);
+            (out.on_output)(text);
         };
         let mut decoder = Utf8Decoder::new();
         let mut pending = String::new();
@@ -741,7 +884,7 @@ fn spawn_pump(
 
         let flush = |pending: &mut String, batch_started: &mut Option<Instant>| {
             if !pending.is_empty() {
-                on_output(std::mem::take(pending));
+                emit_output(std::mem::take(pending));
             }
             *batch_started = None;
         };
@@ -755,10 +898,10 @@ fn spawn_pump(
                 (Some(a), None) | (None, Some(a)) => a,
                 (None, None) => Duration::from_secs(3600),
             };
-            match output.rx.recv_timeout(wait) {
+            match receiver.rx.recv_timeout(wait) {
                 Ok(Msg::Data(bytes)) => {
                     // The pump owns these bytes now; wake any producer waiting on the cap.
-                    output.budget.release(bytes.len());
+                    receiver.budget.release(bytes.len());
                     decoder.decode_into(&bytes, &mut pending);
                     if !pending.is_empty() && batch_started.is_none() {
                         batch_started = Some(Instant::now());
@@ -785,11 +928,15 @@ fn spawn_pump(
         pending.push_str(&decoder.finish());
         flush(&mut pending, &mut batch_started);
         exited.store(true, Ordering::Release);
-        output.budget.close();
+        receiver.budget.close();
         sessions.lock().remove(&id);
         let code = exit.flatten();
         tracing::debug!(%id, ?code, "terminal exited");
-        sink.emit(IdeEvent::TerminalExited { terminal: id, code });
+        let target_sink = sink.lock().clone();
+        if let Some(on_exit) = on_exit {
+            on_exit(code);
+        }
+        target_sink.emit(IdeEvent::TerminalExited { terminal: id, code });
     })?;
     Ok(())
 }
@@ -1128,6 +1275,7 @@ mod tests {
                 Box::new(move |s| {
                     let _ = tx.send(s);
                 }),
+                None,
             )
             .expect("spawn");
         (info, rx)
@@ -1194,14 +1342,14 @@ mod tests {
         let h = harness();
         let mut options = sh("exit 0");
         options.shell = None;
-        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {}), None).is_err());
         let mut options = sh("exit 0");
         options.shell = Some("sh".into());
-        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {}), None).is_err());
         let mut options = sh("exit 0");
         options.cwd = std::env::temp_dir().join(format!("openidea-missing-{}", std::process::id())).into();
         assert!(!options.cwd.exists());
-        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {}), None).is_err());
         assert!(h.manager.list().is_empty());
     }
 
@@ -1331,7 +1479,7 @@ mod tests {
         let h = harness();
         let (other_sink, other_events) = channel_sink();
         let (mine, _rx) = spawn_collect(&h, sh("exit 1"));
-        let theirs = h.manager.spawn(sh("exit 2"), "other".into(), other_sink, Box::new(|_| {})).expect("spawn");
+        let theirs = h.manager.spawn(sh("exit 2"), "other".into(), other_sink, Box::new(|_| {}), None).expect("spawn");
         match h.events.recv_timeout(Duration::from_secs(10)).expect("exit event") {
             IdeEvent::TerminalExited { terminal, code } => assert_eq!((terminal, code), (mine.id, Some(1))),
             e => panic!("unexpected {e:?}"),
@@ -1342,6 +1490,34 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(100));
         assert!(h.events.try_recv().is_err() && other_events.try_recv().is_err(), "no cross delivery");
+    }
+
+    #[test]
+    fn reattach_keeps_the_program_exit_hook_and_rebinds_the_event_sink() {
+        let h = harness();
+        let (completion, completed) = mpsc::channel();
+        let info = h
+            .manager
+            .spawn_program(
+                sh("read _; exit 7"),
+                "test".into(),
+                h.sink.clone(),
+                Box::new(|_| {}),
+                Some(Arc::new(move |code| {
+                    let _ = completion.send(code);
+                })),
+            )
+            .unwrap();
+        let (sink, events) = channel_sink();
+        h.manager.reattach(info.id, "test", 80, 24, sink, Box::new(|_| {})).unwrap();
+        h.manager.write(info.id, "\n").unwrap();
+
+        match events.recv_timeout(Duration::from_secs(10)).expect("exit event after reattach") {
+            IdeEvent::TerminalExited { terminal, code } => assert_eq!((terminal, code), (info.id, Some(7))),
+            e => panic!("unexpected {e:?}"),
+        }
+        assert_eq!(completed.try_recv(), Ok(Some(7)));
+        assert!(h.events.try_recv().is_err(), "exit delivered to the old sink");
     }
 
     #[test]

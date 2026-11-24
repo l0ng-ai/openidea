@@ -31,6 +31,7 @@ import {
 import { downloadJdkActions } from "@/platform/jdk";
 import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { executeAction } from "@/platform/actions";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
@@ -280,8 +281,71 @@ export async function loadConfigs(): Promise<void> {
       loadError: null,
       selectedId,
     });
+    if (isRemoteWindow()) void reattachRemoteRuns(root, configs);
   } catch (e) {
     useRun.setState({ loaded: true, loadError: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** Reattaches running `ProcessManager` sessions (including `docker compose up`, `docker run` and apps) on a persistent remote daemon. */
+async function reattachRemoteRuns(root: string, knownConfigs: readonly RunConfig[]): Promise<void> {
+  let live;
+  try {
+    live = await commands.runList();
+  } catch {
+    return;
+  }
+  if (useProject.getState().project?.root !== root) return;
+  for (const info of live) {
+    if (!info.running) continue;
+    if (useRun.getState().sessions.some((s) => s.runId === info.id)) continue;
+    const sessionId = `run${++sessionSeq}`;
+    const channel = new Channel<OutputChunk>();
+    let generation = 0;
+    channel.onmessage = (chunk) => {
+      if (runtimes.get(sessionId)?.generation !== generation) return;
+      enqueue(sessionId, chunk);
+    };
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- attaches in turn with a project guard, then adds the session to shared run state
+      const attached = await call(commands.runAttach(info.id, channel));
+      if (useProject.getState().project?.root !== root) return;
+      if (useRun.getState().sessions.some((s) => s.runId === info.id)) continue;
+      const config = knownConfigs.find((c) => c.id === attached.config.id) ?? attached.config;
+      const rt = newRuntime(config);
+      generation = rt.generation;
+      if (attached.info.pty) rt.terminal = new TerminalOutput();
+      rt.lineListeners.push((line) => {
+        const port = startedPort(line);
+        if (
+          port !== null &&
+          runtimes.get(sessionId)?.generation === generation &&
+          getSession(sessionId)?.httpPort !== port
+        )
+          patchSession(sessionId, { httpPort: port });
+      });
+      runtimes.set(sessionId, rt);
+      const session: RunSession = {
+        id: sessionId,
+        config,
+        runId: attached.info.id,
+        status: attached.info.running ? "running" : "finished",
+        exitCode: null,
+        startedAt: Date.now(),
+        endedAt: attached.info.running ? null : Date.now(),
+        stdinClosed: !!config.stdinFile,
+        terminal: attached.info.pty,
+        pinned: workflowSettings().run.pinTabs || undefined,
+      };
+      useRun.setState((s) => ({
+        sessions: [...s.sessions, session],
+        activeSession: s.activeSession ?? sessionId,
+      }));
+      for (const chunk of attached.buffered) enqueue(sessionId, chunk);
+      flush(sessionId);
+    } catch {
+      /* run exited before attach */
+    }
   }
 }
 
@@ -1253,6 +1317,15 @@ function finishSession(sessionId: string, code: number | null) {
         if (runtimes.get(sessionId) !== rt) return;
         rt.tests.finish(code);
         recordTestStates(rt.tests);
+        // The build's test task succeeded without running a test: say why instead of ending silently.
+        const ran = rt.tests.counts();
+        if (code === 0 && frameworkFor(session.config) === "jvm" && !(ran.passed + ran.failed + ran.skipped)) {
+          const why = tx(
+            "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.",
+          );
+          rt.console.append({ kind: "system", text: `\n${why}\n` });
+          rt.console.flush();
+        }
       }
       patchSession(sessionId, { status: "finished", exitCode: code, endedAt: Date.now() });
       bump(sessionId);
@@ -1628,8 +1701,13 @@ export async function runSelectedTests(
             ...next,
             id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
           });
-    if (debug) await executeAction("run.debugConfig", config);
-    else await startRun(config, undefined, base);
+    if (debug) {
+      // oxlint-disable-next-line no-await-in-loop -- derived tests launch in order to keep tab order and shared run state consistent
+      await executeAction("run.debugConfig", config);
+    } else {
+      // oxlint-disable-next-line no-await-in-loop -- derived tests launch in order to keep tab order and shared run state consistent
+      await startRun(config, undefined, base);
+    }
   }
   return true;
 }
@@ -1751,9 +1829,9 @@ export function runningSessions(): RunSession[] {
   return useRun.getState().sessions.filter(isLive);
 }
 
-/** Stops everything and forgets sessions (project closed). */
-export function resetRuns() {
-  for (const s of runningSessions()) void stopSession(s.id);
+/** Stops everything (unless detaching from a persistent remote backend) and forgets sessions. */
+export function resetRuns(stopBackend = true) {
+  if (stopBackend) for (const s of runningSessions()) void stopSession(s.id);
   for (const rt of runtimes.values()) cancelFlush(rt);
   runtimes.clear();
   pendingExits.clear();
@@ -1848,6 +1926,7 @@ export async function startSampleOutput(lines: number, perFrame: number): Promis
     /* no workbench (tests) */
   }
   for (let i = 0; i < lines;) {
+    // oxlint-disable-next-line no-await-in-loop -- output is paced one animation frame at a time to simulate streaming logs
     await new Promise(requestAnimationFrame);
     for (const end = Math.min(lines, i + perFrame); i < end; i++) {
       const line = SAMPLE_LINES[i % 20 === 19 ? 1 : i % 7 === 6 ? 2 : 0]!(i);

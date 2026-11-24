@@ -602,6 +602,19 @@ impl MockHost {
         })
     }
 
+    /// Asks a provider for completion at `at` in the mock editor's document, as the host
+    /// does: [`Providers::completion_list`](crate::providers::Providers::completion_list),
+    /// whose `incomplete` says whether typing on asks again. `None` without an editor.
+    pub fn completion_list(
+        &self,
+        provider: &mut impl crate::providers::Providers,
+        at: crate::Position,
+        trigger: Option<&str>,
+    ) -> Option<crate::providers::CompletionList> {
+        let document = self.provider_document()?;
+        Some(provider.completion_list(&document, at, trigger))
+    }
+
     /// Runs a diagnostics provider against the current mock editor snapshot.
     /// This explicit call replaces the real host's debounce; it needs no capability.
     pub fn refresh_diagnostics(&self, provider: &mut impl crate::diagnostics::DiagnosticsProvider) {

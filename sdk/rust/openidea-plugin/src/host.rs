@@ -2059,7 +2059,7 @@ pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
 pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
     imp::set_decorations(path, set, items)
 }
-/// Replace a file's editor decorations with Markdown hover cards (API 1.15).
+/// Replace a file's editor decorations with Markdown hover cards (API 1.16).
 /// Requires project.read; the same limits and set ids as [`set_decorations`].
 pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
     imp::set_markdown_decorations(path, set, items)

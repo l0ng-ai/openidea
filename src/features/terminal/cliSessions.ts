@@ -99,9 +99,37 @@ export function startCli(key: string, cwd: string, command: string, fallbackRoot
   return session;
 }
 
+/** Reattaches a restored CLI editor tab to `terminalId` if it is still running on the remote server. */
+export async function reattachCli(
+  key: string,
+  terminalId: number,
+  cwd: string,
+  fallbackRoot?: string,
+): Promise<boolean> {
+  if (sessions.has(key)) return true;
+  const session = new TerminalSession({
+    key,
+    cwd,
+    fallbackRoot,
+    attachTerminalId: terminalId,
+    onlyAttach: true,
+    onChange,
+    onFocus() {},
+    onCompletion: (_, info) => noteCliCompletion(key, info),
+  });
+  sessions.set(key, session);
+  useClis.setState((s) => ({ sessions: { ...s.sessions, [key]: session.state } }));
+  await session.start();
+  if (session.state.status !== "running") {
+    disposeCli(key, false);
+    return false;
+  }
+  return true;
+}
+
 /** Ends the session of a closed tab. */
-export function disposeCli(key: string) {
-  sessions.get(key)?.dispose();
+export function disposeCli(key: string, kill = true) {
+  sessions.get(key)?.dispose(kill);
   sessions.delete(key);
   useClis.setState((s) => {
     const sessions = { ...s.sessions };
@@ -111,8 +139,8 @@ export function disposeCli(key: string) {
 }
 
 /** The project switched: the tabs are closed by the editor without `onClose`, so end the sessions here. */
-export function disposeAllClis() {
-  for (const session of sessions.values()) session.dispose();
+export function disposeAllClis(kill = true) {
+  for (const session of sessions.values()) session.dispose(kill);
   sessions.clear();
   useClis.setState({ sessions: {} });
 }

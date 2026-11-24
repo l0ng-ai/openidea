@@ -574,7 +574,13 @@ export const lspTheme = EditorView.theme({
     "python-fstring",
     "string",
   ),
-  ".cm-sem-python-escape": semanticStyle("escape", "escape"),
+  ".cm-sem-python-escape, .cm-sem-escape": semanticStyle("escape", "escape"),
+  // IDEA's Invalid escape sequence: the escape colour with an error wave.
+  ".cm-sem-invalid-escape": {
+    ...semanticStyle("escape", "escape"),
+    textDecoration: "underline wavy var(--wave-error)",
+    WebkitTextDecoration: "underline wavy var(--wave-error)",
+  },
   ".cm-sem-python-format": semanticStyle("python-format", "escape"),
   ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
   // --- semantic tokens -----------------------------------------------------
@@ -646,6 +652,12 @@ export const lspTheme = EditorView.theme({
       },
     ]),
   ),
+  // Java's unterminated string or char literal, over the spans the parser's error recovery left inside.
+  ".cm-sem-java-unterminated-string, .cm-sem-java-unterminated-string *": {
+    color: "var(--syn-string)",
+    fontWeight: "var(--syn-string-bold, normal)",
+    fontStyle: "var(--syn-string-italic, normal)",
+  },
   // After the semantic classes: the link wraps their (innermost) spans, and its colour must win.
   ".cm-lsp-link *": { color: "var(--link)" },
 

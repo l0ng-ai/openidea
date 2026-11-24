@@ -194,6 +194,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     quickDocDelay: 500,
     nextErrorErrorsOnly: true,
     stickyLinesMax: 5,
+    stickyLinesDisabledLanguages: [] as string[],
   },
   inlay: {
     types: true,

@@ -77,6 +77,7 @@ export const intellijMacos: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": ["Ctrl+Shift+Space"],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Meta+Right"],
@@ -89,6 +90,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.showIntentions": ["Alt+Enter"],
   "code.applyQuickFix": ["Alt+Shift+Enter"],
   "code.reformat": ["Meta+Alt+L"],
+  "code.rearrange": [],
   "code.reformatDialog": ["Meta+Alt+Shift+L"],
   "code.optimizeImports": ["Ctrl+Alt+O"],
   "code.commentLine": ["Meta+/"],
@@ -96,6 +98,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.extendSelection": ["Alt+Up"],
   "code.shrinkSelection": ["Alt+Down"],
   "code.duplicateLine": ["Meta+D"],
+  "code.duplicateEntireLines": [],
   "code.deleteLine": ["Meta+Backspace"],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
@@ -151,6 +154,7 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.toggleInsertState": ["Insert"],
   "code.joinLines": ["Ctrl+Shift+J"],
   "code.toggleCase": ["Meta+Shift+U"],
+  "code.cycleCase": ["Alt+Shift+U"],
   "code.pasteFromHistory": ["Meta+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],
@@ -256,7 +260,8 @@ export const intellijMacos: Record<string, string[]> = {
 
   // Build
   "build.buildProject": ["Meta+F9"],
-  "build.buildModule": ["Meta+Shift+F9"],
+  "build.buildModule": [],
+  "build.compileFile": ["Meta+Shift+F9"],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 
@@ -404,6 +409,8 @@ export const intellijMacos: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Agents task list (when it has focus)
+  "agents.archiveTasks": ["Meta+Shift+E"],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
   "db.openConsole": ["Meta+Shift+L"],
   "db.newDataSource": [],

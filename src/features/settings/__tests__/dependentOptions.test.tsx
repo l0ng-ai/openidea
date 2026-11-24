@@ -48,6 +48,8 @@ const PAGE: PageSpec = {
   ],
 };
 
+const TEST_PAGE_CONTEXT = { pageId: PAGE.id, scope: "global" } as const;
+
 function renderPage(parent: boolean) {
   const settings = structuredClone(DEFAULT_SETTINGS);
   settings.editor.inlayHints = parent;
@@ -55,7 +57,7 @@ function renderPage(parent: boolean) {
   useProject.setState({ settings, project: null });
   openSettings(PAGE.id);
   render(
-    <PageContext.Provider value={{ pageId: PAGE.id, scope: "global" }}>
+    <PageContext.Provider value={TEST_PAGE_CONTEXT}>
       <OptionsPage spec={PAGE} />
     </PageContext.Provider>,
   );

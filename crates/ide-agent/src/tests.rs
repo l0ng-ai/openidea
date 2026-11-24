@@ -32,6 +32,10 @@ struct FakeAgent {
     servers: Mutex<Vec<Peer>>,
     calls: Mutex<Vec<String>>,
     permission_replies: Mutex<Vec<Value>>,
+    /// The tasks' store directory: when set, a "decide" prompt notes what the task file holds
+    /// for the answered request at the moment its reply arrives.
+    store_dir: Mutex<Option<PathBuf>>,
+    file_at_reply: Mutex<Vec<Value>>,
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
     auth_on_new: bool,
@@ -218,6 +222,10 @@ impl Handler for FakeAgent {
             }
             "session/load" if self.load_error.is_some() => Err(self.load_error.clone().unwrap()),
             "session/load" => {
+                self.update(
+                    &session,
+                    json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "earlier question"}}),
+                );
                 self.say(&session, "replayed history");
                 Ok(json!({}))
             }
@@ -278,6 +286,24 @@ impl Handler for FakeAgent {
                     self.say(&session, "running it in the background");
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
+                if text == "stream tool output" {
+                    // A long command whose output grows: every update carries all of it so far.
+                    let update = |kind: &str, status: &str, output: &str| {
+                        json!({"sessionUpdate": kind, "toolCallId": "build", "title": "cargo build",
+                            "kind": "execute", "status": status,
+                            "content": [{"type": "content", "content": {"type": "text", "text": output}}]})
+                    };
+                    self.update(&session, update("tool_call", "in_progress", "$ cargo build"));
+                    let mut output = String::from("$ cargo build");
+                    for i in 0..40 {
+                        output.push_str(&format!("\n{i:04} {}", "x".repeat(1500)));
+                        self.update(&session, update("tool_call_update", "in_progress", &output));
+                        // Longer than the flush interval: every update reaches the window on its own.
+                        std::thread::sleep(FLUSH_DELAY + Duration::from_millis(30));
+                    }
+                    self.update(&session, update("tool_call_update", "completed", &output));
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
                 if text == "delegate" {
                     self.delegate(&session);
                     return Ok(json!({"stopReason": "end_turn"}));
@@ -316,6 +342,29 @@ impl Handler for FakeAgent {
                         .unwrap();
                     let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
                     self.say(&session, &format!("late chose {chosen}"));
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
+                if text == "decide" {
+                    let peer = self.latest();
+                    let _: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session, "toolCall": {"toolCallId": "d1", "title": "Run cargo test"},
+                                "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                                            {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    if let Some(dir) = self.store_dir.lock().clone() {
+                        let held = std::fs::read_dir(dir)
+                            .unwrap()
+                            .filter_map(|f| serde_json::from_slice::<Value>(&std::fs::read(f.ok()?.path()).ok()?).ok())
+                            .flat_map(|file| file["entries"].as_array().cloned().unwrap_or_default())
+                            .find_map(|entry| entry.get("chosen").cloned())
+                            .unwrap_or(Value::Null);
+                        self.file_at_reply.lock().push(held);
+                    }
+                    self.say(&session, "decided");
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
                 if text == "escalate" {
@@ -1153,7 +1202,7 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
     let mgr = manager(tmp.path(), agent.clone());
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
 
     let task = mgr
         .create(NewAgentTask {
@@ -1266,6 +1315,408 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
     // The chosen settings are re-applied to the reloaded session.
     let calls = agent2.calls.lock().clone();
     assert!(calls.contains(&"session/set_mode \"code\"".to_owned()), "{calls:?}");
+}
+
+fn task_file(dir: &Path, id: &str) -> PathBuf {
+    dir.join("store").join(format!("{id}.json"))
+}
+
+fn saves(path: &Path) -> u32 {
+    FILE_WRITES.lock().get(path).copied().unwrap_or(0)
+}
+
+/// What a task's file holds: its status and how many entries it has.
+fn saved_task(path: &Path) -> Option<(Value, usize)> {
+    let file: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    Some((file["task"]["status"].clone(), file["entries"].as_array()?.len()))
+}
+
+/// Shuts the manager down when the test ends, a failed assertion included: a failing test
+/// would otherwise never return while its turn is still running.
+struct ShutDown<'a>(&'a AgentManager);
+
+impl Drop for ShutDown<'_> {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
+}
+
+/// A turn does not rewrite the whole task file for every step it goes through, and where the
+/// task stops for the user (a question, the end) the file already holds everything, as the
+/// window that was told finds it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_saves_the_task_file_once_per_stop() {
+    struct Stop {
+        status: AgentStatus,
+        saves: u32,
+        file: Option<(Value, usize)>,
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let _shut_down = ShutDown(&mgr);
+    let stops = Arc::new(Mutex::new(Vec::<Stop>::new()));
+    let (sink, dir) = (stops.clone(), tmp.path().to_path_buf());
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |event| {
+            if let AgentEvent::Task { task } = event
+                && matches!(task.status, AgentStatus::NeedsInput | AgentStatus::Ready)
+            {
+                let path = task_file(&dir, &task.id);
+                sink.lock().push(Stop { status: task.status, saves: saves(&path), file: saved_task(&path) });
+            }
+        }),
+    );
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("Fix the lexer"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // The first time the task stopped as `status` after the `from`th stop: what its file held then.
+    let stopped = |status: AgentStatus, from: usize| {
+        let stops = stops.clone();
+        async move {
+            for _ in 0..500 {
+                if let Some(stop) = stops.lock().iter().skip(from).find(|s| s.status == status) {
+                    return (stop.saves, stop.file.clone());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the task never stopped as {status:?}");
+        }
+    };
+    let status = |s: AgentStatus| serde_json::to_value(s).unwrap();
+
+    let (first_turn, asked) = stopped(AgentStatus::NeedsInput, 0).await;
+    // The user's message, "Hi", the edit and the pending permission are all in the file.
+    assert_eq!(asked, Some((status(AgentStatus::NeedsInput), 4)));
+
+    let permission = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let seen = stops.lock().len();
+    mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+    let (ready_at, ready) = stopped(AgentStatus::Ready, seen).await;
+    assert_eq!(ready, Some((status(AgentStatus::Ready), 5)));
+    let answered = ready_at - first_turn;
+
+    let seen = stops.lock().len();
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    let (again_at, again) = stopped(AgentStatus::Ready, seen).await;
+    assert_eq!(again, Some((status(AgentStatus::Ready), 7)));
+    let second_turn = again_at - ready_at;
+    eprintln!(
+        "task file saves: {first_turn} to the first question, {answered} to answer it and finish, {second_turn} for a second turn"
+    );
+    assert!(
+        first_turn <= 4 && answered <= 2 && second_turn <= 3,
+        "task file saves: {first_turn} to the first question (4 or fewer), {answered} to answer it and finish (2 or fewer), {second_turn} for a second turn (3 or fewer)"
+    );
+}
+
+/// A reader of the task's state waits only for a copy of it, not for the whole transcript to
+/// be turned into JSON and written.
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_a_large_task_does_not_hold_up_readers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let handle = mgr.task(&task.id).unwrap();
+    let path = task_file(tmp.path(), &task.id);
+    for i in 0..24 {
+        let text = format!("output {i}: \"quoted\"\n").repeat(40_000);
+        handle.state.lock().conversation.main.push(AgentEntry::Agent { text });
+    }
+    let entries = handle.state.lock().conversation.main.entries.clone();
+    let started = std::time::Instant::now();
+    let json = serde_json::to_vec(&entries).unwrap();
+    let serialising = started.elapsed();
+    eprintln!("large task: {} MB of JSON, {serialising:?} to serialise", json.len() >> 20);
+
+    // The longest wait for the state lock while a save runs: the best of a few saves, so a
+    // reader that was descheduled once does not fail the test.
+    let mut waits = Vec::new();
+    for _ in 0..3 {
+        let writes = saves(&path);
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let (handle, stop) = (handle.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut longest = Duration::ZERO;
+                while !stop.load(Ordering::Acquire) {
+                    let asked = std::time::Instant::now();
+                    drop(handle.state.lock());
+                    longest = longest.max(asked.elapsed());
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                longest
+            })
+        };
+        handle.persist();
+        while saves(&path) == writes {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        stop.store(true, Ordering::Release);
+        waits.push(reader.join().unwrap());
+    }
+    let shortest = waits.iter().min().copied().unwrap();
+    eprintln!("longest wait for the state lock while saving: {waits:?}");
+    assert!(shortest * 3 < serialising, "readers waited {shortest:?} while the task was saved ({serialising:?})");
+    mgr.shutdown();
+}
+
+async fn idle_task(mgr: &AgentManager, title: &str) -> AgentTask {
+    let request = NewAgentTask {
+        prompt: text(title),
+        provider: "claude".into(),
+        isolation: Isolation::Local,
+        idle: true,
+        ..Default::default()
+    };
+    mgr.create(request).await.unwrap()
+}
+
+fn saved_title(path: &Path) -> Option<String> {
+    let file: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    file["task"]["title"].as_str().map(str::to_owned)
+}
+
+/// Changes asked for in a burst are written once, as the latest state, and no older state is
+/// written after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn saves_asked_for_in_a_burst_write_the_latest_state_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = idle_task(&mgr, "first").await;
+    let handle = mgr.task(&task.id).unwrap();
+    let path = task_file(tmp.path(), &task.id);
+    let before = saves(&path);
+    for i in 0..50 {
+        handle.state.lock().task.title = format!("title {i}");
+        handle.persist_soon();
+    }
+    for _ in 0..500 {
+        if saved_title(&path).as_deref() == Some("title 49") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(saved_title(&path).as_deref(), Some("title 49"));
+    tokio::time::sleep(SAVE_DELAY * 2).await;
+    assert_eq!(saved_title(&path).as_deref(), Some("title 49"), "an older state was written back");
+    let written = saves(&path) - before;
+    mgr.shutdown();
+    assert!(written <= 2, "50 changes in a burst were saved {written} times");
+}
+
+/// Saves of one task from several threads, whether they wait or not, never put an older
+/// state back over a newer one, and saves of other tasks never mix in.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_saves_keep_the_newest_state_of_each_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let mut tasks = Vec::new();
+    for name in ["alpha", "beta"] {
+        let task = idle_task(&mgr, name).await;
+        let handle = mgr.task(&task.id).unwrap();
+        // Long enough that a save takes a while between the copy and the write.
+        handle.state.lock().conversation.main.push(AgentEntry::Agent { text: "text ".repeat(60_000) });
+        tasks.push((name, handle, task_file(tmp.path(), &task.id)));
+    }
+    // "<name> <n>", n growing with every change made under the state lock.
+    let change = |name: &str, handle: &Task, n: &AtomicU64| {
+        let mut s = handle.state.lock();
+        s.task.title = format!("{name} {}", n.fetch_add(1, Ordering::AcqRel) + 1);
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut watchers = Vec::new();
+    let mut writers = Vec::new();
+    for (name, handle, path) in &tasks {
+        let counter = Arc::new(AtomicU64::new(0));
+        for pace in 0..2 {
+            let (name, handle, counter) = (*name, handle.clone(), counter.clone());
+            writers.push(std::thread::spawn(move || {
+                for i in 0..40 {
+                    change(name, &handle, &counter);
+                    if (i + pace) % 2 == 0 {
+                        handle.persist();
+                    } else {
+                        handle.persist_soon();
+                    }
+                }
+            }));
+        }
+        let (name, path, stop) = (*name, path.clone(), stop.clone());
+        watchers.push(std::thread::spawn(move || {
+            let mut newest = 0;
+            while !stop.load(Ordering::Acquire) {
+                if let Some(title) = saved_title(&path) {
+                    // Nothing was saved yet but the task's name, before the first change.
+                    let n: u64 = match title.strip_prefix(&format!("{name} ")) {
+                        Some(n) => n.parse().unwrap(),
+                        None => {
+                            assert_eq!(title, name, "another task's state");
+                            0
+                        }
+                    };
+                    assert!(n >= newest, "{name}: state {n} was written after state {newest}");
+                    newest = n;
+                }
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        }));
+    }
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    for (_, handle, _) in &tasks {
+        handle.persist();
+    }
+    stop.store(true, Ordering::Release);
+    for watcher in watchers {
+        watcher.join().unwrap();
+    }
+    tokio::time::sleep(SAVE_DELAY * 2).await;
+    for (name, handle, path) in &tasks {
+        let title = handle.state.lock().task.title.clone();
+        assert_eq!(title, format!("{name} 80"));
+        assert_eq!(saved_title(path), Some(title));
+    }
+    mgr.shutdown();
+}
+
+/// What was asked to be saved soon is written when the manager shuts down, and a task that
+/// is deleted meanwhile stays deleted.
+#[tokio::test]
+async fn shutdown_writes_the_saves_still_waiting_and_a_delete_drops_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let kept = idle_task(&mgr, "kept").await;
+    let gone = idle_task(&mgr, "gone").await;
+    let (kept_path, gone_path) = (task_file(tmp.path(), &kept.id), task_file(tmp.path(), &gone.id));
+    for id in [&kept.id, &gone.id] {
+        let handle = mgr.task(id).unwrap();
+        handle.state.lock().task.title = "renamed".into();
+        handle.persist_soon();
+    }
+    // This runtime runs one thing at a time and nothing has yielded to it: the saves wait.
+    assert_eq!(saved_title(&kept_path).as_deref(), Some("kept"));
+    mgr.delete(&gone.id, false).await.unwrap();
+    mgr.shutdown();
+    assert_eq!(saved_title(&kept_path).as_deref(), Some("renamed"), "shutdown left the task unsaved");
+
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    assert_eq!(restored.task(&kept.id).unwrap().state.lock().task.title, "renamed");
+    assert!(restored.task(&gone.id).is_err());
+    tokio::time::sleep(SAVE_DELAY * 2).await;
+    assert!(!gone_path.exists(), "the save that was waiting brought the deleted task back");
+    assert_eq!(saved_title(&kept_path).as_deref(), Some("renamed"));
+}
+
+/// Archiving saves the task as it is, including changes nobody asked to be saved.
+#[tokio::test]
+async fn archiving_saves_the_task_before_it_returns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = idle_task(&mgr, "task").await;
+    let path = task_file(tmp.path(), &task.id);
+    mgr.task(&task.id).unwrap().state.lock().task.title = "changed meanwhile".into();
+    mgr.archive(&task.id).unwrap();
+    assert_eq!(saved_task(&path).map(|(status, _)| status), Some(serde_json::to_value(AgentStatus::Archived).unwrap()));
+    assert_eq!(saved_title(&path).as_deref(), Some("changed meanwhile"));
+    mgr.shutdown();
+}
+
+/// The answer to a request is in the task file before the agent hears it: a restart right
+/// after still shows the request as answered, not cancelled.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_is_saved_before_the_agent_is_told() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.store_dir.lock() = Some(tmp.path().join("store"));
+    let mgr = manager(tmp.path(), agent.clone());
+    let _shut_down = ShutDown(&mgr);
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("decide"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let permission = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(*agent.file_at_reply.lock(), [json!("Allow")]);
+}
+
+/// A turn that fails or hits the usage limit is in the task file by the time the window is
+/// told, like the end of a turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_turn_is_saved_before_the_window_hears_of_it() {
+    for (message, status) in [("auth", AgentStatus::Failed), ("limit", AgentStatus::Limited)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let _shut_down = ShutDown(&mgr);
+        let told = Arc::new(Mutex::new(None));
+        let (sink, dir) = (told.clone(), tmp.path().to_path_buf());
+        mgr.subscribe_as(
+            "",
+            Arc::new(move |event| {
+                if let AgentEvent::Task { task } = event
+                    && task.status == status
+                {
+                    *sink.lock() = Some(saved_task(&task_file(&dir, &task.id)).map(|(status, _)| status));
+                }
+            }),
+        );
+        let task = mgr
+            .create(NewAgentTask {
+                prompt: text(message),
+                provider: "claude".into(),
+                isolation: Isolation::Local,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, status).await;
+        for _ in 0..500 {
+            if told.lock().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*told.lock(), Some(Some(serde_json::to_value(status).unwrap())), "{status:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1443,14 +1894,17 @@ async fn stale_queue_actions_refresh_the_queue_without_starting_another_turn() {
     let permission = *handle.permissions.lock().keys().next().unwrap();
     let (tx, mut updates) = tokio::sync::mpsc::unbounded_channel();
     let weak = Arc::downgrade(&handle);
-    mgr.subscribe(Arc::new(move |event| {
-        if let AgentEvent::Task { task } = event
-            && task.queue.is_empty()
-            && let Some(handle) = weak.upgrade()
-        {
-            let _ = tx.send(handle.turns.load(Ordering::Acquire));
-        }
-    }));
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |event| {
+            if let AgentEvent::Task { task } = event
+                && task.queue.is_empty()
+                && let Some(handle) = weak.upgrade()
+            {
+                let _ = tx.send(handle.turns.load(Ordering::Acquire));
+            }
+        }),
+    );
     mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     assert_eq!(updates.try_recv().unwrap(), 1, "publish the dequeue before starting the second turn");
@@ -1733,6 +2187,9 @@ fn prompts_become_acp_content_blocks() {
     assert_eq!(title_of(&AgentPrompt { files: p.files.clone(), ..AgentPrompt::default() }), "my file.rs");
     let pasted = AgentPrompt { text: "```text\n\n  ## Fix the tab title\n```".into(), ..AgentPrompt::default() };
     assert_eq!(title_of(&pasted), "## Fix the tab title");
+    let fenced_first =
+        AgentPrompt { text: "```txt\nlog line\n```\nWhy does this fail?".into(), ..AgentPrompt::default() };
+    assert_eq!(title_of(&fenced_first), "Why does this fail?");
     assert!(clean(text(" ")).is_none());
 }
 
@@ -2087,6 +2544,55 @@ async fn renamed_titles_survive_updates_forks_and_restart() {
     handle.on_update(None, &json!({"sessionUpdate": "session_info_update", "title": "Resumed title"}));
     assert_eq!(handle.state.lock().task.title, "My task");
     restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_without_history_takes_it_from_the_replay_before_the_first_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = {
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let _down = ShutDown(&mgr);
+        let task = mgr
+            .create(NewAgentTask { provider: "claude".into(), prompt: text("again"), ..Default::default() })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        task_file(tmp.path(), &task.id)
+    };
+    let id = path.file_stem().unwrap().to_string_lossy().into_owned();
+    // As an imported session is saved: its session id, none of its history.
+    let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    file["entries"] = json!([]);
+    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+    {
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let _down = ShutDown(&mgr);
+        mgr.prompt(&id, text("again"), false).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for(&mgr, &id, AgentStatus::Ready).await;
+        let entries = mgr.entries(&id, None).unwrap();
+        assert!(
+            matches!(&entries[0], AgentEntry::User { text, sent_ms: None, .. } if text == "earlier question"),
+            "{entries:?}"
+        );
+        assert_eq!(entries[1], AgentEntry::Agent { text: "replayed history".into() }, "{entries:?}");
+        assert!(
+            matches!(&entries[2], AgentEntry::User { text, sent_ms: Some(_), .. } if text == "again"),
+            "{entries:?}"
+        );
+        assert_eq!(entries.last(), Some(&AgentEntry::Agent { text: "second turn".into() }), "{entries:?}");
+    }
+    assert_eq!(saved_task(&path).unwrap().1, 4);
+
+    // From then on the task has its history: a later reload's replay is dropped again.
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let _down = ShutDown(&mgr);
+    mgr.prompt(&id, text("again"), false).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for(&mgr, &id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&id, None).unwrap();
+    assert_eq!(entries.len(), 6, "{entries:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3040,7 +3546,7 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_sink = events.clone();
-    mgr.subscribe(Arc::new(move |ev| events_sink.lock().push(ev)));
+    mgr.subscribe_as("", Arc::new(move |ev| events_sink.lock().push(ev)));
 
     let toml = format!(
         "name = \"GitHub Copilot\"\ncommand = {:?}\nargs = [\"--acp\", \"--stdio\"]\n",
@@ -3459,14 +3965,17 @@ async fn config_choice_shows_before_the_agent_answers() {
     let mgr = manager(tempfile::tempdir().unwrap().path(), agent.clone());
     let shown: Arc<Mutex<Option<std::time::Instant>>> = Arc::default();
     let mark = shown.clone();
-    mgr.subscribe(Arc::new(move |e| {
-        if let AgentEvent::Task { task } = e
-            && task.config.iter().any(|o| o.id == "fast" && o.current.as_deref() == Some("false"))
-            && mark.lock().is_none()
-        {
-            *mark.lock() = Some(std::time::Instant::now());
-        }
-    }));
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |e| {
+            if let AgentEvent::Task { task } = e
+                && task.config.iter().any(|o| o.id == "fast" && o.current.as_deref() == Some("false"))
+                && mark.lock().is_none()
+            {
+                *mark.lock() = Some(std::time::Instant::now());
+            }
+        }),
+    );
     let task = mgr
         .create(NewAgentTask {
             project_root: None,
@@ -3497,42 +4006,256 @@ async fn discovery_times_out_when_session_new_hangs() {
     assert!(!cursor.config.iter().any(|o| o.category.as_deref() == Some("model")));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_growing_tool_output_is_not_sent_whole_on_every_flush() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    // What a window receives of the tool's entry: events, and the bytes they take.
+    let sent = Arc::new(Mutex::new((0usize, Vec::<AgentEvent>::new())));
+    let sink = sent.clone();
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |e| {
+            let json = serde_json::to_value(&e).unwrap();
+            if json["entry"]["type"] == "tool" || json["type"] == "toolOutput" {
+                let mut sent = sink.lock();
+                sent.0 += json.to_string().len();
+                sent.1.push(e);
+            }
+        }),
+    );
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("stream tool output"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // The turn takes a few seconds: the agent paces its updates by the flush interval.
+    let finished = |mgr: &AgentManager| {
+        mgr.entries(&task.id, None).unwrap().into_iter().find_map(|e| match e {
+            AgentEntry::Tool { output, status: AgentToolStatus::Completed, .. } => output,
+            _ => None,
+        })
+    };
+    for _ in 0..6000 {
+        if finished(&mgr).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(FLUSH_DELAY * 3).await;
+
+    let output = finished(&mgr).expect("the command's output was kept");
+    assert!(output.len() > 60_000, "a long output that the timeline keeps whole: {}", output.len());
+    let (bytes, events) = {
+        let sent = sent.lock();
+        (sent.0, sent.1.len())
+    };
+    assert!(events >= 30, "the output reached the window in many flushes: {events}");
+    assert!(bytes < 3 * output.len(), "{bytes} bytes sent for {} bytes of output over {events} events", output.len());
+
+    // The window's copy, built as the UI does, ends as the conversation holds it.
+    let mut shown: Option<String> = None;
+    for e in &sent.lock().1 {
+        match e {
+            AgentEvent::Entry { entry: AgentEntry::Tool { output, .. }, .. } => shown = output.clone(),
+            AgentEvent::ToolOutput { from, text, .. } => {
+                let have = shown.get_or_insert_default();
+                assert_eq!(*from as usize, have.encode_utf16().count(), "a delta goes on where the last one ended");
+                have.push_str(text);
+            }
+            _ => unreachable!("{e:?}"),
+        }
+    }
+    assert_eq!(shown, Some(output));
+}
+
 #[test]
 fn streamed_text_is_sent_as_appends() {
-    let mut streamed = HashMap::new();
+    let mut streamed = Streamed::default();
     let agent = |t: &str| AgentEntry::Agent { text: t.into() };
-    let first = entry_event("t", &mut streamed, None, 3, &agent("Hé"));
+    let first = entry_event("t", &mut streamed, None, 3, &agent("Hé")).unwrap();
     assert!(matches!(first, AgentEvent::Entry { index: 3, .. }), "the first sight of a message is whole");
-    let next = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there"));
+    let next = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there")).unwrap();
     assert!(
         matches!(&next, AgentEvent::Append { subagent: None, index: 3, from: 2, text, .. } if text == " 👋 there"),
         "{next:?}"
     );
-    let sub = entry_event("t", &mut streamed, Some("s".into()), 3, &agent("Hé 👋 there!"));
+    let sub = entry_event("t", &mut streamed, Some("s".into()), 3, &agent("Hé 👋 there!")).unwrap();
     assert!(matches!(sub, AgentEvent::Entry { .. }), "each session streams on its own");
-    let after = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there."));
+    let after = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there.")).unwrap();
     assert!(
         matches!(&after, AgentEvent::Append { from: 11, text, .. } if text == "."),
         "from counts UTF-16 units: {after:?}"
     );
-    let replaced = entry_event("t", &mut streamed, None, 3, &agent("Other"));
+    let replaced = entry_event("t", &mut streamed, None, 3, &agent("Other")).unwrap();
     assert!(matches!(replaced, AgentEvent::Entry { .. }), "text that doesn't extend the sent text is sent whole");
     let thought = AgentEntry::Thought { text: "hmm…".into(), started_ms: None };
-    let thought = entry_event("t", &mut streamed, None, 4, &thought);
+    let thought = entry_event("t", &mut streamed, None, 4, &thought).unwrap();
     assert!(matches!(thought, AgentEvent::Entry { index: 4, .. }), "a new message starts whole");
     let tool = AgentEntry::Error { message: "x".into() };
-    entry_event("t", &mut streamed, None, 4, &tool);
+    entry_event("t", &mut streamed, None, 4, &tool).unwrap();
     let again = AgentEntry::Thought { text: "hmm… ok".into(), started_ms: None };
-    let again = entry_event("t", &mut streamed, None, 4, &again);
+    let again = entry_event("t", &mut streamed, None, 4, &again).unwrap();
     assert!(matches!(again, AgentEvent::Entry { .. }), "an entry replaced by another kind forgets its text");
 
     let long = "é".repeat(5000);
-    entry_event("t", &mut streamed, None, 5, &agent(&long));
-    assert!(streamed[&None].tail.len() <= 64, "only the end of what was sent is kept");
-    let on = entry_event("t", &mut streamed, None, 5, &agent(&format!("{long}!")));
+    entry_event("t", &mut streamed, None, 5, &agent(&long)).unwrap();
+    let on = entry_event("t", &mut streamed, None, 5, &agent(&format!("{long}!"))).unwrap();
     assert!(matches!(&on, AgentEvent::Append { from: 5000, text, .. } if text == "!"), "{on:?}");
-    let rewritten = entry_event("t", &mut streamed, None, 5, &agent(&format!("{}x!??", "é".repeat(4999))));
+    let rewritten = entry_event("t", &mut streamed, None, 5, &agent(&format!("{}x!??", "é".repeat(4999)))).unwrap();
     assert!(matches!(rewritten, AgentEvent::Entry { .. }), "a rewritten end is sent whole");
+    // A text that goes on with its end as sent but an edited start is not an append.
+    let kept_end =
+        entry_event("t", &mut streamed, None, 5, &agent(&format!("{}{}", "e".repeat(5000), "é".repeat(5000))));
+    assert!(matches!(kept_end, Some(AgentEvent::Entry { .. })), "{kept_end:?}");
+    let edited_start =
+        entry_event("t", &mut streamed, None, 5, &agent(&format!("{}{}!", "x".repeat(5000), "é".repeat(5000))));
+    assert!(
+        matches!(edited_start, Some(AgentEvent::Entry { .. })),
+        "a rewritten start is sent whole even when the end is as sent: {edited_start:?}"
+    );
+}
+
+#[test]
+fn a_running_tools_output_is_sent_as_appends() {
+    let mut streamed = Streamed::default();
+    let call = |status, output: Option<&str>| AgentEntry::Tool {
+        id: "t1".into(),
+        title: "cargo build".into(),
+        kind: "execute".into(),
+        status,
+        locations: Vec::new(),
+        images: Vec::new(),
+        output: output.map(str::to_owned),
+        diffs: Vec::new(),
+        started_ms: Some(1.0),
+        ended_ms: None,
+    };
+    let running = |output| call(AgentToolStatus::Running, output);
+    let event = |streamed: &mut Streamed, session: Session, i, entry: &AgentEntry| {
+        entry_event("t", streamed, session, i, entry)
+    };
+
+    let first = event(&mut streamed, None, 2, &running(None)).unwrap();
+    assert!(matches!(first, AgentEvent::Entry { index: 2, .. }), "the first sight of a call is whole");
+    let output = event(&mut streamed, None, 2, &running(Some("$ make"))).unwrap();
+    assert!(
+        matches!(&output, AgentEvent::ToolOutput { subagent: None, index: 2, from: 0, text, .. } if text == "$ make"),
+        "{output:?}"
+    );
+    let next = event(&mut streamed, None, 2, &running(Some("$ make\ncc é.c 👋"))).unwrap();
+    assert!(
+        matches!(&next, AgentEvent::ToolOutput { from: 6, text, .. } if text == "\ncc é.c 👋"),
+        "from counts UTF-16 units: {next:?}"
+    );
+    let after = event(&mut streamed, None, 2, &running(Some("$ make\ncc é.c 👋\nok"))).unwrap();
+    assert!(matches!(&after, AgentEvent::ToolOutput { from: 16, text, .. } if text == "\nok"), "{after:?}");
+    assert!(
+        event(&mut streamed, None, 2, &running(Some("$ make\ncc é.c 👋\nok"))).is_none(),
+        "what the window has is not sent again"
+    );
+
+    // Anything else about the call goes whole, output included.
+    let mut titled = running(Some("$ make\ncc é.c 👋\nok\n"));
+    if let AgentEntry::Tool { title, .. } = &mut titled {
+        *title = "make".into();
+    }
+    let renamed = event(&mut streamed, None, 2, &titled).unwrap();
+    assert!(
+        matches!(&renamed, AgentEvent::Entry { entry: AgentEntry::Tool { output: Some(o), .. }, .. } if o.ends_with("ok\n")),
+        "{renamed:?}"
+    );
+    let on = event(&mut streamed, None, 2, &titled);
+    assert!(on.is_none(), "the entry the window holds now is this one");
+    if let AgentEntry::Tool { output, .. } = &mut titled {
+        output.as_mut().unwrap().push_str("more");
+    }
+    let on = event(&mut streamed, None, 2, &titled).unwrap();
+    assert!(matches!(&on, AgentEvent::ToolOutput { from: 20, text, .. } if text == "more"), "{on:?}");
+
+    // An image the tool returned is not part of the appended text: it goes with the whole entry.
+    let mut shown = titled.clone();
+    if let AgentEntry::Tool { images, output, .. } = &mut shown {
+        images.push(AgentImage { mime_type: "image/png".into(), data: "AAAA".into(), name: None });
+        output.as_mut().unwrap().push('!');
+    }
+    let imaged = event(&mut streamed, None, 2, &shown).unwrap();
+    assert!(
+        matches!(&imaged, AgentEvent::Entry { entry: AgentEntry::Tool { images, .. }, .. } if images.len() == 1),
+        "{imaged:?}"
+    );
+    titled = shown;
+
+    // Output the call replaced rather than extended goes whole.
+    let make = |output: &str| {
+        let mut entry = titled.clone();
+        if let AgentEntry::Tool { output: o, .. } = &mut entry {
+            *o = Some(output.to_owned());
+        }
+        entry
+    };
+    let replaced = event(&mut streamed, None, 2, &make("$ make\nother")).unwrap();
+    assert!(matches!(replaced, AgentEvent::Entry { .. }), "a rewritten output is sent whole");
+    let on = event(&mut streamed, None, 2, &make("$ make\nother, but longer")).unwrap();
+    assert!(matches!(on, AgentEvent::ToolOutput { from: 12, .. }), "and the next growth is appended to it: {on:?}");
+
+    // A replacement that keeps the old end, or the old length, is not mistaken for growth.
+    let mut kept = make("$ make\nother, but longer");
+    let swap = |entry: &mut AgentEntry, output: String| {
+        if let AgentEntry::Tool { output: o, .. } = entry {
+            *o = Some(output);
+        }
+    };
+    let (long_tail, same_length) =
+        (format!("{}{}", "X".repeat(100), "z".repeat(100)), "Y".repeat(100) + &"z".repeat(100));
+    swap(&mut kept, long_tail.clone());
+    event(&mut streamed, None, 2, &kept).unwrap();
+    swap(&mut kept, same_length);
+    let same = event(&mut streamed, None, 2, &kept).unwrap();
+    assert!(
+        matches!(&same, AgentEvent::Entry { entry: AgentEntry::Tool { output: Some(o), .. }, .. } if o.starts_with('Y')),
+        "same length, same end, different start is sent whole: {same:?}"
+    );
+    swap(&mut kept, format!("{}{}!", "W".repeat(100), "z".repeat(100)));
+    let grown = event(&mut streamed, None, 2, &kept).unwrap();
+    assert!(
+        matches!(grown, AgentEvent::Entry { .. }),
+        "a replacement that also grows, with the old end, is sent whole: {grown:?}"
+    );
+
+    // Calls run side by side, each in its own session.
+    let whole = |e: &AgentEvent| matches!(e, AgentEvent::Entry { .. });
+    let (a, b) = (
+        event(&mut streamed, None, 3, &running(Some("a"))),
+        event(&mut streamed, Some("s".into()), 3, &running(Some("b"))),
+    );
+    let c = event(&mut streamed, None, 4, &running(Some("c")));
+    assert!([&a, &b, &c].into_iter().all(|e| whole(e.as_ref().unwrap())), "each call starts whole");
+    let a = event(&mut streamed, None, 3, &running(Some("ab"))).unwrap();
+    let c = event(&mut streamed, None, 4, &running(Some("cd"))).unwrap();
+    let b = event(&mut streamed, Some("s".into()), 3, &running(Some("bc"))).unwrap();
+    assert!(
+        [&a, &b, &c].into_iter().all(|e| matches!(e, AgentEvent::ToolOutput { from: 1, .. })),
+        "one call's flush does not end another's: {a:?} {b:?} {c:?}"
+    );
+
+    // A call that ended is sent whole, and forgotten.
+    let done = call(AgentToolStatus::Completed, Some("ab\ndone"));
+    let done_event = event(&mut streamed, None, 3, &done).unwrap();
+    assert!(matches!(done_event, AgentEvent::Entry { .. }));
+    assert!(!streamed.tools.contains_key(&(None, 3)));
+    let late = event(&mut streamed, None, 3, &call(AgentToolStatus::Completed, Some("ab\ndone\nlate"))).unwrap();
+    assert!(matches!(late, AgentEvent::Entry { .. }), "an ended call's output is not appended to");
+
+    // A rollback forgets what was sent.
+    streamed.clear();
+    let again = event(&mut streamed, None, 4, &running(Some("cdef"))).unwrap();
+    assert!(matches!(again, AgentEvent::Entry { .. }), "after the conversation was cut, calls start whole");
 }
 
 #[test]
@@ -4310,7 +5033,7 @@ async fn attention_finished_not_cancelled() {
     let mgr = manager(tmp.path(), agent.clone());
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
 
     let done = mgr
         .create(NewAgentTask {
@@ -4364,7 +5087,7 @@ async fn attention_failed() {
     let mgr = manager(tmp.path(), agent);
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
     let task = mgr
         .create(NewAgentTask {
             project_root: None,
@@ -4389,7 +5112,7 @@ async fn attention_input_not_auto_bypass() {
     let mgr = manager(tmp.path(), agent);
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
 
     let asked = mgr
         .create(NewAgentTask {
@@ -4454,7 +5177,7 @@ async fn attention_not_emitted_on_restore() {
     let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    let tasks = restored.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    let tasks = restored.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
     assert!(tasks.iter().any(|t| t.id == task.id));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(attention_reasons(&events.lock()).is_empty(), "snapshot restore must not re-notify: {:?}", *events.lock());
@@ -4607,7 +5330,7 @@ async fn per_session_skill_overrides_filter_commands_persist_and_reload_when_idl
 
     // Persisted task file preserves `skill_overrides` across restart.
     let restored_mgr = manager(root, Arc::new(FakeAgent::default()));
-    let restored = restored_mgr.subscribe(Arc::new(|_| {})).into_iter().find(|t| t.id == task.id).unwrap();
+    let restored = restored_mgr.subscribe_as("", Arc::new(|_| {})).into_iter().find(|t| t.id == task.id).unwrap();
     assert_eq!(restored.skill_overrides.get("tdd"), Some(&AgentSkillMode::Off));
     assert_eq!(restored.skill_overrides.get("noisy"), Some(&AgentSkillMode::Auto));
     restored_mgr.shutdown();

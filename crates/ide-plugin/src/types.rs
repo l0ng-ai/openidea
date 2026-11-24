@@ -999,7 +999,7 @@ pub struct Decoration {
     pub style: String,
     pub hover: Option<String>,
     pub after: Option<String>,
-    /// Markdown rendered in the editor's hover card (API 1.15); `hover` is the
+    /// Markdown rendered in the editor's hover card (API 1.16); `hover` is the
     /// plain-text fallback shown when this is absent.
     pub markdown_hover: Option<String>,
 }

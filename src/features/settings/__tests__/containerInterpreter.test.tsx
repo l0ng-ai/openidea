@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   packages: vi.fn(),
   effective: vi.fn(),
+  cancel: vi.fn(),
 }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -20,6 +21,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       sdkContainerPythonRefresh: mocks.refresh,
       sdkPythonPackages: mocks.packages,
       sdkPythonEffective: mocks.effective,
+      cancelRequest: mocks.cancel,
     },
   };
 });
@@ -48,6 +50,7 @@ const TARGETS = [
   { ...DEFAULT_RUN_TARGET, kind: "compose" as const, id: "web", name: "Compose web", service: "web" },
   { ...DEFAULT_RUN_TARGET, kind: "ssh" as const, id: "box", name: "Build box" },
 ];
+const PYTHON_INTERPRETER_CONTEXT = { pageId: "python.interpreter", scope: "project" } as const;
 
 function mount(interpreter: string) {
   const settings = structuredClone(DEFAULT_SETTINGS) as typeof DEFAULT_SETTINGS & Record<string, unknown>;
@@ -55,7 +58,7 @@ function mount(interpreter: string) {
   settings.runTargets = TARGETS;
   useSettingsDialog.setState({ base: settings, globalBase: structuredClone(DEFAULT_SETTINGS), staged: {}, query: "" });
   render(
-    <PageContext.Provider value={{ pageId: "python.interpreter", scope: "project" }}>
+    <PageContext.Provider value={PYTHON_INTERPRETER_CONTEXT}>
       <PythonInterpreterPage />
     </PageContext.Provider>,
   );
@@ -102,6 +105,53 @@ describe("run target interpreter", () => {
     expect(await screen.findByRole("option", { name: /Compose web/ })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Build box/ })).toBeNull();
     expect(mocks.container).not.toHaveBeenCalled();
+  });
+});
+
+describe("newer versions", () => {
+  const INSTALLED = [
+    { name: "requests", version: "2.34.2" },
+    { name: "six", version: "1.15.0" },
+  ];
+  const listing = (outdated: () => Promise<unknown>) =>
+    mocks.packages.mockImplementation((_python: string, wantOutdated: boolean) =>
+      wantOutdated ? outdated() : Promise.resolve(ok(INSTALLED)),
+    );
+
+  it("marks the packages that have a newer release once the list shows", async () => {
+    mocks.effective.mockResolvedValue(ok("/p/.venv/bin/python"));
+    listing(async () => ok([{ name: "six", version: "1.15.0", latestVersion: "1.17.0" }]));
+    mount("");
+    expect(await screen.findByTitle("Upgrade available: 1.17.0")).toHaveTextContent("1.17.0");
+    expect(screen.getByRole("row", { name: "requests 2.34.2" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "six 1.15.0 1.17.0" })).toBeInTheDocument();
+    expect(mocks.packages.mock.calls.map((c) => c[1])).toEqual([false, true]);
+  });
+
+  it("keeps the list and says so when the check fails", async () => {
+    mocks.effective.mockResolvedValue(ok("/p/.venv/bin/python"));
+    listing(async () => ({ status: "error", error: { kind: "unavailable", message: "no network" } }));
+    mount("");
+    expect(await screen.findByText("Could not check for newer versions of the packages.")).toBeInTheDocument();
+    expect(screen.getByText("six")).toBeInTheDocument();
+  });
+
+  it("cancels a check still running when the page closes", async () => {
+    mocks.effective.mockResolvedValue(ok("/p/.venv/bin/python"));
+    listing(() => new Promise(() => {}));
+    mount("");
+    expect(await screen.findByText("six")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.packages).toHaveBeenCalledTimes(2));
+    expect(mocks.cancel).not.toHaveBeenCalled();
+    cleanup();
+    expect(mocks.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not check a container interpreter", async () => {
+    mount("target:web");
+    expect(await screen.findByText("Django")).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Latest" })).toBeNull();
+    expect(mocks.packages).not.toHaveBeenCalled();
   });
 });
 

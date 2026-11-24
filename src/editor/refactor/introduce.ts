@@ -416,7 +416,9 @@ async function sameResolution(
   if (wa.length !== wb.length) return false;
   for (let i = 0; i < Math.min(wa.length, 8); i++) {
     if (wa[i]!.word !== wb[i]!.word) return false;
-    if ((await resolve(a.from + wa[i]!.offset)) !== (await resolve(b.from + wb[i]!.offset))) return false;
+    // oxlint-disable-next-line no-await-in-loop -- word checks short-circuit; the two resolves per word are parallel
+    const [ra, rb] = await Promise.all([resolve(a.from + wa[i]!.offset), resolve(b.from + wb[i]!.offset)]);
+    if (ra !== rb) return false;
   }
   return true;
 }
@@ -549,15 +551,23 @@ async function verifiedOccurrences(
   const found = findTextOccurrences(doc.toString(), from, to, exprText, MAX_OCCURRENCES + 1).filter(
     (o) => o.to <= exprFrom || o.from >= exprTo,
   );
+  const candidates = found.slice(0, MAX_OCCURRENCES);
+  const nodes = await Promise.all(
+    candidates.map((o) => structure.nodeAt(p.ctx.doc, offsetsToRange(doc, o.from, o.to))),
+  );
+  const accepted: Array<[Occurrence, { chain: SyntaxNode[]; self: number }]> = [];
+  candidates.forEach((o, i) => {
+    const s = chainOf(nodes[i]!, offsetsToRange(doc, o.from, o.to), expr.kind);
+    if (!s || s.chain[s.self]!.hasError) return;
+    if (literal && doc.sliceString(o.from, o.to) !== exprText) return;
+    if (normalizeExpression(doc.sliceString(o.from, o.to)) !== normalizeExpression(exprText)) return;
+    accepted.push([o, s]);
+  });
+  const answers = await Promise.all(accepted.map(([o, s]) => accept(o, s)));
   const out: Occurrence[] = [];
-  for (const o of found.slice(0, MAX_OCCURRENCES)) {
-    const range = offsetsToRange(doc, o.from, o.to);
-    const s = chainOf(await structure.nodeAt(p.ctx.doc, range), range, expr.kind);
-    if (!s || s.chain[s.self]!.hasError) continue;
-    if (literal && doc.sliceString(o.from, o.to) !== exprText) continue;
-    if (normalizeExpression(doc.sliceString(o.from, o.to)) !== normalizeExpression(exprText)) continue;
-    if (await accept(o, s)) out.push(o);
-  }
+  accepted.forEach(([o], i) => {
+    if (answers[i]) out.push(o);
+  });
   return out;
 }
 
