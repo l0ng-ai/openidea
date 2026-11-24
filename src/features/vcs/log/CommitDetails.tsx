@@ -21,18 +21,20 @@ import {
   type TreeHandle,
 } from "@/ui";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import clsx from "clsx";
 import {
   useCallback,
   useContext,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { DIFF_KIND, diffInput, vcsDiffInFront } from "../diffInput";
+import { DIFF_KIND, diffInput } from "../diffInput";
 import { buildFileTree, dirKeys, type FileTreeNode } from "../fileTree";
 import styles from "../GitLog.module.css";
 import {
@@ -213,29 +215,28 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
   const ordered = useMemo(() => filesUnder(tree), [tree]);
   const chosenChanges = useMemo(() => filesUnder(tree, selectedKeys), [tree, selectedKeys]);
 
-  // Show Diff Preview: a single selected file follows into the editor's preview tab.
+  // Selection updates an open preview. Double-click, Enter and Show Diff open it.
   const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => {
-    if (!active) clearTimeout(previewTimer.current);
-    return () => clearTimeout(previewTimer.current);
-  }, [active]);
+  useEffect(() => () => clearTimeout(previewTimer.current), [active, diffLocation, ordered, preview]);
   const previewSelection = (sel: ReadonlySet<string>) => {
     clearTimeout(previewTimer.current);
-    if (syncingDiff.current || sel.size !== 1) return;
-    // While the editor shows one of this pane's diffs, the selection walks it along (a click or
-    // arrow key), as in the Commit window.
-    const shown = maybeEditorService()?.activeInput?.();
-    const following = shown?.kind === DIFF_KIND && ordered.some((c) => diffInput(c.diff).key === shown.key);
-    if (!following && (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || vcsDiffInFront())) return;
+    if (!active || !preview || diffLocation !== "editor" || syncingDiff.current || sel.size !== 1) return;
+    const editor = maybeEditorService();
+    const shown = editor?.activeInput?.({ previewOnly: true });
+    if (shown?.kind !== DIFF_KIND || !ordered.some((c) => diffInput(c.diff).key === shown.key)) return;
     const file = fileNodeAt(tree, [...sel][0]!)?.file;
-    // A preview that cannot open (no editor yet, the file went away) is just skipped.
-    if (file)
-      previewTimer.current = setTimeout(() => void showChangesDiff([file], true).catch(() => undefined), PREVIEW_DELAY);
+    if (!file || diffInput(file.diff).key === shown.key) return;
+    previewTimer.current = setTimeout(() => {
+      if (!useToolWindowLayout.getState().maximized && editor?.activeInput?.({ previewOnly: true })?.key === shown.key)
+        void showChangesDiff([file], true, ordered).catch(() => undefined);
+    }, PREVIEW_DELAY);
   };
 
   // Follow only this pane's exact diff (path AND revisions); another commit or
   // Compare with Local must not move its selection. Never take focus from F7.
+  const isOnlySelected = useEffectEvent((key: string) => selectedKeys.size === 1 && selectedKeys.has(key));
   useEffect(() => {
+    if (!active) return;
     const editor = maybeEditorService();
     const followDiff = (input: EditorInput | null) => {
       if (input?.kind !== DIFF_KIND) return;
@@ -243,16 +244,19 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
       if (!change) return;
       clearTimeout(previewTimer.current);
       const rel = changeTreePath(change);
+      const key = `f:${rel}`;
+      // The tree already selected this row. Revealing it would scroll it to the center.
+      if (isOnlySelected(key)) return;
       setExpanded((current) => {
         const next = new Set(current ?? allDirs);
         for (const key of allDirs) if (rel.startsWith(key.slice(2) + "/")) next.add(key);
         return next;
       });
-      setDiffToReveal({ key: `f:${rel}` });
+      setDiffToReveal({ key });
     };
     followDiff(editor?.activeInput?.() ?? null);
     return editor?.onActiveInputChange?.(followDiff);
-  }, [ordered, allDirs, changeTreePath]);
+  }, [active, ordered, allDirs, changeTreePath]);
 
   // Tree.reveal needs the expanded rows to have rendered. Suppress the reverse
   // preview update so it cannot reopen the diff and lose its requested chunk.
@@ -440,7 +444,10 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
                 previewSelection(sel);
               }}
               renderNode={(n) => <ChangedFileRow node={n} flat={!groupByDirectory} />}
-              onActivate={(n) => n.file && void showChangesDiff([n.file])}
+              onActivate={(n) => {
+                clearTimeout(previewTimer.current);
+                if (n.file) void showChangesDiff([n.file]);
+              }}
               onJumpToSource={(n, sel) => {
                 const files = sel.has(n.key) ? filesUnder(tree, sel) : filesUnder([n]);
                 void executeAction("vcs.log.changes.jumpToSource", files);

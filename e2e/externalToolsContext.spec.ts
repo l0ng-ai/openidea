@@ -11,7 +11,12 @@ test("External Tools take $FilePath$ from the Project view selection, else the e
     const projectPath = "/src/platform/project.ts";
     const { useProject } = await import(/* @vite-ignore */ projectPath);
     const tool = { id: "echo", name: "Echo File Path", program: "echo", arguments: "$FilePath$ $FileName$" };
-    useProject.setState({ settings: { externalTools: [{ ...tool, openConsole: false, synchronizeAfter: false }] } });
+    useProject.setState({
+      settings: {
+        editor: { tabs: { previewTab: false } },
+        externalTools: [{ ...tool, openConsole: false, synchronizeAfter: false }],
+      },
+    });
     let id = 0;
     window.__ipc.handlers.run_start = ({ config }) => {
       id++;
@@ -40,10 +45,12 @@ test("External Tools take $FilePath$ from the Project view selection, else the e
     (await ipcCalls(page, "run_start")).map((c) => (c as { config: { args: string[] } }).config.args);
 
   await page.getByRole("treeitem", { name: "build.gradle.kts", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "README.md", exact: true })).toHaveAttribute("aria-selected", "true");
   await runTool();
   await expect.poll(startedArgs).toEqual([["/dev/acme-api/build.gradle.kts", "build.gradle.kts"]]);
 
   await editor.click();
+  await expect(editor).toBeFocused();
   await runTool();
   await expect.poll(startedArgs).toEqual([
     ["/dev/acme-api/build.gradle.kts", "build.gradle.kts"],

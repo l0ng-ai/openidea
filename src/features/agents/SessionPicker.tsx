@@ -176,7 +176,7 @@ export function SessionPicker({
           </div>
         )}
 
-        <div className={styles.list}>{children(query, controls)}</div>
+        <div className={styles.list}>{open && children(query, controls)}</div>
 
         <div className={styles.footer}>
           <span>
