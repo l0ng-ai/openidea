@@ -69,10 +69,7 @@ export async function requestHover(view: EditorView, pos: number): Promise<Hover
   if (construct)
     return {
       contents: { kind: "markdown", value: construct.markdown },
-      range: {
-        start: offsetToPos(view.state.doc, construct.from),
-        end: offsetToPos(view.state.doc, construct.to),
-      },
+      range: { start: offsetToPos(view.state.doc, construct.from), end: offsetToPos(view.state.doc, construct.to) },
     };
   if (hoverRequest !== null && isTauri()) void commands.cancelRequest(hoverRequest);
   const id = (hoverRequest = nextRequestId());
@@ -164,10 +161,10 @@ function offerQuickFix(view: EditorView, before: HTMLElement, from: number, to: 
 /**
  * Whether the plain hover (problems + quick documentation) stays out: while
  * ⌘/Ctrl is held the ⌘-hover link and its brief info (`navigation.ts`) own the
- * pointer, as in IDEA; and over an inlay hint, which has its own tooltip.
+ * pointer, as in IDEA. Inlay hints and folded code have their own tooltips.
  */
 export function hoverYields(): boolean {
-  return navigationModifierHeld() || !!pointerTarget()?.closest?.(".cm-lsp-inlay");
+  return navigationModifierHeld() || !!pointerTarget()?.closest?.(".cm-lsp-inlay, .cm-foldPlaceholder");
 }
 
 /** The editor's standard hover card: selectable content in a themed popup. */
@@ -309,14 +306,7 @@ function showDoc(view: EditorView, entry: DocEntry, at: number) {
 export function showPhpConstructDocumentation(view: EditorView, pos: number): boolean {
   const construct = constructAt(view.state, pos, docOf(view)?.language);
   if (!construct) return false;
-  showDoc(
-    view,
-    {
-      markup: { kind: "markdown", value: construct.markdown },
-      language: "PHP",
-    },
-    construct.from,
-  );
+  showDoc(view, { markup: { kind: "markdown", value: construct.markdown }, language: "PHP" }, construct.from);
   return true;
 }
 
@@ -368,17 +358,11 @@ export function definitionSpan(
   const start = loc.range.start.line;
   if (declaration && declaration.start.line <= start && start <= declaration.end.line) {
     const first = Math.max(0, declaration.start.line);
-    return {
-      first,
-      last: Math.min(lineCount - 1, declaration.end.line, first + DECLARATION_MAX_LINES - 1),
-    };
+    return { first, last: Math.min(lineCount - 1, declaration.end.line, first + DECLARATION_MAX_LINES - 1) };
   }
   const first = Math.max(0, start - DEFINITION_CONTEXT_BEFORE);
   const spanEnd = Math.max(loc.range.end.line, start + 12);
-  return {
-    first,
-    last: Math.min(lineCount - 1, Math.min(spanEnd, first + DEFINITION_MAX_LINES - 1)),
-  };
+  return { first, last: Math.min(lineCount - 1, Math.min(spanEnd, first + DEFINITION_MAX_LINES - 1)) };
 }
 
 async function declarationRange(loc: Location): Promise<Range | null> {
