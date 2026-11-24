@@ -94,24 +94,27 @@ function decorations(view: EditorView, words: boolean): DecorationSet {
   return Decoration.set(ranges, true);
 }
 
+// One module for every diff: each new theme adds its rules to the page again, restyling it all.
+const movedCodeTheme = EditorView.baseTheme({
+  ".cm-diffMoved": { boxShadow: "inset 3px 0 0 color-mix(in srgb, var(--accent) 70%, transparent)" },
+  ".cm-diffMoveEdit-deleted": { backgroundColor: "color-mix(in srgb, var(--diff-deleted) 85%, transparent)" },
+  ".cm-diffMoveEdit-inserted": { backgroundColor: "color-mix(in srgb, var(--diff-inserted) 85%, transparent)" },
+  ".cm-diffMoveLink": {
+    marginLeft: "12px",
+    padding: "0 4px",
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--fs-small)",
+    color: "var(--link)",
+    background: "var(--bg-app)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-small)",
+    cursor: "pointer",
+  },
+  ".cm-diffMoveLink:hover": { background: "var(--bg-hover)" },
+  ".cm-diffMoveLink:focus-visible": { outline: "2px solid var(--accent)", outlineOffset: "2px" },
+});
+
 export const movedCodeHighlights = (words: boolean) => [
   chunkDecorations((view) => decorations(view, words)),
-  EditorView.baseTheme({
-    ".cm-diffMoved": { boxShadow: "inset 3px 0 0 color-mix(in srgb, var(--accent) 70%, transparent)" },
-    ".cm-diffMoveEdit-deleted": { backgroundColor: "color-mix(in srgb, var(--diff-deleted) 85%, transparent)" },
-    ".cm-diffMoveEdit-inserted": { backgroundColor: "color-mix(in srgb, var(--diff-inserted) 85%, transparent)" },
-    ".cm-diffMoveLink": {
-      marginLeft: "12px",
-      padding: "0 4px",
-      fontFamily: "var(--font-ui)",
-      fontSize: "var(--fs-small)",
-      color: "var(--link)",
-      background: "var(--bg-app)",
-      border: "1px solid var(--border)",
-      borderRadius: "var(--radius-small)",
-      cursor: "pointer",
-    },
-    ".cm-diffMoveLink:hover": { background: "var(--bg-hover)" },
-    ".cm-diffMoveLink:focus-visible": { outline: "2px solid var(--accent)", outlineOffset: "2px" },
-  }),
+  movedCodeTheme,
 ];

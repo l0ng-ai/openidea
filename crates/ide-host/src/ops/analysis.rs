@@ -8,7 +8,7 @@ use crate::Project;
 use crate::ops::Channel;
 use ide_command::command;
 
-use super::doc::blocking;
+use super::blocking;
 use ide_analysis::{
     DuplicateOptions, DuplicatesReport, SourceFile, StructuralFile, StructuralQuery, StructuralSummary,
 };

@@ -83,12 +83,13 @@ export const caretStyles = {
 
 /** The error stripe and scrollbar lane (cm/lanes.ts), also for the VCS viewers. */
 export const overviewStyles = {
+  "&.cm-openidea-withOverview": { "--cm-overview-width": "12px" },
   ".cm-openidea-overview": {
     position: "absolute",
     top: "0",
     right: "0",
     bottom: "0",
-    width: "12px",
+    width: "var(--cm-overview-width)",
     cursor: "default",
     zIndex: "3",
   },

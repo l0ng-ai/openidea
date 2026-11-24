@@ -13,6 +13,7 @@ import {
 } from "react-resizable-panels";
 import clsx from "clsx";
 import { createContext, useCallback, useContext, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { lockDragCursor } from "./dragCursor";
 import styles from "./Splitter.module.css";
 
 const SplitResetContext = createContext<((handle: HTMLElement, defaultHandled: boolean) => void) | null>(null);
@@ -113,6 +114,7 @@ export function SplitGroup({
       <Group
         className={clsx(styles.group, className)}
         {...rest}
+        disableCursor
         groupRef={group}
         onLayoutChange={onLayoutChange}
         defaultLayout={storageKey ? (saved ?? defaultLayout) : defaultLayout}
@@ -134,10 +136,32 @@ export interface SplitHandleProps extends SeparatorProps {
   hairline?: boolean;
 }
 
-export function SplitHandle({ className, hairline = true, onDoubleClick, ...rest }: SplitHandleProps) {
+export function SplitHandle({
+  className,
+  hairline = true,
+  onDoubleClick,
+  onGotPointerCapture,
+  onLostPointerCapture,
+  ...rest
+}: SplitHandleProps) {
   const reset = useContext(SplitResetContext);
+  const release = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => release.current?.(), []);
   return (
     <Separator
+      onGotPointerCapture={(event) => {
+        onGotPointerCapture?.(event);
+        if (event.currentTarget.dataset.separator === "active") {
+          release.current ??= lockDragCursor(
+            event.currentTarget.getAttribute("aria-orientation") === "vertical" ? "col-resize" : "row-resize",
+          );
+        }
+      }}
+      onLostPointerCapture={(event) => {
+        onLostPointerCapture?.(event);
+        release.current?.();
+        release.current = undefined;
+      }}
       className={clsx(styles.handle, !hairline && styles.invisible, className)}
       onDoubleClick={(e) => {
         onDoubleClick?.(e);

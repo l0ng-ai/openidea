@@ -2,7 +2,7 @@
 use crate::Host;
 use ide_command::command;
 
-use crate::ops::doc::blocking;
+use crate::ops::blocking;
 use ide_core::IdeResult;
 use ide_vfs::{ByteRange, FileProbe};
 use std::path::PathBuf;

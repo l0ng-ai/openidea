@@ -260,6 +260,10 @@
 .dashboardActions + .sectionBanner {
   border-top: 0;
 }
+.bannerMeta {
+  font-weight: 400;
+  color: var(--fg-secondary);
+}
 .propList {
   display: flex;
   flex-direction: column;
@@ -517,7 +521,7 @@ button.entityChip:not(:disabled):hover {
 }
 .dataRow {
   display: grid;
-  grid-template-columns: 72px minmax(120px, 1fr) minmax(140px, 1.3fr) 56px;
+  grid-template-columns: 72px minmax(120px, 1fr) minmax(120px, 1.2fr) 88px 56px;
   gap: var(--space-2);
   align-items: center;
   padding: 4px 12px;
