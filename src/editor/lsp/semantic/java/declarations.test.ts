@@ -29,8 +29,8 @@ describe("javaDeclarationRanges", () => {
       total: "cm-sem-property cm-sem-declaration",
       name: "cm-sem-property cm-sem-static cm-sem-declaration",
       code: "cm-sem-property cm-sem-declaration",
-      SERIAL: "cm-sem-constant cm-sem-static cm-sem-declaration",
-      MAX: "cm-sem-constant cm-sem-static cm-sem-declaration",
+      SERIAL: "cm-sem-property cm-sem-static cm-sem-declaration",
+      MAX: "cm-sem-property cm-sem-static cm-sem-declaration",
       A: "cm-sem-function cm-sem-declaration",
       helper: "cm-sem-function cm-sem-static cm-sem-declaration",
       id: "cm-sem-function cm-sem-declaration",
@@ -38,7 +38,7 @@ describe("javaDeclarationRanges", () => {
       HIGH: "cm-sem-constant cm-sem-static cm-sem-declaration",
       f: "cm-sem-function cm-sem-declaration",
       Level: "cm-sem-function cm-sem-declaration",
-      C: "cm-sem-constant cm-sem-static cm-sem-declaration",
+      C: "cm-sem-property cm-sem-static cm-sem-declaration",
       m: "cm-sem-function cm-sem-declaration",
       s: "cm-sem-function cm-sem-static cm-sem-declaration",
     });
@@ -54,7 +54,7 @@ describe("javaDeclarationRanges", () => {
   });
 
   it("matches the classes of jdtls's own declaration tokens", () => {
-    // MAX (line 5, col 26) and C (line 10, col 20), as jdtls sends them: `static final` → `static readonly`.
+    // MAX (line 5, col 26) and C (line 10, col 20), as jdtls sends them; IDEA colours `static final` fields as static fields.
     const mods = ["static", "readonly", "declaration"];
     const tokens = { data: [5, 26, 3, 0, 7, 10, 20, 1, 0, 7], tokenTypes: ["property"], tokenModifiers: mods };
     const fallback = named(javaDeclarationRanges(tree));
