@@ -706,6 +706,7 @@ export class DocModel {
       if (reason === "explicit") {
         for (const p of _saveParticipants()) {
           try {
+            // oxlint-disable-next-line no-await-in-loop -- participants run in priority order and may edit the document; each must see earlier edits
             await p.beforeSave(this.ctx(), slot?.handle ?? null, "explicit");
           } catch (e) {
             console.warn(`save participant ${p.id} failed`, e);

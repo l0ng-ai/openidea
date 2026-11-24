@@ -55,7 +55,7 @@ import {
   type MarkerCandidate,
   type MarkerGroup,
 } from "./lineMarkers";
-import { overridersInType, superMethodTargets, type SuperDeps, type SuperMethod } from "./structureNav";
+import { overridersInType, superMethodTargets, type SuperDeps } from "./structureNav";
 import {
   classLocation,
   declarationKey,
@@ -277,18 +277,23 @@ export async function fillMarkers(
   // The inheritance graph's direct subclasses, keyed by the *declaration* each base
   // resolves to (path + position), so classes sharing a bare name never mix up.
   const subclassesOf = new Map<string, ClassInheritance[]>();
+  const baseAnswers: Array<{ cls: ClassInheritance; decls: ClassInheritance[] | Promise<ClassInheritance[]> }> = [];
   for (const cls of graph ?? []) {
     for (const base of new Set(cls.bases)) {
       // Only this file's classes are looked up below: read another file's imports only
       // when its base may name one of them, not for every shared or library base name.
       const exact = resolver ? resolver.exact(base, cls.path) : [];
       const named = exact.length || !byName.get(base)?.some((c) => c.path === path) ? exact : null;
-      for (const decl of named ?? (await resolver!.resolve(base, cls.path))) {
-        const key = declarationKey(decl);
-        subclassesOf.set(key, [...(subclassesOf.get(key) ?? []), cls]);
-      }
+      baseAnswers.push({ cls, decls: named ?? resolver!.resolve(base, cls.path) });
     }
   }
+  const resolvedBases = await Promise.all(baseAnswers.map(({ decls }) => decls));
+  baseAnswers.forEach(({ cls }, i) => {
+    for (const decl of resolvedBases[i]!) {
+      const key = declarationKey(decl);
+      subclassesOf.set(key, [...(subclassesOf.get(key) ?? []), cls]);
+    }
+  });
   const classOf = (c: MarkerCandidate): ClassInheritance | null => {
     // A class candidate is its own declaration; a method's is the `owner` it records.
     const at = c.method ? c.owner : { line: c.line, col: c.col };
@@ -302,52 +307,57 @@ export async function fillMarkers(
     const subs = subclassesOf.get(declarationKey(owner)) ?? [];
     if (!c.method) return subs.map(classLocation);
     const bare = c.symbol.replace(/\s*[(<].*$/, "");
+    const outlines = await Promise.all(
+      subs.map((sub) => deps.supers.outline(sub.path).catch(() => [] as OutlineItem[])),
+    );
     const targets: Location[] = [];
-    for (const sub of subs) {
-      const outline = await deps.supers.outline(sub.path).catch(() => [] as OutlineItem[]);
-      const m = methodInOutline(outline, sub, bare);
+    subs.forEach((sub, i) => {
+      const m = methodInOutline(outlines[i]!, sub, bare);
       if (m) targets.push({ path: sub.path, range: m.selection_range });
-    }
+    });
     return targets;
   };
   if (byName.size) {
-    for (let i = 0; i < down.length; i++) {
-      const c = down[i]!;
-      const owner = classOf(c);
-      if (!owner) continue;
-      // Merge, never replace: a server that answers sees one root, so its list can miss
-      // the subclasses living in an attached project while still being non-empty.
-      implementations[i] = withoutSelf(
-        path,
-        c,
-        mergeLocations(implementations[i] ?? [], await subclassDeclarations(c, owner)),
-      );
-    }
+    await Promise.all(
+      down.map(async (c, i) => {
+        const owner = classOf(c);
+        if (!owner) return;
+        // Merge, never replace: a server that answers sees one root, so its list can miss
+        // the subclasses living in an attached project while still being non-empty.
+        implementations[i] = withoutSelf(
+          path,
+          c,
+          mergeLocations(implementations[i] ?? [], await subclassDeclarations(c, owner)),
+        );
+      }),
+    );
   }
-  const supers: SuperMethod[][] = [];
-  for (const c of up) supers.push(await superMethodTargets(path, c.owner!, c.symbol, deps.supers));
-  if (byName.size) {
-    for (let i = 0; i < up.length; i++) {
-      const c = up[i]!;
-      const self = classOf(c);
-      if (!self) continue;
-      const found = resolver ? await superMethodsFrom(resolver, self, c.symbol, deps) : [];
-      if (!found.length) continue;
-      const known = supers[i]!;
-      // Same merge rule as ↓: add the graph's super methods to what the server answered.
-      const extra = found.map((f) => f.location).filter((l) => !known.some((s) => sameDeclarationLine(s.location, l)));
-      const owners = [...new Set(found.map((f) => f.owner))].sort((a, b) => a.localeCompare(b));
-      entry(c).supers = {
-        kind: "overriding",
-        line: c.line,
-        col: c.col,
-        method: c.method,
-        name: c.name,
-        targets: [...known.map((s) => s.location), ...extra],
-        tooltip: tx`Overrides method in ${owners.join(", ")}`,
-        chooserTitle: tx`Choose Super Method of ${c.name} (${known.length + extra.length} found)`,
-      };
-    }
+  const supers = await Promise.all(up.map((c) => superMethodTargets(path, c.owner!, c.symbol, deps.supers)));
+  if (byName.size && resolver) {
+    await Promise.all(
+      up.map(async (c, i) => {
+        const self = classOf(c);
+        if (!self) return;
+        const found = await superMethodsFrom(resolver, self, c.symbol, deps);
+        if (!found.length) return;
+        const known = supers[i]!;
+        // Same merge rule as ↓: add the graph's super methods to what the server answered.
+        const extra = found
+          .map((f) => f.location)
+          .filter((l) => !known.some((s) => sameDeclarationLine(s.location, l)));
+        const owners = [...new Set(found.map((f) => f.owner))].sort((a, b) => a.localeCompare(b));
+        entry(c).supers = {
+          kind: "overriding",
+          line: c.line,
+          col: c.col,
+          method: c.method,
+          name: c.name,
+          targets: [...known.map((s) => s.location), ...extra],
+          tooltip: tx`Overrides method in ${owners.join(", ")}`,
+          chooserTitle: tx`Choose Super Method of ${c.name} (${known.length + extra.length} found)`,
+        };
+      }),
+    );
   }
   // Go: an implementation request on a type or method answers the interfaces it satisfies.
   let satisfied: Location[][] = [];
@@ -404,20 +414,27 @@ async function superMethodsFrom(
   for (let d = 0; d < depth && level.length; d++) {
     const next: ClassInheritance[] = [];
     const found: { location: Location; owner: string }[] = [];
-    for (const cls of level) {
-      for (const base of cls.bases) {
-        // Same rule as the graph: a base the imports name, else a unique one.
-        for (const baseCls of await resolver.resolve(base, cls.path)) {
-          if (seen.has(key(baseCls))) continue;
-          seen.add(key(baseCls));
-          const outline = await deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[]);
-          const m = methodInOutline(outline, baseCls, bare);
-          if (m) found.push({ location: { path: baseCls.path, range: m.selection_range }, owner: base });
-          // Not declared there: keep walking that class's own bases.
-          else next.push(baseCls);
-        }
+    const pairs = level.flatMap((cls) => cls.bases.map((base) => ({ cls, base })));
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; resolves within a level are parallel
+    const resolved = await Promise.all(pairs.map(({ cls, base }) => resolver.resolve(base, cls.path)));
+    const toOutline: Array<{ baseCls: ClassInheritance; base: string }> = [];
+    pairs.forEach(({ base }, i) => {
+      for (const baseCls of resolved[i]!) {
+        if (seen.has(key(baseCls))) continue;
+        seen.add(key(baseCls));
+        toOutline.push({ baseCls, base });
       }
-    }
+    });
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; outlines within a level are parallel
+    const outlines = await Promise.all(
+      toOutline.map(({ baseCls }) => deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[])),
+    );
+    toOutline.forEach(({ baseCls, base }, i) => {
+      const m = methodInOutline(outlines[i]!, baseCls, bare);
+      if (m) found.push({ location: { path: baseCls.path, range: m.selection_range }, owner: base });
+      // Not declared there: keep walking that class's own bases.
+      else next.push(baseCls);
+    });
     if (found.length) return found;
     level = next;
   }
@@ -446,35 +463,38 @@ async function fromHierarchy(
     const key = `${c.owner.line}:${c.owner.col}`;
     byOwner.set(key, [...(byOwner.get(key) ?? []), c]);
   }
-  for (const methods of byOwner.values()) {
-    if (methods.length < 2) continue;
-    const owner = methods[0]!.owner!;
-    const subtypes = await allSubtypes(path, owner, supers, methods.length - 1);
-    if (!subtypes) continue;
-    const type = down.find((c) => !c.method && c.line === owner.line && c.col === owner.col);
-    if (type)
-      known.set(
-        type,
-        subtypes.map((s) => ({ path: s.path, range: s.selectionRange })),
-      );
-    for (const m of methods) {
-      const targets: Location[] = [];
-      let unsure = false;
-      for (const s of subtypes) {
-        const outline = await supers.outline(s.path).catch((e) => {
-          if (isCancelled(e)) throw e;
-          return null;
-        });
-        const found = outline && overridersInType(outline, s, m.symbol);
-        if (!found) {
-          unsure = true;
-          break;
+  await Promise.all(
+    [...byOwner.values()].map(async (methods) => {
+      if (methods.length < 2) return;
+      const owner = methods[0]!.owner!;
+      const subtypes = await allSubtypes(path, owner, supers, methods.length - 1);
+      if (!subtypes) return;
+      const type = down.find((c) => !c.method && c.line === owner.line && c.col === owner.col);
+      if (type)
+        known.set(
+          type,
+          subtypes.map((s) => ({ path: s.path, range: s.selectionRange })),
+        );
+      for (const m of methods) {
+        const targets: Location[] = [];
+        let unsure = false;
+        for (const s of subtypes) {
+          // oxlint-disable-next-line no-await-in-loop -- stop at the first subtype whose overrides are uncertain
+          const outline = await supers.outline(s.path).catch((e) => {
+            if (isCancelled(e)) throw e;
+            return null;
+          });
+          const found = outline && overridersInType(outline, s, m.symbol);
+          if (!found) {
+            unsure = true;
+            break;
+          }
+          for (const o of found) targets.push({ path: s.path, range: o.selection_range });
         }
-        for (const o of found) targets.push({ path: s.path, range: o.selection_range });
+        if (!unsure) known.set(m, targets);
       }
-      if (!unsure) known.set(m, targets);
-    }
-  }
+    }),
+  );
   return known;
 }
 
@@ -490,6 +510,7 @@ async function allSubtypes(path: string, pos: Pos, supers: SuperDeps, budget: nu
       if (++asked > budget) return null;
       let found: HierarchyItem[];
       try {
+        // oxlint-disable-next-line no-await-in-loop -- budgeted walk: stop on the request budget or cancellation
         found = await supers.subtypes!(t.path, t.pos);
       } catch (e) {
         if (isCancelled(e)) throw e;
@@ -773,6 +794,7 @@ class MarkersPlugin {
       const batches = markerBatches(candidates, text.lineAt(from).number - 1, text.lineAt(to).number - 1);
       for (const batch of batches) {
         const request = (this.request = nextRequestId());
+        // oxlint-disable-next-line no-await-in-loop -- batches are ordered; cancellation, staleness and UI updates follow each
         await fillMarkers(ctx.path, batch, groups, markerDeps(ctx, items, request, entry.cache), entry.cache);
         if (this.request === request) this.request = null;
         if (stale()) return;

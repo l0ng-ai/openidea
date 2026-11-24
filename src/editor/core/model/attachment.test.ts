@@ -19,6 +19,7 @@ const host: SlotHost = {
 };
 
 async function settle() {
+  // oxlint-disable-next-line no-await-in-loop -- each tick flushes work scheduled during the previous tick
   for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
 }
 

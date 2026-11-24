@@ -16,7 +16,7 @@
  * - uses the clipboard, when the plugin was granted `clipboard`;
  * - passes on IDE shortcuts it doesn't handle itself (Save, Close…).
  */
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { tx } from "@/platform/i18n";
 import { dispatchForwardedKey } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
@@ -61,6 +61,8 @@ export interface FrameDocument {
   read(): DocumentState & { readOnly: boolean; name: string };
   /** The bytes of the file on disk, for binary documents (read-only, so the disk is current). */
   bytes(): Promise<Uint8Array>;
+  size?(): Promise<number>;
+  readRange?(offset: number, length: number): Promise<Uint8Array>;
   /** Applies the frame's edits as one change; throws `stale` when not at `version`. Returns the new version. */
   edit(version: number, changes: readonly TextChange[]): number;
   /** Changes made other than through `edit` (the text editor, Undo, other windows). */
@@ -258,6 +260,7 @@ export interface WebViewProps {
   document?: FrameDocument | null;
   /** The backend document, for messages to the plugin's code. */
   doc?: number | null;
+  binaryPath?: string;
   /** The text editor an editor panel follows; none elsewhere. */
   editor?: FrameEditor | null;
 }
@@ -269,6 +272,7 @@ export function WebView({
   header = "default",
   document = null,
   doc = null,
+  binaryPath,
   editor = null,
 }: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
@@ -278,6 +282,10 @@ export function WebView({
   const headless = ownHeader && page !== null && "url" in page && loadedPage === page;
   useOwnToolWindowHeader(headless);
   const hasCode = plugin?.hasCode ?? false;
+  const eventEditor = useMemo(
+    () => (binaryPath ? { path: binaryPath, language: "binary", selections: [] } : undefined),
+    [binaryPath],
+  );
   const clipboard = plugin?.capabilities.some((c) => c.id === "clipboard" && c.granted) ?? false;
   const anyAction = plugin?.capabilities.some((c) => c.id === "ide.commands" && c.granted) ?? false;
   const anyActionRef = useRef(anyAction);
@@ -409,6 +417,27 @@ export function WebView({
           const bytes = await document.bytes();
           return [bytes, [bytes.buffer]];
         }
+        case "document.size": {
+          if (!document?.size) throw new Error("this view shows no binary document");
+          return [await document.size()];
+        }
+        case "document.readRange": {
+          if (!document?.readRange) throw new Error("this view shows no binary document");
+          const { offset, length } = args;
+          if (
+            typeof offset !== "number" ||
+            !Number.isSafeInteger(offset) ||
+            offset < 0 ||
+            typeof length !== "number" ||
+            !Number.isSafeInteger(length) ||
+            length < 0 ||
+            length > 1024 * 1024 ||
+            !Number.isSafeInteger(offset + length)
+          )
+            throw new Error("invalid byte range (at most 1 MiB per read)");
+          const bytes = await document.readRange(offset, length);
+          return [bytes, [bytes.buffer]];
+        }
         case "document.edit":
         case "document.replace": {
           if (!document) throw new Error("this view shows no document");
@@ -507,7 +536,7 @@ export function WebView({
         if (ptys.handle(m.text)) return;
         if (hasCode) {
           pluginsBackend()
-            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
+            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc, eventEditor)
             .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
         }
       }
@@ -524,7 +553,7 @@ export function WebView({
       window.removeEventListener("pagehide", onUnload);
       currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, editor, hasCode, post, page]);
+  }, [pluginId, view, document, doc, eventEditor, editor, hasCode, post, page]);
 
   if (!page)
     return (

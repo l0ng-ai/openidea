@@ -174,6 +174,7 @@ describe("Close non-modified files first", () => {
     useProject.setState({ settings: { editor: { tabs: { tabLimit: 2, closingPolicy: "unchanged" } } } as never });
     setFileDecorations("vcs", new Map([["/p/a.ts", { color: "modified" }]]));
     try {
+      // oxlint-disable-next-line no-await-in-loop -- tabs must open in order: the tab limit evicts by last use, which is what this test asserts
       for (const path of ["/p/a.ts", "/p/b.ts", "/p/c.ts"]) await controller.openFile(path);
       expect(pane().tabs.map((tab) => tab.input.path)).toEqual(["/p/a.ts", "/p/c.ts"]);
     } finally {

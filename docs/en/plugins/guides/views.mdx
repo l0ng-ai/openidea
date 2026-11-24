@@ -197,6 +197,13 @@ fn handle(&mut self, _view: &str, event: ViewEvent, ctx: &Invocation) -> Result<
 
 It needs `editor.read` and `editor.write`.
 
+For large binary files, use `binary = true` on a web custom editor with
+`layout = "tab"` and `engines.openidea = "^1.16"`. The IDE opens the file
+without creating a text document. The page gets a read-only document with
+its filename and can read the file through the web view bridge.
+
+Messages from a binary editor carry the open file as the editor in the plugin invocation.
+
 ## HTML bodies
 
 `Body::Html` runs in a sandboxed frame: an opaque origin under a CSP that allows only its
@@ -247,6 +254,8 @@ web = "web/index.html"   # the page; its directory is what it can load
 | `window.openidea`                    | What it does                                                                                                         |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | `document.get()`                     | `{ version, text, readOnly, name }` of the custom editor's document (none in a tool window)                          |
+| `document.size()`                    | Size in bytes of the file open in a binary custom editor                                                             |
+| `document.readRange(offset, length)` | Bytes from the open binary file as a `Uint8Array`. Each call reads at most 1 MiB and may return fewer bytes at EOF   |
 | `document.edit(version, edits)`      | Applies `[{ from, to, insert }]` (UTF-16 offsets) as one undoable change; rejects with `stale` when not at `version` |
 | `document.replace(version, text)`    | The same with the whole text                                                                                         |
 | `document.onChange(fn)`              | `{ version, text }` after changes made elsewhere (text editor, Undo, another window)                                 |
