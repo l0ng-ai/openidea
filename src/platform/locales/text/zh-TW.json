@@ -9228,5 +9228,7 @@
   "Configure skills for this session": "為此工作階段設定技能",
   "No skills found in .agents/skills, .openidea/skills, ~/.agents/skills, or the CLI folders of Claude Code, GitHub Copilot, Codex, and Cursor.": "未在 .agents/skills、.openidea/skills、~/.agents/skills 或 Claude Code、GitHub Copilot、Codex 與 Cursor 的 CLI 資料夾中找到技能。",
   "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.": "該 CLI 會自己發現這個資料夾：關閉只會讓 OpenIDEA 的 / 選單不再提供該技能，並且只在 CLI 支援停用時生效。",
-  "Cannot find the source of {0}": "找不到 {0} 的原始碼"
+  "Cannot find the source of {0}": "找不到 {0} 的原始碼",
+  "Center group": "置中群組",
+  "Move to Center": "移到置中"
 }

@@ -9390,6 +9390,8 @@ export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" |
 
 export type MainToolbarSettings = {
 	left?: string[],
+	/**  Centred in the toolbar (between the other two groups when they leave too little room). */
+	center?: string[],
 	right?: string[],
 	/**  Widgets the user removed. */
 	hidden?: string[],

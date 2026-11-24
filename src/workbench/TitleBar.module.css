@@ -122,6 +122,13 @@
   align-self: stretch;
   min-width: 24px;
 }
+/* Customize Main Toolbar's Center group; toolbarCenter.ts sizes the spacer before it. */
+.centerGroup {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
 .tools {
   display: flex;
   align-items: center;
