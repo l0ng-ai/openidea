@@ -69,7 +69,9 @@ it("middle click on a header button leaves the tool window open", () => {
 it("middle click on a header content tab closes the tab, not the window", () => {
   showToolWindow("problems");
   render(<ToolWindowLayout editor={null} />);
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "File" }), { button: 1 });
+  const tab = screen.getByRole("tab", { name: "File" });
+  fireEvent.mouseDown(tab, { button: 1 });
+  fireEvent.mouseUp(tab, { button: 1 });
   expect(closeContentTab).toHaveBeenCalledWith("file");
   expect(isToolWindowVisible("problems")).toBe(true);
 });

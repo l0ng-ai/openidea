@@ -124,16 +124,33 @@ describe("Tabs interactions", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
     render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} />);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "B" }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: "B" });
+    expect(fireEvent.mouseDown(tab, { button: 1 })).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(fireEvent.mouseUp(tab, { button: 1 })).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledWith("b");
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("does not close a tab when the middle button is released after leaving the pressed tab", () => {
+    const onClose = vi.fn();
+    render(<Tabs items={items} activeId="a" onSelect={() => {}} onClose={onClose} />);
+    const pressed = screen.getByRole("tab", { name: "B" });
+    fireEvent.mouseDown(pressed, { button: 1 });
+    fireEvent.mouseLeave(pressed);
+    fireEvent.mouseEnter(pressed);
+    fireEvent.mouseUp(pressed, { button: 1 });
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("middle click ignores tabs that cannot close", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
     render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} />);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "C" }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: "C" });
+    expect(fireEvent.mouseDown(tab, { button: 1 })).toBe(true);
+    expect(fireEvent.mouseUp(tab, { button: 1 })).toBe(true);
     expect(onClose).not.toHaveBeenCalled();
     expect(onSelect).not.toHaveBeenCalled();
   });
@@ -146,7 +163,9 @@ describe("Tabs interactions", () => {
     const hidden = items.map((it) => ({ ...it, showCloseButton: false }));
     render(<Tabs items={hidden} activeId="a" onSelect={() => {}} onClose={onClose} />);
     expect(screen.queryByRole("button", { name: "Close Tab" })).toBeNull();
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "B" }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: "B" });
+    fireEvent.mouseDown(tab, { button: 1 });
+    fireEvent.mouseUp(tab, { button: 1 });
     expect(onClose).toHaveBeenCalledWith("b");
   });
 
