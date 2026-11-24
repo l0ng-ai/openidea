@@ -646,6 +646,11 @@ impl Handler for ClientHandler {
                     self.show_message(&mgr, &json!({ "type": 1, "message": text.lines().next().unwrap_or(text) }));
                 }
                 if self.server.name == "jdtls"
+                    && let Some(failure) = crate::jdtls::gradle_sync_failure(text)
+                {
+                    mgr.report_gradle_sync_failure(failure);
+                }
+                if self.server.name == "jdtls"
                     && params.get("type").and_then(Value::as_u64) == Some(1)
                     && let Some(failure) = crate::jdtls::logged_build_plan_failure(text)
                 {
