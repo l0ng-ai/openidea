@@ -13,6 +13,7 @@ import {
   type PythonSymbolKind,
 } from "./highlight";
 import { implementPythonAbstractMethods, pythonMemberIntentions } from "./members";
+import { pythonCreateFixes } from "./createFromUsage";
 import { pythonTypeHintIntentions } from "./typeHints";
 import { pythonStringIntentions } from "./stringFormat";
 
@@ -54,7 +55,11 @@ const pythonSemantics: LanguageSemantics = {
     }
   },
   isLocal: ({ type, kind }) => (kind ? kind === "localVariable" || kind === "parameter" : type === "parameter"),
-  intentions: (view) => [...pythonMemberIntentions(view), ...pythonStringIntentions(view)],
+  intentions: (view) => {
+    const { from, to } = view.state.selection.main;
+    return [...pythonCreateFixes(view, from, to), ...pythonMemberIntentions(view), ...pythonStringIntentions(view)];
+  },
+  quickFixes: pythonCreateFixes,
   asyncIntentions: pythonTypeHintIntentions,
   implementMethods: implementPythonAbstractMethods,
 };
