@@ -63,9 +63,8 @@ test("Add to VCS on the Unversioned Files header continues after a locked reposi
       if ((paths as string[]).includes(locked)) throw { kind: "io", message: "Git index is locked" };
     };
   }, paths[0]!);
-  const header = tree.getByRole("treeitem", { name: /Unversioned Files/ });
-  await header.hover();
-  await header.getByRole("button", { name: "Add to VCS", exact: true }).click();
+  await tree.getByRole("treeitem", { name: /Unversioned Files/ }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: /^Add to VCS/ }).click();
   await expect.poll(() => ipcCalls(page, "vcs_stage")).toEqual(paths.map((path) => ({ paths: [path] })));
   await expect(page.getByRole("alert").filter({ hasText: "Git index is locked" })).toContainText("alpha");
 });

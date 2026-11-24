@@ -591,7 +591,7 @@ export function stageOperation(n: ChangeNode): { label: string; icon: "plus" | "
   return null;
 }
 
-function StageButton({ node, leadSelected, staging }: { node: ChangeNode; leadSelected: boolean; staging: boolean }) {
+function StageButton({ node, leadSelected }: { node: ChangeNode; leadSelected: boolean }) {
   const op = stageOperation(node);
   if (!op) return null;
   const { label, icon, paths } = op;
@@ -599,17 +599,13 @@ function StageButton({ node, leadSelected, staging }: { node: ChangeNode; leadSe
   return (
     <IconButton
       icon={icon}
-      title={staging ? label : "Add to VCS"}
+      title={label}
       size="small"
       className={clsx(styles.stageButton, leadSelected && styles.stageButtonLead)}
       onMouseDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
-        if (node.group === "unversioned") {
-          void executeAction("vcs.addToVcs", paths);
-          return;
-        }
         void runOp(icon === "plus" ? tx`Stage ${count} files` : tx`Unstage ${count} files`, () =>
           call(icon === "plus" ? commands.vcsStage(paths) : commands.vcsUnstage(paths)),
         ).then(() => refreshNow());
@@ -1274,9 +1270,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 )}
                 {n.detail && n.detailIcon && <Icon name={n.detailIcon} size={14} className={styles.detailIcon} />}
                 {n.detail && <span className={styles.detail}>{n.detail}</span>}
-                {(staging || (n.type === "group" && n.group === "unversioned")) && (
-                  <StageButton node={n} leadSelected={st.selected && st.lead} staging={staging} />
-                )}
+                {staging && <StageButton node={n} leadSelected={st.selected && st.lead} />}
               </span>
             );
           }}
