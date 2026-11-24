@@ -10192,5 +10192,7 @@
   "To lower": "转为小写",
   "Do not change": "不更改",
   "Unquoted table, column and alias names; ClickHouse names keep their case.": "未加引号的表名、列名和别名；ClickHouse 的名称保持原有大小写。",
-  "Another deployment uses this application context": "另一个部署项已使用此应用程序上下文"
+  "Another deployment uses this application context": "另一个部署项已使用此应用程序上下文",
+  "Show component usages": "显示组件用法",
+  "Find where this component is imported and used": "查找此组件被导入和使用的位置"
 }

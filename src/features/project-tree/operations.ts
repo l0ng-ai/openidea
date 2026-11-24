@@ -4,7 +4,7 @@
  */
 import { writeClipboardText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
-import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
+import { askUsagesDetected, fileUsages, showFileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
 import {
   canRevealInFileManager,
@@ -439,26 +439,9 @@ export async function safeToDelete(files: string[]): Promise<boolean> {
   return answer === "delete";
 }
 
-/** Find Usages (⌥F7) on a file: usages of its top-level symbols from other files. */
-export async function findFileUsages(path: string) {
-  const name = nameOf(path);
-  let result;
-  try {
-    result = await fileUsages([path]);
-  } catch (e) {
-    fail(`Cannot find usages of '${name}'`, e);
-    return;
-  }
-  if (result.status !== "ok")
-    notifications().notify({
-      level: "info",
-      title: `Cannot find usages of '${name}'`,
-      body: result.reason,
-      group: "search",
-    });
-  else if (!result.usages.length)
-    notifications().notify({ level: "info", title: `No usages of '${name}' found`, group: "search" });
-  else viewUsages(name, result.usages);
+/** Find Usages (⌥F7) on a file: its imports and usages of its top-level symbols from other files. */
+export function findFileUsages(path: string) {
+  return showFileUsages(path);
 }
 
 /** Reload from Disk: re-reads the selected folders (and the folders of selected files) and their open documents. */
