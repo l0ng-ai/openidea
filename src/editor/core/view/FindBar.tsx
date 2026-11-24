@@ -280,6 +280,44 @@ export function searchAgain(target: FindTarget, forward: boolean): boolean {
   return true;
 }
 
+/** Java identifier characters, which IDEA's Find Word at Caret reads as the word. */
+const IDENTIFIER_CHAR = /[\p{L}\p{Nl}\p{Nd}\p{Mn}\p{Mc}\p{Pc}\p{Sc}]/u;
+
+/** IDEA's Find Word at Caret / Find Previous Word at Caret on the active editor of `paneId`. */
+export function findWordAtCaretInPane(paneId: string, forward: boolean) {
+  const tabId = activeTab(paneId);
+  if (tabId) findWordAtCaret(tabTarget(tabId), forward);
+}
+
+/**
+ * Searches for the selected text, or the identifier around the caret, from the caret as IDEA does:
+ * case-sensitive, not whole words, not a regex, anywhere in the whole file. It becomes the last search
+ * (Find Next goes on with it) and the query of the open bar. False without a word at the caret.
+ */
+export function findWordAtCaret(target: FindTarget, forward: boolean): boolean {
+  const view = target.view();
+  if (!view) return false;
+  const { state } = view;
+  let { from, to } = state.selection.main;
+  if (from === to) {
+    const line = state.doc.lineAt(from);
+    let start = from - line.from;
+    let end = start;
+    while (start > 0 && IDENTIFIER_CHAR.test(line.text[start - 1]!)) start--;
+    while (end < line.length && IDENTIFIER_CHAR.test(line.text[end]!)) end++;
+    from = line.from + start;
+    to = line.from + end;
+  }
+  if (from === to || to - from >= MAX_QUERY) return false;
+  const search = state.sliceDoc(from, to);
+  const patch = { search, caseSensitive: true, wholeWord: false, regexp: false, context: "any" as const };
+  if (useFindSessions.getState()[target.id]) updateOptions(target.id, () => patch);
+  else useFindOptions.setState(patch);
+  rememberSearch("find", search);
+  if (state.field(findScope, false)) view.dispatch({ effects: setFindScope.of(null) });
+  return searchAgain(target, forward);
+}
+
 /** Toggles "In Selection": limit to the selection the bar was opened over (or the current one). */
 function toggleScope(target: FindTarget) {
   const view = target.view();

@@ -47,6 +47,9 @@ describe("IDEA keymap parity", () => {
     ["navigate.implementation", ["Meta+Alt+B", "Meta+Alt+Button1"], ["Ctrl+Alt+B", "Ctrl+Alt+Button1"]],
     ["find.next", ["Meta+G"], ["F3", "Ctrl+L"]],
     ["find.previous", ["Meta+Shift+G"], ["Shift+F3", "Ctrl+Shift+L"]],
+    // FindWordAtCaret / FindPrevWordAtCaret: the macOS keymaps remove ⌘F3 / ⇧⌘F3.
+    ["find.wordAtCaret", [], ["Ctrl+F3"]],
+    ["find.previousWordAtCaret", [], ["Ctrl+Shift+F3"]],
     ["project.copy", ["Meta+C"], ["Ctrl+C", "Ctrl+Insert"]],
     ["project.cut", ["Meta+X"], ["Ctrl+X", "Shift+Delete"]],
     ["project.paste", ["Meta+V"], ["Ctrl+V", "Shift+Insert"]],

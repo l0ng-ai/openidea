@@ -1535,6 +1535,8 @@
   "Find Action…": "查詢操作…",
   "Find Next Occurrence": "查詢下一個相符項目",
   "Find Previous Occurrence": "查詢上一個相符項目",
+  "Find Word at Caret": "查詢游標處的單字",
+  "Find Previous Word at Caret": "向上查詢游標處的單字",
   "Find Usages": "查詢用法",
   "Find Usages of File": "查詢檔案的用法",
   "Find actions": "查詢操作",

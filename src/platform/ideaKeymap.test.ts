@@ -83,6 +83,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Find Word at Caret / Find Previous Word at Caret", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="FindWordAtCaret"><keyboard-shortcut first-keystroke="alt meta F3"/></action><action id="FindPrevWordAtCaret"><keyboard-shortcut first-keystroke="shift alt meta F3"/></action></keymap>`,
+    );
+    expect(k.overrides["find.wordAtCaret"]).toEqual([normalizeBinding("Alt+Meta+F3")]);
+    expect(k.overrides["find.previousWordAtCaret"]).toEqual([normalizeBinding("Shift+Alt+Meta+F3")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("rejects other XML", () => {
     expect(() => parseIdeaKeymap("<scheme name='x'/>")).toThrow(/keymap/);
   });

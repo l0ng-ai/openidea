@@ -69,6 +69,8 @@ export const intellijMacos: Record<string, string[]> = {
   "find.replaceInFile": ["Meta+R"],
   "find.next": ["Meta+G"],
   "find.previous": ["Meta+Shift+G"],
+  "find.wordAtCaret": [],
+  "find.previousWordAtCaret": [],
   "find.inPath": ["Meta+Shift+F"],
   "find.replaceInPath": ["Meta+Shift+R"],
   "find.usages": ["Alt+F7"],

@@ -37,7 +37,14 @@ import {
   type SimpleRange,
 } from "./model/selectionStack";
 import type { EditorSlot } from "./model/slot";
-import { findAgain, findPanelTarget, openFindBar, openFindBarResults, useFindPreferences } from "./view/FindBar";
+import {
+  findAgain,
+  findPanelTarget,
+  findWordAtCaretInPane,
+  openFindBar,
+  openFindBarResults,
+  useFindPreferences,
+} from "./view/FindBar";
 import {
   collapseAll,
   collapseRecursively,
@@ -1163,6 +1170,20 @@ export function registerEditorActions(): () => void {
       icon: "arrow-up",
       when: EDITOR_WHEN,
       run: () => findAgain(useTabs.getState().activePane, false),
+    },
+    {
+      id: "find.wordAtCaret",
+      title: "Find Word at Caret",
+      category: "Find",
+      when: EDITOR_WHEN,
+      run: () => findWordAtCaretInPane(useTabs.getState().activePane, true),
+    },
+    {
+      id: "find.previousWordAtCaret",
+      title: "Find Previous Word at Caret",
+      category: "Find",
+      when: EDITOR_WHEN,
+      run: () => findWordAtCaretInPane(useTabs.getState().activePane, false),
     },
     {
       id: "navigate.gotoLine",
