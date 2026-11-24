@@ -50,10 +50,12 @@ Content-Type: application/json
 
 在 URL、请求头或请求体中写 `{{name}}`。变量按以下顺序查找：
 
-1. 文件变量：`@name = value` 行。对整个文件生效，后定义的覆盖先定义的。
-2. `http-client.private.env.json` 中所选环境。
-3. `http-client.env.json` 中所选环境。
-4. 私有文件中的 `$shared`，然后是公共文件中的 `$shared`。
+1. `http-client.private.env.json` 中所选环境。
+2. `http-client.env.json` 中所选环境。
+3. 私有文件中的 `$shared`，然后是公共文件中的 `$shared`。
+4. 文件变量：`@name = value` 行。对整个文件生效，后定义的覆盖先定义的。
+
+因此所选环境中的值会覆盖同名的文件变量，与 JetBrains HTTP Client 一致。未选择环境时，文件变量先于 `$shared`。
 
 变量可以引用其他变量。有未解析变量的请求不会发送，错误信息会列出缺少的变量名。用 `<` 插入的文件中的变量不会替换。
 

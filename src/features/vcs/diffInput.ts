@@ -1,6 +1,7 @@
 /** Diff editor inputs and helpers to open them. */
 import type { ChangedFile, FileStatus, RevisionChange } from "@/bindings";
 import { COMBINED_DIFF_KIND, combinedOf, type CombinedDiffData } from "./allInOneDiff";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { call, commands, type LineEnding } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -200,7 +201,7 @@ export function diffTitle(data: DiffData): string {
 }
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  const combined = combinedOf(data);
+  const combined = auxiliaryWindow()?.kind === "diff" ? null : combinedOf(data);
   const input = combined ? combinedDiffInput(combined) : diffInput(data);
   await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
 }

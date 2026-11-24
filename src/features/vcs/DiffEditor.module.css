@@ -355,6 +355,10 @@
 .paneScroll :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
   overflow: auto !important;
 }
+.measuringPanes {
+  opacity: 0;
+}
+
 .host :global(.cm-diffDivider) {
   position: relative;
   flex: none;

@@ -1,4 +1,4 @@
-package openidea:plugin@1.14.0;
+package openidea:plugin@1.15.0;
 
 /// On-demand results for `[[contributes.searchCategories]]`. Optional, API 1.13.
 interface search-provider {
