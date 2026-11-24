@@ -2,6 +2,7 @@ import type { Tree } from "@lezer/common";
 import type { Text } from "@codemirror/state";
 import { registerLanguageSemantics, type LanguageSemantics, type SemanticRange } from "../languages";
 import { javaDeclarationRanges } from "./declarations";
+import { isReassignedAt } from "./reassigned";
 
 const TYPE_TOKENS = new Set(["class", "interface", "enum", "record", "annotation", "type", "typeParameter"]);
 
@@ -57,7 +58,7 @@ export function javaKeywordRanges(tree: Tree, doc: Text): SemanticRange[] {
 const javaSemantics: LanguageSemantics = {
   syntaxRanges: (tree, doc) => javaKeywordRanges(tree, doc),
   fallbackRanges: (tree) => javaDeclarationRanges(tree),
-  tokenClasses({ type, classes }) {
+  tokenClasses({ type, classes, from, doc, tree }) {
     // Relies on jdtls sending only contextual keywords (`sealed`, `permits`, `record`, `non-sealed`) as `modifier` tokens.
     if (type === "modifier" || type === "keyword") classes.push("cm-sem-keyword");
     // Java colours JDK types and calls like any other: `defaultLibrary` (sent for JDK symbols) gets no colour of its own.
@@ -68,6 +69,7 @@ const javaSemantics: LanguageSemantics = {
       const s = classes.indexOf("cm-sem-static");
       if (s >= 0) classes.splice(s, 1);
     }
+    if (tree && isReassignedAt(tree, doc, from)) classes.push("cm-sem-mutable");
   },
 };
 
