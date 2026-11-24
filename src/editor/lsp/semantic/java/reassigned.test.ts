@@ -55,6 +55,20 @@ describe("Java reassigned locals and parameters", () => {
     ).toEqual(["a@2", "a@2", "b@3", "b@3", "c@4", "c@4", "c@4", "d@5", "d@5", "d@5"]);
   });
 
+  it("counts assignments in case groups that fall through, not ones separated by a jump", () => {
+    expect(
+      underlined(`void m(int k) {
+  String a;
+  switch (k) { case 1: a = "x"; case 2: a = "y"; break; }
+  String b;
+  switch (k) { case 1: b = "x"; if (k > 0) break; case 2: case 3: b = "y"; }
+  String c;
+  switch (k) { case 1: c = "x"; break; case 2: { c = "y"; return; } case 3: c = "z"; throw new Error(); default: c = "w"; }
+  print(a, b, c);
+}`),
+    ).toEqual(["a@2", "a@3", "a@3", "b@4", "b@5", "b@5", "a@8", "b@8"]);
+  });
+
   it("underlines a local assigned in a loop it is declared outside of, and loop counters", () => {
     expect(
       underlined(`void m(int n) {

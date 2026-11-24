@@ -8,8 +8,9 @@
  * initialised local that is assigned again, two assignments outside exclusive branches, or one inside
  * a loop the local is declared outside of. `final` variables and try-with-resources resources never count.
  *
- * Limit: no real control flow, so `if (a) { x = 1; return; } x = 2;` and assignments in
- * different `case` groups that fall through are judged by branch structure only.
+ * Limit: no real control flow, so `if (a) { x = 1; return; } x = 2;` is judged by branch structure only.
+ * An old-style `case` group falls into the next unless its last statement is a `break`, `continue`,
+ * `return` or `throw`.
  */
 import type { SyntaxNode, Tree } from "@lezer/common";
 import type { Text } from "@codemirror/state";
@@ -190,8 +191,11 @@ function exclusive(a: SyntaxNode, b: SyntaxNode) {
       const condition = common.name === "IfStatement" ? common.getChild("ParenthesizedExpression") : common.firstChild;
       return !!condition && !same(childA, condition) && !same(childB, condition);
     }
-    case "SwitchBlock":
-      return caseGroup(childA) !== caseGroup(childB);
+    case "SwitchBlock": {
+      if (childA.name === "SwitchRule") return true;
+      const [first, second] = childA.from < childB.from ? [childA, childB] : [childB, childA];
+      return !fallsInto(first, second);
+    }
     default:
       return false;
   }
@@ -206,9 +210,22 @@ function ancestors(node: SyntaxNode) {
 
 const same = (a: SyntaxNode, b: SyntaxNode) => a.from === b.from && a.to === b.to && a.name === b.name;
 
-/** Arrow rules are their own group; old-style statements belong to the last `case` label before them. */
-function caseGroup(child: SyntaxNode) {
-  if (child.name === "SwitchRule") return child.from;
-  for (let n: SyntaxNode | null = child; n; n = n.prevSibling) if (n.name === "SwitchLabel") return n.from;
-  return -1;
+const JUMPS = new Set(["BreakStatement", "ContinueStatement", "ReturnStatement", "ThrowStatement"]);
+
+/** Whether an old-style switch can run on from statement `first` to `second`: no case group between them ends in a jump. */
+function fallsInto(first: SyntaxNode, second: SyntaxNode) {
+  let last: SyntaxNode | null = first;
+  for (let n = first.nextSibling; n && !same(n, second); n = n.nextSibling) {
+    if (n.name === "SwitchLabel") {
+      if (last && jumps(last)) return false;
+      last = null;
+    } else if (n.name !== ":") last = n;
+  }
+  return true;
+}
+
+function jumps(node: SyntaxNode): boolean {
+  if (node.name !== "Block") return JUMPS.has(node.name);
+  const statement = node.lastChild?.prevSibling;
+  return !!statement && jumps(statement);
 }
