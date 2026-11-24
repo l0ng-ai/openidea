@@ -335,3 +335,28 @@ test("terminal shows URLs in the link colour with an underline without hovering,
       await terminal.screenshot({ path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/terminal-links-${theme}.png` });
   }
 });
+
+test("terminal composition follows a drawn caret inside the session", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const layout = "/src/workbench/toolwindows/store.ts";
+    (await import(layout)).showToolWindow("terminal", true);
+  });
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  const textarea = terminal.locator(".xterm-helper-textarea");
+  await expect(textarea).toBeFocused();
+  await page.evaluate(async () => {
+    const module = "/src/features/terminal/runtime.ts";
+    const { term } = (await import(module)).activeSession();
+    term.reset();
+    // Hide the hardware cursor, draw a reverse-video cell at column five, then park at the right edge.
+    await new Promise<void>((done) => term.write("\x1b[?25l\x1b[1;5H\x1b[7mX\x1b[0m\x1b[1;999H", done));
+  });
+  const caret = terminal.locator(".xterm-rows .xterm-bg-257", { hasText: "X" });
+  await expect(caret).toBeVisible();
+  await expect
+    .poll(async () => {
+      const [input, drawn] = await Promise.all([textarea.boundingBox(), caret.boundingBox()]);
+      return input && drawn && Math.abs(input.x - drawn.x) <= 1 && Math.abs(input.y - drawn.y) <= 1;
+    })
+    .toBe(true);
+});
