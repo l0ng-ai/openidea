@@ -1156,14 +1156,14 @@ pub async fn build_compile_file(
     let file = ide_core::project_roots::resolve(&project.root, &file);
     let scope = {
         let (project, file) = (project.clone(), file.clone());
-        tokio::task::spawn_blocking(move || workspace::scope_for(&project, &file)).await.map_err(join_err)??
+        blocking(move || workspace::scope_for(&project, &file)).await?
     };
     let scope_root = scope.root.clone();
     let detected = if scope.root == project.root {
         project.detected_roots.read().clone()
     } else {
         let root = scope.root.clone();
-        tokio::task::spawn_blocking(move || ide_workspace::roots::detect(&root)).await.map_err(join_err)?
+        blocking_value(move || ide_workspace::roots::detect(&root)).await?
     };
     let sink = project.sink.clone();
     let token = host.begin_project_request(window, request);
