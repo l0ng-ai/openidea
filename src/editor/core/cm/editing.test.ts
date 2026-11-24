@@ -8,6 +8,7 @@ import {
   commentLine,
   completeStatement,
   deleteLine,
+  duplicateEntireLines,
   joinLines,
   startNewLine,
   startNewLineBefore,
@@ -140,6 +141,41 @@ describe("join lines", () => {
     const v = make("a|");
     joinLines(v);
     expect(show(v)).toBe("a|");
+  });
+});
+
+describe("duplicate entire lines", () => {
+  it("copies the whole lines a selection touches below them and selects the copy", () => {
+    const v = make("a[b\nc]d\ne");
+    duplicateEntireLines(v);
+    expect(show(v)).toBe("ab\ncd\na[b\nc]d\ne");
+  });
+
+  it("copies the caret's line without a selection", () => {
+    const v = make("a|b\nc");
+    duplicateEntireLines(v);
+    expect(show(v)).toBe("ab\na|b\nc");
+  });
+
+  it("leaves out the line where a selection ends at its start", () => {
+    const v = make("[ab\n]cd");
+    duplicateEntireLines(v);
+    expect(show(v)).toBe("ab\n[ab\n]cd");
+  });
+
+  it("copies a line once for several carets on it, and each caret's line otherwise", () => {
+    const one = make("a|b|c");
+    duplicateEntireLines(one);
+    expect(show(one)).toBe("abc\na|b|c");
+    const two = make("a|\nb\nc|");
+    duplicateEntireLines(two);
+    expect(show(two)).toBe("a\na|\nb\nc\nc|");
+  });
+
+  it("does nothing in a read-only editor", () => {
+    const v = make("a[b]", EditorState.readOnly.of(true));
+    expect(duplicateEntireLines(v)).toBe(false);
+    expect(show(v)).toBe("a[b]");
   });
 });
 

@@ -51,6 +51,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   SurroundWith: "code.surroundWith",
   EditorSelectWord: "code.extendSelection",
   EditorUnSelectWord: "code.shrinkSelection",
+  EditorDuplicateLines: "code.duplicateEntireLines",
   CollapseRegion: "code.fold",
   ExpandRegion: "code.unfold",
   CollapseAllRegions: "code.foldAll",
