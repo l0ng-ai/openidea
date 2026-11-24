@@ -54,7 +54,7 @@ export function javaKeywordRanges(tree: Tree, doc: Text): SemanticRange[] {
 const javaSemantics: LanguageSemantics = {
   syntaxRanges: (tree, doc) => javaKeywordRanges(tree, doc),
   tokenClasses({ type, classes }) {
-    // jdtls sends `sealed`, `permits`, `record` and `non-sealed` as `modifier` tokens.
+    // Relies on jdtls sending only contextual keywords (`sealed`, `permits`, `record`, `non-sealed`) as `modifier` tokens.
     if (type === "modifier" || type === "keyword") classes.push("cm-sem-keyword");
     // Java colours JDK types and calls like any other: `defaultLibrary` (sent for JDK symbols) gets no colour of its own.
     const i = classes.indexOf("cm-sem-builtin");
