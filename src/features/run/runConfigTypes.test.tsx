@@ -91,6 +91,14 @@ it.each([undefined, false])(
 );
 
 describe("configuration types", () => {
+  it("runs a new Shell Script in a terminal, other new types in the plain console", () => {
+    expect(newConfigOfType(typeFor("shell")!, []).emulateTerminal).toBe(true);
+    expect(newConfigOfType(typeFor("jar-application")!, []).emulateTerminal).toBeUndefined();
+    // A template that turned it off still wins.
+    const template = { ...newConfigOfType(typeFor("shell")!, []), emulateTerminal: false };
+    expect(newConfigOfType(typeFor("shell")!, [], template).emulateTerminal).toBe(false);
+  });
+
   it("shows the JAR fields, validates the path and edits shared working directory and environment", () => {
     const type = typeFor("jar-application")!;
     const config = newConfigOfType(type, []);
