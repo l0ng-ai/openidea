@@ -7588,6 +7588,7 @@
   "No image layers": "無映像層",
   "Instruction": "指令",
   "Volume Overview": "資料磁碟區概覽",
+  "Disk usage": "磁碟用量",
   "Mountpoint": "掛載點",
   "Containers Using Volume": "使用此資料磁碟區的容器",
   "No containers are using this volume": "沒有容器正在使用此資料磁碟區",

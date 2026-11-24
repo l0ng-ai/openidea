@@ -8123,6 +8123,7 @@
   "No image layers": "无镜像层",
   "Instruction": "指令",
   "Volume Overview": "数据卷概览",
+  "Disk usage": "磁盘占用",
   "Mountpoint": "挂载点",
   "Containers Using Volume": "使用此数据卷的容器",
   "No containers are using this volume": "没有容器正在使用此数据卷",
