@@ -2319,6 +2319,7 @@ mod tests {
         assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
     }
 
+    #[cfg(unix)]
     fn action_stub() -> CodeAction {
         CodeAction {
             title: String::new(),
