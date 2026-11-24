@@ -5,16 +5,7 @@ import { tx } from "@/platform/i18n";
 import { callDesktop, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { openProject } from "@/platform/project";
 import { Checkbox, Dialog, Icon, IconButton, Input, ProgressBar, Select, T, showContextMenu } from "@/ui";
-import { usePlugins } from "@/features/plugins/store";
-import { usePluginCatalogs, localizeContributions } from "@/features/plugins/pluginText";
-import { WebView } from "@/features/plugins/views/WebView";
-import { cloneUrlFromSource, pluginCloneSources, type PluginCloneSource } from "./cloneSource";
-import {
-  cloneSourceList,
-  notifications,
-  useCloneSources,
-  type CloneSourceContribution,
-} from "@/workbench/contributions";
+import { cloneSourceList, notifications, useCloneSources } from "@/workbench/contributions";
 import { openDialog } from "./dialogs";
 import { progressFraction } from "./model";
 import logo from "../../../src-tauri/icons/128x128.png";
@@ -23,10 +14,6 @@ import styles from "./clone.module.css";
 const PARENT_KEY = "openidea.vcs.cloneParent";
 const RECENT_URLS_KEY = "openidea.vcs.cloneRecentUrls";
 const MAX_RECENT_URLS = 10;
-
-type DialogSource = CloneSourceContribution | PluginCloneSource;
-
-const isPluginSource = (source: DialogSource): source is PluginCloneSource => "pluginId" in source;
 
 /** Folder name git would pick for `url` (`https://h/o/repo.git` → `repo`, `git@h:o/r` → `r`). */
 export function cloneDirName(url: string): string {
@@ -146,14 +133,7 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
   const layout = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
   const [recentUrls] = useState(readRecentUrls);
-  const catalogs = usePluginCatalogs((s) => s.catalogs);
-  const pluginSources = pluginCloneSources(
-    localizeContributions(
-      usePlugins((s) => s.ui),
-      catalogs,
-    ),
-  );
-  const sources: DialogSource[] = [...cloneSourceList(useCloneSources((s) => s.sources)), ...pluginSources];
+  const sources = cloneSourceList(useCloneSources((s) => s.sources));
   const source = sources.find((s) => s.id === sourceId);
 
   useEffect(() => {
@@ -174,13 +154,6 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
-
-  /** A source's page chose a repository: fill the URL and show the normal form. */
-  const applySourceUrl = (next: string) => {
-    setUrls((m) => ({ ...m, [sourceId]: next, url: next }));
-    setCustomDir(null);
-    setSourceId("url");
-  };
 
   const dir = customDir ?? joinPath(parent, cloneDirName(url));
   const depth = shallow ? parseCloneDepth(depthInput) : null;
@@ -301,22 +274,7 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
         >
           {source ? (
             <div className={styles.sourcePane}>
-              {isPluginSource(source) ? (
-                <WebView
-                  pluginId={source.pluginId}
-                  view={source.view}
-                  label={source.label}
-                  header="none"
-                  onText={(text) => {
-                    const received = cloneUrlFromSource(text);
-                    if (!received) return false;
-                    applySourceUrl(received);
-                    return true;
-                  }}
-                />
-              ) : (
-                <source.component url={url} onUrl={setUrl} onClone={(u) => void clone(u)} disabled={busy} />
-              )}
+              <source.component url={url} onUrl={setUrl} onClone={(u) => void clone(u)} disabled={busy} />
             </div>
           ) : (
             <>

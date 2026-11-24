@@ -817,7 +817,8 @@ pub(super) fn editor_panel(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
 struct CloneSourceDecl {
     id: String,
     label: String,
-    /// An IDE icon name (`branch`, `git-pull`); a package SVG is not part of v1.
+    /// An IDE icon name (`branch`, `git-pull`) or a package SVG (`icons/gitee.svg`),
+    /// as on a view: the pane lists the service's own logo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     icon: Option<String>,
     /// The page that lists repositories and posts the chosen clone URL.
@@ -836,7 +837,18 @@ pub(super) fn clone_source(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
     // and sent view events under it, and it cannot collide with a view's id.
     let mut out = UiDecl::new(format!("{CLONE_SOURCES}/{}", d.id), d.label.clone(), json(&d)?);
     out.files = files;
+    if let Some(icon) = d.icon.as_deref().filter(|i| i.ends_with(".svg")) {
+        let path = std::path::PathBuf::from(icon);
+        let svg = super::icons::read_icon(pkg, &path, super::icons::MAX_SVG)?;
+        out.assets.push((clone_source_icon_asset(&d.id), svg));
+        out.files.push(path);
+    }
     Ok(out)
+}
+
+/// Asset id of a clone source's SVG icon, fetched by the workbench for the dialog.
+pub fn clone_source_icon_asset(id: &str) -> String {
+    format!("cloneSourceIcon/{id}")
 }
 
 #[derive(Debug, Deserialize)]

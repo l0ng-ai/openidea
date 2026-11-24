@@ -157,7 +157,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3)                                                                          | without `web` |
 | `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                                                                                            | without `web` |
 | `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?` — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                                        | no            |
-| `cloneSources`      | `id`, `label`, `icon?`, `web` — an entry of the Clone Repository dialog's source list whose page posts the chosen URL (API 1.15; _Clone sources_)                                                                                      | no            |
+| `cloneSources`      | `id`, `label`, `icon?` (an icon name or a package SVG), `web` — an entry of the Clone Repository dialog's source list whose page posts the chosen URL (API 1.15; _Clone sources_)                                                      | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
@@ -446,6 +446,14 @@ matching SDK. Plugins for 1.14 and earlier keep working. New in 1.15:
   sessions while the plugin is enabled; workspace and user skills take
   precedence on a name clash, and invalid entries report a plugin load warning
   rather than failing the plugin.
+
+- **Clone sources (`[[contributes.cloneSources]]`).** An entry in the Clone
+  Repository dialog's source list: `id`, `label`, `icon?` (an icon name or a
+  package SVG) and a required `web` page, served and messaged like a web view
+  under the key `cloneSources/<id>`. The page lists the service's repositories
+  and posts `{ "op": "clone-url", "url": … }` when one is picked; the dialog
+  fills its URL field and switches to its normal form, so git runs only when the
+  user confirms. See _Clone sources_.
 
 ### API 1.14
 
@@ -1855,7 +1863,9 @@ icon = "branch"
 web = "clone/index.html"
 ```
 
-`label` is localized through `locales/<tag>.json` like other contribution titles.
+`label` is localized through `locales/<tag>.json` like other contribution titles,
+and `icon` takes an IDE icon name or a package SVG (`icon = "icons/gitee.svg"`),
+as on a view.
 `web` is required: a source without a page would show an empty pane, so
 `openidea-plugin check` rejects it. The page lives in a directory of the
 package, like a view's `web`, and may load only the files in it (4096 files,

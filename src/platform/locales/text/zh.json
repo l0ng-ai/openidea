@@ -10094,5 +10094,6 @@
   "Mark as Unread": "标记为未读",
   "Archive All Below": "归档下方全部",
   "Mark Agent Tasks as Unread": "将 Agent 任务标记为未读",
-  "Mark Agent Tasks as Read": "将 Agent 任务标记为已读"
+  "Mark Agent Tasks as Read": "将 Agent 任务标记为已读",
+  "Clone Sources": "克隆来源"
 }
