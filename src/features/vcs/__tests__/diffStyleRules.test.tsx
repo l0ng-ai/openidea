@@ -1,5 +1,9 @@
 import { afterEach, expect, it } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { fontExtension } from "@/editor/core/cm/setup";
+import type { EditorSettings } from "@/platform/ipc";
 import type { EditorInput } from "@/workbench/contributions";
 import { DiffEditor } from "../DiffEditor";
 
@@ -30,4 +34,16 @@ it.each([false, true])("adds no style rules to the page for another diff (fit: %
   render(<DiffEditor input={input("diff:third")} fit={fit} />);
   await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(6));
   expect(rules()).toBe(before);
+});
+
+// Every diff pane carries the editor font settings (`viewerEditorLook`), which the app always has.
+it("adds no style rules for another editor with the same font settings", () => {
+  const settings = { fontSize: 15, lineHeight: 22 } as EditorSettings;
+  const mount = () =>
+    new EditorView({ state: EditorState.create({ extensions: fontExtension(settings) }), parent: document.body });
+  const views = [mount()];
+  const before = rules();
+  views.push(mount(), mount());
+  expect(rules()).toBe(before);
+  views.forEach((v) => v.destroy());
 });
