@@ -96,6 +96,8 @@ const MORE_ITEMS: MenuItem[] = [
   { kind: "separator" },
   { kind: "action", action: "debug.evaluate", icon: "evaluate-expression" },
   { kind: "action", action: "debug.resetFrame", icon: "reset-frame" },
+  { kind: "separator" },
+  { kind: "action", action: "debug.dumpThreads", icon: "thread-dump" },
 ];
 
 function MoreActions() {
