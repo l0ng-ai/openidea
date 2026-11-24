@@ -24,23 +24,35 @@ describe("JUnit configurations", () => {
     const line = (p: Record<string, string>) => junitCommandLine({ module: ".", ...p }, maven);
     expect(line({ testKind: "class", className: "a.OrderTest" })).toEqual({
       command: "./mvnw",
-      args: ["test", "-Dtest=a.OrderTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      args: [
+        "test",
+        "-Dtest=a.OrderTest",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ],
       cwd: null,
     });
     expect(line({ testKind: "method", className: "a.OrderTest", methodName: "ships" }).args).toEqual([
       "test",
       "-Dtest=a.OrderTest#ships",
       "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
     ]);
     expect(line({ testKind: "package", packageName: "a.b" }).args).toEqual([
       "test",
       "-Dtest=a.b.**.*",
       "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
     ]);
     expect(line({ testKind: "pattern", pattern: "*IT, a.**.*Test" }).args).toEqual([
       "test",
       "-Dtest=*IT,a.**.*Test",
       "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
     ]);
     expect(line({ testKind: "all", vmOptions: "-Xmx1g -Da=b" }).args).toEqual(["test", "-DargLine=-Xmx1g -Da=b"]);
   });

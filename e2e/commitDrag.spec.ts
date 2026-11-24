@@ -80,3 +80,72 @@ test("dragging an unversioned file onto a changelist adds it to Git", async ({ w
   await expect(changes.getByRole("treeitem", { name: /Unversioned Files/ })).toHaveCount(0);
   await expect(changes.getByRole("treeitem", { name: /notes\.txt/ })).toBeVisible();
 });
+
+test("dragging one changelist onto another moves all of its files (PyCharm style)", async ({ workbench: page }) => {
+  await openFromTree(page, "build.gradle.kts");
+  await stubDesktop(page);
+  await page.evaluate(async (root) => {
+    const h = window.__ipc.handlers;
+    h.vcs_roots = () => [{ root, operation: null, head: "main", headCommit: "1111111" }];
+    h.vcs_branch_info = () => ({
+      head: "main",
+      headCommit: "1111111",
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+      operation: null,
+    });
+    h.vcs_status = () => [
+      {
+        path: `${root}/build.gradle.kts`,
+        relPath: "build.gradle.kts",
+        staged: null,
+        unstaged: "modified",
+        renamedFrom: null,
+      },
+      {
+        path: `${root}/settings.gradle.kts`,
+        relPath: "settings.gradle.kts",
+        staged: null,
+        unstaged: "modified",
+        renamedFrom: null,
+      },
+    ];
+
+    const listsPath = "/src/features/vcs/changelists.ts";
+    const { initialChangelists, useChangelists } = await import(/* @vite-ignore */ listsPath);
+    const state = initialChangelists();
+    state.lists.push({ id: "dd", name: "dd", comment: "" });
+    state.files = { "build.gradle.kts": "default", "settings.gradle.kts": "default" };
+    useChangelists.setState({ state, root, loaded: true });
+
+    const vcsModule = "/src/features/vcs/store.ts";
+    const { useVcs, refreshNow } = await import(/* @vite-ignore */ vcsModule);
+    useVcs.setState({ available: true, root, repo: root, branchesLoaded: false, stashesLoaded: false });
+    await refreshNow();
+  }, ROOT);
+
+  await page.keyboard.press("Meta+k");
+  const changes = page.getByRole("region", { name: "Commit", exact: true }).getByRole("tree", { name: "Changes" });
+  const source = changes.getByRole("treeitem", { name: /Changes/ }).first();
+  const target = changes.getByRole("treeitem", { name: /dd/ }).first();
+  await expect(source).toBeVisible();
+  await expect(target).toBeVisible();
+  const from = (await source.boundingBox())!;
+  const to = (await target.boundingBox())!;
+
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
+  await page.mouse.up();
+
+  await expect
+    .poll(async () =>
+      page.evaluate(async () => {
+        const listsPath = "/src/features/vcs/changelists.ts";
+        const { useChangelists } = await import(/* @vite-ignore */ listsPath);
+        return useChangelists.getState().state.files;
+      }),
+    )
+    .toEqual({ "build.gradle.kts": "dd", "settings.gradle.kts": "dd" });
+});

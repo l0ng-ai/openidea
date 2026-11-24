@@ -15,13 +15,11 @@
 }
 
 .conversation {
-  position: relative;
   container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  padding-right: var(--space-3);
   border-right: 1px solid var(--border);
 }
 
@@ -40,7 +38,7 @@
 .withChanges {
   grid-template-columns: minmax(min(240px, 50%), 1fr) minmax(0, var(--agent-changes-width, 280px));
 }
-.fitWidth .streamContent > * {
+.fitWidth .stream > * {
   width: 100%;
 }
 .fitWidth .userMessage > .user {
@@ -206,14 +204,12 @@
   padding: var(--space-3);
   /* Room below the end that keeps the header of a section folded there in place (`Stream`). */
   padding-bottom: calc(var(--space-3) + var(--stream-slack, 0px));
-  font-size: var(--agent-fs-ui, var(--fs-ui));
-}
-.streamContent {
   display: flex;
   flex-direction: column;
+  font-size: var(--agent-fs-ui, var(--fs-ui));
 }
-/* Actual row heights keep the scrollbar and cross-message selections anchored. */
-.streamContent > * {
+/* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
+.stream > * {
   flex: none;
   min-width: 0;
   width: min(100%, var(--session-content-width));
@@ -241,10 +237,10 @@
 /* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
    universal adjacent-sibling rule makes Chromium restyle whole sibling subtrees on every
    DOM insertion anywhere in the window, which costs every editor scroll frame. */
-.streamContent > :where(:not(:first-child)) {
+.stream > :where(:not(:first-child)) {
   margin-top: var(--space-4);
 }
-.streamContent > [data-process] + [data-process] {
+.stream > [data-process] + [data-process] {
   margin-top: var(--space-2);
 }
 .stream:focus {
@@ -269,8 +265,10 @@
   color: var(--fg-muted);
   cursor: pointer;
 }
-.jumpToLatest:hover {
+/* Over the stream's text: keep it opaque against the icon button's translucent hover fill. */
+.streamArea .jumpToLatest:not(:disabled):hover {
   background: var(--bg-hover);
+  color: var(--fg-strong);
 }
 /* Your message with its actions, shown on hover. */
 .message {
@@ -519,12 +517,21 @@
      it doesn't leave light boxes the way an opaque near-white fill does. */
   --md-code-bg: color-mix(in srgb, var(--fg) 7%, transparent);
 }
+/* Each text block paints its own selection: WebKit otherwise fills the gap under a block's
+   last selected line across the whole block, a stripe below the unselected start of the line.
+   Not inside SVG (Mermaid labels): WebKit draws transformed foreignObject content at the origin. */
+.markdown :global(:is(p, li, h1, h2, h3, h4, h5, h6):not(foreignObject *)) {
+  transform: translateX(0);
+}
 .markdown :global(code) {
   font-family: var(--font-mono);
   font-size: var(--agent-fs-small, var(--fs-small));
-  padding: 0 2px;
   border-radius: 3px;
   background: var(--md-code-bg);
+  /* Side insets as shadows, not padding: a selection leaves inline padding unpainted. */
+  box-shadow:
+    -2px 0 0 var(--md-code-bg),
+    2px 0 0 var(--md-code-bg);
 }
 .markdown :global(pre) {
   margin: 0 0 8px;
@@ -535,8 +542,8 @@
 }
 .markdown :global(pre code) {
   display: block;
-  padding: 0;
   background: none;
+  box-shadow: none;
 }
 .codeBlock {
   position: relative;
@@ -924,8 +931,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-0-5);
-  max-height: calc(var(--h-row) * 16);
-  overflow-y: auto;
   margin: 2px 0 0 10px;
   padding-left: var(--space-3);
   border-left: 1px solid var(--border);
@@ -1207,14 +1212,13 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
-.toolImages,
-.toolImages .imageItem,
-.toolImages .imageButton {
-  max-width: 100%;
-}
+/* Images a tool read (screenshots, crops): one row height whatever their size; a click shows the whole image. */
 .toolImages .image {
-  max-width: min(100%, 640px);
-  max-height: 320px;
+  width: auto;
+  height: 96px;
+  max-width: 200px;
+  object-fit: cover;
+  object-position: top left;
 }
 .removeImage {
   position: absolute;
@@ -1228,8 +1232,14 @@
   border: 0;
   border-radius: 50%;
   background: var(--bg-popup);
+  box-shadow: 0 0 0 1px var(--border);
   color: var(--fg);
   cursor: pointer;
+}
+/* Opaque on hover too: the icon button's own hover fill is translucent over the image. */
+.imageItem .removeImage:not(:disabled):hover {
+  background: color-mix(in srgb, var(--fg-strong) 8%, var(--bg-popup));
+  color: var(--fg-strong);
 }
 
 .attachments {

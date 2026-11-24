@@ -124,6 +124,7 @@ impl PluginWorkspace for TestWorkspace {
             max_matches: limit,
             context: Default::default(),
             include_excluded: false,
+            skip_large_files: false,
         };
         let files = Mutex::new(Vec::new());
         let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
@@ -3900,6 +3901,68 @@ path = "templates/new.draw"
     f.host.set_enabled("web-demo", false).unwrap();
     assert!(file(&format!("{rev}/web/index.html")).is_err());
     assert!(f.host.web_page("web-demo", "draw").is_err());
+}
+
+#[test]
+fn web_pages_embed_only_declared_and_granted_frames() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("frame-demo");
+    for (path, text) in [
+        ("hall/index.html", "<iframe src=\"https://play.games.test:8443/room\"></iframe>"),
+        ("hall/rules.html", "<p>rules</p>"),
+        ("hall/app.js", "console.log(1)"),
+        ("panel/index.html", "<p>panel</p>"),
+    ] {
+        std::fs::create_dir_all(pkg.join(path).parent().unwrap()).unwrap();
+        std::fs::write(pkg.join(path), text).unwrap();
+    }
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        r#"id = "frame-demo"
+name = "Frame Demo"
+version = "1.0.0"
+engines.openidea = "^1.16"
+
+[capabilities]
+optional = ["net:example.com", "net:*.games.test"]
+
+[[contributes.views]]
+id = "hall"
+title = "Hall"
+web = "hall/index.html"
+frames = ["https://example.com/", "https://play.games.test:8443", "https://example.com"]
+
+[[contributes.views]]
+id = "panel"
+title = "Panel"
+web = "panel/index.html"
+"#,
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert_eq!(
+        f.host.ui_items("views").iter().find(|v| v.decl["id"] == "hall").unwrap().decl["frames"],
+        serde_json::json!(["https://example.com", "https://play.games.test:8443"])
+    );
+    let page = f.host.web_page("frame-demo", "hall").unwrap();
+    let rev = page.path.strip_prefix("frame-demo/").unwrap().split_once('/').unwrap().0.to_owned();
+    let frames = |path: &str| f.host.web_file("frame-demo", &format!("{rev}/{path}")).unwrap().frames;
+    let both = Some(vec!["https://example.com".to_owned(), "https://play.games.test:8443".to_owned()]);
+    // Every page in the declaring view's directory, not its other files nor another view's pages.
+    assert_eq!(frames("hall/index.html"), both);
+    assert_eq!(frames("hall/rules.html"), both);
+    assert_eq!(frames("hall/app.js"), None);
+    assert_eq!(frames("panel/index.html"), None);
+
+    // Only what the user granted: declining a host takes it out of the policy.
+    f.host.set_capability("frame-demo", "net:example.com", false).unwrap();
+    assert_eq!(frames("hall/index.html"), Some(vec!["https://play.games.test:8443".to_owned()]));
+    f.host.set_capability("frame-demo", "net:*.games.test", false).unwrap();
+    assert_eq!(frames("hall/index.html"), Some(Vec::new()));
+    f.host.set_capability("frame-demo", "net:example.com", true).unwrap();
+    assert_eq!(frames("hall/index.html"), Some(vec!["https://example.com".to_owned()]));
 }
 
 #[test]

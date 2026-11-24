@@ -557,6 +557,53 @@ fn map_layers(layers: Vec<ApiLayer>, now: i64) -> Vec<DockerImageLayer> {
         .collect()
 }
 
+/// Per-volume disk usage (`GET /system/df?type=volume`).
+pub(crate) fn volume_sizes(ep: &DockerEndpoint, timeout: Duration) -> Option<IdeResult<BTreeMap<String, String>>> {
+    let addr = address(ep)?;
+    Some((|| {
+        let body = check(request(&addr, "GET", "/system/df?type=volume", timeout)?)?;
+        map_volume_sizes(&body)
+    })())
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct ApiDiskUsage {
+    volumes: Option<Vec<ApiVolumeUsage>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct ApiVolumeUsage {
+    name: String,
+    usage_data: Option<ApiVolumeUsageData>,
+}
+
+const fn unknown_volume_size() -> i64 {
+    -1
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct ApiVolumeUsageData {
+    #[serde(default = "unknown_volume_size")]
+    size: i64,
+}
+
+fn map_volume_sizes(body: &str) -> IdeResult<BTreeMap<String, String>> {
+    let parsed = serde_json::from_str::<ApiDiskUsage>(body)
+        .map_err(|e| IdeError::internal(format!("the Docker daemon's disk usage is not JSON: {e}")))?;
+    Ok(parsed
+        .volumes
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| {
+            let size = v.usage_data?.size;
+            (!v.name.is_empty() && size >= 0).then(|| (v.name, human_size(size)))
+        })
+        .collect())
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -1158,6 +1205,15 @@ mod tests {
             (top.titles, top.processes),
             (vec!["PID".to_owned(), "CMD".to_owned()], vec![vec!["1".to_owned(), "sh".to_owned()]])
         );
+        let sizes = map_volume_sizes(
+            r#"{"Volumes":[{"Name":"shop_pgdata","UsageData":{"RefCount":1,"Size":145442}},{"Name":"empty","UsageData":{"RefCount":0,"Size":0}},{"Name":"remote","UsageData":{"RefCount":1,"Size":-1}},{"Name":"missing","UsageData":null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(sizes.get("shop_pgdata").map(String::as_str), Some("145.442kB"));
+        assert_eq!(sizes.get("empty").map(String::as_str), Some("0B"));
+        assert!(!sizes.contains_key("remote"));
+        assert!(!sizes.contains_key("missing"));
+        assert!(map_volume_sizes(r#"{"Volumes":null}"#).unwrap().is_empty());
     }
 
     #[test]

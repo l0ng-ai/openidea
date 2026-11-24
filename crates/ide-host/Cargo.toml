@@ -68,6 +68,7 @@ specta.workspace = true
 specta-typescript.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 tracing.workspace = true
+url = "2"
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
 dunce.workspace = true

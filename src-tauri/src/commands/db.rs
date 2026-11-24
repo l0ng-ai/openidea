@@ -14,7 +14,7 @@ use tauri::{State, Window};
 #[tauri::command]
 #[specta::specta]
 pub async fn db_export_file(path: std::path::PathBuf, text: String) -> IdeResult<()> {
-    ide_host::ops::doc::blocking(move || {
+    ide_host::ops::blocking(move || {
         std::fs::write(&path, text)?;
         Ok(())
     })
@@ -26,7 +26,7 @@ pub async fn db_export_file(path: std::path::PathBuf, text: String) -> IdeResult
 #[tauri::command]
 #[specta::specta]
 pub async fn db_tool_installs(tool: DbTool) -> IdeResult<Vec<ToolInstall>> {
-    ide_host::ops::doc::blocking(move || Ok(ide_db::tools::find_installs(tool))).await
+    ide_host::ops::blocking(move || Ok(ide_db::tools::find_installs(tool))).await
 }
 
 /// The version line of the executable at `path`.
@@ -34,7 +34,7 @@ pub async fn db_tool_installs(tool: DbTool) -> IdeResult<Vec<ToolInstall>> {
 #[tauri::command]
 #[specta::specta]
 pub async fn db_tool_version(path: std::path::PathBuf) -> IdeResult<String> {
-    ide_host::ops::doc::blocking(move || ide_db::tools::version_of(&path)).await
+    ide_host::ops::blocking(move || ide_db::tools::version_of(&path)).await
 }
 
 /// The long options the executable at `path` lists in its `--help` (`masking-policies`…).
@@ -42,7 +42,7 @@ pub async fn db_tool_version(path: std::path::PathBuf) -> IdeResult<String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn db_tool_options(path: std::path::PathBuf) -> IdeResult<Vec<String>> {
-    ide_host::ops::doc::blocking(move || ide_db::tools::options_of(&path)).await
+    ide_host::ops::blocking(move || ide_db::tools::options_of(&path)).await
 }
 
 /// What made the dump at `path` and whether it creates its own database (from its first bytes).
@@ -50,7 +50,7 @@ pub async fn db_tool_options(path: std::path::PathBuf) -> IdeResult<Vec<String>>
 #[tauri::command]
 #[specta::specta]
 pub async fn db_dump_info(path: std::path::PathBuf) -> IdeResult<DumpInfo> {
-    ide_host::ops::doc::blocking(move || ide_db::tools::dump_info(&path)).await
+    ide_host::ops::blocking(move || ide_db::tools::dump_info(&path)).await
 }
 
 /// The command line `db_run_tool` would run, without the password.

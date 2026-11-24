@@ -1,0 +1,9 @@
+id = "test.completion-list"
+name = "Completion list fixture"
+version = "0.1.0"
+engines.openidea = "^1.16"
+wasm = "dist/plugin.wasm"
+
+[[contributes.providers]]
+kinds = ["completion"]
+languages = ["plaintext", "text"]

@@ -67,6 +67,7 @@ fn query(context: SearchContext) -> SearchQuery {
         max_matches: 1_000_000,
         context,
         include_excluded: false,
+        skip_large_files: false,
     }
 }
 
@@ -76,12 +77,20 @@ fn measured(
     context: SearchContext,
     literals: Option<Literals<'_>>,
 ) -> (Vec<FileMatches>, SearchSummary, usize) {
+    measured_query(root, &query(context), literals)
+}
+
+fn measured_query(
+    root: &Path,
+    query: &SearchQuery,
+    literals: Option<Literals<'_>>,
+) -> (Vec<FileMatches>, SearchSummary, usize) {
     let out = Mutex::new(Vec::new());
     let before = LIVE.load(Relaxed);
     PEAK.store(before, Relaxed);
     let summary = search_in_context(
         root,
-        &query(context),
+        query,
         None,
         literals,
         TextSource::detected(&|_| None),
@@ -156,4 +165,19 @@ fn searching_a_big_file_holds_a_bounded_part_of_it() {
     let parsed = parsed.into_inner().unwrap();
     assert!(parsed.iter().any(|name| name == "gbk.log"), "files within the limit are still analysed");
     assert!(!parsed.iter().any(|name| name == "utf8.log"), "a 40 MiB text is never handed to the parser");
+
+    // A file without line breaks (a database dump, a minified bundle) is one line: the search
+    // reads it up to its buffer limit (which the buffer's growth may overshoot), not whole.
+    let one = tempfile::tempdir_in(dir.path()).unwrap();
+    let line = "(1,'needle','a@example.com'),".repeat(1000);
+    write_repeated(&one.path().join("dump.sql"), b"", line.as_bytes(), 96 * MIB);
+    let (_, _, held) = measured(one.path(), SearchContext::Any, None);
+    let limit = ide_search::MAX_SEARCH_BUFFER_BYTES;
+    assert!(held < 2 * limit, "a single-line file held {} MiB", held / MIB);
+
+    // A background scan leaves files over the code insight limit unread.
+    let skip = SearchQuery { skip_large_files: true, ..query(SearchContext::Any) };
+    let (files, summary, held) = measured_query(expected[0].2.path(), &skip, None);
+    assert_eq!((files.len(), summary.matches), (0, 0));
+    assert!(held < MIB, "a skipped file held {} KiB", held / 1024);
 }

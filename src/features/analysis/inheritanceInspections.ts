@@ -1,6 +1,7 @@
 /**
  * Python inheritance inspections: circular inheritance, `@override` consistency, abstract
- * methods a class leaves unimplemented, and overrides that only forward to the base.
+ * methods a class leaves unimplemented, overrides that only forward to the base, and methods
+ * that may be static.
  *
  * The rules read the IDE's inheritance graph (`inheritanceGraph.ts`) plus the facts the
  * Python parser reports for a document (`docPythonFacts`). Nothing here parses source text,
@@ -10,9 +11,15 @@
  */
 import type { Extension } from "@codemirror/state";
 import { ViewPlugin, type EditorView } from "@codemirror/view";
-import { inspectionControlProviders, type EditorDocContext } from "@/editor/api";
+import {
+  inspectionControlProviders,
+  intentionProviders,
+  quickFixProviders,
+  type ContributedIntention,
+  type EditorDocContext,
+} from "@/editor/api";
 import { onServerSettled } from "@/editor/lsp/availability";
-import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
+import { inspectionsAt, setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { withDocument } from "@/editor/lsp/files";
 import { lspRequest } from "@/editor/lsp/lsp";
 import {
@@ -29,6 +36,8 @@ import {
   PYTHON_ABSTRACT_METHOD_PRODUCER,
   PYTHON_CIRCULAR_BASES_INSPECTION,
   PYTHON_CIRCULAR_BASES_PRODUCER,
+  PYTHON_METHOD_MAY_BE_STATIC_INSPECTION,
+  PYTHON_METHOD_MAY_BE_STATIC_PRODUCER,
   PYTHON_OVERRIDE_INSPECTION,
   PYTHON_OVERRIDE_PRODUCER,
   PYTHON_REDUNDANT_OVERRIDE_INSPECTION,
@@ -53,6 +62,7 @@ import {
   type Range,
 } from "@/platform/ipc";
 import { isSuppressed, suppressControls, type FactsOf } from "./pythonSuppression";
+import { makeMethodStatic, makeStaticChanges } from "./makeStatic";
 
 /** The inspection producers, one per rule. */
 const PRODUCERS = [
@@ -60,6 +70,7 @@ const PRODUCERS = [
   PYTHON_OVERRIDE_PRODUCER,
   PYTHON_ABSTRACT_METHOD_PRODUCER,
   PYTHON_REDUNDANT_OVERRIDE_PRODUCER,
+  PYTHON_METHOD_MAY_BE_STATIC_PRODUCER,
 ];
 
 /** What the rules read for one document: its own facts and a way to read another file's. */
@@ -70,6 +81,8 @@ export interface InheritanceInspectionDeps {
   index: InheritanceIndex;
   factsOf: (path: string) => Promise<PythonFacts | null>;
   outlineOf: (path: string) => Promise<readonly OutlineItem[]>;
+  /** Direct subclasses by [`declarationKey`] of their base (`PythonIndex.subclasses`). */
+  subclasses: () => Promise<Map<string, ClassInheritance[]>>;
   /** Producers whose inspection is on; missing means every rule runs. */
   enabled?: ReadonlySet<string>;
 }
@@ -95,7 +108,30 @@ class ProjectView {
   private outlines = new Map<string, Promise<readonly OutlineItem[]>>();
   private ancestry = new Map<string, Promise<AncestryResolution>>();
 
-  constructor(private readonly deps: InheritanceInspectionDeps) {}
+  /**
+   * The graph's declarations of this document paired with its live classes. An unsaved
+   * edit moves classes off the lines the graph indexed: while the classes still read the
+   * same names in the same order, they pair up in order; otherwise only by position.
+   */
+  private readonly declOf = new Map<PythonClassFacts, ClassInheritance>();
+  private readonly liveOf = new Map<string, PythonClassFacts>();
+
+  constructor(private readonly deps: InheritanceInspectionDeps) {
+    const indexed = [...deps.index.byName.values()]
+      .flat()
+      .filter((c) => c.path === deps.path)
+      .sort(byPosition);
+    const live = [...deps.facts.classes].sort((a, b) => byPosition(a.selection.start, b.selection.start));
+    const inOrder = indexed.length === live.length && indexed.every((c, i) => c.name === live[i]!.name);
+    for (const [i, facts] of live.entries()) {
+      const decl = inOrder
+        ? indexed[i]!
+        : indexed.find((c) => c.line === facts.selection.start.line && c.col === facts.selection.start.col);
+      if (!decl) continue;
+      this.declOf.set(facts, decl);
+      this.liveOf.set(declarationKey(decl), facts);
+    }
+  }
 
   /** The document's classes, in declaration order, skipping ones the graph does not match. */
   async classes(): Promise<ClassView[]> {
@@ -126,11 +162,34 @@ class ProjectView {
   }
 
   async methodsOf(decl: ClassInheritance): Promise<PythonMethodFacts[]> {
+    if (decl.path === this.deps.path) return this.liveOf.get(declarationKey(decl))?.methods ?? [];
     const facts = await this.factsOf(decl.path);
     return facts?.classes.find((c) => sameDeclaration(c, decl))?.methods ?? [];
   }
 
+  /** Whether a class below `cls` (transitively) declares `name`. */
+  async overriddenBelow(cls: ClassView, name: string): Promise<boolean> {
+    const subclasses = await this.deps.subclasses();
+    const seen = new Set<string>();
+    const queue = [cls.decl];
+    while (queue.length) {
+      for (const sub of subclasses.get(declarationKey(queue.shift()!)) ?? []) {
+        const key = declarationKey(sub);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if ((await this.membersOf(sub)).has(name) || (await this.methodsOf(sub)).some((m) => m.name === name))
+          return true;
+        queue.push(sub);
+      }
+    }
+    return false;
+  }
+
   async membersOf(decl: ClassInheritance): Promise<ReadonlySet<string>> {
+    if (decl.path === this.deps.path) {
+      const live = this.liveOf.get(declarationKey(decl));
+      return memberNames(live ? classItem(this.deps.outline, live) : null);
+    }
     const outline = await this.outlineOf(decl.path);
     const item = outline.find(
       (i) =>
@@ -140,13 +199,7 @@ class ProjectView {
   }
 
   private declarationOf(facts: PythonClassFacts): ClassInheritance | null {
-    const found = this.deps.index.byName.get(facts.name) ?? [];
-    return (
-      found.find(
-        (c) =>
-          c.path === this.deps.path && c.line === facts.selection.start.line && c.col === facts.selection.start.col,
-      ) ?? null
-    );
+    return this.declOf.get(facts) ?? null;
   }
 
   private factsOf(path: string): Promise<PythonFacts | null> {
@@ -161,6 +214,9 @@ class ProjectView {
     return memo(this.ancestry, declarationKey(decl), () => ancestryResolution(this.deps.index, decl));
   }
 }
+
+const byPosition = (a: { line: number; col: number }, b: { line: number; col: number }) =>
+  a.line - b.line || a.col - b.col;
 
 function memo<T>(cache: Map<string, Promise<T>>, key: string, read: () => Promise<T>): Promise<T> {
   let pending = cache.get(key);
@@ -198,7 +254,7 @@ function sameDeclaration(cls: PythonClassFacts, decl: ClassInheritance): boolean
   return cls.selection.start.line === decl.line && cls.selection.start.col === decl.col;
 }
 
-/** Everything the four rules produce for one document. */
+/** Everything the rules produce for one document. */
 export async function inheritanceDiagnostics(deps: InheritanceInspectionDeps): Promise<Diagnostic[]> {
   const view = new ProjectView(deps);
   const runs = (producer: string) => deps.enabled?.has(producer) ?? true;
@@ -212,6 +268,9 @@ export async function inheritanceDiagnostics(deps: InheritanceInspectionDeps): P
     if (runs(PYTHON_OVERRIDE_PRODUCER) && view.complete(cls)) out.push(...(await unusedOverride(view, cls)));
     if (runs(PYTHON_REDUNDANT_OVERRIDE_PRODUCER)) out.push(...(await redundantOverride(view, cls)));
     if (runs(PYTHON_ABSTRACT_METHOD_PRODUCER)) out.push(...(await missingAbstractMethods(view, cls)));
+    // A method may override one a foreign base declares: only a fully known chain can say it does not.
+    if (runs(PYTHON_METHOD_MAY_BE_STATIC_PRODUCER) && view.complete(cls))
+      out.push(...(await mayBeStatic(view, cls, deps.path)));
   }
   return out;
 }
@@ -242,6 +301,32 @@ async function unusedOverride(view: ProjectView, cls: ClassView): Promise<Diagno
         PYTHON_OVERRIDE_INSPECTION,
         "warning",
         tx`Method '${method.name}' is marked @override but no base class declares it`,
+      ),
+    );
+  }
+  return out;
+}
+
+/** pytest's and unittest's naming: test methods take `self` without needing it. */
+const isTestFile = (path: string) => /(^|\/)(test_[^/]*|[^/]*_test|conftest)\.py$/.test(path);
+
+/**
+ * Methods whose body never names the receiver (the parser decides, `unusedReceiver`), unless
+ * they override a base's or a subclass overrides them (the instance method is then part of a
+ * polymorphic call), or they are test code.
+ */
+async function mayBeStatic(view: ProjectView, cls: ClassView, path: string): Promise<Diagnostic[]> {
+  if (isTestFile(path) || cls.facts.name.startsWith("Test")) return [];
+  const out: Diagnostic[] = [];
+  for (const method of cls.facts.methods) {
+    if (!method.unusedReceiver || method.name.startsWith("test")) continue;
+    if ((await declaredInAncestry(view, cls, method.name)) || (await view.overriddenBelow(cls, method.name))) continue;
+    out.push(
+      problem(
+        method.selection,
+        PYTHON_METHOD_MAY_BE_STATIC_INSPECTION,
+        "info",
+        tx`Method '${method.name}' may be static`,
       ),
     );
   }
@@ -425,6 +510,32 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
   if (ctx.language !== "python" || ctx.virtual || ctx.doc < 0) return [];
   watchChanges();
   const suppress = inspectionControlProviders.of((view, id) => suppressControls(view, id, latestFacts.get(view)));
+  // Make method static, on a method this run reported.
+  const makeStatic = (view: EditorView, from: number): ContributedIntention[] => {
+    // After an edit, the facts and the problems' ranges are stale until the next run.
+    const latest = latestFacts.get(view);
+    if (!latest || latest.doc !== view.state.doc) return [];
+    const reported = inspectionsAt(ctx.path, latest.doc, from).some(
+      (i) => i.id === PYTHON_METHOD_MAY_BE_STATIC_INSPECTION,
+    );
+    const fix = reported ? makeStaticChanges(latest.doc, latest.facts, from) : null;
+    return fix
+      ? [
+          {
+            id: "python.make-static",
+            label: "Make method static",
+            quickFix: true,
+            run: () => {
+              if (view.state.doc === latest.doc) void makeMethodStatic(view, ctx.path, ctx.doc, fix);
+            },
+          },
+        ]
+      : [];
+  };
+  const fixes = [
+    quickFixProviders.of(makeStatic),
+    intentionProviders.of((view) => makeStatic(view, view.state.selection.main.head)),
+  ];
   const plugin = ViewPlugin.define((view: EditorView) => {
     if (!isTauri()) return {};
     viewers.set(ctx.path, (viewers.get(ctx.path) ?? 0) + 1);
@@ -461,6 +572,7 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
           factsOf: (path) =>
             withDocument(path, (doc) => lspRequest(() => commands.docPythonFacts(doc))).catch(() => null),
           outlineOf: (path) => withDocument(path, (doc) => lspRequest(() => commands.docOutline(doc))).catch(() => []),
+          subclasses: project.subclasses,
         });
         if (disposed || mine !== sequence || view.state.doc !== text) return;
         latestFacts.set(view, { facts, doc: text });
@@ -498,5 +610,5 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
       },
     };
   });
-  return [plugin, suppress];
+  return [plugin, suppress, fixes];
 }

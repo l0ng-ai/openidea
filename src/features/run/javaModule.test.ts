@@ -250,6 +250,26 @@ it.each([
   expect(ipc.runStart).not.toHaveBeenCalled();
 });
 
+it("says which build errors kept a module from being imported", async () => {
+  const problems = ["web/pom.xml: Plugin org.apache.maven.plugins:maven-compiler-plugin:9.9.9 could not be resolved"];
+  ipc.javaResolveLaunch.mockResolvedValueOnce({
+    status: "error",
+    error: {
+      kind: "invalidInput",
+      message: "jdtls: /p/web is not a Java project",
+      data: { type: "javaBuildProblems", problems },
+    },
+  } as never);
+  const session = await startRun({ ...config, module: "web" });
+  expect(session?.status).toBe("failed");
+  const output = runtime(session!.id)!
+    .console.lines.map((line) => line.text)
+    .join("\n");
+  expect(output).toContain(`Java module 'web' could not be imported because its build has errors: ${problems[0]}.`);
+  expect(output).not.toContain("Wait for Java project import");
+  expect(ipc.runStart).not.toHaveBeenCalled();
+});
+
 it.each([
   ["unavailable", "jdtls is not installed (Settings › Languages & Frameworks › Language Servers)"],
   ["unavailable", "jdtls exited with code 1: wrong Java version"],
