@@ -679,3 +679,111 @@ test("Docker Compose dashboard shows per-service resource usage and named projec
   });
   await expect(detail).toContainText("27.40%", { timeout: 5000 });
 });
+
+test("Docker Compose dashboard keeps its action row pinned when scrolling", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1200, height: 640 });
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const containers = Array.from({ length: 10 }, (_, idx) => {
+      const n = idx + 1;
+      return {
+        id: `runner-${n}`,
+        name: `selfhost-github-runner-${n}`,
+        image: "myoung34/github-runner:latest",
+        command: "./bin/Runner.Listener run",
+        state: "running",
+        status: "Up 24 hours",
+        ports: "",
+        createdAt: "2026-11-22T20:00:00Z",
+        composeProject: "selfhost",
+        composeService: `github-runner-${n}`,
+        composeWorkingDir: "/work/selfhost",
+        composeFiles: ["/work/selfhost/docker-compose.yml"],
+        mounts: [],
+        networks: ["selfhost_default"],
+      };
+    });
+    const snapshot = {
+      availability: { kind: "ready", clientVersion: "28.0.1", serverVersion: "28.0.1", context: "desktop-linux" },
+      executable: "/usr/bin/docker",
+      containers,
+      images: [],
+      volumes: [],
+      networks: [],
+      errors: [],
+    };
+    window.__ipc.handlers.docker_settings = () => ({
+      connections: [{ id: "default", name: "Docker", endpoint: { kind: "default" } }],
+      registries: [],
+    });
+    window.__ipc.handlers.docker_snapshot = () => snapshot;
+    window.__ipc.handlers.docker_events = () => new Promise(() => {});
+    window.__ipc.handlers.docker_inspect = () => "[]";
+    window.__ipc.handlers.docker_container_stats = () => ({
+      cpuPerc: "0.04%",
+      memUsage: "99.85MiB / 114.3GiB",
+      memPerc: "0.09%",
+      netIo: "1.1MB / 3.75MB",
+      blockIo: "0B / 213kB",
+      pids: "15",
+    });
+
+    const storeMod = "/src/features/services/store.ts";
+    const treeMod = "/src/features/services/tree.ts";
+    const { useServices } = await import(/* @vite-ignore */ storeMod);
+    const { useServicesTree } = await import(/* @vite-ignore */ treeMod);
+    useServices.setState({
+      settings: { connections: [{ id: "default", name: "Docker", endpoint: { kind: "default" } }], registries: [] },
+      conns: { default: { snapshot, loading: false, error: null } },
+    });
+    useServicesTree.setState({
+      expanded: new Set(["docker:default"]),
+      selectedKey: "docker:default:compose:selfhost",
+      selectedKeys: new Set(["docker:default:compose:selfhost"]),
+    });
+  });
+
+  await page.keyboard.press("Meta+8");
+  const services = page.getByRole("region", { name: "Services", exact: true });
+  const detail = services.locator("[data-panel][id=services-detail]");
+  const startBtn = detail.getByRole("button", { name: "Start", exact: true });
+  const stopBtn = detail.getByRole("button", { name: "Stop", exact: true });
+  const restartBtn = detail.getByRole("button", { name: "Restart", exact: true });
+  const downBtn = detail.getByRole("button", { name: "Compose Down", exact: true });
+  await expect(downBtn).toBeVisible();
+
+  const beforeStart = (await startBtn.boundingBox())!;
+  const beforeDown = (await downBtn.boundingBox())!;
+  const beforeBanner = (await detail.getByText("Compose project 'selfhost'").boundingBox())!;
+
+  const scrollState = await detail.evaluate((panel) => {
+    const scrollers = Array.from(panel.querySelectorAll<HTMLElement>("*")).filter((el) => {
+      const cs = getComputedStyle(el);
+      return (cs.overflowY === "auto" || cs.overflowY === "scroll") && el.scrollHeight - el.clientHeight > 2;
+    });
+    scrollers[0]!.scrollTop = 160;
+    return {
+      scrollerCount: scrollers.length,
+      scrollTop: scrollers[0]!.scrollTop,
+      scrollerTop: scrollers[0]!.getBoundingClientRect().top,
+    };
+  });
+
+  expect(scrollState.scrollerCount).toBe(1);
+  expect(scrollState.scrollTop).toBeGreaterThan(100);
+  // The scroll container starts strictly below the pinned action row.
+  expect(scrollState.scrollerTop).toBeGreaterThanOrEqual(beforeDown.y + beforeDown.height);
+
+  await expect(startBtn).toBeVisible();
+  await expect(stopBtn).toBeVisible();
+  await expect(restartBtn).toBeVisible();
+  await expect(downBtn).toBeVisible();
+
+  const afterStart = (await startBtn.boundingBox())!;
+  const afterDown = (await downBtn.boundingBox())!;
+  const afterBanner = (await detail.getByText("Compose project 'selfhost'").boundingBox())!;
+
+  expect(afterStart.y).toBe(beforeStart.y);
+  expect(afterDown.y).toBe(beforeDown.y);
+  expect(afterBanner.y).toBeLessThan(beforeBanner.y - 100);
+});

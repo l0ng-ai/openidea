@@ -96,6 +96,7 @@
 }
 .detailPane {
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -235,6 +236,7 @@
   user-select: text;
 }
 .dashboardActions {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -253,6 +255,10 @@
   background: var(--bg-elev);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
+}
+.dashboard > .sectionBanner:first-child,
+.dashboardActions + .sectionBanner {
+  border-top: 0;
 }
 .propList {
   display: flex;
