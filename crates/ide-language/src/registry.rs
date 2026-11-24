@@ -885,10 +885,16 @@ mod tests {
         let cfg = reg.get(&LanguageId::new("php")).unwrap();
         let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
         // After the fallback: hover, rename and symbols stay with Intelephense.
-        assert_eq!(names, ["intelephense", "phpactor", "phoxite", "laravel-lsp"]);
+        assert_eq!(names, ["intelephense", "phpactor", "phoxite", "devsense-php-ls", "laravel-lsp"]);
         // Phoxite answers the Laravel strings itself.
         let phoxite = cfg.language_servers.iter().find(|s| s.name == "phoxite").unwrap();
         assert!(phoxite.fallback && phoxite.replaces == ["laravel-lsp"]);
+        // DEVSENSE runs without Node or PHP of its own (the npm launcher needs Node) and
+        // answers the Laravel strings itself. https://docs.devsense.com/other/lsp/docs/
+        let devsense = cfg.language_servers.iter().find(|s| s.name == "devsense-php-ls").unwrap();
+        assert!(devsense.fallback && devsense.replaces == ["laravel-lsp"]);
+        assert_eq!(devsense.command.as_str(), "devsense-php-ls");
+        assert_eq!(devsense.install_hint.as_deref(), Some("npm i -g devsense-php-ls"));
         let lsp = cfg.language_servers.iter().find(|s| s.name == "laravel-lsp").unwrap();
         assert_eq!(lsp.command.as_str(), "laravel-lsp");
         // Its `lsp` command takes no options and speaks over stdio; `--stdio` stops it at startup.
