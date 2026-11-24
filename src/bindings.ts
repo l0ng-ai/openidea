@@ -815,6 +815,12 @@ export const commands = {
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**
+	 *  Jars to append to a resolved test classpath (`class_paths`) to run its JUnit Platform tests with
+	 *  OpenIDEA's runner: the runner, and `junit-platform-launcher` of the engine's version unless the
+	 *  classpath has one (from the engine's repository, else downloaded once from Maven Central).
+	 */
+	javaJunitRunner: (classPaths: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("java_junit_runner", { classPaths })),
+	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
@@ -9442,6 +9448,16 @@ export type MavenProject = {
 	env: { [key in string]: string },
 };
 
+/**
+ *  Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+ *  and run actions are delegated to Maven.
+ */
+export type MavenRunTestsUsing = 
+/**  OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`). */
+"ide" | 
+/**  Surefire (`mvn test -Dtest=…`). */
+"maven";
+
 /**  Build Tools › Maven. */
 export type MavenSettings = {
 	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
@@ -9492,6 +9508,8 @@ export type MavenSettings = {
 	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
 	 */
 	updateSnapshots?: boolean,
+	/**  Who runs the JUnit 5 tests of the gutter's Run / Debug. */
+	runTestsUsing?: MavenRunTestsUsing,
 };
 
 /**  What keeps an idle background project loaded. */

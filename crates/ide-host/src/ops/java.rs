@@ -646,6 +646,59 @@ pub async fn java_build_workspace(
     result
 }
 
+/// Jars to append to a resolved test classpath (`class_paths`) to run its JUnit Platform tests with
+/// OpenIDEA's runner: the runner, and `junit-platform-launcher` of the engine's version unless the
+/// classpath has one (from the engine's repository, else downloaded once from Maven Central).
+#[command(trust = trusted)]
+pub async fn java_junit_runner(host: &Host, window: &str, class_paths: Vec<String>) -> IdeResult<Vec<String>> {
+    host.require_trust(window)?;
+    let data_dir = host.local_data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let runner = ide_sdk::java::junit_runner_jar(&data_dir)
+            .ok_or_else(|| IdeError::internal("Cannot install the JUnit runner"))?;
+        let launcher = match ide_sdk::java::junit_launcher(&class_paths) {
+            ide_sdk::java::JunitLauncher::OnClasspath => None,
+            ide_sdk::java::JunitLauncher::Found(path) => Some(path),
+            ide_sdk::java::JunitLauncher::Missing(version) => Some(download_junit_launcher(&data_dir, &version)?),
+            ide_sdk::java::JunitLauncher::NoPlatform => {
+                return Err(IdeError::unavailable(
+                    "No JUnit Platform (junit-platform-engine) on the test classpath. To run these tests through \
+                     Maven, set Settings › Build Tools › Maven › Run tests using to Maven.",
+                ));
+            }
+        };
+        Ok([Some(runner), launcher].into_iter().flatten().map(|p| p.to_string_lossy().into_owned()).collect())
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+fn download_junit_launcher(data_dir: &Path, version: &str) -> IdeResult<PathBuf> {
+    if version.is_empty() || !version.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+        return Err(IdeError::invalid(format!("Unexpected JUnit Platform version '{version}'")));
+    }
+    let name = format!("junit-platform-launcher-{version}.jar");
+    let dest = data_dir.join("junit").join(&name);
+    if dest.is_file() {
+        return Ok(dest);
+    }
+    std::fs::create_dir_all(dest.parent().expect("has a parent"))?;
+    let url = format!("https://repo1.maven.org/maven2/org/junit/platform/junit-platform-launcher/{version}/{name}");
+    let partial = dest.with_extension("jar.part");
+    // ponytail: unverified like the Lombok download (Central publishes SHA-1 only); HTTPS from Central.
+    let fetched = ide_tools::Http::new(&ide_core::tool_path::search_path())
+        .map(ide_tools::Http::https_only)
+        .and_then(|http| http.download(&url, &partial, None, &CancellationToken::new(), &|_| {}))
+        .and_then(|()| Ok(std::fs::rename(&partial, &dest)?));
+    fetched.map(|()| dest).map_err(|e| {
+        IdeError::unavailable(format!(
+            "Cannot download {name} from Maven Central ({}). Add org.junit.platform:junit-platform-launcher to the \
+             test dependencies, or set Settings › Build Tools › Maven › Run tests using to Maven.",
+            e.message
+        ))
+    })
+}
+
 /// An annotation processor's error for writing a file this build already wrote (JDT's
 /// `IdeFilerImpl`: "Source file already created", javac's Filer: "Attempt to recreate a file").
 fn processor_recreated_a_file(message: &str) -> bool {
@@ -946,4 +999,4 @@ mod tests {
     }
 }
 
-ide_command::domain!(java: java_build_workspace, java_debug_adapter, java_debug_server, java_resolve_launch);
+ide_command::domain!(java: java_build_workspace, java_debug_adapter, java_debug_server, java_junit_runner, java_resolve_launch);

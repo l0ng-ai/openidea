@@ -151,7 +151,7 @@ export async function gradleBootLaunch<T extends RunConfig>(config: T): Promise<
  * modules; null to launch it on the language server's classpath.
  */
 export async function gradleDelegation(config: RunConfig): Promise<RunConfig | null> {
-  if (!isTauri() || !isJvmApplication(config)) return null;
+  if (!isTauri() || !isJvmApplication(config) || config.isTest) return null;
   const { project, settings } = useProject.getState();
   if (!project?.root || settings?.languages?.java?.gradle?.runUsing === "ide") return null;
   const { model, gradleOffline } = useBuildModel.getState();

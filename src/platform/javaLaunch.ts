@@ -20,6 +20,8 @@ import { isRemoteWindow } from "@/platform/remote";
 
 export const CLASSPATH = "${classpath}";
 export const TEST_CLASSPATH = "${testClasspath}";
+/** OpenIDEA's JUnit Platform runner (`java/junit-runner`): its jar and the launcher join the test classpath. */
+export const JUNIT_RUNNER_MAIN = "ai.openidea.junit.Runner";
 /** Run configuration kinds launched as a JVM main class. */
 export const JVM_APPLICATION_KINDS = ["application", "spring-boot"];
 
@@ -259,7 +261,8 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   signal.throwIfAborted();
   const parsed = parseJavaArgs(config.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${config.name}'`);
-  report?.(tx`Building and resolving the classpath of ${parsed.mainClass}…` + "\n");
+  const target = parsed.mainClass === JUNIT_RUNNER_MAIN ? config.name : parsed.mainClass;
+  report?.(tx`Building and resolving the classpath of ${target}…` + "\n");
   const started = performance.now();
   const module = await prepareJavaModule(config, preparation.saveAll, signal);
   const moduleMs = performance.now() - started;
@@ -293,6 +296,11 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   }
   if (parsed.classpath && !info.classPaths.length)
     throw new Error(tx("The classpath is empty: is the module imported by the Java language server?"));
+  if (parsed.mainClass === JUNIT_RUNNER_MAIN) {
+    const runner = await call(commands.javaJunitRunner(info.classPaths));
+    signal.throwIfAborted();
+    info.classPaths = [...info.classPaths, ...runner];
+  }
   const resolved = resolveJavaCommand({ ...config, module }, info);
   const project = useProject.getState().project;
   if (resolved.cwd == null && project?.workspace) {
