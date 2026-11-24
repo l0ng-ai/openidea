@@ -28,6 +28,7 @@ import type {
   SymbolKind,
 } from "@/bindings";
 import { getContext } from "@/platform/context";
+import { getAction } from "@/platform/actions";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -1528,6 +1529,76 @@ export function menuGroupItems(menu: ContextMenuId, ctx: MenuGroupContext): Menu
     if (items.length) out.push(...items, { kind: "separator" });
   }
   return out;
+}
+
+export interface GitMenuContext {
+  /** The file or directory the menu targets (one path, or the selection). */
+  paths: string[];
+  /** Whether any target is a directory (Git menus of folders scope some actions). */
+  dirs?: boolean[];
+  /** Show file-revision actions (Compare with Revision…, Show Current Revision): one file only. */
+  file?: boolean;
+  /** Show Add to .gitignore: the selection excludes the project root (which cannot be ignored). */
+  ignore?: boolean;
+}
+
+/**
+ * Git › shared by the editor, editor tab and project view menus (IDEA keeps the
+ * per-menu groups in sync). Items are plain action rows, so unregistered actions
+ * disappear and `vcsAvailable` gates enablement on its own.
+ */
+export function gitMenuItems({ paths, dirs, file, ignore }: GitMenuContext): MenuItem[] {
+  const arg = paths.length === 1 ? paths[0]! : paths;
+  const some = paths.length > 0;
+  const single = paths.length === 1 ? paths[0]! : null;
+  // Unregistered actions drop out (the project view's submenu() never shows an empty menu).
+  const act = (action: string, label?: string): MenuItem | null =>
+    getAction(action) ? { kind: "action", action, arg, ...(label ? { label } : {}) } : null;
+  const action = (id: string, label?: string): MenuItem | null =>
+    getAction(id) ? { kind: "action", action: id, ...(label ? { label } : {}) } : null;
+  const nonNull = (items: (MenuItem | null)[]): MenuItem[] => items.filter((i): i is MenuItem => i !== null);
+  const ignoreSubmenu = ignore
+    ? nonNull([act("vcs.ignoreShared", ".gitignore"), act("vcs.ignoreLocal", ".git/info/exclude")])
+    : [];
+  const github = nonNull([
+    action("github.pullRequests"),
+    action("github.createPullRequest"),
+    action("github.checkoutPullRequest"),
+    action("github.openInBrowser"),
+  ]);
+  const items: (MenuItem | null)[] = [
+    single && !dirs?.[0] ? act("vcs.commit", "Commit File…") : act("vcs.commit", "Commit…"),
+    act("vcs.addToVcs", "Add"),
+    ...(ignoreSubmenu.length ? [{ label: "Add to .gitignore", submenu: ignoreSubmenu } as MenuItem] : []),
+    { kind: "separator" },
+    ...(file ? ([act("vcs.annotate", "Annotate with Git Blame")] as (MenuItem | null)[]) : []),
+    act("vcs.showDiff", "Show Diff"),
+    ...(some ? ([act("vcs.compareWithBranch", "Compare with Branch…")] as (MenuItem | null)[]) : []),
+    ...(file ? ([act("vcs.compareWithRevision", "Compare with Revision…")] as (MenuItem | null)[]) : []),
+    ...(some ? ([act("vcs.showHistory", "Show History")] as (MenuItem | null)[]) : []),
+    ...(file ? ([act("vcs.showCurrentRevision", "Show Current Revision")] as (MenuItem | null)[]) : []),
+    act("vcs.rollback", "Rollback…"),
+    { kind: "separator" },
+    action("vcs.push", "Push…"),
+    act("vcs.pull", "Pull…"),
+    action("vcs.fetch", "Fetch"),
+    { kind: "separator" },
+    act("vcs.merge", "Merge…"),
+    act("vcs.rebase", "Rebase…"),
+    { kind: "separator" },
+    action("vcs.branches", "Branches…"),
+    action("vcs.newBranch", "New Branch…"),
+    action("vcs.newTag", "New Tag…"),
+    action("vcs.resetHead", "Reset HEAD…"),
+    { kind: "separator" },
+    action("vcs.stash", "Stash Changes…"),
+    action("vcs.unstash", "Unstash Changes…"),
+    { kind: "separator" },
+    ...(github.length ? [{ label: "GitHub", icon: "github", submenu: github } as MenuItem] : []),
+    action("vcs.manageRemotes", "Manage Remotes…"),
+    action("vcs.clone", "Get from Version Control…"),
+  ];
+  return items.filter((i): i is MenuItem => i !== null);
 }
 
 // Project view selection, for actions run outside the project view (Find Action,
