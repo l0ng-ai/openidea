@@ -43,13 +43,19 @@ The project interpreter is chosen in this order:
 
 1. The interpreter set in **Settings › Languages & Frameworks › Python Interpreter**.
 2. A virtualenv in the project: `.venv`, `venv`, `env` or `.env` (a folder with `pyvenv.cfg`), or a pixi environment in `.pixi/envs/`.
-3. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
+3. The Pipenv environment for the nearest `Pipfile`, including one selected by a `.venv` file or `PIPENV_CUSTOM_VENV_NAME`.
+4. The `default` environment of a project with Hatch configuration, once Hatch has created it.
+5. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
 
-The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.
+The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, Hatch environments, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.
 
 The selected interpreter is passed to basedpyright and Pyright (`python.pythonPath`), and its virtualenv is set as `VIRTUAL_ENV` for the language server and for run configurations.
 
 The **Python Interpreter** item in the status bar shows the current interpreter. Click it to switch, or to open **Add New Interpreter…** and **Interpreter Settings…**.
+
+### Interpreter paths
+
+**Settings › Languages & Frameworks › Python › All Interpreters › Show Paths for Selected Interpreter** lists the interpreter's `sys.path` and lets you add folders outside the project to it, such as a checkout of a shared library. The added folders are saved per interpreter in the IDE settings, so they apply to every project that uses it. basedpyright and Pyright get them as `extraPaths`, runs, debug sessions, tests and the Python Console get them on `PYTHONPATH`, and they are listed under **External Libraries**. At run time they are searched before the interpreter's own entries. A folder that no longer exists is marked as missing and skipped, and so is one that `PYTHONPATH` cannot hold (not absolute, or with its separator in the name). A folder inside the project is not listed under External Libraries, so its files stay editable. The interpreter's own entries cannot be removed, and a Docker or Compose run target has no paths of its own to edit.
 
 ### A Docker or Compose run target as the interpreter
 
@@ -69,22 +75,32 @@ On **Settings › Languages & Frameworks › Python Interpreter**, choose **Add 
 - **Virtualenv Environment**: `python -m venv` from the base interpreter you pick.
 - **uv Environment**: `uv venv <location> --python <base>` (uv must be on `PATH`).
 - **Poetry Environment**: `poetry env use <base>` in the project.
+- **Pipenv Environment**: `pipenv --python <base>` in the project (pipenv must be on `PATH`). Pipenv writes a `Pipfile` when the project has none, importing `requirements.txt` if there is one. With **Install packages from Pipfile** it then runs `pipenv install --dev`. An environment the project already has is reused; if it was built on another Python version than the base interpreter, nothing is changed and the dialog says so (remove it with `pipenv --rm` to start over).
+- **Hatch Environment** is available when the project has `hatch.toml` or a `[tool.hatch]` table in `pyproject.toml`. Pick an environment to run `hatch env create <environment>` in the project. Hatch must be on `PATH` and receives the base interpreter as `HATCH_PYTHON`. Hatch reuses an existing environment. If its Python version differs from the base interpreter, the dialog reports the mismatch. Remove the environment with `hatch env remove <environment>` to recreate it. The interpreter list shows `Hatch: <project>` for `default` and `Hatch: <project>:<environment>` for the others, including environments at custom paths reported by `hatch env find`.
 - **Conda Environment**: `conda create -n <name>` in conda's envs directory, with the chosen Python version.
 
 You can also select an existing interpreter or environment folder. The new interpreter becomes the project interpreter.
 
 ### Packages
 
-The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way).
+The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way). The **Latest** column marks the packages that have a newer release: after the list loads, the IDE asks the same tool (`pip list --outdated`, or `uv pip list --outdated`), so the answer comes from the index that tool is configured to use (pip's configuration for pip, uv's for uv) and is the newest release that the interpreter can install. When the index cannot be reached for every package, or the check takes more than two minutes, the page says the check failed rather than show a list that may be missing upgrades.
+
+The **Python Packages** tool window (**View | Tool Windows**, or Find Action) manages the same packages next to the code. It lists what is installed and marks what can be upgraded. Type a name in its search field to filter the list; when the text is the exact name of a PyPI project that is not installed, the project appears under **PyPI**. Select a package to see its summary and its versions, then **Install** it (the newest release that fits the interpreter, or a version you pick), **Upgrade** or **Uninstall** it. The window manages the interpreter that runs use for the active file (in a workspace, its member's virtualenv) and shows its path. The lookup asks pypi.org by exact name: it does not search names by substring, and it does not ask a private index configured for pip, although installing does use pip's configuration. What you type in the search field is sent to pypi.org; the name of an installed package is sent only when you click **Show PyPI Details**. When pip or uv is configured to install from another index, nothing is sent to PyPI until you click **Search PyPI for …**, since a private package may have a public namesake.
 
 Other options on the page:
 
 - **Activate virtualenv** (section **Terminal**): new terminal sessions run the virtualenv's activate script.
-- **Documentation string format** (section **Docstrings**): Plain, reStructuredText, Epytext, NumPy or Google. Docstring tags and keywords are highlighted in that format.
+- **Documentation string format** (section **Docstrings**): Plain, reStructuredText, Epytext, NumPy or Google. Typing `"""` and Enter under a `def` or `class` inserts a docstring stub in that format (parameters, return value, raised exceptions), and docstring tags and keywords are highlighted in it.
 
 ### Formatting
 
-**Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`.
+**Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`. When neither the project nor your user configuration has one, Ruff formats with the indentation and line length the editor uses: the file's `.editorconfig` (`indent_size`, `indent_style`, `max_line_length`), then the indent, tab character and hard wrap you set in **Settings › Editor › Code Style › Python**. Values set in neither are not passed, so Ruff keeps its own (4 spaces, 88 columns).
+
+Black formats instead of Ruff below a `pyproject.toml` with a `[tool.black]` table, or everywhere when **Formatting provider** is set to Black in **Settings › Languages & Frameworks › Black formatter**. Black reads its `[tool.black]` options itself. The IDE runs the `black` of the project interpreter's environment, else the one in its tools folder or on `PATH`; when none is installed, Reformat Code offers to install it. **Reformat with Black** in Find Action formats with Black whatever the project uses. Black runs on save when its own **Run on save** or the editor's **Format on save** is on. Without a `[tool.black]` (looked up the way Black does: past a `pyproject.toml` without it, up to the repository root) or a user configuration, Black uses that line length too. Files Black's configuration excludes (`force-exclude`) are left unchanged, and Black before 23.11 formats the whole file instead of a selection.
+
+**Optimize Imports** (`⌃⌥O` / `Ctrl+Alt+O`) sorts the imports. Below a Ruff configuration the Ruff server does it and leaves unused imports alone (Ruff's fix-all removes them). Elsewhere the IDE runs `ruff check --extend-select I --fixable I,F401 --fix` on the file, which also removes unused imports unless your Ruff rules leave out F401; Ruff must be installed. The same goes for Optimize imports on save, before commit and in Code Cleanup.
+
+**Rearrange Code** (Find Action, or the Code menu) orders the methods of every class in the file: `__new__`, `__init__` and `__post_init__`, other dunder methods, public methods, `_protected`, then `__private` ones, each group in its original order. The docstring and class attributes before the first method stay put; a method moves with its decorators and the comment lines directly above it, and definitions sharing a name (a property and its setter, `@overload` stubs) move together. A class is left as it is when moving could change it: other statements, standalone comments or `# region` / `# fmt: off` markers among its methods, or a decorator, default value or annotation that names another of its methods. Files with syntax errors are not rearranged.
 
 ## Run and test
 

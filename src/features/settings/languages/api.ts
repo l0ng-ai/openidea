@@ -18,9 +18,10 @@ import {
   type PythonPackage,
   type Sdk,
   type SdkKind,
+  type UserPathProblem,
 } from "@/platform/ipc";
 
-export type { ContainerPython, ProjectInterpreter, PythonPackage, Sdk, SdkKind };
+export type { ContainerPython, ProjectInterpreter, PythonPackage, Sdk, SdkKind, UserPathProblem };
 
 interface SdkCache {
   byKind: Partial<Record<SdkKind, Sdk[]>>;
@@ -122,15 +123,33 @@ function streamed<T>(
 }
 
 /** Tool that creates a new Python environment (`VenvTool` in `ide-sdk`). */
-export type VenvTool = "venv" | "uv" | "poetry" | "conda";
+export type VenvTool = "venv" | "uv" | "poetry" | "conda" | "pipenv" | "hatch";
 
 export function createVenv(
   tool: VenvTool,
   base: string,
   location: string,
+  /** Also install the packages the project declares (pipenv: its `Pipfile`). */
+  installPackages: boolean,
   onLine: (line: string) => void,
 ): Streamed<Sdk> {
-  return streamed((req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, req, ch)), onLine);
+  return streamed(
+    (req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, installPackages, req, ch)),
+    onLine,
+  );
+}
+
+/**
+ * The open project's Hatch environments, or an empty list when Hatch is unconfigured.
+ * Hatch may install plugins first, so the caller cancels it when it no longer needs it.
+ */
+export function hatchEnvs(): Streamed<string[]> {
+  if (!isTauri()) return { promise: Promise.resolve([]), cancel: () => {} };
+  const request = nextRequestId();
+  return {
+    promise: call(commands.sdkPythonHatchEnvs(request)),
+    cancel: () => void commands.cancelRequest(request),
+  };
 }
 
 /** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */
@@ -138,13 +157,26 @@ export function pythonInterpreter(path: string): Promise<Sdk | null> {
   return isTauri() ? call(commands.sdkPythonInterpreter(path)) : Promise.resolve(null);
 }
 
+/** `sys.path` of an interpreter; `cancel` stops the query when its answer is no longer wanted. */
+export function pythonSysPath(python: string): { promise: Promise<string[]>; cancel: () => void } {
+  if (!isTauri()) return { promise: Promise.resolve([]), cancel: () => {} };
+  const request = nextRequestId();
+  return {
+    promise: call(commands.sdkPythonSysPath(python, request)),
+    cancel: () => void commands.cancelRequest(request),
+  };
+}
+
+/** Why each folder added to an interpreter's paths stays off the import path (`null`: it is used). */
+export function pythonUserPathProblems(paths: string[]): Promise<(UserPathProblem | null)[]> {
+  return isTauri() && paths.length
+    ? call(commands.sdkPythonUserPathProblems(paths))
+    : Promise.resolve(paths.map(() => null));
+}
+
 /** Interpreters of the other recently opened projects, each with the project it belongs to. */
 export function pythonProjectInterpreters(): Promise<ProjectInterpreter[]> {
   return isTauri() ? call(commands.sdkPythonProjectInterpreters()) : Promise.resolve([]);
-}
-
-export function listPackages(python: string): Promise<PythonPackage[]> {
-  return call(commands.sdkPythonPackages(python, nextRequestId()));
 }
 
 export function pip(

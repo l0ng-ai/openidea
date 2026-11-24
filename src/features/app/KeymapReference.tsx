@@ -121,8 +121,8 @@ function KeymapReferenceDialog({ onClose }: { onClose: () => void }) {
                   <li key={e.id} className={styles.keymapRow} title={e.id}>
                     <span className={styles.keymapTitle}>{e.title}</span>
                     <span className={styles.keymapKeys}>
-                      {e.shortcuts.map((s, i) => (
-                        <Kbd key={i}>{s}</Kbd>
+                      {e.shortcuts.map((s) => (
+                        <Kbd key={`${e.id}:${s}`}>{s}</Kbd>
                       ))}
                     </span>
                   </li>

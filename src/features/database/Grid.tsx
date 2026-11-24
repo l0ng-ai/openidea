@@ -141,6 +141,7 @@ function cellText(value: string) {
     i === 0
       ? [part]
       : [
+          // oxlint-disable-next-line react/no-array-index-key -- repeated blank lines produce identical markers; position is the identity
           <span key={i} className={styles.lineBreak}>
             ↵
           </span>,
@@ -673,6 +674,7 @@ export function Grid(props: GridProps) {
             const s = sort?.find((k) => k.column === c.name);
             return (
               <div
+                // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; cells and selection use column positions
                 key={ci}
                 role="columnheader"
                 className={clsx(styles.headerCell, onSort && styles.sortable)}
@@ -735,9 +737,8 @@ export function Grid(props: GridProps) {
               <div className={styles.rowNumber} onMouseDown={(e) => onRowNumberMouseDown(e, r)}>
                 {state === "inserted" ? "+" : (props.rowNumber?.(r) ?? firstRowNumber + r)}
               </div>
-              {columns.map((_, c) => {
+              {columns.map((col, c) => {
                 if (editing && !editing.dialog && editing.row === r && editing.col === c) {
-                  const col = columns[c]!;
                   const lit = bools[c] ? booleanLiterals(props.driver) : null;
                   const values = enums[c];
                   const cell = value(editing.row, editing.col);
@@ -752,6 +753,7 @@ export function Grid(props: GridProps) {
                     if (col.nullable !== false) options.push({ value: NULL_INPUT, label: "NULL" });
                     return (
                       <CellSelect
+                        // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; the editor belongs to this column position
                         key={c}
                         label={tx`Edit ${col.name}`}
                         value={cell === null ? NULL_INPUT : cell}
@@ -766,6 +768,7 @@ export function Grid(props: GridProps) {
                   }
                   return (
                     <input
+                      // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; the editor belongs to this column position
                       key={c}
                       className={styles.cellEditor}
                       data-cell-editor=""
@@ -808,6 +811,7 @@ export function Grid(props: GridProps) {
                   editable && onEdit && bools[c] && state !== "deleted" ? booleanLiterals(props.driver) : null;
                 return (
                   <div
+                    // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; cells and selection use column positions
                     key={c}
                     role="gridcell"
                     aria-selected={selected(r, c)}

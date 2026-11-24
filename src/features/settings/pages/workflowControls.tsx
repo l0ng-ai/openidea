@@ -232,6 +232,7 @@ export function TableEditor({
           )}
           {shown.map((row, i) => (
             <tr
+              // oxlint-disable-next-line react/no-array-index-key -- rows can repeat; position is the identity
               key={i}
               aria-selected={selected === i}
               className={clsx(selected === i && styles.selectedRow)}

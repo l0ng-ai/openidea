@@ -73,25 +73,13 @@ pub const CANCELLED: &str = "was cancelled";
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
     /// Creates/replaces this plugin's non-secret project connection settings.
-    fn database_upsert(&self, root: &Path, source: crate::PluginDataSource) -> Result<(), HostError> {
-        let _ = (root, source);
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    fn database_upsert(&self, root: &Path, source: crate::PluginDataSource) -> Result<(), HostError>;
     /// Removes only an owned data source and its credentials.
-    fn database_remove(&self, root: &Path, id: &str) -> Result<(), HostError> {
-        let _ = (root, id);
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    fn database_remove(&self, root: &Path, id: &str) -> Result<(), HostError>;
     /// Private ids of only this plugin's sources.
-    fn database_sources(&self, root: &Path) -> Result<Vec<String>, HostError> {
-        let _ = root;
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    fn database_sources(&self, root: &Path) -> Result<Vec<String>, HostError>;
     /// Writes a password to the Database credential store, without a read path.
-    fn database_credential(&self, root: &Path, id: &str, password: String) -> Result<(), HostError> {
-        let _ = (root, id, password);
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    fn database_credential(&self, root: &Path, id: &str, password: String) -> Result<(), HostError>;
     /// Requests normal connection/introspection in the invoking project's window.
     fn database_connect(
         &self,
@@ -100,10 +88,7 @@ pub trait HostApi: Send + Sync {
         id: &str,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<(), HostError> {
-        let _ = (root, client, id, cancel, timeout);
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    ) -> Result<(), HostError>;
     /// Sends `method` to the running language server named `server` of the project at
     /// `root`: a request (the result as JSON), or with `notify` a notification (`null`).
     /// `params` is JSON. Never starts a server.
@@ -117,38 +102,21 @@ pub trait HostApi: Send + Sync {
         notify: bool,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<String, HostError> {
-        let _ = (root, method, params, notify, cancel, timeout);
-        Err(HostError::NotFound(format!("no language server `{server}` is running for this project")))
-    }
+    ) -> Result<String, HostError>;
     /// The flat dependency graph of the Maven / Gradle builds of the project at `root`
     /// (of the module `module` only, when given), as the IDE last resolved it; never runs
     /// a build tool.
-    fn build_dependencies(&self, root: &Path, module: Option<&str>) -> Result<Vec<crate::DependencyNode>, HostError> {
-        let _ = (root, module);
-        Err(HostError::Failed("build data is unavailable on this host".into()))
-    }
+    fn build_dependencies(&self, root: &Path, module: Option<&str>) -> Result<Vec<crate::DependencyNode>, HostError>;
     /// Stdio argv only; no URL or bearer token.
-    fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
-        let _ = client;
-        None
-    }
+    fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>>;
     /// What other plugins contributed to `point`, as (plugin id, JSON). Only the
     /// plugin that declares the point may read it.
-    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError> {
-        let _ = point;
-        Err(HostError::NotFound("extension points are unavailable on this host".into()))
-    }
+    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError>;
 
     /// Registers a project-scoped wrapper after validating its process grant and pin.
-    fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError> {
-        let _ = (root, target);
-        Err(HostError::Failed("run targets unavailable".into()))
-    }
+    fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError>;
     /// Withdraws this plugin's target, preserving the user's remembered prompt answer.
-    fn unregister_run_target(&self, root: &Path, id: &str) {
-        let _ = (root, id);
-    }
+    fn unregister_run_target(&self, root: &Path, id: &str);
 
     /// Starts one of this plugin's configurations in a window.
     fn start_run(
@@ -159,10 +127,7 @@ pub trait HostApi: Send + Sync {
         debug: bool,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<String, HostError> {
-        let _ = (client, config, args, debug, cancel, timeout);
-        Err(HostError::Failed("runs unavailable".into()))
-    }
+    ) -> Result<String, HostError>;
     /// Opens/reuses a keyed terminal, retained across idle instance reclamation.
     fn open_terminal_session(
         &self,
@@ -172,10 +137,7 @@ pub trait HostApi: Send + Sync {
         cmd: ProcessCommand,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<String, HostError> {
-        let _ = (client, key, title, cmd, cancel, timeout);
-        Err(HostError::Failed("terminals unavailable".into()))
-    }
+    ) -> Result<String, HostError>;
     /// Writes only to an owned, live terminal.
     fn write_terminal(
         &self,
@@ -184,10 +146,7 @@ pub trait HostApi: Send + Sync {
         text: String,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<(), HostError> {
-        let _ = (client, key, text, cancel, timeout);
-        Err(HostError::Failed("terminals unavailable".into()))
-    }
+    ) -> Result<(), HostError>;
     /// Opens a content tab through the shared editor implementation.
     fn open_content_tab(
         &self,
@@ -195,30 +154,15 @@ pub trait HostApi: Send + Sync {
         tab: crate::ContentTab,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<(), HostError> {
-        let _ = (client, tab, cancel, timeout);
-        Err(HostError::Failed("content tabs unavailable".into()))
-    }
+    ) -> Result<(), HostError>;
     /// Opens a diff of two texts in the invoking window; a `None` side doesn't exist.
-    fn open_diff(&self, client: &str, diff: crate::FileDiff, file_name: Option<String>) -> Result<(), HostError> {
-        let _ = (client, diff, file_name);
-        Err(HostError::Failed("diffs unavailable".into()))
-    }
+    fn open_diff(&self, client: &str, diff: crate::FileDiff, file_name: Option<String>) -> Result<(), HostError>;
     /// Answers a content action in the invoking window.
-    fn reply_content_tab(&self, client: &str, request: &str, reply: crate::ContentTabReply) -> Result<(), HostError> {
-        let _ = (client, request, reply);
-        Err(HostError::Failed("content tabs unavailable".into()))
-    }
+    fn reply_content_tab(&self, client: &str, request: &str, reply: crate::ContentTabReply) -> Result<(), HostError>;
     /// The invoking window's editors.
-    fn open_editors(&self, client: &str) -> Result<Vec<crate::OpenEditor>, HostError> {
-        let _ = client;
-        Ok(Vec::new())
-    }
+    fn open_editors(&self, client: &str) -> Result<Vec<crate::OpenEditor>, HostError>;
     /// Opens a validated file and optionally selects a range.
-    fn editor_open(&self, client: &str, path: &Path, selection: Option<ide_core::Range>) -> Result<(), HostError> {
-        let _ = (client, path, selection);
-        Err(HostError::Failed("editor unavailable".into()))
-    }
+    fn editor_open(&self, client: &str, path: &Path, selection: Option<ide_core::Range>) -> Result<(), HostError>;
     /// Changes the selections, or reveals a range, only in an editor of this window.
     fn editor_ranges(
         &self,
@@ -226,10 +170,7 @@ pub trait HostApi: Send + Sync {
         path: &Path,
         ranges: Vec<ide_core::Range>,
         reveal: bool,
-    ) -> Result<(), HostError> {
-        let _ = (client, path, ranges, reveal);
-        Err(HostError::Failed("editor unavailable".into()))
-    }
+    ) -> Result<(), HostError>;
     /// Find in Files with the project's document overlay.
     fn search_text(
         &self,
@@ -239,35 +180,20 @@ pub trait HostApi: Send + Sync {
         limit: u32,
         cancel: &CancellationToken,
         deadline: Instant,
-    ) -> Result<crate::TextSearch, HostError> {
-        let _ = (client, root, query, limit, cancel, deadline);
-        Err(HostError::Failed("search unavailable".into()))
-    }
+    ) -> Result<crate::TextSearch, HostError>;
     /// Window-reported Problems view snapshot.
-    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<crate::FileProblems>, HostError> {
-        let _ = (client, path);
-        Ok(Vec::new())
-    }
+    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<crate::FileProblems>, HostError>;
     /// Replace or clear an editor decoration set.
-    fn decorations(&self, path: Option<&Path>, set: &str, items: Vec<crate::Decoration>) -> Result<(), HostError> {
-        let _ = (path, set, items);
-        Err(HostError::Failed("decorations unavailable".into()))
-    }
+    fn decorations(&self, path: Option<&Path>, set: &str, items: Vec<crate::Decoration>) -> Result<(), HostError>;
     /// Replace or clear a tree decoration set.
     fn file_decorations(
         &self,
         path: Option<&Path>,
         set: &str,
         item: Option<crate::FileDecoration>,
-    ) -> Result<(), HostError> {
-        let _ = (path, set, item);
-        Err(HostError::Failed("decorations unavailable".into()))
-    }
+    ) -> Result<(), HostError>;
     /// Replace all `(path, icon)` entries of a tree decoration set at once (API 1.8).
-    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
-        let _ = (set, items);
-        Err(HostError::Failed("decorations unavailable".into()))
-    }
+    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError>;
     /// Trusted repository history.
     fn vcs_log(
         &self,
@@ -275,15 +201,9 @@ pub trait HostApi: Send + Sync {
         path: Option<&str>,
         limit: u32,
         cancel: &CancellationToken,
-    ) -> Result<Vec<crate::CommitInfo>, HostError> {
-        let _ = (root, path, limit, cancel);
-        Err(HostError::Failed("git unavailable".into()))
-    }
+    ) -> Result<Vec<crate::CommitInfo>, HostError>;
     /// Trusted repository attribution, including unsaved documents.
-    fn vcs_blame(&self, client: Option<&str>, root: &Path, path: &str) -> Result<Vec<crate::BlameLine>, HostError> {
-        let _ = (client, root, path);
-        Err(HostError::Failed("git unavailable".into()))
-    }
+    fn vcs_blame(&self, client: Option<&str>, root: &Path, path: &str) -> Result<Vec<crate::BlameLine>, HostError>;
     /// Trusted repository working-tree patch, bounded to 4 MiB.
     fn vcs_diff(
         &self,
@@ -291,10 +211,7 @@ pub trait HostApi: Send + Sync {
         path: Option<&str>,
         against: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<Option<String>, HostError> {
-        let _ = (root, path, against, cancel);
-        Err(HostError::Failed("git unavailable".into()))
-    }
+    ) -> Result<Option<String>, HostError>;
 
     /// Shows a notification; `actions` name commands the plugin declares.
     fn notify(
@@ -314,28 +231,13 @@ pub trait HostApi: Send + Sync {
         title: String,
         body: String,
         actions: Vec<crate::NotificationAction>,
-    ) -> Result<(), HostError> {
-        let _ = (root, level, title, body, actions);
-        Err(HostError::NotFound("project notifications unavailable".into()))
-    }
-    fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
-        let _ = (client, text);
-        Ok(())
-    }
+    ) -> Result<(), HostError>;
+    fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError>;
     /// The clipboard of the machine `client`'s window runs on, as that window reads it;
     /// waits for the window until `cancel` fires.
-    fn read_clipboard(&self, client: &str, cancel: &CancellationToken) -> Result<crate::ClipboardContent, HostError> {
-        let _ = (client, cancel);
-        Err(HostError::Failed("the clipboard is unavailable".into()))
-    }
-    fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
-        let _ = (client, url);
-        Ok(())
-    }
-    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
-        let _ = (client, path, new_window);
-        Err(HostError::Invalid("opening projects is unavailable".into()))
-    }
+    fn read_clipboard(&self, client: &str, cancel: &CancellationToken) -> Result<crate::ClipboardContent, HostError>;
+    fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError>;
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError>;
     /// Shows `prompt` in `client`'s window and waits for the answer until the
     /// user gives one or `cancel` fires: the chosen keys (`QuickPick`), the
     /// text (`Input`, one element) or any value (`Confirm`: OK); `None` when
@@ -345,20 +247,11 @@ pub trait HostApi: Send + Sync {
         client: Option<&str>,
         prompt: Prompt,
         cancel: &CancellationToken,
-    ) -> Result<Option<Vec<String>>, HostError> {
-        let _ = (client, prompt, cancel);
-        Ok(None)
-    }
+    ) -> Result<Option<Vec<String>>, HostError>;
     /// Brings the plugin's declared view to the front in `client`'s window.
-    fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
-        let _ = (client, view);
-        Ok(())
-    }
+    fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError>;
     /// Whether this stable id is a command declared by this plugin.
-    fn owns_command(&self, id: &str) -> bool {
-        let _ = id;
-        false
-    }
+    fn owns_command(&self, id: &str) -> bool;
     /// Executes a stable command in the invoking window and waits for its result.
     fn execute_command(
         &self,
@@ -367,57 +260,30 @@ pub trait HostApi: Send + Sync {
         arg: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<Option<String>, HostError> {
-        let _ = (invocation, id, arg, cancel, timeout);
-        Err(HostError::NotFound("command".into()))
-    }
+    ) -> Result<Option<String>, HostError>;
     /// Appends text, or clears (`None`), in a plugin-owned output channel.
-    fn output_write(&self, channel: &str, text: Option<&str>) -> Result<(), HostError> {
-        let _ = (channel, text);
-        Err(HostError::Failed("output unavailable".into()))
-    }
+    fn output_write(&self, channel: &str, text: Option<&str>) -> Result<(), HostError>;
     /// Reveals an output channel in the invoking window.
-    fn output_reveal(&self, client: &str, channel: &str) -> Result<(), HostError> {
-        let _ = (client, channel);
-        Err(HostError::Failed("output unavailable".into()))
-    }
+    fn output_reveal(&self, client: &str, channel: &str) -> Result<(), HostError>;
     /// Checks manifest minimum API requirements for new declarations or subscriptions.
-    fn require_api(&self, what: &str, minor: u64) -> Result<(), HostError> {
-        let _ = (what, minor);
-        Ok(())
-    }
+    fn require_api(&self, what: &str, minor: u64) -> Result<(), HostError>;
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
     /// Checks a status item menu before it is set: its actions name commands the plugin declares.
-    fn check_status_menu(&self, menu: &[crate::StatusMenuEntry]) -> Result<(), HostError> {
-        let _ = menu;
-        Ok(())
-    }
+    fn check_status_menu(&self, menu: &[crate::StatusMenuEntry]) -> Result<(), HostError>;
     /// Sets or removes the status override in the invoking window.
-    fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
-        let _ = (client, id, item);
-        Err(HostError::Invalid("window status unavailable".into()))
-    }
+    fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError>;
     /// Replaces the plugin's console highlight rules (API 1.12); empty removes them.
-    fn console_rules(&self, rules: Vec<crate::ConsoleRule>) -> Result<(), HostError> {
-        let _ = rules;
-        Err(HostError::Failed("console rules unavailable".into()))
-    }
+    fn console_rules(&self, rules: Vec<crate::ConsoleRule>) -> Result<(), HostError>;
     /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
     /// for window `client` (every window if `None`).
-    fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
-        let _ = (client, key, value);
-        Ok(())
-    }
+    fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError>;
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
     /// Roots of the workspace members attached to the project at `root` (a
     /// project window group's folders, as the editor and LSP resolve them).
     /// Empty for a plain project.
-    fn member_roots(&self, root: &Path) -> Vec<std::path::PathBuf> {
-        let _ = root;
-        Vec::new()
-    }
+    fn member_roots(&self, root: &Path) -> Vec<std::path::PathBuf>;
     /// The most specific open project containing a document (including a new file).
     fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
         crate::sandbox::innermost_root(self.projects(), path)
@@ -431,10 +297,7 @@ pub trait HostApi: Send + Sync {
         limit: usize,
         cancel: &CancellationToken,
         deadline: Instant,
-    ) -> Result<Vec<crate::SymbolInfo>, HostError> {
-        let _ = (root, query, limit, cancel, deadline);
-        Err(HostError::NotFound("no project index is available".into()))
-    }
+    ) -> Result<Vec<crate::SymbolInfo>, HostError>;
     /// Unsaved text of an open editor's file.
     fn buffer_text(&self, path: &Path) -> Option<String>;
     /// Version and text of the open document at `path`.
@@ -452,10 +315,7 @@ pub trait HostApi: Send + Sync {
     fn storage_set(&self, key: &str, value: Option<String>) -> Result<(), HostError>;
     fn storage_keys(&self, prefix: &str) -> Result<Vec<String>, HostError>;
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError>;
-    fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
-        let _ = root;
-        Ok(Vec::new())
-    }
+    fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError>;
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError>;
     /// The commit being prepared in `client`'s window (`None`: no repository),
     /// waiting for the window until `cancel` fires.
@@ -463,16 +323,10 @@ pub trait HostApi: Send + Sync {
         &self,
         client: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<Option<CommitDraft>, HostError> {
-        let _ = (client, cancel);
-        Ok(None)
-    }
+    ) -> Result<Option<CommitDraft>, HostError>;
     /// Replaces the commit message of `client`'s window if its draft is still at
     /// `revision` (else [`HostError::Stale`]).
-    fn set_commit_message(&self, client: Option<&str>, revision: u64, message: String) -> Result<(), HostError> {
-        let _ = (client, revision, message);
-        Err(HostError::Invalid("no commit is being prepared".into()))
-    }
+    fn set_commit_message(&self, client: Option<&str>, revision: u64, message: String) -> Result<(), HostError>;
     /// Subscribes to (or unsubscribes from) a kind of workbench event.
     /// Project files matching `glob` (root-relative), at most `limit`.
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError>;
@@ -486,21 +340,10 @@ pub trait HostApi: Send + Sync {
         root: &Path,
         request: crate::WebSocketRequest,
         timeout: Duration,
-    ) -> Result<u64, HostError> {
-        let _ = (root, request, timeout);
-        Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
-    }
-    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
-        let _ = (connection, bytes);
-        Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
-    }
-    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<crate::WebSocketBatch, HostError> {
-        let _ = (connection, limit);
-        Err(HostError::Invalid("background WebSockets are unavailable on this host".into()))
-    }
-    fn websocket_close(&self, connection: u64) {
-        let _ = connection;
-    }
+    ) -> Result<u64, HostError>;
+    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError>;
+    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<crate::WebSocketBatch, HostError>;
+    fn websocket_close(&self, connection: u64);
     /// The `net:ask` answer for a request to HTTPS host `host` of this plugin
     /// (`subject`): `Some(true)` allowed and remembered (a host the user
     /// already allowed connects without asking again, also in the background),
@@ -512,41 +355,24 @@ pub trait HostApi: Send + Sync {
         client: Option<&str>,
         host: &str,
         cancel: &CancellationToken,
-    ) -> Result<Option<bool>, HostError> {
-        let _ = (subject, client, host, cancel);
-        Ok(None)
-    }
+    ) -> Result<Option<bool>, HostError>;
     fn secret_is_set(&self, name: &str) -> bool;
 
     /// Stores or deletes a secret declared by this plugin; never returns its value.
-    fn secret_set(&self, name: &str, value: Option<&str>) -> Result<(), HostError> {
-        let _ = (name, value);
-        Err(HostError::NotFound("secret".into()))
-    }
+    fn secret_set(&self, name: &str, value: Option<&str>) -> Result<(), HostError>;
     /// Creates a desktop loopback listener and returns its handle and redirect URI.
-    fn begin_loopback(&self, client: &str, path: &str) -> Result<(u64, String), HostError> {
-        let _ = (client, path);
-        Err(HostError::Failed("loopback unavailable".into()))
-    }
+    fn begin_loopback(&self, client: &str, path: &str) -> Result<(u64, String), HostError>;
     /// Awaits a browser redirect, excluded from the caller's execution budget.
     fn wait_loopback(
         &self,
         id: u64,
         timeout: Duration,
         cancel: &CancellationToken,
-    ) -> Result<Option<String>, HostError> {
-        let _ = (id, timeout, cancel);
-        Err(HostError::NotFound("loopback".into()))
-    }
+    ) -> Result<Option<String>, HostError>;
     /// Releases a desktop listener when its resource or plugin stops.
-    fn close_loopback(&self, id: u64) {
-        let _ = id;
-    }
+    fn close_loopback(&self, id: u64);
     /// Connects to an approved host-local socket; owned by this plugin instance.
-    fn ipc_connect(&self, name: &str, cancel: &CancellationToken, timeout: Duration) -> Result<u64, HostError> {
-        let _ = (name, cancel, timeout);
-        Err(HostError::Failed("IPC unavailable".into()))
-    }
+    fn ipc_connect(&self, name: &str, cancel: &CancellationToken, timeout: Duration) -> Result<u64, HostError>;
     /// Writes to an owned IPC connection.
     fn ipc_write(
         &self,
@@ -554,10 +380,7 @@ pub trait HostApi: Send + Sync {
         bytes: Vec<u8>,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<(), HostError> {
-        let _ = (id, bytes, cancel, timeout);
-        Err(HostError::NotFound("connection".into()))
-    }
+    ) -> Result<(), HostError>;
     /// Reads from an owned IPC connection, empty on timeout or EOF.
     fn ipc_read(
         &self,
@@ -565,14 +388,9 @@ pub trait HostApi: Send + Sync {
         max: usize,
         timeout: Duration,
         cancel: &CancellationToken,
-    ) -> Result<Vec<u8>, HostError> {
-        let _ = (id, max, timeout, cancel);
-        Err(HostError::NotFound("connection".into()))
-    }
+    ) -> Result<Vec<u8>, HostError>;
     /// Closes an owned IPC connection, including when its resource is dropped.
-    fn ipc_close(&self, id: u64) {
-        let _ = id;
-    }
+    fn ipc_close(&self, id: u64);
     /// Runs the approved file of `process:<program>` with `cmd.env` added to
     /// the inherited environment, and waits.
     fn run_process(
@@ -592,10 +410,7 @@ pub trait HostApi: Send + Sync {
         cancel: &CancellationToken,
         timeout: Duration,
         options: Option<crate::types::ProcessOptions>,
-    ) -> Result<ProcessOutput, HostError> {
-        let _ = options;
-        self.run_process(cmd, cwd, stdin, cancel, timeout)
-    }
+    ) -> Result<ProcessOutput, HostError>;
     /// Delivers every event of `kind`, dropping its path filter.
     fn subscribe(&self, kind: EventKind);
     /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
@@ -610,10 +425,7 @@ pub trait HostApi: Send + Sync {
         cwd: Option<&Path>,
         client: Option<&str>,
         options: Option<crate::types::ProcessOptions>,
-    ) -> Result<u64, HostError> {
-        let _ = options;
-        self.start_process(cmd, cwd, client)
-    }
+    ) -> Result<u64, HostError>;
     /// What process `id` printed since the last call, each stream at most
     /// `max` bytes (the rest waits for the next call), and its status once it
     /// ended.
@@ -673,13 +485,9 @@ pub trait HostApi: Send + Sync {
     /// `max` bounds the bytes read.
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
     /// The plugin's private directory, independent of the current invocation.
-    fn plugin_dir(&self) -> Result<PathBuf, HostError> {
-        Err(HostError::Failed("private plugin storage is unavailable".into()))
-    }
+    fn plugin_dir(&self) -> Result<PathBuf, HostError>;
     /// The plugin's install / package directory (read-only for the guest).
-    fn install_dir(&self) -> Result<PathBuf, HostError> {
-        Err(HostError::Failed("plugin install directory is unavailable".into()))
-    }
+    fn install_dir(&self) -> Result<PathBuf, HostError>;
     /// Replaces the text of a file whose real path the caller already checked:
     /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
     /// while an editor holds unsaved changes for it.
@@ -1574,11 +1382,6 @@ impl Runtime {
         })
     }
 
-    /// The component exports `providers`.
-    pub fn has_providers(&self) -> bool {
-        self.exports.providers.is_some()
-    }
-
     fn provider_call<R>(
         &mut self,
         timeout: Duration,
@@ -1863,11 +1666,6 @@ impl Runtime {
             r
         })?;
         result.map_err(|e| CallError::Guest(e.into()))
-    }
-
-    /// The component exports `view-provider`.
-    pub fn has_views(&self) -> bool {
-        self.exports.views.is_some()
     }
 
     /// Content of a view or custom editor (`invocation.editor`: its document).
@@ -2905,9 +2703,6 @@ impl Runtime {
         };
         let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
         Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
-    }
-    pub fn has_hover_actions(&self) -> bool {
-        self.exports.hover_actions.is_some()
     }
 
     pub fn language_hover_actions(

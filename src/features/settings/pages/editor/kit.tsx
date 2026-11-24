@@ -49,6 +49,11 @@ export type Item =
   | { t: "custom"; label: string; keywords?: string[]; component: ComponentType }
   | { t: "note"; text: string };
 
+/** Keyed settings items have a stable key; unkeyed ones fall back to their position. */
+function itemKey(item: Item, index: number): string | number {
+  return "key" in item ? `${item.t}:${item.key}` : index;
+}
+
 export interface EditorSection {
   title?: string;
   items: Item[];
@@ -101,7 +106,7 @@ function CheckItem({ item }: { item: Extract<Item, { t: "check" }> }) {
         <Disabled.Provider value={off}>
           <div className={styles.children}>
             {item.children.map((c, i) => (
-              <ItemView key={i} item={c} />
+              <ItemView key={itemKey(c, i)} item={c} />
             ))}
           </div>
         </Disabled.Provider>
@@ -301,9 +306,10 @@ export function ItemView({ item }: { item: Item }) {
       return (
         <div className={styles.grid}>
           {item.columns.map((col, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- grid columns have no id; position is the identity
             <div key={i} className={styles.column}>
               {col.map((c, j) => (
-                <ItemView key={j} item={c} />
+                <ItemView key={itemKey(c, j)} item={c} />
               ))}
             </div>
           ))}
@@ -324,7 +330,7 @@ export function EditorSections({ sections }: { sections: EditorSection[] }) {
       {sections.map((s, i) => (
         <Section key={s.title ?? i} title={s.title}>
           {s.items.map((item, j) => (
-            <ItemView key={j} item={item} />
+            <ItemView key={itemKey(item, j)} item={item} />
           ))}
         </Section>
       ))}

@@ -41,6 +41,16 @@ test("Spelling puts dictionary files first and keeps accepted words in separate 
   await expect(filesList.getByRole("option", { name: "dictionaries/team.dic" })).toBeVisible();
 
   await expect(project).toHaveAttribute("aria-selected", "true");
+  // The default dictionary the editor's Save '…' fix writes to (PyCharm's
+  // "Default dictionary"): the project dictionary by default, custom files join the list.
+  const defaultBox = settings.getByRole("button", { name: "Default dictionary" });
+  await expect(defaultBox).toHaveText("Project dictionary");
+  await defaultBox.click();
+  const defaultList = page.getByRole("listbox", { name: "Default dictionary" });
+  await expect(defaultList.getByRole("option", { name: "dictionaries/team.dic" })).toBeVisible();
+  await defaultList.getByRole("option", { name: "Application dictionary" }).click();
+  await expect(defaultBox).toHaveText("Application dictionary");
+
   await words.getByRole("button", { name: "Add", exact: true }).click();
   await words.getByRole("textbox", { name: "Word", exact: true }).fill("checkoutable");
   await words.getByRole("textbox", { name: "Word", exact: true }).press("Enter");
@@ -60,6 +70,7 @@ test("Spelling puts dictionary files first and keeps accepted words in separate 
     .poll(async () => (await ipcCalls(page, "settings_set")).sort((a, b) => String(a.key).localeCompare(String(b.key))))
     .toEqual([
       { scope: "global", key: "spelling.customDictionaries", value: JSON.stringify(["dictionaries/team.dic"]) },
+      { scope: "global", key: "spelling.defaultDictionary", value: JSON.stringify("application") },
       { scope: "global", key: "spelling.ideWords", value: JSON.stringify(["worktree"]) },
       { scope: "project", key: "spelling.projectWords", value: JSON.stringify(["checkoutable"]) },
     ]);

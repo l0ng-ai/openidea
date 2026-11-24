@@ -1,6 +1,6 @@
 use crate::Host;
 use ide_command::command;
-use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range};
+use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range, TextEdit};
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
 use ide_workspace::{DocumentEncoding, DocumentInfo, DocumentLanguage, HistoryEntry};
@@ -195,6 +195,29 @@ pub async fn doc_python_facts(host: &Host, window: &str, doc: DocId) -> IdeResul
     blocking(move || Ok(syntax.python_facts(&snap.language, &snap.text))).await
 }
 
+/// Rearrange Code: the edits that put the document's class members in arrangement order (Python
+/// for now); none when they already are or the language has no arrangement.
+#[command(trust = always)]
+pub async fn doc_rearrange(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    let snap = project.documents.text_snapshot(doc)?;
+    blocking(move || {
+        let Some(rearranged) = syntax.rearranged(&snap.language, &snap.text) else { return Ok(Vec::new()) };
+        let text = ide_text::Document::new(&snap.text);
+        Ok(text
+            .diff(&rearranged)
+            .changes
+            .into_iter()
+            .map(|c| TextEdit {
+                range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
+                new_text: c.insert,
+            })
+            .collect())
+    })
+    .await
+}
+
 /// Extend Selection (⌥↑): syntax ranges around `offset`, innermost first.
 /// Large documents fall back to word / line / document ranges.
 #[command(trust = always)]
@@ -244,6 +267,7 @@ ide_command::domain!(
     doc_open_virtual,
     doc_outline,
     doc_python_facts,
+    doc_rearrange,
     doc_selection_ranges,
     doc_set_bom,
     doc_set_encoding,

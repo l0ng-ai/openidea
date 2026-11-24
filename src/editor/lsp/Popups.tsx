@@ -70,7 +70,11 @@ function ListPreviewPanel({
       ) : (
         <pre className={styles.diff}>
           {preview.lines.map((l, i) => (
-            <div key={i} className={clsx(styles.diffLine, styles[`diff-${l.kind}`])}>
+            <div
+              // oxlint-disable-next-line react/no-array-index-key -- diff lines repeat; position is the identity
+              key={i}
+              className={clsx(styles.diffLine, styles[`diff-${l.kind}`])}
+            >
               {l.kind === "gap" ? "⋯" : l.text || " "}
             </div>
           ))}
@@ -742,13 +746,13 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
           className={clsx(styles.previewList, styles.previewOccurrences, popup.renameThemeClasses)}
           aria-label={tx("Occurrences")}
         >
-          {popup.occurrences.map((o, i) => {
+          {popup.occurrences.map((o) => {
             const lead = o.text.length - o.text.trimStart().length;
             const text = o.text.trim();
             const from = Math.max(0, o.from - lead);
             const to = Math.max(from, Math.min(text.length, o.to - lead));
             return (
-              <li key={i} className={styles.previewRow}>
+              <li key={`${o.line}:${o.from}:${o.to}`} className={styles.previewRow}>
                 <span className={styles.previewLine}>{o.line + 1}</span>
                 <span className={styles.previewCode}>
                   {text.slice(0, from)}
@@ -878,7 +882,7 @@ function ImportsOnPasteDialog({ popup }: { popup: Extract<LspPopup, { kind: "imp
         <div className={styles.pasteImportList}>
           {popup.imports.map((label, i) => (
             <Checkbox
-              key={i}
+              key={label}
               label={label}
               checked={selected.includes(i)}
               onChange={(checked) =>

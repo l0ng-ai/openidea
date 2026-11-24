@@ -169,6 +169,7 @@ function ReportBody({ report }: { report: TransferReport }) {
       {shown.length > 0 && (
         <ul className={styles.reportErrors}>
           {shown.map((e, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- identical errors can repeat; position is the identity
             <li key={i}>
               <span className={styles.mono}>{root ? relativePath(root, e.path) : e.path}</span>: {txt(e.message)}
             </li>

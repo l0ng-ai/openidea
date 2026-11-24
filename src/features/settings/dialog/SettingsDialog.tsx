@@ -176,6 +176,7 @@ function PageHost({
                 {parents.length > 0 && (
                   <span className={styles.parentCrumbs}>
                     {parents.map((c, i) => (
+                      // oxlint-disable-next-line react/no-array-index-key -- crumb labels can repeat; position is the identity
                       <span key={i} className={styles.crumb}>
                         <span className={styles.crumbLabel}>
                           <T>{c}</T>

@@ -248,7 +248,7 @@ function CrumbNav({
         const current = i === segments.length - 1;
         const icon = s.nav?.kind === "dir" && !s.nav.root && !current ? undefined : s.icon;
         return (
-          <Fragment key={i}>
+          <Fragment key={`${i}:${s.title}`}>
             {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
             <BarButton
               className={styles.crumbButton}
@@ -381,7 +381,7 @@ export function CodeBreadcrumbs({
     >
       {chain.map((item, i) => (
         <BarButton
-          key={i}
+          key={`${item.name}:${item.detail ?? ""}:${item.selection_range.start.line}:${item.selection_range.start.col}`}
           className={styles.crumbButton}
           tooltip={item.detail ?? item.name}
           aria-current={i === chain.length - 1 ? "location" : undefined}

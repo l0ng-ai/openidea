@@ -34,8 +34,8 @@
 }
 
 /* A box to write in, not a search bar: room for a few lines before it grows. */
-.composer :global(.cm-content) {
-  min-height: calc(4.5em + 12px);
+.composer {
+  --composer-min-height: calc(4.5em + 12px);
 }
 
 /* Under the box: one quiet group, the project, checkout and branch side by side. */

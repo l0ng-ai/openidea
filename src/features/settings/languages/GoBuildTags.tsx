@@ -10,6 +10,7 @@ const choices = (values: string[]) => [
   ...values.map((value) => ({ value, label: value })),
 ];
 const key = (name: string) => `languages.go.buildTags.${name}`;
+const PAGE_CONTEXT = { pageId: "languages.go.buildTags", scope: "project" } as const;
 export const GO_BUILD_TAG_SECTIONS: SectionSpec[] = [
   {
     options: [
@@ -79,7 +80,7 @@ export function GoBuildTagsPage() {
   const newProjects = useSettingsDialog((s) => s.newProjects);
   if (!hasProject || newProjects) return <T>Open a project to configure Go build tags.</T>;
   return (
-    <PageContext.Provider value={{ pageId: "languages.go.buildTags", scope: "project" }}>
+    <PageContext.Provider value={PAGE_CONTEXT}>
       <OptionsPage
         spec={{ id: "languages.go.buildTags", title: "Build Tags", order: 0, sections: GO_BUILD_TAG_SECTIONS }}
       />

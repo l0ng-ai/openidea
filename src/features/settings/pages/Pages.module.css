@@ -3,3 +3,8 @@
   flex-direction: column;
   max-width: 680px;
 }
+
+.durationAmount {
+  width: 12ch;
+  font-variant-numeric: tabular-nums;
+}

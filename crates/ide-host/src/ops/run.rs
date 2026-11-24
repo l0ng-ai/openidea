@@ -3,7 +3,7 @@ use crate::Host;
 use ide_command::command;
 use ide_core::remote_settings::RunTargetKind;
 use ide_core::{IdeError, IdeResult, RunId};
-use ide_run::{OutputChunk, RunConfig, RunInfo, StartOptions};
+use ide_run::{OutputChunk, RunAttach, RunConfig, RunInfo, StartOptions};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -488,14 +488,17 @@ async fn start_inner(
     }
     // A Python configuration pointing at a missing interpreter fails in the depth of
     // process spawn otherwise; name the cause and the fix like PyCharm's "Invalid SDK".
-    if matches!(config.kind.as_str(), "python" | "pytest" | "django-test")
-        && !Path::new(&config.command).is_file()
-        && Path::new(&config.command).components().count() > 1
-    {
-        return Err(IdeError::invalid(format!(
-            "The configured Python interpreter does not exist: {}\nSelect a working interpreter in Settings › Languages & Frameworks › Python Interpreter.",
-            config.command
-        )));
+    let is_python = matches!(config.kind.as_str(), "python" | "pytest" | "django-test");
+    if is_python && Path::new(&config.command).components().count() > 1 {
+        let cwd = project.root.join(config.cwd.as_deref().unwrap_or(Path::new("")));
+        let executable = ide_core::project_roots::resolve(&cwd, Path::new(&config.command));
+        if !executable.is_file() {
+            return Err(IdeError::invalid(format!(
+                "The configured Python interpreter does not exist: {}\nSelect a working interpreter in Settings › Languages & Frameworks › Python Interpreter.",
+                config.command
+            )));
+        }
+        config.command = ide_core::ipc_path::to_ipc(&executable);
     }
     if config.kind == "tomcat" {
         if host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
@@ -518,10 +521,21 @@ async fn start_inner(
             })
             .await?;
     }
+    let mut python_paths = if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) };
+    if is_python {
+        let near = ide_run::scope::owner(&project.root, &config);
+        python_paths = super::python::with_user_paths(
+            python_paths,
+            &host.config_dir,
+            &project,
+            Some(&config.command),
+            Some(&near),
+        );
+    }
     let encoding = settings.console.encoding;
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
-        python_paths: if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) },
+        python_paths,
         ruby_reporter: ruby_reporter_dir(host, &config),
     };
     project.require_trust()?;
@@ -628,6 +642,19 @@ pub fn run_list(host: &Host) -> Vec<RunInfo> {
     let mut runs = host.processes.list();
     runs.extend(host.remote.runs.list());
     runs
+}
+
+/// Reattaches to a running process `id` on this host, returning its buffered output
+/// and configuration while streaming subsequent chunks to `on_output`.
+#[command(trust = always)]
+pub async fn run_attach(host: &Host, window: &str, id: RunId, on_output: Channel<OutputChunk>) -> IdeResult<RunAttach> {
+    host.processes.reattach(
+        id,
+        host.window_sink(window),
+        Box::new(move |chunk| {
+            let _ = on_output.send(chunk);
+        }),
+    )
 }
 
 pub mod commands;
@@ -802,6 +829,7 @@ mod ownership_tests {
 ide_command::domain!(
     run:
     run_apply_settings,
+    run_attach,
     run_close_stdin,
     run_configs,
     run_list,

@@ -239,7 +239,7 @@ pub(crate) fn script_for(cfg: &LanguageServerConfig) -> Option<PathBuf> {
         return None;
     }
     let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
-    let script = search.and_then(|s| ide_run::which::find_executable(&cfg.command, &s))?;
+    let script = search.and_then(|s| ide_core::process::find_executable(&cfg.command, &s))?;
     let resolved = dunce::canonicalize(script).ok()?;
     let name = resolved.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
     match name.as_deref() {

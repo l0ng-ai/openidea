@@ -2,7 +2,7 @@
  * Color preview gutter: a swatch on each line with a color literal (the first one), as IDEA's
  * color gutter icons. Picking a color replaces the literal in its own format.
  */
-import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, WidgetType, gutter } from "@codemirror/view";
 import { isolateHistory } from "@codemirror/commands";
 import { syntaxTree } from "@codemirror/language";
@@ -63,12 +63,13 @@ class Swatch extends GutterMarker {
   }
 }
 
-function lineColor(view: EditorView, pos: number, language: string): ColorMatch | null {
-  const line = view.state.doc.lineAt(pos);
+/** The literal the built-in preview shows on the line at `pos`. */
+export function lineColor(state: EditorState, pos: number, language: string): ColorMatch | null {
+  const line = state.doc.lineAt(pos);
   if (line.length > MAX_LINE) return null;
   const matches = findColors(line.text, language, isColorName);
   if (!isMarkupLanguage(language)) return matches[0] ?? null;
-  const tree = syntaxTree(view.state);
+  const tree = syntaxTree(state);
   return (
     matches.find((color) => {
       let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(line.from + color.from + 1);
@@ -168,7 +169,7 @@ export function colorPreviewGutter(ctx: EditorDocContext): Extension {
     gutter({
       class: `${styles.gutter} cm-openidea-gutter-colors`,
       lineMarker: (view, block) => {
-        const color = lineColor(view, block.from, ctx.language);
+        const color = lineColor(view.state, block.from, ctx.language);
         return color ? new Swatch(color, !view.state.readOnly) : null;
       },
       lineMarkerChange: (update) => update.docChanged || update.startState.readOnly !== update.state.readOnly,
@@ -178,7 +179,7 @@ export function colorPreviewGutter(ctx: EditorDocContext): Extension {
           const swatch = e.target instanceof Element ? e.target.closest(`.${styles.swatch}`) : null;
           if (e.button !== 0 || !swatch || view.state.readOnly) return false;
           const line = view.state.doc.lineAt(block.from);
-          const color = lineColor(view, block.from, ctx.language);
+          const color = lineColor(view.state, block.from, ctx.language);
           if (!color) return false;
           e.preventDefault();
           const rect = swatch.getBoundingClientRect();

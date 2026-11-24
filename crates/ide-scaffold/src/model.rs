@@ -124,9 +124,14 @@ pub(crate) enum FieldKindDef {
         segmented: bool,
     },
     Checkbox,
-    /// An installed SDK of this `ide-sdk` kind (`jdk`); the value is its home.
+    /// An installed SDK of this `ide-sdk` kind (`jdk`); the value is its home, or its
+    /// version with `version = true`. SDKs older than `min` are not offered.
     Sdk {
         sdk: String,
+        #[serde(default)]
+        version: bool,
+        #[serde(default)]
+        min: Option<String>,
     },
 }
 
@@ -164,8 +169,16 @@ pub(crate) struct FileDef {
     pub content: String,
     #[serde(default)]
     pub when: When,
+    #[serde(default, rename = "if-set")]
+    pub if_set: Option<String>,
     #[serde(default)]
     pub executable: bool,
+}
+
+impl FileDef {
+    pub fn applies(&self, values: &Values) -> bool {
+        is_set(self.if_set.as_deref(), values) && crate::template::matches(&self.when, values)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,11 +204,24 @@ pub(crate) struct StepDef {
     pub creates: Option<String>,
     #[serde(default)]
     pub when: When,
+    /// Runs only when this field is not empty.
+    #[serde(default, rename = "if-set")]
+    pub if_set: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Skipped with a note when the program is not installed.
     #[serde(default)]
     pub optional: bool,
+}
+
+impl StepDef {
+    pub fn applies(&self, values: &Values) -> bool {
+        is_set(self.if_set.as_deref(), values) && crate::template::matches(&self.when, values)
+    }
+}
+
+fn is_set(field: Option<&str>, values: &Values) -> bool {
+    field.is_none_or(|f| values.get(f).is_some_and(|v| !v.trim().is_empty()))
 }
 
 /// `"--flag"`, or arguments passed only when `when` holds and the `if-set` field is not
@@ -219,8 +245,7 @@ impl ArgDef {
         match self {
             Self::Plain(a) => vec![a.as_str()],
             Self::When { when, if_set, args } => {
-                let set = if_set.as_ref().is_none_or(|f| values.get(f).is_some_and(|v| !v.trim().is_empty()));
-                if set && crate::template::matches(when, values) {
+                if is_set(if_set.as_deref(), values) && crate::template::matches(when, values) {
                     args.iter().map(String::as_str).collect()
                 } else {
                     Vec::new()
@@ -287,9 +312,12 @@ pub enum FieldKind {
         segmented: bool,
     },
     Checkbox,
-    /// An installed SDK of this kind (`jdk`); the value is its home, empty = automatic.
+    /// An installed SDK of this kind (`jdk`); the value is its home (its version when
+    /// `version`), empty = automatic. SDKs older than `min` are not offered.
     Sdk {
         sdk: String,
+        version: bool,
+        min: Option<String>,
     },
     /// Several ids out of grouped items; the value is comma-separated.
     Dependencies {

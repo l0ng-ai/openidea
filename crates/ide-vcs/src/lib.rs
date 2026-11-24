@@ -933,6 +933,8 @@ mod ignore;
 mod index_writes;
 mod log_index;
 mod manage;
+mod metadata_watch;
+pub use metadata_watch::MetadataWatch;
 mod ops;
 mod patch;
 mod preserve;
@@ -1326,10 +1328,15 @@ impl Repo {
     /// Reference names and peeled commit ids, including tags and detached HEAD.
     pub fn log_refs(&self) -> IdeResult<std::collections::BTreeMap<String, String>> {
         let repo = self.gix()?;
-        Ok(history::decorations(&repo)?
-            .into_iter()
-            .flat_map(|(id, names)| names.into_iter().map(move |name| (name, id.to_string())))
-            .collect())
+        let (decorations, _) = self.ref_decorations(&repo)?;
+        let mut refs = std::collections::BTreeMap::new();
+        for (id, names) in decorations.iter() {
+            let id = id.to_string();
+            for name in names {
+                refs.insert(name.clone(), id.clone());
+            }
+        }
+        Ok(refs)
     }
     pub fn log_users(&self) -> IdeResult<Vec<String>> {
         let _scope = self.execution_scope();
@@ -1486,7 +1493,8 @@ impl Repo {
     /// Local and remote branches; the current branch first, then most recent first.
     pub fn branches(&self) -> IdeResult<Vec<Branch>> {
         let _scope = self.execution_scope();
-        refs::branches(self)
+        let repo = self.gix()?;
+        self.cached_branches(&repo)
     }
     /// Stash entries, newest (`stash@{0}`) first.
     pub fn stashes(&self) -> IdeResult<Vec<Stash>> {

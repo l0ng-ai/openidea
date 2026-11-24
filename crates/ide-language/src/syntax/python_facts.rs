@@ -15,6 +15,18 @@ use tree_sitter::{Node, Tree};
 #[serde(rename_all = "camelCase")]
 pub struct PythonFacts {
     pub classes: Vec<PythonClassFacts>,
+    /// `# noinspection` comments, in source order.
+    pub suppressions: Vec<PythonSuppression>,
+}
+
+/// A `# noinspection Id1,Id2` comment (PyCharm's) and the code it covers: the statement
+/// right below it (a whole `def` / `class` with its decorators), or the whole file when it
+/// sits among the file's leading comments, followed by a blank line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PythonSuppression {
+    pub ids: Vec<String>,
+    pub range: crate::Range,
 }
 
 /// A class definition and the methods it declares.
@@ -24,6 +36,8 @@ pub struct PythonClassFacts {
     pub name: String,
     /// The class name identifier (selection range).
     pub selection: crate::Range,
+    /// First line of the definition, its decorators included.
+    pub definition_line: u32,
     /// Base names as written, a qualified name reduced to its last segment.
     pub bases: Vec<String>,
     pub methods: Vec<PythonMethodFacts>,
@@ -36,6 +50,8 @@ pub struct PythonMethodFacts {
     pub name: String,
     /// The method name identifier (selection range).
     pub selection: crate::Range,
+    /// First line of the definition, its decorators included.
+    pub definition_line: u32,
     /// Parameter names in order; `None` for a form whose forwarding cannot be compared
     /// (`*args`, `**kwargs`, keyword-only, positional-only).
     pub params: Option<Vec<String>>,
@@ -84,11 +100,91 @@ fn extract(tree: &Tree, text: &str) -> PythonFacts {
         classes.push(PythonClassFacts {
             name,
             selection: idx.range(name_node.start_byte(), name_node.end_byte()),
+            definition_line: definition_line(node),
             bases: super::inheritance::class_base_names(node, text),
             methods: methods_of(node, text, &idx, &imports),
         });
     });
-    PythonFacts { classes }
+    PythonFacts { classes, suppressions: suppressions(tree, text, &idx) }
+}
+
+/// The row a definition starts on: its first decorator's when it has one.
+fn definition_line(definition: Node) -> u32 {
+    let start = definition.parent().filter(|p| p.kind() == "decorated_definition").unwrap_or(definition);
+    start.start_position().row as u32
+}
+
+/// The ids of a `# noinspection` comment, or `None` for any other comment.
+fn noinspection_ids(comment: &str) -> Option<Vec<String>> {
+    let rest = comment.strip_prefix('#')?.trim_start().strip_prefix("noinspection")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let ids: Vec<String> = rest.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_owned).collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
+fn suppressions(tree: &Tree, text: &str, idx: &LineIndex) -> Vec<PythonSuppression> {
+    let root = tree.root_node();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let starts: Vec<usize> =
+        lines.iter().scan(0, |at, line| Some(std::mem::replace(at, *at + line.len() + 1))).collect();
+    let is_comment = |row: usize| lines[row].trim_start().starts_with('#');
+    let first_statement = {
+        let mut cursor = root.walk();
+        let first = root.named_children(&mut cursor).find(|n| n.kind() != "comment");
+        first.map(|n| n.start_position().row)
+    };
+    let mut out = Vec::new();
+    let mut cursor = tree.walk();
+    visit(&mut cursor, &mut |node| {
+        if node.kind() != "comment" {
+            return;
+        }
+        let row = node.start_position().row;
+        // Only a comment on a line of its own: a trailing one belongs to its code.
+        if !lines[row][..node.start_position().column].trim().is_empty() {
+            return;
+        }
+        let Some(ids) = noinspection_ids(&text[node.byte_range()]) else { return };
+        // Several comments may stack up above one statement.
+        let mut next = row + 1;
+        while next < lines.len() && is_comment(next) {
+            next += 1;
+        }
+        let blank_after = next >= lines.len() || lines[next].trim().is_empty();
+        let range = if blank_after && first_statement.is_none_or(|first| row < first) {
+            idx.range(0, text.len())
+        } else if blank_after {
+            return;
+        } else {
+            let indent = indent_len(lines[next]);
+            if indent != node.start_position().column {
+                return;
+            }
+            let Some(statement) = statement_at(root, starts[next] + indent) else { return };
+            idx.range(statement.start_byte(), statement.end_byte())
+        };
+        out.push(PythonSuppression { ids, range });
+    });
+    out
+}
+
+fn indent_len(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// The outermost node starting at `byte` below the enclosing block: the whole statement
+/// (a decorated definition included) that begins there.
+fn statement_at(root: Node, byte: usize) -> Option<Node> {
+    let mut node = root.descendant_for_byte_range(byte, byte)?;
+    while let Some(parent) = node.parent() {
+        if parent.start_byte() != byte || matches!(parent.kind(), "module" | "block") {
+            break;
+        }
+        node = parent;
+    }
+    (node.start_byte() == byte && node.parent().is_some_and(|p| matches!(p.kind(), "module" | "block"))).then_some(node)
 }
 
 /// The methods declared directly in `class`.
@@ -115,6 +211,7 @@ fn methods_of(class: Node, text: &str, idx: &LineIndex, imports: &ImportBindings
         out.push(PythonMethodFacts {
             name,
             selection: idx.range(name_node.start_byte(), name_node.end_byte()),
+            definition_line: member.start_position().row as u32,
             params: parameters_of(method, text),
             abstract_method: decorators.iter().any(|d| last_segment(d) == "abstractmethod"),
             override_decorated: decorators.iter().any(|d| imports.is_typing_override(d)),
@@ -434,5 +531,51 @@ mod tests {
         assert_eq!(names, ["Outer", "Inner"]);
         let other = SYNTAX.get_or_init(Syntax::new).python_facts(&LanguageId::new("rust"), "class C {}");
         assert_eq!(other.classes.len(), 0);
+    }
+
+    fn covered(f: &PythonFacts) -> Vec<(Vec<&str>, u32, u32)> {
+        f.suppressions
+            .iter()
+            .map(|s| (s.ids.iter().map(String::as_str).collect(), s.range.start.line, s.range.end.line))
+            .collect()
+    }
+
+    #[test]
+    fn noinspection_covers_the_statement_below() {
+        let f = facts(
+            "class C:\n    # noinspection PyAbstractClass, PyOverrideDecorator\n    # another comment\n    @dec\n    def m(self):\n        pass\n\n    def n(self):  # noinspection PyAbstractClass\n        x = 1\n        # noinspection ALL\n        y = (1,\n             2)\n",
+        );
+        assert_eq!(covered(&f), [(vec!["PyAbstractClass", "PyOverrideDecorator"], 3, 5), (vec!["ALL"], 10, 11)]);
+        assert_eq!(method(&f, "C", "m").definition_line, 3);
+        assert_eq!(method(&f, "C", "n").definition_line, 7);
+        assert_eq!(f.classes[0].definition_line, 0);
+    }
+
+    #[test]
+    fn noinspection_in_the_file_header_covers_the_file() {
+        let f = facts("#!/usr/bin/env python\n# noinspection PyAbstractClass\n\nclass C:\n    pass\n");
+        assert_eq!(covered(&f), [(vec!["PyAbstractClass"], 0, 5)]);
+        // Right above the first statement it is that statement's.
+        let f = facts("# noinspection PyAbstractClass\nclass C:\n    pass\n\nclass D:\n    pass\n");
+        assert_eq!(covered(&f), [(vec!["PyAbstractClass"], 1, 2)]);
+        // Followed by a blank line further down, it covers nothing.
+        let f = facts("x = 1\n# noinspection PyAbstractClass\n\nclass C:\n    pass\n");
+        assert!(covered(&f).is_empty());
+        let f = facts("# noinspection\nclass C:\n    pass\n# noinspectionX A\nclass D:\n    pass\n");
+        assert!(covered(&f).is_empty());
+    }
+
+    #[test]
+    fn noinspection_does_not_cross_a_block_boundary() {
+        let f = facts("def wrapper():\n    pass\n    # noinspection ALL\nclass Other:\n    pass\n");
+        assert!(covered(&f).is_empty());
+        let f = facts("values = [\n    # noinspection ALL\n    1,\n]\n");
+        assert!(covered(&f).is_empty());
+    }
+
+    #[test]
+    fn decorated_classes_start_at_their_decorator() {
+        let f = facts("@dataclass\nclass C:\n    x: int\n");
+        assert_eq!(f.classes[0].definition_line, 0);
     }
 }
