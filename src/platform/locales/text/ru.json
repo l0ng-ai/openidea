@@ -9661,7 +9661,6 @@
   "Could not open the editor window": "Не удалось открыть окно редактора",
   "Download Mirrors": "Зеркала загрузки",
   "Mirror prefix for GitHub downloads": "Префикс зеркала для загрузок с GitHub",
-  "Only downloads from github.com (most language servers and debuggers) are accelerated. Eclipse JDT LS, Open VSX and Maven Central are not affected — reach them through System Settings › HTTP Proxy instead. A public proxy such as https://gh-proxy.com/ works as the prefix.": "Ускоряются только загрузки с github.com (большинство языковых серверов и отладчиков). Это не затрагивает Eclipse JDT LS, Open VSX и Maven Central — для них используйте Системные настройки › HTTP-прокси. В качестве префикса можно указать публичный прокси, например https://gh-proxy.com/.",
   "Formatting": "Форматирование",
   "Format with gofumpt": "Форматировать с помощью gofumpt",
   "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.": "При переформатировании gopls применяет более строгие правила gofumpt поверх gofmt.",
