@@ -68,6 +68,28 @@ pub(crate) async fn session_thread_dump(session: Arc<Session>) -> IdeResult<JvmT
     .map_err(|e| IdeError::internal(format!("JVM thread dump failed: {e}")))?
 }
 
+/// A thread dump of `pid`, a run's JVM that `session` debugs, taken as the session's own dump
+/// is: a JVM the debugger holds suspended is never asked to open a listener.
+pub(crate) async fn debugged_run_thread_dump(session: Arc<Session>, pid: u32) -> IdeResult<JvmThreadsResult> {
+    // Detached for the same reason as `session_thread_dump`.
+    tokio::spawn(async move {
+        let probe = |suspended| -> Arc<dyn AttachProbe> { Arc::new(JdkProbe { suspended }) };
+        known_pid_dump(&session, probe, pid).await
+    })
+    .await
+    .map_err(|e| IdeError::internal(format!("JVM thread dump failed: {e}")))?
+}
+
+pub(super) async fn known_pid_dump(
+    session: &Session,
+    probe: impl FnOnce(bool) -> Arc<dyn AttachProbe>,
+    pid: u32,
+) -> IdeResult<JvmThreadsResult> {
+    let target =
+        i32::try_from(pid).map_or(JvmTarget::Unavailable(JvmMemoryUnavailable::NoJvmProcess), JvmTarget::Known);
+    thread_dump(&session.jvm_memory, || capture_suspended(session), probe, target).await
+}
+
 /// Takes the class-table lock, so a dump never runs beside a histogram or heap dump of the same
 /// session; `suspended` and then `probe` are read once it is held.
 pub(super) async fn thread_dump(

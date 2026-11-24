@@ -1975,6 +1975,18 @@ impl DebugManager {
         jvm_memory::session_thread_dump(session).await
     }
 
+    /// `Thread.print -l` of `pid`, a run's JVM, when a live session debugs it (a build tool's run
+    /// started for Debug, Attach to Process): taken as [`Self::jvm_thread_dump`] takes it, under
+    /// that session's turn and suspension. `None` when no session debugs `pid`.
+    pub async fn debugged_jvm_thread_dump(&self, pid: u32) -> Option<IdeResult<JvmThreadsResult>> {
+        let session = self.jvm_session_of(pid)?;
+        Some(jvm_memory::debugged_run_thread_dump(session, pid).await)
+    }
+
+    fn jvm_session_of(&self, pid: u32) -> Option<Arc<Session>> {
+        self.live_sessions().into_iter().find(|s| jvm_memory::debugs_jvm(s, pid))
+    }
+
     /// Gives the session the backend for [`Self::jvm_memory_instances`] and the debugger's class
     /// counts; the UI is told to reload the session's capabilities.
     pub fn set_jvm_inspector(

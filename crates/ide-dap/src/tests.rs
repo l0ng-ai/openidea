@@ -3074,6 +3074,20 @@ async fn local_attach_finds_its_jvm_before_the_debugger_connects() {
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
 }
 
+/// A run's Dump Threads reaches the session attached to the run's JVM, not the plain run path.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_jvm_is_found_by_the_session_attached_to_it() {
+    let h = harness(Script::default());
+    h.manager.set_jvm_finder(Arc::new(|port, _| (port == 5005).then_some(4242)));
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "127.0.0.1", "port": 5005}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.manager.jvm_session_of(4242).map(|s| s.id), Some(id));
+    assert!(h.manager.jvm_session_of(4243).is_none());
+    assert!(h.manager.debugged_jvm_thread_dump(4243).await.is_none());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn local_attach_remembers_its_jdwp_port() {

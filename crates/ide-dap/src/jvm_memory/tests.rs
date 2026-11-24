@@ -1296,6 +1296,76 @@ async fn launched_thread_dump_without_a_listener_finds_the_jvm_below_the_reporte
     assert_eq!(*fake.ensured.lock(), [jvm]);
 }
 
+#[tokio::test]
+async fn a_session_debugs_the_jvm_it_launched_or_found() {
+    let attach = bare_session("attach");
+    attach.session.jvm_pid.store(4242, Ordering::Release);
+    assert!(debugs_jvm(&attach.session, 4242));
+    assert!(!debugs_jvm(&attach.session, 4243));
+    let launch = bare_session("launch");
+    launch.session.debuggee_pid.store(77, Ordering::Release);
+    assert!(debugs_jvm(&launch.session, 77));
+    let python = bare_session_of("debugpy", "attach");
+    python.session.jvm_pid.store(4242, Ordering::Release);
+    assert!(!debugs_jvm(&python.session, 4242));
+    attach.session.terminated.store(true, Ordering::Release);
+    assert!(!debugs_jvm(&attach.session, 4242));
+    // An attach whose JVM is not found yet debugs no pid.
+    assert!(!debugs_jvm(&bare_session("attach").session, 0));
+}
+
+/// A run's JVM held at a breakpoint by a debugger attached to it (Debug of `spring-boot:run`).
+fn stopped_attach(pid: u32) -> BareSession {
+    let bare = bare_session("attach");
+    bare.session.jvm_pid.store(i64::from(pid), Ordering::Release);
+    bare.session.suspended.stopped(None, true);
+    bare
+}
+
+#[tokio::test]
+async fn run_dump_of_a_suspended_debugged_jvm_takes_the_suspended_path() {
+    let bare = stopped_attach(4242);
+    let mut fake = dumping_threads(4242, Vec::new());
+    fake.version = Some(JavaVersion { major: 11, text: "11.0.25".into() });
+    let fake = Arc::new(fake);
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let r = known_pid_dump(&bare.session, |_| probe, 4242).await.unwrap();
+    assert_eq!(threads_unavailable(r), threads_jvm(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 }));
+    assert!(fake.commands.lock().is_empty());
+
+    // No listener: none is started, the JVM's Signal Dispatcher being stopped.
+    let fake = Arc::new(dumping_threads(99, Vec::new()));
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let r = known_pid_dump(&bare.session, |_| probe, 4242).await.unwrap();
+    assert_eq!(threads_unavailable(r), threads_jvm(JvmMemoryUnavailable::ListenerNotRunning));
+    assert!(fake.commands.lock().is_empty());
+
+    let mut fake = dumping_threads(4242, vec![Ok(THREADS.into())]);
+    fake.version = Some(JavaVersion { major: 17, text: "17.0.13".into() });
+    let probe: Arc<dyn AttachProbe> = Arc::new(fake);
+    let r = known_pid_dump(&bare.session, |_| probe, 4242).await.unwrap();
+    let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
+    assert!(dump.taken_while_suspended);
+    assert_eq!(dump.pid, 4242);
+}
+
+#[tokio::test]
+async fn run_dump_of_a_debugged_jvm_waits_for_the_session_turn() {
+    let bare = bare_session("attach");
+    bare.session.jvm_pid.store(4242, Ordering::Release);
+    let fake = Arc::new(dumping_threads(99, Vec::new()));
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+
+    let histogram = bare.session.jvm_memory.lock().await;
+    let mut queued = Box::pin(known_pid_dump(&bare.session, |_| probe, 4242));
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued).await.is_err());
+    // The program hits a breakpoint while the dump waits behind the session's histogram.
+    bare.session.suspended.stopped(None, true);
+    drop(histogram);
+    assert_eq!(threads_unavailable(queued.await.unwrap()), threads_jvm(JvmMemoryUnavailable::ListenerNotRunning));
+    assert!(fake.commands.lock().is_empty());
+}
+
 #[test]
 fn threads_of_an_exited_program() {
     let mut fake = dumping_threads(99, Vec::new());

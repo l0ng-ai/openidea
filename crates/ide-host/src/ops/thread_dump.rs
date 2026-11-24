@@ -17,11 +17,18 @@ pub async fn run_jvm_thread_dump(
     host.require_trust(window)?;
     let remote = host.remote.runs.contains(id);
     let root = if remote { None } else { host.processes.pid(id) };
-    // The attach handshake and `ps` block for seconds.
-    host.blocking(move || {
-        Ok(dump_run(remote, root, token.as_deref(), process_table, is_hotspot, ide_dap::run_jvm_thread_dump))
-    })
-    .await
+    let selected = host.blocking(move || Ok(run_jvm(remote, root, token.as_deref(), process_table, is_hotspot)));
+    let pid = match selected.await? {
+        Ok(pid) => pid,
+        Err(refused) => return Ok(refused),
+    };
+    // A debugger attached to this JVM (Debug of a build tool's run, Attach to Process) may hold
+    // it suspended, which only its session knows.
+    if let Some(dump) = host.debugger.debugged_jvm_thread_dump(pid).await {
+        return dump;
+    }
+    // The attach handshake blocks for seconds.
+    host.blocking(move || Ok(ide_dap::run_jvm_thread_dump(pid))).await
 }
 
 fn unavailable(reason: JvmThreadsUnavailable) -> JvmThreadsResult {
@@ -32,27 +39,23 @@ fn jvm(reason: JvmMemoryUnavailable) -> JvmThreadsResult {
     unavailable(JvmThreadsUnavailable::Jvm { reason })
 }
 
-/// `root` is the run's process while it runs. The table and the dump are taken only once the
-/// cheaper reasons to refuse are ruled out.
-fn dump_run(
+/// The run's JVM, or why none can be dumped. `root` is the run's process while it runs; the
+/// process table is read only once the cheaper reasons to refuse are ruled out.
+fn run_jvm(
     remote: bool,
     root: Option<u32>,
     token: Option<&str>,
     table: impl FnOnce() -> Vec<ProcEntry>,
     is_hotspot: impl Fn(u32) -> bool,
-    dump: impl FnOnce(u32) -> JvmThreadsResult,
-) -> JvmThreadsResult {
+) -> Result<u32, JvmThreadsResult> {
     if remote {
-        return unavailable(JvmThreadsUnavailable::RemoteRun);
+        return Err(unavailable(JvmThreadsUnavailable::RemoteRun));
     }
-    let Some(root) = root else { return jvm(JvmMemoryUnavailable::ProgramExited) };
+    let Some(root) = root else { return Err(jvm(JvmMemoryUnavailable::ProgramExited)) };
     if !cfg!(unix) {
-        return jvm(JvmMemoryUnavailable::UnsupportedPlatform);
+        return Err(jvm(JvmMemoryUnavailable::UnsupportedPlatform));
     }
-    match select_run_jvm(&table(), root, token, is_hotspot) {
-        Some(pid) => dump(pid),
-        None => jvm(JvmMemoryUnavailable::NoJvmProcess),
-    }
+    select_run_jvm(&table(), root, token, is_hotspot).ok_or_else(|| jvm(JvmMemoryUnavailable::NoJvmProcess))
 }
 
 ide_command::domain!(thread_dump: run_jvm_thread_dump);
@@ -71,48 +74,35 @@ mod tests {
 
     #[test]
     fn remote_run_is_refused() {
-        let result = dump_run(true, Some(10), None, never_called, |_| never_called(), |_| never_called());
-        assert_eq!(result, unavailable(JvmThreadsUnavailable::RemoteRun));
+        let result = run_jvm(true, Some(10), None, never_called, |_| never_called());
+        assert_eq!(result, Err(unavailable(JvmThreadsUnavailable::RemoteRun)));
     }
 
     #[test]
     fn exited_run_reports_program_exited() {
-        let result = dump_run(false, None, None, never_called, |_| never_called(), |_| never_called());
-        assert_eq!(result, jvm(JvmMemoryUnavailable::ProgramExited));
+        let result = run_jvm(false, None, None, never_called, |_| never_called());
+        assert_eq!(result, Err(jvm(JvmMemoryUnavailable::ProgramExited)));
     }
 
     #[cfg(unix)]
     #[test]
     fn no_jvm_in_tree() {
         let table = || vec![proc(10, 1, "sh -c run"), proc(11, 10, "sleep 100")];
-        let result = dump_run(false, Some(10), None, table, |_| false, |_| never_called());
-        assert_eq!(result, jvm(JvmMemoryUnavailable::NoJvmProcess));
+        let result = run_jvm(false, Some(10), None, table, |_| false);
+        assert_eq!(result, Err(jvm(JvmMemoryUnavailable::NoJvmProcess)));
     }
 
     #[cfg(unix)]
     #[test]
-    fn dumps_the_jvm_below_the_run() {
+    fn finds_the_jvm_below_the_run() {
         let table = || vec![proc(10, 1, "sh -c run"), proc(11, 10, "java -jar app.jar")];
-        let dumped = std::cell::Cell::new(0);
-        let result = dump_run(
-            false,
-            Some(10),
-            None,
-            table,
-            |pid| pid == 11,
-            |pid| {
-                dumped.set(pid);
-                jvm(JvmMemoryUnavailable::ProgramExited)
-            },
-        );
-        assert_eq!(dumped.get(), 11);
-        assert_eq!(result, jvm(JvmMemoryUnavailable::ProgramExited));
+        assert_eq!(run_jvm(false, Some(10), None, table, |pid| pid == 11), Ok(11));
     }
 
     #[cfg(not(unix))]
     #[test]
     fn unsupported_without_reading_the_process_table() {
-        let result = dump_run(false, Some(10), None, never_called, |_| never_called(), |_| never_called());
-        assert_eq!(result, jvm(JvmMemoryUnavailable::UnsupportedPlatform));
+        let result = run_jvm(false, Some(10), None, never_called, |_| never_called());
+        assert_eq!(result, Err(jvm(JvmMemoryUnavailable::UnsupportedPlatform)));
     }
 }
