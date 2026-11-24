@@ -74,6 +74,16 @@ export interface PerfProbe {
    * the Git reads its blocks make: 40 lines each, every 50th file 1,000 lines.
    */
   openCombinedDiff(files: number): Promise<{ first: string; last: string }>;
+  /** Opens an empty Run console session before streaming starts so UI (e.g. Find) can mount first. */
+  openConsoleSession(mode: "long" | "no-lf"): Promise<string>;
+  /** Streams long-line or no-newline output into a Run console session. */
+  streamConsoleOutput(options: {
+    mode: "long" | "no-lf";
+    count: number;
+    perFrame: number;
+    lineLength?: number;
+    sessionId?: string;
+  }): Promise<{ lines: number; dropped: number }>;
 }
 
 const KINDS: CompletionKind[] = [
@@ -299,6 +309,14 @@ export function installPerfProbe(): () => void {
         },
       });
       return { first: paths[0] ?? "", last: paths.at(-1) ?? "" };
+    },
+    async openConsoleSession(mode) {
+      const { openSampleConsoleSession } = await import("@/features/run/store");
+      return openSampleConsoleSession(mode);
+    },
+    async streamConsoleOutput(options) {
+      const { startSampleConsoleOutput } = await import("@/features/run/store");
+      return startSampleConsoleOutput(options);
     },
     editorText: (from = 0, to) => activeEditor()?.view.state.doc.sliceString(from, to) ?? null,
     insertAfter(after, text) {
