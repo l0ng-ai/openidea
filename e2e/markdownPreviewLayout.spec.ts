@@ -57,3 +57,40 @@ test("Markdown settings can stack the preview and remember each direction's spli
   await expect(divider).toHaveAttribute("aria-orientation", "horizontal");
   await expect.poll(() => ratio(editor, preview, "height")).toBeCloseTo(stackedRatio, 2);
 });
+
+test("wrapped Markdown uses the source pane width beside the preview", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("# Example\n\n" + "x ".repeat(320));
+  await expect(content).toHaveClass(/cm-lineWrapping/);
+  const paragraph = content.locator(".cm-line").filter({ hasText: "x x x" });
+  const corner = editor.getByRole("toolbar", { name: "Inspections" });
+  await expect(corner).toBeVisible();
+
+  for (const width of [1100, 1400]) {
+    await page.setViewportSize({ width, height: 780 });
+    await expect
+      .poll(() =>
+        paragraph.evaluate((line) => {
+          const range = document.createRange();
+          range.selectNodeContents(line);
+          const right = Math.max(...Array.from(range.getClientRects(), (rect) => rect.right));
+          const overview = line.closest(".cm-editor")!.querySelector(".cm-openidea-overview")!;
+          const lane = overview.getBoundingClientRect();
+          const gap = lane.left - right;
+          return {
+            padding: parseFloat(getComputedStyle(line).paddingRight) - lane.width,
+            textFits: gap >= 0 && gap < 20,
+          };
+        }),
+      )
+      .toEqual({ padding: 0, textFits: true });
+  }
+
+  await page.getByRole("button", { name: "Editor Only", exact: true }).click();
+  await expect
+    .poll(() => paragraph.evaluate((line) => parseFloat(getComputedStyle(line).paddingRight)))
+    .toBeGreaterThan(40);
+});

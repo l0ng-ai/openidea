@@ -335,7 +335,8 @@ for (const placement of ["editor", "toolWindow"] as const) {
     await seedTasks(page, placement);
     const box = messageBox(page);
     await box.fill(draft);
-    await page.getByRole("treeitem", { name: "README.md", exact: true }).click();
+    await page.getByRole("treeitem", { name: "src", exact: true }).click();
+    await expect(box).toBeVisible();
     await expect(box).not.toBeFocused();
     await page.keyboard.press("Meta+L");
     await expect(box).toBeFocused();

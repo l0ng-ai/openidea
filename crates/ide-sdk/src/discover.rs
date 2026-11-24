@@ -1605,7 +1605,10 @@ mod pipenv_tests {
     #[test]
     fn environments_are_named_as_pipenv_names_them() {
         // `sanitize(folder)[:42] + "-" + urlsafe_b64encode(sha256(Pipfile path).digest()[:6])`, from pipenv.
+        #[cfg(unix)]
         assert_eq!(pipenv_env_name(Path::new("/home/me/My Shop (2)")), "My_Shop__2_-6rNTtAUD");
+        #[cfg(windows)]
+        assert_eq!(pipenv_env_name(Path::new(r"C:\Users\me\My Shop (2)")), "My_Shop__2_-ED1rXUDC");
     }
 
     #[test]

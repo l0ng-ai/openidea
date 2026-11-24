@@ -202,6 +202,19 @@ describe("terminal keys", () => {
     }
   });
 
+  it("pastes on plain Ctrl+V only on Windows", () => {
+    const ctrlV = key({ key: "v", code: "KeyV", ctrlKey: true });
+    try {
+      usePlatform.setState({ os: "windows" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "paste" });
+      usePlatform.setState({ os: "linux" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+    expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+  });
+
   it("keeps Ctrl+C as interrupt on macOS even with a selection", () => {
     usePlatform.setState({ os: "macos" });
     expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), true)).not.toEqual({ kind: "copy" });
@@ -519,6 +532,7 @@ describe("fit scheduling", () => {
     const fit = vi.fn();
     const f = fitScheduler(fit);
     f.schedule();
+    f.schedule();
     vi.advanceTimersToNextFrame();
     expect(fit).toHaveBeenCalledTimes(1);
     for (let i = 0; i < 30; i++) {
@@ -533,6 +547,19 @@ describe("fit scheduling", () => {
     f.cancel();
     vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
     expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a new terminal on the frame schedule until it can measure its grid", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const scheduler = fitScheduler(fit);
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    scheduler.schedule();
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("fits a lone second request after it settles without needing another request", () => {

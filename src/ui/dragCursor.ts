@@ -1,12 +1,3 @@
-/**
- * Keeps one cursor over the whole window while a resize drag runs.
- *
- * `document.body.style.cursor` is not enough: the pointer soon leaves the
- * handle and elements with a cursor of their own (the editor's I-beam, a
- * button's arrow) take over, so the resize cursor appears to fall back to the
- * default one mid-drag. `global.css` keys off `data-drag-cursor` instead and
- * wins over those cursors with `!important`.
- */
 export type DragCursor = "col-resize" | "row-resize" | "ew-resize" | "ns-resize" | "nwse-resize";
 
 const active = new Set<() => void>();
@@ -28,38 +19,31 @@ function listenForEnd() {
 
 /** Returns the release function; call it when the drag ends or is cancelled. */
 export function lockDragCursor(cursor: DragCursor): () => void {
-  const html = document.documentElement;
-  const previous = html.style.getPropertyValue("--drag-cursor");
-  const wasLocked = html.hasAttribute("data-drag-cursor");
-  html.style.setProperty("--drag-cursor", cursor);
-  html.setAttribute("data-drag-cursor", "");
-  return untilDragEnds(() => {
-    if (wasLocked) html.style.setProperty("--drag-cursor", previous);
-    else {
-      html.removeAttribute("data-drag-cursor");
-      html.style.removeProperty("--drag-cursor");
-    }
-  });
-}
-
-export function lockScrollbarCursor(): () => void {
-  // Changing an inherited cursor on the document restyles every glyph in a large preview.
-  const surface = document.createElement("div");
-  surface.setAttribute("data-scrollbar-drag-surface", "");
-  surface.setAttribute("aria-hidden", "true");
-  document.body.appendChild(surface);
-  return () => surface.remove();
-}
-
-function untilDragEnds(cleanup: () => void): () => void {
+  const surface = cursorSurface(cursor);
   listenForEnd();
   let released = false;
   const release = () => {
     if (released) return;
     released = true;
     active.delete(release);
-    cleanup();
+    surface.remove();
   };
   active.add(release);
   return release;
+}
+
+export function lockScrollbarCursor(): () => void {
+  const surface = cursorSurface("default");
+  return () => surface.remove();
+}
+
+function cursorSurface(cursor: DragCursor | "default") {
+  // Changing an inherited cursor restyles every glyph in a large editor.
+  const surface = document.createElement("div");
+  if (cursor === "default") surface.setAttribute("data-scrollbar-drag-surface", "");
+  else surface.setAttribute("data-drag-cursor-surface", cursor);
+  surface.style.cursor = cursor;
+  surface.setAttribute("aria-hidden", "true");
+  document.body.appendChild(surface);
+  return surface;
 }

@@ -26,6 +26,7 @@ import {
 import {
   clearProjectViewLead,
   getFileDecoration,
+  gitMenuItems,
   menuGroupItems,
   notifications,
   openFileExternally,
@@ -1028,7 +1029,7 @@ export class EditorController implements SlotHost {
             openInMenu(slot.model.path, selectedLineContext(view.state)),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),
-            gitMenu(slot.model.path),
+            { label: "Git", submenu: gitMenuItems({ paths: [slot.model.path], file: true, ignore: true }) },
             { kind: "separator" },
             {
               kind: "action",
@@ -2171,8 +2172,10 @@ export class EditorController implements SlotHost {
     return this.removeGuarded((s) => closeKey(s, key));
   }
 
-  activeInput(): EditorInput | null {
-    return this.activeTabOf()?.input ?? null;
+  activeInput(options?: { previewOnly?: boolean }): EditorInput | null {
+    const tab = this.activeTabOf();
+    if (options?.previewOnly && (!tab?.preview || !editorPrefs().tabs.previewTab)) return null;
+    return tab?.input ?? null;
   }
 
   onActiveInputChange(fn: (input: EditorInput | null) => void): () => void {
@@ -2386,7 +2389,9 @@ export class EditorController implements SlotHost {
             openInMenu(path),
             { kind: "separator" },
             localHistoryMenu(path),
-            ...(inProject ? [gitMenu(path)] : []),
+            ...(inProject
+              ? ([{ label: "Git", submenu: gitMenuItems({ paths: [path], file: true, ignore: true }) }] as MenuItem[])
+              : []),
             { kind: "separator" },
             { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
             { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
@@ -2433,54 +2438,6 @@ function localHistoryMenu(path: string): MenuItem {
     submenu: [
       { kind: "action", action: "vcs.localHistory", arg: { path }, label: "Show History" },
       { kind: "action", action: "localHistory.putLabel", label: "Put Label…" },
-    ],
-  };
-}
-
-/** Git › for one file (editor and editor tab menus). */
-function gitMenu(path: string): MenuItem {
-  return {
-    label: "Git",
-    submenu: [
-      { kind: "action", action: "vcs.commit", label: "Commit File…" },
-      { kind: "action", action: "vcs.addToVcs", arg: [path], label: "Add" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.annotate", arg: path, label: "Annotate with Git Blame" },
-      { kind: "action", action: "vcs.showDiff", arg: [path], label: "Show Diff" },
-      { kind: "action", action: "vcs.compareWithBranch", arg: { path } },
-      { kind: "action", action: "vcs.compareWithRevision", arg: { path } },
-      { kind: "action", action: "vcs.showHistory", arg: [path], label: "Show History" },
-      { kind: "action", action: "vcs.showCurrentRevision", arg: { path } },
-      { kind: "action", action: "vcs.showHistoryForSelection", label: "Show History for Selection" },
-      { kind: "action", action: "vcs.rollback", arg: [path], label: "Rollback…" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.push", label: "Push…" },
-      { kind: "action", action: "vcs.pull", arg: [path], label: "Pull…" },
-      { kind: "action", action: "vcs.fetch", label: "Fetch" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.merge", arg: [path] },
-      { kind: "action", action: "vcs.rebase", arg: [path] },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.branches", label: "Branches…" },
-      { kind: "action", action: "vcs.newBranch" },
-      { kind: "action", action: "vcs.newTag" },
-      { kind: "action", action: "vcs.resetHead" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.stash" },
-      { kind: "action", action: "vcs.unstash" },
-      { kind: "separator" },
-      {
-        label: "GitHub",
-        icon: "github",
-        submenu: [
-          { kind: "action", action: "github.pullRequests" },
-          { kind: "action", action: "github.createPullRequest" },
-          { kind: "action", action: "github.checkoutPullRequest" },
-          { kind: "action", action: "github.openInBrowser" },
-        ],
-      },
-      { kind: "action", action: "vcs.manageRemotes" },
-      { kind: "action", action: "vcs.clone", label: "Clone…" },
     ],
   };
 }

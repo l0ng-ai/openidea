@@ -130,6 +130,18 @@ pub async fn docker_container_stats(
     blocking(move || ide_docker::container_stats(&endpoint, &id)).await
 }
 
+/// Disk usage per volume name (`docker system df -v`).
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn docker_volume_sizes(
+    state: State<'_, AppState>,
+    endpoint: DockerEndpoint,
+) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    let endpoint = resolve(&state, endpoint).await?;
+    blocking(move || ide_docker::volume_sizes(&endpoint)).await
+}
+
 /// Streams a container's log lines, in batches, until it stops or the request is cancelled.
 #[desktop_command(trust = trusted)]
 #[tauri::command]
@@ -308,4 +320,5 @@ ide_command::desktop_domain!(
     docker_set_registry_password,
     docker_settings,
     docker_snapshot,
+    docker_volume_sizes,
 );
