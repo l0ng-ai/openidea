@@ -63,22 +63,20 @@ class Swatch extends GutterMarker {
   }
 }
 
-/** The literals the built-in preview recognizes on the line at `pos`; its swatch shows the first. */
-export function lineColors(state: EditorState, pos: number, language: string): ColorMatch[] {
+/** The literal the built-in preview shows on the line at `pos`. */
+export function lineColor(state: EditorState, pos: number, language: string): ColorMatch | null {
   const line = state.doc.lineAt(pos);
-  if (line.length > MAX_LINE) return [];
+  if (line.length > MAX_LINE) return null;
   const matches = findColors(line.text, language, isColorName);
-  if (!isMarkupLanguage(language)) return matches;
+  if (!isMarkupLanguage(language)) return matches[0] ?? null;
   const tree = syntaxTree(state);
-  return matches.filter((color) => {
-    let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(line.from + color.from + 1);
-    for (; node; node = node.parent) if (node.name === "StyleSheet" || node.name === "Styles") return true;
-    return false;
-  });
-}
-
-function lineColor(view: EditorView, pos: number, language: string): ColorMatch | null {
-  return lineColors(view.state, pos, language)[0] ?? null;
+  return (
+    matches.find((color) => {
+      let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(line.from + color.from + 1);
+      for (; node; node = node.parent) if (node.name === "StyleSheet" || node.name === "Styles") return true;
+      return false;
+    }) ?? null
+  );
 }
 
 interface ColorEdit {
@@ -171,7 +169,7 @@ export function colorPreviewGutter(ctx: EditorDocContext): Extension {
     gutter({
       class: `${styles.gutter} cm-openidea-gutter-colors`,
       lineMarker: (view, block) => {
-        const color = lineColor(view, block.from, ctx.language);
+        const color = lineColor(view.state, block.from, ctx.language);
         return color ? new Swatch(color, !view.state.readOnly) : null;
       },
       lineMarkerChange: (update) => update.docChanged || update.startState.readOnly !== update.state.readOnly,
@@ -181,7 +179,7 @@ export function colorPreviewGutter(ctx: EditorDocContext): Extension {
           const swatch = e.target instanceof Element ? e.target.closest(`.${styles.swatch}`) : null;
           if (e.button !== 0 || !swatch || view.state.readOnly) return false;
           const line = view.state.doc.lineAt(block.from);
-          const color = lineColor(view, block.from, ctx.language);
+          const color = lineColor(view.state, block.from, ctx.language);
           if (!color) return false;
           e.preventDefault();
           const rect = swatch.getBoundingClientRect();

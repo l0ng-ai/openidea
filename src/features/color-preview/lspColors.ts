@@ -5,12 +5,20 @@
  */
 import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import { rangeToOffsets, shownAgain, textEditsToChanges, whenSynced, type EditorDocContext } from "@/editor/api";
+import {
+  offsetsToRange,
+  rangeToOffsets,
+  shownAgain,
+  textEditsToChanges,
+  whenSynced,
+  type EditorDocContext,
+} from "@/editor/api";
 import { onServerSettled } from "@/editor/lsp/availability";
+import { comparePos } from "@/editor/lsp/positions";
 import { editorPrefs } from "@/platform/editorSettings";
 import { call, commands, type DocumentColor } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { lineColors } from "./gutter";
+import { lineColor } from "./gutter";
 import { ProviderSwatch } from "./providerSwatch";
 import styles from "./ColorPreview.module.css";
 
@@ -38,10 +46,13 @@ export function serverOnlyColors(state: EditorState, language: string, list: Doc
   const taken = new Set<string>();
   return list.filter((color) => {
     const { from, to } = rangeToOffsets(state.doc, color.range);
+    const { start, end } = offsetsToRange(state.doc, from, to);
+    if (from === to || comparePos(start, color.range.start) || comparePos(end, color.range.end)) return false;
     const line = state.doc.lineAt(from);
     if (!scanned.has(line.number)) {
       scanned.add(line.number);
-      for (const m of lineColors(state, line.from, language)) taken.add(`${line.from + m.from}:${line.from + m.to}`);
+      const literal = lineColor(state, line.from, language);
+      if (literal) taken.add(`${line.from + literal.from}:${line.from + literal.to}`);
     }
     const key = `${from}:${to}`;
     if (taken.has(key)) return false;

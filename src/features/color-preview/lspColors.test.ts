@@ -64,6 +64,20 @@ it("drops server colors the built-in literal preview already shows at the same r
   expect(serverOnlyColors(state, "css", [tailwind, { ...tailwind, server: 8 }])).toEqual([tailwind]);
 });
 
+it("keeps the server's swatch for the second literal on a line", () => {
+  const state = EditorState.create({ doc: "a { color: #ff0000; background: #00ff00; }" });
+  const second = color(0, 32, 39, [0, 1, 0]);
+  expect(serverOnlyColors(state, "css", [literal, second])).toEqual([second]);
+});
+
+it("keeps valid swatches when a server reports a range outside the document", async () => {
+  vi.useFakeTimers();
+  ipc.lspDocumentColors.mockResolvedValue({ status: "ok", data: [color(2, 0, 6, [0, 1, 0]), tailwind] });
+  const view = open(CSS, "css");
+  await vi.advanceTimersByTimeAsync(300);
+  expect(swatches(view).map((swatch) => swatch.title)).toEqual(["rgba(239, 68, 68, 1)"]);
+});
+
 it("shows a swatch per server color and writes the server's presentation on commit", async () => {
   vi.useFakeTimers();
   ipc.lspDocumentColors.mockResolvedValue({ status: "ok", data: [literal, tailwind] });
