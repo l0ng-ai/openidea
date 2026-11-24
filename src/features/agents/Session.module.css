@@ -412,6 +412,8 @@
 
 .reply {
   position: relative;
+  /* Keep WebKit's selection gap fill from extending across reply boundaries. */
+  transform: translateX(0);
 }
 .replyFooter {
   position: absolute;
