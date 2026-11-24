@@ -176,6 +176,8 @@ interface StreamProps {
 
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
+/** How long a conversation stays behind other tabs before it drops the entries painted above its tail. */
+const HIDDEN_TRIM_MS = 30_000;
 
 function scrollsY(el: Element): boolean {
   if (el.scrollHeight - el.clientHeight <= 1) return false;
@@ -215,6 +217,8 @@ export function Stream({
   drafts,
 }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
+  // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
+  const visible = useEditorShown();
   useSelectionBoundary(ref);
   const [openFolds] = useState(() => new Map<string, boolean>());
   const key = entriesKey(task.id, subagent?.id ?? null);
@@ -268,11 +272,11 @@ export function Stream({
   const anchor = useRef<{ el: Element; top: number } | null>(null);
   const loadEarlier = useCallback(() => {
     const el = ref.current;
-    if (!el || start <= 0 || dragging.current || anchor.current) return;
+    if (!visible || !el || start <= 0 || dragging.current || anchor.current) return;
     const first = el.firstElementChild;
     if (!position.current.stick && first) anchor.current = { el: first, top: first.getBoundingClientRect().top };
     startTransition(() => setShown((n) => n + ENTRY_BATCH));
-  }, [start]);
+  }, [start, visible]);
   const loadTimer = useRef<number | null>(null);
   /** Load the next batch once the user stops scrolling near the top. */
   const loadWhenStill = useCallback(() => {
@@ -308,12 +312,29 @@ export function Stream({
   useEffect(() => {
     // Following the end, paint the rest in the background. A user who scrolled away
     // gets them only after stopping near the top (`loadWhenStill`), so the scrollbar
-    // is not resized mid-drag.
-    if (start > 0 && position.current.stick && !dragging.current)
+    // is not resized mid-drag. A hidden tab paints nothing more.
+    if (visible && start > 0 && position.current.stick && !dragging.current)
       startTransition(() => setShown((n) => n + ENTRY_BATCH));
-  }, [start]);
-  // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
-  const visible = useEditorShown();
+  }, [start, visible]);
+  useEffect(() => {
+    // A conversation read to its end gives back the history painted above its recent entries
+    // once it stays behind other tabs: a few kept-alive tabs would otherwise hold every turn
+    // as DOM. One scrolled away keeps them, its offset needs the rows above.
+    if (visible) return;
+    const timer = window.setTimeout(() => {
+      const stream = ref.current;
+      if (!stream || !position.current.stick) return;
+      // A row can still hold an unsent edit or a selection after scrolling to the end.
+      if (
+        stream.querySelector(`.${styles.editMessage}`) ||
+        stream.contains(stream.ownerDocument.activeElement) ||
+        selectionIn(stream)
+      )
+        return;
+      setShown(ENTRY_BATCH);
+    }, HIDDEN_TRIM_MS);
+    return () => window.clearTimeout(timer);
+  }, [visible]);
   const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
   useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
   /**
