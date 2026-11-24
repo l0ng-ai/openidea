@@ -1218,6 +1218,11 @@ impl LspManager {
         self.shown_messages.lock().insert((server.to_owned(), text.to_owned()))
     }
 
+    /// Whether `server` has shown a message containing `needle` in this project.
+    pub(crate) fn shown_message_containing(&self, server: &str, needle: &str) -> bool {
+        self.shown_messages.lock().iter().any(|(s, text)| s == server && text.contains(needle))
+    }
+
     pub(crate) fn apply_edit_hook(&self) -> Option<ApplyEditHook> {
         self.apply_edit_hook.read().clone()
     }
@@ -2628,6 +2633,26 @@ impl LspManager {
         let params = json!({ "command": command.command, "arguments": command.arguments });
         let _: Value = self.call(t, "workspace/executeCommand", params, None, LONG_TIMEOUT).await?;
         Ok(())
+    }
+
+    /// Where other files import `doc`'s file (VS Code's Find File References): tsserver's
+    /// `fileReferences` through vtsls' `typescript.tsserverRequest`, which also answers for a
+    /// `.vue` component with the Vue TypeScript plugin (vtsls' own command refuses non-TS
+    /// documents). Unavailable when no TypeScript server serves the document.
+    pub async fn file_references(&self, doc: DocId, cancel: CancellationToken) -> IdeResult<Vec<Location>> {
+        let snap = self.snapshot(doc)?;
+        let targets =
+            self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == ts_file_moves::COMMAND)).await;
+        let t = targets
+            .iter()
+            .find(|t| t.server.config.tsserver_project)
+            .ok_or_else(|| IdeError::unavailable("No language server finds file references"))?;
+        let params = json!({
+            "command": ts_file_moves::COMMAND,
+            "arguments": ["fileReferences", { "file": snap.path }],
+        });
+        let result: Value = self.call(t, "workspace/executeCommand", params, Some(&cancel), LONG_TIMEOUT).await?;
+        Ok(ts_file_moves::file_references(&result))
     }
 
     /// Whether a server of `doc` (`server`, when given) provides the command `name`. Code actions

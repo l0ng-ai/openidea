@@ -49,7 +49,9 @@ import {
   foldSelection,
   unfoldAtCaret,
 } from "./cm/folding";
+import { fillParagraph } from "./cm/fillParagraph";
 import { reverseLines, sortLines } from "./cm/lines";
+import { hardWrapAt } from "./cm/setup";
 import { customRegions } from "./cm/regions";
 import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
 import { enclosingHeaders } from "./cm/stickyScroll";
@@ -987,6 +989,15 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
     edit("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
+    text(
+      "code.fillParagraph",
+      "Fill Paragraph",
+      (v, slot) => fillParagraph(v, hardWrapAt(slot.model.settings(), slot.model.info)),
+      {
+        category: "Edit",
+        keywords: ["wrap", "reflow", "rewrap comment"],
+      },
+    ),
     text("code.unwrap", "Unwrap/Remove…", (_v, slot) => void unwrapAtCaret(slot), {
       keywords: ["unwrap", "remove if"],
     }),

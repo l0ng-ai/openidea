@@ -364,6 +364,7 @@ lsp_execute_code_action                      trusted            project_host bin
 lsp_execute_command                          trusted            project_host bindings async
 lsp_extract_interface                        trusted            project_host bindings async
 lsp_extract_interface_info                   trusted            project_host bindings async
+lsp_file_references                          trusted            project_host bindings async
 lsp_format                                   trusted            project_host bindings async
 lsp_format_text                              trusted            project_host bindings async
 lsp_goto                                     trusted            project_host bindings async
