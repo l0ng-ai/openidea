@@ -154,9 +154,9 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`); `key = "Escape"` with a required `when` (API 1.10) runs after the editor's own Escape handling                                                                      | no            |
 | `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                            | no            |
 | `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                   | no            |
-| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3)                                                                          | without `web` |
-| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                                                                                            | without `web` |
-| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?` — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                                        | no            |
+| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.15), `group?`, `when?` (API 1.3)                                                    | without `web` |
+| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?` (API 1.15)                                                                                                                      | without `web` |
+| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.15) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
@@ -445,6 +445,10 @@ matching SDK. Plugins for 1.14 and earlier keep working. New in 1.15:
   sessions while the plugin is enabled; workspace and user skills take
   precedence on a name clash, and invalid entries report a plugin load warning
   rather than failing the plugin.
+- [Web views](#web-views) can embed other sites: `frames = ["https://…"]` on a
+  view, custom editor or editor panel lists the origins, each covered by a
+  `net:<host>` capability; the page's `frame-src` holds the ones the user
+  granted.
 
 ### API 1.14
 
@@ -2111,6 +2115,34 @@ For example, a page can reserve the corner in its own toolbar:
   padding-right: var(--openidea-corner-inset-width, 0px);
 }
 ```
+
+With API 1.15 (`engines.openidea = "^1.15"`) a web page can embed other sites
+in `<iframe>`s: list their origins in the declaration's `frames` (views, custom
+editors and editor panels, up to 16). An origin is `https://host[:port]`, or
+`http://` to `localhost` / `127.0.0.1` / `[::1]`, with no path, query or
+fragment, and must be covered by a `net:<host>` (or `net.http:<host>`)
+capability of the manifest — `net:ask` does not count — so the install page
+lists it:
+
+```toml
+[capabilities]
+optional = ["net:play.example.com"]
+
+[[contributes.views]]
+id = "hall"
+title = "Game Hall"
+web = "web/index.html"
+frames = ["https://play.example.com"]
+```
+
+The HTML files under that page's directory are served with `frame-src` set to
+the declared origins whose capability the user granted (`frame-src 'none'`
+when none is), and are revalidated rather than cached, so declining or
+revoking a host takes it out on the next load. Without `frames` nothing can be
+framed, as before. The embedded page inherits the frame's sandbox (scripts and
+an opaque origin: no cookies or storage), never gets `window.openidea`, and
+the plugin's own page still has no network. Sites that refuse framing
+(`X-Frame-Options`, `frame-ancestors`) stay blank.
 
 `plugins/official/graphviz` is a complete example: a Vite + React page in
 `web-src/`, built into `web/` by `plugins/build.sh`, paired with code — the page renders (Graphviz compiled to WebAssembly) and
