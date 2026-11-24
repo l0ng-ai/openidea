@@ -31,6 +31,8 @@ pub(crate) trait AttachProbe: Send + Sync {
     fn thread_print(&self, pid: u32) -> Result<String, AttachError>;
     /// Opens `pid`'s attach listener unless it runs; refuses a process not confirmed HotSpot.
     fn ensure_listener(&self, pid: u32) -> Result<(), AttachError>;
+    /// Confirmed HotSpot and not one of Gradle's own JVMs; asks the JVM nothing.
+    fn is_application_jvm(&self, pid: u32) -> bool;
 }
 
 pub(super) struct JdkProbe {
@@ -84,6 +86,10 @@ impl AttachProbe for JdkProbe {
 
     fn ensure_listener(&self, pid: u32) -> Result<(), AttachError> {
         ide_jvm_attach::ensure_listener(pid, ide_jvm_attach::LISTENER_START_TIMEOUT)
+    }
+
+    fn is_application_jvm(&self, pid: u32) -> bool {
+        ide_jvm_attach::is_application_jvm(pid)
     }
 }
 

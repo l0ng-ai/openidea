@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Command;
 use std::time::Duration;
 
+use crate::listener::is_hotspot;
 use crate::socket::{AttachError, jcmd};
 
 /// Default budget for `thread_print`; a dump of a healthy JVM takes milliseconds, so this only
@@ -77,6 +78,16 @@ pub fn select_run_jvm(
         }
     }
     deepest_jvm_in_tree(table, root, &is_hotspot)
+}
+
+/// Confirmed HotSpot (`is_hotspot`) and, by its command line, not one of Gradle's own JVMs.
+pub fn is_application_jvm(pid: u32) -> bool {
+    is_hotspot(pid) && !command_line(pid).is_some_and(|command| is_gradle_jvm(&command))
+}
+
+fn command_line(pid: u32) -> Option<String> {
+    let out = Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
 fn is_gradle_jvm(command: &str) -> bool {
@@ -236,6 +247,19 @@ mod tests {
         assert_eq!(select_run_jvm(&table, 10, None, not_the_shell), Some(12));
         let helpers = vec![entry(10, 1, "/bin/zsh"), build, entry(20, 11, worker), entry(21, 11, kotlin)];
         assert_eq!(select_run_jvm(&helpers, 10, None, not_the_shell), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_line_of_a_process_and_a_sleep_is_no_application_jvm() {
+        let mut sleep = Command::new("sleep").arg("30").spawn().expect("spawn sleep");
+        let pid = sleep.id();
+        let (command, application) = (command_line(pid), is_application_jvm(pid));
+        let _ = sleep.kill();
+        let _ = sleep.wait();
+        assert_eq!(command.as_deref(), Some("sleep 30"));
+        assert!(!application);
+        assert_eq!(command_line(pid), None, "an ended process has no command line");
     }
 
     #[test]

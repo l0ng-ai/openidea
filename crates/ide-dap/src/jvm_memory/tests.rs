@@ -43,6 +43,10 @@ struct FakeProbe {
     thread_dumps: parking_lot::Mutex<VecDeque<Result<String, AttachError>>>,
     /// Replies to `ensure_listener`, in order; `Ok` once empty.
     listener_starts: parking_lot::Mutex<VecDeque<Result<(), AttachError>>>,
+    /// Pids `is_application_jvm` confirms.
+    application_jvms: Vec<u32>,
+    /// Pids `ensure_listener` was asked for.
+    ensured: parking_lot::Mutex<Vec<u32>>,
 }
 
 type StopHook = Box<dyn Fn() + Send + Sync>;
@@ -103,6 +107,8 @@ impl FakeProbe {
             stops_on: None,
             thread_dumps: parking_lot::Mutex::new(VecDeque::new()),
             listener_starts: parking_lot::Mutex::new(VecDeque::new()),
+            application_jvms: Vec::new(),
+            ensured: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -179,9 +185,13 @@ impl AttachProbe for FakeProbe {
         self.leave();
         self.thread_dumps.lock().pop_front().expect("unexpected thread dump request")
     }
-    fn ensure_listener(&self, _pid: u32) -> Result<(), AttachError> {
+    fn ensure_listener(&self, pid: u32) -> Result<(), AttachError> {
         self.record("ensure_listener");
+        self.ensured.lock().push(pid);
         self.listener_starts.lock().pop_front().unwrap_or(Ok(()))
+    }
+    fn is_application_jvm(&self, pid: u32) -> bool {
+        self.application_jvms.contains(&pid)
     }
 }
 
@@ -1240,6 +1250,50 @@ fn threads_while_suspended_on_17_use_the_running_listener() {
     assert!(dump.taken_while_suspended);
     assert_eq!(dump.java_version, "17.0.13");
     assert_eq!(*fake.commands.lock(), ["thread_print"]);
+}
+
+#[test]
+fn threads_of_a_tree_without_a_listener_go_to_its_first_application_jvm() {
+    // A shell (10) started a Gradle client (11) that started the program's JVM (12).
+    let mut fake = dumping_threads(99, vec![Ok(THREADS.into())]);
+    fake.application_jvms = vec![12];
+    let r = dump_tree(&fake, &[10, 11, 12], false);
+    let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
+    assert_eq!(dump.pid, 12);
+    assert_eq!(*fake.ensured.lock(), [12]);
+
+    // No JVM at all: the reported pid is asked, which tells an exited program from a non-JVM.
+    let fake = dumping_threads(99, Vec::new());
+    *fake.listener_starts.lock() = vec![Err(AttachError::NotAJvm)].into();
+    assert_eq!(
+        threads_unavailable(dump_tree(&fake, &[10, 11], false)),
+        threads_jvm(JvmMemoryUnavailable::NoJvmProcess)
+    );
+    assert_eq!(*fake.ensured.lock(), [10]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn launched_thread_dump_without_a_listener_finds_the_jvm_below_the_reported_pid() {
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let child = Child(std::process::Command::new("sleep").arg("30").spawn().unwrap());
+    let jvm = child.0.id();
+    let state = tokio::sync::Mutex::new(JvmMemoryState::default());
+    let mut fake = dumping_threads(0, vec![Ok(THREADS.into())]);
+    fake.application_jvms = vec![jvm];
+    let fake = Arc::new(fake);
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let target = JvmTarget::Launched(std::process::id() as i32);
+    let r = thread_dump(&state, || false, |_| probe, target).await.unwrap();
+    let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
+    assert_eq!(dump.pid, jvm);
+    assert_eq!(*fake.ensured.lock(), [jvm]);
 }
 
 #[test]

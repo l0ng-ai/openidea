@@ -94,9 +94,11 @@ pub(super) async fn thread_dump(
 }
 
 /// `tree` starts with the session's reported pid, followed by its descendants: the JVM is the
-/// first with a listener, else the reported pid.
-fn dump_tree(probe: &dyn AttachProbe, tree: &[i32], suspended: bool) -> JvmThreadsResult {
+/// first with a listener, else the first application JVM (the reported pid may be a shell or a
+/// Gradle client), else the reported pid.
+pub(super) fn dump_tree(probe: &dyn AttachProbe, tree: &[i32], suspended: bool) -> JvmThreadsResult {
     let jvm_pid = pick_jvm_pid(tree, |p| probe.has_listener(p))
+        .or_else(|| pick_jvm_pid(tree, |p| probe.is_application_jvm(p)))
         .or_else(|| tree.first().and_then(|&p| u32::try_from(p).ok()).filter(|&p| p > 0));
     match jvm_pid {
         Some(pid) => dump_threads(probe, pid, suspended),
