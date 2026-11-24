@@ -3,7 +3,7 @@ use crate::Host;
 use crate::Project;
 use ide_command::command;
 
-use super::doc::blocking;
+use super::blocking;
 use ide_core::settings::SpellingSettings;
 use ide_core::{DocId, IdeError, IdeResult, RequestId};
 use ide_language::SpellingKind;

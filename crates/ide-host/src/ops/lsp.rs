@@ -1,4 +1,4 @@
-use super::doc::blocking;
+use super::blocking;
 use crate::Host;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use ide_command::command;
