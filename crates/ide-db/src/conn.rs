@@ -12,7 +12,7 @@ use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use sqlx::{
-    Column, ColumnIndex, Connection, Decode, Executor, Row, SqlSafeStr, Sqlite, TypeInfo, ValueRef,
+    Column, ColumnIndex, ConnectOptions, Connection, Decode, Executor, Row, SqlSafeStr, Sqlite, TypeInfo, ValueRef,
     mysql::{MySqlConnectOptions, MySqlConnection, MySqlSslMode},
     pool::PoolConnection,
     postgres::{PgConnectOptions, PgConnection, PgSslMode},
@@ -135,7 +135,7 @@ impl Context {
 }
 
 macro_rules! sqlx_pool {
-    ($manager:ident, $handle:ident, $options:ty, $connection:ty, $driver:expr, $query:expr) => {
+    ($manager:ident, $handle:ident, $options:ty, $connection:ty, $driver:expr, $query:expr $(, $after_init:ident)?) => {
         pub struct $manager {
             options: $options,
             init: Arc<Vec<String>>,
@@ -170,7 +170,7 @@ macro_rules! sqlx_pool {
 
             async fn connect(&self) -> Result<Self::Connection, Self::Error> {
                 tokio::time::timeout(self.timeout, async {
-                    let mut conn = <$connection>::connect_with(&self.options).await?;
+                    let mut conn = self.options.connect().await?;
                     let context_sql = |value: Option<String>| {
                         value.map(|v| {
                             if $driver == DbDriver::Postgres {
@@ -183,6 +183,9 @@ macro_rules! sqlx_pool {
                     for sql in self.init.iter() {
                         sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut conn).await?;
                     }
+                    $(if !self.init.is_empty() {
+                        self.options.$after_init(&mut conn).await?;
+                    })?
                     let row = sqlx::raw_sql(sqlx::AssertSqlSafe($query.to_owned())).fetch_one(&mut conn).await?;
                     let context = Context::new(context_sql(row.try_get(0)?));
                     Ok($handle {
@@ -209,7 +212,76 @@ macro_rules! sqlx_pool {
     };
 }
 
-sqlx_pool!(PgManager, PgHandle, PgConnectOptions, PgConnection, DbDriver::Postgres, "SHOW search_path");
+#[derive(Clone)]
+struct PostgresOptions {
+    connection: PgConnectOptions,
+    read_only: bool,
+}
+
+const PG_READ_ONLY_HINT: &str = "Read-only requires the pooler to track default_transaction_read_only for each client. \
+    For PgBouncer, check track_extra_parameters.";
+
+impl PostgresOptions {
+    async fn connect(&self) -> Result<PgConnection, sqlx::Error> {
+        let mut conn = self.connection.connect().await?;
+        // A pooler can silently discard startup options. Check before giving the startup script a connection.
+        self.verify_read_only(&mut conn).await?;
+        Ok(conn)
+    }
+
+    async fn verify_read_only(&self, conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+        if self.read_only {
+            let row = sqlx::raw_sql("SHOW default_transaction_read_only").fetch_one(conn).await?;
+            if row.try_get::<&str, _>(0)? != "on" {
+                return Err(sqlx::Error::Configuration(
+                    format!(
+                        "PostgreSQL did not enable the requested default_transaction_read_only setting. \
+                        Check the Advanced properties and startup script. {PG_READ_ONLY_HINT}"
+                    )
+                    .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn postgres_read_only_hint(read_only: bool, code: Option<&str>, message: &str) -> Option<&'static str> {
+    match (read_only, code, message) {
+        (
+            true,
+            Some("08P01"),
+            "unsupported startup parameter in options: default_transaction_read_only"
+            | "unsupported startup parameter: default_transaction_read_only",
+        ) => Some(PG_READ_ONLY_HINT),
+        (true, Some("08P01"), "unsupported startup parameter: options") => Some(
+            "This endpoint rejects PostgreSQL startup options. Use an endpoint that supports and tracks \
+             default_transaction_read_only for each client.",
+        ),
+        _ => None,
+    }
+}
+
+fn postgres_connect_error(error: sqlx::Error, read_only: bool) -> IdeError {
+    let hint =
+        error.as_database_error().and_then(|db| postgres_read_only_hint(read_only, db.code().as_deref(), db.message()));
+    let mut error = db_err(error);
+    if let Some(hint) = hint {
+        error.message.push_str(". ");
+        error.message.push_str(hint);
+    }
+    error
+}
+
+sqlx_pool!(
+    PgManager,
+    PgHandle,
+    PostgresOptions,
+    PgConnection,
+    DbDriver::Postgres,
+    "SHOW search_path",
+    verify_read_only
+);
 sqlx_pool!(MysqlManager, MysqlHandle, MySqlConnectOptions, MySqlConnection, DbDriver::Mysql, "SELECT DATABASE()");
 
 pub struct ServerPool<M: ManageConnection> {
@@ -980,17 +1052,18 @@ impl Pool {
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
-                let mut manager = PgManager { options: opts, init: init.clone(), timeout };
+                let options = PostgresOptions { connection: opts, read_only: source.read_only };
+                let mut manager = PgManager { options, init: init.clone(), timeout };
                 // Open once directly so authentication failures retain their database error.
                 let first = match manager.connect().await {
                     Err(e) if source.ssl == DbSslMode::Prefer && tls_failed(&e) => {
                         tracing::info!("TLS handshake failed, connecting without TLS (SSL mode Prefer): {e}");
-                        manager.options = manager.options.clone().ssl_mode(PgSslMode::Disable);
+                        manager.options.connection = manager.options.connection.clone().ssl_mode(PgSslMode::Disable);
                         manager.connect().await
                     }
                     first => first,
                 }
-                .map_err(db_err)?;
+                .map_err(|e| postgres_connect_error(e, source.read_only))?;
                 let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
                 let _ = pool.add(first);
                 Ok(Pool::Postgres(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
@@ -1630,6 +1703,19 @@ mod tests {
             assert!(whole.starts_with(cut.as_deref().unwrap()));
             assert!(cut.as_deref().unwrap().encode_utf16().count() <= 2);
         }
+    }
+
+    #[test]
+    fn postgres_read_only_guidance_identifies_what_the_pooler_rejected() {
+        let rejected = "unsupported startup parameter in options: default_transaction_read_only";
+        assert_eq!(postgres_read_only_hint(true, Some("08P01"), rejected), Some(PG_READ_ONLY_HINT));
+        assert!(postgres_read_only_hint(true, Some("08P01"), "unsupported startup parameter: options").is_some());
+        assert_eq!(postgres_read_only_hint(false, Some("08P01"), rejected), None);
+        assert_eq!(postgres_read_only_hint(true, Some("28P01"), rejected), None);
+        assert_eq!(
+            postgres_read_only_hint(true, Some("08P01"), "unsupported startup parameter: extra_float_digits"),
+            None
+        );
     }
 
     #[test]
