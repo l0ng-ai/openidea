@@ -178,6 +178,10 @@ fn handle(&mut self, _view: &str, event: ViewEvent, ctx: &Invocation) -> Result<
 
 它需要 `editor.read` 和 `editor.write`。
 
+处理大型二进制文件时，在网页自定义编辑器中设置 `binary = true`、`layout = "tab"`，并在清单中声明
+`engines.openidea = "^1.16"`。IDE 打开文件时无需创建文本文档。页面可以访问只读文档的文件名，并通过网页视图桥接
+API 分段读取文件。插件代码收到此编辑器的消息时，编辑器上下文指向当前打开的二进制文件。
+
 ## HTML 主体
 
 `Body::Html` 在沙箱 frame 中运行：不透明源（opaque origin），CSP 只允许其内联脚本、内联样式和 `data:` 图片，
@@ -221,6 +225,8 @@ web = "web/index.html"   # 页面；它所在的目录就是它能加载的范�
 | `window.openidea`                    | 作用                                                                                        |
 | ------------------------------------ | ------------------------------------------------------------------------------------------- |
 | `document.get()`                     | 自定义编辑器文档的 `{ version, text, readOnly, name }`（工具窗口中没有）                    |
+| `document.size()`                    | 当前二进制文件的字节数                                                                      |
+| `document.readRange(offset, length)` | 从当前二进制文件的字节偏移处读取最多 1 MiB，返回 `Uint8Array`；到达文件末尾时可能更短       |
 | `document.edit(version, edits)`      | 把 `[{ from, to, insert }]`（UTF-16 偏移）作为一次可撤销修改应用；版本不符时以 `stale` 拒绝 |
 | `document.replace(version, text)`    | 同上，但替换整个文本                                                                        |
 | `document.onChange(fn)`              | 其他地方（文本编辑器、撤销、另一个窗口）修改后收到 `{ version, text }`                      |
