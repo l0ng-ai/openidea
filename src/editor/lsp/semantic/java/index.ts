@@ -2,6 +2,7 @@ import type { Tree } from "@lezer/common";
 import type { Text } from "@codemirror/state";
 import { registerLanguageSemantics, type LanguageSemantics, type SemanticRange } from "../languages";
 import { javaDeclarationRanges } from "./declarations";
+import { javaEscapeRanges } from "./escapes";
 import { isReassignedAt } from "./reassigned";
 
 const TYPE_TOKENS = new Set(["class", "interface", "enum", "record", "annotation", "type", "typeParameter"]);
@@ -56,7 +57,7 @@ export function javaKeywordRanges(tree: Tree, doc: Text): SemanticRange[] {
 }
 
 const javaSemantics: LanguageSemantics = {
-  syntaxRanges: (tree, doc) => javaKeywordRanges(tree, doc),
+  syntaxRanges: (tree, doc) => [...javaKeywordRanges(tree, doc), ...javaEscapeRanges(tree, doc)],
   fallbackRanges: (tree) => javaDeclarationRanges(tree),
   tokenClasses({ type, classes, from, doc, tree }) {
     // Relies on jdtls sending only contextual keywords (`sealed`, `permits`, `record`, `non-sealed`) as `modifier` tokens.
