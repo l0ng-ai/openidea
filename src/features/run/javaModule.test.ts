@@ -68,6 +68,7 @@ beforeEach(() => {
 afterEach(() => {
   resetRuns();
   _resetI18nForTests();
+  useProject.setState({ project: null });
 });
 
 it.each(["sibling", "/outside/modules"])("runs from %s using the stored module's classpath", async (cwd) => {
@@ -137,6 +138,27 @@ it("finds the source module for an old saved configuration without a module", as
   expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
   expect(ipc.runStart).toHaveBeenCalledWith(
     expect.objectContaining({ cwd: "/outside/modules" }),
+    expect.anything(),
+    expect.any(Number),
+  );
+});
+
+it.each([null, "/elsewhere"])("recovers an attached module from its indexed path with cwd %s", async (cwd) => {
+  const root = "/p";
+  const member = "/other/spring";
+  const module = `${member}/web`;
+  useProject.setState({
+    project: { root, workspace: { version: 1, name: "demo", projects: [root, member] } } as never,
+  });
+  ipc.findFiles.mockResolvedValueOnce({
+    status: "ok",
+    data: [{ path: `${module}/src/main/java/a/Main.java`, relPath: "spring/web/src/main/java/a/Main.java" }],
+  });
+  const session = await startRun({ ...config, cwd });
+  expect(session?.status).toBe("running");
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(module, false, "automatic", expect.any(Number));
+  expect(ipc.runStart).toHaveBeenCalledWith(
+    expect.objectContaining({ cwd: cwd ?? module, module }),
     expect.anything(),
     expect.any(Number),
   );

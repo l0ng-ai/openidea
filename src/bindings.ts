@@ -574,6 +574,11 @@ export const commands = {
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
 	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
+	/**
+	 *  Rearrange Code: the edits that put the document's class members in arrangement order (Python
+	 *  for now); none when they already are or the language has no arrangement.
+	 */
+	docRearrange: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("doc_rearrange", { doc })),
 	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
 	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
@@ -680,7 +685,7 @@ export const commands = {
 	 *  `charset` (writes the BOM for `utf-8-bom` / UTF-16).
 	 */
 	fsCreateFile: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file", { path })),
-	fsCreateFileBytes: (path: string, data: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
+	fsCreateFileBytes: (path: string, data: IpcBytes) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
 	/**  Moving to the trash can take a while (large trees): kept off the main thread. */
 	fsDelete: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_delete", { path })),
 	/**  Moves an item to the Trash and returns the snapshot for Project View Undo. */
@@ -707,6 +712,11 @@ export const commands = {
 	fsRename: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_rename", { from, to })),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
+	/**
+	 *  The scratch files' folder of this host (`<data dir>/scratches`), created. A remote window
+	 *  keeps its scratches on the server, where its file commands run.
+	 */
+	fsScratchesDir: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("fs_scratches_dir")),
 	/**
 	 *  Toggle Read-only Attribute: sets the writable bit (and the open document's
 	 *  state). Returns whether the file is read-only now.
@@ -849,7 +859,11 @@ export const commands = {
 	lspCodeActionQuery: (request: RequestId, doc: DocId, range: Range, only: string[]) => typedError<CodeActionQuery, IdeError>(__TAURI_INVOKE("lsp_code_action_query", { request, doc, range, only })),
 	lspCodeActions: (doc: DocId, range: Range, only: string[]) => typedError<CodeAction[], IdeError>(__TAURI_INVOKE("lsp_code_actions", { doc, range, only })),
 	lspCodeLens: (doc: DocId) => typedError<CodeLens[], IdeError>(__TAURI_INVOKE("lsp_code_lens", { doc })),
+	/**  How the server that reported `color` writes it with new components. */
+	lspColorPresentations: (doc: DocId, color: DocumentColor) => typedError<ColorPresentation[], IdeError>(__TAURI_INVOKE("lsp_color_presentations", { doc, color })),
 	lspCompletion: (request: RequestId, doc: DocId, pos: Pos, trigger: string | null) => typedError<CompletionList, IdeError>(__TAURI_INVOKE("lsp_completion", { request, doc, pos, trigger })),
+	/**  Colors in a document from its language servers (Tailwind classes, CSS values…). */
+	lspDocumentColors: (doc: DocId) => typedError<DocumentColor[], IdeError>(__TAURI_INVOKE("lsp_document_colors", { doc })),
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
@@ -1093,6 +1107,11 @@ export const commands = {
 	 *  for native inheritance gutter markers.
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
+	/**
+	 *  The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
+	 *  functions and classes declared in both: PyCharm's stub gutter markers.
+	 */
+	navPythonStubs: (doc: DocId) => typedError<PythonStubLinks, IdeError>(__TAURI_INVOKE("nav_python_stubs", { doc })),
 	/**
 	 *  The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
 	 *  no project or content root has it.
@@ -1380,6 +1399,16 @@ export const commands = {
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**  A project on pypi.org by its exact name; `None` when PyPI has no such project. */
+	pypiPackage: (name: string, request: RequestId) => typedError<{
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+} | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
 	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
 	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
@@ -1641,10 +1670,15 @@ export const commands = {
 	 *  with the Maven / Gradle dependency jars of the build model.
 	 */
 	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
-	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
-	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, request, onOutput })),
+	/**
+	 *  Creates a Python environment and streams its output through `on_output`.
+	 *  With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
+	 */
+	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, installPackages: boolean, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, installPackages, request, onOutput })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
+	/**  The environments the window's project defines for Hatch, `default` first (hatch must be on PATH). */
+	sdkPythonHatchEnvs: (request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("sdk_python_hatch_envs", { request })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -1665,11 +1699,20 @@ export const commands = {
 	/**  Rust standard library sources, Go default GOPATH. */
 	extra: IpcPath | null,
 } | null, IdeError>(__TAURI_INVOKE("sdk_python_interpreter", { path })),
-	sdkPythonPackages: (python: string, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, request })),
+	/**  A package index other than PyPI that installing from `python` uses; `None` for PyPI. */
+	sdkPythonPackageIndex: (python: string, request: RequestId) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_package_index", { python, request })),
+	sdkPythonPackages: (python: string, outdated: boolean, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, outdated, request })),
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
 	/**  The Python interpreters of the recently opened projects, each with its project. */
 	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
+	/**  `sys.path` of the interpreter `python`, for All Interpreters › Show Paths. */
+	sdkPythonSysPath: (python: string, request: RequestId) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("sdk_python_sys_path", { python, request })),
+	/**
+	 *  For each folder added to an interpreter's paths, why it stays off the import path
+	 *  (`None`: it is used). The folders may not be saved yet.
+	 */
+	sdkPythonUserPathProblems: (paths: string[]) => typedError<(UserPathProblem | null)[], IdeError>(__TAURI_INVOKE("sdk_python_user_path_problems", { paths })),
 	/**
 	 *  Find in Files. Results stream through `on_event`; ends with `Done`.
 	 *  Cancel with `cancel_request(request)`.
@@ -1723,6 +1766,14 @@ export const commands = {
 	 *  `cancel_request(request)`.
 	 */
 	spellCheck: (doc: DocId, scope: SpellScope, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, scope, request })),
+	/**
+	 *  Appends `word` to the custom dictionary `dictionary` (a
+	 *  `spelling.customDictionaries` entry: `~/…` from home, relative from the
+	 *  project root) and reports which file was written, creating it when missing.
+	 *  A Hunspell `.dic` with a `.aff` beside it keeps its word count line current;
+	 *  the speller picks the change up through its own mtime cache.
+	 */
+	spellSaveToDictionary: (dictionary: string, word: string) => typedError<string, IdeError>(__TAURI_INVOKE("spell_save_to_dictionary", { dictionary, word })),
 	/**  Replacements for a misspelt `word`, best first (Typo › Change to…). */
 	spellSuggest: (word: string) => typedError<string[], IdeError>(__TAURI_INVOKE("spell_suggest", { word })),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
@@ -1818,7 +1869,7 @@ export const commands = {
 	 *  to start the shell takes tens of milliseconds, a frozen UI if run there.
 	 */
 	termSpawn: (options: TerminalOptions, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("term_spawn", { options, onOutput })),
-	termStoreImage: (id: TerminalId, data: number[], mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
+	termStoreImage: (id: TerminalId, data: IpcBytes, mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
 	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("term_write", { id, data })),
 	/**
 	 *  Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
@@ -2529,6 +2580,8 @@ chosen: string | null } | { type: "thought"; text: string;
 startedMs?: number | null } | { type: "tool"; id: string; title: string; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
+/**  Images returned by the tool, kept separately from its truncated text. */
+images?: AgentImage[]; 
 /**  Text the tool reported (command output…), truncated. */
 output: string | null; diffs: AgentToolDiff[]; 
 /**  When the call started and ended (ms since the epoch); `None` in tasks saved before. */
@@ -2569,10 +2622,10 @@ form?: AgentForm | null;
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Deserialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Deserialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -2594,7 +2647,7 @@ export type AgentEvent_Deserialize =
 /**  The task needs attention once (finished turn, explicit input, or failure). */
 ({ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason }) & { catalog?: never; entry?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; subagent?: never; text?: never };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Serialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Serialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -4180,6 +4233,15 @@ export type ColorInfo = {
 	green: number | null,
 	blue: number | null,
 	alpha: number | null,
+};
+
+/**
+ *  One way to write a picked color (`textDocument/colorPresentation`): `edits` replace the
+ *  color's range (with `label` unless the server gave its own edit), then any extra edits.
+ */
+export type ColorPresentation = {
+	label: string,
+	edits: TextEdit[],
 };
 
 export type Command = {
@@ -5970,6 +6032,8 @@ export type DockerConnection = {
 	id: string,
 	name: string,
 	endpoint: DockerEndpoint,
+	/**  Whether the user explicitly disconnected this connection in Services. */
+	disconnected?: boolean,
 };
 
 export type DockerContainer = {
@@ -6132,6 +6196,16 @@ export type DocumentChanged = {
 	baseVersion: number,
 	version: number,
 	changes: DocumentTextChange[],
+};
+
+/**  A color a server found in a document (`textDocument/documentColor`); components are 0–1. */
+export type DocumentColor = {
+	range: Range,
+	red: number | null,
+	green: number | null,
+	blue: number | null,
+	alpha: number | null,
+	server: ServerId,
 };
 
 /**  Encoding and BOM currently applied to an open document. */
@@ -6670,9 +6744,9 @@ export type ExternalDiffSide = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff";
+export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff" | "black";
 
-/**  An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
 export type ExternalFormatterSettings = {
 	/**  Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH. */
 	path?: string,
@@ -6761,8 +6835,11 @@ export type Field = {
 };
 
 export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
-/**  An installed SDK of this kind (`jdk`); the value is its home, empty = automatic. */
-{ type: "sdk"; sdk: string } | 
+/**
+ *  An installed SDK of this kind (`jdk`); the value is its home (its version when
+ *  `version`), empty = automatic. SDKs older than `min` are not offered.
+ */
+{ type: "sdk"; sdk: string; version: boolean; min: string | null } | 
 /**  Several ids out of grouped items; the value is comma-separated. */
 { type: "dependencies"; groups: DependencyGroup[] };
 
@@ -8123,6 +8200,8 @@ export type InlayHint = {
 	 *  their values concatenate to `label`.
 	 */
 	parts: InlayLabelPart[],
+	/**  The edits that turn the hint into code (an annotation and any import it needs). */
+	textEdits: TextEdit[],
 };
 
 /**  Editor › Inlay Hints. */
@@ -8363,6 +8442,9 @@ export type InvalidateCachesOptions = {
 	/**  Build tool sync results (Maven / Gradle) and other per-project caches. */
 	buildCaches?: boolean,
 };
+
+/**  A binary argument or result of an IPC command. */
+export type IpcBytes = string;
 
 /**  A path field of an IPC type. */
 export type IpcPath = string;
@@ -8835,6 +8917,7 @@ export type LanguagesSettings = {
 	oxfmt?: ExternalFormatterSettings,
 	biome?: ExternalFormatterSettings,
 	ruff?: ExternalFormatterSettings,
+	black?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
@@ -9195,6 +9278,8 @@ export type LogcatLine = {
 };
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" | 
+/**  An import or classpath update may have changed inheritance search results. */
+"inheritance" | 
 /**  The Dart server published a document's Flutter outline. */
 "flutterOutline";
 
@@ -11300,11 +11385,23 @@ export type PushTargetChoices = {
 
 export type PushTargetState = "ready" | "diverged" | "fetchRequired";
 
+export type PypiPackage = {
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+};
+
 /**  A class definition and the methods it declares. */
 export type PythonClassFacts = {
 	name: string,
 	/**  The class name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**  Base names as written, a qualified name reduced to its last segment. */
 	bases: string[],
 	methods: PythonMethodFacts[],
@@ -11319,6 +11416,8 @@ export type PythonDebuggerSettings = {
 /**  One Python module's classes, in source order. */
 export type PythonFacts = {
 	classes: PythonClassFacts[],
+	/**  `# noinspection` comments, in source order. */
+	suppressions: PythonSuppression[],
 };
 
 /**  A method definition the inspections can reason about. */
@@ -11326,6 +11425,8 @@ export type PythonMethodFacts = {
 	name: string,
 	/**  The method name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**
 	 *  Parameter names in order; `None` for a form whose forwarding cannot be compared
 	 *  (`*args`, `**kwargs`, keyword-only, positional-only).
@@ -11341,6 +11442,8 @@ export type PythonMethodFacts = {
 export type PythonPackage = {
 	name: string,
 	version: string,
+	/**  The newest release the interpreter can install; only [`list_packages`] with `outdated` sets it. */
+	latestVersion?: string | null,
 };
 
 export type PythonRequirements = {
@@ -11371,6 +11474,29 @@ export type PythonSettings = {
 	hideOtherProjectInterpreters?: boolean,
 	/**  Show each interpreter's path under its name on the interpreters page. */
 	showInterpreterPaths?: boolean,
+	/**
+	 *  Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
+	 *  by interpreter executable; absolute or `~/`.
+	 */
+	interpreterPaths?: { [key in string]: string[] },
+};
+
+export type PythonStubLinks = {
+	/**  The stub of a `.py` document, the implementation of a `.pyi` one. */
+	counterpart: IpcPath | null,
+	links: StubLink[],
+	/**  Every place the counterpart was looked for: a change to one of them may change the answer. */
+	candidates: IpcPath[],
+};
+
+/**
+ *  A `# noinspection Id1,Id2` comment (PyCharm's) and the code it covers: the statement
+ *  right below it (a whole `def` / `class` with its decorators), or the whole file when it
+ *  sits among the file's leading comments, followed by a blank line.
+ */
+export type PythonSuppression = {
+	ids: string[],
+	range: Range,
 };
 
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */
@@ -12209,7 +12335,9 @@ export type SdkKind = "python" | "node" |
 /**  Maven homes. */
 "maven" | "ruby" | 
 /**  Zig toolchain directories. */
-"zig";
+"zig" | 
+/**  .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins. */
+"dotnet";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -12710,6 +12838,12 @@ export type SpellingSettings = {
 	projectWords?: string[],
 	/**  Custom dictionaries: plain word lists or Hunspell `.dic` files. */
 	customDictionaries?: string[],
+	/**
+	 *  Where "Save '…' to dictionary" writes: `project`, `application`, or a
+	 *  `spelling.customDictionaries` entry verbatim; empty (the default) is
+	 *  project when one is open, application otherwise.
+	 */
+	defaultDictionary?: string | null,
 };
 
 /**  One row of SQL Resolution Scopes. */
@@ -13035,6 +13169,18 @@ export type StructureSupport = {
 	tree: boolean,
 	/**  A `locals.scm` query is bundled. */
 	locals: boolean,
+};
+
+/**  A declaration of the document and its counterpart in the other file. */
+export type StubLink = {
+	/**  Qualified name, `Class.method`. */
+	name: string,
+	/**  The declaration's identifier in the document. */
+	range: Range,
+	/**  The declaration's whole extent in the document. */
+	extent: Range,
+	/**  The counterpart's identifier in `PythonStubLinks::counterpart`. */
+	target: Range,
 };
 
 export type SubmoduleRollbackSource = "head" | "index";
@@ -13653,6 +13799,13 @@ export type UpstreamTracking = {
 	branch: string,
 };
 
+/**  Why a folder added to an interpreter's paths stays off the import path. */
+export type UserPathProblem = 
+/**  Not an existing folder. */
+"missing" | 
+/**  Not absolute or `~/`, or it holds the separator of `PYTHONPATH`. */
+"invalid";
+
 export type Variable = Variable_Serialize | Variable_Deserialize;
 
 export type Variable_Deserialize = {
@@ -13757,7 +13910,11 @@ export type VenvTool =
 /**  `poetry env use <base>` in the project, then `poetry env info --path`. */
 "poetry" | 
 /**  `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH). */
-"conda";
+"conda" | 
+/**  `pipenv --python <base>` in the project (pipenv must be on PATH). */
+"pipenv" | 
+/**  `hatch env create <env>` in the project (hatch must be on PATH). */
+"hatch";
 
 /**  What a view or custom editor shows. */
 export type View = {

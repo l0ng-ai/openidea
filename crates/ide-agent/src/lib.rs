@@ -647,12 +647,8 @@ impl AgentManager {
         Self { shared, tasks: RwLock::new(tasks) }
     }
 
-    /// Routes events to `sink` (replacing the previous subscriber); returns every task.
-    pub fn subscribe(&self, sink: AgentSink) -> Vec<AgentTask> {
-        self.subscribe_as("", sink)
-    }
-
-    /// Routes events to `sink` too, replacing only the sink `subscriber` (a view of the project) had.
+    /// Routes events to `sink`, replacing only the sink `subscriber` (a view of the project) had;
+    /// returns every task.
     pub fn subscribe_as(&self, subscriber: &str, sink: AgentSink) -> Vec<AgentTask> {
         self.shared.sinks.write().insert(subscriber.to_owned(), sink);
         let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.state.lock().snapshot()).collect();
@@ -4234,8 +4230,11 @@ fn file_uri(path: &Path) -> String {
     out
 }
 
+/// The title of a task: the first line of the prompt that says something. A pasted Markdown
+/// block opens with a code fence (```` ```text ````), which names no task.
 fn title_of(prompt: &AgentPrompt) -> String {
-    let line = prompt.text.lines().map(str::trim).find(|l| !l.is_empty());
+    let is_fence = |l: &str| l.starts_with("```") || l.starts_with("~~~");
+    let line = prompt.text.lines().map(str::trim).find(|l| !l.is_empty() && !is_fence(l));
     let line = match line {
         Some(l) => l.to_owned(),
         None => prompt.files.first().map(|f| file_name(&f.0)).unwrap_or_else(|| "Image".into()),

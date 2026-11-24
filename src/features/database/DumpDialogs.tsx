@@ -468,7 +468,11 @@ export function RunOutput({ runKey }: { runKey: number }) {
         }}
       >
         {run.lines.map((l, i) => (
-          <div key={i} className={clsx(l.stderr && /error|fatal/i.test(l.text) && styles.dumpError)}>
+          <div
+            // oxlint-disable-next-line react/no-array-index-key -- output lines repeat; position is the identity
+            key={i}
+            className={clsx(l.stderr && /error|fatal/i.test(l.text) && styles.dumpError)}
+          >
             {l.text || " "}
           </div>
         ))}

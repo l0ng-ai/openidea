@@ -53,7 +53,7 @@ export function interpreterPathKey(path: string): string {
   return isWindowsPath(normalized) ? normalized.toLowerCase() : normalized;
 }
 
-/** The icon for an interpreter's source: virtualenv / conda / uv / Poetry, version managers, system. */
+/** The icon for an interpreter's source: virtualenv / conda / uv / Poetry / Pipenv / Hatch, version managers, system. */
 export function interpreterIcon(source: string): IconName {
   switch (source) {
     case "conda":
@@ -62,6 +62,10 @@ export function interpreterIcon(source: string): IconName {
       return "python-uv";
     case "poetry":
       return "python-poetry";
+    case "pipenv":
+      return "file-pipenv";
+    case "hatch":
+      return "python-hatch";
     case "pyenv":
     case "mise":
     case "asdf":
@@ -109,6 +113,12 @@ export function sameInterpreterPath(a: string, b: string, root: string | null): 
   if (ta) return resolved(b).endsWith(ta);
   if (tb) return resolved(a).endsWith(tb);
   return false;
+}
+
+/** `user` plus `picked`, unless it is already there or on the interpreter's `own` paths. */
+export function addUserPath(user: readonly string[], own: readonly string[], picked: string): string[] {
+  const key = interpreterPathKey(picked);
+  return [...own, ...user].some((path) => interpreterPathKey(path) === key) ? [...user] : [...user, picked];
 }
 
 export interface BuildInterpreters {

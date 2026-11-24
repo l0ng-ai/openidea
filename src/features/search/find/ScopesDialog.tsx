@@ -135,7 +135,7 @@ function ScopesDialog() {
           {scopes.length ? (
             <ul className={styles.list} aria-label={tr("Scopes")}>
               {scopes.map((s, i) => (
-                <li key={i}>
+                <li key={s.name}>
                   <button
                     type="button"
                     ref={i === index ? selectedRow : undefined}

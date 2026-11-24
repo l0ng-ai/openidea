@@ -8,14 +8,15 @@ import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { validateLanguages } from "@/platform/languageSettings";
 import type { Settings } from "@/bindings";
-import { explicitCompletion } from "./completion";
+import { basicCompletion, smartTypeCompletion } from "./completion";
+import { SMART_TYPE_LANGUAGES } from "./smartCompletion";
 import { triggerSignatureHelp } from "./signature";
 import { quickDefinition, quickDocumentation } from "./hover";
 import { expressionTypeInfo } from "./typeInfo";
 import { gotoHighlightedUsage, gotoTargets, highlightUsages } from "./navigation";
 import { gotoDiagnostic, showErrorDescription } from "./diagnostics";
 import { applyKindSilently, applyQuickFix, runKindAction, showIntentions } from "./intentions";
-import { docOf } from "./lsp";
+import { docOf, reportLspError } from "./lsp";
 import { languageSemantics } from "./semantic";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
@@ -29,6 +30,8 @@ import {
   startHierarchyRefactoring,
 } from "@/editor/refactor";
 import { evaluateWhen } from "@/platform/context";
+import { isolateHistory } from "@codemirror/commands";
+import { textEditsToChanges } from "./positions";
 import { tx } from "@/platform/i18n";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
@@ -137,6 +140,30 @@ const optimizeImports = async (v: EditorView) => {
   });
 };
 
+/** Rearrange Code: class members in arrangement order (Python), as one undo step. */
+async function rearrange(view: EditorView) {
+  const doc = docOf(view);
+  if (!doc || doc.readOnly) return;
+  await whenSynced(view);
+  const state = view.state;
+  let edits;
+  try {
+    edits = await call(commands.docRearrange(doc.doc));
+  } catch (e) {
+    reportLspError(view, e, true);
+    return;
+  }
+  if (view.state.doc !== state.doc) return showHint(view, "The file changed while rearranging; try again");
+  if (!edits.length)
+    return showHint(view, "Nothing to rearrange: members are in order, or moving them could change the class");
+  view.dispatch({
+    changes: textEditsToChanges(state.doc, edits),
+    userEvent: "format.rearrange",
+    annotations: isolateHistory.of("full"),
+    scrollIntoView: false,
+  });
+}
+
 export interface CleanupOptions {
   fixAll?: boolean;
   optimizeImports?: boolean;
@@ -202,10 +229,12 @@ function editorAction(
 
 /** Whether saving a `language` file formats it: Format on save, or Run on save of an external formatter. */
 export function formatsOnSave(settings: Settings | null, language: string): boolean {
-  const { prettier, oxfmt, biome, ruff } = validateLanguages(settings?.languages);
+  const { prettier, oxfmt, biome, ruff, black } = validateLanguages(settings?.languages);
   return (
     !!settings?.editor?.formatOnSave ||
-    [prettier, oxfmt, biome, ruff].some((formatter) => formatter.runOnSave && formatter.languages.includes(language))
+    [prettier, oxfmt, biome, ruff, black].some(
+      (formatter) => formatter.runOnSave && formatter.languages.includes(language),
+    )
   );
 }
 
@@ -241,9 +270,13 @@ export function registerActionsOnSave(): () => void {
 
 export function registerLspActions(): () => void {
   return registerActions([
-    editorAction("code.completion", "Basic", "Code Completion", (v) => explicitCompletion(v), {
+    editorAction("code.completion", "Basic", "Code Completion", (v) => basicCompletion(v), {
       icon: "list",
       keywords: ["code completion", "basic completion", "autocomplete"],
+    }),
+    editorAction("code.smartTypeCompletion", "Smart Type", "Code Completion", smartTypeCompletion, {
+      when: `${EDITOR_WHEN} && (${[...SMART_TYPE_LANGUAGES].map((id) => `editorLangId == ${id}`).join(" || ")})`,
+      keywords: ["smart completion", "smart type completion", "expected type"],
     }),
     editorAction("code.parameterInfo", "Parameter Info", "Code", (v) => triggerSignatureHelp(v, true)),
     editorAction("code.quickDocumentation", "Quick Documentation", "Code", quickDocumentation, {
@@ -296,6 +329,13 @@ export function registerLspActions(): () => void {
       (v) => formatDocument(v, { explicit: true, tool: "ruff" }),
       { keywords: ["format", "ruff", "python"] },
     ),
+    editorAction(
+      "code.reformatWithBlack",
+      "Reformat with Black",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "black" }),
+      { keywords: ["format", "black", "python"] },
+    ),
     editorAction("code.reformatDialog", "Reformat File…", "Code", (v) =>
       reformatDialog(v, (view) => applyKindSilently(view, "source.organizeImports")),
     ),
@@ -304,6 +344,10 @@ export function registerLspActions(): () => void {
     }),
     editorAction("code.fixStylelintProblems", "Fix Stylelint Problems", "Code", fixStylelintProblems, {
       keywords: ["stylelint", "lint", "css", "fix all"],
+    }),
+    editorAction("code.rearrange", "Rearrange Code", "Code", rearrange, {
+      when: `${EDITOR_WHEN} && editorLangId == python`,
+      keywords: ["arrange", "sort", "members", "methods", "order"],
     }),
     editorAction("code.optimizeImports", "Optimize Imports", "Code", optimizeImports, {
       keywords: ["organize imports"],

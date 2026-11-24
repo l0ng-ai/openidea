@@ -335,7 +335,11 @@ for (const placement of ["editor", "pane"] as const) {
     await seedTasks(page, placement);
     const box = messageBox(page);
     await box.fill(draft);
-    await page.getByRole("treeitem", { name: "README.md", exact: true }).click();
+    const project = page.getByRole("tree", { name: "Project", exact: true });
+    // A file click opens that editor; select the root to keep the conversation shown.
+    await project.getByRole("treeitem", { name: /acme-api/ }).click();
+    await expect(project).toBeFocused();
+    await expect(box).toBeVisible();
     await expect(box).not.toBeFocused();
     await page.keyboard.press("Meta+L");
     await expect(box).toBeFocused();

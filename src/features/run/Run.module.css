@@ -6,23 +6,6 @@
   min-width: 0;
 }
 
-.scriptsRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.scriptsStrong {
-  font-weight: 500;
-}
-
-.scriptsMeta {
-  flex: none;
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-}
-
 .tabs {
   min-width: 0;
   border: 0;
@@ -487,8 +470,16 @@
   padding: 6px 8px;
   border-bottom: 1px solid var(--border-popup);
 }
+/* The list fills what is left of the viewport once the popup is capped by the window, not its full height. */
 .chooserViewport {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+}
+.chooserViewport > .chooserList {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 .chooserList {
   height: 100%;

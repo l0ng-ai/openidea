@@ -27,6 +27,7 @@ import styles from "./TodoView.module.css";
 
 /** Dirty attachments kept alive after their view unmounted (see header note). */
 const heldDirty = new Map<string, DocumentAttachment>();
+const NO_HIGHLIGHTS: readonly SourceHighlight[] = [];
 
 /** The held attachment for `path`, if it is still dirty; releases it otherwise. */
 export function heldAttachment(path: string): DocumentAttachment | null {
@@ -49,7 +50,7 @@ export function PreviewEditor({
   path,
   line,
   col,
-  highlights = [],
+  highlights = NO_HIGHLIGHTS,
   fallbackLoad,
 }: {
   path: string | null;

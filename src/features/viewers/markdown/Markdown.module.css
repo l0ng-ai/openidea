@@ -21,6 +21,13 @@
   display: flex;
   flex-direction: column;
 }
+/* Keep the thumb clear of the side-by-side divider's mouse hit area. */
+.mode-split
+  .group:has(> :global([data-separator][aria-orientation="vertical"]))
+  .editor
+  :global(.cm-openidea-overviewThumb) {
+  right: 5px;
+}
 .mode-preview > :global([data-group]) > :global([data-panel]:first-child) {
   display: none !important;
 }

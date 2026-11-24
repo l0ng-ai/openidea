@@ -47,6 +47,7 @@ const forward = (target: string, args: string[], returns = false): MethodBody =>
 const methodFacts = (spec: MethodSpec): PythonMethodFacts => ({
   name: spec.name,
   selection: range(spec.line, spec.col ?? 8),
+  definitionLine: spec.line,
   params: spec.params === undefined ? ["self"] : spec.params,
   abstractMethod: spec.abstract ?? false,
   overrideDecorated: spec.override ?? false,
@@ -95,11 +96,17 @@ class Fixture {
     for (const spec of classes) {
       const col = spec.col ?? 6;
       const methods = (spec.methods ?? []).map(methodFacts);
-      classFacts.push({ name: spec.name, selection: range(spec.line, col), bases: spec.bases, methods });
+      classFacts.push({
+        name: spec.name,
+        selection: range(spec.line, col),
+        definitionLine: spec.line,
+        bases: spec.bases,
+        methods,
+      });
       this.graph.push({ path, line: spec.line, col, name: spec.name, bases: spec.indexedBases ?? spec.bases });
       this.outlines.set(path, [...(this.outlines.get(path) ?? []), classItem(spec, col, methods)]);
     }
-    this.facts.set(path, { classes: [...(this.facts.get(path)?.classes ?? []), ...classFacts] });
+    this.facts.set(path, { classes: [...(this.facts.get(path)?.classes ?? []), ...classFacts], suppressions: [] });
     return this;
   }
 

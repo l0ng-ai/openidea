@@ -91,12 +91,6 @@ fn executable() -> IdeResult<PathBuf> {
     })
 }
 
-/// The directory holding adb, for command lines that expect `adb` on `PATH`.
-pub fn platform_tools_dir() -> Option<&'static Path> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| adb_executable().as_deref().and_then(Path::parent).map(Path::to_path_buf)).as_deref()
-}
-
 /// Connected devices, online ones first; starting the adb daemon when needed.
 pub fn devices() -> IdeResult<Vec<AndroidDevice>> {
     let adb = executable()?;

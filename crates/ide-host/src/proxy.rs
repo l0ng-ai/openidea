@@ -87,17 +87,7 @@ mod tests {
     #[tokio::test]
     async fn without_a_credential_store_the_password_lasts_the_session() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut host = Host::new(crate::HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let mut host = Host::new(crate::HostConfig::for_test(tmp.path()));
         let path = tmp.path().join("data/proxy-password.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"httpProxy": "old"}"#).unwrap();

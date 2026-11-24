@@ -24,7 +24,9 @@ export function DocstringsPage() {
       <SettingSelect
         k="editor.docstringFormat"
         label="Documentation string format"
-        hint="Docstring tags and keywords are highlighted according to this markup format (Color Scheme › Python styles their colours)."
+        hint={
+          'Docstring stubs (Enter after """) are written in this markup format, and docstring tags and keywords are highlighted according to it (Color Scheme › Python styles their colours).'
+        }
         options={DOCSTRING_OPTIONS}
       />
     </Section>

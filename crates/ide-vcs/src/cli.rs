@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 /// How long a cancelled git's process group (remote helpers, `ssh`, credential helpers) gets
 /// to exit on `SIGTERM` before `SIGKILL`: git removes its `index.lock` on `SIGTERM`.
 const KILL_GRACE: Duration = Duration::from_millis(20);
+/// Longest the wait for a captured child sleeps before it looks at cancellation again.
+const POLL: Duration = Duration::from_millis(20);
 
 /// A throwaway index file in the repository's Git directory.
 pub(crate) struct TempIndex(PathBuf);
@@ -653,9 +655,13 @@ pub(crate) fn capture_command(
         }
         _ => None,
     };
+    // When both readers finish, their senders disconnect the channel and wake the child wait.
+    let (closed_tx, closed) = mpsc::channel::<()>();
     let capture = |mut pipe: Box<dyn Read + Send>| {
         let overflow = overflow.clone();
+        let closed_tx = closed_tx.clone();
         std::thread::spawn(move || {
+            let _closed_tx = closed_tx;
             let mut bytes = Vec::new();
             (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
             if bytes.len() > max {
@@ -667,6 +673,9 @@ pub(crate) fn capture_command(
     };
     let stdout = capture(Box::new(child.stdout.take().expect("piped stdout")));
     let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
+    drop(closed_tx);
+    let mut pipes_open = true;
+    let mut backoff = Duration::from_micros(100);
     let status = loop {
         if cancel.is_cancelled() || overflow.load(std::sync::atomic::Ordering::Acquire) {
             terminate_tree(&mut child, KILL_GRACE);
@@ -684,7 +693,15 @@ pub(crate) fn capture_command(
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        if pipes_open {
+            // Cancellation and overflow are only noticed between wake-ups, so wait at most one
+            // `POLL` for them; the pipes closing ends the wait at once.
+            pipes_open = !matches!(closed.recv_timeout(POLL), Err(mpsc::RecvTimeoutError::Disconnected));
+        } else {
+            // Reap promptly after EOF, but back off if the child keeps running without its pipes.
+            std::thread::sleep(backoff);
+            backoff = (backoff * 2).min(POLL);
+        }
     };
     if let Some(w) = writer {
         let _ = w.join();
@@ -1243,5 +1260,92 @@ mod index_lock_tests {
         out.stdout.clear();
         out.code = Some(1);
         assert!(!retryable_index_conflict(&["reset"], &out));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod capture_tests {
+    use super::*;
+
+    fn sh(script: &str) -> Command {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    #[test]
+    fn a_cancelled_capture_kills_a_long_running_child() {
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            trigger.cancel();
+        });
+        let start = Instant::now();
+        let error = capture_command(sh("sleep 60"), None, &cancel, usize::MAX, "sh").err().unwrap();
+        canceller.join().unwrap();
+        assert_eq!(error.to_string(), IdeError::cancelled().to_string());
+        assert!(start.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn cancelling_before_the_start_spawns_nothing() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let mut cmd = sh(r#"touch "$1""#);
+        cmd.arg("sh").arg(&marker);
+        assert!(capture_command(cmd, None, &cancel, usize::MAX, "sh").is_err());
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn megabytes_on_both_streams_are_captured_whole() {
+        // Both pipes fill at once: a wait that stopped draining one while blocked on the other,
+        // or on the exit, would deadlock here.
+        const SIZE: usize = 6_000_000;
+        let script = format!("(yes e | head -c {SIZE} >&2) & yes o | head -c {SIZE}; wait; exit 3");
+        let out = capture_command(sh(&script), None, &CancellationToken::new(), usize::MAX, "sh").unwrap();
+        assert_eq!((out.stdout.len(), out.stderr.len()), (SIZE, SIZE));
+        assert!(out.stdout.chunks(2).all(|c| c.starts_with(b"o")));
+        assert!(out.stderr.chunks(2).all(|c| c.starts_with(b"e")));
+        assert_eq!(out.code, Some(3));
+    }
+
+    #[test]
+    fn exit_status_and_both_streams_are_preserved() {
+        let out = capture_command(sh("echo out; echo err >&2; exit 7"), None, &CancellationToken::new(), 1 << 20, "sh")
+            .unwrap();
+        assert_eq!((out.stdout, out.stderr, out.code), (b"out\n".to_vec(), b"err\n".to_vec(), Some(7)));
+    }
+
+    #[test]
+    fn stdin_reaches_the_child() {
+        let out = capture_command(sh("cat"), Some(b"piped"), &CancellationToken::new(), 1 << 20, "sh").unwrap();
+        assert_eq!(out.stdout, b"piped");
+    }
+
+    #[test]
+    fn output_over_the_limit_stops_the_child() {
+        let start = Instant::now();
+        let error = capture_command(sh("yes"), None, &CancellationToken::new(), 1000, "sh").err().unwrap();
+        assert!(error.to_string().contains("exceeds 1000 bytes"), "{error}");
+        assert!(start.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_child_that_closes_its_pipes_but_keeps_running_is_still_cancellable() {
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            trigger.cancel();
+        });
+        let start = Instant::now();
+        let error = capture_command(sh("exec >&- 2>&-; sleep 60"), None, &cancel, usize::MAX, "sh").err().unwrap();
+        canceller.join().unwrap();
+        assert_eq!(error.to_string(), IdeError::cancelled().to_string());
+        assert!(start.elapsed() < Duration::from_secs(30));
     }
 }

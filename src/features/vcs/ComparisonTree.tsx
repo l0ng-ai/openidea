@@ -5,6 +5,7 @@ import { dirKeys, type FileTreeNode } from "./fileTree";
 import styles from "./common.module.css";
 
 const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
+const defaultOpenDiff = (diff: DiffData) => void openVcsDiff(diff);
 
 /** Shared changes tree and on-demand diff surface for revisions and disk folders. */
 export function ComparisonTree<F>({
@@ -19,7 +20,7 @@ export function ComparisonTree<F>({
   getColor,
   onOpen,
   inlineDiff = true,
-  openDiff = (diff) => void openVcsDiff(diff),
+  openDiff = defaultOpenDiff,
 }: {
   tree: FileTreeNode<F>[];
   current: F | null;

@@ -679,7 +679,7 @@ function CustomAgentModal({
     try {
       const trimmed = name.trim();
       const title = trimmed ? tx`Select ${trimmed}` : tx("Select executable");
-      const path = await backend.chooseExecutable(title, command);
+      const path = await backend.chooseExecutable(title, command, "desktop");
       if (path) setCommand(path);
       setError(null);
     } catch (e) {
@@ -994,7 +994,14 @@ function LoginHint({ text }: { text: string }) {
   const translate = useTxTemplate();
   return translate(text)
     .split(/(`[^`]+`)/g)
-    .map((part, i) => (i % 2 === 1 ? <code key={i}>{part.slice(1, -1)}</code> : part));
+    .map((part, i) =>
+      i % 2 === 1 ? (
+        // oxlint-disable-next-line react/no-array-index-key -- code tokens can repeat; position is the identity
+        <code key={i}>{part.slice(1, -1)}</code>
+      ) : (
+        part
+      ),
+    );
 }
 
 function ExternalLink({ url, label }: { url: string; label: string }) {

@@ -24,6 +24,8 @@ pub enum ReleaseSource {
     Fixed { version: &'static str, url: &'static str, sha256: &'static str },
     /// Latest GitHub release of `owner/repo`; assets plus links in the release notes.
     GitHub { repo: &'static str },
+    /// Assets from a specific GitHub release tag.
+    GitHubTag { repo: &'static str, tag: &'static str },
     /// `api.releases.hashicorp.com` product.
     HashiCorp { product: &'static str },
     /// Latest Eclipse JDT LS milestone tarball from download.eclipse.org.
@@ -346,6 +348,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "black",
+        display: "Black",
+        kind: Formatter,
+        commands: &["black"],
+        method: Method::PipVenv { package: "black" },
+        fallback: None,
+        version: ver("black"),
+        homepage: "https://black.readthedocs.io",
+        needs: &[],
+    },
+    ToolSpec {
         name: "djlsp",
         display: "Django Template LSP",
         kind: LanguageServer,
@@ -591,6 +604,27 @@ pub static TOOLS: &[ToolSpec] = &[
         fallback: None,
         version: ver("phoxite-lsp"),
         homepage: "https://github.com/samehelhawary/phoxite",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "helm-ls",
+        display: "helm-ls",
+        kind: LanguageServer,
+        commands: &["helm_ls"],
+        method: Method::Release {
+            source: ReleaseSource::GitHubTag { repo: "mrjosh/helm-ls", tag: "v0.5.4" },
+            assets: &[
+                rule(Mac, Arm64, "helm_ls_darwin_arm64"),
+                rule(Mac, X64, "helm_ls_darwin_amd64"),
+                rule(Linux, Arm64, "helm_ls_linux_arm64"),
+                rule(Linux, X64, "helm_ls_linux_amd64"),
+                rule(Windows, X64, "helm_ls_windows_amd64.exe"),
+            ],
+            locate: &["helm_ls"],
+        },
+        fallback: None,
+        version: Some(("helm_ls", &["version"])),
+        homepage: "https://github.com/mrjosh/helm-ls",
         needs: &[],
     },
     ToolSpec {
@@ -1348,6 +1382,28 @@ mod tests {
                     assert!(assets.iter().any(|r| r.os == os), "{} has no {os:?} asset", t.name);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn helm_ls_picks_the_pinned_native_binary() {
+        use crate::platform::{Platform, select_asset};
+        let spec = find("helm-ls").unwrap();
+        assert!(matches!(
+            spec.method,
+            Method::Release { source: ReleaseSource::GitHubTag { repo: "mrjosh/helm-ls", tag: "v0.5.4" }, .. }
+        ));
+        let releases = [
+            (Mac, Arm64, "helm_ls_darwin_arm64"),
+            (Mac, X64, "helm_ls_darwin_amd64"),
+            (Linux, Arm64, "helm_ls_linux_arm64"),
+            (Linux, X64, "helm_ls_linux_amd64"),
+            (Windows, X64, "helm_ls_windows_amd64.exe"),
+        ];
+        let checksums = releases.map(|(_, _, name)| format!("{name}.sha256sum"));
+        let names: Vec<_> = checksums.iter().map(String::as_str).chain(releases.map(|(_, _, name)| name)).collect();
+        for (os, arch, name) in releases {
+            assert_eq!(select_asset(&names, spec.asset_rules(), Platform { os, arch }), Some(name));
         }
     }
 

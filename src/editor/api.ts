@@ -559,6 +559,13 @@ export function contributedQuickFixes(view: EditorView, from: number, to: number
   return view.state.facet(quickFixProviders).flatMap((provider) => provider(view, from, to));
 }
 
+/**
+ * Extra rows for the ⌥↵ submenu of inspection `inspectionId` at the caret (after Edit
+ * inspection profile setting and Disable inspection), such as Suppress for statement.
+ */
+export const inspectionControlProviders =
+  Facet.define<(view: EditorView, inspectionId: string) => readonly ContributedIntention[]>();
+
 /** Providers of `ContributedIntention`s for the caret of `view` (cheap and synchronous: also drives the light bulb). */
 export const intentionProviders = Facet.define<(view: EditorView) => ContributedIntention[]>();
 

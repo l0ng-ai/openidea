@@ -48,6 +48,7 @@ impl Utf8Decoder {
         }
     }
 
+    #[cfg(test)]
     /// Convenience wrapper around [`Self::decode_into`].
     pub fn decode(&mut self, bytes: &[u8]) -> String {
         let mut out = String::new();
@@ -65,6 +66,7 @@ impl Utf8Decoder {
         }
     }
 
+    #[cfg(test)]
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
