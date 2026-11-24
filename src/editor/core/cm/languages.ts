@@ -246,6 +246,12 @@ const OWN_MODES = [
     extensions: ["erb", "rhtml"],
     load: () => import("./erb").then((m) => m.erb()),
   }),
+  LanguageDescription.of({
+    name: "FreeMarker",
+    alias: ["freemarker", "ftl"],
+    extensions: ["ftl", "ftlh", "ftlx"],
+    load: () => import("./freemarker").then((m) => m.freemarker()),
+  }),
   LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
   LanguageDescription.of({
     name: "Django Template",

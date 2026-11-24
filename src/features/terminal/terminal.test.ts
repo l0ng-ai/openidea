@@ -202,6 +202,19 @@ describe("terminal keys", () => {
     }
   });
 
+  it("pastes on plain Ctrl+V only on Windows", () => {
+    const ctrlV = key({ key: "v", code: "KeyV", ctrlKey: true });
+    try {
+      usePlatform.setState({ os: "windows" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "paste" });
+      usePlatform.setState({ os: "linux" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+    expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+  });
+
   it("keeps Ctrl+C as interrupt on macOS even with a selection", () => {
     usePlatform.setState({ os: "macos" });
     expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), true)).not.toEqual({ kind: "copy" });

@@ -270,6 +270,29 @@ corner actions (**Options**, **Hide**) and sets `--openidea-corner-inset-width` 
 }
 ```
 
+**Embedded pages** (API 1.16). A web page can embed other sites in `<iframe>`s when its
+declaration lists their origins in `frames`. Each origin is `https://host[:port]` (or
+`http://` to `localhost`, `127.0.0.1` or `[::1]`), with no path, and must be covered by a
+`net:<host>` capability of the manifest, so the install page shows it:
+
+```toml
+[capabilities]
+optional = ["net:play.example.com"]
+
+[[contributes.views]]
+id = "hall"
+title = "Game Hall"
+web = "web/index.html"
+frames = ["https://play.example.com"]   # up to 16 origins
+```
+
+The pages of that directory get `frame-src` with the declared origins the user granted;
+an origin whose capability is declined or revoked is left out, and without `frames` a page
+can embed nothing. The embedded page keeps the frame's sandbox (scripts, an opaque origin,
+no cookies or storage), gets no `window.openidea`, and the plugin's page still has no
+network of its own. A site that refuses to be framed (`X-Frame-Options`,
+`frame-ancestors`) stays blank.
+
 [Graphviz](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/graphviz) is a
 complete example: a Vite + React page in `web-src/`, built into `web/` by
 `plugins/build.sh official/graphviz`, whose code publishes the errors Graphviz reports as

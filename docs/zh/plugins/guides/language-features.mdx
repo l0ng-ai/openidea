@@ -106,6 +106,11 @@ register_plugin!(Todos, providers, hover);
   （`CompletionKind`）决定图标。补全项可以是 `snippet`（`$1`、`${1:name}`、`$0`），可以替换 `replace` 范围，
   按 `filter_text` 而不是标签匹配，按 `sort_text` 排序，带 `documentation`，还能用 `additional_edits`
   修改文档其他位置（比如加 import）。
+- **`completion_list(doc, at, trigger)`**（API 1.16）返回同样的补全项，外加 `incomplete` 标记，
+  用于依赖已输入内容计算的补全（例如 GORM 的 `findByTitleAndAuthor…`）。用户在同一个词里继续输入时，
+  宿主会用新的文本再次询问这个插件，而不是过滤它的结果；语言服务器和其他插件不会被重新询问。
+  在 `Providers` 中重写它并一并注册：`register_plugin!(T, providers, completion_list)`。默认返回
+  `completion` 的结果且不标记为不完整；测试中可用 `MockHost::completion_list` 调用。
 - **`inline_completion(doc, at)`** 在光标处返回幽灵文本（`InlineSuggestion { insert_text, replace }`）。
   可参考 [AI Completion](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/ai-completion)。
 - **`definition(doc, at)`** 返回 `Location` 列表，与语言服务器的结果合并，用于跳转到声明（`⌘B` / `Ctrl+B`）。
