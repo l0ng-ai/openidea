@@ -127,6 +127,10 @@ export function readEditorTopLayout(view: EditorView) {
 class StickyScroll {
   dom: HTMLElement;
   private lines: number[] = [];
+  /** Header rows showing now. */
+  get rows(): number {
+    return this.lines.length;
+  }
   /**
    * Text and syntax tree the rows were rendered from (re-render when either changes), and
    * the document while bracket colours are on (an edit above may change their depth).
@@ -368,8 +372,27 @@ export function stickyTopMargin(view: EditorView): number {
   return rows * view.defaultLineHeight;
 }
 
-export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll, {
-  provide: () => EditorView.scrollMargins.of((view) => ({ top: stickyTopMargin(view) })),
+/**
+ * The editor's top scroll margin. CodeMirror also treats it as covered when placing tooltips, so
+ * the caret's rows are reserved only while the caret sits above where they would stick (revealing
+ * it then scrolls up and they appear); otherwise it is what sticks now. A caret deep in a method
+ * at the top of the file must not hide the hovers of its first lines.
+ */
+export function stickyScrollMargin(caretTop: number, visibleTop: number, reserve: number, shown: number): number {
+  return caretTop < visibleTop + reserve ? Math.max(reserve, shown) : shown;
+}
+
+const stickyScrollPlugin: ViewPlugin<StickyScroll> = ViewPlugin.fromClass(StickyScroll, {
+  provide: () =>
+    EditorView.scrollMargins.of((view) => {
+      const caretTop = view.lineBlockAt(view.state.selection.main.head).top;
+      // In document coordinates, like the caret's block.
+      const visibleTop = view.scrollDOM.getBoundingClientRect().top - view.documentTop;
+      const shown = (view.plugin(stickyScrollPlugin)?.rows ?? 0) * view.defaultLineHeight;
+      return { top: stickyScrollMargin(caretTop, visibleTop, stickyTopMargin(view), shown) };
+    }),
 });
+
+export const stickyScroll: Extension = stickyScrollPlugin;
 
 export { renderLineContent as renderContextLine };
