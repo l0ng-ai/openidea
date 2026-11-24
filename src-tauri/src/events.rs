@@ -228,6 +228,14 @@ mod tests {
         (coalescing_sink(Arc::new(move |event| saved.lock().push(event)), tokio::runtime::Handle::current()), events)
     }
 
+    /// Waits for the coalescing window to flush `n` events (a fixed sleep is too short on slow CI timers).
+    async fn wait_for_events(events: &Mutex<Vec<IdeEvent>>, n: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while events.lock().len() < n && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     fn diagnostics(path: &str, source: &str, message: &str) -> IdeEvent {
         IdeEvent::Diagnostics {
             path: IpcPath::from(path),
@@ -316,9 +324,7 @@ mod tests {
         sink.emit(diagnostics("/p/b.rs", "rust-analyzer", "other"));
 
         assert!(events.lock().is_empty());
-        tokio::task::yield_now().await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        tokio::task::yield_now().await;
+        wait_for_events(&events, 3).await;
 
         {
             let saved_events = events.lock();
@@ -381,7 +387,7 @@ mod tests {
         }
         assert_eq!(events.lock().len(), MAX_PENDING_DIAGNOSTICS);
 
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        wait_for_events(&events, MAX_PENDING_DIAGNOSTICS + 1).await;
         assert_eq!(events.lock().len(), MAX_PENDING_DIAGNOSTICS + 1);
     }
 

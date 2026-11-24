@@ -432,6 +432,14 @@ async fn patches_read_and_write_the_requested_repository() {
         })
         .collect::<String>();
     let root = Some(roots[0].clone());
+    // Automatic mappings wait for indexing; the new folders and exclude rule may start a rescan.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for _ in 0..500 {
+        if !project.index.status().indexing {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let preview = vcs::vcs_patch_preview(&host, "main", root.clone(), patch.clone(), None, None).await.unwrap();
     assert!(preview.files.iter().all(|file| file.applies && !file.missing_base));
     assert_eq!(preview.automatic_mappings.len(), 1);
