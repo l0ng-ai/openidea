@@ -1218,6 +1218,11 @@ impl LspManager {
         self.shown_messages.lock().insert((server.to_owned(), text.to_owned()))
     }
 
+    /// Whether `server` has shown a message containing `needle` in this project.
+    pub(crate) fn shown_message_containing(&self, server: &str, needle: &str) -> bool {
+        self.shown_messages.lock().iter().any(|(s, text)| s == server && text.contains(needle))
+    }
+
     pub(crate) fn apply_edit_hook(&self) -> Option<ApplyEditHook> {
         self.apply_edit_hook.read().clone()
     }

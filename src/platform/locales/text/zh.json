@@ -10194,5 +10194,8 @@
   "Unquoted table, column and alias names; ClickHouse names keep their case.": "未加引号的表名、列名和别名；ClickHouse 的名称保持原有大小写。",
   "Another deployment uses this application context": "另一个部署项已使用此应用程序上下文",
   "Show component usages": "显示组件用法",
-  "Find where this component is imported and used": "查找此组件被导入和使用的位置"
+  "Find where this component is imported and used": "查找此组件被导入和使用的位置",
+  "Gradle project sync failed": "Gradle 项目同步失败",
+  "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. Cause: {cause}": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。原因：{cause}",
+  "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project.": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。"
 }
