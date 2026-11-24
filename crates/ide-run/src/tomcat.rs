@@ -2402,8 +2402,9 @@ mod tests {
         let contexts = base.join("conf/Catalina/localhost");
         let doc_base = |name: &str| fs::read_to_string(contexts.join(name)).unwrap();
         assert!(doc_base("ROOT.xml").contains("WebRoot"));
-        assert!(doc_base("service.xml").contains(&*base.join("deployments/1/deployment").to_string_lossy()));
-        assert!(base.join("deployments/1/deployment/WEB-INF/web.xml").is_file());
+        let service = base.join("deployments").join("1").join("deployment");
+        assert!(doc_base("service.xml").contains(&format!("docBase=\"{}\"", escape(&service.to_string_lossy()))));
+        assert!(service.join("WEB-INF/web.xml").is_file());
         assert!(base.join("deployments/1/artifact-path.txt").is_file());
         assert!(doc_base("admin.xml").contains("Admin"));
 
