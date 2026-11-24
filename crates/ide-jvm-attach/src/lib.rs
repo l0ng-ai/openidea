@@ -20,5 +20,6 @@ pub use listener::{LISTENER_START_TIMEOUT, ensure_listener, is_hotspot};
 pub use properties::{jdwp_port, parse_properties};
 pub use socket::{AttachError, MAX_OUTPUT, agent_properties, has_listener, jcmd, temp_dir};
 pub use threads::{
-    ProcEntry, RUN_TOKEN_PROPERTY, THREAD_DUMP_TIMEOUT, is_application_jvm, process_table, select_run_jvm, thread_print,
+    ProcEntry, RUN_TOKEN_PROPERTY, THREAD_DUMP_TIMEOUT, is_application_jvm, process_table, select_run_jvm,
+    thread_dump_json, thread_print,
 };

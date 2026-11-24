@@ -47,6 +47,8 @@ struct FakeProbe {
     application_jvms: Vec<u32>,
     /// Pids `ensure_listener` was asked for.
     ensured: parking_lot::Mutex<Vec<u32>>,
+    json_dumps: parking_lot::Mutex<VecDeque<Result<String, AttachError>>>,
+    json_dirs: parking_lot::Mutex<Vec<PathBuf>>,
 }
 
 type StopHook = Box<dyn Fn() + Send + Sync>;
@@ -109,6 +111,8 @@ impl FakeProbe {
             listener_starts: parking_lot::Mutex::new(VecDeque::new()),
             application_jvms: Vec::new(),
             ensured: parking_lot::Mutex::new(Vec::new()),
+            json_dumps: parking_lot::Mutex::new(VecDeque::new()),
+            json_dirs: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -192,6 +196,12 @@ impl AttachProbe for FakeProbe {
     }
     fn is_application_jvm(&self, pid: u32) -> bool {
         self.application_jvms.contains(&pid)
+    }
+    fn thread_dump_json(&self, _pid: u32, dir: &Path) -> Result<String, AttachError> {
+        self.enter("thread_dump_json");
+        self.json_dirs.lock().push(dir.to_owned());
+        self.leave();
+        self.json_dumps.lock().pop_front().expect("unexpected JSON thread dump request")
     }
 }
 
@@ -1205,10 +1215,95 @@ fn threads_jvm(reason: JvmMemoryUnavailable) -> JvmThreadsUnavailable {
     JvmThreadsUnavailable::Jvm { reason }
 }
 
+/// The text dump alone: without a directory no JSON dump is asked for.
+fn dump_text(fake: &FakeProbe, pid: u32, suspended: bool) -> JvmThreadsResult {
+    dump_threads(fake, pid, suspended, None, &|| suspended)
+}
+
+fn ready_dump(r: JvmThreadsResult) -> JvmThreadDump {
+    match r {
+        JvmThreadsResult::Ready { dump } => dump,
+        other => panic!("{other:?}"),
+    }
+}
+
+const VIRTUAL_JSON: &str = r#"{"threadDump":{"threadContainers":[]}}"#;
+
+fn json_dir() -> &'static Path {
+    Path::new("/data/cache/heap-snapshots/x")
+}
+
+#[test]
+fn threads_below_21_ask_for_no_json() {
+    let mut fake = dumping_threads(99, vec![Ok(THREADS.into())]);
+    fake.version = Some(JavaVersion { major: 17, text: "17.0.13".into() });
+    let dump = ready_dump(dump_threads(&fake, 12, false, Some(json_dir()), &|| false));
+    assert_eq!((dump.virtual_json, dump.virtual_note), (None, None));
+    assert_eq!(*fake.commands.lock(), ["ensure_listener", "thread_print"]);
+}
+
+#[test]
+fn threads_on_21_add_the_json_after_the_text() {
+    let fake = dumping_threads(99, vec![Ok(THREADS.into())]);
+    *fake.json_dumps.lock() = vec![Ok(VIRTUAL_JSON.into())].into();
+    let dump = ready_dump(dump_threads(&fake, 12, false, Some(json_dir()), &|| false));
+    assert_eq!(dump.text, THREADS);
+    assert_eq!((dump.virtual_json.as_deref(), dump.virtual_note), (Some(VIRTUAL_JSON), None));
+    assert_eq!(*fake.commands.lock(), ["ensure_listener", "thread_print", "thread_dump_json"]);
+    assert_eq!(*fake.json_dirs.lock(), [json_dir()]);
+}
+
+#[test]
+fn a_failed_json_dump_keeps_the_text_dump() {
+    let cases = [
+        (AttachError::TooLarge, VirtualThreadsNote::TooLarge),
+        (AttachError::Timeout, VirtualThreadsNote::Failed),
+        (AttachError::Protocol("no thread dump file".into()), VirtualThreadsNote::Failed),
+    ];
+    for (error, note) in cases {
+        let fake = dumping_threads(99, vec![Ok(THREADS.into())]);
+        *fake.json_dumps.lock() = vec![Err(error)].into();
+        let dump = ready_dump(dump_threads(&fake, 12, false, Some(json_dir()), &|| false));
+        assert_eq!((dump.text.as_str(), dump.virtual_json, dump.virtual_note), (THREADS, None, Some(note)));
+    }
+
+    // No directory to write the file into.
+    let fake = dumping_threads(99, vec![Ok(THREADS.into())]);
+    let dump = ready_dump(dump_text(&fake, 12, false));
+    assert_eq!((dump.virtual_json, dump.virtual_note), (None, Some(VirtualThreadsNote::Failed)));
+    assert_eq!(*fake.commands.lock(), ["ensure_listener", "thread_print"]);
+}
+
+#[test]
+fn a_failed_text_dump_asks_for_no_json() {
+    let fake = dumping_threads(99, vec![Err(AttachError::Timeout)]);
+    let r = dump_threads(&fake, 12, false, Some(json_dir()), &|| false);
+    assert_eq!(threads_unavailable(r), threads_jvm(JvmMemoryUnavailable::TimedOut));
+    assert_eq!(*fake.commands.lock(), ["ensure_listener", "thread_print"]);
+}
+
+#[test]
+fn threads_while_suspended_on_21_skip_the_json() {
+    let fake = dumping_threads(12, vec![Ok(THREADS.into())]);
+    let dump = ready_dump(dump_threads(&fake, 12, true, Some(json_dir()), &|| true));
+    assert_eq!((dump.virtual_json, dump.virtual_note), (None, Some(VirtualThreadsNote::WhileSuspended)));
+    assert_eq!(*fake.commands.lock(), ["thread_print"]);
+
+    // The program hits a breakpoint while the text dump is taken.
+    let stopped = Arc::new(AtomicBool::new(false));
+    let mut fake = dumping_threads(99, vec![Ok(THREADS.into())]);
+    let stop = stopped.clone();
+    fake.stops_on = Some(("thread_print", Box::new(move || stop.store(true, Ordering::SeqCst))));
+    let dump = ready_dump(dump_threads(&fake, 12, false, Some(json_dir()), &|| stopped.load(Ordering::SeqCst)));
+    assert!(!dump.taken_while_suspended);
+    assert_eq!((dump.virtual_json, dump.virtual_note), (None, Some(VirtualThreadsNote::WhileSuspended)));
+    assert_eq!(*fake.commands.lock(), ["ensure_listener", "thread_print"]);
+}
+
 #[test]
 fn threads_while_running_start_the_listener() {
     let fake = dumping_threads(99, vec![Ok(THREADS.into())]);
-    let r = dump_threads(&fake, 12, false);
+    let r = dump_text(&fake, 12, false);
     let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
     assert_eq!((dump.text.as_str(), dump.pid, dump.java_version.as_str()), (THREADS, 12, "21.0.5"));
     assert!(!dump.taken_while_suspended);
@@ -1218,10 +1313,7 @@ fn threads_while_running_start_the_listener() {
 #[test]
 fn threads_while_suspended_without_listener_do_not_attach() {
     let fake = dumping_threads(99, Vec::new());
-    assert_eq!(
-        threads_unavailable(dump_threads(&fake, 12, true)),
-        threads_jvm(JvmMemoryUnavailable::ListenerNotRunning)
-    );
+    assert_eq!(threads_unavailable(dump_text(&fake, 12, true)), threads_jvm(JvmMemoryUnavailable::ListenerNotRunning));
     assert!(fake.commands.lock().is_empty());
 }
 
@@ -1230,12 +1322,12 @@ fn threads_while_suspended_on_11_are_refused() {
     let mut fake = dumping_threads(12, Vec::new());
     fake.version = Some(JavaVersion { major: 11, text: "11.0.25".into() });
     assert_eq!(
-        threads_unavailable(dump_threads(&fake, 12, true)),
+        threads_unavailable(dump_text(&fake, 12, true)),
         threads_jvm(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 })
     );
     fake.version = None;
     assert_eq!(
-        threads_unavailable(dump_threads(&fake, 12, true)),
+        threads_unavailable(dump_text(&fake, 12, true)),
         threads_jvm(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 0 })
     );
     assert!(fake.commands.lock().is_empty());
@@ -1245,7 +1337,7 @@ fn threads_while_suspended_on_11_are_refused() {
 fn threads_while_suspended_on_17_use_the_running_listener() {
     let mut fake = dumping_threads(12, vec![Ok(THREADS.into())]);
     fake.version = Some(JavaVersion { major: 17, text: "17.0.13".into() });
-    let r = dump_threads(&fake, 12, true);
+    let r = dump_text(&fake, 12, true);
     let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
     assert!(dump.taken_while_suspended);
     assert_eq!(dump.java_version, "17.0.13");
@@ -1257,7 +1349,7 @@ fn threads_of_a_tree_without_a_listener_go_to_its_first_application_jvm() {
     // A shell (10) started a Gradle client (11) that started the program's JVM (12).
     let mut fake = dumping_threads(99, vec![Ok(THREADS.into())]);
     fake.application_jvms = vec![12];
-    let r = dump_tree(&fake, &[10, 11, 12], false);
+    let r = dump_tree(&fake, &[10, 11, 12], false, None, &|| false);
     let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
     assert_eq!(dump.pid, 12);
     assert_eq!(*fake.ensured.lock(), [12]);
@@ -1266,7 +1358,7 @@ fn threads_of_a_tree_without_a_listener_go_to_its_first_application_jvm() {
     let fake = dumping_threads(99, Vec::new());
     *fake.listener_starts.lock() = vec![Err(AttachError::NotAJvm)].into();
     assert_eq!(
-        threads_unavailable(dump_tree(&fake, &[10, 11], false)),
+        threads_unavailable(dump_tree(&fake, &[10, 11], false, None, &|| false)),
         threads_jvm(JvmMemoryUnavailable::NoJvmProcess)
     );
     assert_eq!(*fake.ensured.lock(), [10]);
@@ -1290,7 +1382,7 @@ async fn launched_thread_dump_without_a_listener_finds_the_jvm_below_the_reporte
     let fake = Arc::new(fake);
     let probe: Arc<dyn AttachProbe> = fake.clone();
     let target = JvmTarget::Launched(std::process::id() as i32);
-    let r = thread_dump(&state, || false, |_| probe, target).await.unwrap();
+    let r = thread_dump(&state, || false, |_| probe, target, None).await.unwrap();
     let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
     assert_eq!(dump.pid, jvm);
     assert_eq!(*fake.ensured.lock(), [jvm]);
@@ -1340,7 +1432,7 @@ async fn run_dump_through_a_linked_session_whose_jvm_is_not_located() {
     let bare = stopped_attach(0);
     let fake = Arc::new(dumping_threads(99, Vec::new()));
     let probe: Arc<dyn AttachProbe> = fake.clone();
-    let r = known_pid_dump(&bare.session, |_| probe, 555).await.unwrap();
+    let r = known_pid_dump(&bare.session, |_| probe, 555, None).await.unwrap();
     assert_eq!(threads_unavailable(r), threads_jvm(JvmMemoryUnavailable::ListenerNotRunning));
     assert!(fake.commands.lock().is_empty());
 
@@ -1348,7 +1440,7 @@ async fn run_dump_through_a_linked_session_whose_jvm_is_not_located() {
     let bare = bare_session("attach");
     let fake = Arc::new(dumping_threads(99, vec![Ok(THREADS.into())]));
     let probe: Arc<dyn AttachProbe> = fake.clone();
-    let r = known_pid_dump(&bare.session, |_| probe, 555).await.unwrap();
+    let r = known_pid_dump(&bare.session, |_| probe, 555, None).await.unwrap();
     let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
     assert_eq!((dump.pid, dump.taken_while_suspended), (555, false));
     assert_eq!(*fake.ensured.lock(), [555]);
@@ -1369,21 +1461,21 @@ async fn run_dump_of_a_suspended_debugged_jvm_takes_the_suspended_path() {
     fake.version = Some(JavaVersion { major: 11, text: "11.0.25".into() });
     let fake = Arc::new(fake);
     let probe: Arc<dyn AttachProbe> = fake.clone();
-    let r = known_pid_dump(&bare.session, |_| probe, 4242).await.unwrap();
+    let r = known_pid_dump(&bare.session, |_| probe, 4242, None).await.unwrap();
     assert_eq!(threads_unavailable(r), threads_jvm(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 }));
     assert!(fake.commands.lock().is_empty());
 
     // No listener: none is started, the JVM's Signal Dispatcher being stopped.
     let fake = Arc::new(dumping_threads(99, Vec::new()));
     let probe: Arc<dyn AttachProbe> = fake.clone();
-    let r = known_pid_dump(&bare.session, |_| probe, 4242).await.unwrap();
+    let r = known_pid_dump(&bare.session, |_| probe, 4242, None).await.unwrap();
     assert_eq!(threads_unavailable(r), threads_jvm(JvmMemoryUnavailable::ListenerNotRunning));
     assert!(fake.commands.lock().is_empty());
 
     let mut fake = dumping_threads(4242, vec![Ok(THREADS.into())]);
     fake.version = Some(JavaVersion { major: 17, text: "17.0.13".into() });
     let probe: Arc<dyn AttachProbe> = Arc::new(fake);
-    let r = known_pid_dump(&bare.session, |_| probe, 4242).await.unwrap();
+    let r = known_pid_dump(&bare.session, |_| probe, 4242, None).await.unwrap();
     let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
     assert!(dump.taken_while_suspended);
     assert_eq!(dump.pid, 4242);
@@ -1397,7 +1489,7 @@ async fn run_dump_of_a_debugged_jvm_waits_for_the_session_turn() {
     let probe: Arc<dyn AttachProbe> = fake.clone();
 
     let histogram = bare.session.jvm_memory.lock().await;
-    let mut queued = Box::pin(known_pid_dump(&bare.session, |_| probe, 4242));
+    let mut queued = Box::pin(known_pid_dump(&bare.session, |_| probe, 4242, None));
     assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued).await.is_err());
     // The program hits a breakpoint while the dump waits behind the session's histogram.
     bare.session.suspended.stopped(None, true);
@@ -1411,28 +1503,28 @@ fn threads_of_an_exited_program() {
     let mut fake = dumping_threads(99, Vec::new());
     fake.alive = false;
     *fake.listener_starts.lock() = vec![Err(AttachError::NoListener)].into();
-    assert_eq!(threads_unavailable(dump_threads(&fake, 12, false)), threads_jvm(JvmMemoryUnavailable::ProgramExited));
-    assert_eq!(threads_unavailable(dump_threads(&fake, 12, true)), threads_jvm(JvmMemoryUnavailable::ProgramExited));
+    assert_eq!(threads_unavailable(dump_text(&fake, 12, false)), threads_jvm(JvmMemoryUnavailable::ProgramExited));
+    assert_eq!(threads_unavailable(dump_text(&fake, 12, true)), threads_jvm(JvmMemoryUnavailable::ProgramExited));
 }
 
 #[test]
 fn thread_dump_errors_map_to_reasons() {
     let fake = dumping_threads(12, vec![Err(AttachError::Timeout)]);
-    assert_eq!(threads_unavailable(dump_threads(&fake, 12, false)), threads_jvm(JvmMemoryUnavailable::TimedOut));
+    assert_eq!(threads_unavailable(dump_text(&fake, 12, false)), threads_jvm(JvmMemoryUnavailable::TimedOut));
 
     let fake = dumping_threads(99, Vec::new());
     *fake.listener_starts.lock() = vec![Err(AttachError::ListenerDidNotStart)].into();
-    assert_eq!(threads_unavailable(dump_threads(&fake, 12, false)), JvmThreadsUnavailable::ListenerDidNotStart);
+    assert_eq!(threads_unavailable(dump_text(&fake, 12, false)), JvmThreadsUnavailable::ListenerDidNotStart);
     assert_eq!(*fake.commands.lock(), ["ensure_listener"]);
 
     let mut fake = dumping_threads(99, Vec::new());
     *fake.listener_starts.lock() = vec![Err(AttachError::NotAJvm), Err(AttachError::NotAJvm)].into();
-    assert_eq!(threads_unavailable(dump_threads(&fake, 12, false)), threads_jvm(JvmMemoryUnavailable::NoJvmProcess));
+    assert_eq!(threads_unavailable(dump_text(&fake, 12, false)), threads_jvm(JvmMemoryUnavailable::NoJvmProcess));
     fake.alive = false;
-    assert_eq!(threads_unavailable(dump_threads(&fake, 12, false)), threads_jvm(JvmMemoryUnavailable::ProgramExited));
+    assert_eq!(threads_unavailable(dump_text(&fake, 12, false)), threads_jvm(JvmMemoryUnavailable::ProgramExited));
 
     let fake = dumping_threads(12, vec![Err(AttachError::Command { code: 1, message: "no".into() })]);
-    let JvmThreadsUnavailable::Failed { message } = threads_unavailable(dump_threads(&fake, 12, false)) else {
+    let JvmThreadsUnavailable::Failed { message } = threads_unavailable(dump_text(&fake, 12, false)) else {
         panic!("not a failure")
     };
     assert!(message.contains("no"), "{message}");
@@ -1456,14 +1548,20 @@ fn thread_results_serialize_with_camel_case_tags() {
         java_version: String::new(),
         taken_while_suspended: true,
         elapsed_ms: 3,
+        virtual_json: None,
+        virtual_note: Some(VirtualThreadsNote::WhileSuspended),
     };
     assert_eq!(
         serde_json::to_value(JvmThreadsResult::Ready { dump }).unwrap(),
         serde_json::json!({
             "status": "ready",
-            "dump": {"text": "t", "pid": 7, "javaVersion": "", "takenWhileSuspended": true, "elapsedMs": 3}
+            "dump": {
+                "text": "t", "pid": 7, "javaVersion": "", "takenWhileSuspended": true, "elapsedMs": 3,
+                "virtualJson": null, "virtualNote": "whileSuspended"
+            }
         })
     );
+    assert_eq!(serde_json::to_value(VirtualThreadsNote::TooLarge).unwrap(), serde_json::json!("tooLarge"));
 }
 
 #[cfg(unix)]
@@ -1479,7 +1577,7 @@ async fn threads_take_the_memory_lock() {
     let running = Suspension::default();
     let (classes, threads) = tokio::join!(
         snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32), None),
-        thread_dump(&state, || false, |_| probe.clone(), JvmTarget::Launched(pid as i32))
+        thread_dump(&state, || false, |_| probe.clone(), JvmTarget::Launched(pid as i32), None)
     );
     assert!(matches!(classes.unwrap(), JvmMemoryResult::Ready { .. }));
     let threads = threads.unwrap();
@@ -1493,12 +1591,14 @@ async fn threads_take_the_memory_lock() {
 async fn queued_thread_dump_reads_suspension_under_the_lock() {
     let pid = std::process::id();
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
-    let suspended = Suspension::default();
+    let suspended = Arc::new(Suspension::default());
     let fake = Arc::new(dumping_threads(0, Vec::new()));
     let probe: Arc<dyn AttachProbe> = fake.clone();
 
     let running = state.lock().await;
-    let mut queued = Box::pin(thread_dump(&state, || suspended.get(), |_| probe, JvmTarget::Launched(pid as i32)));
+    let stopped = suspended.clone();
+    let target = JvmTarget::Launched(pid as i32);
+    let mut queued = Box::pin(thread_dump(&state, move || stopped.get(), |_| probe, target, Some(json_dir().into())));
     assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued).await.is_err());
     // The program hits a breakpoint while the dump waits behind a class-table request.
     suspended.stopped(None, true);
@@ -1515,10 +1615,25 @@ async fn attached_thread_dump_keeps_the_scanned_jvm() {
     fake.jdwp = Some((5005, 4242));
     let probe: Arc<dyn AttachProbe> = Arc::new(fake);
     let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: Some(5005) };
-    let r = thread_dump(&state, || false, |_| probe, target).await.unwrap();
+    let r = thread_dump(&state, || false, |_| probe, target, None).await.unwrap();
     let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
     assert_eq!(dump.pid, 4242);
     assert_eq!(jvm_pid.load(Ordering::SeqCst), 4242);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn session_thread_dump_writes_the_json_into_the_given_directory() {
+    let pid = std::process::id();
+    let state = tokio::sync::Mutex::new(JvmMemoryState::default());
+    let fake = dumping_threads(pid, vec![Ok(THREADS.into())]);
+    *fake.json_dumps.lock() = vec![Ok(VIRTUAL_JSON.into())].into();
+    let fake = Arc::new(fake);
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let target = JvmTarget::Launched(pid as i32);
+    let r = thread_dump(&state, || false, |_| probe, target, Some(json_dir().into())).await.unwrap();
+    assert_eq!(ready_dump(r).virtual_json.as_deref(), Some(VIRTUAL_JSON));
+    assert_eq!(*fake.json_dirs.lock(), [json_dir()]);
 }
 
 #[tokio::test]

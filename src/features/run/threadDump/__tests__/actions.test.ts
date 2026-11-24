@@ -55,7 +55,15 @@ function start(c: RunConfig, status: SessionStatus = "running") {
 
 const ready = (text: string): JvmThreadsResult => ({
   status: "ready",
-  dump: { text, pid: 42, javaVersion: "25", takenWhileSuspended: false, elapsedMs: 80 },
+  dump: {
+    text,
+    pid: 42,
+    javaVersion: "25",
+    takenWhileSuspended: false,
+    elapsedMs: 80,
+    virtualJson: null,
+    virtualNote: null,
+  },
 });
 const unavailable = (reason: JvmThreadsUnavailable): JvmThreadsResult => ({ status: "unavailable", reason });
 const answer = (result: JvmThreadsResult) => ({ status: "ok" as const, data: result });
