@@ -201,22 +201,18 @@ fn disk_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
-fn editorconfig_label(
-    editorconfig: Option<&EditorConfigProps>,
-    detected: &str,
-    has_bom: bool,
-    ascii: bool,
-) -> Option<&'static str> {
+fn editorconfig_label(editorconfig: Option<&EditorConfigProps>, detected: &str, ascii: bool) -> Option<&'static str> {
     let (charset, _) = editorconfig?.encoding()?;
     let compatible = encoding_rs::Encoding::for_label(detected.as_bytes()).is_some_and(|e| e.is_ascii_compatible());
-    (ascii && compatible && !has_bom && !charset.starts_with("utf-16")).then_some(charset)
+    (ascii && compatible && !charset.starts_with("utf-16")).then_some(charset)
 }
 
 fn apply_editorconfig_charset(loaded: &mut ide_vfs::LoadedText, editorconfig: Option<&EditorConfigProps>) {
     if loaded.binary {
         return;
     }
-    if let Some(charset) = editorconfig_label(editorconfig, &loaded.encoding, loaded.has_bom, loaded.text.is_ascii()) {
+    if let Some(charset) = editorconfig_label(editorconfig, &loaded.encoding, !loaded.has_bom && loaded.text.is_ascii())
+    {
         loaded.encoding = charset.to_owned();
     }
 }
@@ -333,7 +329,7 @@ impl Documents {
         let defaults = self.file_defaults();
         let detected = ide_vfs::detect_encoding(bytes, defaults.fallback_for(&absolute(path)));
         let editorconfig = self.editorconfig_for(path, &defaults);
-        editorconfig_label(editorconfig.as_ref(), detected.name(), false, bytes.is_ascii())
+        editorconfig_label(editorconfig.as_ref(), detected.name(), bytes.is_ascii())
             .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
             .unwrap_or(detected)
     }

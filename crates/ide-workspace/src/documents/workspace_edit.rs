@@ -806,11 +806,13 @@ impl Documents {
                     return Err(stale(path));
                 }
                 let defaults = self.file_defaults();
+                let native_to_ascii = defaults.native_to_ascii_for(path);
                 let loaded = if state.encoding_chosen {
-                    Self::load_as(path, &state.encoding, state.native_to_ascii)?
+                    Self::load_as(path, &state.encoding, native_to_ascii)?
                 } else {
                     Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?
                 };
+                state.native_to_ascii = native_to_ascii;
                 self.replace_locked(id, state, &loaded.text)?;
                 state.encoding = loaded.encoding;
                 state.has_bom = loaded.has_bom;
