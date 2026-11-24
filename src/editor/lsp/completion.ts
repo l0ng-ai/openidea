@@ -697,8 +697,8 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos));
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
-  if (!ctx.explicit && completionBackoff.active(doc.doc)) return fallback(ctx);
   const smart = ctx.state.field(smartLookup, false) ?? false;
+  if (!ctx.explicit && completionBackoff.active(doc.doc)) return smart ? null : fallback(ctx);
   cancelInflight();
   const id = nextRequestId();
   inflight = id;
@@ -884,9 +884,7 @@ const endSmartLookup = EditorView.updateListener.of((u) => {
 
 /** The type expected at `from`: an annotated assignment, a `return`, else the active parameter's. */
 async function expectedType(ctx: CompletionContext, doc: number, from: number): Promise<string | null> {
-  const line = ctx.state.doc.lineAt(from);
-  const lines = ctx.state.doc.sliceString(0, line.from).split("\n");
-  const fromText = expectedFromText(lines, line.number - 1, line.text.slice(0, from - line.from));
+  const fromText = expectedFromText(ctx.state, from);
   if (fromText) return fromText;
   const help = await lspRequest(() => commands.lspSignatureHelp(doc, offsetToPos(ctx.state.doc, from))).catch(
     () => null,

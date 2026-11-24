@@ -3,6 +3,8 @@
  * caret's expected type. basedpyright's items carry no type, so each candidate is resolved and
  * its type read from the documentation's code block; types are compared by name.
  */
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import type { EditorState } from "@codemirror/state";
 import type { CompletionItem, Markup, SignatureHelp } from "@/platform/ipc";
 
 export const SMART_TYPE_LANGUAGES = new Set(["python"]);
@@ -42,18 +44,19 @@ function canonicalMember(type: string): string {
   const m = /^([A-Za-z_][\w.]*)\s*(?:\[([\s\S]*)\])?$/.exec(type);
   if (!m) return type.replace(/\s+/g, "");
   const base = m[1]!.slice(m[1]!.lastIndexOf(".") + 1);
-  const name = TYPING_ALIASES[base] ?? base;
+  const name = Object.hasOwn(TYPING_ALIASES, base) ? TYPING_ALIASES[base]! : base;
   return m[2] === undefined ? name : `${name}[${splitTopLevel(m[2], ",").map(canonicalType).join(", ")}]`;
 }
 
 /** The union members of a type, each canonical: `Optional[a.B]` → `B`, `None`. */
 export function typeParts(type: string): string[] {
   const text = type.trim().replace(/^["']|["']$/g, "");
-  const optional = /^(?:typing\.)?Optional\[([\s\S]*)\]$/.exec(text);
-  if (optional) return [...new Set([...typeParts(optional[1]!), "None"])];
-  const union = /^(?:typing\.)?Union\[([\s\S]*)\]$/.exec(text);
-  const members = union ? splitTopLevel(union[1]!, ",") : splitTopLevel(text, "|");
+  const members = splitTopLevel(text, "|");
   if (members.length > 1) return [...new Set(members.flatMap(typeParts))];
+  const optional = /^(?:typing\.)?Optional\s*\[([\s\S]*)\]$/.exec(text);
+  if (optional) return [...new Set([...typeParts(optional[1]!), "None"])];
+  const union = /^(?:typing\.)?Union\s*\[([\s\S]*)\]$/.exec(text);
+  if (union) return [...new Set(splitTopLevel(union[1]!, ",").flatMap(typeParts))];
   return text ? [canonicalMember(text)] : [];
 }
 
@@ -81,7 +84,7 @@ export function typeFit(
   for (const part of parts) {
     if (expected.includes(part)) continue;
     const name = part.replace(/\[[\s\S]*$/, "");
-    if (PROMOTED[part]?.some((p) => expected.includes(p))) continue;
+    if (Object.hasOwn(PROMOTED, part) && PROMOTED[part]?.some((p) => expected.includes(p))) continue;
     if (ancestors(name, bases).some((a) => expected.includes(a))) continue;
     // `Any`, or a generic whose arguments the server could not infer (`list[Unknown]`).
     const unknownArgs =
@@ -138,31 +141,27 @@ const NOT_A_TARGET = new Set([
   "case",
 ]);
 
-/**
- * The caret's expected type from the text before it: `x: T = |`, or `return |` in a function
- * annotated `-> T` (the nearest less indented `def` above). A member access being typed
- * (`x: T = task.|`) is skipped over.
- */
-export function expectedFromText(lines: readonly string[], line: number, before: string): string | null {
-  before = before.replace(/(?:[A-Za-z_]\w*(?:\([^()]*\)|\[[^[\]]*\])*\s*\.\s*)+$/, "");
+/** The annotation for an assignment or return, including when a member name is being typed. */
+export function expectedFromText(state: EditorState, from: number): string | null {
+  const line = state.doc.lineAt(from);
+  const before = line.text
+    .slice(0, from - line.from)
+    .replace(/(?:[A-Za-z_]\w*(?:\([^()]*\)|\[[^[\]]*\])*\s*\.\s*)+$/, "");
   // `[^=]`: the type holds no `=`, so `ok: bool = a <= |` is not an assignment to the caret.
   const assigned = /^\s*([A-Za-z_][\w.]*)\s*:\s*([^=]+?)\s*=\s*$/.exec(before);
   if (assigned) return NOT_A_TARGET.has(assigned[1]!) ? null : assigned[2]!;
   if (!/^\s*return\s+$/.test(before)) return null;
-  const indent = before.length - before.trimStart().length;
-  for (let i = line - 1; i >= 0; i--) {
-    const text = lines[i]!;
-    if (!text.trim()) continue;
-    const own = text.length - text.trimStart().length;
-    if (own >= indent) continue;
-    if (!/^\s*(?:async\s+)?def\b/.test(text)) {
-      if (/^\s*class\b/.test(text) || own === 0) return null;
-      continue;
+
+  const keyword = line.from + before.indexOf("return");
+  const tree = ensureSyntaxTree(state, from, 10) ?? syntaxTree(state);
+  const statement = tree.resolveInner(keyword + 1, 1).parent;
+  if (statement?.name !== "ReturnStatement") return null;
+  for (let node = statement.parent; node; node = node.parent) {
+    if (node.name === "ClassDefinition") return null;
+    if (node.name === "FunctionDefinition") {
+      const annotation = node.getChild("TypeDef")?.firstChild;
+      return annotation ? state.sliceDoc(annotation.from, annotation.to) : null;
     }
-    // The header may span lines: up to the `:` that ends it.
-    let header = text;
-    for (let j = i + 1; j < line && !/:\s*(?:#.*)?$/.test(header); j++) header += " " + lines[j]!.trim();
-    return /->\s*(.+?)\s*:\s*(?:#.*)?$/.exec(header)?.[1] ?? null;
   }
   return null;
 }
@@ -261,7 +260,7 @@ export async function smartItems(
   const fits = new Map<CompletionItem, { type: string; fit: "yes" | "maybe" }>();
   candidates.forEach((item, i) => {
     const done = resolved[i];
-    const type = done ? itemType(item, done.documentation) : null;
+    const type = done ? itemType(done, done.documentation) : null;
     const fit = type === null ? "no" : typeFit(type, want, bases);
     if (type !== null && fit !== "no") fits.set(item, { type, fit });
   });

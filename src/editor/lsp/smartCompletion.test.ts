@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { languages } from "@codemirror/language-data";
 import { EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { closeCompletion, currentCompletions, startCompletion } from "@codemirror/autocomplete";
@@ -36,6 +37,12 @@ describe("types", () => {
     expect(typeParts("List[Optional[int]]")).toEqual(typeParts("list[int | None]"));
   });
 
+  it("reads unions with nested typing aliases and single-member unions", () => {
+    expect(typeParts("Optional[int] | list[str]")).toEqual(["int", "None", "list[str]"]);
+    expect(typeParts("typing.Union[int]")).toEqual(["int"]);
+    expect(typeParts("Union[int, float] | Optional[list[str]]")).toEqual(["int", "float", "list[str]", "None"]);
+  });
+
   it("fits a member of the expected union, a promoted number or a subclass", () => {
     const want = (t: string) => typeParts(t);
     expect(typeFit("date", want("date | None"))).toBe("yes");
@@ -52,7 +59,11 @@ describe("types", () => {
   });
 });
 
+const python = await languages.find((language) => language.name === "Python")!.load();
+
 describe("expected type", () => {
+  const expected = (doc: string) => expectedFromText(EditorState.create({ doc, extensions: python }), doc.length);
+
   it("reads the active parameter's annotation", () => {
     const label = "(p: Priority, d: date = ...) -> Task";
     const help = (active: number) => ({
@@ -75,21 +86,28 @@ describe("expected type", () => {
   });
 
   it("reads annotated assignments and return annotations, also around a member access", () => {
-    expect(expectedFromText([], 0, "due: date | None = ")).toBe("date | None");
-    expect(expectedFromText([], 0, "due: date = task.")).toBe("date");
-    expect(expectedFromText([], 0, "due: date = self.items[0].owner().")).toBe("date");
+    expect(expected("due: date | None = ")).toBe("date | None");
+    expect(expected("due: date = task.")).toBe("date");
+    expect(expected("due: date = self.items[0].owner().")).toBe("date");
     const lines = ["class A:", "    def f(", "        self,", "    ) -> list[Task]:", "        x = 1"];
-    expect(expectedFromText(lines, 5, "        return ")).toBe("list[Task]");
-    expect(expectedFromText(lines, 5, "        return self.")).toBe("list[Task]");
-    expect(expectedFromText(["async def g() -> int:"], 1, "    return ")).toBe("int");
-    expect(expectedFromText(["def h():"], 1, "    return ")).toBeNull();
-    expect(expectedFromText([], 0, "take(")).toBeNull();
+    expect(expected([...lines, "        return "].join("\n"))).toBe("list[Task]");
+    expect(expected([...lines, "        return self."].join("\n"))).toBe("list[Task]");
+    expect(expected("async def g() -> int:\n    return ")).toBe("int");
+    expect(expected("def f(\n    value: int,\n) -> str:\n    return ")).toBe("str");
+    expect(expected("def h():\n    return ")).toBeNull();
+    expect(expected("take(")).toBeNull();
+  });
+
+  it("finds the enclosing function rather than a closed sibling definition", () => {
+    const lines = ["def outer() -> str:", "    def inner() -> int: return 1", "    if True:", "        return "];
+    expect(expected(lines.join("\n"))).toBe("str");
+    expect(expected('def f() -> int:\n    """Example:\n    return ')).toBeNull();
   });
 
   it("takes no keyword or comparison for an annotated assignment", () => {
-    expect(expectedFromText([], 0, "else: x = ")).toBeNull();
-    expect(expectedFromText([], 0, "ok: bool = a <= ")).toBeNull();
-    expect(expectedFromText([], 0, "ok: bool = a == ")).toBeNull();
+    expect(expected("else: x = ")).toBeNull();
+    expect(expected("ok: bool = a <= ")).toBeNull();
+    expect(expected("ok: bool = a == ")).toBeNull();
   });
 });
 
