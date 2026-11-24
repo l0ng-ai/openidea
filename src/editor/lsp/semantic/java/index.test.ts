@@ -28,6 +28,12 @@ describe("Java semantic tokens", () => {
     ]);
   });
 
+  it("colours `static final` fields as constants", () => {
+    expect(token("property", ["static", "readonly"], "java")).toEqual(["cm-sem-constant", "cm-sem-static"]);
+    expect(token("property", ["readonly"], "java")).toEqual(["cm-sem-property"]);
+    expect(token("property", ["static"], "java")).toEqual(["cm-sem-property", "cm-sem-static"]);
+  });
+
   it("leaves defaultLibrary colouring to other languages", () => {
     expect(token("function", ["defaultLibrary"], "python")).toContain("cm-sem-builtin");
   });
