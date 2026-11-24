@@ -146,7 +146,12 @@ export class ModifiedRanges {
 
   map(changes: ChangeSet) {
     if (this.all) return;
-    this.ranges = this.ranges.map(([a, b]): [number, number] => [changes.mapPos(a, -1), changes.mapPos(b, 1)]);
+    // A range past the end belongs to another version of the text; mapping it would throw out of the
+    // edit (before the document is marked dirty, so the edit would never be saved). Drop it instead.
+    const kept = this.ranges.filter(([, b]) => b <= changes.length);
+    if (kept.length < this.ranges.length)
+      console.warn(`modified ranges past the end (${changes.length}) dropped`, this.ranges.length - kept.length);
+    this.ranges = kept.map(([a, b]): [number, number] => [changes.mapPos(a, -1), changes.mapPos(b, 1)]);
   }
 
   add(changes: ChangeSet) {

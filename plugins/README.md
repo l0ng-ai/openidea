@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.15.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.16.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -154,9 +154,9 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`); `key = "Escape"` with a required `when` (API 1.10) runs after the editor's own Escape handling                                                                      | no            |
 | `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                            | no            |
 | `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                   | no            |
-| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3)                                                                          | without `web` |
-| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                                                                                            | without `web` |
-| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?` — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                                        | no            |
+| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                    | without `web` |
+| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?` (API 1.16)                                                                                                                      | without `web` |
+| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
@@ -426,6 +426,26 @@ are always available. Calling a gated function without its capability returns
 (Git Toolbox still shows the branch without `vcs.write`).
 
 ## 3. Writing code (Rust SDK)
+
+### API 1.16
+
+API 1.16.0 is in development on `main`. Use `engines.openidea = "^1.16"` and the
+matching SDK. Plugins for 1.15 and earlier keep working. New in 1.16:
+
+- **Incomplete completion lists.** The optional `completion-list-provider`
+  export (world `plugin-completion-list`, SDK
+  `Providers::completion_list`, registration
+  `register_plugin!(Plugin, providers, completion_list)`) returns completion
+  items with an `incomplete` flag. A plugin exporting it is called instead of
+  `providers.completion` for its `completion` kind. While the user types on in
+  the same word, the host asks only the plugins that marked their list
+  incomplete again, with the new text, and keeps the language server's list
+  (when it was complete) and the other plugins' items. Plugins without the
+  export keep one request, then filtering.
+- [Web views](#web-views) can embed other sites: `frames = ["https://…"]` on a
+  view, custom editor or editor panel lists the origins, each covered by a
+  `net:<host>` capability; the page's `frame-src` holds the ones the user
+  granted.
 
 ### API 1.15
 
@@ -1436,6 +1456,21 @@ kinds = ["definition", "line-markers", "completion"]  # also "inline-completion"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
 ```
 
+Completion built from what has been typed (GORM's dynamic finders:
+`findByTitle`, `findByTitleAndAuthor`, …) can't be listed up front. With API
+1.16 a plugin returns it from `Providers::completion_list` with
+`incomplete: true` and registers that export too; typing on in the word asks
+it again:
+
+```rust
+impl Providers for Finders {
+    fn completion_list(&mut self, doc: &Document, at: Position, _: Option<&str>) -> CompletionList {
+        CompletionList { items: finders_after(doc, at), incomplete: true }
+    }
+}
+register_plugin!(Finders, providers, completion_list);
+```
+
 Line marker `icon` accepts an icon name (including registered plugin icons),
 the aliases `navigate`, `implemented`, `implementing`, `overridden`, `overriding`
 and `run`, or a package SVG path. Declare package marker icons so installation
@@ -2111,6 +2146,34 @@ For example, a page can reserve the corner in its own toolbar:
   padding-right: var(--openidea-corner-inset-width, 0px);
 }
 ```
+
+With API 1.16 (`engines.openidea = "^1.16"`) a web page can embed other sites
+in `<iframe>`s: list their origins in the declaration's `frames` (views, custom
+editors and editor panels, up to 16). An origin is `https://host[:port]`, or
+`http://` to `localhost` / `127.0.0.1` / `[::1]`, with no path, query or
+fragment, and must be covered by a `net:<host>` (or `net.http:<host>`)
+capability of the manifest — `net:ask` does not count — so the install page
+lists it:
+
+```toml
+[capabilities]
+optional = ["net:play.example.com"]
+
+[[contributes.views]]
+id = "hall"
+title = "Game Hall"
+web = "web/index.html"
+frames = ["https://play.example.com"]
+```
+
+The HTML files under that page's directory are served with `frame-src` set to
+the declared origins whose capability the user granted (`frame-src 'none'`
+when none is), and are revalidated rather than cached, so declining or
+revoking a host takes it out on the next load. Without `frames` nothing can be
+framed, as before. The embedded page inherits the frame's sandbox (scripts and
+an opaque origin: no cookies or storage), never gets `window.openidea`, and
+the plugin's own page still has no network. Sites that refuse framing
+(`X-Frame-Options`, `frame-ancestors`) stay blank.
 
 `plugins/official/graphviz` is a complete example: a Vite + React page in
 `web-src/`, built into `web/` by `plugins/build.sh`, paired with code — the page renders (Graphviz compiled to WebAssembly) and
@@ -3021,7 +3084,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0, 1.14.0 and 1.15.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0, 1.14.0 1.15.0 and 1.16.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
