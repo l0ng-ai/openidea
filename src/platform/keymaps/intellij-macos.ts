@@ -258,7 +258,8 @@ export const intellijMacos: Record<string, string[]> = {
 
   // Build
   "build.buildProject": ["Meta+F9"],
-  "build.buildModule": ["Meta+Shift+F9"],
+  "build.buildModule": [],
+  "build.compileFile": ["Meta+Shift+F9"],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 

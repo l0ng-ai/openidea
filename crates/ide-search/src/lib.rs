@@ -55,6 +55,11 @@ pub struct SearchQuery {
     #[serde(default)]
     #[specta(optional)]
     pub include_excluded: bool,
+    /// Leave out files over [`MAX_CODE_INSIGHT_FILE_BYTES`], as IDEA's TODO and word indexes do:
+    /// a background scan never reads a log or a database dump.
+    #[serde(default)]
+    #[specta(optional)]
+    pub skip_large_files: bool,
 }
 
 /// IDEA's search context: matches anywhere, only in, or outside comments and
@@ -111,6 +116,15 @@ impl SearchContext {
         matches!(self, Self::InComments | Self::InStringLiterals)
     }
 }
+
+/// The largest file, in bytes, that a [`SearchQuery::skip_large_files`] search reads: IDEA's
+/// code insight limit (`idea.max.intellisense.filesize`, 2500 KB).
+pub const MAX_CODE_INSIGHT_FILE_BYTES: u64 = 2500 * 1024;
+
+/// The most a search holds of one file's text read from disk: IDEA's content-load limit
+/// (`idea.max.content.load.filesize`, 20 MB). A longer line, or in a multi-line search a longer
+/// file, is not searched any further, so a file without line breaks is never read whole.
+pub const MAX_SEARCH_BUFFER_BYTES: usize = 20 * 1024 * 1024;
 
 /// The longest file text, in bytes, that is searched for comments and string literals: the
 /// parser's limit (`ide_language::MAX_PARSE_BYTES`), above which a [`Literals`] finds none.
@@ -276,6 +290,7 @@ pub fn search_in_context(
         literals,
         max_matches: query.max_matches,
         ignore_rules: !query.include_excluded,
+        max_file_bytes: query.skip_large_files.then_some(MAX_CODE_INSIGHT_FILE_BYTES),
         text,
         cancel,
         on_file,

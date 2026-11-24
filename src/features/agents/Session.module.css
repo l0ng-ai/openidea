@@ -931,8 +931,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-0-5);
-  max-height: calc(var(--h-row) * 16);
-  overflow-y: auto;
   margin: 2px 0 0 10px;
   padding-left: var(--space-3);
   border-left: 1px solid var(--border);
