@@ -241,6 +241,13 @@ describe("Build and run using: Gradle", () => {
     expect(RUN_SCRIPT).toContain("else p.tasks.create('openideaRun', JavaExec, configure)");
     expect(RUN_SCRIPT).toContain("import org.gradle.util.GradleVersion");
   });
+
+  // A toolchain newer than Gradle's JVM: on it, a class compiled for that toolchain fails to load (#5594).
+  it("launches on the project's Java toolchain, as the application plugin's `run` does (#5594)", () => {
+    // `javaLauncher` is Gradle 6.7+: guarded on its line, like `mainClass`.
+    expect(RUN_SCRIPT).toContain("if (t.hasProperty('javaLauncher'))");
+    expect(RUN_SCRIPT).toContain("JavaToolchainService).launcherFor(");
+  });
 });
 
 describe("Gradle test runs", () => {
