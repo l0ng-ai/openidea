@@ -12,7 +12,7 @@ use ide_workspace::{FileMove, UndoOutcome};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 
-use super::doc::blocking;
+use super::blocking;
 
 fn pairs(moves: &[FileMove]) -> Vec<(PathBuf, PathBuf)> {
     moves.iter().map(|m| (m.from.to_path_buf(), m.to.to_path_buf())).collect()

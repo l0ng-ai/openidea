@@ -56,6 +56,7 @@ function result(id: number, title: string, path: string, sourceId: string, value
         hasMore: false,
         elapsedMs: 1,
         executionMs: 1,
+        truncated: [],
       },
       error: null,
     },

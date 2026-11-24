@@ -74,6 +74,9 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
         noteCopySource(text, { kind: "terminal", title: "Terminal" });
         void writeClipboardText(text).catch(() => undefined);
       }
+    } else if (action.kind === "paste") {
+      // Keep xterm from sending Ctrl+V as ^V; the native paste reaches its textarea.
+      return false;
     } else {
       return true;
     }
@@ -121,9 +124,9 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   }
 
   const fitter = fitScheduler(() => {
-    if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return;
+    if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return false;
     const dims = fit.proposeDimensions();
-    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return false;
     if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
     processResize.resized(dims.cols, dims.rows);
   });

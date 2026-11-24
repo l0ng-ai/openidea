@@ -393,11 +393,10 @@ for (const reducedMotion of ["reduce", "no-preference"] as const) {
             )
             .toEqual({ line, column: 0, centred: true, cursor: true, blinking: true });
           if (mode === "split" && !alignChanges) {
-            const tops = await toolbar
-              .locator("..")
-              .locator(".cm-scroller")
-              .evaluateAll((els) => els.map((el) => el.scrollTop));
-            expect(Math.abs(tops[0]! - tops[1]!)).toBeLessThan(2);
+            const scrollers = toolbar.locator("..").locator(".cm-scroller");
+            await expect
+              .poll(() => scrollers.evaluateAll(([left, right]) => Math.abs(left!.scrollTop - right!.scrollTop)))
+              .toBeLessThan(2);
           }
         };
         await toolbar.getByRole("button", { name: "Next Difference", exact: true }).click();

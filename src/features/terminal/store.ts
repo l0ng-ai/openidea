@@ -148,7 +148,6 @@ function createSession(
     },
   });
   sessions.set(key, session);
-  useTerminals.setState((s) => ({ sessions: { ...s.sessions, [key]: session.state } }));
   return session;
 }
 
@@ -160,11 +159,6 @@ function disposeSession(key: string, kill = true) {
   if (focus && session?.host?.contains(focus)) publishFocus(false);
   session?.dispose(kill);
   sessions.delete(key);
-  useTerminals.setState((s) => {
-    const next = { ...s.sessions };
-    delete next[key];
-    return { sessions: next };
-  });
 }
 
 /** Next free default name: "Local", "Local (2)", … */
@@ -250,6 +244,7 @@ export function newTab(cwd: string, name?: string, command?: SessionOptions["com
   };
   useTerminals.setState((s) => ({
     tabs: [...s.tabs, tab],
+    sessions: { ...s.sessions, [session.key]: session.state },
     selected: { ...s.selected, [tab.group]: tab.id },
     activeTab: tab.id,
   }));
@@ -305,7 +300,11 @@ export function closeTab(id: string) {
   const tab = useTerminals.getState().tabs.find((t) => t.id === id);
   if (!tab) return;
   disposeSession(tab.session);
-  useTerminals.setState((s) => withoutTab(s, id));
+  useTerminals.setState((s) => {
+    const next = { ...s.sessions };
+    delete next[tab.session];
+    return { ...withoutTab(s, id), sessions: next };
+  });
 }
 
 /**
@@ -476,6 +475,7 @@ export function splitTab(id: string, orientation: SplitOrientation, move = false
   };
   useTerminals.setState((st) => ({
     tabs: [...st.tabs, copy],
+    sessions: { ...st.sessions, [session.key]: session.state },
     layout,
     selected: { ...st.selected, [group]: copy.id },
     activeTab: copy.id,
@@ -683,6 +683,7 @@ function restore(saved: StoredTerminals, root: string, remote: boolean) {
   const idOf = new Map<string, string>();
   const tabs: TerminalTab[] = [];
   const toAttach: TerminalSession[] = [];
+  const snapshots: Record<string, SessionSnapshot> = {};
   for (const savedTab of saved.tabs) {
     const attachId = remote ? (savedTab.terminalId ?? null) : null;
     const session = createSession(
@@ -694,6 +695,7 @@ function restore(saved: StoredTerminals, root: string, remote: boolean) {
     );
     if (attachId !== null) toAttach.push(session);
     const id = `t${seq}`;
+    snapshots[session.key] = session.state;
     idOf.set(savedTab.id, id);
     tabs.push({
       id,
@@ -713,7 +715,7 @@ function restore(saved: StoredTerminals, root: string, remote: boolean) {
     if (id) selected[group] = id;
   }
   const activeTab = (saved.activeTab && idOf.get(saved.activeTab)) || tabs[0]?.id || null;
-  useTerminals.setState({ tabs, layout, selected, activeTab });
+  useTerminals.setState({ tabs, layout, selected, activeTab, sessions: snapshots });
   for (const session of toAttach) void session.start();
 }
 
@@ -753,6 +755,7 @@ async function reconcileRemoteTerminals(scope: string, root: string) {
     };
     useTerminals.setState((s) => ({
       tabs: [...s.tabs, tab],
+      sessions: { ...s.sessions, [session.key]: session.state },
       selected: { ...s.selected, [tab.group]: s.selected[tab.group] ?? tab.id },
       activeTab: s.activeTab ?? tab.id,
     }));

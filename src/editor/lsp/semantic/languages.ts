@@ -26,6 +26,10 @@ export interface SemanticToken {
   marksLocals?: boolean;
   /** Classes accumulated so far; the hook appends or removes. */
   classes: string[];
+  /** Where the token is, for hooks that look at the parse tree around it. */
+  from: number;
+  doc: Text;
+  tree: Tree | undefined;
 }
 
 /** Documentation of a language construct that has no source declaration. */

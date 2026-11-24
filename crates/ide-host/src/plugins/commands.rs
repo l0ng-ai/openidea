@@ -5,17 +5,14 @@ use super::{
     PluginInfo, PluginStatusItem, WorkbenchEvent,
 };
 use crate::Host;
+use crate::ops::blocking;
 use ide_command::command;
-use ide_core::{IdeError, IdeResult, RequestId};
+use ide_core::{IdeResult, RequestId};
 use ide_plugin::Invocation;
 use ide_workspace::settings::SettingsScope;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
-}
 
 /// Runs a plugin command in the context of this window's project and focused editor.
 #[allow(clippy::too_many_arguments)]

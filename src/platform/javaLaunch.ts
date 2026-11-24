@@ -266,6 +266,12 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   const info = await call(
     commands.javaResolveLaunch(module, parsed.classpath === "test", policy, preparation.request),
   ).catch((error: unknown) => {
+    if (error instanceof IpcError && error.data?.type === "javaBuildProblems") {
+      const problems = error.data.problems.join("; ");
+      throw new Error(
+        tx`Java module '${module || "."}' could not be imported because its build has errors: ${problems}. Fix them, then reload the Maven or Gradle project.`,
+      );
+    }
     if (
       error instanceof IpcError &&
       error.kind !== "cancelled" &&

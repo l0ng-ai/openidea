@@ -1,4 +1,4 @@
-use super::doc::blocking;
+use super::blocking;
 use super::python_stubs::{
     PythonStubLinks, counterpart_candidates, match_declarations, module_name, site_packages, stub_path,
 };

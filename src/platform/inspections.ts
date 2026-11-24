@@ -257,6 +257,8 @@ export const PYTHON_ABSTRACT_METHOD_PRODUCER = "python-abstract-method";
 export const PYTHON_ABSTRACT_METHOD_INSPECTION = "builtin:python-abstract-method";
 export const PYTHON_REDUNDANT_OVERRIDE_PRODUCER = "python-redundant-override";
 export const PYTHON_REDUNDANT_OVERRIDE_INSPECTION = "builtin:python-redundant-override";
+export const PYTHON_METHOD_MAY_BE_STATIC_PRODUCER = "python-method-may-be-static";
+export const PYTHON_METHOD_MAY_BE_STATIC_INSPECTION = "builtin:python-method-may-be-static";
 
 /** IDEA's Typo options: which parts of source files are checked (plain text always is). */
 export const SPELLING_OPTIONS = {
@@ -384,6 +386,16 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     group: "Python",
     description:
       "Reports a method whose body only repeats the inherited one — 'pass' over a method that does nothing, or calling 'super()' with the same arguments — so the override can be removed.",
+    defaultLevel: "weakWarning",
+  },
+  {
+    id: PYTHON_METHOD_MAY_BE_STATIC_INSPECTION,
+    suppressId: "PyMethodMayBeStatic",
+    producer: PYTHON_METHOD_MAY_BE_STATIC_PRODUCER,
+    name: "Method may be static",
+    group: "Python",
+    description:
+      "Reports a method that never uses 'self': it can be a @staticmethod. Methods with decorators, dunder methods, stubs (pass, '...', a docstring or one raise) and methods that use super() are left alone, as are methods that override a base class's and classes whose hierarchy the IDE's index does not know completely. Alt+Enter makes the method static.",
     defaultLevel: "weakWarning",
   },
   {

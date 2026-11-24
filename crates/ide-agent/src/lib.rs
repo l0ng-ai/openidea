@@ -44,7 +44,9 @@ use ide_vcs::Repo;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -68,6 +70,8 @@ pub type GitExecutableHook = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
+/// A save asked for with `persist_soon` waits this long for others to join it.
+const SAVE_DELAY: Duration = Duration::from_millis(250);
 /// Updates that arrive this late after `session/load` returns are still replayed history.
 const REPLAY_GRACE: Duration = Duration::from_millis(300);
 /// Notifications are delivered on their own thread: the last `session/update`s of a turn
@@ -545,8 +549,11 @@ struct Task {
     /// Unanswered permission requests: where to send the chosen option id.
     permissions: Mutex<HashMap<u32, std::sync::mpsc::Sender<Option<String>>>>,
     next_permission: AtomicU32,
-    /// Set while `session/load` replays history we already have.
+    /// Set while `session/load` replays the session's history.
     replaying: AtomicBool,
+    /// The task has a session but none of its history (an imported session): the next load's
+    /// replay becomes the task's history instead of being dropped.
+    adopting_replay: AtomicBool,
     /// The saved session failed to load and the user was told: the next start opens a new one.
     start_fresh: AtomicBool,
     /// The current turn is being cancelled to send the first queued message right away.
@@ -568,12 +575,24 @@ struct Task {
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
-    /// How much of each session's streaming message was last sent, so the next flush sends the rest.
-    streamed: Mutex<HashMap<Session, Sent>>,
+    /// What was last sent of the entries that stream, so the next flush sends the rest.
+    streamed: Mutex<Streamed>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
-    /// Set by `delete`; held while saving.
-    deleted: Mutex<bool>,
+    /// Saves asked for (see `persist`); the file holds those up to `file.saved`.
+    saves_asked: AtomicU64,
+    save_scheduled: AtomicBool,
+    /// Held while the file is written, so saves land in order and none follows a delete.
+    file: Mutex<SavedFile>,
+}
+
+/// What the task's file on disk holds.
+#[derive(Default)]
+struct SavedFile {
+    /// Set by `delete`: nothing is written any more.
+    deleted: bool,
+    /// The saves asked for that the file holds.
+    saved: u64,
 }
 
 impl AgentManager {
@@ -913,7 +932,7 @@ impl AgentManager {
         out
     }
 
-    /// Imports an external session as a task: its first turn loads and replays it (#312).
+    /// Imports an external session as a task, loading it in the background to show its history (#312).
     pub fn import_session(&self, provider: &str, session_id: &str) -> IdeResult<AgentTask> {
         if !matches!(provider, "claude" | "codex") {
             return Err(IdeError::invalid(format!("cannot import {provider} sessions")));
@@ -978,6 +997,13 @@ impl AgentManager {
         self.tasks.write().insert(task.id.clone(), handle.clone());
         handle.emit_task();
         handle.persist();
+        // Loading the session replays its history into the task, so it shows before a first message.
+        self.shared.runtime.spawn(async move {
+            match handle.ensure_session().await {
+                Ok(_) => handle.release_when_idle(),
+                Err(e) => tracing::info!("agent task {}: loading the imported session failed: {e}", handle.id),
+            }
+        });
         Ok(task)
     }
 
@@ -1806,7 +1832,7 @@ impl AgentManager {
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
         self.tasks.write().remove(id);
-        *task.deleted.lock() = true;
+        task.file.lock().deleted = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
         let _ = std::fs::remove_dir_all(task.turn_dir());
         skills::remove_farm(&self.shared.paths.store_dir, id);
@@ -2196,6 +2222,7 @@ impl Task {
     fn restore(file: TaskFile, shared: Arc<Shared>) -> Arc<Self> {
         let mut task = file.task;
         config::add_client_options(&task.provider, &mut task.config);
+        let adopt = file.entries.is_empty() && file.session_id.is_some();
         let conversation = Conversation::restore(file.entries, file.subagents);
         let mut wanted = file.wanted;
         let pending_model = file.pending_switch.or_else(|| {
@@ -2242,6 +2269,7 @@ impl Task {
             permissions: Mutex::new(HashMap::new()),
             next_permission: AtomicU32::new(1),
             replaying: AtomicBool::new(false),
+            adopting_replay: AtomicBool::new(adopt),
             start_fresh: AtomicBool::new(false),
             send_now: AtomicBool::new(false),
             cancel_pending: AtomicBool::new(false),
@@ -2252,10 +2280,12 @@ impl Task {
             skills_reload_pending: AtomicBool::new(false),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
-            streamed: Mutex::new(HashMap::new()),
+            streamed: Mutex::new(Streamed::default()),
             flush_scheduled: AtomicBool::new(false),
             stderr: Mutex::new(VecDeque::new()),
-            deleted: Mutex::new(false),
+            saves_asked: AtomicU64::new(0),
+            save_scheduled: AtomicBool::new(false),
+            file: Mutex::new(SavedFile::default()),
         })
     }
 
@@ -2277,7 +2307,7 @@ impl Task {
     }
 
     /// Records the checkout as a turn starts: what the turn's changes are compared with.
-    async fn checkout_before_turn(&self) {
+    async fn checkout_before_turn(self: &Arc<Self>) {
         let (cwd, previous, dir) = self.last_turn();
         let turn = match vcs(&self.shared, move || worktree::start_turn(&cwd, &dir, previous.as_deref())).await {
             Ok(turn) => Some(Arc::new(turn)),
@@ -2287,12 +2317,12 @@ impl Task {
             }
         };
         self.state.lock().turn = turn;
-        self.persist();
+        self.persist_soon();
     }
 
     /// Records the files that changed in the checkout while the turn ran: the turn's, and in
     /// the project's own checkout also the task's.
-    async fn record_turn_changes(&self) {
+    async fn record_turn_changes(self: &Arc<Self>) {
         let (cwd, turn, _) = self.last_turn();
         let Some(turn) = turn else { return };
         let start = turn.clone();
@@ -2310,7 +2340,7 @@ impl Task {
             }
             s.turn = Some(Arc::new(worktree::TurnStart { changed: Some(all), ..(*turn).clone() }));
         }
-        self.persist();
+        self.persist_soon();
     }
 
     fn base(&self) -> worktree::TaskBase {
@@ -2391,16 +2421,26 @@ impl Task {
         }
     }
 
+    fn change_status(&self, status: AgentStatus, error: Option<String>) {
+        let mut s = self.state.lock();
+        s.task.retry = None;
+        s.task.status = status;
+        s.task.error = error;
+        s.task.updated_ms = now_ms();
+    }
+
     fn set_status(&self, status: AgentStatus, error: Option<String>) {
-        {
-            let mut s = self.state.lock();
-            s.task.retry = None;
-            s.task.status = status;
-            s.task.error = error;
-            s.task.updated_ms = now_ms();
-        }
+        self.change_status(status, error);
         // Saved first: whoever reacts to the status change finds it on disk.
         self.persist();
+        self.emit_task();
+    }
+
+    /// `Running` again after the agent started or a request was answered: the turn's next stop
+    /// saves what changed, and the turn start saved the message that began it.
+    fn resume_running(self: &Arc<Self>) {
+        self.change_status(AgentStatus::Running, None);
+        self.persist_soon();
         self.emit_task();
     }
 
@@ -2426,15 +2466,40 @@ impl Task {
         }
     }
 
+    /// Writes the task file, with everything changed so far, before it returns.
     fn persist(&self) {
-        // Held from snapshot to rename, so saves land in order and none follows a delete.
-        let deleted = self.deleted.lock();
-        if *deleted {
+        self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        self.save();
+    }
+
+    /// Has the task file written within `SAVE_DELAY`, once for every change asked for by then:
+    /// for what the next `persist` (the turn's next stop, shutdown) saves anyway, and a crash
+    /// before it costs at most what changed in this window.
+    fn persist_soon(self: &Arc<Self>) {
+        self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        if !self.save_scheduled.swap(true, Ordering::AcqRel) {
+            let task = self.clone();
+            self.shared.runtime.spawn(async move {
+                tokio::time::sleep(SAVE_DELAY).await;
+                task.save_scheduled.store(false, Ordering::Release);
+                let _ = tokio::task::spawn_blocking(move || task.save()).await;
+            });
+        }
+    }
+
+    /// Writes the file unless it holds every save asked for. The state is locked only to copy
+    /// it: turning a long transcript into JSON and writing it is no reader's wait.
+    fn save(&self) {
+        // Held from the copy to the rename, so saves land in order and none follows a delete.
+        let mut file = self.file.lock();
+        // Read before the copy: whatever was asked for up to now is in it.
+        let asked = self.saves_asked.load(Ordering::Acquire);
+        if file.deleted || file.saved >= asked {
             return;
         }
-        let bytes = {
+        let copy = {
             let s = self.state.lock();
-            serde_json::to_vec(&TaskFile {
+            TaskFile {
                 task: s.task.clone(),
                 session_id: s.session_id.clone(),
                 entries: s.conversation.main.entries.clone(),
@@ -2448,11 +2513,14 @@ impl Task {
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: s.pending_rollback,
                 title_renamed: s.title_renamed,
-            })
+            }
         };
+        let bytes = serde_json::to_vec(&copy);
+        drop(copy);
         let path = self.shared.paths.store_dir.join(format!("{}.json", self.id));
-        if let Err(e) = bytes.map_err(|e| e.to_string()).and_then(|b| write_file(&path, &b)) {
-            tracing::warn!("saving agent task {}: {e}", self.id);
+        match bytes.map_err(|e| e.to_string()).and_then(|b| write_file(&path, &b)) {
+            Ok(()) => file.saved = asked,
+            Err(e) => tracing::warn!("saving agent task {}: {e}", self.id),
         }
     }
 
@@ -2477,7 +2545,7 @@ impl Task {
                 .into_iter()
                 .filter_map(|(subagent, i)| {
                     let entry = s.conversation.timeline(&subagent)?.entries.get(i)?;
-                    Some(entry_event(&self.id, &mut streamed, subagent, i, entry))
+                    entry_event(&self.id, &mut streamed, subagent, i, entry)
                 })
                 .collect()
         };
@@ -2511,6 +2579,19 @@ impl Task {
         }));
         self.state.lock().shell_context.push(ran.context(command));
         self.persist();
+    }
+
+    /// Removes the task's own entries and returns them.
+    fn take_entries(self: &Arc<Self>) -> Vec<AgentEntry> {
+        let entries = {
+            let mut s = self.state.lock();
+            let entries = s.conversation.main.entries.clone();
+            s.conversation.truncate(0);
+            entries
+        };
+        self.streamed.lock().clear();
+        self.shared.emit(AgentEvent::Truncated { task: self.id.clone(), length: 0 });
+        entries
     }
 
     fn push_entry(self: &Arc<Self>, entry: AgentEntry) -> usize {
@@ -2869,7 +2950,7 @@ impl Task {
         if self.cancel_pending.load(Ordering::Acquire) {
             return Ok("cancelled".into());
         }
-        self.set_status(AgentStatus::Running, None);
+        self.resume_running();
         if !prompt.images.is_empty() && !live.capabilities.images {
             return Err(Failure::from("This agent can't read images.".to_owned()));
         }
@@ -3105,12 +3186,27 @@ impl Task {
             });
         }
         if let (Some(id), true, false) = (saved, can_load, start_fresh) {
+            // The replay goes before what this turn already showed (the user's message).
+            let shown = self.adopts_replay().then(|| self.take_entries());
             self.replaying.store(true, Ordering::Release);
             let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
             params["sessionId"] = json!(&id);
             let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
+            if let Some(shown) = shown {
+                if loaded.is_ok() {
+                    self.adopting_replay.store(false, Ordering::Release);
+                    let changed = self.state.lock().conversation.end_turn(None);
+                    self.mark_dirty(changed);
+                } else {
+                    // A failed load may still have replayed part of it.
+                    self.take_entries();
+                }
+                for entry in shown {
+                    self.push_entry(entry);
+                }
+            }
             match loaded {
                 Ok(v) => session = Some((id, v)),
                 // Not silently: a new session would lose the conversation and replace the saved id.
@@ -3332,7 +3428,7 @@ impl Task {
             s.task.background.clear();
             *client.opening_config.lock() = None;
         }
-        self.persist();
+        self.persist_soon();
         self.emit_task();
         stop_on_err.0 = None;
         Ok(Live {
@@ -3402,7 +3498,7 @@ impl Task {
                 }
             }
             task.approve_pending();
-            task.persist();
+            task.persist_soon();
             task.emit_task();
         });
     }
@@ -3428,7 +3524,7 @@ impl Task {
         let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default();
         // A subagent's title, settings and usage are its own, not the task's.
         if self.state.lock().conversation.owner(session).is_some() {
-            if !SESSION_STATE.contains(&kind) && !self.replaying.load(Ordering::Acquire) {
+            if !SESSION_STATE.contains(&kind) && (!self.replaying.load(Ordering::Acquire) || self.adopts_replay()) {
                 self.apply(session, kind, update);
             }
             return;
@@ -3464,7 +3560,7 @@ impl Task {
                     std::mem::replace(&mut s.task.stats.compressions, depth) != depth
                 };
                 if changed {
-                    self.persist();
+                    self.persist_soon();
                     self.emit_task();
                 }
             }
@@ -3482,11 +3578,11 @@ impl Task {
                 if (user_named || !s.title_renamed) && s.task.title != title {
                     s.task.title = title.to_owned();
                     drop(s);
-                    self.persist();
+                    self.persist_soon();
                     self.emit_task();
                 } else if flag_changed {
                     drop(s);
-                    self.persist();
+                    self.persist_soon();
                     self.emit_task();
                 }
             }
@@ -3532,7 +3628,7 @@ impl Task {
             };
             self.shared.remember(&provider, Some(&config), Some(&commands), model.as_deref());
             if kind != "usage_update" {
-                self.persist();
+                self.persist_soon();
             }
             self.emit_task();
             if kind == "config_option_update" && !self.replaying.load(Ordering::Acquire) {
@@ -3544,6 +3640,13 @@ impl Task {
             return;
         }
         if self.replaying.load(Ordering::Acquire) {
+            if self.adopts_replay() {
+                if kind == "user_message_chunk" {
+                    self.adopt_user_chunk(update);
+                } else {
+                    self.apply(session, kind, update);
+                }
+            }
             return;
         }
         // The first sign that the agent took the prompt: a stop sent before it is repeated.
@@ -3556,14 +3659,52 @@ impl Task {
         self.apply(session, kind, update);
     }
 
+    fn adopts_replay(&self) -> bool {
+        self.adopting_replay.load(Ordering::Acquire)
+    }
+
+    /// A user message of the adopted history: live turns show the user's own, so only a replay's count.
+    fn adopt_user_chunk(self: &Arc<Self>, update: &Value) {
+        let content = update.get("content");
+        let image = content.filter(|c| c.get("type").and_then(Value::as_str) == Some("image")).map(|c| AgentImage {
+            mime_type: c.get("mimeType").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            data: c.get("data").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            name: None,
+        });
+        let text = timeline::content_text(content).unwrap_or_default();
+        if text.is_empty() && image.is_none() {
+            return;
+        }
+        let changed = {
+            let mut s = self.state.lock();
+            let entries = &mut s.conversation.main.entries;
+            // The chunks of one message arrive in a row.
+            if let Some(AgentEntry::User { text: shown, images, .. }) = entries.last_mut() {
+                shown.push_str(&text);
+                images.extend(image);
+                entries.len() - 1
+            } else {
+                s.conversation.main.push(AgentEntry::User {
+                    text,
+                    attachments: Vec::new(),
+                    images: image.into_iter().collect(),
+                    sent_ms: None,
+                    done_ms: None,
+                    steered: false,
+                })
+            }
+        };
+        self.mark_dirty([(None, changed)]);
+    }
+
     fn apply(self: &Arc<Self>, session: Option<&str>, kind: &str, update: &Value) {
         // Output again: the retried request went through.
         self.set_retry(None);
         let applied = self.state.lock().conversation.apply(session, update, now_ms());
         self.mark_dirty(applied);
-        // A subagent can start or finish after the turn that started it: saved right away.
+        // A subagent can start or finish after the turn that started it: nothing else saves it then.
         if matches!(kind, "subagent_update" | "user_question") {
-            self.persist();
+            self.persist_soon();
         }
     }
 
@@ -3746,6 +3887,7 @@ impl Task {
     }
 
     /// Records the answer to the request at `entry`; the turn runs on once nothing else waits.
+    /// Saved before it returns, which is before the agent is told: a restart after that keeps the answer.
     fn settle(self: &Arc<Self>, entry: usize, chosen: String) {
         {
             let mut s = self.state.lock();
@@ -3755,8 +3897,13 @@ impl Task {
         }
         self.mark_dirty([(None, entry)]);
         let still_asking = !self.permissions.lock().is_empty();
-        if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
-            self.set_status(AgentStatus::Running, None);
+        let resumed = !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput;
+        if resumed {
+            self.change_status(AgentStatus::Running, None);
+        }
+        self.persist();
+        if resumed {
+            self.emit_task();
         }
     }
 
@@ -3840,7 +3987,7 @@ impl Handler for Client {
                 && let Some(message) = params.get("message").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
             {
                 task.push_entry(AgentEntry::Error { message: message.to_owned() });
-                task.persist();
+                task.persist_soon();
             }
             return;
         }
@@ -4282,12 +4429,21 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
 }
 
+/// How many times each file was written, in test builds: lets a test count a task's saves.
+#[cfg(test)]
+static FILE_WRITES: std::sync::LazyLock<Mutex<HashMap<PathBuf, u32>>> = std::sync::LazyLock::new(Mutex::default);
+
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| e.to_string())
+    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    {
+        *FILE_WRITES.lock().entry(path.to_owned()).or_default() += 1;
+    }
+    Ok(())
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
@@ -4333,78 +4489,158 @@ fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root
     vec![json!({ "name": BUILTIN_SERVER, "command": command[0], "args": command[1..], "env": env })]
 }
 
-/// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which
-/// ended with `tail`. A message only grows while it streams, so its tail tells a message
-/// that went on from one that was replaced without comparing (or keeping) all of it.
+/// What was sent of a streaming text: its first `bytes` (`utf16` UTF-16 units), hashed. The
+/// text only grows while it streams; the hash tells one that went on from one that was replaced
+/// (at its end or anywhere before) without keeping a copy of it.
 struct Sent {
     index: usize,
     bytes: usize,
     utf16: usize,
-    tail: String,
+    hash: u64,
 }
-
-const SENT_TAIL: usize = 64;
 
 impl Sent {
     fn new(index: usize, text: &str) -> Self {
-        Self::after(index, text, 0, 0)
+        Self { index, bytes: text.len(), utf16: text.encode_utf16().count(), hash: Self::digest(text) }
     }
 
-    /// `text` as sent, of which the first `bytes` (`utf16` units) were sent before.
-    fn after(index: usize, text: &str, bytes: usize, utf16: usize) -> Self {
-        let mut start = text.len().saturating_sub(SENT_TAIL);
-        while !text.is_char_boundary(start) {
-            start -= 1;
+    fn digest(text: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hasher.write(text.as_bytes());
+        hasher.finish()
+    }
+
+    /// `text` at `index` as sent after this, when it is this text with more at the end.
+    fn extended(&self, index: usize, text: &str) -> Option<Self> {
+        if self.index != index || text.len() <= self.bytes || !text.is_char_boundary(self.bytes) {
+            return None;
         }
-        let utf16 = utf16 + text[bytes..].encode_utf16().count();
-        Self { index, bytes: text.len(), utf16, tail: text[start..].to_owned() }
+        let mut hasher = DefaultHasher::new();
+        hasher.write(&text.as_bytes()[..self.bytes]);
+        if hasher.finish() != self.hash {
+            return None;
+        }
+        let more = &text[self.bytes..];
+        hasher.write(more.as_bytes());
+        Some(Self { index, bytes: text.len(), utf16: self.utf16 + more.encode_utf16().count(), hash: hasher.finish() })
     }
 
-    /// Whether `text` at `index` is this message, gone on.
-    fn extended_by(&self, index: usize, text: &str) -> bool {
-        self.index == index
-            && text.len() > self.bytes
-            && text.is_char_boundary(self.bytes)
-            && text[..self.bytes].ends_with(&self.tail)
+    /// Whether `text` is exactly what was sent.
+    fn is(&self, text: &str) -> bool {
+        text.len() == self.bytes && Self::digest(text) == self.hash
+    }
+}
+
+/// A running tool call as last sent: the entry without its output, and what was sent of that.
+struct SentTool {
+    call: AgentEntry,
+    output: Sent,
+}
+
+/// What each window was last sent of the entries that stream, so the next flush sends the rest.
+#[derive(Default)]
+struct Streamed {
+    /// The message each session streams now.
+    messages: HashMap<Session, Sent>,
+    /// The tool calls still running, by session and entry index.
+    tools: HashMap<(Session, usize), SentTool>,
+}
+
+impl Streamed {
+    fn clear(&mut self) {
+        self.messages.clear();
+        self.tools.clear();
     }
 }
 
 /// The event that brings the UI's copy of entry `i` up to date: only the new text when
-/// it extends the message last sent for the session, else the whole entry.
+/// it extends the message (or the tool output) last sent, else the whole entry; `None`
+/// when the UI's copy of a tool already is the entry.
 fn entry_event(
     task: &str,
-    streamed: &mut HashMap<Session, Sent>,
+    streamed: &mut Streamed,
     subagent: Session,
     i: usize,
     entry: &AgentEntry,
-) -> AgentEvent {
+) -> Option<AgentEvent> {
+    let whole = |subagent| AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
     let text = match entry {
         AgentEntry::Agent { text } | AgentEntry::Thought { text, .. } => Some(text),
+        AgentEntry::Tool { .. } => return tool_event(task, streamed, subagent, i, entry),
         _ => None,
     };
     let Some(text) = text else {
-        if streamed.get(&subagent).is_some_and(|sent| sent.index == i) {
-            streamed.remove(&subagent);
+        if streamed.messages.get(&subagent).is_some_and(|sent| sent.index == i) {
+            streamed.messages.remove(&subagent);
         }
-        return AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
+        return Some(whole(subagent));
     };
-    match streamed.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
-        Some(sent) => {
-            let (bytes, from) = (sent.bytes, sent.utf16);
-            streamed.insert(subagent.clone(), Sent::after(i, text, bytes, from));
-            AgentEvent::Append {
+    match streamed.messages.get(&subagent).and_then(|sent| Some((sent.bytes, sent.utf16, sent.extended(i, text)?))) {
+        Some((bytes, from, sent)) => {
+            streamed.messages.insert(subagent.clone(), sent);
+            Some(AgentEvent::Append {
                 task: task.to_owned(),
                 subagent,
                 index: i as u32,
                 from: from as u32,
                 text: text[bytes..].to_owned(),
-            }
+            })
         }
         None => {
-            streamed.insert(subagent.clone(), Sent::new(i, text));
-            AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() }
+            streamed.messages.insert(subagent.clone(), Sent::new(i, text));
+            Some(whole(subagent))
         }
     }
+}
+
+/// [`entry_event`] for a tool call: the output it grew by while the rest of it is unchanged.
+fn tool_event(
+    task: &str,
+    streamed: &mut Streamed,
+    subagent: Session,
+    i: usize,
+    entry: &AgentEntry,
+) -> Option<AgentEvent> {
+    let AgentEntry::Tool { id, title, kind, status, locations, images, output, diffs, started_ms, ended_ms } = entry
+    else {
+        return None;
+    };
+    let call = AgentEntry::Tool {
+        id: id.clone(),
+        title: title.clone(),
+        kind: kind.clone(),
+        status: *status,
+        locations: locations.clone(),
+        images: images.clone(),
+        output: None,
+        diffs: diffs.clone(),
+        started_ms: *started_ms,
+        ended_ms: *ended_ms,
+    };
+    let text = output.as_deref().unwrap_or_default();
+    let key = (subagent, i);
+    if let Some(sent) = streamed.tools.get_mut(&key).filter(|sent| sent.call == call) {
+        if let Some(output) = sent.output.extended(i, text) {
+            let (bytes, from) = (sent.output.bytes, sent.output.utf16);
+            sent.output = output;
+            return Some(AgentEvent::ToolOutput {
+                task: task.to_owned(),
+                subagent: key.0,
+                index: i as u32,
+                from: from as u32,
+                text: text[bytes..].to_owned(),
+            });
+        }
+        if sent.output.is(text) {
+            return None;
+        }
+    }
+    if matches!(status, AgentToolStatus::Pending | AgentToolStatus::Running) {
+        streamed.tools.insert(key.clone(), SentTool { call, output: Sent::new(i, text) });
+    } else {
+        streamed.tools.remove(&key);
+    }
+    Some(AgentEvent::Entry { task: task.to_owned(), subagent: key.0, index: i as u32, entry: entry.clone() })
 }
 
 struct SessionOpenError {
