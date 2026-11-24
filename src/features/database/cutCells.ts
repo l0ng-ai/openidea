@@ -39,10 +39,21 @@ export function cellOf(r: DbQueryResult, row: number, col: number): Cell {
   return whole.get(r)?.get(key(row, col)) ?? r.rows[row]?.[col] ?? null;
 }
 
-/** The whole length (UTF-16 units) of cell (`row`, `col`) of `r` while it shows only its start; else `null`. */
-export function cutLength(r: DbQueryResult, row: number, col: number): number | null {
+/** The cut cell (`row`, `col`) of `r` while it shows only its start; else `null`. */
+function cutCell(r: DbQueryResult, row: number, col: number) {
   if (whole.get(r)?.has(key(row, col))) return null;
-  return cutOf(r).find((c) => c.row === row && c.column === col)?.length ?? null;
+  return cutOf(r).find((c) => c.row === row && c.column === col) ?? null;
+}
+
+/** The whole length (UTF-16 units) of cell (`row`, `col`) of `r` while it shows only its start; else `null`. */
+export const cutLength = (r: DbQueryResult, row: number, col: number): number | null =>
+  cutCell(r, row, col)?.length ?? null;
+
+/** FNV-1a over the UTF-16 units of `text`, one step per unit: what the backend hashes a cut value with. */
+export function hashOf(text: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+  return hash >>> 0;
 }
 
 /** Whether `r` still has a cell that shows only its start. */
@@ -60,22 +71,32 @@ class ResultChanged extends Error {
   }
 }
 
-/** Keeps the whole cells of `fresh` (rows `at…` of the page `r`) once they continue what `r` shows. */
-function adopt(r: DbQueryResult, at: number, fresh: DbQueryResult) {
+/**
+ * Keeps the whole cells of `fresh`, the `count` rows read again from row `at` of the page `r`,
+ * once they are the rows the page showed: as many rows, every other cell the same, and each cut
+ * cell a value of the length and hash the backend cut it from, starting with what the page shows.
+ */
+function adopt(r: DbQueryResult, at: number, count: number, fresh: DbQueryResult) {
   const kept = whole.get(r) ?? new Map<string, string>();
   const names = r.columns.map((c) => c.name);
   if (fresh.columns.length !== names.length || fresh.columns.some((c, i) => c.name !== names[i]))
     throw new ResultChanged();
+  if (fresh.rows.length !== count || at + count > r.rows.length) throw new ResultChanged();
   const found = new Map<string, string>();
   fresh.rows.forEach((cells, i) => {
     const row = at + i;
-    if (!r.rows[row] || cells.length !== names.length) throw new ResultChanged();
+    if (cells.length !== names.length) throw new ResultChanged();
     cells.forEach((text, col) => {
-      const shown = r.rows[row]![col] ?? null;
-      const length = cutLength(r, row, col);
-      if (length === null) {
-        if (text !== shown && !kept.has(key(row, col))) throw new ResultChanged();
-      } else if (text === null || text.length !== length || !text.startsWith(shown ?? "")) throw new ResultChanged();
+      const cut = cutCell(r, row, col);
+      if (cut === null) {
+        if (text !== cellOf(r, row, col)) throw new ResultChanged();
+      } else if (
+        text === null ||
+        text.length !== cut.length ||
+        hashOf(text) !== cut.hash ||
+        !text.startsWith(r.rows[row]![col] ?? "")
+      )
+        throw new ResultChanged();
       else found.set(key(row, col), text);
     });
   });
@@ -97,8 +118,8 @@ export async function loadCells(tab: ResultTab, cells: ReadonlyArray<{ row: numb
   const r = tab.outcome.result!;
   const cut = cells.filter((c) => cutLength(r, c.row, c.col) !== null);
   const rows = [...new Set(cut.map((c) => c.row))].sort((a, b) => a - b);
-  if (rows.length > ROWWISE_LIMIT) adopt(r, 0, await readResultPage(tab));
-  else for (const row of rows) adopt(r, row, await readResultRow(tab, firstRow(tab) + row));
+  if (rows.length > ROWWISE_LIMIT) adopt(r, 0, r.rows.length, await readResultPage(tab));
+  else for (const row of rows) adopt(r, row, 1, await readResultRow(tab, firstRow(tab) + row));
   return cells.map((c) => cellOf(r, c.row, c.col));
 }
 

@@ -5523,6 +5523,11 @@ export type DbTruncatedCell = {
 	column: number,
 	/**  Length of the whole value in UTF-16 code units (what a JavaScript string counts). */
 	length: number,
+	/**
+	 *  FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+	 *  so a client that reads the value again can tell whether it is the one that was cut.
+	 */
+	hash: number,
 };
 
 /**  Transaction control of the data source's consoles. */

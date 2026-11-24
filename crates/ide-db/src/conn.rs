@@ -61,6 +61,21 @@ pub struct TruncatedCell {
     pub column: u32,
     /// Length of the whole value in UTF-16 code units (what a JavaScript string counts).
     pub length: u32,
+    /// FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+    /// so a client that reads the value again can tell whether it is the one that was cut.
+    pub hash: u32,
+}
+
+/// FNV-1a over UTF-16 code units, one step per unit (the same on the client: see `cutCells.ts`).
+fn fnv1a_utf16(text: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    let mut pair = [0u16; 2];
+    for ch in text.chars() {
+        for unit in ch.encode_utf16(&mut pair) {
+            hash = (hash ^ u32::from(*unit)).wrapping_mul(0x0100_0193);
+        }
+    }
+    hash
 }
 
 impl QueryResult {
@@ -86,8 +101,9 @@ impl QueryResult {
                 if units <= limit {
                     continue;
                 }
+                let hash = fnv1a_utf16(text);
                 text.truncate(cut);
-                self.truncated.push(TruncatedCell { row: r as u32, column: c as u32, length: units as u32 });
+                self.truncated.push(TruncatedCell { row: r as u32, column: c as u32, length: units as u32, hash });
             }
         }
     }
@@ -1561,12 +1577,25 @@ mod tests {
         assert_eq!(
             r.truncated,
             [
-                TruncatedCell { row: 0, column: 1, length: 1_000_000 },
-                TruncatedCell { row: 1, column: 0, length: 1_000_000 }
+                TruncatedCell { row: 0, column: 1, length: 1_000_000, hash: fnv1a_utf16(&"x".repeat(1_000_000)) },
+                TruncatedCell { row: 1, column: 0, length: 1_000_000, hash: fnv1a_utf16(&"x".repeat(1_000_000)) }
             ]
         );
         assert_eq!(r.rows[0][0].as_deref(), Some("short"));
         assert_eq!(r.rows[0][2], None);
+    }
+
+    #[test]
+    fn a_cut_cell_is_hashed_by_its_utf16_units() {
+        // Fixed values: the client (`cutCells.ts`) computes the same hash to recognise a value it reads again.
+        assert_eq!(fnv1a_utf16(""), 2_166_136_261);
+        assert_eq!(fnv1a_utf16("a"), 3_826_002_220);
+        assert_eq!(fnv1a_utf16("a😀b"), 2_412_414_209);
+        assert_eq!(fnv1a_utf16("日本語日本語"), 2_778_669_755);
+        assert_ne!(fnv1a_utf16(&"x".repeat(100)), fnv1a_utf16(&format!("{}y", "x".repeat(99))));
+        let mut r = rows(vec![vec![Some("a😀b".into())]]);
+        r.cap_cells(2);
+        assert_eq!(r.truncated[0].hash, 2_412_414_209);
     }
 
     #[test]
@@ -1579,7 +1608,10 @@ mod tests {
         r.cap_cells(3);
         assert_eq!(
             r.truncated,
-            [TruncatedCell { row: 0, column: 0, length: 4 }, TruncatedCell { row: 0, column: 1, length: 4 }]
+            [
+                TruncatedCell { row: 0, column: 0, length: 4, hash: fnv1a_utf16("abcd") },
+                TruncatedCell { row: 0, column: 1, length: 4, hash: fnv1a_utf16("😀😀") }
+            ]
         );
         assert_eq!(r.rows[0][2].as_deref(), Some("ééé"));
     }

@@ -783,11 +783,14 @@ mod tests {
         assert!(size < 1_000, "{size} bytes");
         assert_eq!(page.rows[0][1].as_deref(), Some("tiny"));
         let whole = 150_000;
+        // What the client checks a value it reads again against: FNV-1a over its UTF-16 units.
+        let hash =
+            wide.encode_utf16().fold(0x811c_9dc5_u32, |hash, unit| (hash ^ u32::from(unit)).wrapping_mul(0x0100_0193));
         assert_eq!(
             page.truncated,
             [
-                ide_db::TruncatedCell { row: 1, column: 1, length: whole },
-                ide_db::TruncatedCell { row: 2, column: 1, length: whole }
+                ide_db::TruncatedCell { row: 1, column: 1, length: whole, hash },
+                ide_db::TruncatedCell { row: 2, column: 1, length: whole, hash }
             ]
         );
 

@@ -52,25 +52,37 @@ struct Read {
 
 /// A live cursor: where its stream stands, and the channel to the task that owns it.
 struct Slot {
+    id: u64,
     key: Key,
     /// The number of rows read from the start of the statement (skipped or returned).
     next: usize,
+    /// A page is being read from it: it stays registered meanwhile, so a release finds it.
+    busy: bool,
     reads: mpsc::Sender<Read>,
 }
 
-impl Slot {
-    /// Reads `max` rows after the first `skip` of the stream; `None` when the cursor is gone.
-    async fn read(&self, skip: usize, max: usize, cancel: &CancellationToken) -> Option<IdeResult<Fetched>> {
-        let (reply, answer) = oneshot::channel();
-        self.reads.send(Read { skip, max, cancel: cancel.clone(), reply }).await.ok()?;
-        answer.await.ok()
-    }
+/// Reads `max` rows after the first `skip` of a cursor's stream through `reads`; `None` when the cursor is gone.
+async fn read(
+    reads: &mpsc::Sender<Read>,
+    skip: usize,
+    max: usize,
+    cancel: &CancellationToken,
+) -> Option<IdeResult<Fetched>> {
+    let (reply, answer) = oneshot::channel();
+    reads.send(Read { skip, max, cancel: cancel.clone(), reply }).await.ok()?;
+    answer.await.ok()
+}
+
+#[derive(Default)]
+struct Registry {
+    /// Oldest first.
+    slots: Vec<Slot>,
+    issued: u64,
 }
 
 #[derive(Default)]
 pub(crate) struct Cursors {
-    /// Oldest first.
-    slots: Mutex<Vec<Slot>>,
+    registry: Mutex<Registry>,
 }
 
 impl Cursors {
@@ -84,18 +96,28 @@ impl Cursors {
         max: usize,
         cancel: &CancellationToken,
     ) -> Option<IdeResult<Fetched>> {
-        let slot = {
-            let mut slots = self.slots.lock();
-            let at = slots.iter().position(|s| s.key == *key && s.next == skip && !s.reads.is_closed())?;
-            slots.remove(at)
+        let (id, reads) = {
+            let mut registry = self.registry.lock();
+            let slot = registry
+                .slots
+                .iter_mut()
+                .find(|s| s.key == *key && s.next == skip && !s.busy && !s.reads.is_closed())?;
+            slot.busy = true;
+            (slot.id, slot.reads.clone())
         };
-        match slot.read(0, max, cancel).await? {
-            Ok(fetched) => {
-                self.keep(slot, &fetched);
+        match read(&reads, 0, max, cancel).await {
+            Some(Ok(fetched)) => {
+                self.finish(id, &fetched);
                 Some(Ok(fetched))
             }
-            Err(e) if e.kind == ErrorKind::Cancelled => Some(Err(e)),
-            Err(_) => None,
+            Some(Err(e)) if e.kind == ErrorKind::Cancelled => {
+                self.close(id);
+                Some(Err(e))
+            }
+            _ => {
+                self.close(id);
+                None
+            }
         }
     }
 
@@ -113,39 +135,60 @@ impl Cursors {
     ) -> IdeResult<Fetched> {
         let (reads, requests) = mpsc::channel(1);
         tokio::spawn(serve(held, pool, key.statement.clone(), requests));
-        let slot = Slot { key, next: skip, reads };
-        let fetched = slot
-            .read(skip, max, cancel)
-            .await
-            .unwrap_or_else(|| Err(IdeError::internal("the statement stopped before it answered")))?;
-        self.keep(slot, &fetched);
+        let id = self.register(key, skip, reads.clone());
+        let fetched = match read(&reads, skip, max, cancel).await {
+            Some(Ok(fetched)) => fetched,
+            other => {
+                self.close(id);
+                return other.unwrap_or_else(|| Err(IdeError::internal("the statement stopped before it answered")));
+            }
+        };
+        self.finish(id, &fetched);
         Ok(fetched)
     }
 
-    /// Keeps `slot`, which just returned `fetched`, when more rows are waiting in its stream.
-    fn keep(&self, mut slot: Slot, fetched: &Fetched) {
-        if !fetched.3 {
-            return;
+    /// Registers a cursor that is reading its first page. A target keeps one cursor (its
+    /// connection pool is small), and all together are bounded.
+    fn register(&self, key: Key, next: usize, reads: mpsc::Sender<Read>) -> u64 {
+        let mut registry = self.registry.lock();
+        registry.issued += 1;
+        let id = registry.issued;
+        registry.slots.retain(|s| s.key.target != key.target && !s.reads.is_closed());
+        registry.slots.push(Slot { id, key, next, busy: true, reads });
+        if registry.slots.len() > MAX_CURSORS {
+            registry.slots.remove(0);
         }
-        slot.next += fetched.1.len();
-        let mut slots = self.slots.lock();
-        // A target keeps one cursor: its connection pool is small.
-        slots.retain(|s| s.key.target != slot.key.target && !s.reads.is_closed());
-        slots.push(slot);
-        if slots.len() > MAX_CURSORS {
-            slots.remove(0);
+        id
+    }
+
+    /// Ready for the page after `fetched`, which cursor `id` just read, when more rows are waiting in its
+    /// stream; closed otherwise. A cursor released meanwhile is gone from the registry: the caller's
+    /// handle on its channel is the last, so the statement stops.
+    fn finish(&self, id: u64, fetched: &Fetched) {
+        let mut registry = self.registry.lock();
+        let Some(at) = registry.slots.iter().position(|s| s.id == id) else { return };
+        if fetched.3 {
+            let slot = &mut registry.slots[at];
+            slot.next += fetched.1.len();
+            slot.busy = false;
+        } else {
+            registry.slots.remove(at);
         }
     }
 
-    /// Closes the cursor of one statement of `target` (its result tab was closed).
+    fn close(&self, id: u64) {
+        self.registry.lock().slots.retain(|s| s.id != id);
+    }
+
+    /// Closes the cursor of one statement of `target` (its result tab was closed), also when it is reading a page.
     pub(crate) fn release(&self, key: &Key) {
-        self.slots.lock().retain(|s| s.key != *key);
+        self.registry.lock().slots.retain(|s| s.key != *key);
     }
 
     /// Closes the cursors of `target`: it disconnects, or a statement that changes
     /// data or schema is about to run there.
     pub(crate) fn release_target(&self, target: &str) {
-        self.slots.lock().retain(|s| s.key.target != target);
+        self.registry.lock().slots.retain(|s| s.key.target != target);
     }
 }
 
@@ -309,7 +352,7 @@ mod tests {
         page(&db, QUERY, 1).await;
         let row = db.read_row("s1", QUERY, 350, &CancellationToken::new(), None).await.unwrap();
         assert_eq!(row.rows, [[Some("351".to_owned()), Some("row 351".to_owned())]]);
-        assert_eq!(db.cursors.slots.lock().len(), 1);
+        assert_eq!(db.cursors.registry.lock().slots.len(), 1);
         // The next page still continues the cursor: it reads one page, not 200 rows again.
         let before = pulled();
         assert_eq!(page(&db, QUERY, 2).await.0, ids(2));
@@ -340,9 +383,9 @@ mod tests {
     async fn a_statement_that_changes_data_closes_the_cursor() {
         let (_tmp, db) = manager().await;
         page(&db, QUERY, 1).await;
-        assert_eq!(db.cursors.slots.lock().len(), 1);
+        assert_eq!(db.cursors.registry.lock().slots.len(), 1);
         db.execute("s1", "DELETE FROM t WHERE id = 150", 0, &CancellationToken::new()).await.unwrap();
-        assert_eq!(db.cursors.slots.lock().len(), 0);
+        assert_eq!(db.cursors.registry.lock().slots.len(), 0);
         // The next page shows the change: row 150 is gone, so page 2 starts at 202.
         assert_eq!(page(&db, QUERY, 2).await.0[0], 202);
     }
@@ -354,7 +397,7 @@ mod tests {
         for _ in 0..8 {
             page(&db, QUERY, 1).await;
             db.release_result("s1", QUERY, None);
-            assert_eq!(db.cursors.slots.lock().len(), 0);
+            assert_eq!(db.cursors.registry.lock().slots.len(), 0);
             assert_eq!(page(&db, "SELECT count(*) FROM t", 0).await.0, [ROWS as i64]);
         }
         // Finishing a result also frees its connection.
@@ -363,7 +406,7 @@ mod tests {
                 page(&db, QUERY, p).await;
             }
         }
-        assert_eq!(db.cursors.slots.lock().len(), 0);
+        assert_eq!(db.cursors.registry.lock().slots.len(), 0);
     }
 
     #[tokio::test]
@@ -374,8 +417,49 @@ mod tests {
         cancel.cancel();
         let e = db.execute_from("s1", QUERY, 2 * PAGE, PAGE, &cancel, None).await.unwrap_err();
         assert_eq!(e.kind, ErrorKind::Cancelled);
-        assert_eq!(db.cursors.slots.lock().len(), 0);
+        assert_eq!(db.cursors.registry.lock().slots.len(), 0);
         assert_eq!(page(&db, QUERY, 2).await.0, ids(2));
+    }
+
+    /// A closed result tab releases its cursor even when a page is being read from it: the
+    /// cursor is not put back afterwards and its statement stops.
+    #[tokio::test]
+    async fn releasing_a_cursor_in_the_middle_of_a_page_read_closes_it() {
+        use super::{Cursors, Key, Read};
+        use std::sync::Arc;
+        use tokio::sync::{Notify, mpsc};
+
+        let cursors = Arc::new(Cursors::default());
+        let key = Key::new("s1", QUERY, None);
+        let (reads, mut requests) = mpsc::channel::<Read>(1);
+        cursors.register(key.clone(), 0, reads.clone());
+        let page = || (Vec::new(), vec![vec![Some("1".to_owned())]], None, true, None);
+        cursors.finish(1, &page());
+        drop(reads);
+
+        let in_read = Arc::new(Notify::new());
+        let (release, announced) = (Arc::new(Notify::new()), in_read.clone());
+        let server = tokio::spawn({
+            let release = release.clone();
+            async move {
+                let read = requests.recv().await.unwrap();
+                announced.notify_one();
+                release.notified().await;
+                let _ = read.reply.send(Ok(page()));
+                // The channel closes once nobody holds a handle on it.
+                requests.recv().await.is_none()
+            }
+        });
+        let resumed = tokio::spawn({
+            let (cursors, key) = (cursors.clone(), key.clone());
+            async move { cursors.resume(&key, 1, 1, &CancellationToken::new()).await.is_some() }
+        });
+        in_read.notified().await;
+        cursors.release(&key);
+        release.notify_one();
+        assert!(resumed.await.unwrap(), "the page that was being read is still returned");
+        assert!(cursors.registry.lock().slots.is_empty(), "the released cursor is not put back");
+        assert!(server.await.unwrap(), "the statement's task sees its channel close");
     }
 
     #[tokio::test]
@@ -383,7 +467,7 @@ mod tests {
         let (_tmp, db) = manager().await;
         page(&db, QUERY, 1).await;
         page(&db, "SELECT id, name FROM t WHERE id > 0 ORDER BY id", 1).await;
-        assert_eq!(db.cursors.slots.lock().len(), 1);
+        assert_eq!(db.cursors.registry.lock().slots.len(), 1);
         // The first statement's cursor is gone: its next page is read again, and still right.
         assert_eq!(page(&db, QUERY, 2).await.0, ids(2));
     }

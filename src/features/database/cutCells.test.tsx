@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbDriver, DbQueryResult, DbTableDetails } from "@/platform/ipc";
 import { provideToolWindowService } from "@/workbench/contributions";
-import { cellOf, cutLength, hasCutCells, loadCells, loadPage } from "./cutCells";
+import { cellOf, cutLength, hasCutCells, hashOf, loadCells, loadPage } from "./cutCells";
 import { ResultsView } from "./ResultsView";
 import { CELL_LIMIT, closeResult, executeConsole, useDatabase, type ResultTab } from "./store";
 
@@ -56,6 +56,7 @@ const whole = "😀é".repeat(5000);
 const start = Array.from(whole).slice(0, 4000).join("");
 const shown = [start];
 const length = whole.length;
+const hash = hashOf(whole);
 
 function page(): DbQueryResult {
   return {
@@ -72,7 +73,7 @@ function page(): DbQueryResult {
     hasMore: false,
     elapsedMs: 1,
     executionMs: 1,
-    truncated: [{ row: 1, column: 1, length }],
+    truncated: [{ row: 1, column: 1, length, hash }],
   };
 }
 
@@ -150,12 +151,57 @@ describe("cut cells", () => {
     expect(cellOf(tab.outcome.result!, 1, 1)).toBe(shown[0]);
   });
 
+  it("refuse a value that differs from the one that was cut anywhere, not only in its start or length", async () => {
+    const tab = show();
+    // Same length, same start the page shows: only the end differs.
+    backend.resultRow.mockImplementationOnce(() => rowReply(whole.slice(0, -1) + "!"));
+    await expect(loadCells(tab, [{ row: 1, col: 1 }])).rejects.toThrow("The result changed");
+    expect(cellOf(tab.outcome.result!, 1, 1)).toBe(shown[0]);
+    expect(hasCutCells(tab.outcome.result!)).toBe(true);
+  });
+
+  it("refuse a read that returns fewer rows than were asked for", async () => {
+    const tab = show();
+    backend.resultRow.mockImplementationOnce(() =>
+      Promise.resolve({ status: "ok", data: { ...page(), rows: [], truncated: [] } }),
+    );
+    await expect(loadCells(tab, [{ row: 1, col: 1 }])).rejects.toThrow("The result changed");
+    expect(cellOf(tab.outcome.result!, 1, 1)).toBe(shown[0]);
+
+    const r = tab.outcome.result!;
+    const many = Array.from({ length: 12 }, (_, i) => i);
+    r.rows = many.map((i) => [String(i), shown[0]!]);
+    r.truncated = many.map((row) => ({ row, column: 1, length, hash }));
+    backend.execute.mockImplementation(() =>
+      Promise.resolve({
+        status: "ok",
+        data: [
+          {
+            statement: tab.outcome.statement,
+            error: null,
+            result: { ...r, rows: many.slice(0, 11).map((i) => [String(i), whole]), truncated: [] },
+          },
+        ],
+      }),
+    );
+    await expect(loadPage(tab)).rejects.toThrow("The result changed");
+    expect(hasCutCells(r)).toBe(true);
+  });
+
+  it("hash a value as the backend does", () => {
+    // The same values as the Rust test of the backend's hash.
+    expect(hashOf("")).toBe(2166136261);
+    expect(hashOf("a")).toBe(3826002220);
+    expect(hashOf("a😀b")).toBe(2412414209);
+    expect(hashOf("日本語日本語")).toBe(2778669755);
+  });
+
   it("read a page that has many cut rows with one request", async () => {
     const tab = show();
     const r = tab.outcome.result!;
     const many = Array.from({ length: 12 }, (_, i) => i);
     r.rows = many.map((i) => [String(i), shown[0]!]);
-    r.truncated = many.map((row) => ({ row, column: 1, length }));
+    r.truncated = many.map((row) => ({ row, column: 1, length, hash }));
     backend.execute.mockImplementation(() =>
       Promise.resolve({
         status: "ok",
