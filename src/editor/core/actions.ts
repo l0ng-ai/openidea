@@ -85,6 +85,7 @@ import { togglePinSelectedContent } from "@/workbench/toolwindows/content";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { toggleReadOnly } from "./fileAttributes";
 import { codeVisionShown, toggleCodeVision } from "./codeVision";
+import { appearanceSwitches, toggleAppearance, type AppearanceSwitch } from "./gutterMenu";
 import { openNavBarPopup } from "./view/NavBarPopup";
 import {
   cachedStructureQueries,
@@ -731,6 +732,15 @@ export async function toggleSchemeSwitch(key: SchemeSwitch, on = !editorPrefs()[
   }
 }
 
+const appearanceSwitch = (id: string, s: AppearanceSwitch, keywords: string[]): Action => ({
+  id,
+  title: s.title,
+  category: "View",
+  keywords,
+  toggled: s.on,
+  run: () => toggleAppearance(s),
+});
+
 const schemeSwitch = (id: string, title: string, key: SchemeSwitch, keywords: string[]): Action => ({
   id,
   title,
@@ -795,6 +805,14 @@ export function registerEditorActions(): () => void {
       "bracket pair colorization",
       "rainbow parentheses",
       "color scheme",
+    ]),
+    appearanceSwitch("editor.toggleLineNumbers", appearanceSwitches.lineNumbers, ["gutter", "hide line numbers"]),
+    appearanceSwitch("editor.toggleIndentGuides", appearanceSwitches.indentGuides, ["indent lines", "indentation"]),
+    appearanceSwitch("editor.toggleStickyLines", appearanceSwitches.stickyLines, ["sticky scroll"]),
+    appearanceSwitch("editor.toggleWhitespaces", appearanceSwitches.whitespaces, [
+      "render whitespace",
+      "spaces",
+      "tabs",
     ]),
     {
       id: "editor.toggleCodeVision",

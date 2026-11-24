@@ -254,6 +254,10 @@ export const intellijWindows: Record<string, string[]> = {
   "toolwindow.hideActive": ["Shift+Escape"],
   "toolwindow.focusEditor": ["Escape"],
   "editor.toggleZen": [],
+  "editor.toggleLineNumbers": [],
+  "editor.toggleIndentGuides": [],
+  "editor.toggleStickyLines": [],
+  "editor.toggleWhitespaces": [],
 
   // Build
   "build.buildProject": ["Ctrl+F9"],
