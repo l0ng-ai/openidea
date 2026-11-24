@@ -149,7 +149,13 @@
       }
     },
     {
-      "files": ["src/features/vcs/**/*.ts", "src/features/vcs/**/*.tsx"],
+      "files": [
+        "evals/**/*.ts",
+        "perf/**/*.ts",
+        "smoke/**/*.ts",
+        "src/features/vcs/**/*.ts",
+        "src/features/vcs/**/*.tsx"
+      ],
       "rules": {
         "no-await-in-loop": "error"
       }

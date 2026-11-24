@@ -98,6 +98,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.extendSelection": ["Alt+Up"],
   "code.shrinkSelection": ["Alt+Down"],
   "code.duplicateLine": ["Meta+D"],
+  "code.duplicateEntireLines": [],
   "code.deleteLine": ["Meta+Backspace"],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
@@ -153,6 +154,7 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.toggleInsertState": ["Insert"],
   "code.joinLines": ["Ctrl+Shift+J"],
   "code.toggleCase": ["Meta+Shift+U"],
+  "code.cycleCase": ["Alt+Shift+U"],
   "code.pasteFromHistory": ["Meta+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],
@@ -258,7 +260,8 @@ export const intellijMacos: Record<string, string[]> = {
 
   // Build
   "build.buildProject": ["Meta+F9"],
-  "build.buildModule": ["Meta+Shift+F9"],
+  "build.buildModule": [],
+  "build.compileFile": ["Meta+Shift+F9"],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 

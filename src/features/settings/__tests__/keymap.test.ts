@@ -258,6 +258,19 @@ describe("shortcut search", () => {
     }
   });
 
+  it("finds the identifier case action by name and by each style it converts between", () => {
+    const dispose = registerEditorActions();
+    try {
+      for (const query of ["Cycle Identifier Case", "camel", "snake", "kebab", "pascal"]) {
+        expect(matchActions(allActions(), query, { isEnabled: () => true, recent: [] }).map((a) => a.id)).toContain(
+          "code.cycleCase",
+        );
+      }
+    } finally {
+      dispose();
+    }
+  });
+
   it("matches exact bindings and chord first strokes", () => {
     expect(bindingMatches(["Meta+K Meta+C"], "Meta+K")).toBe(true);
     expect(bindingMatches(["Shift+Meta+O"], "Meta+Shift+O")).toBe(true);

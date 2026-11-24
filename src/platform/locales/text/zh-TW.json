@@ -695,6 +695,7 @@
   "Clone Caret Below": "在下方新增游標",
   "Join Lines": "合併行",
   "Toggle Case": "切換大小寫",
+  "Cycle Identifier Case": "循環切換識別字大小寫",
   "Add or Remove Caret": "新增或移除插入點",
   "Create Rectangular Selection on Mouse Drag": "拖動滑鼠建立矩形選取範圍",
   "Middle Click": "滑鼠中鍵",

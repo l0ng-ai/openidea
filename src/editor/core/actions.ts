@@ -15,7 +15,9 @@ import {
   commentBlock,
   commentLine,
   completeStatement,
+  cycleCase,
   deleteLine,
+  duplicateEntireLines,
   duplicateLineOrSelection,
   joinLines,
   moveStatementDown,
@@ -803,6 +805,7 @@ export function registerEditorActions(): () => void {
     edit("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
     edit("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
     edit("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
+    edit("code.duplicateEntireLines", "Duplicate Entire Lines", (v) => duplicateEntireLines(v)),
     edit("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
     edit("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
     edit("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
@@ -971,6 +974,9 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.joinLines", "Join Lines", (v) => joinLines(v)),
     edit("code.toggleCase", "Toggle Case", (v) => toggleCase(v), { keywords: ["upper", "lower"] }),
+    edit("code.cycleCase", "Cycle Identifier Case", (v) => cycleCase(v), {
+      keywords: ["camel", "snake", "kebab", "pascal", "screaming"],
+    }),
     caret("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
       category: "Edit",
     }),

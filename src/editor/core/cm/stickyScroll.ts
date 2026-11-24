@@ -362,7 +362,8 @@ class StickyScroll {
  * from under them, as in IDEA.
  */
 export function stickyTopMargin(view: EditorView): number {
-  const line = view.state.doc.lineAt(view.state.selection.main.head).number;
+  const caretBlock = view.lineBlockAt(view.state.selection.main.head);
+  const line = view.state.doc.lineAt(caretBlock.from).number;
   const rows = Math.min(enclosingHeaders(view.state, line).length, view.state.facet(stickyMaxLines));
   return rows * view.defaultLineHeight;
 }

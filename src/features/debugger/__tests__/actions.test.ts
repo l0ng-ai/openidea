@@ -609,6 +609,18 @@ describe("output class breakpoint restrictions", () => {
   });
 });
 
+it("links an attach to the run it debugs, so the run's thread dumps go through the session", async () => {
+  useProject.setState({ project: { root: "/p" } as never });
+  const target = { name: "app", adapter: "debugpy", hostName: "127.0.0.1", port: 41234, remoteRoot: "/app" };
+  const extra = (call: number) => JSON.parse(ipc.debugStart.mock.calls[call]![0].extraJson!);
+  ipc.debugStart.mockClear();
+  await executeAction("debug.attach", { ...target, process: 31 });
+  await executeAction("debug.attach", target);
+  const { __openideaRun: run, ...linked } = extra(0);
+  expect(run).toBe(31);
+  expect(extra(1)).toEqual(linked);
+});
+
 it("stops the waiting Python container if attaching fails", async () => {
   useProject.setState({ project: { root: "/p" } as never });
   ipc.debugStart.mockResolvedValueOnce({

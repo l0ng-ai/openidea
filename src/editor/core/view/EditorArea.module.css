@@ -69,6 +69,28 @@
   content-visibility: visible;
   opacity: 0;
 }
+/* Keep the typeset page on its own layer. Hiding every glyph invalidates WebKit's text layout. */
+.keptText {
+  will-change: transform;
+  transform: translateZ(0);
+}
+.keptText.keptHidden {
+  content-visibility: visible;
+  transform: translate3d(-100vw, 0, 0);
+}
+.keptText.keptHidden
+  :is(
+    :any-link,
+    :enabled,
+    summary,
+    iframe,
+    audio[controls],
+    video[controls],
+    [tabindex]:not([tabindex="-1"]),
+    [contenteditable]:not([contenteditable="false"])
+  ) {
+  visibility: hidden;
+}
 .host {
   flex: 1;
   min-height: 0;
