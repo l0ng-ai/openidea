@@ -108,6 +108,23 @@
   color: var(--fg-muted);
   font-style: italic;
 }
+/* A value the page carries only the start of: tagged before its text, which a column clips on the right. */
+.cellCutMark {
+  flex: none;
+  margin-right: var(--space-1-5);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-muted);
+  font-size: 0.85em;
+}
+.cutNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--fg-muted);
+}
 .lineBreak {
   color: var(--fg-muted);
 }

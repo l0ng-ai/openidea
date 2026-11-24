@@ -22,6 +22,10 @@
   :global(.cm-openidea-overviewThumb) {
   right: 5px;
 }
+/* Only the scrollbar lane runs alongside every wrapped source line. */
+.mode-split .editor :global(.cm-lineWrapping .cm-line) {
+  padding-right: var(--cm-overview-width, 0px);
+}
 .mode-preview > :global([data-group]) > :global([data-panel]:first-child) {
   display: none !important;
 }

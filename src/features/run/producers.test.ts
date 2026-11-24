@@ -742,6 +742,8 @@ describe("single-file producers (scratches)", () => {
         "test",
         "-Dtest=demo.Test#works",
         "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
       ]);
       // No `main`: the file-level context runs the class's tests.
       const noMain = "package demo;\npublic class Test {\n  @Test\n  void works() {\n  }\n}\n";
@@ -751,7 +753,13 @@ describe("single-file producers (scratches)", () => {
       )!;
       expect(tests.config).toMatchObject({ kind: "maven", isTest: true });
       // A reactor module without `Test` must not fail the build before the module that has it.
-      expect(tests.config!.args).toEqual(["test", "-Dtest=Test", "-Dsurefire.failIfNoSpecifiedTests=false"]);
+      expect(tests.config!.args).toEqual([
+        "test",
+        "-Dtest=Test",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ]);
     });
   });
 
