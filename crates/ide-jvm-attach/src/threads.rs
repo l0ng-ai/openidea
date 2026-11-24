@@ -12,10 +12,16 @@ pub const THREAD_DUMP_TIMEOUT: Duration = Duration::from_secs(10);
 /// forks it outside the run's process tree (a Gradle daemon).
 pub const RUN_TOKEN_PROPERTY: &str = "-Dopenidea.run.token=";
 
-/// Gradle's own JVMs: the client that waits for the build and the daemon that runs it. Neither
-/// is the application, even when it is the only JVM under the run's root.
-const GRADLE_JVM_MARKERS: [&str; 3] =
-    ["org.gradle.wrapper.GradleWrapperMain", "org.gradle.launcher.GradleMain", "org.gradle.launcher.daemon"];
+/// Gradle's own JVMs: the client that waits for the build, the daemon that runs it, and the
+/// workers and Kotlin compile daemon it forks (beside the application under `--no-daemon`).
+/// None is the application, even when it is the only JVM under the run's root.
+const GRADLE_JVM_MARKERS: [&str; 5] = [
+    "org.gradle.wrapper.GradleWrapperMain",
+    "org.gradle.launcher.GradleMain",
+    "org.gradle.launcher.daemon",
+    "org.gradle.process.internal.worker.GradleWorkerMain",
+    "org.jetbrains.kotlin.daemon.KotlinCompileDaemon",
+];
 
 /// `Thread.print -l` also lists the owned `java.util.concurrent` locks, which deadlock
 /// reports need.
@@ -211,6 +217,25 @@ mod tests {
     fn select_survives_a_parent_cycle() {
         let table = vec![entry(10, 11, "sh"), entry(11, 10, "java a")];
         assert_eq!(select_run_jvm(&table, 10, None, not_the_shell), Some(11));
+    }
+
+    #[test]
+    fn select_skips_gradle_workers_and_the_kotlin_daemon() {
+        // `--no-daemon`: the build's helper JVMs sit beside the application in the run's tree.
+        let worker = "/jdk/bin/java -cp gradle-worker.jar worker.org.gradle.process.internal.worker.GradleWorkerMain 'Gradle Worker Daemon 1'";
+        let kotlin = "/jdk/bin/java -cp kotlin-compiler-embeddable.jar org.jetbrains.kotlin.daemon.KotlinCompileDaemon --daemon-runFilesPath x";
+        let build =
+            entry(11, 10, "/jdk/bin/java -cp gradle-launcher.jar org.gradle.launcher.GradleMain --no-daemon run");
+        let table = vec![
+            entry(10, 1, "/bin/zsh"),
+            build.clone(),
+            entry(12, 11, "/jdk/bin/java -cp app Main"),
+            entry(20, 11, worker),
+            entry(21, 11, kotlin),
+        ];
+        assert_eq!(select_run_jvm(&table, 10, None, not_the_shell), Some(12));
+        let helpers = vec![entry(10, 1, "/bin/zsh"), build, entry(20, 11, worker), entry(21, 11, kotlin)];
+        assert_eq!(select_run_jvm(&helpers, 10, None, not_the_shell), None);
     }
 
     #[test]
