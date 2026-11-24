@@ -17,6 +17,8 @@ export interface DumpThread {
   waitsOn: string | null;
   internal: boolean;
   deadlocked: boolean;
+  /** Thread container of a JSON dump (virtual threads only); absent in text dumps. */
+  container?: string;
 }
 
 export interface DeadlockLink {
