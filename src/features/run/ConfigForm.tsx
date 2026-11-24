@@ -958,8 +958,9 @@ function TypeField({
   }, [field]);
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
-    const options = [...(field.options ?? []), ...loaded];
-    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value });
+    // Loaded options are detected data (JDKs, build modules), not catalog text.
+    const options: SelectOption[] = [...(field.options ?? []), ...loaded.map((o) => ({ ...o, verbatim: true }))];
+    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
     return (
       <Select
         value={value || (options[0]?.value ?? "")}

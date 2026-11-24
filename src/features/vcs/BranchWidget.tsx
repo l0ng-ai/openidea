@@ -941,7 +941,8 @@ function MultiRepoPanel({
                 <span className={styles.noticeDetail}>{r.detail}</span>
               </span>
             ) : r.type === "section" && r.label ? (
-              <span className={styles.section}>{tx(r.label)}</span>
+              // Repository names: shown as written.
+              <span className={styles.section}>{r.label}</span>
             ) : (
               <span className={styles.separator} role="separator" />
             )
