@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
     data: { build: "succeeded", classPaths: ["/p/app/bin/main"], pathListSeparator: ":" },
   })),
   runBuild: vi.fn(async () => {}),
+  buildListeners: new Set<(event: unknown) => void>(),
   state: { configs: [] as RunSession["config"][], sessions: [] as RunSession[], activeSession: null as string | null },
 }));
 vi.mock("@/platform/actions", () => ({ executeAction: mocks.action, getAction: () => ({}) }));
@@ -35,6 +36,10 @@ vi.mock("@/platform/ipc", () => ({
 vi.mock("@/workbench/contributions", () => ({
   maybeEditorService: () => ({ saveAll: async () => {} }),
   notifications: () => ({ notify: mocks.notify }),
+  onBuildCompleted: (listener: (event: unknown) => void) => {
+    mocks.buildListeners.add(listener);
+    return () => mocks.buildListeners.delete(listener);
+  },
   useDebugRunSessions: {
     getState: () => ({
       sessions: mocks.debug ? [{ configId: "tomcat:one" }, { configId: "boot" }] : [],
@@ -60,6 +65,8 @@ vi.mock("./store", () => ({
   useRun: { setState: vi.fn(), getState: () => mocks.state },
 }));
 import {
+  installBuildTomcatSync,
+  syncTomcatOnBuildCompleted,
   updateApplication as updateTomcat,
   showApplicationUpdate,
   updateOnDeactivation,
@@ -234,5 +241,45 @@ describe("Spring Boot application updates", () => {
       { ...boot, id: "remote", config: { ...boot.config, target: "ssh" } },
     ];
     expect(updatableSessions().map((s) => s.id)).toEqual([boot.id]);
+  });
+
+  it("syncs exploded Tomcat artifact deployments after user Java builds without redundant notifications while debugging", async () => {
+    const tomcatSession = {
+      id: "run-tomcat",
+      status: "running",
+      config: { id: "tomcat:one", kind: "tomcat", params: { deployment: "artifact" } },
+    } as unknown as RunSession;
+    const warSession = {
+      id: "run-war",
+      status: "running",
+      config: { id: "tomcat:war", kind: "tomcat", params: { deployment: "war" } },
+    } as unknown as RunSession;
+    mocks.state.sessions = [tomcatSession, warSession];
+    mocks.sync.mockResolvedValue(true);
+
+    // Non-debugged running Tomcat notifies that outputs were synced; WAR deployments are untouched.
+    mocks.debug = false;
+    const off = installBuildTomcatSync();
+    try {
+      for (const listener of mocks.buildListeners) {
+        listener({ kind: "compileFile", file: "/p/app/src/A.java", system: "maven", userInitiated: true });
+      }
+      await vi.waitFor(() => expect(mocks.sync).toHaveBeenCalledTimes(1));
+      expect(mocks.sync).toHaveBeenCalledWith(tomcatSession.config, false, "noBuild");
+      expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Tomcat classes updated" }));
+
+      // Debugged Tomcat syncs silently so HotSwap owns the notification; non-user or non-Java builds skip sync.
+      mocks.notify.mockClear();
+      mocks.debug = true;
+      await syncTomcatOnBuildCompleted({ kind: "build", file: null, system: "gradle", userInitiated: true });
+      expect(mocks.sync).toHaveBeenCalledTimes(2);
+      expect(mocks.notify).not.toHaveBeenCalled();
+
+      await syncTomcatOnBuildCompleted({ kind: "build", file: null, system: "maven", userInitiated: false });
+      await syncTomcatOnBuildCompleted({ kind: "build", file: null, system: "cargo", userInitiated: true });
+      expect(mocks.sync).toHaveBeenCalledTimes(2);
+    } finally {
+      off();
+    }
   });
 });

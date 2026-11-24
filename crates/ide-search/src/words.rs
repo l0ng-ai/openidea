@@ -45,6 +45,7 @@ pub fn files_with_word(
         max_matches: u32::MAX,
         context: SearchContext::Any,
         include_excluded: false,
+        skip_large_files: true,
     };
     let stop = cancel.child_token();
     let found = Mutex::new(WordFiles::default());

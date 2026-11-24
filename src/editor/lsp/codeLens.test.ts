@@ -274,7 +274,10 @@ describe("background usage counts", () => {
   it("stops asking again while the server keeps saying it is indexing, until it settles", async () => {
     ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
     const view = editor();
-    for (let i = 0; i < 10; i++) await settle();
+    for (let i = 0; i < 10; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- each settle advances fake timers one retry step at a time
+      await settle();
+    }
     expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
     expect(titles(view)).toEqual([]);
     ipc.lspReferences.mockResolvedValue(refs(2));
@@ -517,6 +520,7 @@ describe("file changes on disk", () => {
     const first = await settledEditors(n);
     for (let i = 0; i < 10; i++) {
       fsChanged(["/p/logo.png"]);
+      // oxlint-disable-next-line no-await-in-loop -- fake timers must advance one debounce window per file event
       await vi.advanceTimersByTimeAsync(1000);
     }
     fsChanged([], ["/p"]);

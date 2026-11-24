@@ -83,11 +83,13 @@ describe("language modes", () => {
   });
 
   it("parses YAML into large tree buffers and highlights mappings after comment lines", async () => {
-    for (const path of ["/p/application.yml", "/p/compose.yaml"]) {
-      const support = await loadSupport(findLanguageDescription("YAML", path)!);
-      // @lezer/yaml can invert a node's range on a tree buffer boundary; one buffer avoids it.
-      expect((support!.language.parser as unknown as { bufferLength: number }).bufferLength).toBe(1 << 16);
-    }
+    await Promise.all(
+      ["/p/application.yml", "/p/compose.yaml"].map(async (path) => {
+        const support = await loadSupport(findLanguageDescription("YAML", path)!);
+        // @lezer/yaml can invert a node's range on a tree buffer boundary; one buffer avoids it.
+        expect((support!.language.parser as unknown as { bufferLength: number }).bufferLength).toBe(1 << 16);
+      }),
+    );
     const support = await loadSupport(findLanguageDescription("YAML", "/p/application.yml")!);
     const source = "spring:\n  datasource:\n  # driver: a\n  # url: b\n    driver: c # d\n    url: e\n";
     const found: Array<[string, string]> = [];
@@ -107,12 +109,14 @@ describe("language modes", () => {
   });
 
   it("recognizes AsciiDoc files and loads their lightweight syntax mode", async () => {
-    for (const path of ["/docs/guide.adoc", "/docs/guide.asciidoc"]) {
-      const description = findLanguageDescription("AsciiDoc", path);
-      expect(description?.name).toBe("AsciiDoc");
-      const support = await loadSupport(description!);
-      expect(support?.language).toBeTruthy();
-    }
+    await Promise.all(
+      ["/docs/guide.adoc", "/docs/guide.asciidoc"].map(async (path) => {
+        const description = findLanguageDescription("AsciiDoc", path);
+        expect(description?.name).toBe("AsciiDoc");
+        const support = await loadSupport(description!);
+        expect(support?.language).toBeTruthy();
+      }),
+    );
   });
 
   it("highlights log levels, timestamps, exception names and stack frames", async () => {
@@ -388,18 +392,21 @@ describe("language modes", () => {
 
   it("styles `?.` like `.` in JavaScript and TypeScript", async () => {
     const highlighter = tagHighlighter([{ tag: t.derefOperator, class: "deref" }]);
-    for (const [mode, path] of [
+    const cases = [
       ["JavaScript", "/p/a.js"],
       ["TypeScript", "/p/a.ts"],
       ["JSX", "/p/a.jsx"],
       ["TSX", "/p/a.tsx"],
-    ] as const) {
-      const support = await loadSupport(findLanguageDescription(mode, path)!);
-      const doc = "a?.b.c?.();";
-      const derefs: string[] = [];
-      highlightTree(support!.language.parser.parse(doc), highlighter, (from, to) => derefs.push(doc.slice(from, to)));
-      expect(derefs, mode).toEqual(["?.", ".", "?."]);
-    }
+    ] as const;
+    await Promise.all(
+      cases.map(async ([mode, path]) => {
+        const support = await loadSupport(findLanguageDescription(mode, path)!);
+        const doc = "a?.b.c?.();";
+        const derefs: string[] = [];
+        highlightTree(support!.language.parser.parse(doc), highlighter, (from, to) => derefs.push(doc.slice(from, to)));
+        expect(derefs, mode).toEqual(["?.", ".", "?."]);
+      }),
+    );
   });
 
   it('keeps C++ namespace and extern "C" contents at the level of their braces', async () => {
@@ -467,24 +474,27 @@ describe("language modes", () => {
       { tag: t.self, class: "self" },
       { tag: t.atom, class: "atom" },
     ]);
-    for (const [mode, path, doc, expected] of [
+    const cases = [
       ["Java", "/p/A.java", "class A extends B { A() { super(); this.a = 1; } }", ["super", "this"]],
       ["JavaScript", "/p/a.js", "class A extends B { m() { super.m(); this.a = 1; } }", ["super", "this"]],
       ["TypeScript", "/p/a.ts", "class A extends B { m() { super.m(); this.a = 1; } }", ["super", "this"]],
       ["C++", "/p/a.cpp", "void A::m() { this->a = 1; }", ["this"]],
       ["Rust", "/p/a.rs", "impl A { fn m(&self) { self.a = 1; } }", ["self", "self"]],
-    ] as const) {
-      const support = await loadSupport(findLanguageDescription(mode, path)!);
-      const found: Array<[string, string]> = [];
-      highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) =>
-        found.push([doc.slice(from, to), style]),
-      );
-      const words = new Set<string>(expected);
-      expect(
-        found.filter(([text]) => words.has(text)),
-        mode,
-      ).toEqual(expected.map((word) => [word, "keyword"]));
-    }
+    ] as const;
+    await Promise.all(
+      cases.map(async ([mode, path, doc, expected]) => {
+        const support = await loadSupport(findLanguageDescription(mode, path)!);
+        const found: Array<[string, string]> = [];
+        highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) =>
+          found.push([doc.slice(from, to), style]),
+        );
+        const words = new Set<string>(expected);
+        expect(
+          found.filter(([text]) => words.has(text)),
+          mode,
+        ).toEqual(expected.map((word) => [word, "keyword"]));
+      }),
+    );
   });
 
   it("leaves Java statement labels uncoloured, unlike JavaScript's", async () => {
@@ -527,17 +537,20 @@ describe("language modes", () => {
   });
 
   it("recognizes go.mod and go.work files by mode and filename", async () => {
-    for (const [mode, path] of [
+    const cases = [
       ["GoMod", "/project/go.mod"],
       [null, "/project/go.mod"],
       ["GoMod", "/project/go.work"],
       [null, "/project/go.work"],
-    ] as const) {
-      const desc = findLanguageDescription(mode, path);
-      expect(desc?.name).toBe("GoMod");
-      const support = await loadSupport(desc!);
-      expect(support?.language).toBeTruthy();
-    }
+    ] as const;
+    await Promise.all(
+      cases.map(async ([mode, path]) => {
+        const desc = findLanguageDescription(mode, path);
+        expect(desc?.name).toBe("GoMod");
+        const support = await loadSupport(desc!);
+        expect(support?.language).toBeTruthy();
+      }),
+    );
   });
 
   const keywordHighlighter = tagHighlighter([{ tag: t.keyword, class: "keyword" }]);
@@ -554,10 +567,12 @@ describe("language modes", () => {
   });
 
   it("colours TOML keys as keywords in files, lock files and ```toml code blocks", async () => {
-    for (const path of ["/p/Cargo.toml", "/p/uv.lock"]) {
-      const support = await loadSupport(findLanguageDescription("TOML", path)!);
-      expect(keywords(support!.language, '[package]\nname = "x"'), path).toEqual(["package", "name"]);
-    }
+    await Promise.all(
+      ["/p/Cargo.toml", "/p/uv.lock"].map(async (path) => {
+        const support = await loadSupport(findLanguageDescription("TOML", path)!);
+        expect(keywords(support!.language, '[package]\nname = "x"'), path).toEqual(["package", "name"]);
+      }),
+    );
     const fenced = fencedCodeMode("toml")!;
     expect(fenced.name).toBe("TOML");
     const language =
@@ -637,17 +652,19 @@ describe("language modes", () => {
   });
 
   it("colours properties keys in ```ini and ```properties code blocks", async () => {
-    for (const info of ["ini", "properties"]) {
-      const fenced = fencedCodeMode(info)!;
-      expect(fenced.name, info).toBe("Properties files");
-      const language =
-        fenced.language instanceof LanguageDescription ? (await fenced.language.load()).language : fenced.language;
-      expect(highlightProperties(language, "a=b"), info).toEqual([
-        ["a", "keyword"],
-        ["=", "operator"],
-        ["b", "string"],
-      ]);
-    }
+    await Promise.all(
+      ["ini", "properties"].map(async (info) => {
+        const fenced = fencedCodeMode(info)!;
+        expect(fenced.name, info).toBe("Properties files");
+        const language =
+          fenced.language instanceof LanguageDescription ? (await fenced.language.load()).language : fenced.language;
+        expect(highlightProperties(language, "a=b"), info).toEqual([
+          ["a", "keyword"],
+          ["=", "operator"],
+          ["b", "string"],
+        ]);
+      }),
+    );
   });
   it("colours Typst markup, embedded code and math", async () => {
     const support = await loadSupport(findLanguageDescription("Typst", "/p/notes.typ")!);

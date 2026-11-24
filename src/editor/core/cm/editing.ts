@@ -31,6 +31,7 @@ import {
 } from "@codemirror/commands";
 import { SearchCursor } from "@codemirror/search";
 import { humpLeft, humpRight, wordStartLeft } from "../model/camelHumps";
+import { cycleIdentifierCase, wordSpan } from "../model/identifierCase";
 
 type Node = ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]>;
 
@@ -135,22 +136,8 @@ export const duplicateLineOrSelection: Command = (view) => {
   if (state.readOnly) return false;
   if (state.selection.ranges.every((r) => r.empty)) {
     const spans = foldedLineSpans(state);
-    if (!spans) return copyLineDown(view);
     // On a folded region's line the whole folded block is duplicated.
-    const changes = state.changes(
-      spans.map((s) => ({ from: s.to, insert: state.lineBreak + state.sliceDoc(s.from, s.to) })),
-    );
-    const ranges = state.selection.ranges.map((r) => {
-      const s = spans.find((sp) => sp.from <= r.head && r.head <= sp.to)!;
-      return EditorSelection.cursor(changes.mapPos(r.head, -1) + s.to - s.from + state.lineBreak.length);
-    });
-    view.dispatch({
-      changes,
-      selection: EditorSelection.create(ranges, state.selection.mainIndex),
-      scrollIntoView: true,
-      userEvent: "input.duplicate",
-    });
-    return true;
+    return spans ? duplicateSpans(view, spans) : copyLineDown(view);
   }
   const tr = state.changeByRange((r) => {
     if (r.empty) {
@@ -169,6 +156,33 @@ export const duplicateLineOrSelection: Command = (view) => {
   view.dispatch(state.update(tr, { scrollIntoView: true, userEvent: "input.duplicate" }));
   return true;
 };
+
+/** IDEA's Duplicate Entire Lines: every line a caret or selection touches is copied below, and the copy keeps the selection. */
+export const duplicateEntireLines: Command = (view) => {
+  if (view.state.readOnly) return false;
+  const spans = foldedLineSpans(view.state);
+  return spans ? duplicateSpans(view, spans) : copyLineDown(view);
+};
+
+/** Copies each span below itself and moves every selection range onto its copy. */
+function duplicateSpans(view: EditorView, spans: Array<{ from: number; to: number }>): boolean {
+  const { state } = view;
+  const changes = state.changes(
+    spans.map((s) => ({ from: s.to, insert: state.lineBreak + state.sliceDoc(s.from, s.to) })),
+  );
+  const ranges = state.selection.ranges.map((r) => {
+    const s = spans.find((sp) => sp.from <= r.from && r.from <= sp.to)!;
+    const onCopy = (pos: number) => changes.mapPos(s.to, -1) + pos - s.from + 1;
+    return EditorSelection.range(onCopy(r.anchor), onCopy(r.head));
+  });
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
+    scrollIntoView: true,
+    userEvent: "input.duplicate",
+  });
+  return true;
+}
 
 /** ⌘⌫: Delete Line — on a folded region's line, every line of the folded block. */
 export const deleteLine: Command = (view) => {
@@ -1040,6 +1054,49 @@ export const toggleCase: Command = (view) => {
       : EditorSelection.range(r.anchor, r.head);
     return { changes: { from: t.from, to: t.to, insert }, range };
   });
+  view.dispatch(state.update(tr, { userEvent: "input.case" }));
+  return true;
+};
+
+const NAME_CHAR = /[\p{L}\p{N}_$-]/u;
+
+/**
+ * ⇧⌥U: Cycle the Case of the identifier at each caret (which stays selected)
+ * or of each selection, from the style it is written in: snake_case →
+ * SCREAMING_SNAKE_CASE → kebab-case → camelCase → PascalCase.
+ */
+export const cycleCase: Command = (view) => {
+  const { state } = view;
+  if (state.readOnly) return false;
+  /** The `-`-joined name at or right before `pos`. */
+  const nameAt = (pos: number): { from: number; to: number } | null => {
+    const char = (at: number) => at >= 0 && at < state.doc.length && NAME_CHAR.test(state.sliceDoc(at, at + 1));
+    if (!char(pos) && !char(pos - 1)) return null;
+    let from = pos;
+    let to = pos;
+    while (char(from - 1)) from--;
+    while (char(to)) to++;
+    return { from, to };
+  };
+  let changed = false;
+  const tr = state.changeByRange((r) => {
+    const name = r.empty ? nameAt(r.head) : r;
+    if (!name) return { range: r };
+    const span = wordSpan(state.sliceDoc(name.from, name.to));
+    if (!span) return { range: r };
+    const from = name.from + span.from;
+    const insert = cycleIdentifierCase(state.sliceDoc(from, name.from + span.to));
+    if (insert === null) return { range: r };
+    changed = true;
+    const set = state.changes({ from, to: name.from + span.to, insert });
+    return {
+      changes: set,
+      range: r.empty
+        ? EditorSelection.range(from, from + insert.length)
+        : EditorSelection.range(set.mapPos(r.anchor), set.mapPos(r.head)),
+    };
+  });
+  if (!changed) return false;
   view.dispatch(state.update(tr, { userEvent: "input.case" }));
   return true;
 };

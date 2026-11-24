@@ -143,6 +143,7 @@
   "Clone Caret Below": "캐럿을 아래에 복제",
   "Join Lines": "줄 결합",
   "Toggle Case": "대/소문자 전환",
+  "Cycle Identifier Case": "식별자 대/소문자 순환",
   "Add Carets to Ends of Selected Lines": "선택한 줄 끝에 캐럿 추가",
   "Unselect Occurrence": "찾은 항목 선택 해제",
   "Paste from History…": "기록에서 붙여넣기…",

@@ -155,13 +155,17 @@ export async function buildTomcatArtifact(config: RunConfig): Promise<void> {
  * `false` when that isn't possible (other deployment kinds, no Java language server, a changed
  * dependency module): the caller rebuilds the WAR.
  */
-export async function syncTomcatOutputs(config: RunConfig, resourcesOnly: boolean): Promise<boolean> {
+export async function syncTomcatOutputs(
+  config: RunConfig,
+  resourcesOnly: boolean,
+  buildPolicy: "make" | "noBuild" = "make",
+): Promise<boolean> {
   const p = config.params ?? {};
   if ((p.deployment ?? "artifact") !== "artifact") return false;
   const artifacts = await call(commands.runTomcatArtifacts());
   const artifact = p.artifact ? artifacts.find((a) => a.id === p.artifact) : artifacts[0];
   if (!artifact) return false;
-  const info = await call(commands.javaResolveLaunch(artifact.module, false, "make", nextRequestId())).catch(
+  const info = await call(commands.javaResolveLaunch(artifact.module, false, buildPolicy, nextRequestId())).catch(
     () => null,
   );
   if (!info) return false;

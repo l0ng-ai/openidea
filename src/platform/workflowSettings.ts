@@ -8,6 +8,7 @@ import type {
   FetchTagsMode,
   GitAnnotateMovement,
   GitSaveChangesPolicy,
+  HotSwapPolicy,
   StashDiffTarget,
 } from "@/bindings";
 import { useProject } from "./project";
@@ -153,6 +154,7 @@ export interface DebuggerSettingsValid {
   skipLibraryCode: boolean;
   debugServerPage: boolean;
   flutterHotReloadOnSave: boolean;
+  hotSwapAfterCompile: HotSwapPolicy;
   python: { attachSubprocess: boolean; gevent: boolean };
 }
 
@@ -406,6 +408,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     skipLibraryCode: true,
     debugServerPage: false,
     flutterHotReloadOnSave: true,
+    hotSwapAfterCompile: "ask",
     python: { attachSubprocess: true, gevent: false },
   },
   run: {
@@ -617,6 +620,7 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     skipLibraryCode: bool(v.skipLibraryCode, d.skipLibraryCode),
     debugServerPage: bool(v.debugServerPage, d.debugServerPage),
     flutterHotReloadOnSave: bool(v.flutterHotReloadOnSave, d.flutterHotReloadOnSave),
+    hotSwapAfterCompile: oneOf(v.hotSwapAfterCompile, ["ask", "always", "never"] as const, d.hotSwapAfterCompile),
     python: {
       attachSubprocess: bool(py.attachSubprocess, d.python.attachSubprocess),
       gevent: bool(py.gevent, d.python.gevent),

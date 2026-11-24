@@ -9,6 +9,7 @@ import { filterRecent, loadRecent, openRecent, recentRows, useRecent, type Recen
 import styles from "./ProjectPopup.module.css";
 import { tx } from "@/platform/i18n";
 import { parseRemoteLocation, remoteLocation } from "@/platform/remote";
+import { projectWindowOverride, type ProjectWindowOverride } from "@/workbench/projectWindow";
 
 type Entry =
   | { kind: "action"; id: string; label: string; icon: IconName }
@@ -81,14 +82,16 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
     listRef.current?.querySelector(`[data-index="${current}"]`)?.scrollIntoView({ block: "nearest" });
   }, [current]);
 
-  const activate = (e: Entry | undefined) => {
+  /** `override`: the window a modifier key picked ({@link projectWindowOverride}). */
+  const activate = (e: Entry | undefined, override: ProjectWindowOverride | null = null) => {
     if (!e) return;
     onClose();
     if (e.kind === "action") void executeAction(e.id);
+    // An open project goes to its window.
     else if (e.open && !parseRemoteLocation(e.m.project.path))
       void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
     // Opening a remote location focuses the window already connected to it.
-    else void openRecent(e.m.project);
+    else void openRecent(e.m.project, override);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -101,7 +104,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
       setActive(e.key === "Home" ? 0 : n - 1);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      activate(entries[current]);
+      activate(entries[current], projectWindowOverride(e));
     } else if (e.key === "Escape" && query) {
       e.preventDefault();
       e.stopPropagation();
@@ -164,7 +167,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
               data-index={i}
               className={clsx(styles.row, e.kind === "project" && styles.projectRow, i === current && styles.active)}
               onMouseMove={() => i !== current && setActive(i)}
-              onClick={() => activate(e)}
+              onClick={(ev) => activate(e, projectWindowOverride(ev))}
               onContextMenu={(ev) => {
                 if (e.kind !== "project" || e.open) return;
                 ev.preventDefault();

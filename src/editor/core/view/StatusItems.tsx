@@ -248,6 +248,7 @@ function CrumbNav({
         const current = i === segments.length - 1;
         const icon = s.nav?.kind === "dir" && !s.nav.root && !current ? undefined : s.icon;
         return (
+          // oxlint-disable-next-line react/no-array-index-key -- the `…` crumb and the last directory crumb can share a title; position disambiguates them
           <Fragment key={`${i}:${s.title}`}>
             {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
             <BarButton

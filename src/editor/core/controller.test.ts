@@ -668,6 +668,7 @@ describe("EditorController", () => {
           "vcs.compareWithRevision",
           "vcs.showHistory",
           "vcs.showCurrentRevision",
+          ...(menu === "editor" ? ["vcs.showHistoryForSelection"] : []),
           "vcs.rollback",
         ],
         ["vcs.push", "vcs.pull", "vcs.fetch"],
@@ -682,9 +683,9 @@ describe("EditorController", () => {
         "github.checkoutPullRequest",
         "github.openInBrowser",
       ];
-      const ids = [...groups.flat().filter((id) => id !== "GitHub"), ...github];
+      const ids = new Set([...groups.flat().filter((id) => id !== "GitHub"), ...github, "vcs.showHistoryForSelection"]);
       const dispose = registerActions(
-        ids.map((id) => ({
+        [...ids].map((id) => ({
           id,
           title: id,
           when: id === "vcs.clone" ? undefined : id.startsWith("github.") ? "projectOpen" : "vcsAvailable",

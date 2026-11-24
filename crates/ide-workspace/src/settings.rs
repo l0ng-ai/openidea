@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 /// The UI languages the frontend ships (`LOCALES` in `src/platform/i18n.ts`).
-pub const UI_LOCALES: &[&str] = &["en", "zh", "zh-TW", "ko", "fr", "pl", "pt", "es", "tr"];
+pub const UI_LOCALES: &[&str] = &["en", "zh", "zh-TW", "ko", "fr", "pl", "pt", "es", "tr", "ru"];
 
 /// Maps an OS language tag (`tr-TR`, `fr_CA.UTF-8`, `zh-Hant-HK`) to one of [`UI_LOCALES`], English otherwise.
 pub fn ui_locale_for(language: &str) -> &'static str {
