@@ -2,6 +2,7 @@
   "Create function '{name}'": "Create function '{name}'",
   "Create class '{name}'": "Create class '{name}'",
   "Create method '{name}' in '{owner}'": "Create method '{name}' in '{owner}'",
+  "Docstring stubs (Enter after \"\"\") are written in this markup format, and docstring tags and keywords are highlighted according to it (Color Scheme › Python styles their colours).": "Docstring stubs (Enter after \"\"\") are written in this markup format, and docstring tags and keywords are highlighted according to it (Color Scheme › Python styles their colours).",
   "Default dictionary": "Default dictionary",
   "The dictionary the editor's Save '…' to dictionary quick fix writes to.": "The dictionary the editor's Save '…' to dictionary quick fix writes to.",
   "Save to '{dictionary}'": "Save to '{dictionary}'",
