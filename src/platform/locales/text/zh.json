@@ -10185,5 +10185,11 @@
   "Change Project Icon…": "更改项目图标…",
   "Reset Project Icon": "重置项目图标",
   "Cannot change the project icon": "无法更改项目图标",
-  "Cannot reset the project icon": "无法重置项目图标"
+  "Cannot reset the project icon": "无法重置项目图标",
+  "Case": "大小写",
+  "Keywords": "关键字",
+  "To upper": "转为大写",
+  "To lower": "转为小写",
+  "Do not change": "不更改",
+  "Unquoted table, column and alias names; ClickHouse names keep their case.": "未加引号的表名、列名和别名；ClickHouse 的名称保持原有大小写。"
 }
