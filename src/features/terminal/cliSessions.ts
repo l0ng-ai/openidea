@@ -127,6 +127,19 @@ export async function reattachCli(
   return true;
 }
 
+/** Hands back tab `key`'s live session without ending its PTY (Move to Terminal). */
+export function detachCli(key: string): TerminalSession | undefined {
+  const session = sessions.get(key);
+  if (!session) return undefined;
+  sessions.delete(key);
+  useClis.setState((s) => {
+    const next = { ...s.sessions };
+    delete next[key];
+    return { sessions: next };
+  });
+  return session;
+}
+
 /** Ends the session of a closed tab. */
 export function disposeCli(key: string, kill = true) {
   sessions.get(key)?.dispose(kill);

@@ -469,6 +469,103 @@ test("dragging terminal tabs into editor strips and split edges preserves live s
   expect(await page.evaluate(() => (window as unknown as { __killedPtys: number[] }).__killedPtys)).toEqual([]);
 });
 
+test("editor terminal tabs move and drag back to the Terminal stripe, tab strip, and split edges", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const handlers = window.__ipc.handlers;
+    let id = 0;
+    const killed: number[] = [];
+    (window as unknown as { __killedPtys: number[] }).__killedPtys = killed;
+    handlers.term_default_shell = () => "/bin/zsh";
+    handlers.term_available_shells = () => ["/bin/zsh"];
+    handlers.term_spawn = () => ({ id: ++id, title: "zsh", pid: id });
+    handlers.term_resize = () => null;
+    handlers.term_write = () => null;
+    handlers.term_is_busy = () => true;
+    handlers.term_kill = (args: unknown) => {
+      killed.push((args as { id: number }).id);
+      return null;
+    };
+
+    const contributions = "/src/workbench/contributions.ts";
+    const editor = (await import(contributions)).editorService();
+    await editor.openFile("/dev/acme-api/App.tsx", { focus: false });
+    await editor.openFile("/dev/acme-api/README.md", { focus: false });
+    const store = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(store);
+    layout.setToolWindowSize("bottom", 240);
+    layout.showToolWindow("terminal", true);
+  });
+
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+  await terminal.getByRole("button", { name: "New Tab", exact: true }).click();
+  const termStrip = terminal.getByRole("tablist", { name: "Terminal sessions" });
+  await expect(termStrip.getByRole("tab")).toHaveCount(2);
+
+  await page.evaluate(async () => {
+    const store = "/src/features/terminal/store.ts";
+    const rt = await import(store);
+    const [first, second] = rt.useTerminals.getState().tabs;
+    await new Promise<void>((done) => rt.getSession(first!.session)!.term.write("ALPHA-SESSION-OUTPUT\r\n", done));
+    await new Promise<void>((done) => rt.getSession(second!.session)!.term.write("BETA-TEST-RUNNER\r\n", done));
+    const actions = "/src/platform/actions.ts";
+    const { executeAction } = await import(actions);
+    await executeAction("terminal.moveToEditor", first!.id);
+    await executeAction("terminal.moveToEditor", second!.id);
+  });
+
+  await expect(terminal).toBeHidden();
+  const editorTabs = page.getByRole("tablist", { name: "Editor tabs" });
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "README.md", "Local", "Local (2)"]);
+
+  // 1) Drag "Local" from the editor onto the Terminal stripe button while Terminal is hidden.
+  const editorLocal = editorTabs.getByRole("tab", { name: "Local", exact: true });
+  const stripeBtn = page.locator('[data-stripe-button="terminal"]');
+  const from1 = (await editorLocal.boundingBox())!;
+  const to1 = (await stripeBtn.boundingBox())!;
+  await page.mouse.move(from1.x + from1.width / 2, from1.y + from1.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to1.x + to1.width / 2, to1.y + to1.height / 2, { steps: 8 });
+  await page.mouse.up();
+
+  await expect(terminal).toBeVisible();
+  await expect(termStrip.getByRole("tab", { name: "Local", exact: true })).toBeVisible();
+  await expect(terminal.locator(".xterm-rows")).toContainText("ALPHA-SESSION-OUTPUT");
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+
+  // 2) Drag "Local (2)" from the editor onto the right edge of the Terminal pane to create a split.
+  const editorLocal2 = editorTabs.getByRole("tab", { name: "Local (2)", exact: true });
+  const termPanelBox = (await terminal.getByRole("tabpanel").boundingBox())!;
+  const from2 = (await editorLocal2.boundingBox())!;
+  await page.mouse.move(from2.x + from2.width / 2, from2.y + from2.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(termPanelBox.x + termPanelBox.width - 20, termPanelBox.y + termPanelBox.height / 2, {
+    steps: 8,
+  });
+  await page.mouse.up();
+
+  const termStrips = terminal.getByRole("tablist", { name: "Terminal sessions" });
+  await expect(termStrips).toHaveCount(2);
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "README.md"]);
+  await expect(terminal.locator(".xterm-rows").nth(1)).toContainText("BETA-TEST-RUNNER");
+
+  // 3) Context menu round-trip: Move to Editor -> editor tab context menu Move to Terminal.
+  await termStrips.nth(1).getByRole("tab", { name: "Local (2)", exact: true }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Move to Editor" }).click();
+  const reopenedEditorTab = editorTabs.getByRole("tab", { name: "Local (2)", exact: true });
+  await expect(reopenedEditorTab).toBeVisible();
+  await reopenedEditorTab.click({ button: "right" });
+  const moveBackItem = page.getByRole("menuitem", { name: "Move to Terminal" });
+  await expect(moveBackItem).toBeVisible();
+  await moveBackItem.click();
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "README.md"]);
+  await expect(termStrip.getByRole("tab")).toHaveText(["Local", "Local (2)"]);
+  expect(await page.evaluate(() => (window as unknown as { __killedPtys: number[] }).__killedPtys)).toEqual([]);
+});
+
 test("⌘+hover turns existing terminal files and folders into hyperlinks and routes clicks by target kind and project scope", async ({
   workbench: page,
 }) => {

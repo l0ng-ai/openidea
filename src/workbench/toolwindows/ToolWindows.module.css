@@ -370,6 +370,12 @@
   color: var(--fg-emphasis);
   --icon-color: currentColor;
 }
+.stripeDropOver,
+.stripeDropOver:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--fg-emphasis);
+}
 .stripeButton:focus-visible {
   outline-offset: -2px;
 }

@@ -2523,6 +2523,8 @@
   "No matching tasks": "No matching tasks",
   "Move to Editor": "Move to Editor",
   "Moves a terminal tab, with its running session, into the editor area (arg: tab id).": "Moves a terminal tab, with its running session, into the editor area (arg: tab id).",
+  "Move to Terminal": "Move to Terminal",
+  "Moves a terminal editor tab, with its running session, back to the Terminal tool window (arg: input key).": "Moves a terminal editor tab, with its running session, back to the Terminal tool window (arg: input key).",
   "Starts a login shell where the session was.": "Starts a login shell where the session was.",
   "Also used for {others}; settings apply to all of them.": "Also used for {others}; settings apply to all of them.",
   "{name} tools": "{name} tools",
