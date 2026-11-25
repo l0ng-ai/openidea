@@ -468,6 +468,38 @@ describe("smooth caret", () => {
     expect(glides(v)).toBe(true);
   });
 
+  it("stops a caret move in flight when a drag starts", () => {
+    const v = smoothCaret();
+    const p = pointer(v);
+    p.press();
+    v.dispatch({ selection: { anchor: 0 }, userEvent: "select.pointer" });
+    measure(v);
+    expect(glides(v)).toBe(true);
+
+    const caret = v.scrollDOM.querySelector(".cm-cursor") as HTMLElement;
+    const cancelled: string[] = [];
+    (caret as unknown as { getAnimations: () => Animation[] }).getAnimations = () => [
+      { cancel: () => cancelled.push("move") } as unknown as Animation,
+    ];
+    p.move(40);
+    v.dispatch({ selection: { anchor: 0, head: 2 }, userEvent: "select.pointer" });
+    expect(cancelled).toEqual(["move"]);
+    expect(glides(v)).toBe(false);
+    p.release();
+  });
+
+  it("keeps the caret in place when a drag starts before the click's measure runs", () => {
+    const v = smoothCaret();
+    const p = pointer(v);
+    p.press();
+    v.dispatch({ selection: { anchor: 0 }, userEvent: "select.pointer" });
+    p.move(40);
+    v.dispatch({ selection: { anchor: 0, head: 2 }, userEvent: "select.pointer" });
+    measure(v);
+    expect(glides(v)).toBe(false);
+    p.release();
+  });
+
   it("keeps the caret with the pointer when a drag empties the selection or selects zero-width lines", () => {
     const v = smoothCaret();
     const p = pointer(v);

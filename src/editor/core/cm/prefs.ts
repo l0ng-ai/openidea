@@ -610,6 +610,7 @@ const POINTER_DRAG_SLOP = 4;
 const caretGlide = ViewPlugin.fromClass(
   class {
     on = false;
+    private measureId = 0;
     private readonly win: Window;
     /** The pointer is down over the editor, and how far it moved since it went down. */
     private pointerDown = false;
@@ -650,19 +651,37 @@ const caretGlide = ViewPlugin.fromClass(
       const dragging =
         this.pointerDown && this.pointerDragged && u.transactions.some((tr) => tr.isUserEvent("select.pointer"));
       if (!u.selectionSet || u.docChanged || u.geometryChanged || from.ranges.length !== to.ranges.length || dragging) {
+        // A drag can start before the click's measure runs; its write must not turn the
+        // transition back on after the caret has moved.
+        this.measureId++;
         this.set(false);
         return;
       }
+      const measureId = ++this.measureId;
       // Measured before the editor scrolls the new caret into view.
       u.view.requestMeasure({
         key: this,
         read: (view) => caretOnScreen(view, from.main.head) && caretOnScreen(view, to.main.head),
-        write: (on) => this.set(on),
+        write: (on) => {
+          if (measureId === this.measureId) this.set(on);
+        },
       });
+    }
+    /**
+     * WebKit keeps a caret's CSS transition running after the class that declares it is
+     * removed, so a drag that starts mid-move would keep the caret travelling to the
+     * click. Cancelling the running animations lands it at once.
+     */
+    private cancelMoves() {
+      const layer = this.view.scrollDOM.querySelector(":scope > .cm-cursorLayer");
+      if (!layer) return;
+      for (const caret of layer.querySelectorAll(".cm-cursor"))
+        for (const animation of caret.getAnimations?.() ?? []) animation.cancel();
     }
     set(on: boolean) {
       if (on === this.on) return;
       this.on = on;
+      if (!on) this.cancelMoves();
       this.view.scrollDOM.querySelector(":scope > .cm-cursorLayer")?.classList.toggle("cm-openidea-caretGlide", on);
     }
   },

@@ -56,6 +56,12 @@ const caretGap = async (page: Page) => {
   return s.caretX === null || s.headX === null ? Infinity : Math.abs(s.caretX - s.headX);
 };
 
+/** Two frames: CodeMirror draws new caret positions in a measure on the next frame. */
+const nextFrames = (page: Page) =>
+  page.evaluate(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+  );
+
 test("smooth caret follows the pointer during a drag and still glides a click", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   await enableSmoothCaret(page);
@@ -68,15 +74,18 @@ test("smooth caret follows the pointer during a drag and still glides a click", 
   await page.mouse.move(a.x, a.y);
   await page.mouse.down();
   await page.mouse.move(b.x, b.y, { steps: 10 });
-  await expect.poll(async () => (await caretState(page)).empty).toBe(false);
-  await expect.poll(() => caretGap(page)).toBeLessThanOrEqual(3);
-  expect((await caretState(page)).glide).toBe(false);
+  await nextFrames(page);
+  const drag = await caretState(page);
+  expect(drag.empty).toBe(false);
+  expect(drag.glide).toBe(false);
+  expect(await caretGap(page)).toBeLessThanOrEqual(3);
 
   // Dragging back onto the anchor empties the selection without restarting the transition.
   await page.mouse.move(a.x, a.y, { steps: 10 });
-  await expect.poll(async () => (await caretState(page)).empty).toBe(true);
-  await expect.poll(() => caretGap(page)).toBeLessThanOrEqual(3);
+  await nextFrames(page);
+  expect((await caretState(page)).empty).toBe(true);
   expect((await caretState(page)).glide).toBe(false);
+  expect(await caretGap(page)).toBeLessThanOrEqual(3);
   await page.mouse.up();
 
   // Clicks still glide.
