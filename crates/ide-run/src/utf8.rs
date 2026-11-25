@@ -114,7 +114,8 @@ enum Line {
 ///
 /// A read with NUL bytes, which text in the others never has, is UTF-16LE (ASCII characters
 /// and line ends in it have them); UTF-16 goes on until one of its lines has ended and a read
-/// without NUL bytes comes.
+/// without NUL bytes comes, or at once when a read without NUL bytes is text in UTF-8 again:
+/// a program that writes a buffer whose tail is NULs leaves a UTF-16 line that never ends.
 pub struct MixedDecoder {
     utf8: Utf8Decoder,
     native: Option<NativeDecoder>,
@@ -133,22 +134,25 @@ impl MixedDecoder {
             return;
         }
         let nul = bytes.contains(&0);
-        match self.utf16.as_ref().map(|u| u.open || nul) {
-            Some(true) => {
-                if let Some(u) = &mut self.utf16 {
-                    u.decode(bytes, out);
-                }
-                return;
+        if let Some(u) = &self.utf16 {
+            // UTF-16 text has a NUL byte in every ASCII character and in every line end: a read
+            // without one that reads as UTF-8 is the console's own text again. It ends UTF-16
+            // even mid-line, which a buffer written with a NUL tail never leaves.
+            let text = !nul && !u.odd && reads_as_utf8(bytes);
+            if text || !(u.open || nul) {
+                self.utf16 = None;
             }
-            Some(false) => self.utf16 = None,
-            None if nul => {
-                self.end_line(out);
-                let mut u = Utf16::new();
-                u.decode(utf16_aligned(bytes), out);
-                self.utf16 = Some(u);
-                return;
-            }
-            None => {}
+        }
+        if let Some(u) = &mut self.utf16 {
+            u.decode(bytes, out);
+            return;
+        }
+        if nul {
+            self.end_line(out);
+            let mut u = Utf16::new();
+            u.decode(utf16_aligned(bytes), out);
+            self.utf16 = Some(u);
+            return;
         }
         for piece in bytes.split_inclusive(|b| *b == b'\n') {
             let ends = piece.last() == Some(&b'\n');
@@ -270,6 +274,12 @@ fn utf16_aligned(bytes: &[u8]) -> &[u8] {
         }
     }
     if even > odd { &bytes[1..] } else { bytes }
+}
+
+/// Whether `bytes` is text in UTF-8: two code units or more, and valid. A shorter read could be
+/// one UTF-16 character that happens to be valid UTF-8 on its own.
+fn reads_as_utf8(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && std::str::from_utf8(bytes).is_ok()
 }
 
 fn decode_with(d: &mut encoding_rs::Decoder, bytes: &[u8], out: &mut String, last: bool) {
