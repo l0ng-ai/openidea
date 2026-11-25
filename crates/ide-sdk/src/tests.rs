@@ -11,7 +11,7 @@ use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 fn fake_venv(root: &Path, name: &str) -> std::path::PathBuf {
