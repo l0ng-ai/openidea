@@ -29,12 +29,22 @@ const ipc = vi.hoisted(() => {
         projectRoot: "/p",
         classPaths: ["/p/app/target/classes"],
         modulePaths: [],
+        pathListSeparator: ":",
         javaHome: null,
         javaExec: "java",
         shortenCommandLine: null,
         errors: [],
         errorCount: 0,
         hints: [],
+      }),
+    ),
+    javaJunitRunner: vi.fn(() =>
+      ok({
+        classPaths: ["/p/app/target/test-classes", "/runner.jar"],
+        vmArgs: ["-Xmx1g", "-Dopenidea.fail=true"],
+        env: { TZ: "UTC" },
+        workingDirectory: "/p/app/work",
+        surefire: ["argLine", "systemPropertyVariables"],
       }),
     ),
   };
@@ -309,4 +319,31 @@ it("does not resolve or launch when saving fails", async () => {
   await expect(prepareJavaModule(config, saveAll)).rejects.toThrow("save failed");
   expect(ipc.javaResolveLaunch).not.toHaveBeenCalled();
   expect(ipc.runStart).not.toHaveBeenCalled();
+});
+
+it("gives the JUnit runner's JVM the module's Surefire configuration", async () => {
+  const report = vi.fn();
+  const junit: RunConfig = {
+    ...config,
+    module: "app",
+    isTest: true,
+    args: ["-ea", "-cp", "${testClasspath}", "ai.openidea.junit.Runner", "a.MainTest#adds"],
+    env: { TZ: "Europe/Paris" },
+  };
+  const { resolved } = await prepareJavaLaunch(junit, { request: 1, signal: new AbortController().signal, report });
+  expect(ipc.javaJunitRunner).toHaveBeenCalledWith("app", ["/p/app/target/classes"]);
+  expect(resolved).toMatchObject({
+    args: [
+      "-Xmx1g",
+      "-Dopenidea.fail=true",
+      "-ea",
+      "-cp",
+      "/p/app/target/test-classes:/runner.jar",
+      "ai.openidea.junit.Runner",
+      "a.MainTest#adds",
+    ],
+    env: { TZ: "Europe/Paris" },
+    cwd: "/p/app/work",
+  });
+  expect(report).toHaveBeenCalledWith("Applying the Surefire configuration: argLine, systemPropertyVariables\n");
 });

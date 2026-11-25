@@ -829,11 +829,12 @@ export const commands = {
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**
-	 *  Jars to append to a resolved test classpath (`class_paths`) to run its JUnit Platform tests with
-	 *  OpenIDEA's runner: the runner, and `junit-platform-launcher` of the engine's version unless the
-	 *  classpath has one (from the engine's repository, else downloaded once from Maven Central).
+	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
+	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
+	 *  classpath has one; from the engine's repository, else downloaded once from Maven Central), and,
+	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
 	 */
-	javaJunitRunner: (classPaths: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("java_junit_runner", { classPaths })),
+	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
 	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds according to `policy`, then resolves the runtime (or test)
@@ -8719,6 +8720,17 @@ export type JsResponseRule = {
 	status: number,
 	contentType: string,
 	body: string,
+};
+
+/**  The test JVM of OpenIDEA's JUnit runner. */
+export type JunitLaunch = {
+	classPaths: string[],
+	/**  Surefire's `argLine`, then its system properties as `-Dkey=value`. */
+	vmArgs: string[],
+	env: { [key in string]: string },
+	workingDirectory: string | null,
+	/**  The Surefire settings that were applied (`argLine`, `systemPropertyVariables`…), for the console. */
+	surefire: string[],
 };
 
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */

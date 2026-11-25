@@ -646,14 +646,29 @@ pub async fn java_build_workspace(
     result
 }
 
-/// Jars to append to a resolved test classpath (`class_paths`) to run its JUnit Platform tests with
-/// OpenIDEA's runner: the runner, and `junit-platform-launcher` of the engine's version unless the
-/// classpath has one (from the engine's repository, else downloaded once from Maven Central).
+/// The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
+/// the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
+/// classpath has one; from the engine's repository, else downloaded once from Maven Central), and,
+/// for a Maven module, what its Surefire configuration gives the forked test JVM.
 #[command(trust = trusted)]
-pub async fn java_junit_runner(host: &Host, window: &str, class_paths: Vec<String>) -> IdeResult<Vec<String>> {
+pub async fn java_junit_runner(
+    host: &Host,
+    window: &str,
+    module: PathBuf,
+    class_paths: Vec<String>,
+) -> IdeResult<JunitLaunch> {
     host.require_trust(window)?;
+    let project = host.project(window)?;
+    let module = ide_core::project_roots::resolve(&project.root, &module);
     let data_dir = host.local_data_dir.clone();
     tokio::task::spawn_blocking(move || {
+        let scope = workspace::scope_for(&project, &module)?;
+        let model = load_launch_model(&scope);
+        let surefire = model
+            .maven
+            .as_ref()
+            .and_then(|maven| ide_build::surefire::surefire_config(&scope.root, &scope.cache, maven, &module))
+            .unwrap_or_default();
         let runner = ide_sdk::java::junit_runner_jar(&data_dir)
             .ok_or_else(|| IdeError::internal("Cannot install the JUnit runner"))?;
         let launcher = match ide_sdk::java::junit_launcher(&class_paths) {
@@ -667,10 +682,65 @@ pub async fn java_junit_runner(host: &Host, window: &str, class_paths: Vec<Strin
                 ));
             }
         };
-        Ok([Some(runner), launcher].into_iter().flatten().map(|p| p.to_string_lossy().into_owned()).collect())
+        Ok(junit_launch(&module, class_paths, surefire, [Some(runner), launcher].into_iter().flatten()))
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// The test JVM of OpenIDEA's JUnit runner.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JunitLaunch {
+    pub class_paths: Vec<String>,
+    /// Surefire's `argLine`, then its system properties as `-Dkey=value`.
+    pub vm_args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub working_directory: Option<String>,
+    /// The Surefire settings that were applied (`argLine`, `systemPropertyVariables`…), for the console.
+    pub surefire: Vec<String>,
+}
+
+fn junit_launch(
+    module: &Path,
+    class_paths: Vec<String>,
+    surefire: ide_build::surefire::SurefireConfig,
+    runner: impl Iterator<Item = PathBuf>,
+) -> JunitLaunch {
+    let mut applied = Vec::new();
+    let mut note = |used: bool, name: &str| {
+        if used {
+            applied.push(name.to_owned());
+        }
+    };
+    note(!surefire.arg_line.is_empty(), "argLine");
+    note(!surefire.system_properties.is_empty(), "systemPropertyVariables");
+    note(!surefire.environment.is_empty(), "environmentVariables");
+    note(surefire.working_directory.is_some(), "workingDirectory");
+    note(!surefire.additional_classpath.is_empty(), "additionalClasspathElements");
+    note(!surefire.classpath_excludes.is_empty(), "classpathDependencyExcludes");
+    // `group:artifact` in a Maven repository (`g/r/p/artifact/…`) or the Gradle cache (`g.r.p/artifact/…`).
+    let excluded = |path: &str| {
+        let path = path.replace('\\', "/");
+        surefire.classpath_excludes.iter().any(|e| {
+            e.split_once(':').is_some_and(|(group, artifact)| {
+                path.contains(&format!("/{}/{artifact}/", group.replace('.', "/")))
+                    || path.contains(&format!("/{group}/{artifact}/"))
+            })
+        })
+    };
+    let mut class_paths: Vec<String> = class_paths.into_iter().filter(|p| !excluded(p)).collect();
+    class_paths.extend(surefire.additional_classpath);
+    class_paths.extend(runner.map(|p| p.to_string_lossy().into_owned()));
+    let mut vm_args = surefire.arg_line;
+    vm_args.extend(surefire.system_properties.into_iter().map(|(k, v)| format!("-D{k}={v}")));
+    JunitLaunch {
+        class_paths,
+        vm_args,
+        env: surefire.environment,
+        working_directory: surefire.working_directory.map(|d| module.join(d).to_string_lossy().into_owned()),
+        surefire: applied,
+    }
 }
 
 fn download_junit_launcher(data_dir: &Path, version: &str) -> IdeResult<PathBuf> {
@@ -715,6 +785,35 @@ fn drop_processor_recreate_errors(info: &mut JavaLaunchInfo) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn junit_launch_applies_the_surefire_configuration() {
+        let surefire = ide_build::surefire::SurefireConfig {
+            arg_line: vec!["-Xmx1g".into()],
+            system_properties: [("openidea.fail".to_owned(), "true".to_owned())].into(),
+            environment: [("TZ".to_owned(), "UTC".to_owned())].into(),
+            working_directory: Some("work".into()),
+            additional_classpath: vec!["/extra".into()],
+            classpath_excludes: vec!["org.slf4j:slf4j-simple".into(), "com.acme:gone".into()],
+        };
+        let classpath = vec![
+            "/m/target/test-classes".into(),
+            "/m2/org/slf4j/slf4j-simple/2.0/slf4j-simple-2.0.jar".into(),
+            "/gradle/files-2.1/com.acme/gone/1/abc/gone-1.jar".into(),
+            "/m2/org/slf4j/slf4j-api/2.0/slf4j-api-2.0.jar".into(),
+        ];
+        let launch = junit_launch(Path::new("/m"), classpath, surefire, [PathBuf::from("/runner.jar")].into_iter());
+        assert_eq!(
+            launch.class_paths,
+            ["/m/target/test-classes", "/m2/org/slf4j/slf4j-api/2.0/slf4j-api-2.0.jar", "/extra", "/runner.jar"]
+        );
+        assert_eq!(launch.vm_args, ["-Xmx1g", "-Dopenidea.fail=true"]);
+        assert_eq!(launch.env["TZ"], "UTC");
+        assert_eq!(launch.working_directory.as_deref(), Some(Path::new("/m/work").to_str().unwrap()));
+        assert_eq!(launch.surefire.len(), 6);
+        let plain = junit_launch(Path::new("/m"), vec![], Default::default(), std::iter::empty());
+        assert!(plain.surefire.is_empty() && plain.vm_args.is_empty() && plain.working_directory.is_none());
+    }
 
     fn fake_jdk(dir: &Path, version: Option<&str>) -> PathBuf {
         let bin = dir.join("bin");

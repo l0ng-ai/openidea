@@ -10,6 +10,7 @@ import {
   IpcError,
   type BuildPolicy,
   type JavaLaunchInfo,
+  type JunitLaunch,
   type RunConfig,
   type RequestId,
 } from "@/platform/ipc";
@@ -302,12 +303,21 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   }
   if (parsed.classpath && !info.classPaths.length)
     throw new Error(tx("The classpath is empty: is the module imported by the Java language server?"));
+  let junit: JunitLaunch | null = null;
   if (parsed.mainClass === JUNIT_RUNNER_MAIN) {
-    const runner = await call(commands.javaJunitRunner(info.classPaths));
+    junit = await call(commands.javaJunitRunner(module, info.classPaths));
     signal.throwIfAborted();
-    info.classPaths = [...info.classPaths, ...runner];
+    info.classPaths = junit.classPaths;
+    const list = junit.surefire.join(", ");
+    if (list) report?.(tx`Applying the Surefire configuration: ${list}` + "\n");
   }
   const resolved = resolveJavaCommand({ ...config, module }, info);
+  // As IDEA's MavenJUnitPatcher: the JVM gets what Surefire would give its fork; the configuration's own settings win.
+  if (junit) {
+    resolved.args = [...junit.vmArgs, ...resolved.args];
+    resolved.env = { ...junit.env, ...resolved.env };
+    if (junit.workingDirectory) resolved.cwd = junit.workingDirectory;
+  }
   const project = useProject.getState().project;
   if (resolved.cwd == null && project?.workspace) {
     const path = /^(?:[A-Za-z]:)?\//.test(module) ? module : `${project.root}/${module}`;

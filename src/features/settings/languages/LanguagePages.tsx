@@ -677,7 +677,7 @@ export function MavenPage() {
         />
         <Row
           label="Run tests using"
-          hint="OpenIDEA runs a JUnit 5 test from the gutter on the Java language server's test classpath, without starting Maven. Maven runs it through Surefire, with the POM's Surefire configuration (argLine, system properties, environment variables) and filtered test resources."
+          hint="OpenIDEA runs a JUnit 5 test from the gutter on the Java language server's test classpath, without starting Maven, with the POM's Surefire configuration (argLine, system properties, environment variables, working directory). Maven runs it through Surefire, with filtered test resources."
         >
           <Select
             value={runTestsUsing || "ide"}
