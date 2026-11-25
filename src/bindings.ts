@@ -700,6 +700,12 @@ export const commands = {
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
 	/**  Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`. */
 	flutterEmulatorLaunch: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("flutter_emulator_launch", { id })),
+	/**
+	 *  The address of the project's Widget Preview page, its server started on first use with the
+	 *  project's DevTools for its inspector. A server that failed or exited is only started again by
+	 *  the next request.
+	 */
+	flutterWidgetPreviewUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_widget_preview_url")),
 	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),

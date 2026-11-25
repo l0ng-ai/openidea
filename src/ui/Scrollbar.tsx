@@ -119,8 +119,11 @@ function layout(el: HTMLElement | null, t: HTMLElement | null, th: HTMLElement |
  * a script scroll only at a later rendering step and may paint the new offset
  * first, so a virtual list would show a frame of blank rows mid-drag.
  */
-function scrollNow(el: HTMLElement, top: number) {
-  const before = el.scrollTop;
-  el.scrollTo({ top, behavior: "instant" });
-  if (el.scrollTop !== before) el.dispatchEvent(new Event("scroll"));
+export function scrollNow(el: HTMLElement, top: number, left = el.scrollLeft) {
+  const beforeTop = el.scrollTop;
+  const beforeLeft = el.scrollLeft;
+  el.scrollTo({ top, left, behavior: "instant" });
+  const moved = el.scrollTop !== beforeTop || el.scrollLeft !== beforeLeft;
+  if (moved) el.dispatchEvent(new Event("scroll"));
+  return moved;
 }

@@ -303,11 +303,14 @@ const precedence = (name: string) => {
   const language = LANGUAGE_PRECEDENCE.findIndex((prefix) => name.startsWith(prefix));
   return (language < 0 ? LANGUAGE_PRECEDENCE.length : language) * KEY_ORDER.size + KEY_ORDER.get(name)!;
 };
+// Keys that also colour another attribute as its fallback. TypeScript's interface falls back to the
+// language default Interface name, as it does in WebStorm; an explicit JS./TS.INTERFACE outranks it.
+const ALSO_TARGETS: Record<string, string> = { DEFAULT_INTERFACE_NAME: "javascript.interface" };
 const targets = (name: string): string[] =>
   Object.hasOwn(ATTRIBUTE_NAMES, name)
     ? ALSO_CALLS.has(name)
       ? [ATTRIBUTE_NAMES[name]!, "javascript.functionCall"]
-      : [ATTRIBUTE_NAMES[name]!]
+      : [ATTRIBUTE_NAMES[name]!, ...(Object.hasOwn(ALSO_TARGETS, name) ? [ALSO_TARGETS[name]!] : [])]
     : [];
 
 // IntelliJ's EFFECT_TYPE codes. The box (0) and faded text (6) have no counterpart here; the bold and the

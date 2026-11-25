@@ -68,7 +68,9 @@ pub struct Project {
     /// Flutter's devices; its daemon starts when the UI first asks for them.
     pub(crate) flutter: ide_flutter::FlutterDaemon,
     /// Flutter DevTools; its server starts when the UI first asks for it.
-    pub(crate) devtools: ide_flutter::DevToolsServer,
+    pub(crate) devtools: ide_flutter::ToolServer,
+    /// Flutter Widget Preview; its server starts when its tool window first opens.
+    pub(crate) widget_preview: ide_flutter::ToolServer,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
     pub(crate) watcher: Arc<Watcher>,
@@ -649,7 +651,11 @@ impl Host {
                 sink.clone(),
                 flutter_tool(&root, &settings, "flutter"),
             ),
-            devtools: ide_flutter::DevToolsServer::new(root.clone(), flutter_tool(&root, &settings, "dart")),
+            devtools: ide_flutter::ToolServer::devtools(root.clone(), flutter_tool(&root, &settings, "dart")),
+            widget_preview: ide_flutter::ToolServer::widget_preview(
+                root.clone(),
+                flutter_tool(&root, &settings, "flutter"),
+            ),
             root,
             sink,
             languages,
@@ -904,7 +910,11 @@ impl Host {
                 sink.clone(),
                 flutter_tool(&dir, &settings, "flutter"),
             ),
-            devtools: ide_flutter::DevToolsServer::new(dir.clone(), flutter_tool(&dir, &settings, "dart")),
+            devtools: ide_flutter::ToolServer::devtools(dir.clone(), flutter_tool(&dir, &settings, "dart")),
+            widget_preview: ide_flutter::ToolServer::widget_preview(
+                dir.clone(),
+                flutter_tool(&dir, &settings, "flutter"),
+            ),
             sink,
             languages,
             settings,

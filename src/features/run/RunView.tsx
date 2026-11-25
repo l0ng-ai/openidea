@@ -56,7 +56,8 @@ import { isJvmRun } from "./threadDump/actions";
 import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
-import { hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
+import { useFlutterRunApps } from "@/workbench/flutterRunApps";
+import { canHotReload, hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
 import { configIcon } from "./configs";
 import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
@@ -114,6 +115,7 @@ export function SessionPanel({
   const hasTests = !!rt?.tests;
   const canUpdateApplication = isUpdatable(session.config);
   const hasFlutterActions = supportsHotReload(session.config);
+  const reloadable = canHotReload(session, useFlutterRunApps());
   const canDumpThreads = isJvmRun(session.config);
   // Eight standard buttons with group spacing and insets, then 24 px plus gap per extra button.
   const fullToolbarWidth =
@@ -301,14 +303,14 @@ export function SessionPanel({
                   icon="hot-reload"
                   title="Hot Reload"
                   shortcut={shortcutLabel("run.flutterHotReload")}
-                  disabled={!acceptsInput(session)}
+                  disabled={!reloadable}
                   onClick={() => hotReload(session.id)}
                 />
                 <IconButton
                   icon="refresh"
                   title="Hot Restart"
                   shortcut={shortcutLabel("run.flutterHotRestart")}
-                  disabled={!acceptsInput(session)}
+                  disabled={!reloadable}
                   onClick={() => hotRestart(session.id)}
                 />
               </>

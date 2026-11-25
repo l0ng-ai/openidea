@@ -122,6 +122,8 @@ export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
 
 export function DebugConsole({ session, interactive = true }: { session: DebugSession; interactive?: boolean }) {
   const lines = useDebug((s) => s.console[session.id]);
+  const dropped = useDebug((s) => s.consoleDropped[session.id] ?? 0);
+  const count = dropped.toLocaleString();
   const scroller = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   // Scroll to End: follows new output; scrolling up turns it off, back to the end turns it on.
@@ -450,6 +452,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
             onClose={closeFind}
           />
         )}
+        {dropped > 0 && <div className={styles.consoleNotice}>{tx`${count} earlier lines were discarded`}</div>}
         <div
           ref={scroller}
           className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
