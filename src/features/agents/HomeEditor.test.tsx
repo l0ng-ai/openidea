@@ -249,8 +249,8 @@ it("switches Cursor per-model context and fast options cleanly without sending s
   };
   useAgents.setState({ providers: [cursor], draft: savedDraft({ provider: "cursor", config: {} }) });
   render(<HomeEditor />);
-  // Cursor defaults fast off even though the agent reported true, and formats context concisely.
-  expect(settingsButton()).toHaveTextContent("high · 256k · Fast: Off");
+  // Cursor defaults fast off even though the agent reported true, and omits off switches from multi-setting summaries.
+  expect(settingsButton()).toHaveTextContent("high · 256k");
   await chooseModel("gemini-4-neon");
   expect(settingsButton()).toHaveTextContent("high · 300k");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));

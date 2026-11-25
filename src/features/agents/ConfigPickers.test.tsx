@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfigOption } from "@/bindings";
-import { ConfigPickers, configPickerOptions } from "./ConfigPickers";
+import { ConfigPickers, computeOverflowLayout, configPickerOptions } from "./ConfigPickers";
 import { useAgents } from "./store";
 
 beforeEach(() => {
@@ -95,7 +95,7 @@ describe("configPickerOptions", () => {
   });
 });
 
-it("shows Cursor approvals separately from its execution mode and sends the choice", () => {
+it("tucks Cursor approvals into the mode popup as a switch and sends the choice", () => {
   const option = (id: string, category: string, values: string[]): AgentConfigOption => ({
     id,
     category,
@@ -110,19 +110,19 @@ it("shows Cursor approvals separately from its execution mode and sends the choi
     })),
   });
   const onChange = vi.fn();
-  render(
-    <ConfigPickers
-      config={[
-        option("mode", "mode", ["Agent", "Plan", "Ask"]),
-        option("openidea.cursor.approval", "approval", ["ask", "bypass"]),
-      ]}
-      onChange={onChange}
-    />,
-  );
-  expect(screen.getByText("Agent")).toBeVisible();
-  fireEvent.click(screen.getByLabelText("Approvals"));
-  fireEvent.click(screen.getByRole("option", { name: "Bypass approvals" }));
+  const cfg = [
+    option("mode", "mode", ["Agent", "Plan", "Ask"]),
+    option("openidea.cursor.approval", "approval", ["ask", "bypass"]),
+  ];
+  const { rerender } = render(<ConfigPickers config={cfg} onChange={onChange} />);
+  expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("Agent");
+  expect(screen.queryByRole("button", { name: "Approvals" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Mode" }));
+  fireEvent.click(screen.getByRole("switch", { name: "Bypass approvals" }));
   expect(onChange).toHaveBeenCalledWith("openidea.cursor.approval", "bypass");
+
+  rerender(<ConfigPickers config={cfg} values={{ "openidea.cursor.approval": "bypass" }} onChange={onChange} />);
+  expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("AgentBypass");
 });
 
 it("shows Allow All as a switch and sends on/off values", () => {
@@ -500,5 +500,92 @@ describe("model settings", () => {
   it("keeps a plain model picker when the agent has no effort option", () => {
     render(<ConfigPickers config={copilotConfig(null)} onChange={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Model" })).toHaveAttribute("aria-haspopup", "listbox");
+  });
+
+  it("omits off switches from multi-setting summaries and shows them concisely when on", () => {
+    const cfg = copilotConfig();
+    cfg.push(
+      {
+        id: "context",
+        name: "Context",
+        category: "model_config",
+        description: null,
+        current: "500k",
+        via: "option",
+        values: [value("500k", "500K")],
+      },
+      {
+        id: "fast",
+        name: "Fast",
+        category: "model_config",
+        description: null,
+        current: "false",
+        via: "option",
+        values: [value("false", "Off"), value("true", "Fast")],
+      },
+    );
+    const { rerender } = render(<ConfigPickers config={cfg} onChange={vi.fn()} />);
+    const settings = screen.getByRole("button", { name: /^Model settings:/ });
+    expect(settings).toHaveTextContent("medium · 500K");
+    expect(settings).toHaveAttribute("title", expect.stringContaining("Fast: Off"));
+
+    rerender(<ConfigPickers config={cfg} values={{ fast: "true" }} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("medium · 500K · Fast");
+  });
+});
+
+describe("computeOverflowLayout", () => {
+  const base = {
+    gap: 2,
+    fixedWidths: [38, 220], // agent icon + model/settings
+    secondaryWidths: [120, 90], // mode (with detail) + collaboration mode
+    detailWidth: 45,
+    detailIndex: 0,
+    menuWidth: 24,
+  };
+
+  it("keeps everything visible when the toolbar fits", () => {
+    // 38 + 220 + 120 + 90 + 3*2 = 474
+    expect(computeOverflowLayout({ ...base, available: 500 })).toEqual({
+      compactDetail: false,
+      collapsedCount: 0,
+    });
+  });
+
+  it("hides chip detail before collapsing any secondary picker", () => {
+    // 474 - 45 = 429
+    expect(computeOverflowLayout({ ...base, available: 440 })).toEqual({
+      compactDetail: true,
+      collapsedCount: 0,
+    });
+  });
+
+  it("collapses trailing secondary pickers one by one as space shrinks", () => {
+    // Keep mode (full 120) + menu (24): 38 + 220 + 120 + 24 + 3*2 = 408
+    expect(computeOverflowLayout({ ...base, available: 410 })).toEqual({
+      compactDetail: false,
+      collapsedCount: 1,
+    });
+    // Keep mode (compact 75) + menu (24): 38 + 220 + 75 + 24 + 3*2 = 363
+    expect(computeOverflowLayout({ ...base, available: 370 })).toEqual({
+      compactDetail: true,
+      collapsedCount: 1,
+    });
+    // Collapse all secondary pickers into the menu:
+    expect(computeOverflowLayout({ ...base, available: 320 })).toEqual({
+      compactDetail: false,
+      collapsedCount: 2,
+    });
+  });
+
+  it("does nothing when unmeasured (available <= 0) or when there are no secondary items", () => {
+    expect(computeOverflowLayout({ ...base, available: 0 })).toEqual({
+      compactDetail: false,
+      collapsedCount: 0,
+    });
+    expect(computeOverflowLayout({ ...base, available: 100, secondaryWidths: [] })).toEqual({
+      compactDetail: false,
+      collapsedCount: 0,
+    });
   });
 });

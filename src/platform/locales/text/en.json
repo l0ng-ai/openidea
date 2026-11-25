@@ -1876,6 +1876,7 @@
   "{version} is available": "{version} is available",
   "The agent's models and modes can be chosen here after its first session.": "The agent's models and modes can be chosen here after its first session.",
   "Agent's default ({fallback})": "Agent's default ({fallback})",
+  "Default ({fallback})": "Default ({fallback})",
   "Agent's default": "Agent's default",
   "What you pick on the New Task page wins; these apply until then and after switching agents.": "What you pick on the New Task page wins; these apply until then and after switching agents.",
   "Queues the message for after the turn": "Queues the message for after the turn",

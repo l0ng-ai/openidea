@@ -28,6 +28,7 @@ vi.mock("@/ui", async (original) => ({
 vi.mock("../DiffEditor", () => ({ DiffEditor: () => <div /> }));
 
 import { useProject } from "@/platform/project";
+import { useBuildPresentation } from "@/platform/projectPresentation";
 import { useProjectRoots } from "@/platform/projectRoots";
 import { ChangesTree } from "../CommitView";
 import { amendPreviewNode } from "../amendPreview";
@@ -84,7 +85,9 @@ describe("Commit changes tree file icons", () => {
         { path: "src/test/java", kind: "test", detectedFrom: "pom.xml" },
         { path: "src/main/resources", kind: "resources", detectedFrom: "pom.xml" },
       ],
+      attached: [],
     });
+    useBuildPresentation.setState({ modules: new Map(), spring: false });
     useCommit.setState({
       groupByDir: false,
       groupByStaging: false,
@@ -218,5 +221,169 @@ describe("Commit changes tree file icons", () => {
     expect(mocks.presentations.mock.calls.flatMap(([paths]) => paths)).toEqual([
       `${ROOT}/src/main/java/HeadClass.java`,
     ]);
+  });
+
+  it("shows Project-tree directory, package, module, and excluded folder icons when grouped by directory", async () => {
+    mocks.buildModel.mockResolvedValue({
+      status: "ok",
+      data: {
+        maven: {
+          projects: [
+            {
+              dir: "",
+              pom: "pom.xml",
+              groupId: "com.acme",
+              artifactId: "root",
+              displayName: "root",
+              version: "1.0",
+              packaging: "pom",
+              parent: null,
+              modules: ["app/pom.xml"],
+              aggregated: false,
+              plugins: [],
+              dependencies: [],
+              profiles: [],
+              javaVersion: 21,
+            },
+            {
+              dir: "app",
+              pom: "app/pom.xml",
+              groupId: "com.acme",
+              artifactId: "app",
+              displayName: "app",
+              version: "1.0",
+              packaging: "jar",
+              parent: null,
+              modules: [],
+              aggregated: true,
+              plugins: [],
+              dependencies: [],
+              profiles: [],
+              javaVersion: 21,
+            },
+          ],
+          profiles: [],
+          syncedAt: null,
+          stale: false,
+          syncError: null,
+        },
+        gradle: [],
+      },
+    });
+    useProjectRoots.setState({
+      root: ROOT,
+      detected: [
+        { path: "app/src/main/java", kind: "source", detectedFrom: "app/pom.xml" },
+        { path: "app/src/test/java", kind: "test", detectedFrom: "app/pom.xml" },
+        { path: "app/src/main/resources", kind: "resources", detectedFrom: "app/pom.xml" },
+        { path: "app/target", kind: "excluded", detectedFrom: "app/pom.xml" },
+      ],
+      attached: [],
+    });
+    useCommit.setState({ groupByDir: true, groupByRepo: false });
+    useVcs.setState({
+      status: [
+        statusFile("app/src/main/java/App.java"),
+        statusFile("app/src/main/java/com/acme/Order.java"),
+        statusFile("app/src/main/java/com/other/Helper.java"),
+        statusFile("app/src/test/java/OrderTest.java"),
+        statusFile("app/src/main/resources/application.yml"),
+        statusFile("app/target/gen.txt"),
+        statusFile(".github/CODEOWNERS"),
+        statusFile(".github/workflows/ci.yml"),
+      ],
+    });
+
+    render(<ChangesTree mode="commit" />);
+    expect(await screen.findByTestId("icon-maven-module")).toBeInTheDocument();
+    expect(iconOf("app")).toBe("icon-maven-module");
+    expect(iconOf("java")).toBe("icon-folder-source");
+    expect(iconOf("com")).toBe("icon-package");
+    expect(iconOf("acme")).toBe("icon-package");
+    expect(iconOf("test/java")).toBe("icon-folder-test");
+    expect(iconOf("resources")).toBe("icon-folder-resources");
+    expect(iconOf("target")).toBe("icon-folder-excluded");
+    expect(iconOf(".github")).toBe("icon-folder-github");
+  });
+
+  it("resolves test and Spring icons for attached workspace members", async () => {
+    const memberRoot = "/workspace/member-b";
+    useProject.setState({
+      project: {
+        name: "Workspace",
+        root: "/workspace",
+        trusted: true,
+        isGit: true,
+        settings: {},
+        workspace: { version: 1, name: "Workspace", projects: ["/workspace/member-a", memberRoot] },
+      } as never,
+      settings: {} as never,
+    });
+    useProjectRoots.setState({
+      root: "/workspace",
+      detected: [],
+      attached: [
+        {
+          root: memberRoot,
+          structure: {
+            sourceRoots: [],
+            testRoots: [],
+            resourceRoots: [],
+            testResourceRoots: [],
+            excluded: [],
+            unmarked: [],
+            contentRoots: [],
+            dependencies: [],
+            memberDependencies: {},
+            excludeFiles: "",
+            compilerOutput: "",
+            modules: {},
+            libraries: [],
+            facets: [],
+            artifacts: [],
+          },
+          detected: [
+            { path: "src/test/java", kind: "test", detectedFrom: "pom.xml" },
+            { path: "src/main/resources", kind: "resources", detectedFrom: "pom.xml" },
+          ],
+        },
+      ],
+    });
+    useCommit.setState({ groupByDir: false, groupByRepo: false });
+    useVcs.setState({
+      root: "/workspace",
+      repo: memberRoot,
+      roots: [memberRoot],
+      status: [
+        {
+          path: `${memberRoot}/src/test/java/CustomSpec.java`,
+          relPath: "src/test/java/CustomSpec.java",
+          staged: null,
+          unstaged: "modified",
+          renamedFrom: null,
+        },
+        {
+          path: `${memberRoot}/src/main/resources/application.yml`,
+          relPath: "src/main/resources/application.yml",
+          staged: null,
+          unstaged: "modified",
+          renamedFrom: null,
+        },
+      ],
+    });
+    mocks.presentations.mockResolvedValue({
+      status: "ok",
+      data: [
+        {
+          path: `${memberRoot}/src/test/java/CustomSpec.java`,
+          presentation: { kind: "class", springBoot: false, runnable: false, deprecated: false },
+        },
+      ],
+    });
+
+    render(<ChangesTree mode="commit" />);
+    expect(await screen.findByTestId("icon-jvm-test")).toBeInTheDocument();
+    expect(iconOf("CustomSpec.java")).toBe("icon-jvm-test");
+    expect(iconOf("application.yml")).toBe("icon-spring-config");
   });
 });
