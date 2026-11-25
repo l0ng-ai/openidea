@@ -39,6 +39,7 @@ export function CliEditor({ input }: { input: EditorInput }) {
     const wrapper = el.closest<HTMLElement>("[data-editor-focus]");
     const onFocus = () => session.focus();
     wrapper?.addEventListener("focus", onFocus);
+    if (document.activeElement === wrapper || document.activeElement === el) session.focus();
     return () => {
       wrapper?.removeEventListener("focus", onFocus);
       session.detach(el);
