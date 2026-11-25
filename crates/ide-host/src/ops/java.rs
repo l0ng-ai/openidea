@@ -9,6 +9,7 @@ use super::build::{load, with_profiles, workspace};
 use cache::LaunchEvents;
 use ide_build::BuildModel;
 use ide_build::compile::{self, BuildEvent};
+use ide_build::jbuild::{Built, JavaBuild, JavaBuildService, LaunchOutputs};
 use ide_core::error::ErrorKind;
 use ide_core::settings::Settings;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
@@ -73,13 +74,12 @@ pub(crate) async fn resolve_launch(
     }
     let scope = std::sync::Arc::new(scope);
     let launches = project.java_launches.for_cache(&scope.cache);
-    let waiting = launches.waiting.add(module.clone(), test, policy, events.clone());
     let prefer_maven = scope.settings.languages.java.maven.delegate_build;
     // A launch builds incrementally unless the configuration asks for Rebuild or NoBuild.
     let build = policy != BuildPolicy::NoBuild;
     let full = policy == BuildPolicy::Rebuild;
     let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-    let (model, external, mut delegated, is_maven) = {
+    let (model, external, mut delegated, is_maven, non_java) = {
         let scope = scope.clone();
         let launches = launches.clone();
         let module = module.clone();
@@ -98,11 +98,60 @@ pub(crate) async fn resolve_launch(
                     prefer_maven,
                 );
             let external = non_java || delegated;
-            (model, external, delegated, is_maven)
+            (std::sync::Arc::new(model), external, delegated, is_maven, non_java)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
     };
+    // A Maven module jdtls doesn't build for this launch is built by the IDE's Java build,
+    // unless Settings › Maven › Delegate IDE build/run actions to Maven asks for Maven.
+    if delegated && !prefer_maven && !non_java {
+        let built = {
+            let (service, data_dir, scope, model, module, cancel, events) = (
+                host.java_build.clone(),
+                host.local_data_dir.clone(),
+                scope.clone(),
+                model.clone(),
+                module.clone(),
+                cancel.clone(),
+                events.clone(),
+            );
+            tokio::task::spawn_blocking(move || {
+                let on_event = |event: BuildEvent| {
+                    if let Some(events) = &events {
+                        events(event);
+                    }
+                };
+                build_with_service(&service, &data_dir, &scope, &model, &module, test, build_kind, &cancel, &on_event)
+            })
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))??
+        };
+        if let Some(outputs) = built {
+            progress("Resolving the classpath");
+            let mut info = project.lsp.java_launch(&module, test, false, false, false, cancel).await?;
+            let data_dir = host.local_data_dir.clone();
+            let cancel = cancel.clone();
+            return tokio::task::spawn_blocking(move || {
+                // javac's verdict replaces JDT's, as a Maven build's does.
+                apply_external_build_result(&mut info, outputs.failure, true);
+                info.class_paths = outputs.class_paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                apply_library_classpath(&mut info, &scope.root, &scope.settings.project_structure.libraries, test);
+                finish_launch(&mut info, &scope.root, &module, &scope.settings, &model, &data_dir);
+                if cancel.is_cancelled() {
+                    return Err(IdeError::cancelled());
+                }
+                tracing::info!(
+                    total_ms = started.elapsed().as_millis(),
+                    "Java launch resolved with the IDE's Java build"
+                );
+                Ok(info)
+            })
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?;
+        }
+    }
+    let waiting = launches.waiting.add(module.clone(), test, policy, events.clone());
     let mut external_build =
         if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
     if build && !delegated {
@@ -124,7 +173,6 @@ pub(crate) async fn resolve_launch(
             drop_processor_recreate_errors(&mut info);
         }
     }
-    let model = std::sync::Arc::new(model);
     let members = if delegated {
         build_members(&project, &scope, &model, &module, test, &waiting, cancel).await?
     } else {
@@ -217,6 +265,58 @@ pub(crate) async fn resolve_launch(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// Builds the launch of a Maven module with the IDE's Java build (#4078): javac in a resident
+/// process with the configuration Maven gives the compiler, into outputs in the project cache
+/// that neither the language server nor a terminal `mvn` writes. `None` when the module needs
+/// Maven's own build (another compiler, a multi-release jar, a Java module…), which then runs.
+#[allow(clippy::too_many_arguments)]
+fn build_with_service(
+    service: &JavaBuildService,
+    data_dir: &Path,
+    scope: &workspace::Scope,
+    model: &BuildModel,
+    module: &Path,
+    test: bool,
+    kind: compile::BuildKind,
+    cancel: &CancellationToken,
+    on_event: &(dyn Fn(BuildEvent) + Sync),
+) -> IdeResult<Option<LaunchOutputs>> {
+    let Some(jar) = ide_sdk::java::java_build_jar(data_dir) else { return Ok(None) };
+    let (root, settings) = (&scope.root, &scope.settings);
+    let jdk = |release: Option<u32>| {
+        ide_sdk::apply::module_jdk(root, module, settings)
+            .or_else(|| ide_sdk::java::pick_jdk(&ide_sdk::java::installed_jdks(), release).cloned())
+            .map(|jdk| jdk.home)
+    };
+    let version = ide_sdk::java::java_build_version();
+    let build = JavaBuild {
+        root,
+        model,
+        cache: &scope.cache,
+        jar: &jar,
+        jar_version: &version,
+        local_repo: ide_sdk::apply::maven_local_repository(root, settings),
+        service,
+        jdk: &jdk,
+    };
+    match build.build_launch(module, test, kind, cancel, on_event) {
+        Ok(Built::Done(outputs)) => Ok(Some(outputs)),
+        Ok(Built::Unsupported(reason)) => {
+            tracing::info!(module = %module.display(), reason, "Building the launch with Maven");
+            Ok(None)
+        }
+        Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+        Err(e) => {
+            tracing::warn!(module = %module.display(), "The IDE's Java build failed: {}", e.message);
+            on_event(BuildEvent::Output {
+                text: format!("The IDE's Java build failed, so Maven builds the module: {}\n", e.message),
+                stderr: true,
+            });
+            Ok(None)
+        }
+    }
+}
+
 fn load_launch_model(scope: &workspace::Scope) -> BuildModel {
     with_profiles(load(&scope.root, &scope.cache, &scope.settings), &scope.cache)
 }
@@ -241,8 +341,9 @@ async fn resolve_launch_without_jdtls(
     let started = std::time::Instant::now();
     let scope = std::sync::Arc::new(scope);
     let kind = if policy == BuildPolicy::Rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-    let (model, built) = {
+    let (model, built, by_service) = {
         let (scope, module, cancel, events) = (scope.clone(), module.clone(), cancel.clone(), events.clone());
+        let (service, data_dir) = (host.java_build.clone(), host.local_data_dir.clone());
         tokio::task::spawn_blocking(move || {
             let model = load_launch_model(&scope);
             let on_event = |event: BuildEvent| {
@@ -250,12 +351,24 @@ async fn resolve_launch_without_jdtls(
                     events(event);
                 }
             };
-            let built = if policy == BuildPolicy::NoBuild {
-                None
-            } else {
-                Some(compile::build_for_launch(&scope.root, &model, &module, test, kind, &cancel, &on_event))
-            };
-            (model, built)
+            if policy == BuildPolicy::NoBuild {
+                return (model, None, false);
+            }
+            if is_maven_module(&scope.root, &model, &module)
+                && !scope.settings.languages.java.maven.delegate_build
+                && !compile::launch_has_non_java_sources(&scope.root, &model, &module, test)
+            {
+                match build_with_service(&service, &data_dir, &scope, &model, &module, test, kind, &cancel, &on_event) {
+                    Ok(Some(outputs)) => {
+                        let built = compile::LaunchBuild { class_dirs: outputs.class_paths, failure: outputs.failure };
+                        return (model, Some(Ok(built)), true);
+                    }
+                    Ok(None) => {}
+                    Err(e) => return (model, Some(Err(e)), false),
+                }
+            }
+            let built = compile::build_for_launch(&scope.root, &model, &module, test, kind, &cancel, &on_event);
+            (model, Some(built), false)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
@@ -294,6 +407,12 @@ async fn resolve_launch_without_jdtls(
     tokio::task::spawn_blocking(move || {
         let (root, cache, settings) = (&scope.root, &scope.cache, &scope.settings);
         match from_server {
+            // The IDE's Java build gave the whole classpath; the server adds its JDK.
+            Some(server) if by_service => {
+                info.project_root = server.classpath.project_root;
+                info.java_home = server.jdk_home.map(Into::into);
+            }
+            None if by_service => {}
             Some(server) => {
                 info.project_root = server.classpath.project_root;
                 info.module_paths = server.classpath.module_paths;

@@ -1654,6 +1654,23 @@ pub fn junit_runner_jar(data_dir: &Path) -> Option<PathBuf> {
     )
 }
 
+/// The IDE's Java build (`java/java-build`): the resident javac server and the Maven
+/// extension that records the build model.
+const JAVA_BUILD: &[u8] = include_bytes!("../../../java/java-build/openidea-java-build.jar");
+
+/// Extracts the Java build jar into the application's data directory.
+pub fn java_build_jar(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(data_dir, "java-build", "1.0.0", JAVA_BUILD)
+}
+
+/// Changes whenever the embedded Java build jar does (FNV-1a of its bytes), so build models
+/// recorded by an older extension are prepared again.
+pub fn java_build_version() -> String {
+    let hash =
+        JAVA_BUILD.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3));
+    format!("{hash:016x}")
+}
+
 /// The JUnit Platform launcher a test classpath needs to start the runner.
 #[derive(Debug, PartialEq)]
 pub enum JunitLauncher {

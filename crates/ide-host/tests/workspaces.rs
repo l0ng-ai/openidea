@@ -110,7 +110,9 @@ done
         assert!(info.class_paths.iter().any(|p| std::path::Path::new(p) == out));
         assert!(info.class_paths.iter().any(|p| std::path::Path::new(p) == jar));
         let calls = fs::read_to_string(root.join("calls")).unwrap();
-        assert!(calls.lines().next().unwrap().contains("-pl app -am"), "{calls}");
+        // This Maven records no build model for the IDE's Java build, so Maven builds the module.
+        assert!(calls.lines().next().unwrap().contains("-Dopenidea.build.model="), "{calls}");
+        assert!(calls.lines().nth(1).unwrap().contains("-pl app -am"), "{calls}");
         assert!(calls.lines().all(|line| line.contains(&format!("-P member-{index}"))), "{calls}");
         assert!(calls.contains(":build-classpath"), "{calls}");
     }
