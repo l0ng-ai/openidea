@@ -5,8 +5,9 @@ import { fileIconName, useFileIconRevision, type IconName } from "./icons";
 import { call, commands, isTauri, onIdeEvent, type JvmPresentation } from "@/platform/ipc";
 import { basename, relativePath, useProject } from "@/platform/project";
 import { rootFor, type RootFolder } from "@/platform/languageSettings";
-import { useEffectiveRoots } from "@/platform/projectRoots";
+import { useDetectedRoots, useEffectiveRoots, useProjectRoots, type AttachedProject } from "@/platform/projectRoots";
 import { useProjectPresentation } from "@/platform/projectPresentation";
+import { projectScopeForPath } from "./folderPresentation";
 
 const JVM = /\.(java|kt)$/;
 const MAX_CACHE = 4096;
@@ -156,13 +157,21 @@ export function useJvmPresentation(path: string, mtime?: number | null) {
   return cache((s) => s.entries.get(path));
 }
 
+const EMPTY_ATTACHED: AttachedProject[] = [];
+
 export function useFilePresentation(path: string, mtime?: number | null) {
   useFileIconRevision();
   const info = useJvmPresentation(path, mtime);
   const roots = useEffectiveRoots();
+  const detected = useDetectedRoots();
   const root = useProject((s) => s.project?.root ?? null);
+  const attached = useProjectRoots((s) => (s.root === root ? s.attached : EMPTY_ATTACHED));
   const build = useProjectPresentation();
-  const icon = presentationIcon(path, info, roots, root, build.spring);
+  const scope = useMemo(
+    () => projectScopeForPath(path, root, roots, detected, attached),
+    [path, root, roots, detected, attached],
+  );
+  const icon = presentationIcon(path, info, scope.ownerRoots, scope.ownerRoot, build.spring);
   return {
     icon,
     runnable: !!info?.runnable && icon !== "spring-boot" && icon !== "jvm-test",
@@ -180,20 +189,25 @@ export function useFilePresentations(paths: readonly string[]) {
   const entries = cache((s) => s.entries);
   const iconRevision = useFileIconRevision();
   const roots = useEffectiveRoots();
+  const detected = useDetectedRoots();
   const root = useProject((s) => s.project?.root ?? null);
+  const attached = useProjectRoots((s) => (s.root === root ? s.attached : EMPTY_ATTACHED));
   const build = useProjectPresentation();
   return useMemo(
     () =>
       new Map(
-        (JSON.parse(key) as string[]).map((path) => [
-          path,
-          {
-            icon: presentationIcon(path, entries.get(path), roots, root, build.spring),
-            deprecated: !!entries.get(path)?.deprecated,
-          },
-        ]),
+        (JSON.parse(key) as string[]).map((path) => {
+          const scope = projectScopeForPath(path, root, roots, detected, attached);
+          return [
+            path,
+            {
+              icon: presentationIcon(path, entries.get(path), scope.ownerRoots, scope.ownerRoot, build.spring),
+              deprecated: !!entries.get(path)?.deprecated,
+            },
+          ];
+        }),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- iconRevision: the file icon theme changed
-    [key, entries, roots, root, build.spring, iconRevision],
+    [key, entries, roots, detected, attached, root, build.spring, iconRevision],
   );
 }

@@ -196,11 +196,11 @@ fn levels_for_model_from_slice(options: &[AgentConfigOption]) -> Vec<AgentConfig
         .filter(|o| config::is_per_model_option(o))
         .cloned()
         .map(|mut o| {
-            if config::is_context_option(&o.id) {
+            if config::is_context_option(&o.id) || config::is_fast_option(&o.id) {
                 if o.category.is_none() {
                     o.category = Some("model_config".into());
                 }
-            } else if o.category.as_deref() != Some("thought_level") {
+            } else if o.category.is_none() {
                 o.category = Some("thought_level".into());
             }
             o

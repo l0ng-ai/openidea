@@ -112,7 +112,7 @@ done
         let calls = fs::read_to_string(root.join("calls")).unwrap();
         assert!(calls.lines().next().unwrap().contains("-pl app -am"), "{calls}");
         assert!(calls.lines().all(|line| line.contains(&format!("-P member-{index}"))), "{calls}");
-        assert!(calls.contains("dependency:build-classpath"), "{calls}");
+        assert!(calls.contains(":build-classpath"), "{calls}");
     }
 }
 

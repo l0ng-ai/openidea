@@ -86,26 +86,30 @@
 }
 .bar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: var(--space-0-5);
+  gap: var(--space-1);
   padding: 4px 6px 6px;
   cursor: default;
 }
 .toolbar {
   display: flex;
-  flex: 1;
-  flex-wrap: wrap;
+  flex: 1 1 0;
+  flex-wrap: nowrap;
   align-items: center;
   min-width: 0;
+  overflow: hidden;
   gap: var(--space-0-5);
+}
+.toolbar > button {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .actions {
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--space-1);
-  margin-left: auto;
 }
 /* Attach/reference buttons share the send button's 24px footprint and chrome. */
 /* Plain toolbar icons, framed only on hover like the rest of the IDE's toolbars. */
@@ -114,21 +118,60 @@
   height: var(--h-control);
 }
 .spacer {
-  flex: 1;
+  display: none;
 }
 .configPicker,
 .modelControl {
   display: flex;
+  flex: 0 1 auto;
   min-width: 0;
 }
 .modelControl {
   align-items: center;
 }
+.modelControl > .chip {
+  flex: 0 1 auto;
+  min-width: 0;
+}
 .configPicker > button {
+  min-width: 0;
   max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inlineSetting {
+  flex: none;
+}
+.collapsed {
+  display: none;
+}
+.compactDetail {
+  display: none;
 }
 .settingsMenu {
   display: none;
+  flex: none;
+}
+.settingsMenuVisible {
+  display: flex;
+}
+/* Applied only synchronously during JS overflow measurement (never painted). */
+.toolbarMeasuring > *,
+.toolbarMeasuring .configPicker,
+.toolbarMeasuring .modelControl,
+.toolbarMeasuring .modelControl > .chip,
+.toolbarMeasuring .chip,
+.toolbarMeasuring .configPicker > button {
+  flex: none;
+  max-width: none;
+}
+.toolbarMeasuring .collapsed,
+.toolbarMeasuring .settingsMenu {
+  display: flex;
+}
+.toolbarMeasuring .compactDetail {
+  display: inline-grid;
 }
 .settingsPopup {
   width: min(320px, calc(100vw - 24px));
@@ -232,18 +275,31 @@
 .quickSettings {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: 4px 12px 10px;
 }
 .quickRow {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+}
+.quickRow + .quickRow {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
 }
 .quickLabel {
+  padding: 2px 14px 4px;
   color: var(--fg-secondary);
   font-size: var(--fs-small);
   font-weight: 600;
+}
+.quickToggleRow {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 2px 14px;
+}
+.quickToggleRow .quickLabel {
+  padding: 0;
 }
 .modelEffortPopup [role="option"] .modelRowConfigure {
   opacity: 0;
@@ -284,44 +340,6 @@
 .pinnedButton {
   color: var(--accent);
 }
-.segmented {
-  display: flex;
-  align-items: stretch;
-  gap: var(--space-0-5);
-  padding: 2px;
-  border-radius: var(--radius-toolbar-button);
-  background: var(--bg-input);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
-}
-.segment {
-  flex: 1 1 0;
-  min-width: 0;
-  height: calc(var(--h-button) - 2px);
-  padding: 0 6px;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition:
-    background var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-.segment:hover {
-  color: var(--fg-strong);
-}
-.segment:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
-}
-.segmentActive {
-  background: var(--bg-toolbar-hover);
-  color: var(--fg-strong);
-  font-weight: 600;
-}
 .modePopup {
   min-width: 200px;
   padding: 6px 0;
@@ -360,54 +378,6 @@
   margin-top: 6px;
   padding: 8px 14px 2px;
   border-top: 1px solid var(--border);
-}
-@container agent-composer (max-width: 600px) {
-  /* Narrow: keep one row of icons next to the agent picker. The model/mode pickers
-     collapse into the settings menu, so nothing has to wrap onto a second line. */
-  .bar {
-    flex-direction: row;
-    align-items: center;
-    gap: var(--space-1-5);
-  }
-  .toolbar {
-    flex-wrap: nowrap;
-  }
-  .toolbar > button,
-  .toolbar > .configPicker {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
-  .configPicker > button {
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .chipDetail {
-    display: none;
-  }
-  .modelDetail {
-    flex-shrink: 0;
-    max-width: 65%;
-  }
-  .inlineSetting {
-    display: none;
-  }
-  .settingsMenu {
-    display: flex;
-    flex: none;
-    margin-left: auto;
-  }
-  .actions {
-    width: auto;
-    flex: none;
-    margin-left: 0;
-    justify-content: flex-end;
-  }
-  .actions .spacer {
-    display: none;
-  }
 }
 .pickerValue {
   display: inline-flex;

@@ -7403,6 +7403,11 @@ export type GeneratorInfo = {
 	/**  Offer "Create Git repository". */
 	git: boolean,
 	fields: Field[],
+	/**
+	 *  The project folder's name when it isn't the project name: a template over the fields
+	 *  shown (a hidden field has its default), like [`Field::default`]; empty renders the name.
+	 */
+	directory: string | null,
 	/**  More fields come from `scaffold_options` (a project service's metadata). */
 	dynamic: boolean,
 };

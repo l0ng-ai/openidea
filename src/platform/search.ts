@@ -68,18 +68,27 @@ function save(key: string, value: unknown) {
   }
 }
 
+/**
+ * `key` for the open project: search history names the project's identifiers, so each project
+ * keeps its own (IDEA stores it in the project's workspace). Without a project, `key` itself.
+ */
+export function projectKey(key: string): string {
+  const root = useProject.getState().project?.root;
+  return root ? `${key}:${root}` : key;
+}
+
 const HISTORY_KEYS = { find: "openidea.search.findHistory.v1", replace: "openidea.search.replaceHistory.v1" };
 const MAX_HISTORY = 20;
 
-/** Recent search (or replace) strings, newest first; shared by the find bar and Find in Files. */
+/** Recent search (or replace) strings of the open project, newest first; shared by the find bar and Find in Files. */
 export function searchHistory(kind: "find" | "replace"): string[] {
-  const v = load(HISTORY_KEYS[kind]);
+  const v = load(projectKey(HISTORY_KEYS[kind]));
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
 export function rememberSearch(kind: "find" | "replace", text: string) {
   if (!text.trim()) return;
-  save(HISTORY_KEYS[kind], [text, ...searchHistory(kind).filter((x) => x !== text)].slice(0, MAX_HISTORY));
+  save(projectKey(HISTORY_KEYS[kind]), [text, ...searchHistory(kind).filter((x) => x !== text)].slice(0, MAX_HISTORY));
 }
 
 /**
