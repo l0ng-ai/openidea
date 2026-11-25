@@ -4288,7 +4288,6 @@
   "Find in Conversation": "Rechercher dans la conversation",
   "Find in conversation": "Rechercher dans la conversation",
   "0 results": "0 résultat",
-  "Time the agent spent on this task": "Temps passé par l'agent sur cette tâche",
   "Send Again": "Renvoyer",
   "Customize IDE appearance and behavior: change themes and font size, configure system settings and notifications.": "Personnalisez l'apparence et le comportement de l'IDE : thèmes, taille de police, paramètres système et notifications.",
   "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.": "Configurez l'édition du code : complétion, pliage, onglets, polices, couleurs, style de code et inspections.",
@@ -5607,7 +5606,6 @@
   "Chat": "Discussion",
   "Shown in the Task Header": "Affiché dans l'en-tête de la tâche",
   "Context window usage": "Utilisation de la fenêtre de contexte",
-  "Time spent on the task": "Temps passé sur la tâche",
   "Usage limits": "Limites d'utilisation",
   "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)": "Les limites sur 5 heures et hebdomadaires du compte, lorsque l'agent les indique (Claude Code)",
   "Session cost": "Coût de la session",
@@ -5753,5 +5751,6 @@
   "Roll Back to Here": "Revenir à ce point",
   "Couldn't roll back": "Impossible de revenir en arrière",
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Ce message et les suivants sont supprimés, et les fichiers modifiés par l'agent depuis reviennent à leur état d'avant l'envoi. Le message revient dans la zone de saisie.",
-  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Cela efface toute la conversation, remet les fichiers modifiés par l'agent dans leur état du début de la tâche et démarre une nouvelle session de l'agent avec ce message."
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Cela efface toute la conversation, remet les fichiers modifiés par l'agent dans leur état du début de la tâche et démarre une nouvelle session de l'agent avec ce message.",
+  "Resets in {resetIn}": "Réinitialisation dans {resetIn}"
 }
