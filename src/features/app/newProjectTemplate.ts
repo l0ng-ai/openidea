@@ -76,6 +76,28 @@ export function isVisible(field: Field, values: Values): boolean {
   return Object.entries(field.visible).every(([id, allowed]) => allowed.includes(values[id] ?? ""));
 }
 
+/**
+ * The project folder's name: the generator's `directory` template (a .NET solution's name) over
+ * the values the form sends — a hidden field falls back to its default, as `ide-scaffold` does —
+ * or the project name.
+ */
+export function projectFolder(
+  directory: string | null | undefined,
+  fields: readonly Field[],
+  name: string,
+  edited: Values,
+): string {
+  if (!directory) return name.trim();
+  const shown = effectiveValues(fields, name, edited);
+  const sent = Object.fromEntries(
+    Object.entries(edited).filter(([id]) => {
+      const field = fields.find((f) => f.id === id);
+      return !field || isVisible(field, shown);
+    }),
+  );
+  return render(directory, effectiveValues(fields, name, sent)).trim() || name.trim();
+}
+
 /** `a` ≥ `b`, comparing the numeric parts of dotted versions (`ide-scaffold`'s `version_at_least`). */
 export function versionAtLeast(a: string, b: string): boolean {
   const parts = (s: string) => {
