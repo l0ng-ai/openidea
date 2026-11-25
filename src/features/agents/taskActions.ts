@@ -59,6 +59,7 @@ async function runTasks(tasks: AgentTask[], run: (task: AgentTask) => Promise<un
   const errors: string[] = [];
   for (const task of tasks) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- archive/unarchive/delete mutate shared task and worktree state one task at a time
       await run(task);
     } catch (error) {
       errors.push(`${task.title}: ${error instanceof Error ? error.message : String(error)}`);

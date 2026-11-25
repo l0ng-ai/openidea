@@ -649,11 +649,14 @@ pub struct Delivery {
 
 /// Stages the skills a session of `provider` runs with into `farm` — linking (copying on
 /// Windows, where directory symlinks need Developer Mode) every active skill folder into
-/// the CLI's tree — and reports what to hand the CLI. Skills the CLI discovers natively
-/// (its own folders of the working directory and the home) are not staged again: it already
-/// sees them, and seeing both would list one skill twice. Skills `off` are never staged;
-/// the CLI's native disable (where it has one) receives their names or paths. An ACP
-/// agent gets nothing here: its `/` menu is filtered instead.
+/// the CLI's tree — and reports what to hand the CLI. For Claude Code and Codex, skills
+/// the CLI discovers natively (its own folders of the working directory and the home) are
+/// not staged again so the CLI does not see duplicates. For Copilot (`copilot --headless`),
+/// config discovery is off by default (enabling it would also auto-load workspace `.mcp.json`
+/// outside OpenIDEA's MCP approvals), so every active `Auto` skill is staged into
+/// `skillDirectories`. Skills `off` are never staged; the CLI's native disable (where it has
+/// one) receives their names or paths. An ACP agent gets nothing here: its `/` menu is
+/// filtered instead.
 pub fn stage(
     farm: &Path,
     provider: &str,
@@ -705,7 +708,7 @@ pub fn stage(
                 if let Some(tree) = claude_tree.as_ref().filter(|_| !native_claude(&state.skill, &cwd, home)) {
                     link_skill(&tree.join(name), path)?;
                 }
-                if let Some(tree) = copilot_tree.as_ref().filter(|_| !native_copilot(&state.skill, &cwd, home)) {
+                if let Some(tree) = copilot_tree.as_ref() {
                     link_skill(&tree.join(name), path)?;
                 }
                 if let Some(tree) = codex_tree.as_ref().filter(|_| !native_codex(&state.skill, &cwd, home)) {
@@ -792,29 +795,6 @@ fn native_claude(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
         }
         _ => false,
     }
-}
-
-/// Copilot natively scans `.github/skills`, `.agents/skills` and `.claude/skills` in `cwd`,
-/// plus `~/.copilot` and `~/.agents/skills` in `home`. `.openidea/skills` is NOT native.
-fn native_copilot(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
-    let target = skill.path.0.as_path();
-    for rel in [".github/skills", ".agents/skills", ".claude/skills"] {
-        let root = cwd.join(rel);
-        if is_under(target, &root) || direct_link_matches(&root, &skill.name, target) {
-            return true;
-        }
-    }
-    if let Some(h) = home {
-        let h = dunce::canonicalize(h).unwrap_or_else(|_| h.to_path_buf());
-        if is_under(target, &h.join(".copilot"))
-            || is_under(target, &h.join(".agents/skills"))
-            || direct_link_matches(&h.join(".copilot/skills"), &skill.name, target)
-            || direct_link_matches(&h.join(".agents/skills"), &skill.name, target)
-        {
-            return true;
-        }
-    }
-    false
 }
 
 /// Codex natively scans `.codex/skills` and `.agents/skills` in `cwd` and `home`.
@@ -1232,12 +1212,20 @@ mod tests {
             true,
         );
 
-        //For a local session, `.github/skills`, `.agents/skills` and `~/.agents/skills` are
-        // already scanned natively by Copilot; `.openidea/skills` and `~/.codex/skills` are staged.
+        // Copilot headless does not run disk config discovery unless explicitly opted in, so
+        // every active `Auto` skill — including `.github/skills`, `.agents/skills`, `~/.agents/skills`,
+        // `~/.copilot/installed-plugins`, `.openidea/skills`, and `~/.codex/skills` — must be staged.
         let mut states = states;
         std::fs::create_dir_all(repo.join(".openidea/skills/ideonly")).unwrap();
         states.push(AgentSkillState {
             skill: skill("ideonly", AgentSkillSource::Workspace, &repo.join(".openidea/skills")),
+            mode: AgentSkillMode::Auto,
+            origin: AgentSkillOrigin::None,
+        });
+        let copilot_plugin_skills = home.join(".copilot/installed-plugins/_direct/azure/skills");
+        std::fs::create_dir_all(copilot_plugin_skills.join("azure-ai")).unwrap();
+        states.push(AgentSkillState {
+            skill: skill("azure-ai", AgentSkillSource::CopilotUser, &copilot_plugin_skills),
             mode: AgentSkillMode::Auto,
             origin: AgentSkillOrigin::None,
         });
@@ -1249,7 +1237,7 @@ mod tests {
         let staged = listed(&claude_tree);
         assert_eq!(
             staged,
-            ["codexy", "gh", "ideonly", "lint", "muted", "tdd"],
+            ["azure-ai", "codexy", "gh", "ideonly", "lint", "muted", "tdd"],
             "everything but the off one: none is native to Claude here, and slash-only needs the folder"
         );
 
@@ -1259,8 +1247,8 @@ mod tests {
         let copilot_staged = listed(&farm.join("copilot"));
         assert_eq!(
             copilot_staged,
-            ["codexy", "ideonly"],
-            "`gh` (.github), `tdd` (.agents) and `lint` (~/.agents) are native to Copilot; `.openidea` & `~/.codex` are staged"
+            ["azure-ai", "codexy", "gh", "ideonly", "lint", "tdd"],
+            "all active Auto skills (including .github, .agents, ~/.agents, and ~/.copilot/installed-plugins) are staged for Copilot headless"
         );
         assert_eq!(
             delivery.codex_off,
@@ -1276,12 +1264,12 @@ mod tests {
             ]
         );
 
-        // A worktree task: the repo's skills are untracked, so workspace skills are staged now.
+        // A worktree task also stages all active workspace, user, and plugin skills.
         let worktree = root.join("wt");
         std::fs::create_dir_all(&worktree).unwrap();
         let _ = stage(&farm, "copilot", &states, &worktree, Some(&home)).unwrap();
         let copilot_staged = listed(&farm.join("copilot"));
-        assert!(copilot_staged.contains(&"gh".to_string()) && copilot_staged.contains(&"tdd".to_string()));
+        assert_eq!(copilot_staged, ["azure-ai", "codexy", "gh", "ideonly", "lint", "tdd"]);
 
         // Slash-only reaches Claude as `user-invocable-only`, off as `off`.
         let delivery = stage(&farm, "claude", &states, &repo, Some(&home)).unwrap();
@@ -1289,7 +1277,7 @@ mod tests {
         assert_eq!(settings["skillOverrides"]["muted"], "user-invocable-only");
         assert_eq!(settings["skillOverrides"]["off"], "off");
 
-        // Restaging after a session turned `lint` off drops its link and leaves the skill.
+        // Restaging after a session turned `lint` off drops its link and leaves the skill on disk.
         let session = BTreeMap::from([("lint".to_owned(), AgentSkillMode::Off)]);
         let restated = resolve(
             states.iter().map(|s| s.skill.clone()).collect(),
@@ -1299,9 +1287,13 @@ mod tests {
             true,
         );
         stage(&farm, "claude", &restated, &repo, Some(&home)).unwrap();
-        assert_eq!(listed(&claude_tree), ["codexy", "gh", "ideonly", "muted", "tdd"]);
+        assert_eq!(listed(&claude_tree), ["azure-ai", "codexy", "gh", "ideonly", "muted", "tdd"]);
         assert!(home.join(".agents/skills/lint").is_dir());
         assert!(farm.join("copilot").is_dir(), "restaging Claude's tree leaves Copilot's alone");
+
+        let delivery = stage(&farm, "copilot", &restated, &repo, Some(&home)).unwrap();
+        assert_eq!(listed(&farm.join("copilot")), ["azure-ai", "codexy", "gh", "ideonly", "tdd"]);
+        assert_eq!(delivery.copilot_disabled_skills, ["lint", "muted", "off"]);
 
         // An ACP agent gets no farm.
         let delivery = stage(&farm, "cursor-acp", &states, &repo, Some(&home)).unwrap();

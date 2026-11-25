@@ -5,9 +5,172 @@ use ide_core::{CancellationToken, IdeResult};
 use ide_db::{DataSource, DbDriver, DbManager};
 
 fn server() -> Option<(String, u16, String, String)> {
-    let v = std::env::var("OPENIDEA_TEST_POSTGRES").ok()?;
+    endpoint("OPENIDEA_TEST_POSTGRES")
+}
+
+fn endpoint(variable: &str) -> Option<(String, u16, String, String)> {
+    let v = std::env::var(variable).ok()?;
     let mut it = v.splitn(4, ':');
     Some((it.next()?.into(), it.next()?.parse().ok()?, it.next()?.into(), it.next().unwrap_or("").into()))
+}
+
+/// A disposable PgBouncer transaction pool which rejects default_transaction_read_only at startup
+/// (`OPENIDEA_TEST_PGBOUNCER`, same format). PgBouncer 1.24 rejects it; 1.26 tracks it per client,
+/// which keeps the startup option in use and fails the fallback assertion below.
+#[tokio::test]
+async fn transaction_pooler_runs_read_only_work_on_the_assigned_backend() -> IdeResult<()> {
+    let Some((host, port, user, password)) = endpoint("OPENIDEA_TEST_PGBOUNCER") else { return Ok(()) };
+    let dir = tempfile::tempdir()?;
+    let root = dir.path();
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(root.join("ssh-passwords.json")));
+    let db = DbManager::new(root.into(), root.join("passwords.json"), root.join("history.json"), ssh);
+    let mut source = DataSource {
+        id: "ro".into(),
+        name: "Pooler".into(),
+        driver: DbDriver::Postgres,
+        host,
+        port: Some(port),
+        user,
+        read_only: true,
+        ..Default::default()
+    };
+    let normal = DataSource { id: "rw".into(), read_only: false, ..source.clone() };
+    source.options.startup_script =
+        "SET search_path = pg_catalog, public; SET statement_timeout = '17s'; SELECT 1".into();
+    db.save_sources(vec![source.clone(), normal]).await?;
+    for id in ["rw", "ro"] {
+        db.set_password(id, Some(password.clone()), false).await?;
+    }
+    let message = db.test(&source, Some(password.clone()), None).await?;
+    assert!(message.contains("PostgreSQL") && message.contains("BEGIN READ ONLY"), "{message}");
+    let c = CancellationToken::new();
+    let table = format!("public.oi_pooler_{}", uuid::Uuid::new_v4().simple());
+    let write = format!("INSERT INTO {table} VALUES (1)");
+    pooler_modes(&db, &table, &write, &c).await?;
+    pooler_rotation(&db, &c).await?;
+    pooler_manual(&db, &write, &c).await?;
+    pooler_paging(&db, &c).await?;
+    pooler_cancellation(&db, &c).await?;
+    source.options.time_zone = "Europe/Paris".into();
+    source.options.startup_script = "SELECT 'read;only'".into();
+    let configured = ide_db::Pool::connect(&source, Some(&password), None).await?;
+    assert_eq!(configured.rows("SHOW TimeZone", 1).await?, [[Some("Europe/Paris".into())]]);
+    configured.close().await;
+    source.options.startup_script = "SELECT 1/0; COMMIT".into();
+    let error = db.test(&source, Some(password), None).await.unwrap_err();
+    assert!(error.message.contains("COMMIT"), "{}", error.message);
+    db.execute("rw", &format!("DROP TABLE {table}"), 1, &c).await?;
+    Ok(())
+}
+
+async fn pooler_modes(db: &DbManager, table: &str, write: &str, c: &CancellationToken) -> IdeResult<()> {
+    let mode = "SHOW transaction_read_only";
+    assert_eq!(db.execute("ro", mode, 1, c).await?.rows, [[Some("on".into())]]);
+    assert_eq!(db.execute("rw", mode, 1, c).await?.rows, [[Some("off".into())]]);
+    db.execute("rw", &format!("CREATE TABLE {table} (n int)"), 1, c).await?;
+    assert!(db.execute("ro", write, 1, c).await.unwrap_err().message.contains("25006"));
+    assert_eq!(db.pool("ro").await?.rows(mode, 1).await?, [[Some("on".into())]]);
+    Ok(())
+}
+
+async fn pooler_rotation(db: &DbManager, c: &CancellationToken) -> IdeResult<()> {
+    let status = "SELECT pg_backend_pid(), current_setting('transaction_read_only'), current_setting('search_path'), current_setting('statement_timeout')";
+    let pool = db.pool("ro").await?;
+    let mut client = ide_db::Held::acquire(&pool).await?;
+    let first_pid = client.execute(&pool, status, 1, c).await?.rows[0][0].clone();
+    let writable = db.pool("rw").await?;
+    let mut blockers = Vec::new();
+    let mut previous_backend = loop {
+        let mut other = ide_db::Held::acquire(&writable).await?;
+        other.command("BEGIN").await?;
+        let pid = other.execute(&writable, status, 1, c).await?.rows[0][0].clone();
+        if pid == first_pid {
+            break other;
+        }
+        blockers.push(other);
+        assert!(blockers.len() < 4, "the fixture must offer the original backend");
+    };
+    for mut other in blockers {
+        other.command("ROLLBACK").await?;
+    }
+    let rerouted = client.execute(&pool, status, 1, c).await?;
+    assert_ne!(rerouted.rows[0][0], first_pid);
+    assert_eq!(rerouted.rows[0][1..], [Some("on".into()), Some("pg_catalog, public".into()), Some("17s".into())]);
+    let ordinary = previous_backend.execute(&writable, status, 1, c).await?;
+    assert_ne!(ordinary.rows[0][2].as_deref(), Some("pg_catalog, public"));
+    assert_ne!(ordinary.rows[0][3].as_deref(), Some("17s"));
+    previous_backend.command("ROLLBACK").await?;
+    drop(client);
+    Ok(())
+}
+
+async fn pooler_manual(db: &DbManager, write: &str, c: &CancellationToken) -> IdeResult<()> {
+    let mode = "SHOW transaction_read_only";
+    db.set_manual_commit("ro", true).await?;
+    for commit in [true, false] {
+        assert_eq!(db.execute("ro", mode, 1, c).await?.rows, [[Some("on".into())]]);
+        db.finish_transaction("ro", commit).await?;
+    }
+    db.execute("ro", write, 1, c).await.unwrap_err();
+    assert_eq!(db.execute("ro", mode, 1, c).await?.rows, [[Some("on".into())]]);
+    let timestamp = "SELECT transaction_timestamp()";
+    for batch in [false, true] {
+        let before = db.execute("ro", timestamp, 1, c).await?.rows;
+        let error = if batch {
+            let script = ide_db::split::split("SELECT 1/0; COMMIT", DbDriver::Postgres);
+            db.validate_script("ro", &script).await.unwrap_err()
+        } else {
+            db.execute("ro", "COMMIT", 1, c).await.unwrap_err()
+        };
+        assert!(error.message.contains("COMMIT"), "{}", error.message);
+        assert_ne!(db.execute("ro", timestamp, 1, c).await?.rows, before);
+    }
+    db.set_manual_commit("ro", false).await?;
+    Ok(())
+}
+
+async fn pooler_paging(db: &DbManager, c: &CancellationToken) -> IdeResult<()> {
+    let query = "SELECT current_setting('transaction_read_only'), pg_backend_pid(), transaction_timestamp(), n FROM generate_series(1, 12) n";
+    let first = db.execute_from("ro", query, 0, 2, c, None).await?;
+    let page = db.execute_from("ro", query, 2, 2, c, None).await?;
+    let next = db.execute_from("ro", query, 4, 2, c, None).await?;
+    assert_eq!(page.rows[0][0].as_deref(), Some("on"));
+    assert_eq!(page.rows[0][..3], first.rows[0][..3]);
+    assert_eq!(next.rows[0][..3], page.rows[0][..3]);
+    assert_eq!(next.rows[0][3].as_deref(), Some("5"));
+    db.release_result("ro", query, None);
+    let expired = db.execute_from("ro", query, 6, 2, c, None).await.unwrap_err();
+    assert!(expired.message.contains("Run the query again"), "{}", expired.message);
+    let chosen = db.execute_from("ro", "SELECT current_schema()", 0, 1, c, Some("public")).await?;
+    assert_eq!(chosen.rows, [[Some("public".into())]]);
+    assert_eq!(db.execute("ro", "SELECT current_schema()", 1, c).await?.rows, [[Some("pg_catalog".into())]]);
+
+    Ok(())
+}
+
+async fn pooler_cancellation(db: &DbManager, c: &CancellationToken) -> IdeResult<()> {
+    let writable = db.pool("rw").await?;
+    let mode = "SHOW transaction_read_only";
+    let stop = CancellationToken::new();
+    let slow = "SELECT pg_sleep(10) AS oi_pooler_cancel";
+    let (outcome, observed) = tokio::join!(db.execute("ro", slow, 1, &stop), async {
+        for _ in 0..40 {
+            let live = writable.rows("SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query = 'SELECT pg_sleep(10) AS oi_pooler_cancel'", 1).await.unwrap();
+            if live[0][0].as_deref() == Some("1") {
+                stop.cancel();
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        stop.cancel();
+        false
+    });
+    assert!(observed, "the slow statement reached PostgreSQL before cancellation");
+    assert_eq!(outcome.unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+    assert_eq!(db.execute("ro", mode, 1, c).await?.rows, [[Some("on".into())]]);
+    let active = writable.rows("SELECT count(*) FROM pg_stat_activity WHERE state <> 'idle' AND query = 'SELECT pg_sleep(10) AS oi_pooler_cancel'", 1).await?;
+    assert_eq!(active, [[Some("0".into())]]);
+    Ok(())
 }
 
 async fn manager(tmp: &tempfile::TempDir) -> Option<DbManager> {

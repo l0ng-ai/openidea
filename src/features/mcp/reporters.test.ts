@@ -138,6 +138,7 @@ describe("MCP editor reports", () => {
     for (let from = 4; from < 9; from++) {
       state.selection = { from, to: from + 2 };
       state.editorChanged();
+      // oxlint-disable-next-line no-await-in-loop -- each iteration asserts the debounce state for its selection before moving to the next one.
       await vi.advanceTimersByTimeAsync(100);
       expect(state.reportFocused).toHaveBeenCalledTimes(1);
     }

@@ -751,3 +751,47 @@ async fn stop_ends_a_turn_left_running_only_by_background_shells() {
     assert_eq!(res["stopReason"], "cancelled");
     assert!(!server.calls.lock().iter().any(|(m, _)| m == "session.abort"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_new_and_load_forward_staged_skill_directories_and_disabled_skills() {
+    let server =
+        Arc::new(FakeCopilotServer { peer: OnceLock::new(), calls: Mutex::new(Vec::new()), background_shell: false });
+    let updates = Arc::new(CollectUpdates(Mutex::new(Vec::new())));
+    let server_clone = server.clone();
+    let client = attach(updates, move |events| {
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (ar, aw) = tokio::io::split(a);
+        let (br, bw) = tokio::io::split(b);
+        let srv_peer = Peer::connect_framed(br, bw, server_clone.clone(), Framing::ContentLength);
+        let _ = server_clone.peer.set(srv_peer);
+        Ok(Peer::connect_framed(ar, aw, events, Framing::ContentLength))
+    })
+    .unwrap();
+    let _: Value = client.request("initialize", json!({}), None).await.unwrap();
+    let meta = json!({
+        "openidea": {
+            "skills": {
+                "copilotSkillDirectories": ["/farm/task-1/copilot"],
+                "copilotDisabledSkills": ["muted", "off"],
+            }
+        }
+    });
+    let _: Value =
+        client.request("session/new", json!({ "cwd": "/tmp", "mcpServers": [], "_meta": meta }), None).await.unwrap();
+    let _: Value = client
+        .request(
+            "session/load",
+            json!({ "sessionId": "cop-sess-1", "cwd": "/tmp", "mcpServers": [], "_meta": meta }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let calls = server.calls.lock();
+    for method in ["session.create", "session.resume"] {
+        let params = calls.iter().find_map(|(m, p)| (m == method).then_some(p)).expect(method);
+        assert_eq!(params["skillDirectories"], json!(["/farm/task-1/copilot"]), "{method}: {params}");
+        assert_eq!(params["disabledSkills"], json!(["muted", "off"]), "{method}: {params}");
+        assert!(params.get("enableConfigDiscovery").is_none(), "{method} must not auto-enable workspace MCP discovery");
+    }
+}

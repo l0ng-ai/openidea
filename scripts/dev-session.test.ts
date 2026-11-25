@@ -73,6 +73,7 @@ describe("development worktrees", () => {
   it("keeps different worktrees independent even when their control ports collide", async () => {
     const port = await freePort();
     for (const root of ["/repo/a", "/repo/b"]) {
+      // oxlint-disable-next-line no-await-in-loop -- both claims share one control port and are asserted in order
       const claim = await claimSession({ worktree: root, identifier: worktreeId(root), pid: process.pid }, port);
       expect("server" in claim).toBe(true);
       if ("server" in claim) servers.push(claim.server);

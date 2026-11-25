@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import type { AgentChange, AgentCommit, AgentLimit, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
+import { reducedMotion } from "@/platform/motion";
 import { basename, useProject } from "@/platform/project";
 import clsx from "clsx";
 import { Icon, IconButton, Popup, showContextMenu, T, tooltipAttrs } from "@/ui";
@@ -222,7 +223,7 @@ function LimitsMeter({ limits, now }: { limits: readonly AgentLimit[]; now: numb
   const anchor = useRef<HTMLButtonElement>(null);
   const [phase, setPhase] = useState<"closed" | "open" | "closing">("closed");
   const open = phase === "open";
-  const close = () => setPhase(window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "closed" : "closing");
+  const close = () => setPhase(reducedMotion() ? "closed" : "closing");
   useEffect(() => {
     if (phase !== "closing") return;
     const timer = window.setTimeout(() => setPhase("closed"), 100);

@@ -601,6 +601,7 @@ describe("terminal tab spinner state (#3831)", () => {
 
   const feed = async (session: TerminalSession, ...chunks: string[]) => {
     for (const chunk of chunks) {
+      // oxlint-disable-next-line no-await-in-loop -- chunks are written to the terminal in order
       await new Promise<void>((resolve) => session.term.write(chunk, resolve));
     }
   };

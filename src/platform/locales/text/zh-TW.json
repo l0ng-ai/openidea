@@ -1573,6 +1573,8 @@
   "Font": "字型",
   "Font preview": "字型預覽",
   "For protanopia and deuteranopia.": "適用於紅色盲和綠色盲。",
+  "Reduce motion": "減少動態效果",
+  "Turns off animations and transitions, such as spinners and popup fades. Always on when the system asks for reduced motion.": "關閉動畫和轉場效果，例如載入旋轉圖示和彈出視窗淡入淡出。系統要求減少動態效果時一律開啟。",
   "For symbols not supported by the main font": "用於主字型不支援的符號",
   "Force": "強制",
   "Force (with lease)": "強制 (with lease)",

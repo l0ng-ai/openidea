@@ -168,6 +168,7 @@ describe("streaming results into the Find tool window", () => {
 
     let updates = 0;
     for (let b = 0; b < BATCHES; b++) {
+      // oxlint-disable-next-line no-await-in-loop -- batches are ordered; each timer advance flushes this batch's render before the next is pushed
       await act(async () => {
         for (const f of all.slice((b * F) / BATCHES, ((b + 1) * F) / BATCHES)) push(f);
         await vi.advanceTimersByTimeAsync(60);

@@ -162,7 +162,11 @@ for (const placement of ["editor", "toolWindow"] as const) {
       const history = conversation(page);
       for (const range of [false, true]) {
         const expected = await selectDraft(box, range);
-        await history.click({ position: { x: 12, y: 20 } });
+        // Click reply text: at a fixed point of the narrow tool window a message's footer buttons can sit.
+        await history
+          .getByText(/^Reply \d+$/)
+          .last()
+          .click();
         await expect(history).toBeFocused();
         await history.press("Home");
         await expect.poll(() => history.evaluate((element) => element.scrollTop)).toBe(0);

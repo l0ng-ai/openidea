@@ -130,6 +130,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   "Vcs.Push": "vcs.push",
   "Vcs.UpdateProject": "vcs.update",
   "Git.Branches": "vcs.branches",
+  "Vcs.CopyCurrentBranchName": "vcs.copyBranchName",
   Annotate: "vcs.annotate",
   VcsShowNextChangeMarker: "vcs.nextChange",
   VcsShowPrevChangeMarker: "vcs.prevChange",

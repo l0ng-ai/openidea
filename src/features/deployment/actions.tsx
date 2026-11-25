@@ -312,6 +312,7 @@ export async function openSync(server: DeploymentServerValid, paths: string[]) {
       const entries = [];
       for (const path of coverage.paths) {
         if (useDeployment.getState().sync?.request !== request) break;
+        // oxlint-disable-next-line no-await-in-loop -- cancellation is rechecked before each compare and results are appended in path order.
         entries.push(...(await call(commands.deployCompare(path, server.id, request))));
       }
       return entries;
@@ -349,8 +350,10 @@ export async function runSync(steps: SyncStep[], mode: SyncRunMode = "all") {
       if (step.action !== "upload" || !root) continue;
       const path = `${root.replace(/\/$/, "")}/${step.path}`;
       if (!editorsFor(path).length) continue;
+      // oxlint-disable-next-line no-await-in-loop -- attach/save/release must stay paired per path; attached documents are shared editor state.
       const document = await attachDocument(path);
       try {
+        // oxlint-disable-next-line no-await-in-loop -- the document must be saved before release() in the finally block.
         await document.save();
       } finally {
         document.release();
@@ -368,6 +371,7 @@ export async function runSync(steps: SyncStep[], mode: SyncRunMode = "all") {
       for (const step of steps) {
         if (useDeployment.getState().sync?.request !== request) return;
         try {
+          // oxlint-disable-next-line no-await-in-loop -- refresh rechecks cancellation per step and updates checked/refreshed/error state in step order.
           const entries = await withSsh(deploymentSecretKey(server), () =>
             call(commands.deployCompare(`${root.replace(/\/$/, "")}/${step.path}`, server.id, request)),
           );
@@ -513,6 +517,7 @@ export function registerDeploymentActions(): () => void {
         // The default server group: each of its servers in turn, as Upload to… on the group does.
         const group = defaultGroup(deployment());
         if (group) {
+          // oxlint-disable-next-line no-await-in-loop -- group servers upload in turn, as Upload to… does; each transfer reports its own result.
           for (const server of group.servers) await transfer("upload", server, paths);
           return;
         }
@@ -528,6 +533,7 @@ export function registerDeploymentActions(): () => void {
       keywords: ["deploy", "sftp", "upload", "remote"],
       run: withTargets(async (paths) => {
         // A group uploads to each server in turn; each reports on its own, and a failure doesn't stop the rest.
+        // oxlint-disable-next-line no-await-in-loop -- chosen servers upload in turn so each reports independently; a failure must not stop the rest.
         for (const server of (await pickUploadTargets(paths)) ?? []) await transfer("upload", server, paths);
       }),
     },
