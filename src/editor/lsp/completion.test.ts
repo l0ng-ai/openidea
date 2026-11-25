@@ -239,6 +239,9 @@ describe("completion helpers", () => {
     expect(triggerCharacter("ab")).toBeNull();
     // `(` asks for annotation attributes in Java documents only.
     expect(triggerCharacter("@Test(", "java")).toBe("(");
+    expect(triggerCharacter("  @org.junit.Test (", "java")).toBe("(");
+    expect(triggerCharacter("foo(", "java")).toBeNull();
+    expect(triggerCharacter("if (", "java")).toBeNull();
     expect(triggerCharacter("foo(", "kotlin")).toBeNull();
     expect(triggerCharacter("foo(")).toBeNull();
   });

@@ -199,7 +199,8 @@ export function triggerCharacter(before: string, language?: string): string | nu
   if (last === ":") return before.slice(-2) === "::" ? ":" : null;
   if (last === ">") return before.slice(-2) === "->" ? ">" : null;
   if (last === "@") return "@";
-  // In Java, `(` after an annotation name asks the server for its attributes, like IDEA.
-  if (last === "(" && language === "java") return "(";
+  // In Java, `(` right after an annotation name asks the server for its attributes, like IDEA;
+  // a method call's `(` does not open the popup.
+  if (last === "(") return language === "java" && /@[\w$.]+\s*\($/.test(before) ? "(" : null;
   return null;
 }

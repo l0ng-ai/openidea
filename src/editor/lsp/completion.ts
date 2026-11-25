@@ -693,7 +693,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const doc = ctx.state.facet(lspDoc);
   if (!doc || doc.readOnly) return null;
   const word = ctx.matchBefore(WORD_BEFORE);
-  const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos), doc.language);
+  const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 128), ctx.pos), doc.language);
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
   const smart = ctx.state.field(smartLookup, false) ?? false;
