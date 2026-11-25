@@ -174,6 +174,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     fileHeader: true,
     imports: true,
     docComments: false,
+    goShortBlocks: true,
   },
   tabs: {
     placement: "top",

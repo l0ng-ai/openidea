@@ -7233,7 +7233,7 @@ export type FocusedEditor = {
 	selectedText: string,
 };
 
-export type FoldKind = "region" | "comment" | "imports";
+export type FoldKind = "region" | "comment" | "imports" | "compact";
 
 export type FoldRange = {
 	start_line: number,
@@ -7250,6 +7250,7 @@ export type FoldingSettings = {
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
+	goShortBlocks?: boolean,
 };
 
 /**

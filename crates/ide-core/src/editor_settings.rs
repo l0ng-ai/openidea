@@ -201,6 +201,7 @@ pub struct FoldingSettings {
     pub file_header: bool,
     pub imports: bool,
     pub doc_comments: bool,
+    pub go_short_blocks: bool,
 }
 
 impl Default for FoldingSettings {
@@ -211,6 +212,7 @@ impl Default for FoldingSettings {
             file_header: true,
             imports: true,
             doc_comments: false,
+            go_short_blocks: true,
         }
     }
 }
