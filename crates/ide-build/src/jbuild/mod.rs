@@ -926,15 +926,17 @@ impl JavaBuild<'_> {
                 },
             );
             if !matches!(result, Ok(true)) {
-                // Whatever this build had to compile stays to compile; the replaced classes stay
-                // the baseline the next compilation compares with.
                 for (path, _) in &written {
                     let _ = std::fs::remove_file(path);
                 }
-                state.classes.extend(replaced);
-                state.dirty = to_compile.union(&compiled).filter(|s| source_stamps.contains_key(*s)).cloned().collect();
-                state.success = false;
-                let _ = model::write_json(&state_file, &state);
+                // The next build starts from the state this one started from, with whatever this
+                // one had to compile still to compile. Its earlier rounds' classes are not the
+                // baseline: compared with them, the API and constant changes those rounds found
+                // would never reach this set's dependents or the sets compiled against it.
+                let mut retry = incremental::load_state(&state_file).unwrap_or_default();
+                retry.dirty.extend(to_compile.union(&compiled).filter(|s| source_stamps.contains_key(*s)).cloned());
+                retry.success = false;
+                let _ = model::write_json(&state_file, &retry);
                 return result.map(|_| true);
             }
             // javac names sources as they were passed; other spellings are matched canonically,

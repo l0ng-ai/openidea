@@ -308,6 +308,42 @@ fn recompiles_the_classes_an_api_change_reaches() {
 }
 
 #[test]
+fn an_api_change_from_a_failed_build_still_reaches_other_modules() {
+    let Some(f) = Fixture::new(&[
+        ("lib/src/main/java/l/L.java", "package l;\npublic class L { public static int m() { return 1; } }\n"),
+        ("lib/src/main/java/l/U.java", "package l;\nclass U { int u() { return L.m(); } }\n"),
+        ("app/src/main/java/a/A.java", "package a;\nclass A { int a() { return l.L.m(); } }\n"),
+    ]) else {
+        return;
+    };
+    assert_eq!(f.launch(false).failure, None);
+
+    // L compiles, then U, which still calls the removed method, fails lib before app compiles.
+    f.write("lib/src/main/java/l/L.java", "package l;\npublic class L { public static int n() { return 1; } }\n");
+    assert!(f.launch(false).failure.expect("lib fails").contains("U.java"));
+
+    // Once lib compiles, app learns that L changed, and A fails too instead of keeping a class
+    // that calls a method L no longer has.
+    f.write("lib/src/main/java/l/U.java", "package l;\nclass U { int u() { return L.n(); } }\n");
+    let failed = f.launch(false);
+    assert!(failed.failure.expect("app fails").contains("A.java"), "{:?}", failed.messages);
+
+    // So does a changed constant: C compiles, then the whole set, where U fails.
+    f.write("app/src/main/java/a/A.java", "package a;\nclass A { int a() { return l.L.n() + l.C.X; } }\n");
+    let c = |x: u32, y: &str| format!("package l;\npublic class C {{ public static final int X = {x};{y} }}\n");
+    f.write("lib/src/main/java/l/C.java", &c(1, " public static int y() { return 0; }"));
+    f.write("lib/src/main/java/l/U.java", "package l;\nclass U { int u() { return L.n() + C.y(); } }\n");
+    assert_eq!(f.launch(false).failure, None);
+    f.write("lib/src/main/java/l/C.java", &c(2, ""));
+    assert!(f.launch(false).failure.expect("lib fails").contains("U.java"));
+    f.write("lib/src/main/java/l/U.java", "package l;\nclass U { int u() { return L.n(); } }\n");
+    f.steps();
+    assert_eq!(f.launch(false).failure, None);
+    let steps = f.steps();
+    assert!(steps.contains(&"javac app (main, 1 file)".to_owned()), "{steps:?}");
+}
+
+#[test]
 fn reads_what_a_class_file_declares() {
     let Some((home, _)) = tools() else { return };
     let tmp = tempfile::tempdir().unwrap();
