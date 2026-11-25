@@ -5923,5 +5923,11 @@
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Ta wiadomość i kolejne zostaną usunięte, a pliki zmienione od tego czasu przez agenta wrócą do stanu sprzed jej wysłania. Wiadomość wróci do pola tekstowego.",
   "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "To wyczyści całą rozmowę, przywróci pliki zmienione przez agenta do stanu z początku zadania i rozpocznie nową sesję agenta z tą wiadomością.",
   "Resets in {resetIn}": "Resetuje się za {resetIn}",
-  "Cannot paste {name}": "Nie można wkleić {name}"
+  "Cannot paste {name}": "Nie można wkleić {name}",
+  "NuGet Packages": "Pakiety NuGet",
+  "Refresh packages": "Odśwież pakiety",
+  "Search NuGet packages": "Szukaj pakietów NuGet",
+  "Install / Update": "Zainstaluj / zaktualizuj",
+  "Versions": "Wersje",
+  "Transitive": "Przechodnia"
 }

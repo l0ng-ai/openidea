@@ -6,11 +6,14 @@ import {
   evaluateProject,
   dotnetTestArgs,
   jsonOutput,
+  type DotnetProject,
   type DotnetWorkspace,
 } from "@/platform/dotnet";
 import { dirname, useProject } from "@/platform/project";
 import type { RunConfig } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { maybeEditorService, projectViewSelection } from "@/workbench/contributions";
+import { contextDotnetTarget, isDotnetProjectPath, isDotnetSolutionPath } from "./target";
 
 export interface Package {
   id: string;
@@ -47,13 +50,79 @@ const initial: State = {
 export const useDotnet = create<State>(() => initial);
 let controller: AbortController | undefined;
 let generation = 0;
+/** The workspace scan a context action starts when the model was never loaded; concurrent calls share it (#5635). */
+let contextScan: Promise<unknown> | undefined;
 export function resetDotnet() {
   generation++;
   controller?.abort();
+  contextScan = undefined;
   useDotnet.setState(initial);
 }
 export const selectedProject = () =>
   useDotnet.getState().model.projects.find((p) => p.path === useDotnet.getState().selected);
+
+/**
+ * The .NET project or solution of the current context (#5635): an explicit file (the
+ * Project view context menu), else the Project view's selected `.csproj` / `.sln`, else
+ * the project of the active editor's file, else the solution — or, in a workspace with
+ * no solution, the project selected in the NuGet window.
+ */
+async function contextTarget(arg?: unknown): Promise<string | null> {
+  if (typeof arg === "string" && arg) return arg;
+  const resolve = () => {
+    return (
+      contextDotnetTarget({
+        selected: projectViewSelection(),
+        editorFile: maybeEditorService()?.activePath() ?? null,
+        model: useDotnet.getState().model,
+      }) ??
+      (useDotnet.getState().selected || null)
+    );
+  };
+  // A selected `.csproj` / `.sln` resolves without the model. Otherwise a fresh
+  // session may never have scanned the workspace yet (#5635): load it once
+  // instead of silently doing nothing. A workspace without .NET stays a no-op
+  // after that single scan, and a selected file never triggers one.
+  const target = resolve();
+  if (target) return target;
+  const { model } = useDotnet.getState();
+  if (model.projects.length || model.solutions.length || !useProject.getState().project?.root) return null;
+  await ensureDotnetModel();
+  return resolve();
+}
+
+/**
+ * Loads the workspace model unless it is loaded: the NuGet window on mount and the context
+ * actions share one scan (#5635), so opening the window while an action resolves its target
+ * does not scan twice.
+ */
+export async function ensureDotnetModel(): Promise<void> {
+  const { model } = useDotnet.getState();
+  if (model.projects.length || model.solutions.length || !useProject.getState().project?.root) return;
+  const scan = (contextScan ??= Promise.resolve(reloadDotnet()));
+  try {
+    await scan;
+  } finally {
+    // A failed scan must not disable the context actions for the rest of the
+    // session (#5635): drop it so the next caller starts a new one. A scan
+    // that completed finds the model loaded — or, in a workspace without
+    // .NET, no error — and keeps its single-scan no-op.
+    if (contextScan === scan) {
+      const { model, error } = useDotnet.getState();
+      if (error && !model.projects.length && !model.solutions.length) contextScan = undefined;
+    }
+  }
+}
+
+/** The context's target as an evaluated project: a solution has no single project, so the selected one stands in. */
+async function contextProject(): Promise<DotnetProject | null> {
+  const target = await contextTarget();
+  const s = useDotnet.getState();
+  const path = target && !isDotnetSolutionPath(target) ? target : s.selected;
+  const known = s.model.projects.find((p) => p.path === path);
+  if (known || !path) return known ?? null;
+  return isDotnetProjectPath(path) ? evaluateProject(path, s.configuration, "") : null;
+}
 
 async function task(work: (signal: AbortSignal) => Promise<Partial<State>>) {
   controller?.abort();
@@ -133,27 +202,57 @@ export function selectDotnet(path: string, configuration?: string, framework?: s
   });
 }
 
-export function buildDotnet(operation: "build" | "restore" | "clean") {
-  const p = selectedProject();
-  if (!p) return;
+export async function buildDotnet(operation: "build" | "restore" | "clean", arg?: unknown) {
+  const target = await contextTarget(arg);
+  if (!target) return;
+  // A solution builds as a whole: `dotnet` takes the `.sln` directly, there is no
+  // project to re-evaluate afterwards.
+  if (isDotnetSolutionPath(target)) {
+    const { configuration } = useDotnet.getState();
+    return task(async (signal) => ({
+      output: await dotnet(
+        [
+          operation,
+          target,
+          ...(operation === "restore" ? [`-p:Configuration=${configuration}`] : ["--configuration", configuration]),
+        ],
+        dirname(target),
+        signal,
+      ),
+    }));
+  }
+  const selected = selectedProject();
   const { framework, configuration } = useDotnet.getState();
+  // The selected project keeps its chosen configuration and framework; another
+  // project builds with its own defaults.
+  if (selected?.path !== target)
+    return task(async (signal) => {
+      const output = await dotnet([operation, target, "--configuration", "Debug"], dirname(target), signal);
+      const model = useDotnet.getState().model;
+      if (!model.projects.some((p) => p.path === target)) return { output };
+      const project = await evaluateProject(target, "Debug", "", signal);
+      return {
+        output,
+        model: { ...model, projects: model.projects.map((item) => (item.path === target ? project : item)) },
+      };
+    });
   return task(async (signal) => {
     const output = await dotnet(
       [
         operation,
-        p.path,
+        target,
         ...(operation === "restore"
           ? [`-p:Configuration=${configuration}`]
           : ["--configuration", configuration, ...(framework ? ["--framework", framework] : [])]),
       ],
-      dirname(p.path),
+      dirname(target),
       signal,
     );
-    const project = await evaluateProject(p.path, configuration, framework, signal);
+    const project = await evaluateProject(target, configuration, framework, signal);
     const model = useDotnet.getState().model;
     return {
       output,
-      model: { ...model, projects: model.projects.map((item) => (item.path === p.path ? project : item)) },
+      model: { ...model, projects: model.projects.map((item) => (item.path === target ? project : item)) },
     };
   });
 }
@@ -285,23 +384,25 @@ export function discoveredTests(output: string): string[] {
   }
   return [...tests];
 }
-export function discoverTests() {
-  const p = selectedProject();
+export async function discoverTests() {
+  const p = await contextProject();
   if (!p) return;
   const s = useDotnet.getState();
+  const own = p.path === s.selected;
+  const framework = own ? s.framework : "";
+  const configuration = own ? s.configuration : "Debug";
   return task(async (signal) => {
-    const output = await dotnet(
-      dotnetTestArgs(p, s.framework, ["--list-tests"], s.configuration),
-      dirname(p.path),
-      signal,
-    );
+    const output = await dotnet(dotnetTestArgs(p, framework, ["--list-tests"], configuration), dirname(p.path), signal);
     return { output, tests: discoveredTests(output) };
   });
 }
-export function runTests(test?: string) {
-  const p = selectedProject();
+export async function runTests(test?: string) {
+  const p = await contextProject();
   if (!p) return;
   const s = useDotnet.getState();
+  const own = p.path === s.selected;
+  const framework = own ? s.framework : "";
+  const configuration = own ? s.configuration : "Debug";
   const method = test?.replace(/\(.*$/, "").trim();
   const config: RunConfig = {
     id: `dotnet:${p.path}:tests`,
@@ -316,8 +417,8 @@ export function runTests(test?: string) {
     debugAdapter: null,
     params: {
       project: p.path,
-      framework: s.framework,
-      configuration: s.configuration,
+      framework,
+      configuration,
       runner: p.runner,
       adapter: p.adapter,
       programArgs: "",
