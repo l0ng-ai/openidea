@@ -516,7 +516,9 @@ export function RunTargetsEditor() {
         </Row>
       </Section>
       {current && (
-        <Section title="Target Settings">
+        // Keyed by target id: switching targets remounts the form and drops any
+        // uncommitted ListField draft instead of committing it to the new target.
+        <Section title="Target Settings" key={current.id}>
           <TextField label="Name" value={current.name} onChange={(name) => update({ name })} />
           <Row label="Type" className={styles.alignedRow}>
             <Select
