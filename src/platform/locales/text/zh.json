@@ -8379,6 +8379,7 @@
   "{version} is available": "{version} 可用",
   "The agent's models and modes can be chosen here after its first session.": "agent 运行过一次会话后，才能在这里选择它的模型和模式。",
   "Agent's default ({fallback})": "agent 默认（{fallback}）",
+  "Default ({fallback})": "默认（{fallback}）",
   "Agent's default": "agent 默认",
   "What you pick on the New Task page wins; these apply until then and after switching agents.": "以“新任务”页上的选择为准；在那之前，以及切换 agent 之后，使用这里的设置。",
   "Queues the message for after the turn": "排队，等本回合结束后发送",
