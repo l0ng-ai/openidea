@@ -467,6 +467,18 @@ describe("terminalFont", () => {
     expect(family).toContain('"PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC"');
     expect(family.endsWith(', "Source Han Sans SC", monospace')).toBe(true);
   });
+  it("names Latin monospace faces before the CJK ones, whose Latin glyphs are proportional", () => {
+    // A Linux box without the chosen font: Latin must stop at a monospace face, not Noto Sans CJK.
+    for (const font of [
+      terminalFont(t, editor, BASE),
+      terminalFont({ ...t, useEditorFont: false, fontFamily: "Missing Mono" }, editor, BASE),
+    ]) {
+      const at = (face: string) => font.family.indexOf(`"${face}"`);
+      expect(at("DejaVu Sans Mono")).toBeGreaterThan(at("Symbols Nerd Font"));
+      expect(at("Consolas")).toBeLessThan(at("Microsoft YaHei"));
+      expect(at("DejaVu Sans Mono")).toBeLessThan(at("Noto Sans CJK SC"));
+    }
+  });
 });
 
 describe("terminal tab titles", () => {
