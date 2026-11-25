@@ -249,6 +249,12 @@
   max-width: 100%;
   font-size: var(--fs-ui);
 }
+/* A bare inline span puts its inline-flex checkbox child on the text baseline,
+   lifting it above the sibling controls; keep the tooltip wrapper centred. */
+.pushOptionWrap {
+  display: inline-flex;
+  align-items: center;
+}
 .pushTargetBar {
   display: flex;
   flex-wrap: wrap;
