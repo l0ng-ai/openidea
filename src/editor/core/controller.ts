@@ -26,6 +26,7 @@ import {
 import {
   clearProjectViewLead,
   getFileDecoration,
+  gitMenuItems,
   menuGroupItems,
   notifications,
   openFileExternally,
@@ -706,6 +707,7 @@ export class EditorController implements SlotHost {
       this.restoring = false;
     }
     if (liveKeys.size)
+      // oxlint-disable-next-line no-await-in-loop -- enforcing a limit mutates tabs and can evict them; each pane must see the previous pane's result
       for (const paneId of paneIds(useTabs.getState())) await this.enforcePaneTabLimit(paneId, undefined, liveKeys);
     const next = useTabs.getState();
     for (const pane of Object.values(next.panes)) if (pane.active) void this.ensureSlot(pane.active);
@@ -1028,7 +1030,10 @@ export class EditorController implements SlotHost {
             openInMenu(slot.model.path, selectedLineContext(view.state)),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),
-            gitMenu(slot.model.path),
+            {
+              label: "Git",
+              submenu: gitMenuItems({ paths: [slot.model.path], file: true, ignore: true, editorSelection: true }),
+            },
             { kind: "separator" },
             {
               kind: "action",
@@ -1673,12 +1678,14 @@ export class EditorController implements SlotHost {
             if (!discard) break;
             // Nor may a Cancel on ending a busy tab's session: ask before discarding anything.
             if (!busyAsked) {
+              // oxlint-disable-next-line no-await-in-loop -- a Cancel here aborts the whole close; the answer decides whether to keep looping
               if (!(await this.confirmBusyClose(currentRemoval, confirmedBusy))) return false;
               if (generation !== this.projectGeneration) return false;
               busyAsked = true;
               continue;
             }
             discards.delete(discard.input.key);
+            // oxlint-disable-next-line no-await-in-loop -- discarding changes which documents lose their last tab, so the loop re-checks afterwards
             await discard.lifecycle.discard(discard.input);
             // The await may have changed which documents lose their last tab.
             if (generation !== this.projectGeneration) return false;
@@ -1687,11 +1694,13 @@ export class EditorController implements SlotHost {
           if (!prepared.some((document) => document.input.key === d.input.key)) {
             prepared.push(d);
             this.preparedDocuments.set(d.input.key, d);
+            // oxlint-disable-next-line no-await-in-loop -- each prepare is checked for cancellation and project changes before the next one starts
             await d.lifecycle.prepareClose(d.input);
           }
           if (generation !== this.projectGeneration) return false;
           if (!stillLast(d)) continue;
           if (documentDirty(d)) {
+            // oxlint-disable-next-line no-await-in-loop -- one modal decision per document; Cancel ends the close sequence
             const decision = await ask({
               title: t("app.unsaved.title"),
               body: t("app.unsaved.body", { count: 1, project: d.input.path ?? d.input.key }),
@@ -1702,6 +1711,7 @@ export class EditorController implements SlotHost {
               icon: "warning",
             });
             if (!stillLast(d)) continue;
+            // oxlint-disable-next-line no-await-in-loop -- saving is only for the document just confirmed, before the loop moves on
             if (decision.button === "save") await d.lifecycle.save(d.input);
             else if (decision.button === "discard") discards.set(d.input.key, d);
             else return false;
@@ -1720,6 +1730,7 @@ export class EditorController implements SlotHost {
             untitledAuthorized.add(key);
             continue;
           }
+          // oxlint-disable-next-line no-await-in-loop -- one Save As decision at a time; a Cancel stops asking about the remaining buffers
           const decision = await ask({
             title: t("app.unsaved.title"),
             body: t("app.unsaved.fileBody", { name: untitledTitle(key) }),
@@ -1730,6 +1741,7 @@ export class EditorController implements SlotHost {
             icon: "warning",
           });
           if (decision.button === "save") {
+            // oxlint-disable-next-line no-await-in-loop -- re-check dirtiness right after this save before asking about the next buffer
             await model.save("explicit");
             // Still dirty: the Save As dialog was cancelled or the save failed.
             if (model.getMeta().dirty) return false;
@@ -1860,6 +1872,7 @@ export class EditorController implements SlotHost {
         continue;
       }
       try {
+        // oxlint-disable-next-line no-await-in-loop -- each reload emits document events and notifications; keep them in the requested file order
         const encoding = await this.manager.backend.setEncoding(meta.doc, meta.encoding, true);
         model.setMeta({ encoding: encoding.encoding, hasBom: encoding.hasBom });
       } catch (e) {
@@ -1901,6 +1914,7 @@ export class EditorController implements SlotHost {
       useTabs.setState(r.state, true);
       target = r.paneId;
     }
+    // oxlint-disable-next-line no-await-in-loop -- drop order determines tab order, tab-limit eviction and which of the dropped files gets focus
     for (const [i, path] of paths.entries()) await this.openFile(path, { pane: target, focus: i === paths.length - 1 });
     const pane = useTabs.getState().panes[target];
     if (pane && !pane.tabs.length) this.apply((st) => removePane(st, target));
@@ -2171,8 +2185,10 @@ export class EditorController implements SlotHost {
     return this.removeGuarded((s) => closeKey(s, key));
   }
 
-  activeInput(): EditorInput | null {
-    return this.activeTabOf()?.input ?? null;
+  activeInput(options?: { previewOnly?: boolean }): EditorInput | null {
+    const tab = this.activeTabOf();
+    if (options?.previewOnly && (!tab?.preview || !editorPrefs().tabs.previewTab)) return null;
+    return tab?.input ?? null;
   }
 
   onActiveInputChange(fn: (input: EditorInput | null) => void): () => void {
@@ -2259,6 +2275,7 @@ export class EditorController implements SlotHost {
         for (const d of documents) {
           prepared.push(d);
           this.preparedDocuments.set(d.input.key, d);
+          // oxlint-disable-next-line no-await-in-loop -- cancellation is checked after each prepare, so later documents must not start in parallel
           await d.lifecycle.prepareClose(d.input);
           if (generation !== this.projectGeneration) throw new Error("The project changed during close");
           if (this.closeSession !== session) {
@@ -2386,7 +2403,9 @@ export class EditorController implements SlotHost {
             openInMenu(path),
             { kind: "separator" },
             localHistoryMenu(path),
-            ...(inProject ? [gitMenu(path)] : []),
+            ...(inProject
+              ? ([{ label: "Git", submenu: gitMenuItems({ paths: [path], file: true, ignore: true }) }] as MenuItem[])
+              : []),
             { kind: "separator" },
             { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
             { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
@@ -2433,54 +2452,6 @@ function localHistoryMenu(path: string): MenuItem {
     submenu: [
       { kind: "action", action: "vcs.localHistory", arg: { path }, label: "Show History" },
       { kind: "action", action: "localHistory.putLabel", label: "Put Label…" },
-    ],
-  };
-}
-
-/** Git › for one file (editor and editor tab menus). */
-function gitMenu(path: string): MenuItem {
-  return {
-    label: "Git",
-    submenu: [
-      { kind: "action", action: "vcs.commit", label: "Commit File…" },
-      { kind: "action", action: "vcs.addToVcs", arg: [path], label: "Add" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.annotate", arg: path, label: "Annotate with Git Blame" },
-      { kind: "action", action: "vcs.showDiff", arg: [path], label: "Show Diff" },
-      { kind: "action", action: "vcs.compareWithBranch", arg: { path } },
-      { kind: "action", action: "vcs.compareWithRevision", arg: { path } },
-      { kind: "action", action: "vcs.showHistory", arg: [path], label: "Show History" },
-      { kind: "action", action: "vcs.showCurrentRevision", arg: { path } },
-      { kind: "action", action: "vcs.showHistoryForSelection", label: "Show History for Selection" },
-      { kind: "action", action: "vcs.rollback", arg: [path], label: "Rollback…" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.push", label: "Push…" },
-      { kind: "action", action: "vcs.pull", arg: [path], label: "Pull…" },
-      { kind: "action", action: "vcs.fetch", label: "Fetch" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.merge", arg: [path] },
-      { kind: "action", action: "vcs.rebase", arg: [path] },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.branches", label: "Branches…" },
-      { kind: "action", action: "vcs.newBranch" },
-      { kind: "action", action: "vcs.newTag" },
-      { kind: "action", action: "vcs.resetHead" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.stash" },
-      { kind: "action", action: "vcs.unstash" },
-      { kind: "separator" },
-      {
-        label: "GitHub",
-        icon: "github",
-        submenu: [
-          { kind: "action", action: "github.pullRequests" },
-          { kind: "action", action: "github.createPullRequest" },
-          { kind: "action", action: "github.checkoutPullRequest" },
-          { kind: "action", action: "github.openInBrowser" },
-        ],
-      },
-      { kind: "action", action: "vcs.manageRemotes" },
-      { kind: "action", action: "vcs.clone", label: "Clone…" },
     ],
   };
 }

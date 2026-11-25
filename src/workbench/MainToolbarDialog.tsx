@@ -15,7 +15,9 @@ import {
   entryAction,
   useMainToolbarSettings,
   widgetTitle,
+  TOOLBAR_SIDES,
   type ToolbarLayout,
+  type ToolbarSide,
 } from "./mainToolbar";
 import styles from "./MainToolbarDialog.module.css";
 
@@ -27,8 +29,18 @@ export function MainToolbarDialogHost() {
   return open ? <CustomizeDialog onClose={() => useCustomize.setState({ open: false })} /> : null;
 }
 
-type Side = "left" | "right";
-const SIDES: Side[] = ["left", "right"];
+type Side = ToolbarSide;
+
+const SIDE_TITLES: Record<Side, string> = { left: "Left", center: "Center", right: "Right" };
+const GROUP_LABELS: Record<Side, string> = { left: "Left group", center: "Center group", right: "Right group" };
+const MOVE_TITLES: Record<Side, string> = { left: "Move to Left", center: "Move to Center", right: "Move to Right" };
+
+/** Moves entry `index` of `side` to the end of the group `to`. */
+export function moveToGroup(layout: ToolbarLayout, side: Side, index: number, to: Side): ToolbarLayout {
+  const id = layout[side][index];
+  if (id === undefined || to === side) return layout;
+  return { ...layout, [side]: layout[side].filter((_, i) => i !== index), [to]: [...layout[to], id] };
+}
 
 function move(layout: ToolbarLayout, side: Side, index: number, delta: -1 | 1): ToolbarLayout {
   const list = [...layout[side]];
@@ -75,7 +87,7 @@ function CustomizeDialog({ onClose }: { onClose: () => void }) {
       open
       title="Customize Main Toolbar"
       onClose={onClose}
-      width={620}
+      width={760}
       buttons={[
         { label: "OK", role: "default", onClick: () => void apply() },
         { label: t("common.cancel"), role: "cancel" },
@@ -120,22 +132,23 @@ function CustomizeDialog({ onClose }: { onClose: () => void }) {
               setSel({ ...sel, index: sel.index + 1 });
             }}
           />
-          <IconButton
-            icon={sel.side === "left" ? "arrow-right" : "arrow-left"}
-            title={sel.side === "left" ? "Move to Right" : "Move to Left"}
-            size="small"
-            disabled={selected === undefined}
-            onClick={() => {
-              if (selected === undefined) return;
-              const other: Side = sel.side === "left" ? "right" : "left";
-              setLayout({
-                ...layout,
-                [sel.side]: layout[sel.side].filter((_, i) => i !== sel.index),
-                [other]: [...layout[other], selected],
-              });
-              setSel({ side: other, index: layout[other].length });
-            }}
-          />
+          {([-1, 1] as const).map((step) => {
+            const to = TOOLBAR_SIDES[TOOLBAR_SIDES.indexOf(sel.side) + step];
+            return (
+              <IconButton
+                key={step}
+                icon={step < 0 ? "arrow-left" : "arrow-right"}
+                title={MOVE_TITLES[to ?? (step < 0 ? "left" : "right")]}
+                size="small"
+                disabled={selected === undefined || !to}
+                onClick={() => {
+                  if (!to) return;
+                  setLayout(moveToGroup(layout, sel.side, sel.index, to));
+                  setSel({ side: to, index: layout[to].length });
+                }}
+              />
+            );
+          })}
           <IconButton
             icon="undo"
             title="Restore Defaults"
@@ -146,11 +159,15 @@ function CustomizeDialog({ onClose }: { onClose: () => void }) {
             }}
           />
         </div>
-        {adding && <AddPicker hidden={layout.hidden} present={[...layout.left, ...layout.right]} onPick={add} />}
+        {adding && (
+          <AddPicker hidden={layout.hidden} present={TOOLBAR_SIDES.flatMap((side) => layout[side])} onPick={add} />
+        )}
         <div className={styles.sides}>
-          {SIDES.map((side) => (
-            <section key={side} className={styles.side} aria-label={side === "left" ? "Left" : "Right"}>
-              <h3 className={styles.heading}>{side === "left" ? <T>Left</T> : <T>Right</T>}</h3>
+          {TOOLBAR_SIDES.map((side) => (
+            <section key={side} className={styles.side} aria-label={SIDE_TITLES[side]}>
+              <h3 className={styles.heading}>
+                <T>{SIDE_TITLES[side]}</T>
+              </h3>
               <List
                 items={layout[side]}
                 getKey={(id) => id}
@@ -158,7 +175,7 @@ function CustomizeDialog({ onClose }: { onClose: () => void }) {
                 onActiveChange={(index) => setSel({ side, index })}
                 autoFocus={side === "left"}
                 className={styles.list}
-                aria-label={side === "left" ? "Left group" : "Right group"}
+                aria-label={GROUP_LABELS[side]}
                 empty={
                   <div className={styles.empty}>
                     <T>Empty</T>

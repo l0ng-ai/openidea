@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { AgentConfigOption, AgentProvider, CustomAgentInput, NewAgentTask } from "@/bindings";
+import type { AgentConfigOption, AgentProvider, CustomAgentInput, NewAgentTask, ProjectInfo } from "@/bindings";
 import { useProject } from "@/platform/project";
 import { HomeEditor } from "./HomeEditor";
 import homeStyles from "./Home.module.css";
@@ -12,6 +12,7 @@ const backend = vi.hoisted(() => ({
   probe: vi.fn(),
   saveCustom: vi.fn(),
   hermesProfiles: [] as { name: string; label: string }[],
+  branches: [] as { name: string; remote: boolean }[],
 }));
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok", data });
 vi.mock("@/platform/ipc", async (original) => ({
@@ -30,7 +31,7 @@ vi.mock("@/platform/ipc", async (original) => ({
       }),
     agentProbe: (provider: string, refresh: boolean) => backend.probe(provider, refresh),
     vcsBranchInfo: () => ok({ head: "main" }),
-    vcsBranches: () => ok([]),
+    vcsBranches: () => ok(backend.branches),
     agentCreate: (req: NewAgentTask) => backend.create(req),
     agentHermesProfiles: () => ok(backend.hermesProfiles),
     agentCustomSave: (input: CustomAgentInput) => {
@@ -58,6 +59,7 @@ const option = (id: string, category: string, values: string[], current: string)
 
 beforeEach(() => {
   disconnect();
+  backend.branches = [];
   backend.create.mockReset().mockImplementation((req: NewAgentTask) => ok({ id: "new", config: req.config }));
   backend.probe.mockReset().mockImplementation(() => ok(null));
   backend.providers = [
@@ -274,4 +276,47 @@ it("offers Hermes profiles next to the model and starts the chosen one with -p",
     args: ["-p", "Dom 2", "acp"],
   });
   await waitFor(() => expect(screen.getByRole("button", { name: "Hermes profile" })).toHaveTextContent("Dom 2"));
+});
+
+it("shows workspace folder and branch names as written in Chinese", async () => {
+  const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+  await setLocale("zh");
+  try {
+    // Precondition: the zh catalog translates these words, so a translated label would differ.
+    expect(tx("dev")).not.toBe("dev");
+    expect(tx("test")).not.toBe("test");
+    backend.branches = [
+      { name: "dev", remote: false },
+      { name: "test", remote: false },
+    ];
+    useProject.setState({
+      project: {
+        root: "/ws",
+        name: "Workspace",
+        trusted: true,
+        isGit: true,
+        workspace: { version: 1, name: "Workspace", projects: ["/ws/dev", "/ws/test"] },
+      } as ProjectInfo,
+    });
+    useAgents.setState({ draft: { ...useAgents.getState().draft, isolation: "worktree" } });
+    render(<HomeEditor />);
+    const projectPicker = screen.getByRole("button", { name: tx("Project") });
+    expect(projectPicker).toHaveTextContent(/^dev$/);
+    fireEvent.click(projectPicker);
+    expect(
+      within(screen.getByRole("listbox"))
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["dev/ws/dev", "test/ws/test"]);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+    fireEvent.click(await screen.findByRole("button", { name: tx("Base branch") }));
+    expect(
+      within(screen.getByRole("listbox"))
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["dev", "test"]);
+  } finally {
+    _resetI18nForTests();
+    useProject.setState({ project: null });
+  }
 });

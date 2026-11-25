@@ -93,7 +93,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
       frame = requestAnimationFrame(() => {
         frame = 0;
         const match = session.isSearchSelection
-          ? session.host.querySelector(`.${ACTIVE_SEARCH_DECORATION_CLASS}`)?.getBoundingClientRect()
+          ? session.term.element?.querySelector(`.${ACTIVE_SEARCH_DECORATION_CLASS}`)?.getBoundingClientRect()
           : undefined;
         if (!match?.width) {
           element.removeAttribute("data-match-covered");

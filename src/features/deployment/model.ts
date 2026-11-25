@@ -170,6 +170,8 @@ export function joinRemote(dir: string, rel: string): string {
 export function remoteParent(path: string): string {
   const trimmed = path.length > 1 ? path.replace(/\/+$/, "") : path;
   const i = trimmed.lastIndexOf("/");
+  if (/^[a-z]:$/i.test(trimmed)) return `${trimmed}/`;
+  if (i === 2 && trimmed[1] === ":") return trimmed.slice(0, 3);
   return i <= 0 ? "/" : trimmed.slice(0, i);
 }
 

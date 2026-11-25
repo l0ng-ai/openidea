@@ -101,6 +101,10 @@ export class NotebookSession {
   // EditorState contains selection and syntax state, but deliberately no local history.
   readonly editors = new Map<string, EditorState>();
   readonly markdownEditing = new Set<string>();
+  /** Cells folded to one line, source and outputs (view state, not saved in the notebook). */
+  readonly collapsedCells = new Set<string>();
+  /** Code cells whose outputs alone are folded. */
+  readonly hiddenOutputs = new Set<string>();
   selectedCell: string | null = null;
   scrollTop = 0;
   /** The last `reveal` request a cell editor carried out. */

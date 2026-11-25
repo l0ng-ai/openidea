@@ -263,9 +263,8 @@ export async function subclassMap(index: InheritanceIndex): Promise<Map<string, 
 
 /** The declarations `cls` directly inherits from, in the order it writes them. */
 export async function baseDeclarations(index: InheritanceIndex, cls: ClassInheritance): Promise<ClassInheritance[]> {
-  const out: ClassInheritance[] = [];
-  for (const base of cls.bases) out.push(...(await index.resolve(base, cls.path)));
-  return out;
+  const resolved = await Promise.all(cls.bases.map((base) => index.resolve(base, cls.path)));
+  return resolved.flat();
 }
 
 /**
@@ -309,22 +308,23 @@ export async function ancestryResolution(
   let level: ClassInheritance[] = [cls];
   for (let d = 1; d <= depth && level.length; d++) {
     const next: ClassInheritance[] = [];
-    for (const current of level) {
-      for (const base of current.bases) {
-        const found = await index.resolve(base, current.path);
-        if (!found.length) {
-          if (!EMPTY_BASES.has(base)) firstUnresolvedDepth = Math.min(firstUnresolvedDepth, d);
-          continue;
-        }
-        for (const parent of found) {
-          const key = declarationKey(parent);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          out.push({ decl: parent, depth: d });
-          next.push(parent);
-        }
+    const pairs = level.flatMap((current) => current.bases.map((base) => ({ current, base })));
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; resolves within a level are parallel
+    const resolved = await Promise.all(pairs.map(({ current, base }) => index.resolve(base, current.path)));
+    pairs.forEach(({ base }, i) => {
+      const found = resolved[i]!;
+      if (!found.length) {
+        if (!EMPTY_BASES.has(base)) firstUnresolvedDepth = Math.min(firstUnresolvedDepth, d);
+        return;
       }
-    }
+      for (const parent of found) {
+        const key = declarationKey(parent);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ decl: parent, depth: d });
+        next.push(parent);
+      }
+    });
     level = next;
   }
   return { ancestors: out, firstUnresolvedDepth };

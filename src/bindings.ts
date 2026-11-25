@@ -234,11 +234,10 @@ export const commands = {
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	/**
-	 *  Build › Compile File: compiles one Java source of a linked Maven module with
-	 *  `javac`, streaming the console and messages on `on_event`; cancellable with
-	 *  `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
-	 *  build) are cleared first; the new messages are published as `build`
-	 *  diagnostics.
+	 *  Build › Recompile: compiles one Java source file with `javac`, streaming the
+	 *  console and messages on `on_event`; cancellable with `cancel_request(request)`.
+	 *  Diagnostics of `clear` (the files of the previous build) are cleared first;
+	 *  the new messages are published as `build` diagnostics.
 	 */
 	buildCompileFile: (file: string, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_compile_file", { file, request, clear, onEvent })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */
@@ -324,6 +323,8 @@ export const commands = {
 	/**  Cucumber feature files and step definition files, for step navigation. */
 	cucumberSources: () => typedError<StepSource[], IdeError>(__TAURI_INVOKE("cucumber_sources")),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
+	/**  Records the exact helper and destination reviewed in the local data-source dialog. */
+	dbApproveExternalTunnel: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_external_tunnel", { source })),
 	dbApproveJdbcSource: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_jdbc_source", { source })),
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
@@ -335,12 +336,12 @@ export const commands = {
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
-	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
+	dbDisconnect: (id: string, wholeSource: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id, wholeSource })),
 	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
-	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, onProgress })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -353,8 +354,15 @@ export const commands = {
 	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
 	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
+	/**  Closes what the pages of a result keep open on the server (its result tab was closed). */
+	dbReleaseResult: (id: string, statement: string, schema: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_result", { id, statement, schema })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbRemoveJdbcDriver: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_jdbc_driver", { id })),
+	/**
+	 *  Row `row` (from 0) of the result of `statement`, whole: what a page of a run with a
+	 *  `cell_limit` shows cut short.
+	 */
+	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema })),
 	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	/**
 	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
@@ -381,6 +389,8 @@ export const commands = {
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	/**  Tests the reviewed helper once, without persisting approval for subsequent connections. */
+	dbTestExternalTunnel: (request: RequestId, source: DataSource_Deserialize, password: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_external_tunnel", { request, source, password })),
 	/**  Data Source › SSH/SSL › Test SSH Tunnel. */
 	dbTestTunnel: (source: DataSource_Deserialize, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_tunnel", { source, sshSecret })),
 	/**  Installed copies of `tool`, newest first. */
@@ -449,6 +459,8 @@ export const commands = {
 	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
 	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
 	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
+	/**  A `Thread.print -l` of the debuggee JVM, or why it cannot be taken. */
+	debugJvmThreadDump: (session: DebugSessionId) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("debug_jvm_thread_dump", { session })),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -637,6 +649,8 @@ export const commands = {
 	dockerSettings: () => typedError<DockerSettings, IdeError>(__TAURI_INVOKE("docker_settings")),
 	/**  Availability plus containers, images, volumes and networks. */
 	dockerSnapshot: (endpoint: DockerEndpoint) => typedError<DockerSnapshot, IdeError>(__TAURI_INVOKE("docker_snapshot", { endpoint })),
+	/**  Disk usage per volume name (`docker system df -v`). */
+	dockerVolumeSizes: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_volume_sizes", { endpoint })),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
@@ -888,6 +902,11 @@ export const commands = {
 	lspExecuteCommand: (doc: DocId, command: Command) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_execute_command", { doc, command })),
 	lspExtractInterface: (request: RequestId, doc: DocId, pos: Pos, members: string[], name: string, destination: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_extract_interface", { request, doc, pos, members, name, destination, confirmation })),
 	lspExtractInterfaceInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<ExtractInterfaceInfo, IdeError>(__TAURI_INVOKE("lsp_extract_interface_info", { request, doc, pos })),
+	/**
+	 *  Where other files import the document's file (Find Usages on a file, a Vue component's
+	 *  usages). Cancel with `cancel_request(request)`.
+	 */
+	lspFileReferences: (request: RequestId, doc: DocId) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_file_references", { request, doc })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -1416,6 +1435,11 @@ export const commands = {
 	versions: string[],
 } | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
+	 *  PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
+	 *  PyPI's name list, which the first search downloads and a search a day later refreshes.
+	 */
+	pypiSearch: (query: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("pypi_search", { query, request })),
+	/**
 	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
 	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
 	 */
@@ -1510,6 +1534,7 @@ export const commands = {
 	remoteTrustSet: (trusted: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("remote_trust_set", { trusted })),
 	/**  This machine's trust decision for the window's remote project (see [`Connection::authorize`]). */
 	remoteTrustStatus: () => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("remote_trust_status")),
+	remoteUploadInto: (connection: FsConnection, paths: IpcPath[], target: string, replace: boolean, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_upload_into", { connection, paths, target, replace, request })),
 	removeRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent", { path })),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	/**
@@ -1551,6 +1576,11 @@ export const commands = {
 	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  Project files run configurations can be imported from (`.vscode/launch.json`). */
 	runImportSources: () => typedError<RunImportSource[], IdeError>(__TAURI_INVOKE("run_import_sources")),
+	/**
+	 *  A `Thread.print -l` of the JVM a run started: the deepest HotSpot JVM of the run's process
+	 *  tree, else the one carrying `token` (the run's marker property).
+	 */
+	runJvmThreadDump: (id: RunId, token: string | null) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("run_jvm_thread_dump", { id, token })),
 	runList: () => __TAURI_INVOKE<RunInfo[]>("run_list"),
 	/**  Terminal size of a run started with "Emulate terminal in output console". */
 	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
@@ -2668,6 +2698,12 @@ export type AgentEvent_Deserialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2690,6 +2726,12 @@ export type AgentEvent_Serialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -4197,6 +4239,7 @@ export type CodeEditingSettings = {
 	/**  Next / previous error goes to errors only (skips warnings). */
 	nextErrorErrorsOnly?: boolean,
 	stickyLinesMax?: number,
+	stickyLinesDisabledLanguages?: string[],
 };
 
 export type CodeLens = {
@@ -4925,6 +4968,7 @@ export type DataSource_Deserialize = {
 	readOnly?: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh?: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor?: string,
 	color?: DbColor | null,
@@ -4971,6 +5015,7 @@ export type DataSource_Serialize = {
 	readOnly: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor: string,
 	color: DbColor | null,
@@ -5119,6 +5164,12 @@ export type DbDumpKind =
 "mysqlSql" | "unknown";
 
 export type DbDumpStatements = "copy" | "inserts" | "columnInserts";
+
+/**  A foreground program that forwards an IDE-assigned loopback port to the database. */
+export type DbExternalTunnel = {
+	executable: string,
+	arguments: string[],
+};
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -5335,6 +5386,8 @@ export type DbQueryResult = {
 	elapsedMs: number | null,
 	/**  Until the server's first answer; the rest of `elapsed_ms` is fetching. */
 	executionMs: number | null,
+	/**  Cells of `rows` cut short by [`QueryResult::cap_cells`], in row order. */
+	truncated: DbTruncatedCell[],
 };
 
 export type DbResultColumn = {
@@ -5514,6 +5567,19 @@ export type DbTriggerInfo = {
 	events: string,
 };
 
+/**  A cell of a [`QueryResult`] whose text was cut to a prefix. */
+export type DbTruncatedCell = {
+	row: number,
+	column: number,
+	/**  Length of the whole value in UTF-16 code units (what a JavaScript string counts). */
+	length: number,
+	/**
+	 *  FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+	 *  so a client that reads the value again can tell whether it is the one that was cut.
+	 */
+	hash: number,
+};
+
 /**  Transaction control of the data source's consoles. */
 export type DbTxMode = "auto" | "manual";
 
@@ -5636,6 +5702,8 @@ export type DebuggerSettings = {
 	debugServerPage?: boolean,
 	/**  Flutter: saving a Dart file of a running debug session hot reloads the app. */
 	flutterHotReloadOnSave?: boolean,
+	/**  Java: whether to reload changed classes into running debug sessions after compilation. */
+	hotSwapAfterCompile?: HotSwapPolicy,
 	python?: PythonDebuggerSettings,
 };
 
@@ -5645,6 +5713,11 @@ export type Decoration = {
 	style: string,
 	hover: string | null,
 	after: string | null,
+	/**
+	 *  Markdown rendered in the editor's hover card (API 1.16); `hover` is the
+	 *  plain-text fallback shown when this is absent.
+	 */
+	markdownHover: string | null,
 };
 
 /**  A plugin-owned editor or project-tree decoration set for one file. */
@@ -6654,7 +6727,12 @@ report?: PushReport | null } |
 /**  Git updated some refs before a later ref or push URL failed. */
 { type: "pushPartiallyApplied"; report: PushReport } | 
 /**  A conflicted history replay left an amend commit ready to keep separately. */
-{ type: "amendConflict"; commit: string };
+{ type: "amendConflict"; commit: string } | 
+/**
+ *  jdtls could not set a module up as a Java project: the errors on its build files and
+ *  the builds enclosing it (`path: message`, the path relative to the project), nearest first.
+ */
+{ type: "javaBuildProblems"; problems: string[] };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  The requested state is stale; the UI must use the current snapshot. */
@@ -7882,6 +7960,9 @@ export type HistoryTip = {
 /**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
 export type HotReloadReason = "manual" | "save";
 
+/**  Whether compiled classes are reloaded into running Java debug sessions after compilation. */
+export type HotSwapPolicy = "ask" | "always" | "never";
+
 /**  Result of [`DebugManager::redefine_classes`]. */
 export type HotSwapResult = {
 	/**  Fully qualified names of the classes reloaded (empty: nothing had changed). */
@@ -8752,6 +8833,26 @@ export type JvmReferrer = {
 
 export type JvmReferrersResult = { status: "ready"; referrers: JvmReferrer[]; truncated: boolean } | { status: "unavailable"; reason: JvmInspectUnavailable };
 
+export type JvmThreadDump = {
+	text: string,
+	pid: number,
+	/**  Empty when unknown. */
+	javaVersion: string,
+	takenWhileSuspended: boolean,
+	/**  Wall time of the `Thread.print` request. */
+	elapsedMs: number,
+};
+
+export type JvmThreadsResult = { status: "ready"; dump: JvmThreadDump } | { status: "unavailable"; reason: JvmThreadsUnavailable };
+
+export type JvmThreadsUnavailable = 
+/**  The reason a class table could not be read applies to the dump too. */
+{ kind: "jvm"; reason: JvmMemoryUnavailable } | 
+/**  The JVM ignored the request to open its attach listener (`-XX:+DisableAttachMechanism`). */
+{ kind: "listenerDidNotStart" } | 
+/**  A run on a remote host, whose JVM this machine cannot attach to. */
+{ kind: "remoteRun" } | { kind: "failed"; message: string };
+
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
 export type JvmValue = { kind: "null" } | { kind: "primitive"; typeName: string; text: string } | 
@@ -8779,6 +8880,10 @@ export type LanguageCodeStyle_Deserialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -8799,6 +8904,10 @@ export type LanguageCodeStyle_Serialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -9312,6 +9421,8 @@ export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" |
 
 export type MainToolbarSettings = {
 	left?: string[],
+	/**  Centred in the toolbar (between the other two groups when they leave too little room). */
+	center?: string[],
 	right?: string[],
 	/**  Widgets the user removed. */
 	hidden?: string[],
@@ -10657,6 +10768,12 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
  */
 ({ type: "clipboardRequested"; pluginId: string; requestId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
 
+/**  A group of file extensions in a plugin's native chooser. */
+export type PluginFileFilter = {
+	name: string,
+	extensions: string[],
+};
+
 /**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
 export type PluginIcon = {
 	light: string,
@@ -11285,7 +11402,7 @@ export type ProjectUpdateTarget = {
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | 
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | { kind: "pickFile"; title: string; save: boolean; name: string | null; filters: PluginFileFilter[] } | 
 /**
  *  The host's own question under `net:ask` (never plugin-initiated): the
  *  plugin reached an HTTPS host its manifest does not list.
@@ -11476,6 +11593,13 @@ export type PythonMethodFacts = {
 	/**  Decorated with `override` from `typing` / `typing_extensions`. */
 	overrideDecorated: boolean,
 	body: MethodBody,
+	/**
+	 *  For 'Method may be static': the receiver parameter up to the next parameter (what
+	 *  Make method static deletes), when the method is undecorated and not a dunder, and its
+	 *  body does more than `pass`, `...`, a docstring or one `raise` without ever naming the
+	 *  receiver, `super` or `__class__`.
+	 */
+	unusedReceiver: Range | null,
 };
 
 export type PythonPackage = {
@@ -12452,6 +12576,11 @@ export type SearchQuery = {
 	 *  adds none of the project's exclusions either).
 	 */
 	includeExcluded?: boolean,
+	/**
+	 *  Leave out files over [`MAX_CODE_INSIGHT_FILE_BYTES`], as IDEA's TODO and word indexes do:
+	 *  a background scan never reads a log or a database dump.
+	 */
+	skipLargeFiles?: boolean,
 };
 
 export type SearchScope = { kind: "project" } | { kind: "directory"; path: IpcPath } | { kind: "files"; paths: IpcPath[] } | 

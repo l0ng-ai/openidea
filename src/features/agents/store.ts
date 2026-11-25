@@ -27,7 +27,7 @@ import { auxiliaryWindow, windowLabel } from "@/platform/auxWindow";
 import { routeToWindow, taskWindowDraft, taskWindowFocused, updateTaskWindowDraft } from "./taskWindowRouting";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
-import { useSkillsCatalog } from "./skillsModel";
+import { useSkillsCatalog, useSkillsCatalogSync } from "./skillsModel";
 import { basename, useProject } from "@/platform/project";
 import { projectLocation } from "@/platform/remote";
 import { defaultTaskProject } from "./project";
@@ -369,6 +369,11 @@ function setUnread(task: string, value: boolean) {
   useAgents.setState({ unread });
 }
 
+/** Marks tasks read or unread from the list's menu. */
+export function setTasksUnread(tasks: readonly string[], value: boolean) {
+  for (const task of tasks) setUnread(task, value);
+}
+
 function markUnread(task: string) {
   const current = useAgents.getState().tasks.get(task);
   if (current && current.status !== "archived" && !viewing(task) && !quietTasks.has(task)) setUnread(task, true);
@@ -579,7 +584,7 @@ export async function connect(): Promise<void> {
   }
 }
 
-type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" }>;
+type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" | "toolOutput" }>;
 
 /** Entry events that arrived while their conversation loaded, applied on top of the copy it loads. */
 const arrivedWhileLoading = new Map<string, EntryEvent[]>();
@@ -588,7 +593,7 @@ const streamingReply = new Map<string, { index: number; reply: boolean }>();
 
 /** `entries` with the event applied; `null` when the copy can't take it. */
 function applyEntryEvent(entries: AgentEntry[], e: EntryEvent): AgentEntry[] | null {
-  if (e.type === "append") return appendEntry(entries, e.index, e.from, e.text);
+  if (e.type === "append" || e.type === "toolOutput") return appendEntry(entries, e.index, e.from, e.text);
   const have = entries[e.index];
   // Sent before the loaded copy was read: that copy already holds more of the message.
   if (
@@ -846,6 +851,10 @@ function onEvent(e: AgentEvent) {
       onEntryEvent(s, e);
       break;
     }
+    case "toolOutput": {
+      onEntryEvent(s, e);
+      break;
+    }
   }
 }
 
@@ -1067,6 +1076,8 @@ export function useAgentCommands(
   offered: readonly AgentCommand[],
 ): readonly AgentCommand[] {
   const skillOverrides = useAgents((s) => (task ? s.tasks.get(task)?.skillOverrides : s.draft.skillOverrides));
+  // The server's draft commands omit skills that only this draft has enabled.
+  useSkillsCatalogSync(task === null && Object.values(skillOverrides ?? {}).some((mode) => mode !== "off"));
   const catalogSkills = useSkillsCatalog((s) => s.skills);
   const [found, setFound] = useState<{
     for: unknown[];

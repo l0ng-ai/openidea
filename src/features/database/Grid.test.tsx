@@ -92,6 +92,48 @@ describe("database grid", () => {
     expect(writeText).toHaveBeenCalledWith("one\ttwo\nthree\tfour");
     expect(globalCopy).not.toHaveBeenCalled();
   });
+  it("adds and removes separate rows with ⌘-click on their numbers, and drags across numbers for a range", () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const data = [
+      ["1", "a"],
+      ["2", "b"],
+      ["3", "c"],
+      ["4", "d"],
+    ];
+    render(
+      <Grid
+        columns={[
+          { name: "id", type: "INTEGER" },
+          { name: "name", type: "TEXT" },
+        ]}
+        rowCount={4}
+        value={(r, c) => data[r]![c]!}
+      />,
+    );
+    const number = (r: number) => screen.getAllByRole("row")[r + 1]!.firstElementChild!;
+    const copied = () => {
+      writeText.mockClear();
+      fireEvent.keyDown(screen.getByRole("grid"), { key: "c", metaKey: true });
+      return writeText.mock.calls[0]?.[0];
+    };
+    fireEvent.mouseDown(number(0), { button: 0 });
+    fireEvent.mouseUp(window);
+    fireEvent.mouseDown(number(2), { button: 0, metaKey: true });
+    fireEvent.mouseUp(window);
+    fireEvent.mouseDown(number(3), { button: 0, metaKey: true });
+    fireEvent.mouseUp(window);
+    expect(copied()).toBe("1\ta\n3\tc\n4\td");
+    // ⌘-click on a selected row takes it out again.
+    fireEvent.mouseDown(number(2), { button: 0, metaKey: true });
+    fireEvent.mouseUp(window);
+    expect(copied()).toBe("1\ta\n4\td");
+    // A plain click starts over; dragging down the numbers selects whole rows.
+    fireEvent.mouseDown(number(1), { button: 0 });
+    fireEvent.mouseEnter(number(2));
+    fireEvent.mouseUp(window);
+    expect(copied()).toBe("2\tb\n3\tc");
+  });
   it("copies the selection in the extractor's format for plain ⌘C", () => {
     const writeText = vi.fn();
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });

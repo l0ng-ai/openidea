@@ -1,48 +1,42 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { lockDragCursor } from "./dragCursor";
 
-const html = document.documentElement;
+const surfaces = () => [...document.querySelectorAll<HTMLElement>("[data-drag-cursor-surface]")];
+const cursors = () => surfaces().map((el) => el.style.cursor);
 
-afterEach(() => {
-  html.removeAttribute("data-drag-cursor");
-  html.style.removeProperty("--drag-cursor");
-});
+afterEach(() => document.dispatchEvent(new Event("pointercancel")));
 
 describe("lockDragCursor", () => {
   it("holds the cursor until the drag ends", () => {
     const release = lockDragCursor("col-resize");
-    expect(html.getAttribute("data-drag-cursor")).toBe("");
-    expect(html.style.getPropertyValue("--drag-cursor")).toBe("col-resize");
+    expect(cursors()).toEqual(["col-resize"]);
 
     release();
-    expect(html.hasAttribute("data-drag-cursor")).toBe(false);
-    expect(html.style.getPropertyValue("--drag-cursor")).toBe("");
+    expect(cursors()).toEqual([]);
   });
 
   it("ignores a repeated release", () => {
     const release = lockDragCursor("row-resize");
     release();
     release();
-    expect(html.hasAttribute("data-drag-cursor")).toBe(false);
+    expect(cursors()).toEqual([]);
   });
 
   it("restores an outer drag after a nested one ends", () => {
     const outer = lockDragCursor("col-resize");
     const inner = lockDragCursor("nwse-resize");
-    expect(html.style.getPropertyValue("--drag-cursor")).toBe("nwse-resize");
+    expect(cursors()).toEqual(["col-resize", "nwse-resize"]);
 
     inner();
-    expect(html.getAttribute("data-drag-cursor")).toBe("");
-    expect(html.style.getPropertyValue("--drag-cursor")).toBe("col-resize");
+    expect(cursors()).toEqual(["col-resize"]);
 
     outer();
-    expect(html.hasAttribute("data-drag-cursor")).toBe(false);
+    expect(cursors()).toEqual([]);
   });
 
   it("releases when the pointer goes up outside the handle", () => {
     lockDragCursor("col-resize");
     document.dispatchEvent(new Event("pointerup", { bubbles: true }));
-    expect(html.hasAttribute("data-drag-cursor")).toBe(false);
-    expect(html.style.getPropertyValue("--drag-cursor")).toBe("");
+    expect(cursors()).toEqual([]);
   });
 });

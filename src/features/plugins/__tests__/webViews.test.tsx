@@ -183,19 +183,28 @@ describe("frame bridge", () => {
 });
 
 describe("WebView", () => {
-  function setup(hasCode: boolean) {
+  function setup(hasCode: boolean, doc = memoryDocument("hello world"), binaryPath?: string) {
     const events: ViewEvent[] = [];
+    const viewEvent = vi.fn(async (_p: string, _v: string, e: ViewEvent) => void events.push(e));
     setPluginsBackend({
       ...createMemoryPluginsBackend([]),
       webPageUrl: async () => "about:blank",
-      viewEvent: vi.fn(async (_p: string, _v: string, e: ViewEvent) => void events.push(e)),
+      viewEvent,
     });
     usePlugins.setState({
       plugins: [{ id: "acme.draw", hasCode, enabled: true, capabilities: [] } as unknown as PluginInfo],
     });
-    const doc = memoryDocument("hello world");
-    const view = render(<WebView pluginId="acme.draw" view="draw" label="Draw" document={doc} doc={7} />);
-    return { events, doc, view };
+    const view = render(
+      <WebView
+        pluginId="acme.draw"
+        view="draw"
+        label="Draw"
+        document={doc}
+        doc={binaryPath ? null : 7}
+        binaryPath={binaryPath}
+      />,
+    );
+    return { events, doc, view, viewEvent };
   }
 
   async function frameOf(container: HTMLElement) {
@@ -219,6 +228,47 @@ describe("WebView", () => {
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame.getAttribute("src")).toBe("about:blank");
     expect(frame.getAttribute("allow")).toBeNull();
+  });
+
+  it("uses the binary editor's own path for messages to plugin code", async () => {
+    const { view, viewEvent } = setup(true, undefined, "/project/open.parquet");
+    const { send } = await frameOf(view.container);
+    send({ text: "query", path: "/ignored.parquet" });
+    await waitFor(() =>
+      expect(viewEvent.mock.calls).toEqual([
+        [
+          "acme.draw",
+          "draw",
+          { kind: "message", text: "query" },
+          null,
+          { path: "/project/open.parquet", language: "binary", selections: [] },
+        ],
+      ]),
+    );
+  });
+
+  it("reads only bounded ranges from a binary editor's document", async () => {
+    const readRange = vi.fn(async () => Uint8Array.of(80, 65, 82, 49));
+    const doc = {
+      ...memoryDocument(""),
+      read: () => ({ version: 0, text: "", readOnly: true, name: "data.parquet" }),
+      size: async () => 536870924,
+      readRange,
+    };
+    const { view } = setup(false, doc);
+    const { posted, send } = await frameOf(view.container);
+    send({ call: 1, op: "document.size" });
+    send({ call: 2, op: "document.readRange", args: { offset: 536870920, length: 4, path: "/ignored" } });
+    send({ call: 3, op: "document.readRange", args: { offset: 0, length: 1048577 } });
+    send({ call: 4, op: "document.readRange", args: { offset: Number.MAX_SAFE_INTEGER, length: 4 } });
+    send({ call: 5, op: "document.replace", args: { version: 0, text: "changed" } });
+    await waitFor(() => expect(posted.filter((event) => event.reply)).toHaveLength(5));
+    expect(posted.find((event) => event.reply === 1)?.value).toBe(536870924);
+    expect(posted.find((event) => event.reply === 2)?.value).toEqual(Uint8Array.of(80, 65, 82, 49));
+    expect(posted.find((event) => event.reply === 3)?.error).toBe("invalid byte range (at most 1 MiB per read)");
+    expect(posted.find((event) => event.reply === 4)?.error).toBe("invalid byte range (at most 1 MiB per read)");
+    expect(posted.find((event) => event.reply === 5)?.error).toBe("the document is read-only");
+    expect(readRange.mock.calls).toEqual([[536870920, 4]]);
   });
 
   it("serves the document to the page: versioned edits, replace, stale versions, outside changes", async () => {

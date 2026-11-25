@@ -47,6 +47,9 @@ describe("IDEA keymap parity", () => {
     ["navigate.implementation", ["Meta+Alt+B", "Meta+Alt+Button1"], ["Ctrl+Alt+B", "Ctrl+Alt+Button1"]],
     ["find.next", ["Meta+G"], ["F3", "Ctrl+L"]],
     ["find.previous", ["Meta+Shift+G"], ["Shift+F3", "Ctrl+Shift+L"]],
+    // FindWordAtCaret / FindPrevWordAtCaret: the macOS keymaps remove ⌘F3 / ⇧⌘F3.
+    ["find.wordAtCaret", [], ["Ctrl+F3"]],
+    ["find.previousWordAtCaret", [], ["Ctrl+Shift+F3"]],
     ["project.copy", ["Meta+C"], ["Ctrl+C", "Ctrl+Insert"]],
     ["project.cut", ["Meta+X"], ["Ctrl+X", "Shift+Delete"]],
     ["project.paste", ["Meta+V"], ["Ctrl+V", "Shift+Insert"]],
@@ -55,6 +58,14 @@ describe("IDEA keymap parity", () => {
     ["code.expandRecursively", ["Meta+Alt+="], ["Ctrl+Alt+="]],
     ["editor.cloneCaretAbove", ["Alt Alt+Up"], ["Ctrl Ctrl+Up"]],
     ["editor.cloneCaretBelow", ["Alt Alt+Down"], ["Ctrl Ctrl+Down"]],
+    // `Mac OS X 10.5+` removes the ⌘↑ / ⌘↓ it would inherit from `Mac OS X`.
+    ["editor.scrollUp", [], ["Ctrl+Up"]],
+    ["editor.scrollDown", [], ["Ctrl+Down"]],
+    // `$default` Ctrl reads as ⌘ in the Mac keymaps that inherit it.
+    ["editor.moveToPageTop", ["Meta+PageUp"], ["Ctrl+PageUp"]],
+    ["editor.moveToPageBottom", ["Meta+PageDown"], ["Ctrl+PageDown"]],
+    ["editor.moveToPageTopWithSelection", ["Meta+Shift+PageUp"], ["Ctrl+Shift+PageUp"]],
+    ["editor.moveToPageBottomWithSelection", ["Meta+Shift+PageDown"], ["Ctrl+Shift+PageDown"]],
     ["editor.toggleInsertState", ["Insert"], ["Insert"]],
     ["navigate.nextOccurrence", ["Meta+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["navigate.prevOccurrence", ["Meta+Alt+Up"], ["Ctrl+Alt+Up"]],
@@ -87,6 +98,8 @@ describe("IDEA keymap parity", () => {
     ["navigate.back", ["Meta+[", "Meta+Alt+Left", "Button4", "SwipeRight"], ["Ctrl+Alt+Left", "Button4"]],
     ["navigate.forward", ["Meta+]", "Meta+Alt+Right", "Button5", "SwipeLeft"], ["Ctrl+Alt+Right", "Button5"]],
     ["file.projectStructure", ["Meta+;"], ["Ctrl+Alt+Shift+S"]],
+    ["build.compileFile", ["Meta+Shift+F9"], ["Ctrl+Shift+F9"]],
+    ["build.buildModule", [], []],
   ])("%s", (id, mac, win) => {
     expect(intellijMacos[id]).toEqual(mac);
     expect(intellijWindows[id]).toEqual(win);

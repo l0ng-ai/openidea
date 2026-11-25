@@ -251,12 +251,16 @@ export function idleTargets(
   now: number,
 ): string[] {
   const out: string[] = [];
+  const activeSiblings = new Set<string>();
   for (const t of connected) {
-    const secs = sources.find((s) => s.id === splitTarget(t).id)?.options?.autoDisconnectSecs;
-    if (!secs || busy(t)) continue;
-    if (now - (lastUsed.get(t) ?? now) >= secs * 1000) out.push(t);
+    const { id, database } = splitTarget(t);
+    const secs = sources.find((s) => s.id === id)?.options?.autoDisconnectSecs;
+    if (!secs) continue;
+    if (!busy(t) && now - (lastUsed.get(t) ?? now) >= secs * 1000) out.push(t);
+    else if (database) activeSiblings.add(id);
   }
-  return out;
+  // Disconnecting the source row also disconnects its other databases.
+  return out.filter((t) => !activeSiblings.has(t));
 }
 
 export function newSourceId(): string {

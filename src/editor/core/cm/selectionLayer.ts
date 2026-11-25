@@ -364,18 +364,18 @@ const snappedSelectionLayer = layer({
   update: (u) => u.docChanged || u.selectionSet || u.viewportChanged,
 });
 
+// Shared by every editor: a theme made per editor adds its rules to the page each time, restyling all of it.
+const seamlessTheme = EditorView.theme({
+  ".cm-selectionLayer:not(.cm-openidea-selectionLayer)": {
+    display: "none",
+  },
+  // drawSelection hides the native selection inside the lines only. WebKit also fills the gaps left of
+  // selected lines (the text inset) with the content's own ::selection colour, which showed as small
+  // blocks next to the gutter.
+  ".cm-content::selection": { backgroundColor: "transparent" },
+});
+
 /** Use with `drawSelection()`: replaces its selection layer, which is hidden. */
 export function seamlessSelection(): Extension {
-  return [
-    snappedSelectionLayer,
-    EditorView.theme({
-      ".cm-selectionLayer:not(.cm-openidea-selectionLayer)": {
-        display: "none",
-      },
-      // drawSelection hides the native selection inside the lines only. WebKit also fills the gaps left of
-      // selected lines (the text inset) with the content's own ::selection colour, which showed as small
-      // blocks next to the gutter.
-      ".cm-content::selection": { backgroundColor: "transparent" },
-    }),
-  ];
+  return [snappedSelectionLayer, seamlessTheme];
 }

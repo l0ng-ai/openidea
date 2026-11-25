@@ -4,6 +4,7 @@
 //! the desktop for local projects, `openidea-server` for remote ones.
 
 use super::{PluginEditor, PluginHost, PluginOutputLine};
+use crate::ops::blocking;
 use ide_command::command;
 use ide_core::{DocId, IdeError, IdeResult};
 use ide_plugin::{EditorContext, Invocation, ServiceTab, View, ViewEvent, Viewport};
@@ -33,10 +34,6 @@ pub fn view_invocation(
         editor,
         ..Invocation::default()
     })
-}
-
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Content of a plugin view (`doc`: the document of a custom editor; `editor`: for

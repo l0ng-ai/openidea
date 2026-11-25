@@ -10,7 +10,7 @@ use crate::Host;
 use crate::Project;
 use ide_command::command;
 
-use super::doc::blocking;
+use super::blocking;
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, LanguageId, Pos, Range, RequestId};
 use ide_syntax::{
     ExpressionAt, FileIdentifiers, IdentifierOccurrence, Locals, NodeAt, Snapshot, StructuralRanges, StructureResult,

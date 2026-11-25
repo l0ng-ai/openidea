@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { executeAction, getAction, isActionEnabled } from "@/platform/actions";
-import { getContext, setContext } from "@/platform/context";
-import { bindingsFor } from "@/platform/keymap";
+import { clearContext, getContext, setContext } from "@/platform/context";
+import { bindingsFor, installKeyboardDispatcher } from "@/platform/keymap";
 import { IpcError, type BuildEvent, type BuildMessage, type BuildResult } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
   menuGroupItems,
+  onBuildCompleted,
   provideEditorService,
   provideNotificationService,
   provideToolWindowService,
   useContributions,
+  type BuildCompletedEvent,
   type EditorService,
   type NotificationService,
   type ToolWindowService,
@@ -179,6 +181,7 @@ describe("build feature", () => {
     useProject.setState({ project: null, settings: null });
     setContext("projectOpen", false);
     setContext("run.cmakeBuild", null);
+    clearContext("editorPath");
   });
 
   it("shows the CMake hammer and builds the selected target through the shared action", async () => {
@@ -205,8 +208,11 @@ describe("build feature", () => {
       expect(getAction(id), id).toBeDefined();
       expect(isActionEnabled(getAction(id)!)).toBe(true);
     }
+    expect(getAction("build.compileFile")).toBeDefined();
+    expect(isActionEnabled(getAction("build.compileFile")!)).toBe(false);
     expect(bindingsFor("build.buildProject")).toContain("Meta+F9");
-    expect(bindingsFor("build.buildModule")).toContain("Meta+Shift+F9");
+    expect(bindingsFor("build.compileFile")).toContain("Meta+Shift+F9");
+    expect(bindingsFor("build.buildModule")).toEqual([]);
     const tw = useContributions.getState().toolWindows.get("build");
     expect(tw).toMatchObject({ anchor: "bottom", stripe: "onUse", icon: "toolwindow-build" });
     expect(menuGroupItems("projectView", { paths: ["/p/core"] })).toContainEqual({
@@ -568,5 +574,116 @@ describe("build feature", () => {
     await act(async () => {
       fake.resolve(result([], true));
     });
+  });
+
+  it("publishes onBuildCompleted only when a build finishes successfully", async () => {
+    const events: BuildCompletedEvent[] = [];
+    const off = onBuildCompleted((e) => events.push(e));
+    try {
+      const single = startCompileFile("/p/core/src/A.java", true);
+      await act(async () => {});
+      fake.resolve(result([], true));
+      await single;
+      expect(events).toEqual([
+        { kind: "compileFile", file: "/p/core/src/A.java", system: "maven", userInitiated: true },
+      ]);
+
+      const failed = startCompileFile("/p/core/src/Broken.java", true);
+      await act(async () => {});
+      fake.resolve(result([err("/p/core/src/Broken.java", 3)], false));
+      await failed;
+      expect(events).toHaveLength(1);
+    } finally {
+      off();
+    }
+  });
+
+  it("gates Recompile to local Java files and offers context menu labels", () => {
+    const compileFile = getAction("build.compileFile")!;
+    let currentPath: string | null = "/p/core/src/A.java";
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => currentPath,
+    } as unknown as EditorService);
+    expect(isActionEnabled(compileFile)).toBe(true);
+
+    for (const nonTarget of [
+      "/p/core/pom.xml",
+      "jdt://contents/rt.jar/java/lang/String.class",
+      "untitled:Untitled-1.java",
+      null,
+    ]) {
+      currentPath = nonTarget;
+      expect(isActionEnabled(compileFile), String(nonTarget)).toBe(false);
+    }
+    expect(isActionEnabled(compileFile, getContext(), "/p/core/src/Explicit.java")).toBe(true);
+
+    for (const menu of ["editor", "editorTab", "projectView"] as const) {
+      expect(menuGroupItems(menu, { paths: ["/p/core/src/A.java"] })).toContainEqual({
+        kind: "action",
+        action: "build.compileFile",
+        arg: "/p/core/src/A.java",
+        label: "Recompile 'A.java'",
+      });
+      expect(
+        menuGroupItems(menu, { paths: ["jdt://contents/rt.jar/java/lang/String.java"] }).some(
+          (i) => i.kind === "action" && i.action === "build.compileFile",
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("dispatches Shift+Cmd+F9 to Recompile for the active Java file only", async () => {
+    let currentPath: string | null = "/p/core/src/OnlyThis.java";
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => currentPath,
+    } as unknown as EditorService);
+    const uninstall = installKeyboardDispatcher(window);
+    try {
+      fireEvent.keyDown(window, { code: "F9", key: "F9", metaKey: true, shiftKey: true });
+      await act(async () => {});
+      expect(fake.calls).toEqual([{ kind: "compileFile", file: "/p/core/src/OnlyThis.java", clear: [] }]);
+      expect(isActionEnabled(getAction("build.compileFile")!)).toBe(false);
+      await act(async () => {
+        fake.resolve(result([], true));
+      });
+
+      currentPath = "/p/core/pom.xml";
+      fireEvent.keyDown(window, { code: "F9", key: "F9", metaKey: true, shiftKey: true });
+      await act(async () => {});
+      expect(fake.calls).toHaveLength(1);
+    } finally {
+      uninstall();
+    }
+  });
+
+  it("streams single-file compile errors to BuildView and opens the first error", async () => {
+    const run = startCompileFile("/p/core/src/Broken.java");
+    await act(async () => {});
+    const messages = [err("/p/core/src/Broken.java", 7, "cannot find symbol")];
+    await act(async () => {
+      fake.emit!({ kind: "started", system: "javac", title: "Compile Broken.java" });
+      fake.emit!({ kind: "step", command: "javac -encoding UTF-8 Broken.java", cwd: "/p/core" });
+      fake.emit!({ kind: "output", text: "/p/core/src/Broken.java:8: error: cannot find symbol\n", stderr: true });
+      fake.emit!({ kind: "message", message: messages[0]! });
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    render(<BuildView />);
+    expect(screen.getByText("Compile Broken.java")).toBeInTheDocument();
+    await act(async () => {
+      fake.resolve({ ...result(messages, false), system: "javac", title: "Compile Broken.java" });
+      await run;
+    });
+    expect(useBuildRun.getState().status).toBe("failed");
+    expect(useBuildRun.getState().selected).toBe(firstError(messages)!.key);
+    expect(show).toHaveBeenCalledWith("build", false);
+    expect(openFile).toHaveBeenCalledWith(
+      "/p/core/src/Broken.java",
+      expect.objectContaining({ focus: true, selection: { line: 7, col: 4 } }),
+    );
+    expect(screen.getByRole("document", { name: "Build message" })).toHaveTextContent("cannot find symbol");
   });
 });

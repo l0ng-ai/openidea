@@ -26,7 +26,16 @@ const lspReferences = vi.fn(async (_request: number, _doc: number, pos: Pos) => 
 });
 const lspCodeActions = vi.fn(async () => ({ status: "ok", data: [] }));
 const lspApplyCodeAction = vi.fn(async () => ({ status: "ok", data: null }));
-const docOpen = vi.fn(async (path: string) => ({ status: "ok", data: { id: 99, path } }));
+/** Text of the documents opened for a search, by path. */
+const texts: Record<string, string> = {};
+const docIds: Record<string, number> = {};
+const docOpen = vi.fn(async (path: string) => ({
+  status: "ok",
+  data: { id: docIds[path] ?? 99, path, text: texts[path] ?? "" },
+}));
+/** Imports of a file (vtsls' file references); unavailable unless a test serves them. */
+let fileRefs: () => ReturnType<Answer<Location[]>> = unavailable;
+const lspFileReferences = vi.fn(async () => fileRefs());
 const docClose = vi.fn(async () => ({ status: "ok", data: null }));
 const languages = vi.fn(async () => [
   { id: "rust", name: "Rust", lineComment: "//", blockComment: ["/*", "*/"] },
@@ -43,6 +52,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       lspGoto,
       docOutline,
       lspReferences,
+      lspFileReferences,
       lspCodeActions,
       lspApplyCodeAction,
       docOpen,
@@ -405,6 +415,65 @@ describe("safeDelete in the editor", () => {
     v.dispatch({ selection: { anchor: 11 } });
     await safeDelete(v);
     expect(showHint).toHaveBeenCalledWith(v, "Cannot perform refactoring. Caret should be on a symbol");
+  });
+});
+
+describe("file references", () => {
+  const at = (path: string, line: number, col: number, len = 1): Location => ({
+    path,
+    range: { start: { line, col }, end: { line, col: col + len } },
+  });
+  afterEach(() => {
+    fileRefs = unavailable;
+    references = ok([]);
+    outline = ok([]);
+  });
+
+  it("finds the default import name before a module specifier", async () => {
+    const { defaultImportName } = await import("./fileReferences");
+    expect(defaultImportName("import Hello from ")).toEqual({ name: "Hello", col: 7 });
+    expect(defaultImportName("import Hello from '")).toEqual({ name: "Hello", col: 7 });
+    expect(defaultImportName("  import Hello, { a } from ")).toEqual({ name: "Hello", col: 9 });
+    expect(defaultImportName("import type Props from ")).toEqual({ name: "Props", col: 12 });
+    expect(defaultImportName("import { Hello } from ")).toBeNull();
+    expect(defaultImportName("const Page = () => import(")).toBeNull();
+  });
+
+  it("a Vue component: its imports and the tags of the name each import binds", async () => {
+    const app = "<script setup>\nimport Hello from './Hello.vue'\n</script>\n<template><Hello /></template>";
+    texts["/p/App.vue"] = app;
+    docIds["/p/App.vue"] = 7;
+    const imported = at("/p/App.vue", 1, 19, 22);
+    const tag = at("/p/App.vue", 3, 11, 5);
+    fileRefs = ok([imported, at("/p/router.ts", 2, 30, 13)]);
+    texts["/p/router.ts"] = "\n\nimport Hello from './components/Hello.vue'";
+    // The binding itself comes back too (on the import's line): listed once, as the import.
+    references = (pos) =>
+      pos.line === 1 && pos.col === 7
+        ? {
+            status: "ok",
+            data: [at("/p/App.vue", 1, 7, 5), tag, at("/p/Hello.vue", 0, 0), at("/p/router.ts", 2, 7, 5)],
+          }
+        : { status: "ok", data: [] };
+    const res = await fileUsages(["/p/Hello.vue"]);
+    expect(res).toEqual({ status: "ok", usages: [imported, at("/p/router.ts", 2, 30, 13), tag] });
+    expect(lspReferences).toHaveBeenCalledWith(
+      expect.anything(),
+      7,
+      { line: 1, col: 7 },
+      false,
+      false,
+      false,
+      expect.anything(),
+    );
+  });
+
+  it("other files: the imports of the file beside its symbols' references", async () => {
+    lspReferences.mockClear();
+    const imported = at("/p/main.ts", 0, 20, 8);
+    fileRefs = ok([imported]);
+    expect(await fileUsages(["/p/util.ts"])).toEqual({ status: "ok", usages: [imported] });
+    expect(lspReferences).not.toHaveBeenCalled();
   });
 });
 

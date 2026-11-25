@@ -1336,6 +1336,11 @@
   align-items: center;
   gap: 10px;
 }
+.tomcatFieldError {
+  margin-left: 136px;
+  color: var(--danger);
+  font-size: var(--fs-small);
+}
 .tomcatRowLabel {
   color: var(--fg-secondary);
   font-size: var(--fs-ui);

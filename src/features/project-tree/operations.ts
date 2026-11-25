@@ -4,7 +4,7 @@
  */
 import { writeClipboardText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
-import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
+import { askUsagesDetected, fileUsages, showFileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
 import {
   canRevealInFileManager,
@@ -19,6 +19,7 @@ import { osClipboard } from "./clipboard";
 import { lastFileRefactoring, nextFileOperation, runFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
 import { beginLocalImport, projectFs } from "./fs";
+import { renameCopiedJavaType } from "./javaCopy";
 import { IpcError, isCancelled } from "@/platform/ipc";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
@@ -26,6 +27,7 @@ import {
   isSameOrInside,
   joinPath,
   nameOf,
+  outermostPaths,
   packageSegments,
   parentOf,
   uniqueName,
@@ -91,8 +93,7 @@ export function leadNode(): ProjectNode | null {
 
 /** Selected paths without entries nested in other selected folders. */
 export function topLevelPaths(nodes: ProjectNode[] = selectedNodes()): string[] {
-  const paths = assetPaths(nodes.map((n) => n.path));
-  return paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)));
+  return outermostPaths(assetPaths(nodes.map((n) => n.path)));
 }
 
 /** A visible sidecar is already included by the backend asset operation. */
@@ -438,26 +439,9 @@ export async function safeToDelete(files: string[]): Promise<boolean> {
   return answer === "delete";
 }
 
-/** Find Usages (⌥F7) on a file: usages of its top-level symbols from other files. */
-export async function findFileUsages(path: string) {
-  const name = nameOf(path);
-  let result;
-  try {
-    result = await fileUsages([path]);
-  } catch (e) {
-    fail(`Cannot find usages of '${name}'`, e);
-    return;
-  }
-  if (result.status !== "ok")
-    notifications().notify({
-      level: "info",
-      title: `Cannot find usages of '${name}'`,
-      body: result.reason,
-      group: "search",
-    });
-  else if (!result.usages.length)
-    notifications().notify({ level: "info", title: `No usages of '${name}' found`, group: "search" });
-  else viewUsages(name, result.usages);
+/** Find Usages (⌥F7) on a file: its imports and usages of its top-level symbols from other files. */
+export function findFileUsages(path: string) {
+  return showFileUsages(path);
 }
 
 /** Reload from Disk: re-reads the selected folders (and the folders of selected files) and their open documents. */
@@ -477,8 +461,9 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
   if (!root || !paths.length) return;
   // Invoked from the tree (or its context menu): give the tree its focus back afterwards.
   const refocus = typeof document !== "undefined" && !!document.activeElement?.closest('[role="tree"], [role="menu"]');
-  const folders = nodes.filter((n) => n.dir && paths.includes(n.path)).length;
-  const files = nodes.filter((n) => !n.dir && paths.includes(n.path)).map((n) => n.path);
+  const top = new Set(paths);
+  const folders = nodes.filter((n) => n.dir && top.has(n.path)).length;
+  const files = nodes.filter((n) => !n.dir && top.has(n.path)).map((n) => n.path);
   // IDEA's Delete dialog: "Safe delete (with usage search)", remembered.
   const searchable = files.length > 0 && files.length <= SAFE_DELETE_MAX_FILES;
   const answer = await confirmChecked({
@@ -776,7 +761,10 @@ export async function transfer(
         if (source === "local") {
           const skipped = await fs.importLocal(src, to, upload);
           errors.push(...skipped);
-        } else await fs.copy(src, to);
+        } else {
+          await fs.copy(src, to);
+          if (!srcIsDir) await renameCopiedJavaType(src, to).catch(() => undefined);
+        }
         taken.add(caseInsensitive ? finalName.toLowerCase() : finalName);
         first ??= to;
       } catch (e) {
@@ -937,10 +925,4 @@ export function reformatNodes(nodes: readonly ProjectNode[]): boolean {
     files: targets.filter((n) => !n.dir).map((n) => n.path),
     directories: targets.filter((n) => n.dir).map((n) => n.path),
   });
-}
-
-/** Argument for VCS actions: one path or several. */
-export function vcsArg(nodes: ProjectNode[] = selectedNodes()): string | string[] {
-  const paths = nodes.map((n) => n.path);
-  return paths.length === 1 ? paths[0]! : paths;
 }

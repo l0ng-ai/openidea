@@ -18,6 +18,7 @@ fn query(pattern: &str, is_regex: bool) -> SearchQuery {
         max_matches: 1_000_000,
         context: Default::default(),
         include_excluded: false,
+        skip_large_files: false,
     }
 }
 

@@ -64,7 +64,7 @@ export function McpPicker({
   testData,
 }: McpPickerProps) {
   const tx = useTx();
-  useMcpCatalogSync();
+  useMcpCatalogSync(!hideTrigger);
   const catalogServers = useMcpCatalog((s) => s.servers);
   const catalogSources = useMcpCatalog((s) => s.sources);
   const projectIdeMcp = useProject((s) => s.settings?.mcpServer?.enabled ?? false);

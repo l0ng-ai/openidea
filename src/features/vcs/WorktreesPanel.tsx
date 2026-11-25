@@ -152,9 +152,11 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
       for (const tree of selectedWorktrees) {
         if (projectRoot !== useProject.getState().project?.root) return;
         try {
+          // oxlint-disable-next-line no-await-in-loop -- remove one worktree at a time; the project check can abort the remaining ones
           await call(commands.vcsRemoveWorktree(currentGroup.root, tree.path, false));
         } catch (e) {
           if (projectRoot !== useProject.getState().project?.root) return;
+          // oxlint-disable-next-line no-await-in-loop -- the force confirmation depends on this worktree's removal error
           const force = await confirmDialog({
             title: "Remove Worktree",
             message: tx`${errorMessage(e)}\n\nRemove it anyway, discarding its changes?`,
@@ -163,6 +165,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
           });
           if (!force) throw e;
           if (projectRoot === useProject.getState().project?.root)
+            // oxlint-disable-next-line no-await-in-loop -- the forced removal follows its own confirmation and project check
             await call(commands.vcsRemoveWorktree(currentGroup.root, tree.path, true));
         }
       }

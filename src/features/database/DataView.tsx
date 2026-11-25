@@ -100,6 +100,8 @@ export interface DataViewProps extends Pick<
   | "sort"
   | "onSort"
   | "rowMenu"
+  | "truncated"
+  | "loadFull"
   | "initialScrollLeft"
   | "onHorizontalScroll"
 > {
@@ -234,6 +236,10 @@ export function DataView(props: DataViewProps) {
             columns={columns}
             rowCount={shown}
             value={(r, c) => value(at(r), c)}
+            truncated={props.truncated && ((r, c) => props.truncated!(at(r), c))}
+            loadFull={
+              props.loadFull && ((cells) => props.loadFull!(cells.map(({ row, col }) => ({ row: at(row), col }))))
+            }
             rowState={props.rowState && ((r) => props.rowState!(at(r)))}
             isModified={props.isModified && ((r, c) => props.isModified!(at(r), c))}
             editable={props.editable}
@@ -287,6 +293,10 @@ export function DataView(props: DataViewProps) {
           columns={columns}
           range={range}
           value={(r, c) => value(at(r), c)}
+          truncated={props.truncated && ((r, c) => props.truncated!(at(r), c))}
+          loadFull={
+            props.loadFull && ((cells) => props.loadFull!(cells.map(({ row, col }) => ({ row: at(row), col }))))
+          }
           editable={!!props.editable && !!props.onEdit && !!range && props.rowState?.(at(range.lead.row)) !== "deleted"}
           onEdit={(r, c, v) => props.onEdit?.(at(r), c, v)}
         />
@@ -475,6 +485,8 @@ function SidePanel(props: {
   columns: readonly GridColumn[];
   range: GridRange | null;
   value: (row: number, col: number) => Cell;
+  truncated?: GridProps["truncated"];
+  loadFull?: GridProps["loadFull"];
   editable: boolean;
   onEdit: (row: number, col: number, v: Cell) => void;
 }) {
@@ -509,6 +521,8 @@ function SidePanel(props: {
             key={`${range.lead.row}:${range.lead.col}\u0000${value(range.lead.row, range.lead.col) ?? "\u0001"}`}
             column={columns[range.lead.col] ?? { name: "", type: "" }}
             cell={value(range.lead.row, range.lead.col)}
+            cut={props.truncated?.(range.lead.row, range.lead.col) ?? null}
+            onLoad={() => void props.loadFull?.([{ row: range.lead.row, col: range.lead.col }])}
             editable={props.editable}
             onCommit={(v) => props.onEdit(range.lead.row, range.lead.col, v)}
           />
@@ -525,6 +539,8 @@ function RecordView(props: {
   columns: readonly GridColumn[];
   row: number;
   value: (row: number, col: number) => Cell;
+  truncated?: GridProps["truncated"];
+  loadFull?: GridProps["loadFull"];
   editable: boolean;
   onEdit: (row: number, col: number, v: Cell) => void;
 }) {
@@ -536,6 +552,8 @@ function RecordView(props: {
           key={`${c.name}\u0000${props.value(props.row, i) ?? "\u0001"}`}
           column={c}
           cell={props.value(props.row, i)}
+          cut={props.truncated?.(props.row, i) ?? null}
+          onLoad={() => void props.loadFull?.([{ row: props.row, col: i }])}
           editable={props.editable}
           onCommit={(v) => props.onEdit(props.row, i, v)}
         />
@@ -544,50 +562,82 @@ function RecordView(props: {
   );
 }
 
-function RecordField(props: { column: GridColumn; cell: Cell; editable: boolean; onCommit: (v: Cell) => void }) {
+/** What a value that is shown cut short offers: the whole value is read on request (until then it is read-only). */
+function CutNotice(props: { shown: number; total: number; onLoad: () => void }) {
+  const { shown, total } = props;
+  return (
+    <div className={styles.cutNotice} role="status">
+      <span>{tx`Only the first ${shown} of ${total} characters are shown.`}</span>
+      <Button size="small" onClick={props.onLoad}>
+        <T>Load whole value</T>
+      </Button>
+    </div>
+  );
+}
+
+function RecordField(props: {
+  column: GridColumn;
+  cell: Cell;
+  cut: number | null;
+  onLoad: () => void;
+  editable: boolean;
+  onCommit: (v: Cell) => void;
+}) {
   const [text, setText] = useState(props.cell ?? "");
   const commit = () => {
     if (text !== (props.cell ?? "") || (props.cell === null && text !== "")) props.onCommit(text);
   };
   const c = props.column;
+  const editable = props.editable && props.cut === null;
   return (
-    <label className={styles.recordField}>
-      <span className={styles.recordLabel}>
-        <Icon name={c.primaryKey ? "db-column-key" : c.foreignKey ? "db-column-fk" : "db-column"} size={16} />
-        {c.name}
-        {c.type && c.type !== "NULL" && <span className={styles.treeType}>{c.type}</span>}
-      </span>
-      {hasLineBreak(props.cell ?? "") ? (
-        // A single-line field would drop the line breaks on the first edit.
-        <textarea
-          className={styles.recordText}
-          rows={Math.min(8, (props.cell ?? "").split(/\r\n|\r|\n/).length)}
-          value={text}
-          readOnly={!props.editable}
-          spellCheck={false}
-          onChange={(e) => setText(e.target.value)}
-          onBlur={commit}
-        />
-      ) : (
-        <Input
-          mono
-          value={text}
-          readOnly={!props.editable}
-          placeholder={props.cell === null ? "<null>" : undefined}
-          onChange={(e) => setText(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commit();
-          }}
-        />
-      )}
-    </label>
+    <>
+      <label className={styles.recordField}>
+        <span className={styles.recordLabel}>
+          <Icon name={c.primaryKey ? "db-column-key" : c.foreignKey ? "db-column-fk" : "db-column"} size={16} />
+          {c.name}
+          {c.type && c.type !== "NULL" && <span className={styles.treeType}>{c.type}</span>}
+        </span>
+        {hasLineBreak(props.cell ?? "") ? (
+          // A single-line field would drop the line breaks on the first edit.
+          <textarea
+            className={styles.recordText}
+            rows={Math.min(8, (props.cell ?? "").split(/\r\n|\r|\n/).length)}
+            value={text}
+            readOnly={!editable}
+            spellCheck={false}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={commit}
+          />
+        ) : (
+          <Input
+            mono
+            value={text}
+            readOnly={!editable}
+            placeholder={props.cell === null ? "<null>" : undefined}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+            }}
+          />
+        )}
+      </label>
+      {props.cut !== null && <CutNotice shown={props.cell?.length ?? 0} total={props.cut} onLoad={props.onLoad} />}
+    </>
   );
 }
 
 /** The Value panel's editor: plain text, or the JSON code editor for JSON cells (#2333). */
-function ValueView(props: { column: GridColumn; cell: Cell; editable: boolean; onCommit: (v: Cell) => void }) {
+function ValueView(props: {
+  column: GridColumn;
+  cell: Cell;
+  cut: number | null;
+  onLoad: () => void;
+  editable: boolean;
+  onCommit: (v: Cell) => void;
+}) {
   const name = props.column.name;
+  const editable = props.editable && props.cut === null;
   const [json] = useState(() => isJsonValue(props.column.type, props.cell));
   const validate = isJsonColumn(props.column.type);
   // JSON opens pretty-printed; the panel applies what the editor shows.
@@ -600,18 +650,19 @@ function ValueView(props: { column: GridColumn; cell: Cell; editable: boolean; o
   const editor = useRef<JsonEditorApi | null>(null);
   const dirty = text !== initial;
   const commit = () => {
-    if (props.editable && dirty && !error && !pending) props.onCommit(text);
+    if (editable && dirty && !error && !pending) props.onCommit(text);
   };
   const [windowOpen, setWindowOpen] = useState(false);
   return (
     <div className={styles.valueView}>
+      {props.cut !== null && <CutNotice shown={props.cell?.length ?? 0} total={props.cut} onLoad={props.onLoad} />}
       {json ? (
         <>
           <JsonValueEditor
             initial={initial}
             validate={validate}
             emptyIsNull={props.cell === null}
-            readOnly={!props.editable}
+            readOnly={!editable}
             ariaLabel={tx`Value of ${name}`}
             onChange={(t, e, busy) => {
               setText(t);
@@ -628,11 +679,7 @@ function ValueView(props: { column: GridColumn; cell: Cell; editable: boolean; o
             </div>
           )}
           <div className={styles.filterButtons}>
-            <Button
-              size="small"
-              disabled={!props.editable || !!error || pending}
-              onClick={() => editor.current?.reformat()}
-            >
+            <Button size="small" disabled={!editable || !!error || pending} onClick={() => editor.current?.reformat()}>
               <T>Reformat</T>
             </Button>
             <Button size="small" onClick={() => setWindowOpen(true)}>
@@ -645,7 +692,7 @@ function ValueView(props: { column: GridColumn; cell: Cell; editable: boolean; o
           className={styles.valueText}
           aria-label={tx`Value of ${name}`}
           value={text}
-          readOnly={!props.editable}
+          readOnly={!editable}
           placeholder={props.cell === null ? "<null>" : undefined}
           spellCheck={false}
           onChange={(e) => setText(e.target.value)}
@@ -654,7 +701,7 @@ function ValueView(props: { column: GridColumn; cell: Cell; editable: boolean; o
           }}
         />
       )}
-      {props.editable && (
+      {editable && (
         <div className={styles.filterButtons}>
           <Button size="small" disabled={!dirty || !!error || pending} onClick={commit}>
             <T>Apply</T>
@@ -676,7 +723,7 @@ function ValueView(props: { column: GridColumn; cell: Cell; editable: boolean; o
           baseline={initial}
           validate={validate}
           emptyIsNull={props.cell === null}
-          readOnly={!props.editable}
+          readOnly={!editable}
           onClose={() => setWindowOpen(false)}
           onApply={(t) => {
             props.onCommit(t);
@@ -694,8 +741,9 @@ function ValueView(props: { column: GridColumn; cell: Cell; editable: boolean; o
 
 function AggregatesView({ range, value }: { range: GridRange; value: (row: number, col: number) => Cell }) {
   const cells: Cell[] = [];
-  for (let r = range.top; r <= range.bottom; r++)
-    for (let c = range.left; c <= range.right; c++) cells.push(value(r, c));
+  const rows = new Set(range.rows);
+  for (let r = range.top; r <= range.bottom; r++) rows.add(r);
+  for (const r of rows) for (let c = range.left; c <= range.right; c++) cells.push(value(r, c));
   const a = aggregates(cells);
   const show = (v: number | string | null) => (v === null ? "—" : typeof v === "number" ? formatNumber(v) : v);
   return (

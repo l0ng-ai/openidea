@@ -27,6 +27,7 @@ export async function fetchIncoming(
       continue;
     }
     try {
+      // oxlint-disable-next-line no-await-in-loop -- roots are fetched one at a time so cancellation and shared deferred state can stop the loop early
       const report = await fetchIncomingRemotes(
         root,
         [...(skipped ?? [])].filter((remote) => remote !== null),
@@ -62,6 +63,7 @@ async function checkIncoming(roots: readonly string[], stale: () => boolean) {
   for (const root of roots) {
     if (interrupted()) break;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- each root's result updates shared unfetched state before cancellation is checked again
       const report = await inspectIncomingRefs(root);
       if (interrupted()) break;
       useVcs.setState((state) => {

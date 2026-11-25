@@ -2,13 +2,16 @@
  * Data source properties (IDEA's Data Sources and Drivers page): name, colour and
  * comment above General / Options / SSH/SSL / Schemas / Advanced tabs, Test Connection.
  */
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   call,
   commands,
   IpcError,
+  isTauri,
+  nextRequestId,
   type DataSource,
   type DbColor,
+  type DbExternalTunnel,
   type DbIntrospection,
   type DbJdbcDriver,
   type DbOptions,
@@ -19,11 +22,13 @@ import {
   type SshAuth,
   type DbSslMode,
   type DbTxMode,
+  type RequestId,
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { choosePath } from "@/platform/choosePath";
 import { tx, txPart, useTx, useTxTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { sshLabel as configLabel } from "@/platform/remoteSettings";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Checkbox, Dialog, IconButton, Input, Select, Tabs, T, type SelectOption } from "@/ui";
@@ -45,6 +50,7 @@ import styles from "./Database.module.css";
 import { isImeKey } from "@/platform/ime";
 
 type Tab = "general" | "options" | "ssh" | "schemas" | "advanced";
+type ConnectionMethod = "direct" | "ssh" | "external";
 
 const TYPES: SelectOption[] = VENDORS.map((v) => ({ value: v.id, label: v.label, icon: v.icon }));
 
@@ -64,6 +70,12 @@ const SSL: Array<SelectOption<DbSslMode>> = [
   { value: "require", label: "Require" },
   { value: "verifyCa", label: "Verify CA" },
   { value: "verifyFull", label: "Verify Full" },
+];
+
+const CONNECTION_METHODS: Array<SelectOption<ConnectionMethod>> = [
+  { value: "direct", label: "Direct" },
+  { value: "ssh", label: "SSH tunnel" },
+  { value: "external", label: "External TCP tunnel" },
 ];
 
 const TX: Array<SelectOption<DbTxMode>> = [
@@ -421,6 +433,35 @@ function Section({ title }: { title: string }) {
   );
 }
 
+function visibleArgument(value: string): string {
+  // Keep quotes, whitespace and invisible formatting characters visible in the approval.
+  return JSON.stringify(value).replace(
+    /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}]|[^\S ]/gu,
+    (character) => `\\u{${character.codePointAt(0)!.toString(16)}}`,
+  );
+}
+
+function externalReviewKey(source: DataSource): string | null {
+  if (!source.externalTunnel) return null;
+  return JSON.stringify([
+    source.externalTunnel,
+    source.driver,
+    source.host?.trim(),
+    source.port ?? vendorOf(source).port,
+    source.database,
+    source.user,
+    source.urlOnly,
+    source.ssl,
+    source.sslCaFile,
+    source.sslCertFile,
+    source.sslKeyFile,
+    source.readOnly,
+    source.properties?.filter((property) => property.name?.trim()),
+    source.options,
+    source.global,
+  ]);
+}
+
 export function SourceDialog({
   initial,
   preset,
@@ -432,14 +473,39 @@ export function SourceDialog({
 }) {
   const tx = useTx();
   const txTemplate = useTxTemplate();
-  const [s, setS] = useState<DataSource>(() => ({ ...blank(), ...preset, ...initial }));
-  // `undefined`: unchanged (editing keeps the stored password).
-  const [password, setPassword] = useState<string | undefined>(presetPassword ?? undefined);
+  const [{ source: s, password, reviewedTunnel }, setDraft] = useState(() => ({
+    source: { ...blank(), ...preset, ...initial },
+    // `undefined`: unchanged (editing keeps the stored password).
+    password: presetPassword ?? undefined,
+    reviewedTunnel: false,
+  }));
+  const setS = (update: (source: DataSource) => DataSource) =>
+    setDraft((draft) => {
+      const source = update(draft.source);
+      const reviewedTunnel = draft.reviewedTunnel && externalReviewKey(source) === externalReviewKey(draft.source);
+      return { ...draft, source, reviewedTunnel };
+    });
+  const setPassword = (password: string | undefined) =>
+    setDraft((draft) => ({ ...draft, password, reviewedTunnel: draft.reviewedTunnel && draft.password === password }));
   // Same convention for the SSH password / passphrase.
   const [sshSecret, setSshSecret] = useState<string | undefined>(undefined);
   const [tab, setTab] = useState<Tab>("general");
   const [test, setTest] = useState<{ ok: boolean; text: string; trust?: boolean; tunnel?: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busyKind, setBusy] = useState<"connecting" | "external" | null>(null);
+  const busy = busyKind !== null;
+  const [reviewRequest, setReviewRequest] = useState(0);
+  const reviewPanel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (reviewRequest) reviewPanel.current?.querySelector("input")?.focus();
+  }, [reviewRequest]);
+  const externalRequest = useRef<RequestId | null>(null);
+  const cancelExternalTest = useCallback(() => {
+    const request = externalRequest.current;
+    if (request === null) return;
+    externalRequest.current = null;
+    void commands.cancelRequest(request);
+  }, []);
+  useEffect(() => cancelExternalTest, [cancelExternalTest]);
   const [showComment, setShowComment] = useState(!!s.comment);
   // The URL being typed in default mode (null: show the fields' URL).
   const [urlDraft, setUrlDraft] = useState<string | null>(null);
@@ -461,6 +527,7 @@ export function SourceDialog({
   const jdbcProfile = availableProfiles?.find((d) => d.id === s.jdbcDriver);
   const installedJdbcProfile = jdbcProfiles.drivers?.find((d) => d.id === s.jdbcDriver);
   const projectRoot = useProject((st) => st.project?.root);
+  const remote = useRemote((st) => st.session !== null);
   const nativeUrl = nativeSource?.urlOnly ? parseSourceUrl(nativeSource.url ?? "") : null;
   const nativeOptions = nativeSource?.options;
   const reviewSessionSettings =
@@ -480,6 +547,7 @@ export function SourceDialog({
           nativeSource.driver === "clickhouse" ||
           nativeSource.driver === "snowflake" ||
           nativeSource.ssh?.enabled ||
+          nativeSource.externalTunnel ||
           nativeSource.urlOnly ||
           ["require", "verifyCa", "verifyFull"].includes(nativeSource.ssl ?? "") ||
           nativeSource.sslCaFile ||
@@ -516,6 +584,10 @@ export function SourceDialog({
 
   const sqlite = s.driver === "sqlite";
   const postgres = s.driver === "postgres";
+  const externalTunnel = s.externalTunnel;
+  const setExternalTunnel = (patch: Partial<DbExternalTunnel>) =>
+    setS((x) => (x.externalTunnel ? { ...x, externalTunnel: { ...x.externalTunnel, ...patch } } : x));
+  const externalAvailable = postgres && isTauri() && !remote && !s.pluginOwner;
   /** Drivers that can list every database on the host (tree level + Schemas tab). */
   const serverDatabases = postgres || s.driver === "sqlServer" || s.driver === "snowflake";
   const clickhouse = s.driver === "clickhouse";
@@ -541,7 +613,24 @@ export function SourceDialog({
         ? fileSourceName(s.file ?? "")
         : `${database || s.user || "db"}@${host || "localhost"}`);
   // Snowflake is reached over HTTPS, where a tunnel to another host name cannot pass certificate checks.
-  const sshOn = !sqlite && !snowflake && !jdbc && !!ssh.enabled;
+  const sshOn = !sqlite && !snowflake && !jdbc && !externalTunnel && !!ssh.enabled;
+  const connectionMethod = externalTunnel ? "external" : sshOn ? "ssh" : "direct";
+  const setConnectionMethod = (method: ConnectionMethod) => {
+    setTest(null);
+    set({
+      ssh: { ...ssh, enabled: method === "ssh" },
+      externalTunnel: method === "external" ? (externalTunnel ?? { executable: "", arguments: [] }) : null,
+    });
+  };
+  const externalError = externalTunnel
+    ? !externalAvailable
+      ? tx("External TCP tunnels require a local desktop window and a user-managed PostgreSQL source.")
+      : urlOnly
+        ? tx("External TCP tunnels use the host and port from the default connection type.")
+        : s.ssl === "verifyFull"
+          ? tx("Verify Full is unavailable with an external TCP tunnel.")
+          : null
+    : null;
   const template = jdbcProfile?.urlTemplate ?? "";
   const templateFields = (["host", "port", "database", "file"] as const).filter((key) => template.includes(`{${key}}`));
   const renderedUrl = template.replace(
@@ -584,6 +673,7 @@ export function SourceDialog({
       properties: [],
       options: { ...blankOptions(), ...connectionTimers("jdbc") },
       ssh: null,
+      externalTunnel: null,
       ssl: "disable",
       sslCaFile: "",
       sslCertFile: "",
@@ -591,14 +681,19 @@ export function SourceDialog({
     });
   };
   const jdbcUrlValid = /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) && !jdbcUrlPlaceholder.test(jdbcUrl);
-  const valid = jdbc
-    ? !!jdbcProfile && jdbcUrlValid && (!reviewJdbcSecurity || connectionSecurityConfirmed)
-    : (!reviewBuiltinSecurity || connectionSecurityConfirmed) &&
-      (sqlite
-        ? !!s.file?.trim()
-        : (urlOnly ? urlValid : !!s.host?.trim()) &&
-          (!sshOn || sshTunnelReady(ssh, sshConfigs)) &&
-          (!snowflake || (!!s.user?.trim() && (sf.auth !== "keyPair" || !!sf.privateKeyFile?.trim()))));
+  const valid =
+    (!externalTunnel ||
+      (!externalError &&
+        !!externalTunnel.executable.trim() &&
+        externalTunnel.arguments.some((argument) => argument.includes("{localPort}")))) &&
+    (jdbc
+      ? !!jdbcProfile && jdbcUrlValid && (!reviewJdbcSecurity || connectionSecurityConfirmed)
+      : (!reviewBuiltinSecurity || connectionSecurityConfirmed) &&
+        (sqlite
+          ? !!s.file?.trim()
+          : (urlOnly ? urlValid : !!s.host?.trim()) &&
+            (!sshOn || sshTunnelReady(ssh, sshConfigs)) &&
+            (!snowflake || (!!s.user?.trim() && (sf.auth !== "keyPair" || !!sf.privateKeyFile?.trim())))));
   const sslOn = (s.ssl ?? "prefer") !== "disable";
 
   /** What is saved / tested: a preset's port when the field was left empty. */
@@ -606,6 +701,7 @@ export function SourceDialog({
     ...s,
     name,
     port: s.port ?? (s.vendor ? vendor.port : null),
+    ...(externalTunnel ? { ssh: null } : {}),
     ...(jdbc
       ? {
           jdbcDriver: s.jdbcDriver ?? "",
@@ -658,7 +754,7 @@ export function SourceDialog({
     }
     setNativeDraft(null);
     if (jdbc && nativeSource && vendorOf(nativeSource).id === v.id) {
-      setS(previous);
+      setS(() => previous);
       return;
     }
     setS(() => {
@@ -670,6 +766,7 @@ export function SourceDialog({
         driver: v.driver,
         vendor: v.id === v.driver ? "" : v.id,
         port,
+        ...(v.driver !== "postgres" && x.externalTunnel ? { externalTunnel: null } : {}),
         ssl: v.ssl ?? (v.driver === "clickhouse" ? "disable" : x.ssl),
         ...(v.driver === "sqlite" && x.driver !== "jdbc" ? { options: { ...x.options, keepAliveSecs: null } } : {}),
         ...(v.driver === "snowflake"
@@ -728,26 +825,49 @@ export function SourceDialog({
   };
   const setUrlOnly = (on: boolean) => setConnectionUrl(on && !s.url?.trim() ? sourceUrl(s) : (s.url ?? ""), on);
 
+  const externalReviewed = () => {
+    if (!externalTunnel || reviewedTunnel) return true;
+    setTab("ssh");
+    setReviewRequest((n) => n + 1);
+    return false;
+  };
+
   /** Test Connection, or with `tunnel` the SSH/SSL tab's Test SSH Tunnel (no database login). */
   const runTest = async (tunnel = false) => {
-    if (!valid && !tunnel) return;
-    setBusy(true);
+    if (busy || (!tunnel && (!valid || !externalReviewed()))) return;
+    const source = effective();
+    const request = !tunnel && source.externalTunnel ? nextRequestId() : null;
+    if (request !== null) externalRequest.current = request;
+    const stillTesting = () => request === null || externalRequest.current === request;
+    setBusy(request === null ? "connecting" : "external");
     setTest(null);
     try {
       const secret = sshOn ? (sshSecret ?? null) : null;
       if (tunnel) {
-        const route = await call(commands.dbTestTunnel(effective(), secret));
+        const route = await call(commands.dbTestTunnel(source, secret));
         setTest({ ok: true, text: tx`SSH tunnel works: ${route}`, tunnel });
       } else {
-        const v = await call(commands.dbTest(effective(), password ?? null, secret));
-        setTest({ ok: true, text: tx`Succeeded: ${v}` });
+        const v = await call(
+          request === null
+            ? commands.dbTest(source, password ?? null, secret)
+            : commands.dbTestExternalTunnel(request, source, password ?? null),
+        );
+        if (stillTesting()) setTest({ ok: true, text: tx`Succeeded: ${v}` });
       }
     } catch (e) {
-      const text = e instanceof Error ? e.message : String(e);
-      const trust = e instanceof IpcError && connectRemedy(e.kind, e.message, { ssh: sshUsed }) === "trustHostKey";
-      setTest({ ok: false, text, trust, tunnel });
+      if (stillTesting()) {
+        const text = e instanceof Error ? e.message : String(e);
+        const trust =
+          request === null &&
+          e instanceof IpcError &&
+          connectRemedy(e.kind, e.message, { ssh: sshUsed }) === "trustHostKey";
+        setTest({ ok: false, text, trust, tunnel });
+      }
     } finally {
-      setBusy(false);
+      if (stillTesting()) {
+        externalRequest.current = null;
+        setBusy(null);
+      }
     }
   };
 
@@ -758,12 +878,14 @@ export function SourceDialog({
   };
 
   const save = async () => {
-    if (!valid) return;
+    if (busy || !valid || !externalReviewed()) return;
+    const draft = effective();
     const dialog = useDatabase.getState().dialog;
-    setBusy(true);
+    setBusy("connecting");
     try {
-      const source = { ...effective(), properties: properties.filter((p) => p.name?.trim()) };
+      const source = { ...draft, properties: draft.properties?.filter((p) => p.name?.trim()) ?? [] };
       if (jdbc && !source.global) await call(commands.dbApproveJdbcSource(source));
+      if (source.externalTunnel) await call(commands.dbApproveExternalTunnel(source));
       await saveSource(
         source,
         sqlite ? undefined : password === undefined ? undefined : password || null,
@@ -773,7 +895,7 @@ export function SourceDialog({
     } catch (e) {
       setTest({ ok: false, text: e instanceof Error ? e.message : String(e) });
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
@@ -914,7 +1036,12 @@ export function SourceDialog({
                 <button type="button" aria-pressed={!urlOnly} onClick={() => setUrlOnly(false)}>
                   <T>default</T>
                 </button>
-                <button type="button" aria-pressed={urlOnly} onClick={() => setUrlOnly(true)}>
+                <button
+                  type="button"
+                  aria-pressed={urlOnly}
+                  disabled={!!externalTunnel}
+                  onClick={() => setUrlOnly(true)}
+                >
                   <T>URL only</T>
                 </button>
               </div>
@@ -1112,6 +1239,11 @@ export function SourceDialog({
               <T>JDBC asks the driver for a read-only connection. Use a database account with read-only privileges.</T>
             </span>
           )}
+          {jdbc && nativeSource?.externalTunnel && (
+            <span className={styles.formHint}>
+              <T>Configure the route for the JDBC driver if the built-in connection uses an external TCP tunnel.</T>
+            </span>
+          )}
           {jdbc && reviewSessionSettings && (
             <span className={styles.formHint}>
               <T>
@@ -1273,10 +1405,11 @@ export function SourceDialog({
     ...sshConfigs.map((c) => ({ value: c.id, label: c.name.trim() || configLabel(c) || c.id, detail: configLabel(c) })),
     ...(sshConfigId && !sshConfig ? [{ value: sshConfigId, label: tx`${sshConfigId} (missing)` }] : []),
   ];
-  const sshTab = (
+  const targetHost = s.host?.trim() ?? "";
+  const targetPort = s.port ?? vendor.port ?? 5432;
+  const targetAddress = `${targetHost.includes(":") && !targetHost.startsWith("[") ? `[${targetHost}]` : targetHost}:${targetPort}`;
+  const sshFields = (
     <>
-      <span />
-      <Checkbox checked={!!ssh.enabled} onChange={(enabled) => setSsh({ enabled })} label="Use SSH tunnel" />
       <span className={styles.formLabel}>
         <T>Configuration:</T>
       </span>
@@ -1415,6 +1548,95 @@ export function SourceDialog({
           <T>Logs in to the SSH host and checks that it reaches the database host and port.</T>
         </span>
       </div>
+    </>
+  );
+  const sshTab = (
+    <>
+      {externalAvailable || externalTunnel ? (
+        <>
+          <span className={styles.formLabel}>
+            <T>Connection method:</T>
+          </span>
+          <Select
+            aria-label="Connection method"
+            className={styles.narrowSelect}
+            value={connectionMethod}
+            options={
+              externalAvailable
+                ? CONNECTION_METHODS
+                : CONNECTION_METHODS.map((method) => ({ ...method, disabled: method.value === "external" }))
+            }
+            onChange={setConnectionMethod}
+          />
+          {sshOn && sshFields}
+          {externalAvailable && externalTunnel && (
+            <>
+              <FileField
+                id="db-tunnel-executable"
+                label="Executable:"
+                title="External Tunnel Executable"
+                value={externalTunnel.executable}
+                onChange={(executable) => setExternalTunnel({ executable })}
+              />
+              <span id="db-tunnel-arguments" className={`${styles.formLabel} ${styles.tunnelArgumentsLabel}`}>
+                <T>Arguments:</T>
+              </span>
+              <div className={styles.tunnelArguments} role="group" aria-labelledby="db-tunnel-arguments">
+                {externalTunnel.arguments.map((argument, i) => (
+                  // oxlint-disable-next-line react/no-array-index-key -- the position identifies an argument
+                  <div key={i} className={styles.formRow}>
+                    <Input
+                      className={`${styles.fill} ${styles.paramInput}`}
+                      aria-label={tx`Argument ${i + 1}`}
+                      value={argument}
+                      spellCheck={false}
+                      onChange={(e) =>
+                        setExternalTunnel({
+                          arguments: externalTunnel.arguments.map((value, j) => (j === i ? e.target.value : value)),
+                        })
+                      }
+                    />
+                    <IconButton
+                      icon="close"
+                      size="small"
+                      aria-label={tx`Remove argument ${i + 1}`}
+                      title="Remove"
+                      onClick={() =>
+                        setExternalTunnel({
+                          arguments: externalTunnel.arguments.filter((_, j) => j !== i),
+                        })
+                      }
+                    />
+                  </div>
+                ))}
+                <Button
+                  icon="plus"
+                  size="small"
+                  onClick={() => setExternalTunnel({ arguments: [...externalTunnel.arguments, ""] })}
+                >
+                  <T>Add Argument</T>
+                </Button>
+                <span className={styles.formHint}>
+                  <T>
+                    {
+                      "Use one field per argument. Include {localPort} for the loopback port. {host} and {port} use the PostgreSQL destination."
+                    }
+                  </T>
+                </span>
+                <span className={styles.formHint}>
+                  <T>The executable must listen on 127.0.0.1 and run in the foreground.</T>
+                </span>
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <span />
+          <Checkbox checked={!!ssh.enabled} onChange={(enabled) => setSsh({ enabled })} label="Use SSH tunnel" />
+          {sshFields}
+        </>
+      )}
       <Section title="SSL" />
       <span className={styles.formLabel}>
         <T>Mode:</T>
@@ -1460,6 +1682,66 @@ export function SourceDialog({
         title="Client Key File"
         onChange={(sslKeyFile) => set({ sslKeyFile })}
       />
+      {valid && externalTunnel && (
+        <div className={styles.tunnelReview} role="group" aria-labelledby="db-tunnel-review" ref={reviewPanel}>
+          <div className={styles.formSection} id="db-tunnel-review">
+            <T>Review External Tunnel</T>
+          </div>
+          <p className={styles.formHint}>
+            <T>The executable runs on this computer with your user permissions when connecting.</T>
+          </p>
+          <dl className={styles.tunnelPreview}>
+            <dt>
+              <T>Executable:</T>
+            </dt>
+            <dd>
+              <code>{visibleArgument(externalTunnel.executable)}</code>
+            </dd>
+            <dt>
+              <T>Arguments:</T>
+            </dt>
+            <dd>
+              <ol>
+                {externalTunnel.arguments.map((argument, i) => (
+                  // oxlint-disable-next-line react/no-array-index-key -- a literal argument can repeat at different positions
+                  <li key={i}>
+                    <code>{visibleArgument(argument)}</code>
+                  </li>
+                ))}
+              </ol>
+            </dd>
+            <dt>
+              <T>Destination:</T>
+            </dt>
+            <dd>
+              <code>{visibleArgument(targetAddress)}</code>
+            </dd>
+            {!!s.database && (
+              <>
+                <dt>
+                  <T>Database:</T>
+                </dt>
+                <dd>
+                  <code>{visibleArgument(s.database)}</code>
+                </dd>
+              </>
+            )}
+          </dl>
+          <Checkbox
+            checked={reviewedTunnel}
+            disabled={busy}
+            label="Allow this command for the destination shown"
+            onChange={(checked) => {
+              const key = externalReviewKey(s);
+              setDraft((draft) => ({
+                ...draft,
+                reviewedTunnel: checked && draft.password === password && externalReviewKey(draft.source) === key,
+              }));
+              setTest(null);
+            }}
+          />
+        </div>
+      )}
     </>
   );
 
@@ -1589,11 +1871,15 @@ export function SourceDialog({
     schemas: schemasTab,
     advanced: advancedTab,
   };
+  const shownTest = externalTunnel && !reviewedTunnel ? null : test;
 
   return (
     <Dialog
       open
-      onClose={closeDialog}
+      onClose={() => {
+        cancelExternalTest();
+        closeDialog();
+      }}
       title={initial ? tx`Data Source: ${initial.name}` : "New Data Source"}
       width={760}
       footerStart={
@@ -1676,9 +1962,16 @@ export function SourceDialog({
         <div className={`${styles.form} ${styles.sourcePanel}`} role="tabpanel" id={`db-source-panel-${current}`}>
           {body[current]}
         </div>
-        <div className={`${styles.testResult} ${test?.ok ? styles.ok : styles.bad}`} role="status">
-          {busy && !test ? tx("Connecting…") : test?.text}
-          {test?.trust && (
+        <div
+          className={`${styles.testResult} ${shownTest?.ok ? styles.ok : shownTest || externalError ? styles.bad : ""}`}
+          role="status"
+        >
+          {busy && !shownTest
+            ? busyKind === "external"
+              ? tx("Testing external TCP tunnel and PostgreSQL connection…")
+              : tx("Connecting…")
+            : (externalError ?? shownTest?.text)}
+          {shownTest?.trust && (
             <>
               {" "}
               <Button size="small" onClick={() => void trustAndRetry()} disabled={busy}>

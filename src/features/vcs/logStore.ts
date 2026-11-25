@@ -1008,6 +1008,7 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
       const tab = s.logTabs.find((t) => t.id === s.shownLog);
       if (tab?.readOnly)
         for (const repo of tab.repositories ?? (tab.repo ? [tab.repo] : []))
+          // oxlint-disable-next-line no-await-in-loop -- external log windows open in repository order, one at a time
           await call(commands.vcsOpenExternalLog(repo));
       const { repositories: roots, ownerRoots } = logRepositoryScope(s);
       const limit = Math.min(replace ? Math.max(PAGE, s.commits.length) : PAGE, cap - loaded);
@@ -1256,6 +1257,7 @@ async function pageUntil(find: () => boolean) {
   const generation = useGitLog.getState().generation;
   while (!find() && !useGitLog.getState().done && useGitLog.getState().generation === generation) {
     const before = useGitLog.getState().commits.length;
+    // oxlint-disable-next-line no-await-in-loop -- each page mutates shared log state; progress and cancellation decide whether to continue
     await loadMore();
     if (useGitLog.getState().commits.length <= before) break;
   }
@@ -1288,6 +1290,7 @@ export async function revealCommit(id: string, repo = currentRepo(), tab = "log"
     while (valid()) {
       const pending = loadPromises.get(tab);
       if (!pending) break;
+      // oxlint-disable-next-line no-await-in-loop -- a pending load can queue the next one; settle them in order while validity is rechecked
       await pending;
     }
   };

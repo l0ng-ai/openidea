@@ -173,7 +173,7 @@ function moduleOptions(maven: readonly MavenProject[], gradle: readonly GradleMo
   return [
     ...maven
       .filter((p) => p.packaging !== "pom" || p.dependencies.length > 0)
-      .map((p) => ({ value: p.pom, label: p.displayName, detail: p.pom, icon: "maven-project" })),
+      .map((p) => ({ value: p.pom, label: p.displayName, verbatim: true, detail: p.pom, icon: "maven-project" })),
     // buildSrc's tasks can't be run from the build.
     ...gradle.flatMap((build) =>
       build.projects
@@ -181,6 +181,7 @@ function moduleOptions(maven: readonly MavenProject[], gradle: readonly GradleMo
         .map((p) => ({
           value: gradleProjectKey(build, p),
           label: p.name,
+          verbatim: true,
           detail: `${build.dir || "."} ${p.path}`,
           icon: p.path === ":" ? "gradle-project" : "gradle-module",
         })),
