@@ -12,6 +12,7 @@ fn build_hidden(config: &mut WindowConfig) -> bool {
 #[cfg(target_os = "linux")]
 mod runtime {
     use super::*;
+    use crate::windows::WorkbenchWindows;
     use parking_lot::Mutex;
     use std::collections::HashMap;
     use std::sync::OnceLock;
@@ -336,8 +337,8 @@ mod runtime {
             let app = window.app_handle().clone();
             let label = window.label().to_owned();
             let _ = window.run_on_main_thread(move || {
-                if let Some(parent) = crate::windows::auxiliary_parent(&label).and_then(|p| app.get_webview_window(p))
-                    && let Some(aux) = app.get_webview_window(&label)
+                if let Some(parent) = crate::windows::auxiliary_parent(&label).and_then(|p| app.workbench_window(p))
+                    && let Some(aux) = app.workbench_window(&label)
                     && let Err(error) = crate::windows::place_over_parent(&aux, &parent)
                 {
                     tracing::warn!("cannot fit restored auxiliary window: {error}");
@@ -380,7 +381,7 @@ mod runtime {
         let saved = cache.saved.entry(key(label).to_owned()).or_default();
         saved.set_normal_size(Size(size.width, size.height));
         drop(cache);
-        if let Some(webview) = app.get_webview_window(label) {
+        if let Some(webview) = app.workbench_window(label) {
             request_presentation(webview.as_ref(), request);
         }
     }
@@ -419,7 +420,7 @@ mod runtime {
     }
 
     pub fn save_before_close(app: &AppHandle) {
-        for window in app.webview_windows().values() {
+        for window in app.workbench_windows().values() {
             sample(&window.as_ref().window(), false, false);
         }
         persist(app);
@@ -464,7 +465,7 @@ mod runtime {
                         request: u64,
                     }
                     let Ok(presented) = serde_json::from_str::<Presented>(event.payload()) else { return };
-                    let Some(webview) = handle.get_webview_window(&presented.label) else { return };
+                    let Some(webview) = handle.workbench_window(&presented.label) else { return };
                     let window = webview.as_ref().window();
                     let cloned = window.clone();
                     let _ = window.run_on_main_thread(move || {
@@ -510,7 +511,7 @@ mod runtime {
                             .filter(|p| !p.presented)
                             .map(|p| p.presentation_request);
                         if let Some(request) = request
-                            && let Some(webview) = cloned.app_handle().get_webview_window(cloned.label())
+                            && let Some(webview) = cloned.app_handle().workbench_window(cloned.label())
                         {
                             request_presentation(webview.as_ref(), request);
                         }

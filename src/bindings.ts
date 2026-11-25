@@ -2265,6 +2265,9 @@ export const commands = {
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	/**  Create Patch › Save to file. */
 	vcsWritePatch: (path: string, patch: string, encoding: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch, encoding })),
+	webBrowserControl: (session: RequestId, action: BrowserAction) => typedError<BrowserStatus, IdeError>(__TAURI_INVOKE("web_browser_control", { session, action })),
+	/**  Creates a private localhost browser session owned by this window and project. */
+	webBrowserOpen: (url: string, session: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("web_browser_open", { url, session })),
 	/**  The browsers installed on this machine. */
 	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
@@ -3921,6 +3924,24 @@ export type Browser = {
 	/**  `chrome`, `firefox`, `safari`, `edge`, `brave`, `chromium`. */
 	id: string,
 	name: string,
+};
+
+export type BrowserAction = { type: "navigate"; url: string } | { type: "back" } | { type: "forward" } | { type: "reload" } | { type: "inspect" } | { type: "cancel" } | { type: "layout"; bounds: BrowserBounds | null } | { type: "status" };
+
+/**  Physical pixels measured from the top left of the workbench webview. */
+export type BrowserBounds = {
+	x: number,
+	y: number,
+	width: number,
+	height: number,
+};
+
+export type BrowserStatus = {
+	url: string,
+	canBack: boolean,
+	canForward: boolean,
+	inspecting: boolean,
+	element: InspectedElement | null,
 };
 
 export type BuildEvent = 
@@ -8526,6 +8547,12 @@ export type InspectSummary = {
 	failed: number,
 	cancelled: boolean,
 	elapsedMs: number,
+};
+
+export type InspectedElement = {
+	selector: string,
+	html: string,
+	styles: string,
 };
 
 export type InspectedFile = {

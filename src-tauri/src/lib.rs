@@ -7,6 +7,7 @@
 #![recursion_limit = "512"]
 
 mod application_focus;
+mod browser_picker;
 mod cli;
 mod commands;
 #[cfg(debug_assertions)]
@@ -47,6 +48,8 @@ mod windows_error_mode;
 mod windows_webview_keys;
 #[cfg(windows)]
 mod windows_webview_recovery;
+
+use crate::windows::WorkbenchWindows;
 
 use parking_lot::Mutex;
 use state::AppState;
@@ -185,6 +188,10 @@ pub fn run() {
     });
     app.invoke_handler(move |request| {
         let webview = request.message.webview_ref();
+        if browser_picker::is_guest(webview.label()) {
+            request.resolver.reject("Browser pages cannot invoke IDE commands");
+            return true;
+        }
         if let Some(state) = webview.try_state::<AppState>() {
             let label = AppState::owner_window(webview.label());
             let command = request.message.command();
@@ -298,6 +305,7 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            browser_picker::forget(window.label());
             // Also release a view that failed during startup, before the parent could watch it.
             if let Some(state) = window.try_state::<AppState>()
                 && let Ok(project) = state.host.project(window.label())
@@ -427,7 +435,7 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
             let label = match windows::menu_destination(w.label(), &route.action) {
                 windows::MenuDestination::Own => w.label(),
                 windows::MenuDestination::Parent { label, raise } => {
-                    if raise && let Some(parent) = app.get_webview_window(label) {
+                    if raise && let Some(parent) = app.workbench_window(label) {
                         windows::focus(&parent);
                         return_to = Some(w.label());
                     }

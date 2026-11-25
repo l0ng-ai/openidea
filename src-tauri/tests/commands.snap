@@ -824,6 +824,8 @@ vcs_watch_commit_messages                    always             project_host bin
 vcs_worktree_include                         always             project_host bindings async
 vcs_worktrees                                always             project_host bindings async
 vcs_write_patch                              always             project_host bindings async
+web_browser_control                          trusted            desktop      bindings async
+web_browser_open                             trusted            desktop      bindings async
 web_browsers                                 always             desktop      bindings async
 web_goto                                     always             project_host bindings async
 web_open                                     always             desktop      bindings async
