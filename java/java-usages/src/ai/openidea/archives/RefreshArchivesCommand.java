@@ -12,6 +12,7 @@ import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.core.runtime.Path;
+import org.eclipse.core.runtime.Platform;
 import org.eclipse.jdt.core.IJavaModel;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IPackageFragmentRoot;
@@ -20,12 +21,17 @@ import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 import org.eclipse.jdt.ls.core.internal.ProjectUtils;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
+import org.osgi.framework.Bundle;
 
 /**
  * Re-reads library archives replaced in place (a SNAPSHOT installed again keeps its path). The
  * arguments are the archives' file system paths. Their package fragment roots are closed, which
  * drops the class files read from the old archive, and jdtls' decompiled sources (cached by class
  * handle, which a replaced archive keeps) are dropped, so the classes are read again.
+ *
+ * <p>Every call (each project reload) also drops the annotation processors' class loaders: they
+ * keep the processor path's jars open, so after a dependency on that path was installed again the
+ * next build failed with "Unable to load annotation processor factory" until jdtls restarted (#4105).
  */
 public final class RefreshArchivesCommand implements IDelegateCommandHandler {
     @Override
@@ -43,6 +49,7 @@ public final class RefreshArchivesCommand implements IDelegateCommandHandler {
         }
         IJavaModel model = JavaCore.create(ResourcesPlugin.getWorkspace().getRoot());
         model.refreshExternalArchives(null, monitor);
+        resetAnnotationProcessors();
         Set<IPath> archives = new HashSet<>();
         for (Object argument : arguments) {
             if (argument instanceof String path) archives.add(Path.fromOSString(path));
@@ -60,6 +67,19 @@ public final class RefreshArchivesCommand implements IDelegateCommandHandler {
             }
         }
         return closed;
+    }
+
+    /** JDT APT caches a class loader per project over the factory path; the next build creates new ones. */
+    private static void resetAnnotationProcessors() {
+        try {
+            Bundle apt = Platform.getBundle("org.eclipse.jdt.apt.core");
+            if (apt == null) return;
+            Class<?> loader = apt.loadClass("org.eclipse.jdt.apt.core.internal.AnnotationProcessorFactoryLoader");
+            Object instance = loader.getMethod("getLoader").invoke(null);
+            loader.getMethod("resetAll").invoke(instance);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            JavaLanguageServerPlugin.logException("Resetting annotation processors", e);
+        }
     }
 
     /** jdtls keeps decompiled sources in a static per-decompiler LRU with no API to drop them. */
