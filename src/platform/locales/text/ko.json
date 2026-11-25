@@ -839,6 +839,7 @@
   "Exit": "종료",
   "Expand": "펼치기",
   "Expand All": "모두 펼치기",
+  "Expand Selected": "선택 항목 펼치기",
   "Expand abbreviations with Tab": "Tab으로 약어 확장",
   "Expand folded lines": "접힌 줄 펼치기",
   "Expand templates with Tab": "Tab으로 템플릿 확장",
