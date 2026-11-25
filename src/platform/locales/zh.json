@@ -416,6 +416,7 @@
   "menu.build.compileFile": "{compileFile, select, yes {重新编译 '{compileFileName}'} other {重新编译}}",
   "menu.build.rebuildProject": "重新构建项目",
   "menu.build.buildArtifacts": "构建工件",
+  "menu.build.flutter": "Flutter",
   "menu.toolwindow.build": "构建",
   "menu.find.structural": "结构化搜索…",
   "menu.find.replaceStructural": "结构化替换…",

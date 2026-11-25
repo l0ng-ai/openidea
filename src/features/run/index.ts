@@ -78,6 +78,7 @@ import {
   updatableSessions,
 } from "./applicationUpdate";
 import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
+import { registerFlutterBuildActions } from "./flutterBuild";
 import { npmGutter } from "./npmGutter";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
@@ -466,6 +467,7 @@ export function activate(): () => void {
     registerBuiltinTypes(),
     registerRunConfigType(junitType),
     registerGoActions(),
+    registerFlutterBuildActions(),
     registerRunTabActions(),
     registerComposerInstall(),
     registerPubspecCommands(),
