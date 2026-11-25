@@ -46,7 +46,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 import { SessionEditor } from "./SessionEditor";
 import { textOf, typeIn } from "./composerTesting";
 import { registerActions } from "@/platform/actions";
-import { composerDraft, retractFrom, rerunFrom, sendMessage, updateComposer, useAgents } from "./store";
+import { composerDraft, rollBackTo, rerunFrom, sendMessage, updateComposer, useAgents } from "./store";
 import { replyActions } from "./replyActions";
 
 const task: AgentTask = {
@@ -107,19 +107,32 @@ it("keeps the transcript and running session when a fresh-session rerun is cance
   expect(useAgents.getState().entries.get(task.id)).toEqual(entries);
 });
 
-describe("retracting a turn", () => {
+it("confirms before rerunning a later turn when confirmRewind is requested", async () => {
+  ipc.confirm.mockResolvedValue(false);
+  expect(await rerunFrom(task.id, 1, "Follow up", [], { title: "Run Again From Here", later: true })).toBe(false);
+  expect(ipc.confirm).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: "Run Again From Here",
+      message: expect.stringContaining("files the agent changed since"),
+    }),
+  );
+  expect(ipc.rollback).not.toHaveBeenCalled();
+  expect(ipc.prompt).not.toHaveBeenCalled();
+});
+
+describe("rolling back to a message", () => {
   it.each([0, 1])("stops before rollback and restores text/images without sending (turn %s)", async (turn) => {
     const image = { mimeType: "image/png", data: "AAA", name: "shot.png" };
     useAgents.setState({
       tasks: new Map([[task.id, { ...task, status: "running" }]]),
     });
     updateComposer(task.id, { text: "Draft" });
-    const running = retractFrom(task.id, turn, "Original", [image]);
+    const running = rollBackTo(task.id, turn, "Original", [image]);
     await waitFor(() => expect(ipc.cancel).toHaveBeenCalledTimes(1));
     expect(ipc.rollback).not.toHaveBeenCalled();
     useAgents.setState({ tasks: new Map([[task.id, task]]) });
     await running;
-    expect(ipc.rollback).toHaveBeenCalledExactlyOnceWith(task.id, turn);
+    expect(ipc.rollback).toHaveBeenCalledExactlyOnceWith(task.id, turn, true);
     expect(ipc.prompt).not.toHaveBeenCalled();
     expect(composerDraft(task.id)).toEqual({
       text: "Original\nDraft",
@@ -135,7 +148,7 @@ describe("retracting a turn", () => {
       useAgents.setState({
         tasks: new Map([[task.id, { ...task, status: "running" }]]),
       });
-      const result = expect(retractFrom(task.id, 1, "Original")).rejects.toThrow("The agent is still stopping");
+      const result = expect(rollBackTo(task.id, 1, "Original")).rejects.toThrow("The agent is still stopping");
       await vi.advanceTimersByTimeAsync(15_000);
       await result;
       expect(ipc.rollback).not.toHaveBeenCalled();
@@ -150,12 +163,12 @@ describe("retracting a turn", () => {
       status: "error",
       error: { kind: "internal", message: "Rollback failed" },
     });
-    await expect(retractFrom(task.id, 1, "Original")).rejects.toThrow("Rollback failed");
+    await expect(rollBackTo(task.id, 1, "Original")).rejects.toThrow("Rollback failed");
     expect(composerDraft(task.id).text).toBe("Original");
     expect(ipc.prompt).not.toHaveBeenCalled();
   });
 
-  it("confirms before retracting a turn with later messages and guards repeated clicks", async () => {
+  it("confirms before rolling back and guards repeated clicks", async () => {
     const transcript = [...entries, { ...entries[0]!, text: "Follow up" } as AgentEntry, entries[1]!];
     useAgents.setState({ entries: new Map([[task.id, transcript]]) });
     let answer!: (ok: boolean) => void;
@@ -167,7 +180,7 @@ describe("retracting a turn", () => {
     render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
     const user = userEvent.setup();
     const retract = screen.getAllByRole("button", {
-      name: "Retract Message",
+      name: "Roll Back to Here",
     })[0]!;
     await user.click(retract);
     await user.click(retract);
@@ -177,7 +190,7 @@ describe("retracting a turn", () => {
     expect(useAgents.getState().entries.get(task.id)).toEqual(transcript);
     ipc.confirm.mockResolvedValue(true);
     await user.click(retract);
-    await waitFor(() => expect(ipc.rollback).toHaveBeenCalledExactlyOnceWith(task.id, 0));
+    await waitFor(() => expect(ipc.rollback).toHaveBeenCalledExactlyOnceWith(task.id, 0, true));
     expect(composerDraft(task.id).text).toBe("Original message");
   });
 });
@@ -371,7 +384,7 @@ describe("editing a sent agent message", () => {
     );
     const { user, box, send } = await edit();
     await user.click(send);
-    expect(ipc.rollback).toHaveBeenCalledWith(task.id, 0);
+    expect(ipc.rollback).toHaveBeenCalledWith(task.id, 0, true);
     expect(ipc.prompt).not.toHaveBeenCalled();
     expect(send).toBeDisabled();
     expect(send).toHaveAccessibleName("Send");
