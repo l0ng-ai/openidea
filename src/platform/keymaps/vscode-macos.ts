@@ -393,6 +393,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "editor.copyReference": [],
   "editor.copyPathReference": [],
   "code.pasteAsPlainText": [],
+  "code.copyAsPlainText": [],
+  "code.copyAsRichText": [],
   "code.expressionTypeInfo": [],
   "code.implementMethods": [],
   "code.overrideMethods": [],
