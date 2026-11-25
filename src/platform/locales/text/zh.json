@@ -1082,9 +1082,7 @@
   "Add Maven Projects": "添加 Maven 项目",
   "Choose one or more pom.xml files inside or outside the opened project. The opened folder stays the project root.": "选择打开项目之内或之外的一个或多个 pom.xml。打开的文件夹仍是项目根。",
   "Import Module from Existing Sources": "导入已有模块",
-  "Choose a module directory outside the opened project. If it contains pom.xml, that Maven project is attached. The opened folder stays the project root, and neither POM is edited.": "选择打开项目之外的模块目录。若其中有 pom.xml，则挂接该 Maven 项目。打开的文件夹仍是项目根，两个 POM 都不会被修改。",
-  "Maven project was not imported": "未导入 Maven 项目",
-  "This directory has no pom.xml, so it was not imported.": "此目录没有 pom.xml，因此未导入。",
+  "Choose a module directory. A pom.xml is linked as a Maven project and a Gradle settings or build script as a Gradle build; a folder with neither is attached as another root. The opened folder stays the project root, and no build file is edited.": "选择模块目录。有 pom.xml 时作为 Maven 项目链接，有 Gradle settings 或构建脚本时作为 Gradle 构建链接；两者都没有的文件夹作为另一个根附加。打开的文件夹仍是项目根目录，不会修改任何构建文件。",
   "Some Maven projects were not added": "部分 Maven 项目未能添加",
   "These files are not named pom.xml, so they were not added: {join}{more}": "这些文件不叫 pom.xml，因此未添加：{join}{more}",
   "Unlink Maven Projects": "取消链接 Maven 项目",
@@ -10328,5 +10326,10 @@
   "File Already Exists": "文件已存在",
   "{name} already exists in {folder}.": "{folder} 中已存在 {name}。",
   "Create Copy": "创建副本",
-  "Do this for the other conflicts": "其余冲突也这样处理"
+  "Do this for the other conflicts": "其余冲突也这样处理",
+  "Module was not imported": "未导入模块",
+  "Cannot read {path}.": "无法读取 {path}。",
+  "Already in the project": "已在项目中",
+  "{name} is inside the opened project, so its sources are already part of it.": "{name} 位于已打开的项目内，其源码已属于该项目。",
+  "{name} has no pom.xml or Gradle build file. Attach it to this project as another root? Its source folders are detected automatically.": "{name} 没有 pom.xml 或 Gradle 构建文件。要将其作为另一个根附加到此项目吗？其中的源码目录会自动识别。"
 }
