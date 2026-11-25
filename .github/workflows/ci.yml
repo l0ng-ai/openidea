@@ -156,6 +156,44 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Test fixtures write LF files; keep Git from converting them on checkout.
       - run: git config --global core.autocrlf false
+      - name: Restore Maven artifacts for Java build tests
+        id: jbuild-maven-cache
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/jbuild-maven-repository
+          key: jbuild-maven-${{ runner.os }}-${{ hashFiles('crates/ide-build/tests/fixtures/jbuild-maven/**/pom.xml') }}
+      - name: Prepare Maven artifacts for Java build tests
+        id: jbuild-maven
+        if: runner.environment == 'github-hosted'
+        timeout-minutes: 5
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.jbuild-maven-cache.outputs.cache-hit }}
+        run: |
+          if [[ -z "${JAVA_HOME:-}" || ! -d "$JAVA_HOME/bin" ]] || ! command -v mvn >/dev/null; then
+            exit 0
+          fi
+          export MAVEN_OPTS="${MAVEN_OPTS:+$MAVEN_OPTS }-Dmaven.repo.local=$RUNNER_TEMP/jbuild-maven-repository"
+          echo "MAVEN_OPTS=$MAVEN_OPTS" >> "$GITHUB_ENV"
+          if [[ "$CACHE_HIT" == true ]]; then
+            exit 0
+          fi
+          # The IDE also reads the compiler plugin descriptor when it builds the Maven model.
+          for delay in 0 10 30; do
+            sleep "$delay"
+            if mvn -B -ntp -U -N -f crates/ide-build/tests/fixtures/jbuild-maven/pom.xml resources:resources compiler:compile; then
+              echo "prepared=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          exit 1
+      - name: Save Maven artifacts for Java build tests
+        if: steps.jbuild-maven.outputs.prepared == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/jbuild-maven-repository
+          key: ${{ steps.jbuild-maven-cache.outputs.cache-primary-key }}
       - run: cargo nextest run --workspace --no-fail-fast
       - name: Remote backend with Docker Compose
         # Self-hosted runner containers do not mount /var/run/docker.sock (scripts/selfhost-runner/README.md).
