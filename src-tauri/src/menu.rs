@@ -825,6 +825,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             "Active Tool Window",
             vec![
                 act("toolwindow.hideActive", "Hide Active Tool Window"),
+                act("toolwindow.hideSide", "Hide Side Tool Windows"),
                 act("toolwindow.maximize", "Maximize Tool Window"),
                 act("toolwindow.closeContent", "Close Active Tab"),
                 sub(
@@ -2392,6 +2393,7 @@ mod tests {
                     && *id != "toolwindow.hideAll"
                     && ![
                         "toolwindow.hideActive",
+                        "toolwindow.hideSide",
                         "toolwindow.maximize",
                         "toolwindow.closeContent",
                         "toolwindow.jumpToLast",

@@ -118,6 +118,23 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps the Active Tool Window actions", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="$default"><action id="HideSideWindows"><keyboard-shortcut first-keystroke="control alt shift F12"/></action><action id="HideActiveWindow"><keyboard-shortcut first-keystroke="alt ESCAPE"/></action><action id="MaximizeToolWindow"><keyboard-shortcut first-keystroke="control alt M"/></action><action id="JumpToLastWindow"><keyboard-shortcut first-keystroke="alt F12"/></action><action id="ResizeToolWindowLeft"><keyboard-shortcut first-keystroke="control alt LEFT"/></action><action id="ResizeToolWindowRight"><keyboard-shortcut first-keystroke="control alt RIGHT"/></action><action id="ResizeToolWindowUp"><keyboard-shortcut first-keystroke="control alt UP"/></action><action id="ResizeToolWindowDown"><keyboard-shortcut first-keystroke="control alt DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides).toMatchObject({
+      "toolwindow.hideSide": [normalizeBinding("Ctrl+Alt+Shift+F12")],
+      "toolwindow.hideActive": [normalizeBinding("Alt+Escape")],
+      "toolwindow.maximize": [normalizeBinding("Ctrl+Alt+M")],
+      "toolwindow.jumpToLast": [normalizeBinding("Alt+F12")],
+      "toolwindow.resizeLeft": [normalizeBinding("Ctrl+Alt+Left")],
+      "toolwindow.resizeRight": [normalizeBinding("Ctrl+Alt+Right")],
+      "toolwindow.resizeUp": [normalizeBinding("Ctrl+Alt+Up")],
+      "toolwindow.resizeDown": [normalizeBinding("Ctrl+Alt+Down")],
+    });
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("rejects other XML", () => {
     expect(() => parseIdeaKeymap("<scheme name='x'/>")).toThrow(/keymap/);
   });

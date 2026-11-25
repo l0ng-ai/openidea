@@ -265,6 +265,7 @@ export const intellijWindows: Record<string, string[]> = {
   "layout.restoreDefault": [],
   "toolwindow.jumpToLast": ["F12"],
   "toolwindow.hideActive": ["Shift+Escape"],
+  "toolwindow.hideSide": [],
   "toolwindow.focusEditor": ["Escape"],
   "editor.toggleZen": [],
   "editor.toggleLineNumbers": [],

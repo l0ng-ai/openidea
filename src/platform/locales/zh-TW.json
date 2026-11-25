@@ -475,6 +475,7 @@
   "menu.layout.delete": "刪除佈局…",
   "menu.activeToolWindow": "活動工具視窗",
   "menu.toolwindow.hideActive": "隱藏活動工具視窗",
+  "menu.toolwindow.hideSide": "隱藏側邊工具視窗",
   "menu.toolwindow.maximize": "最大化工具視窗",
   "menu.toolwindow.closeContent": "關閉活動分頁",
   "menu.toolwindow.jumpToLast": "跳轉到上一個工具視窗",
