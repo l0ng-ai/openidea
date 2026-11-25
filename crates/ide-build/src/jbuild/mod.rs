@@ -14,10 +14,15 @@
 //!   reactor dependency counts as changed when it compiled again.
 //! - **Fallback.** Projects Maven compiles with more than javac (Kotlin, AspectJ, enhancers,
 //!   another compiler id), multi-release jars and Java modules are left to the Maven launch build.
+mod classfile;
+mod incremental;
 mod javac;
 mod model;
 
+pub use classfile::ClassFile;
 pub use javac::{JavacPool, Reply, ServerKey};
+
+use incremental::{ClassRecord, SetStamp, SetState};
 pub use model::{CompilerConfig, ProjectModel, ReactorModel, ResourceRoot, SourceSet};
 
 use crate::compile::fingerprint;
@@ -29,7 +34,7 @@ use crate::process;
 use crate::{BuildModel, maven};
 use ide_core::{CancellationToken, IdeError, IdeResult, Pos, Range, Severity};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -85,28 +90,6 @@ pub enum Built {
 
 /// `(length, mtime in ns)` of a file.
 type FileStamp = (u64, u128);
-
-/// One source set's inputs as of its last compilation.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-struct SetStamp {
-    options: Vec<String>,
-    sources: BTreeMap<PathBuf, FileStamp>,
-    /// Per classpath entry: a file's stamp, or the generation of a reactor output.
-    classpath: Vec<(PathBuf, Option<FileStamp>, Option<u64>)>,
-    processor_path: Vec<(PathBuf, Option<FileStamp>)>,
-    java_home: PathBuf,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct SetState {
-    stamp: SetStamp,
-    /// Changes whenever the set's classes do: the sets compiled against it compile again.
-    generation: u64,
-    /// Files javac wrote: removed before the set compiles again.
-    outputs: Vec<PathBuf>,
-    generated: Vec<PathBuf>,
-    success: bool,
-}
 
 /// `(length, mtime in ns)` of a file; `None` for a folder or a missing file.
 fn file_stamp(path: &Path) -> Option<FileStamp> {
@@ -538,7 +521,7 @@ impl JavaBuild<'_> {
         Ok(())
     }
 
-    /// Compiles one source set when its inputs changed. Returns whether it failed.
+    /// Compiles what changed in one source set (see [`incremental`]). Returns whether it failed.
     #[allow(clippy::too_many_arguments)]
     fn compile_set(
         &self,
@@ -556,8 +539,10 @@ impl JavaBuild<'_> {
             return Ok(false);
         }
         let sources = java_sources(set, cancel)?;
+        let source_stamps: BTreeMap<PathBuf, FileStamp> =
+            sources.iter().filter_map(|s| Some((s.clone(), file_stamp(s)?))).collect();
         let state_file = state_path(dir, project, test, "compile");
-        let previous: Option<SetState> = std::fs::read(&state_file).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let previous = incremental::load_state(&state_file);
         let config = set.compiler.clone().unwrap_or_default();
         let release = config.release.as_deref().or(config.source.as_deref()).and_then(feature);
         let java_home = self.java_home(top, &config, release)?;
@@ -568,79 +553,223 @@ impl JavaBuild<'_> {
             set.classpath.clone()
         };
         let options = javac_options(set, &classpath, &generated, jdk_major(&java_home));
+        let reactor: Vec<PathBuf> =
+            classpath.iter().filter(|e| **e != set.output && outputs.contains_key(*e)).cloned().collect();
         let stamp = SetStamp {
             options: options.clone(),
-            sources: sources.iter().filter_map(|s| Some((s.clone(), file_stamp(s)?))).collect(),
-            classpath: classpath
+            libraries: classpath
                 .iter()
-                .map(|entry| match outputs.get(entry) {
-                    Some((key, test)) => (entry.clone(), None, Some(generation_of(dir, key, *test))),
-                    None => (entry.clone(), file_stamp(entry), None),
-                })
+                .filter(|e| **e != set.output && !outputs.contains_key(*e))
+                .map(|e| (e.clone(), file_stamp(e)))
                 .collect(),
+            reactor: reactor.clone(),
             processor_path: config.processor_path.iter().flatten().map(|p| (p.clone(), file_stamp(p))).collect(),
             java_home: java_home.clone(),
         };
-        if let Some(previous) = &previous
-            && previous.success
-            && previous.stamp == stamp
-            && set.output.is_dir()
-        {
+
+        // What the reactor outputs it compiles against changed since it last compiled.
+        let mut upstream = BTreeMap::new();
+        let mut upstream_changed = BTreeSet::new();
+        let mut upstream_all = false;
+        for entry in &reactor {
+            let (key, entry_test) = &outputs[entry];
+            let state = incremental::load_state(&state_path_of(dir, key, *entry_test, "compile"));
+            let generation = state.as_ref().map_or(0, |s| s.generation);
+            upstream.insert(entry.clone(), generation);
+            let recorded = previous.as_ref().and_then(|p| p.upstream.get(entry)).copied();
+            if recorded == Some(generation) {
+                continue;
+            }
+            match (recorded, state.and_then(|s| s.changes_since(recorded?))) {
+                (Some(_), Some(changed)) => upstream_changed.extend(changed),
+                _ => upstream_all = true,
+            }
+        }
+
+        let had_state = previous.is_some();
+        let previous = previous.unwrap_or_default();
+        let changed: BTreeSet<PathBuf> = source_stamps
+            .iter()
+            .filter(|(path, stamp)| previous.sources.get(*path) != Some(*stamp) || previous.dirty.contains(*path))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let removed: BTreeSet<PathBuf> =
+            previous.sources.keys().filter(|p| !source_stamps.contains_key(*p)).cloned().collect();
+        let from_scratch = !had_state
+            || previous.stamp != stamp
+            || upstream_all
+            || !set.output.is_dir()
+            || (!previous.success && previous.dirty.is_empty());
+        if !from_scratch && changed.is_empty() && removed.is_empty() && upstream_changed.is_empty() {
             return Ok(false);
         }
-        // Classes of the previous compilation go first, so deleted sources leave none behind.
-        match &previous {
-            Some(previous) => {
-                for file in previous.outputs.iter().chain(&previous.generated) {
-                    let _ = std::fs::remove_file(file);
-                }
-            }
-            None => {
-                remove_classes(&set.output);
-                let _ = std::fs::remove_dir_all(&generated);
-            }
+        // Processors that aggregate (or name no originating source) can't be followed class by class.
+        let from_scratch = from_scratch
+            || (!previous.generated.is_empty() || !previous.unowned.is_empty())
+                && !(changed.is_empty() && removed.is_empty() && upstream_changed.is_empty());
+
+        let mut state = SetState {
+            stamp,
+            sources: source_stamps.clone(),
+            generation: previous.generation,
+            upstream,
+            classes: previous.classes,
+            changes: previous.changes,
+            ..Default::default()
+        };
+        let mut api_changed = BTreeSet::new();
+        let mut constants_changed = false;
+        // Classes of removed sources go first, and count as changed.
+        let gone: Vec<String> = state
+            .classes
+            .iter()
+            .filter(|(_, r)| r.source.as_ref().is_some_and(|s| removed.contains(s)))
+            .map(|(n, _)| n.clone())
+            .collect();
+        for name in gone {
+            let record = state.classes.remove(&name).expect("listed");
+            let _ = std::fs::remove_file(&record.file);
+            constants_changed |= record.constants != incremental::NO_CONSTANTS;
+            api_changed.insert(name);
         }
+        let mut to_compile: BTreeSet<PathBuf> = if from_scratch || constants_changed {
+            remove_classes(&set.output);
+            for file in previous.generated.iter().chain(&previous.unowned) {
+                let _ = std::fs::remove_file(file);
+            }
+            let _ = std::fs::remove_dir_all(&generated);
+            state.classes.retain(|_, r| r.source.is_some());
+            source_stamps.keys().cloned().collect()
+        } else {
+            let affected =
+                incremental::with_subclasses(&state.classes, &upstream_changed.union(&api_changed).cloned().collect());
+            changed.iter().cloned().chain(incremental::dependent_sources(&state.classes, &affected)).collect()
+        };
         std::fs::create_dir_all(&set.output)?;
         std::fs::create_dir_all(&generated)?;
+
         let set_name = if test { "tests" } else { "main" };
-        on_event(BuildEvent::Step {
-            command: format!("javac {} ({set_name}, {} files)", project.artifact_id, sources.len()),
-            cwd: project.dir.clone().into(),
-        });
-        let mut state = SetState { stamp, generation: now_generation(), ..Default::default() };
-        if sources.is_empty() {
-            state.success = true;
-            model::write_json(&state_file, &state)?;
-            return Ok(false);
-        }
-        let key = ServerKey { java_home: java_home.clone(), jvm_args: jvm_config(&subdir(self.root, &top.dir)) };
-        let server = self.service.servers.server(self.jar, &key)?;
-        let encoding = config.encoding.clone();
-        let success = server.compile(&options, &sources, encoding.as_deref(), cancel, |reply| match reply {
-            Reply::Output { path, .. } => state.outputs.push(path.clone()),
-            Reply::Generated { path, .. } => state.generated.push(path.clone()),
-            Reply::OutputText { text } => on_event(BuildEvent::Output { text: text.clone(), stderr: false }),
-            Reply::Diagnostic { .. } => {
-                if let Some(m) = diagnostic(reply) {
-                    on_event(BuildEvent::Output { text: message_text(&m), stderr: m.severity == Severity::Error });
-                    on_event(BuildEvent::Message { message: m.clone() });
-                    messages.push(m);
-                }
+        let total = source_stamps.len();
+        let mut compiled: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut server = None;
+        loop {
+            let batch: BTreeSet<PathBuf> = to_compile
+                .iter()
+                .filter(|s| !compiled.contains(*s) && source_stamps.contains_key(*s))
+                .cloned()
+                .collect();
+            if batch.is_empty() {
+                break;
             }
-            Reply::Done { .. } => {}
-        });
-        let success = match success {
-            Ok(success) => success,
-            Err(e) => {
-                // A cancelled or broken compilation may have written part of the classes.
+            // The classes the batch replaces: their files go first, so nothing stale is left.
+            let replaced: BTreeMap<String, ClassRecord> = state
+                .classes
+                .iter()
+                .filter(|(_, r)| r.source.as_ref().is_some_and(|s| batch.contains(s)))
+                .map(|(n, r)| (n.clone(), r.clone()))
+                .collect();
+            for (name, record) in &replaced {
+                let _ = std::fs::remove_file(&record.file);
+                state.classes.remove(name);
+            }
+            let files: Vec<PathBuf> = batch.iter().cloned().collect();
+            let count = if files.len() == total {
+                format!("{total} files")
+            } else {
+                format!("{} of {total} files", files.len())
+            };
+            on_event(BuildEvent::Step {
+                command: format!("javac {} ({set_name}, {count})", project.artifact_id),
+                cwd: project.dir.clone().into(),
+            });
+            if server.is_none() {
+                let key =
+                    ServerKey { java_home: java_home.clone(), jvm_args: jvm_config(&subdir(self.root, &top.dir)) };
+                server = Some(self.service.servers.server(self.jar, &key)?);
+            }
+            let mut written: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+            let result = server.as_ref().expect("started").compile(
+                &options,
+                &files,
+                config.encoding.as_deref(),
+                cancel,
+                |reply| match reply {
+                    Reply::Output { path, source } => written.push((path.clone(), source.clone())),
+                    Reply::Generated { path, .. } => state.generated.push(path.clone()),
+                    Reply::OutputText { text } => on_event(BuildEvent::Output { text: text.clone(), stderr: false }),
+                    Reply::Diagnostic { .. } => {
+                        if let Some(m) = diagnostic(reply) {
+                            on_event(BuildEvent::Output {
+                                text: message_text(&m),
+                                stderr: m.severity == Severity::Error,
+                            });
+                            on_event(BuildEvent::Message { message: m.clone() });
+                            messages.push(m);
+                        }
+                    }
+                    Reply::Done { .. } => {}
+                },
+            );
+            if !matches!(result, Ok(true)) {
+                // Whatever this build had to compile stays to compile; the replaced classes stay
+                // the baseline the next compilation compares with.
+                for (path, _) in &written {
+                    let _ = std::fs::remove_file(path);
+                }
+                state.classes.extend(replaced);
+                state.dirty = to_compile.union(&compiled).filter(|s| source_stamps.contains_key(*s)).cloned().collect();
                 state.success = false;
                 let _ = model::write_json(&state_file, &state);
-                return Err(e);
+                return result.map(|_| true);
             }
-        };
-        state.success = success;
+            // javac names sources as they were passed; other spellings are matched canonically,
+            // and classes of sources outside the set (processors' output) are unowned.
+            let canonical: HashMap<PathBuf, &PathBuf> =
+                batch.iter().filter_map(|s| Some((dunce::canonicalize(s).ok()?, s))).collect();
+            let own = |source: PathBuf| -> Option<PathBuf> {
+                if source_stamps.contains_key(&source) {
+                    return Some(source);
+                }
+                canonical.get(&dunce::canonicalize(&source).ok()?).map(|s| (*s).clone())
+            };
+            let mut fresh = BTreeMap::new();
+            for (path, source) in written {
+                let source = source.and_then(own);
+                let class = (path.extension().is_some_and(|e| e == "class"))
+                    .then(|| std::fs::read(&path).ok())
+                    .flatten()
+                    .and_then(|bytes| classfile::parse(&bytes));
+                match (class, source) {
+                    (Some(class), Some(source)) => {
+                        let (name, record) = ClassRecord::new(class, path, Some(source));
+                        fresh.insert(name, record);
+                    }
+                    _ => state.unowned.push(path),
+                }
+            }
+            let round = incremental::diff(&replaced, &fresh);
+            constants_changed |= round.constants;
+            api_changed.extend(round.api.iter().cloned());
+            state.classes.extend(fresh);
+            compiled.extend(batch);
+            if constants_changed {
+                // Constants are copied into the classes that use them: compile the rest too.
+                to_compile.extend(source_stamps.keys().cloned());
+                continue;
+            }
+            let affected =
+                incremental::with_subclasses(&state.classes, &round.api.union(&upstream_changed).cloned().collect());
+            to_compile.extend(incremental::dependent_sources(&state.classes, &affected));
+            to_compile.extend(incremental::shadowed_sources(&state.classes, &round.added));
+        }
+        state.success = true;
+        if !compiled.is_empty() || !api_changed.is_empty() {
+            let changed =
+                incremental::with_subclasses(&state.classes, &api_changed.union(&upstream_changed).cloned().collect());
+            state.log(now_generation(), changed, !had_state || constants_changed);
+        }
         model::write_json(&state_file, &state)?;
-        Ok(!success)
+        Ok(false)
     }
 
     /// The JDK compiling a source set: the compiler plugin's forked `executable`, else Maven's
@@ -728,14 +857,6 @@ fn state_path(dir: &Path, project: &ProjectModel, test: bool, what: &str) -> Pat
 
 fn state_path_of(dir: &Path, key: &str, test: bool, what: &str) -> PathBuf {
     dir.join("state").join(key.replace(':', ".")).join(format!("{}-{what}.json", if test { "test" } else { "main" }))
-}
-
-fn generation_of(dir: &Path, key: &str, test: bool) -> u64 {
-    std::fs::read(state_path_of(dir, key, test, "compile"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<SetState>(&b).ok())
-        .filter(|s| s.success)
-        .map_or(0, |s| s.generation)
 }
 
 fn generated_dir(dir: &Path, project: &ProjectModel, test: bool) -> PathBuf {
