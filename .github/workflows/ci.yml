@@ -159,7 +159,7 @@ jobs:
       - name: Restore Maven artifacts for Java build tests
         id: jbuild-maven-cache
         if: runner.environment == 'github-hosted'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/jbuild-maven-repository
           key: jbuild-maven-${{ runner.os }}-${{ hashFiles('crates/ide-build/tests/fixtures/jbuild-maven/**/pom.xml') }}
@@ -190,7 +190,7 @@ jobs:
           exit 1
       - name: Save Maven artifacts for Java build tests
         if: steps.jbuild-maven.outputs.prepared == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/jbuild-maven-repository
           key: ${{ steps.jbuild-maven-cache.outputs.cache-primary-key }}
