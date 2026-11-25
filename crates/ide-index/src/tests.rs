@@ -1246,3 +1246,38 @@ fn queries_during_streaming_scan_do_not_deadlock() {
 
     done_rx.recv_timeout(Duration::from_secs(60)).expect("concurrent index queries deadlocked with streaming scan");
 }
+
+#[test]
+fn reconciling_a_few_changed_files_does_not_show_indexing() {
+    let fx = sample();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink: SharedSink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let idx = fx.open_with(sink);
+    let announced = |events: &Mutex<Vec<IdeEvent>>| {
+        events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::IndexState { indexing: true, .. } | IdeEvent::Task { done: false, .. }))
+            .count()
+    };
+    let settle = || {
+        assert!(idx.wait_idle(WAIT));
+        // The touched folders are reconciled once the snapshot delay has passed.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(idx.wait_idle(WAIT));
+    };
+
+    // A program appending to its log in the project, as a debugged Spring app does.
+    events.lock().clear();
+    let log = fx.write("logs/app.log", "start\n");
+    for i in 0..3 {
+        std::fs::write(&log, format!("line {i}\n").repeat(i + 1)).unwrap();
+        idx.update(std::slice::from_ref(&log), &[]);
+        settle();
+    }
+    assert_eq!(announced(&events), 0, "a log being written must not show Indexing");
+    assert!(files(&idx, "app.log").contains(&"logs/app.log".to_owned()), "the log is still indexed");
+}

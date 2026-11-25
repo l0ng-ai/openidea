@@ -36,6 +36,8 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 const SNAPSHOT_DELAY: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const SNAPSHOT_DELAY: Duration = Duration::from_millis(50);
+/// A subtree scan with fewer files to parse runs without showing "Indexing" (see `scan`).
+const QUIET_SCAN_FILES: usize = 200;
 pub(crate) const MAX_RECENT: usize = 50;
 
 pub(crate) enum Job {
@@ -444,7 +446,8 @@ impl Shared {
     }
 
     /// A cancelled scan (project closed) still ends its progress task and the indexing state.
-    fn end_scan(&self, task: TaskId) {
+    fn end_scan(&self, task: Option<TaskId>) {
+        let Some(task) = task else { return };
         self.indexing.store(false, Ordering::SeqCst);
         self.sink.emit(IdeEvent::Task {
             id: task,
@@ -476,8 +479,8 @@ impl Shared {
         ide_core::memory::release_free_pages();
     }
 
-    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) -> Option<ScanCounts> {
-        let started = Instant::now();
+    /// Shows "Indexing" (the status flag and a background task) for a scan.
+    fn start_scan(&self) -> TaskId {
         self.indexing.store(true, Ordering::SeqCst);
         self.emit_state();
         let task = TaskId::next();
@@ -489,6 +492,16 @@ impl Shared {
             done: false,
             cancellable: false,
         });
+        task
+    }
+
+    /// A full scan shows "Indexing" from the start. A subtree scan (folders the watcher reported,
+    /// reconciled after each burst of changes) shows it only once it has
+    /// [`QUIET_SCAN_FILES`] or more files to parse: a program writing its log inside the project
+    /// would otherwise keep "Indexing" in the status bar for as long as it runs.
+    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) -> Option<ScanCounts> {
+        let started = Instant::now();
+        let mut task = dirs.is_none().then(|| self.start_scan());
 
         let filter = self.filter();
         let walk_started = Instant::now();
@@ -524,6 +537,9 @@ impl Shared {
         self.persist(&[], &stale, false);
 
         let total = todo.len();
+        if task.is_none() && total >= QUIET_SCAN_FILES {
+            task = Some(self.start_scan());
+        }
         let update_started = Instant::now();
         let mut laps = ChunkLaps::default();
         {
@@ -564,7 +580,9 @@ impl Shared {
                     }
                     done += batch.len();
                     laps.add(self.publish(batch.drain(..)));
-                    if last_progress.elapsed() >= PROGRESS_EVERY {
+                    if let Some(task) = task
+                        && last_progress.elapsed() >= PROGRESS_EVERY
+                    {
                         last_progress = Instant::now();
                         self.sink.emit(IdeEvent::Task {
                             id: task,
@@ -606,15 +624,18 @@ impl Shared {
         }
         let snapshot_elapsed = snapshot_started.elapsed();
         *self.snapshot_due.lock() = None;
-        self.indexing.store(false, Ordering::SeqCst);
-        self.sink.emit(IdeEvent::Task {
-            id: task,
-            title: "Indexing".into(),
-            message: None,
-            fraction: Some(1.0),
-            done: true,
-            cancellable: false,
-        });
+        if let Some(task) = task {
+            self.indexing.store(false, Ordering::SeqCst);
+            self.sink.emit(IdeEvent::Task {
+                id: task,
+                title: "Indexing".into(),
+                message: None,
+                fraction: Some(1.0),
+                done: true,
+                cancellable: false,
+            });
+        }
+        // The counts may have changed either way.
         self.emit_state();
         if self.is_cancelled() {
             return None;
