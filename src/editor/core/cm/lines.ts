@@ -6,6 +6,7 @@ import {
   type Transaction,
   type TransactionSpec,
 } from "@codemirror/state";
+import { formatIndentFacet } from "./setup";
 
 /** Line blocks the command applies to: one per non-empty selection range, or the document. */
 function blocks(state: EditorState): Array<{ from: number; to: number }> {
@@ -70,10 +71,12 @@ export function reverseLinesSpec(state: EditorState): TransactionSpec | null {
 
 /**
  * Edit › Convert Indents › To Spaces / To Tabs: rewrites the leading whitespace of each line, measured in columns
- * with the editor's tab size. To Tabs keeps the columns left over after the last full tab stop as spaces, as IDEA does.
+ * with the Code Style tab size (the editor's when there is none). A space indent detected in the file sets the
+ * editor's tab size to the indent width, but IDEA's detection keeps the tab size. To Tabs keeps the columns left
+ * over after the last full tab stop as spaces, as IDEA does.
  */
 function convertIndents(state: EditorState, toTabs: boolean): TransactionSpec | null {
-  const tab = state.tabSize;
+  const tab = state.facet(formatIndentFacet)[0]?.tabSize ?? state.tabSize;
   const changes: ChangeSpec[] = [];
   for (const b of blocks(state)) {
     for (let n = state.doc.lineAt(b.from).number, last = state.doc.lineAt(b.to).number; n <= last; n++) {
@@ -85,7 +88,7 @@ function convertIndents(state: EditorState, toTabs: boolean): TransactionSpec | 
       if (next !== old) changes.push({ from: line.from, to: line.from + old.length, insert: next });
     }
   }
-  return changes.length ? { changes, scrollIntoView: true, userEvent: "input.indent" } : null;
+  return changes.length ? { changes, scrollIntoView: true, userEvent: "input.indent.convert" } : null;
 }
 
 export const convertIndentsToSpacesSpec = (state: EditorState) => convertIndents(state, false);

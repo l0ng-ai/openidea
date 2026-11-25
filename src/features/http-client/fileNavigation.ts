@@ -33,6 +33,7 @@ export function registerFileNavigation(): () => void {
     if (!at) return null;
     const candidates = at.response ? [`/.idea/httpRequests/${at.value}`, at.value] : [at.value];
     for (const value of candidates) {
+      // oxlint-disable-next-line no-await-in-loop -- candidates are fallbacks; the first resolvable path wins
       const path = await call(commands.fsResolveReference(doc.path, value)).catch(() => null);
       if (path) {
         const start = { line: 0, col: 0 };

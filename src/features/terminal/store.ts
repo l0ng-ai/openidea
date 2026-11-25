@@ -115,19 +115,8 @@ function notifyCompletion(key: string, info: CompletionInfo) {
   });
 }
 
-function createSession(
-  cwd: string,
-  command?: SessionOptions["command"],
-  fallbackRoot?: string,
-  attachTerminalId?: number | null,
-): TerminalSession {
-  const key = `s${++seq}`;
-  const session = new TerminalSession({
-    key,
-    cwd,
-    command,
-    fallbackRoot,
-    attachTerminalId,
+function sessionOwner(): Pick<SessionOptions, "onChange" | "onFocus" | "onCompletion" | "onExit"> {
+  return {
     onChange: (k, snapshot) => useTerminals.setState((s) => ({ sessions: { ...s.sessions, [k]: snapshot } })),
     onFocus: (k) => {
       const tab = tabOfSession(k);
@@ -146,6 +135,23 @@ function createSession(
       // Wait for the surviving pane to re-mount before giving xterm the caret.
       else if (hadFocus) requestAnimationFrame(() => activeSession()?.focus());
     },
+  };
+}
+
+function createSession(
+  cwd: string,
+  command?: SessionOptions["command"],
+  fallbackRoot?: string,
+  attachTerminalId?: number | null,
+): TerminalSession {
+  const key = `s${++seq}`;
+  const session = new TerminalSession({
+    key,
+    cwd,
+    command,
+    fallbackRoot,
+    attachTerminalId,
+    ...sessionOwner(),
   });
   sessions.set(key, session);
   return session;
@@ -305,6 +311,91 @@ export function closeTab(id: string) {
     delete next[tab.session];
     return { ...withoutTab(s, id), sessions: next };
   });
+}
+
+export interface TerminalDropTarget {
+  group?: string;
+  index?: number;
+  edge?: SplitEdge;
+}
+
+export interface AdoptedTabMeta {
+  name: string;
+  customName?: string | null;
+  shell?: string | null;
+}
+
+/** Spawns a fresh session for an unstarted restored editor tab being moved to Terminal. */
+export function createDetachedSession(cwd: string, shell?: string | null, fallbackRoot?: string): TerminalSession {
+  const session = new TerminalSession({
+    key: `s${++seq}`,
+    cwd,
+    command: shell ? { program: shell, args: [], shell: true } : undefined,
+    fallbackRoot,
+    ...sessionOwner(),
+  });
+  return session;
+}
+
+/**
+ * Move to Terminal: adopts `session` (moved from an editor tab) into `target`
+ * (a group's strip slot, a group's end, or a new split at `edge`), keeping its PTY and scrollback.
+ */
+export function adoptTab(session: TerminalSession, meta: AdoptedTabMeta, target?: TerminalDropTarget): TerminalTab {
+  sessions.set(session.key, session);
+  session.rebind(sessionOwner());
+  const s = useTerminals.getState();
+  const groups = layoutGroups(s.layout);
+  const fallback = s.tabs.find((t) => t.id === s.activeTab)?.group ?? groups[0]!;
+  const anchor = target?.group && groups.includes(target.group) ? target.group : fallback;
+  if (target?.edge && groupTabs(s.tabs, anchor).length > 0) {
+    const group = newGroupId();
+    const orientation: SplitOrientation = target.edge === "left" || target.edge === "right" ? "horizontal" : "vertical";
+    const tab: TerminalTab = {
+      id: `t${++seq}`,
+      name: meta.name,
+      customName: meta.customName ?? null,
+      shell: meta.shell ?? null,
+      session: session.key,
+      group,
+    };
+    useTerminals.setState((st) => ({
+      tabs: [...st.tabs, tab],
+      sessions: { ...st.sessions, [session.key]: session.state },
+      layout: splitLayout(
+        st.layout,
+        anchor,
+        group,
+        orientation,
+        `split${++splitSeq}`,
+        target.edge === "left" || target.edge === "top",
+      ),
+      selected: { ...st.selected, [group]: tab.id },
+      activeTab: tab.id,
+    }));
+    return tab;
+  }
+  const tab: TerminalTab = {
+    id: `t${++seq}`,
+    name: meta.name,
+    customName: meta.customName ?? null,
+    shell: meta.shell ?? null,
+    session: session.key,
+    group: anchor,
+  };
+  useTerminals.setState((st) => {
+    const others = st.tabs.filter((t) => t.group !== anchor);
+    const strip = groupTabs(st.tabs, anchor);
+    const at = target?.index !== undefined ? Math.max(0, Math.min(target.index, strip.length)) : strip.length;
+    strip.splice(at, 0, tab);
+    return {
+      tabs: [...others, ...strip],
+      sessions: { ...st.sessions, [session.key]: session.state },
+      selected: { ...st.selected, [anchor]: tab.id },
+      activeTab: tab.id,
+    };
+  });
+  return tab;
 }
 
 /**

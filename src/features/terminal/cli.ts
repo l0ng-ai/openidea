@@ -7,7 +7,13 @@
  */
 import { createElement } from "react";
 import { create } from "zustand";
-import { editorService, toolWindowService, type EditorDropTarget, type EditorInput } from "@/workbench/contributions";
+import {
+  editorService,
+  maybeEditorService,
+  toolWindowService,
+  type EditorDropTarget,
+  type EditorInput,
+} from "@/workbench/contributions";
 import { useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
@@ -15,6 +21,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { Badge } from "@/ui";
 import { loadTerminalRuntime } from "./loader";
 import type { SessionSnapshot } from "./session";
+import type { TerminalDropTarget } from "./store";
 
 /** Editor kind of a terminal session tab. */
 export const CLI_KIND = "cli";
@@ -31,6 +38,12 @@ export interface CliData {
   cwd?: string;
   /** Live backend PTY id in a persistent remote session. */
   terminalId?: number;
+  /** Default tab name beneath `customName`, preserved when moving back to Terminal. */
+  baseName?: string;
+  /** User rename preserved when moving back to Terminal. */
+  customName?: string;
+  /** Predefined shell path preserved when moving back to Terminal. */
+  shell?: string;
 }
 
 /** `data` arrives from the saved editor session: treat it as untrusted JSON. */
@@ -45,6 +58,9 @@ export function cliData(input: EditorInput): CliData | null {
     command: typeof d.command === "string" ? d.command.trim() : "",
     ...(typeof d.cwd === "string" && d.cwd ? { cwd: d.cwd } : {}),
     ...(terminalId !== undefined ? { terminalId } : {}),
+    ...(typeof d.baseName === "string" && d.baseName.trim() ? { baseName: d.baseName.trim() } : {}),
+    ...(typeof d.customName === "string" && d.customName.trim() ? { customName: d.customName.trim() } : {}),
+    ...(typeof d.shell === "string" && d.shell ? { shell: d.shell } : {}),
   };
 }
 
@@ -105,6 +121,12 @@ export async function moveTerminalToEditor(id?: string, target?: EditorDropTarge
   if (!session) return;
   const tid = session.persistedTerminalId ?? session.state.terminalId ?? undefined;
   const input = cliInput(name, "", session.state.cwd ?? undefined, tid);
+  if (tab.customName || tab.shell) {
+    Object.assign(input.data as CliData, {
+      ...(tab.customName ? { baseName: tab.name, customName: tab.customName } : {}),
+      ...(tab.shell ? { shell: tab.shell } : {}),
+    });
+  }
   rt.adoptCli(input.key, session);
   trackCliTerminalId(input);
   if (rt.useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
@@ -139,6 +161,60 @@ export async function splitCliTab(input: EditorInput): Promise<EditorInput | nul
   rt.startCli(fresh.key, cwd, "", root);
   trackCliTerminalId(fresh);
   return fresh;
+}
+
+/** Resolves an `EDITOR_TAB_MIME` drag payload when it points to a terminal (`cli`) editor tab. */
+export function cliEditorPayload(raw: string): EditorInput | null {
+  try {
+    const p = JSON.parse(raw) as { paneId?: unknown; tabId?: unknown };
+    if (typeof p.paneId !== "string" || typeof p.tabId !== "string") return null;
+    const input = maybeEditorService()?.tabInput?.(p.paneId, p.tabId) ?? null;
+    return input?.kind === CLI_KIND ? input : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Move to Terminal: a terminal editor tab (`keyOrInput`, or the active editor tab when omitted)
+ * leaves the editor and docks in the Terminal tool window with its running session intact.
+ */
+export async function moveEditorToTerminal(keyOrInput?: string | EditorInput, target?: TerminalDropTarget) {
+  const svc = maybeEditorService();
+  if (!svc) return;
+  const input =
+    typeof keyOrInput === "object" && keyOrInput !== null
+      ? keyOrInput
+      : typeof keyOrInput === "string" && keyOrInput
+        ? (svc.openTabs?.().find((t) => t.input.key === keyOrInput)?.input ??
+          (svc.activeInput?.()?.key === keyOrInput ? svc.activeInput() : null))
+        : (svc.activeInput?.() ?? null);
+  const data = input ? cliData(input) : null;
+  if (!input || !data) return;
+  const rt = await loadTerminalRuntime();
+  let session = rt.detachCli(input.key);
+  if (!session) {
+    const root = useProject.getState().project?.root;
+    if (!root) return;
+    session = rt.createDetachedSession(data.cwd ?? rt.startDirectory(root), data.shell, root);
+    if (data.command) session.input(`${data.command}\r`);
+  }
+  const closed = await (svc.closeInput?.(input.key) ?? Promise.resolve(true));
+  if (!closed) {
+    rt.adoptCli(input.key, session);
+    return;
+  }
+  rt.adoptTab(
+    session,
+    {
+      name: data.baseName ?? data.name,
+      customName: data.customName ?? null,
+      shell: data.shell ?? null,
+    },
+    target,
+  );
+  toolWindowService().show("terminal", true);
+  requestAnimationFrame(() => requestAnimationFrame(() => rt.activeSession()?.focus()));
 }
 
 /** Starts the session of a restored tab: its Start button. */

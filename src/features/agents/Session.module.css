@@ -8,7 +8,7 @@
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   background: var(--bg-app);
   color: var(--fg);
   font-size: var(--fs-ui);
@@ -20,23 +20,9 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border);
-}
-
-.conversation[hidden] {
-  display: none;
 }
 .docked {
-  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
-}
-.docked .conversation {
-  border-right: 0;
-}
-/* The pane takes its width while the conversation keeps 240px (half of a narrower session);
-   keep that minimum in step with ChangesResizer. */
-.withChanges {
-  grid-template-columns: minmax(min(240px, 50%), 1fr) minmax(0, var(--agent-changes-width, 280px));
 }
 .fitWidth .stream > * {
   width: 100%;
@@ -143,8 +129,7 @@
   white-space: nowrap;
   cursor: pointer;
 }
-.statusChip:hover,
-.statusChip[aria-expanded="true"] {
+.statusChip:hover {
   background: var(--bg-toolbar-hover);
   color: var(--fg-strong);
 }
@@ -1269,79 +1254,26 @@
   gap: var(--space-1);
 }
 
+/* The Changes tab: the file tree beside the diff of every file, under one toolbar. */
 .changes {
-  position: relative;
-  display: flex;
-  flex-direction: column;
+  flex: 1;
+  height: 100%;
   min-height: 0;
   min-width: 0;
-}
-/* On the conversation's border; the hit area reaches 3px either side of it. */
-.changesResizer {
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  bottom: 0;
-  left: -1px;
-  width: 0;
-  outline: none;
-}
-.changesResizer::after {
-  content: "";
-  position: absolute;
-  inset: 0 -3px;
-  cursor: col-resize;
-}
-.changesResizer:focus-visible::after {
-  background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
-}
-.changesHeader {
-  min-width: 0;
   display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  height: 32px;
-  flex: none;
-  padding: 0 6px 0 10px;
-  border-bottom: 1px solid var(--border);
-}
-.changesTitle {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: var(--fg-strong);
-}
-.changesHeader > .muted {
-  flex: none;
-  white-space: nowrap;
-}
-.changesScope {
-  flex: none;
-  padding: 0 4px;
+  flex-direction: column;
+  background: var(--bg-app);
+  color: var(--fg);
+  font-size: var(--fs-ui);
 }
 .changesSummary {
-  flex: none;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 4px 10px;
+  padding-inline: var(--space-1-5);
+  font-size: var(--fs-small);
   color: var(--fg-subtle);
   white-space: pre;
-}
-.changesList {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.changesList > * {
-  flex: 1;
-  min-height: 0;
-}
-.changesEmpty {
-  padding: 8px 10px;
-  color: var(--fg-muted);
 }
 .change {
   flex: 1;

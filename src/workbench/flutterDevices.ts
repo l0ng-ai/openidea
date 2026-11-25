@@ -5,10 +5,20 @@
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
-import { call, commands, onIdeEvent, type FlutterDevice, type FlutterDeviceList, type RunConfig } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  onIdeEvent,
+  type FlutterDevice,
+  type FlutterDeviceList,
+  type FlutterEmulator,
+  type RunConfig,
+} from "@/platform/ipc";
 import { notifications } from "./contributions";
 
 const SELECTED_KEY = "openidea.flutter.device:";
+/** A cold boot of a large AVD can take minutes; past this the launch is taken to have failed. */
+const BOOT_TIMEOUT_MS = 180_000;
 
 interface FlutterDevicesState {
   list: FlutterDeviceList | null;
@@ -16,6 +26,8 @@ interface FlutterDevicesState {
   preferred: string | null;
   root: string | null;
   chooserOpen: boolean;
+  /** The emulator started from the chooser, until its device connects. */
+  launching: FlutterEmulator | null;
 }
 
 export const useFlutterDevices = create<FlutterDevicesState>(() => ({
@@ -23,6 +35,7 @@ export const useFlutterDevices = create<FlutterDevicesState>(() => ({
   preferred: null,
   root: null,
   chooserOpen: false,
+  launching: null,
 }));
 
 function storedDevice(root: string): string | null {
@@ -131,7 +144,7 @@ export function watchFlutterDevices(root: string): () => void {
     offDevices();
     offTrust();
     setContext("flutterProject", false);
-    useFlutterDevices.setState({ list: null, root: null, chooserOpen: false });
+    useFlutterDevices.setState({ list: null, root: null, chooserOpen: false, launching: null });
   };
 }
 
@@ -147,4 +160,57 @@ export function selectFlutterDevice(id: string) {
 
 export async function restartFlutterDaemon() {
   useFlutterDevices.setState({ list: await call(commands.flutterDaemonRestart()) });
+}
+
+/** The chooser's label for starting `e`, as the Flutter plugin words it. */
+export function flutterEmulatorLabel(e: FlutterEmulator): string {
+  return e.platformType === "ios" ? tx("Open iOS Simulator") : tx`Open Android Emulator: ${e.name}`;
+}
+
+/** Starts `e` and selects its device once it connects. */
+export async function launchFlutterEmulator(e: FlutterEmulator) {
+  useFlutterDevices.setState({ launching: e });
+  const booted = (list: FlutterDeviceList | null) => usableFlutterDevices(list).find((d) => d.emulatorId === e.id);
+  let stop = () => {};
+  const done = new Promise<FlutterDevice | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), BOOT_TIMEOUT_MS);
+    const off = useFlutterDevices.subscribe((s) => {
+      const device = booted(s.list);
+      if (device) resolve(device);
+      else if (s.launching !== e) resolve(null);
+    });
+    stop = () => {
+      clearTimeout(timer);
+      off();
+      resolve(null);
+    };
+  });
+  try {
+    await call(commands.flutterEmulatorLaunch(e.id));
+  } catch (err) {
+    stop();
+    if (useFlutterDevices.getState().launching === e) useFlutterDevices.setState({ launching: null });
+    notifications().notify({
+      group: "run",
+      level: "error",
+      key: "flutter.emulator",
+      title: tx`Could not start ${e.name}`,
+      body: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+  const device = await done;
+  stop();
+  // Replaced by another launch, or the project closed.
+  if (useFlutterDevices.getState().launching !== e) return;
+  useFlutterDevices.setState({ launching: null });
+  if (device) selectFlutterDevice(device.id);
+  else
+    notifications().notify({
+      group: "run",
+      level: "warning",
+      key: "flutter.emulator",
+      title: tx`${e.name} did not connect`,
+      body: tx("It may still be starting: it appears in the device list once Flutter sees it."),
+    });
 }

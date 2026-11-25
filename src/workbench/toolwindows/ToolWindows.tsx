@@ -24,6 +24,7 @@ import {
   IconButton,
   lockDragCursor,
   Menu,
+  registerDropTarget,
   showContextMenu,
   tooltipAttrs,
   type MenuItem,
@@ -399,14 +400,32 @@ function StripeButton({
   const iconSize = useChromeIconSize();
   const shortcut = shortcutLabel(`toolwindow.${tw.id}`);
   const dragged = useStripeDrag((s) => s.id === tw.id);
+  const ref = useRef<HTMLButtonElement>(null);
+  const [dropOver, setDropOver] = useState(false);
+  const stripeDrop = tw.onStripeDrop;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !stripeDrop) return;
+    return registerDropTarget(el, {
+      accepts: (type, data) => stripeDrop.accepts(type, data),
+      over: () => setDropOver(true),
+      leave: () => setDropOver(false),
+      drop: (data) => {
+        setDropOver(false);
+        stripeDrop.drop(data);
+      },
+    });
+  }, [stripeDrop]);
   return (
     <button
+      ref={ref}
       type="button"
       className={clsx(
         styles.stripeButton,
         showName && styles.stripeNamed,
         active && styles.stripeActive,
         active && focused && styles.stripeFocused,
+        dropOver && styles.stripeDropOver,
         dragged && styles.stripeDragged,
       )}
       aria-label={toolWindowTitle(tw)}

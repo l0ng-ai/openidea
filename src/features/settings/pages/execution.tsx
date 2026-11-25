@@ -250,6 +250,9 @@ export const EXECUTION_PAGES: PageSpec[] = [
     order: 359,
     keywords: [
       "Delegate IDE build/run actions to Maven",
+      "Run tests using",
+      "JUnit",
+      "Surefire",
       "javac",
       "ECJ",
       "JRE",
