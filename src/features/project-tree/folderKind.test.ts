@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { folderKind, outputFolderKind } from "./folderKind";
-import type { RootFolder } from "@/platform/languageSettings";
+import { validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
+import { directoryIconName } from "@/ui/folderPresentation";
 const build = {
   modules: new Map([
     ["", "maven"],
@@ -58,4 +59,41 @@ describe("JVM folder presentation", () => {
     "does not guess output roles for %s",
     (path) => expect(outputFolderKind(path, build.modules)).toBeNull(),
   );
+  it("isolates output folder detection for attached workspace members from the primary relative key space", () => {
+    const emptyStructure = validateProjectStructure(undefined);
+    const attached = [
+      { root: "/other", structure: emptyStructure, detected: [] },
+      { root: "/web", structure: emptyStructure, detected: [] },
+    ];
+    expect(
+      directoryIconName({
+        path: "/other/target/generated-sources/gen",
+        root: "/p",
+        roots: [],
+        attached,
+        build: {
+          modules: new Map([
+            ["", "gradle"],
+            ["/other", "maven"],
+          ]),
+          spring: false,
+        },
+      }),
+    ).toBe("folder-generated-source");
+    expect(
+      directoryIconName({
+        path: "/web/target/classes",
+        root: "/p",
+        roots: [],
+        attached,
+        build: {
+          modules: new Map([
+            ["", "maven"],
+            ["/other", "maven"],
+          ]),
+          spring: false,
+        },
+      }),
+    ).toBe("folder");
+  });
 });

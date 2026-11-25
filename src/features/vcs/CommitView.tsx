@@ -22,7 +22,14 @@ import { executeAction } from "@/platform/actions";
 import { fontWeightOf } from "@/platform/editorSettings";
 import { resolveMonoFont } from "@/platform/fonts";
 import { basename, dirname, useProject } from "@/platform/project";
-import { isTestFile, useEffectiveRoots } from "@/platform/projectRoots";
+import { useProjectPresentation } from "@/platform/projectPresentation";
+import {
+  isTestFile,
+  useDetectedRoots,
+  useEffectiveRoots,
+  useProjectRoots,
+  type AttachedProject,
+} from "@/platform/projectRoots";
 import {
   Button,
   Checkbox,
@@ -49,6 +56,7 @@ import {
   T,
 } from "@/ui";
 import { useFilePresentation } from "@/ui/filePresentation";
+import { directoryIconName } from "@/ui/folderPresentation";
 import {
   editorService,
   maybeEditorService,
@@ -141,6 +149,7 @@ import styles from "./CommitView.module.css";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
+const EMPTY_ATTACHED: AttachedProject[] = [];
 
 /** Shown text of a node: group names are translated, except the names of user change lists. */
 function nodeText(n: ChangeNode): string {
@@ -814,7 +823,11 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
 
   const repos = useVcs((s) => s.roots);
   const heads = useVcs((s) => s.heads);
+  const projectRoot = useProject((s) => s.project?.root ?? null);
   const projectRoots = useEffectiveRoots();
+  const detectedRoots = useDetectedRoots();
+  const attachedProjects = useProjectRoots((s) => (s.root === projectRoot ? s.attached : EMPTY_ATTACHED));
+  const buildPresentation = useProjectPresentation();
   const roots = useMemo(() => {
     const changes = buildChangeTree(
       status,
@@ -1261,8 +1274,28 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                       className={clsx(styles.icon, n.warning && styles.committerWarning)}
                     />
                   ))
-                ) : n.type === "dir" || ignoredDirectory(n) ? (
+                ) : ignoredDirectory(n) || n.repository ? (
                   <Icon name={st.expanded ? "folder-open" : "folder"} size={16} className={styles.icon} />
+                ) : n.type === "dir" ? (
+                  <Icon
+                    name={
+                      n.path
+                        ? directoryIconName({
+                            path: n.path,
+                            root: projectRoot,
+                            roots: projectRoots,
+                            detected: detectedRoots,
+                            attached: attachedProjects,
+                            build: buildPresentation,
+                            expanded: st.expanded,
+                          })
+                        : st.expanded
+                          ? "folder-open"
+                          : "folder"
+                    }
+                    size={16}
+                    className={styles.icon}
+                  />
                 ) : iconPath ? (
                   <ChangeFileIcon path={iconPath} />
                 ) : (
