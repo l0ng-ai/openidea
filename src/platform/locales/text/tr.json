@@ -3692,6 +3692,8 @@
   "Font": "Yazı Tipi",
   "Font preview": "Yazı tipi önizlemesi",
   "For protanopia and deuteranopia.": "Protanopi ve döteranopi için.",
+  "Reduce motion": "Hareketi azalt",
+  "Turns off animations and transitions, such as spinners and popup fades. Always on when the system asks for reduced motion.": "Yükleme göstergeleri ve açılır pencere geçişleri gibi animasyonları ve geçişleri kapatır. Sistem hareketin azaltılmasını istediğinde her zaman açıktır.",
   "For symbols not supported by the main font": "Ana yazı tipinin desteklemediği semboller için",
   "Force": "Zorla",
   "Force (with lease)": "Zorla (lease ile)",

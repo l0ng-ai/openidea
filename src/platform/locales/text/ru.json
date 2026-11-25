@@ -1960,6 +1960,8 @@
   "Font": "Шрифт",
   "Font preview": "Предпросмотр шрифта",
   "For protanopia and deuteranopia.": "Для протанопии и дейтеранопии.",
+  "Reduce motion": "Уменьшить движение",
+  "Turns off animations and transitions, such as spinners and popup fades. Always on when the system asks for reduced motion.": "Отключает анимации и переходы, например индикаторы загрузки и плавное появление всплывающих окон. Всегда включено, если система запрашивает уменьшение движения.",
   "For symbols not supported by the main font": "Для символов, не поддерживаемых основным шрифтом",
   "Force": "Принудительно",
   "Force (with lease)": "Принудительно (with lease)",

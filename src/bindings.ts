@@ -3508,6 +3508,8 @@ export type AppearanceSettings_Deserialize = {
 	contrastScrollbars?: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision?: boolean,
+	/**  Turn off animations and transitions (also on when the OS asks for reduced motion). */
+	reduceMotion?: boolean,
 	differentToolWindowBackground?: boolean,
 	compactMode?: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
@@ -3583,6 +3585,8 @@ export type AppearanceSettings_Serialize = {
 	contrastScrollbars: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision: boolean,
+	/**  Turn off animations and transitions (also on when the OS asks for reduced motion). */
+	reduceMotion: boolean,
 	differentToolWindowBackground: boolean,
 	compactMode: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
