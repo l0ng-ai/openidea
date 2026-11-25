@@ -118,6 +118,7 @@ export function javaLanguageLevel(
         ["build.gradle", javaLevelFromGradle],
         ["build.gradle.kts", javaLevelFromGradle],
       ] as const) {
+        // oxlint-disable-next-line no-await-in-loop -- nearest directory and first parser with a level win
         const text = await read(`${dir}/${name}`).catch(() => null);
         if (text === null) continue;
         const level = parse(text);
@@ -133,6 +134,7 @@ export function cIsC23(file: string, root: string | null, read: ReadText = readT
   return cached(`c:${file}`, async () => {
     for (const dir of ancestorDirs(file, root)) {
       for (const name of ["CMakeLists.txt", "compile_flags.txt", "compile_commands.json", ".clangd", "Makefile"]) {
+        // oxlint-disable-next-line no-await-in-loop -- nearest directory wins; stop at the first C23 config
         const text = await read(`${dir}/${name}`).catch(() => null);
         if (text !== null && cStandardIs23(name, text)) return true;
       }

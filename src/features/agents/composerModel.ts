@@ -452,21 +452,28 @@ export function atEdgeLine(text: string, caret: number, dir: -1 | 1): boolean {
   return dir < 0 ? !text.slice(0, caret).includes("\n") : !text.slice(caret).includes("\n");
 }
 
-export const isContextOption = (id: string) => /^(context_tier|contextTier)$/.test(id);
+export const isContextOption = (id: string) => /^(context|context_tier|contextTier)$/.test(id);
+
+export const isFastOption = (id: string) => id === "fast";
 
 /** Whether an option's available values and default belong to the selected model rather than the provider. */
 export const isPerModelOption = (o: AgentConfigOption) =>
-  o.category === "thought_level" || o.category === "context_tier" || isContextOption(o.id);
+  o.category === "thought_level" ||
+  o.category === "context_tier" ||
+  o.category === "model_config" ||
+  isFastOption(o.id) ||
+  isContextOption(o.id);
 
 const matchesCategory = (o: AgentConfigOption, category: string) =>
   o.category === category ||
   (category === "model_config" &&
-    (o.category === "model_config" || o.category === "context_tier" || o.id === "fast" || isContextOption(o.id)));
+    (o.category === "model_config" || o.category === "context_tier" || isFastOption(o.id) || isContextOption(o.id)));
 
-/** Cursor / ACP model parameters (`fast`, `contextTier`…), separate from the model id itself. */
+/** Cursor / ACP model parameters (`fast`, `context`, `contextTier`…), separate from the model id itself. */
 export function modelConfigOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
   return config.filter(
-    (o) => o.category === "model_config" || o.category === "context_tier" || o.id === "fast" || isContextOption(o.id),
+    (o) =>
+      o.category === "model_config" || o.category === "context_tier" || isFastOption(o.id) || isContextOption(o.id),
   );
 }
 
@@ -479,13 +486,13 @@ export function mainOptions(config: readonly AgentConfigOption[]): AgentConfigOp
   });
 }
 
-/** Cursor defaults to Fast; prefer standard Composer unless the user chose otherwise. */
+/** Cursor defaults to Fast; prefer standard speed unless the user chose otherwise. */
 export function cursorModelDefaults(
   providerId: string | undefined,
   config: readonly AgentConfigOption[],
 ): Record<string, string> {
   if (providerId !== "cursor") return {};
-  const fast = config.find((o) => o.id === "fast" || o.category === "model_config");
+  const fast = config.find((o) => isFastOption(o.id));
   if (fast?.values.some((v) => v.value === "false")) return { [fast.id]: "false" };
   return {};
 }
@@ -511,7 +518,14 @@ export function modeIcon(mode: string): string {
   return "lock";
 }
 
-/** The settings that approve everything without asking (a bypass mode, or approvals), by option id. */
+const isBypassOptionValue = (category: string | null | undefined, value: string): boolean => {
+  if (category === "mode") return modeIcon(value) === "unlock";
+  if (category === "permissions") return /^(on|true)$/i.test(value);
+  if (category === "approval") return value.toLowerCase() === "bypass";
+  return false;
+};
+
+/** The settings that approve everything without asking (a bypass mode, permissions, or approvals), by option id. */
 export function bypassDefaults(config: readonly AgentConfigOption[]): Record<string, string> {
   const out: Record<string, string> = {};
   const mode = modeOption(config);
@@ -523,6 +537,29 @@ export function bypassDefaults(config: readonly AgentConfigOption[]): Record<str
   const approval = config.find((o) => o.category === "approval");
   if (approval?.values.some((v) => v.value === "bypass")) out[approval.id] = "bypass";
   return out;
+}
+
+/** Moves approval-bearing options away from bypass when `agents.newTaskApprovals` is `"ask"`. */
+export function askApprovalDefaults(config: readonly AgentConfigOption[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const o of config) {
+    if (o.category !== "mode" && o.category !== "permissions" && o.category !== "approval") continue;
+    if (o.current !== null && !isBypassOptionValue(o.category, o.current)) continue;
+    const asking = o.values.filter((v) => !isBypassOptionValue(o.category, v.value));
+    const agentDefault = o.defaultValue && asking.find((v) => v.value === o.defaultValue);
+    const picked =
+      agentDefault ?? asking.find((v) => v.value === "default") ?? asking.find((v) => v.value === "ask") ?? asking[0];
+    if (picked) out[o.id] = picked.value;
+  }
+  return out;
+}
+
+/** Effective approval overrides from `agents.newTaskApprovals` (`"bypass"` or `"ask"`), by option id. */
+export function approvalDefaults(
+  config: readonly AgentConfigOption[],
+  newTaskApprovals: "bypass" | "ask" = "bypass",
+): Record<string, string> {
+  return newTaskApprovals === "ask" ? askApprovalDefaults(config) : bypassDefaults(config);
 }
 
 /** Shift+Tab: the mode after the current one. */
@@ -562,23 +599,51 @@ const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
   seven_day_sonnet: { short: "7d Sonnet", name: "Weekly Sonnet limit" },
 };
 
+/** Visual severity for a usage percentage meter: quiet until nearing the cap. */
+export type MeterTone = "warning" | "danger";
+
+export function meterTone(percent: number): MeterTone | undefined {
+  if (percent >= 95) return "danger";
+  if (percent >= 80) return "warning";
+  return undefined;
+}
+
+/** Structured fields for a usage-limit window, shared by inline badges and the detail popover. */
+export function limitParts(
+  l: AgentLimit,
+  now: number,
+): {
+  windowShort: string;
+  name: string;
+  percent: number;
+  resetIn: string | null;
+  detail: string;
+} {
+  const known = LIMIT_WINDOWS[l.window];
+  const windowShort = known?.short ?? l.window;
+  const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
+  const name = known ? tx(known.name) : l.window;
+  const used = tx`${known ? txPart(known.name) : l.window}: ${percent}% used`;
+  if (l.resetsMs == null) {
+    return { windowShort, name, percent, resetIn: null, detail: used };
+  }
+  const resetIn = untilReset(Math.max(0, l.resetsMs - now));
+  return {
+    windowShort,
+    name,
+    percent,
+    resetIn,
+    detail: tx`${used}, resets in ${resetIn}`,
+  };
+}
+
 /** "5h 19%" for a usage-limit window, and a tooltip saying when it resets. */
 export function limitLabel(l: AgentLimit, now: number): { short: string; percent: number; detail: string } {
-  const known = LIMIT_WINDOWS[l.window];
-  const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
-  const name = known ? txPart(known.name) : l.window;
-  const used = tx`${name}: ${percent}% used`;
-  if (l.resetsMs == null)
-    return {
-      short: `${known?.short ?? l.window} ${percent}%`,
-      percent,
-      detail: used,
-    };
-  const reset = untilReset(Math.max(0, l.resetsMs - now));
+  const { windowShort, percent, detail } = limitParts(l, now);
   return {
-    short: `${known?.short ?? l.window} ${percent}%`,
+    short: `${windowShort} ${percent}%`,
     percent,
-    detail: tx`${used}, resets in ${reset}`,
+    detail,
   };
 }
 

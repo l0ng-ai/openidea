@@ -1,3 +1,4 @@
+use super::blocking;
 use crate::Host;
 use ide_command::command;
 use ide_core::{ChangeSet, DocId, IdeResult};

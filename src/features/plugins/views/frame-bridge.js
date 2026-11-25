@@ -123,6 +123,8 @@
     get: () => call("document.get"),
     /** The bytes of the file the custom editor shows (read-only, so the disk is current). */
     bytes: () => call("document.bytes"),
+    size: () => call("document.size"),
+    readRange: (offset, length) => call("document.readRange", { offset, length }),
     /** Called with `{ version, text }` when the document changes other than through this frame. */
     onChange: (fn) => {
       if (typeof fn === "function") documentListeners.push(fn);

@@ -10,6 +10,7 @@ import {
 } from "./colorScheme";
 import { isBuiltinTheme, themeKind } from "./themes";
 import type { CustomColorScheme, CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
+import { iclsColor } from "./iclsColor";
 import { DARCULA_ATTRIBUTES } from "./iclsDarcula";
 
 // Many language keys share the editor's language-default tokens.
@@ -222,13 +223,13 @@ const SCRIPT_KEYS: Record<string, string> = {
   GLOBAL_FUNCTION: "globalFunction",
   LOCAL_FUNCTION: "functionDeclaration",
   EXPORTED_FUNCTION: "functionDeclaration",
-  INSTANCE_MEMBER_FUNCTION: "functionDeclaration",
-  STATIC_MEMBER_FUNCTION: "functionDeclaration",
+  INSTANCE_MEMBER_FUNCTION: "instanceMethod",
+  STATIC_MEMBER_FUNCTION: "staticMethod",
   CLASS: "className",
   EXPORTED_CLASS: "className",
-  INTERFACE: "className",
-  "TYPE.ALIAS": "className",
-  TYPE_PARAMETER: "className",
+  INTERFACE: "interface",
+  "TYPE.ALIAS": "typeAlias",
+  TYPE_PARAMETER: "typeParameter",
   DECORATOR: "decorator",
   OPERATION_SIGN: "operator",
 };
@@ -302,11 +303,14 @@ const precedence = (name: string) => {
   const language = LANGUAGE_PRECEDENCE.findIndex((prefix) => name.startsWith(prefix));
   return (language < 0 ? LANGUAGE_PRECEDENCE.length : language) * KEY_ORDER.size + KEY_ORDER.get(name)!;
 };
+// Keys that also colour another attribute as its fallback. TypeScript's interface falls back to the
+// language default Interface name, as it does in WebStorm; an explicit JS./TS.INTERFACE outranks it.
+const ALSO_TARGETS: Record<string, string> = { DEFAULT_INTERFACE_NAME: "javascript.interface" };
 const targets = (name: string): string[] =>
   Object.hasOwn(ATTRIBUTE_NAMES, name)
     ? ALSO_CALLS.has(name)
       ? [ATTRIBUTE_NAMES[name]!, "javascript.functionCall"]
-      : [ATTRIBUTE_NAMES[name]!]
+      : [ATTRIBUTE_NAMES[name]!, ...(Object.hasOwn(ALSO_TARGETS, name) ? [ALSO_TARGETS[name]!] : [])]
     : [];
 
 // IntelliJ's EFFECT_TYPE codes. The box (0) and faded text (6) have no counterpart here; the bold and the
@@ -324,8 +328,11 @@ const EFFECT_CODES: Partial<Record<NonNullable<TextAttributesOverride["effect"]>
   strikeout: "3",
 };
 const children = (el: Element, tag: string) => Array.from(el.children).filter((e) => e.tagName === tag);
-const color = (v: string | null): string | undefined =>
-  v && /^[0-9a-f]{1,6}$/i.test(v) ? `#${v.padStart(6, "0").toLowerCase()}` : undefined;
+// Schemes here have no alpha: an RRGGBBAA value is left out, as before.
+const color = (v: string | null): string | undefined => {
+  const c = iclsColor(v);
+  return c?.length === 7 ? c : undefined;
+};
 
 function attributeEntries(section: Element): Element[] {
   const entries = children(section, "option");

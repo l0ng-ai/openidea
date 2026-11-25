@@ -15,12 +15,12 @@ pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
 pub use launch_resources::process_launch_resources;
 pub use modules::record_module_build;
 pub use single::{
-    SingleFileTarget, compile_file_plan, find_javac, javac_step, module_classpath, module_classpaths,
-    single_file_classpath, single_file_target,
+    SingleFileTarget, compile_file_plan, compile_file_plan_cancellable, find_javac, gradle_compile_file_plan,
+    has_gradle_file_target, javac_step, module_classpath, module_classpaths, single_file_classpath, single_file_target,
 };
 pub use structure::{
-    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_outputs, structure_plan,
-    structure_war_plan, structure_web_artifacts,
+    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_compile_file_plan,
+    structure_outputs, structure_plan, structure_war_plan, structure_web_artifacts,
 };
 pub use up_to_date::{menu_up_to_date, record_menu_build};
 
@@ -965,6 +965,7 @@ pub struct LaunchBuild {
 
 /// Compiles the module at `module` with its build system before a JVM launch and
 /// returns the class directories it wrote, to put ahead of the jdtls classpath.
+/// The build's console, messages and progress stream to `on_event` as it runs.
 pub fn build_for_launch(
     root: &Path,
     model: &BuildModel,
@@ -972,8 +973,9 @@ pub fn build_for_launch(
     test: bool,
     kind: BuildKind,
     cancel: &CancellationToken,
+    on_event: &(dyn Fn(BuildEvent) + Sync),
 ) -> IdeResult<LaunchBuild> {
-    let mut built = build_for_launches(root, model, &[module.to_path_buf()], test, kind, cancel)?;
+    let mut built = build_for_launches(root, model, &[module.to_path_buf()], test, kind, cancel, on_event)?;
     Ok(built.pop().unwrap())
 }
 
@@ -986,9 +988,10 @@ pub fn build_for_launches(
     test: bool,
     kind: BuildKind,
     cancel: &CancellationToken,
+    on_event: &(dyn Fn(BuildEvent) + Sync),
 ) -> IdeResult<Vec<LaunchBuild>> {
     let plan = merged_launch_plan(root, model, modules, test, kind, cancel)?;
-    let result = run(root, &plan, cancel, &|_| {})?;
+    let result = run(root, &plan, cancel, on_event)?;
     let failure = if !result.success {
         let errors: Vec<String> = result
             .messages
@@ -1822,8 +1825,16 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut model = reactor_model();
         model.maven.as_mut().unwrap().projects[0].command = wrapper.to_string_lossy().into_owned();
-        let dirs = build_for_launch(root, &model, &root.join("app"), true, BuildKind::Build, &CancellationToken::new())
-            .unwrap();
+        let dirs = build_for_launch(
+            root,
+            &model,
+            &root.join("app"),
+            true,
+            BuildKind::Build,
+            &CancellationToken::new(),
+            &|_| {},
+        )
+        .unwrap();
         assert_eq!(
             dirs.class_dirs,
             ["app/target/test-classes", "app/target/classes", "middle/target/classes", "lib/target/classes"]
@@ -1834,16 +1845,25 @@ mod tests {
             "mvnw",
             "#!/bin/sh\necho '[ERROR] Kotlin compilation failed: unresolved reference broken' >&2\nexit 1\n",
         );
-        let error =
-            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &CancellationToken::new())
-                .unwrap()
-                .failure
-                .unwrap();
+        let error = build_for_launch(
+            root,
+            &model,
+            &root.join("app"),
+            false,
+            BuildKind::Build,
+            &CancellationToken::new(),
+            &|_| {},
+        )
+        .unwrap()
+        .failure
+        .unwrap();
         assert!(error.contains("Kotlin compilation failed"), "{error}");
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert_eq!(
-            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel).unwrap_err().kind,
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel, &|_| {})
+                .unwrap_err()
+                .kind,
             ide_core::error::ErrorKind::Cancelled
         );
     }

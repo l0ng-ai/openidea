@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { textColumns, WidestColumns } from "./consoleColumns";
 
 describe("console columns", () => {
@@ -28,4 +28,19 @@ describe("console columns", () => {
     expect(widest.measure([])).toBe(0);
     expect(widest.measure([{ text: "abc" }])).toBe(3);
   });
+});
+
+it("resumes from a growing last line the store replaced with a copy", () => {
+  const widest = new WidestColumns();
+  const first = [
+    { id: 1, text: "abc\n" },
+    { id: 2, text: "de" },
+  ];
+  expect(widest.measure(first)).toBe(3);
+  const text = vi.spyOn(String.prototype, "codePointAt");
+  // Line 2 grew into a new object; only it and the lines after it are measured.
+  const next = [first[0]!, { id: 2, text: "defgh\n" }, { id: 3, text: "ij\n" }];
+  expect(widest.measure(next)).toBe(5);
+  expect(text.mock.calls.length).toBe("defgh\n".length + "ij\n".length);
+  text.mockRestore();
 });

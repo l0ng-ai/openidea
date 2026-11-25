@@ -1,6 +1,6 @@
 //! Agents tool window: coding agent tasks of the project (over ACP). In a remote
 //! window they run on the host, next to the project they work on.
-use super::Channel;
+use super::{Channel, blocking, blocking_value};
 use crate::Host;
 use crate::agent_secrets::{AgentSecrets, Kept};
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
@@ -63,9 +63,7 @@ pub async fn agent_providers(host: &Host, window: &str) -> IdeResult<Vec<AgentPr
 pub async fn agent_hermes_profiles(host: &Host, window: &str) -> IdeResult<Vec<ide_agent::hermes::HermesProfile>> {
     host.require_trust(window)?;
     let root = ide_agent::hermes::root(dirs::home_dir().as_deref());
-    tokio::task::spawn_blocking(move || root.map(|r| ide_agent::hermes::labeled_profiles(&r)).unwrap_or_default())
-        .await
-        .map_err(join_err)
+    blocking_value(move || root.map(|r| ide_agent::hermes::labeled_profiles(&r)).unwrap_or_default()).await
 }
 
 /// Refreshes the model catalog; force bypasses freshness, not the cooldown.
@@ -126,20 +124,15 @@ pub(crate) fn registry_paths(host: &Host) -> RegistryPaths {
     RegistryPaths::new(&host.config_dir, &host.local_data_dir)
 }
 
-fn join_err(e: impl std::fmt::Display) -> IdeError {
-    IdeError::internal(e.to_string())
-}
-
 /// Agents of the ACP Registry this machine can run, with what is installed; the list
 /// saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 #[command(trust = always)]
 pub async fn agent_registry_list(host: &Host, request: RequestId) -> IdeResult<AgentRegistry> {
     let paths = registry_paths(host);
     let cancel = host.begin_request(request);
-    let result =
-        tokio::task::spawn_blocking(move || ide_agent::registry::list(&paths, &cancel)).await.map_err(join_err);
+    let result = blocking(move || ide_agent::registry::list(&paths, &cancel)).await;
     host.end_request(request);
-    let mut registry = result??;
+    let mut registry = result?;
     let installing = installing();
     for agent in &mut registry.agents {
         agent.installing = installing.contains(&agent.id);
@@ -204,7 +197,7 @@ pub async fn agent_registry_install(
             });
         }
     };
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let _installing = installing;
         let _cancel = ide_core::task::on_cancel(task, {
             let cancel = cancel.clone();
@@ -223,10 +216,9 @@ pub async fn agent_registry_install(
         report(None, Some(1.0), true);
         result
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    result??;
+    result?;
     for project in host.projects() {
         project.agents.reload_providers();
     }
@@ -237,7 +229,7 @@ pub async fn agent_registry_install(
 #[command(trust = always)]
 pub async fn agent_registry_remove(host: &Host, id: String) -> IdeResult<()> {
     let paths = registry_paths(host);
-    tokio::task::spawn_blocking(move || ide_agent::registry::remove(&paths, &id)).await.map_err(join_err)??;
+    blocking(move || ide_agent::registry::remove(&paths, &id)).await?;
     for project in host.projects() {
         project.agents.reload_providers();
     }
@@ -273,7 +265,7 @@ pub async fn agent_entries(
 pub async fn agent_external_sessions(host: &Host, window: &str) -> IdeResult<Vec<ExternalSession>> {
     // Reads transcripts from disk on the blocking pool.
     let agents = host.project(window)?.agents.clone();
-    tokio::task::spawn_blocking(move || agents.external_sessions()).await.map_err(join_err)
+    blocking_value(move || agents.external_sessions()).await
 }
 
 /// Imports an external session as a task: its first turn loads and replays it.
@@ -286,7 +278,7 @@ pub async fn agent_import_session(
 ) -> IdeResult<AgentTask> {
     host.require_trust(window)?;
     let agents = host.project(window)?.agents.clone();
-    tokio::task::spawn_blocking(move || agents.import_session(&provider, &session_id)).await.map_err(join_err)?
+    blocking(move || agents.import_session(&provider, &session_id)).await
 }
 
 #[command(trust = trusted)]
@@ -368,10 +360,17 @@ pub async fn agent_fork(host: &Host, window: &str, task: String, turns: Option<u
 }
 
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
+/// With `files`, the files those turns changed go back as they were before them.
 #[command(trust = trusted)]
-pub async fn agent_rollback(host: &Host, window: &str, task: String, turns: u32) -> IdeResult<Option<AgentPrompt>> {
+pub async fn agent_rollback(
+    host: &Host,
+    window: &str,
+    task: String,
+    turns: u32,
+    files: bool,
+) -> IdeResult<Option<AgentPrompt>> {
     host.require_trust(window)?;
-    host.project(window)?.agents.rollback(&task, turns).await
+    host.project(window)?.agents.rollback(&task, turns, files).await
 }
 
 /// Checks the selected installation without modifying it.
@@ -408,14 +407,13 @@ async fn cli_update(
     let project = host.project(window)?;
     let installing = offer.as_ref().map(|_| Installing::begin(&provider)).transpose()?;
     let cancel = host.begin_project_request(window, request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let _installing = installing;
         project.agents.cli_update(&provider, offer.as_ref(), &cancel)
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    result?
+    result
 }
 
 /// What the agent reports about itself when it starts (no session: no MCP servers, hooks
@@ -818,11 +816,7 @@ pub fn agent_mcp_import(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> 
 pub async fn agent_mcp_discover_sources(host: &Host, window: &str) -> IdeResult<Vec<McpExternalSource>> {
     let project_root = host.project(window).ok().filter(|p| !p.light).map(|p| p.root.clone());
     let home = dirs::home_dir();
-    tokio::task::spawn_blocking(move || {
-        ide_agent::mcp::discover_external_sources(home.as_deref(), project_root.as_deref())
-    })
-    .await
-    .map_err(|e| IdeError::internal(e.to_string()))
+    blocking_value(move || ide_agent::mcp::discover_external_sources(home.as_deref(), project_root.as_deref())).await
 }
 
 /// Imports selected servers from discovered external MCP configuration files into User or Workspace scope.
@@ -1061,7 +1055,7 @@ pub async fn agent_skills_list(host: &Host, window: &str) -> IdeResult<Vec<Agent
     let project = host.project(window).ok().filter(|p| !p.light);
     let policy = host_skills_policy(host, project.as_deref());
     let home = dirs::home_dir();
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         Ok(ide_agent::skills::resolve(
             ide_agent::skills::discover_skills_with_plugins(
                 &policy.workspace_roots,
@@ -1075,7 +1069,6 @@ pub async fn agent_skills_list(host: &Host, window: &str) -> IdeResult<Vec<Agent
         ))
     })
     .await
-    .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Sets how `name` may run in `scope`, in the settings file of that scope, and returns the
@@ -1139,14 +1132,13 @@ pub async fn agent_skills_browse(
 ) -> IdeResult<RemoteSkillBrowseResult> {
     let cancel = host.begin_request(request);
     let search_path = ide_core::tool_path::search_path();
-    let res = tokio::task::spawn_blocking(move || {
+    let res = blocking(move || {
         let fetcher = ide_agent::skill_installer::GitHubHttpFetcher::new(&search_path)?;
         ide_agent::skill_installer::browse_skills(&fetcher, &source, &cancel)
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    res?
+    res
 }
 
 /// Fetches one skill's `SKILL.md`, file list, and static security scan warnings before installation.
@@ -1164,7 +1156,7 @@ pub async fn agent_skills_preview(
     let ws_root = host.project(window).ok().filter(|p| !p.light).map(|p| p.root.clone());
     let home = dirs::home_dir();
     let search_path = ide_core::tool_path::search_path();
-    let res = tokio::task::spawn_blocking(move || {
+    let res = blocking(move || {
         let fetcher = ide_agent::skill_installer::GitHubHttpFetcher::new(&search_path)?;
         ide_agent::skill_installer::preview_skill(
             &fetcher,
@@ -1175,10 +1167,9 @@ pub async fn agent_skills_preview(
             &cancel,
         )
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    res?
+    res
 }
 
 /// Installs the selected skill subtree into `~/.agents/skills` (User) or `<workspace>/.agents/skills` (Workspace).
@@ -1199,7 +1190,7 @@ pub async fn agent_skills_install(
     let search_path = ide_core::tool_path::search_path();
     let install_home = home.clone();
     let install_ws = ws_root.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    let res = blocking(move || {
         let fetcher = ide_agent::skill_installer::GitHubHttpFetcher::new(&search_path)?;
         ide_agent::skill_installer::install_skill(
             &fetcher,
@@ -1209,10 +1200,9 @@ pub async fn agent_skills_install(
             &cancel,
         )
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    res??;
+    res?;
 
     let event = IdeEvent::SettingsChanged { key: "agents.skills".into() };
     for p in host.projects() {
@@ -1221,7 +1211,7 @@ pub async fn agent_skills_install(
     }
 
     let policy = host_skills_policy(host, project.as_deref());
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         Ok(ide_agent::skills::resolve(
             ide_agent::skills::discover_skills_with_plugins(
                 &policy.workspace_roots,
@@ -1235,7 +1225,6 @@ pub async fn agent_skills_install(
         ))
     })
     .await
-    .map_err(join_err)?
 }
 
 /// The user's and the workspace's skill policies (`[agents.skills.<name>]`).

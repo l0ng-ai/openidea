@@ -26,6 +26,7 @@ import { authorLabel, authorSummary, authorTooltip, blameFor, onBlameInvalidated
 import { tx } from "@/platform/i18n";
 import { languageInfo, languagesForPath } from "@/editor/core/cm/languages";
 import { overrideKey, userFileType, validateFileTypeOverrides, validateFileTypes } from "@/platform/fileTypes";
+import { showFileUsages } from "@/editor/refactor";
 
 const LENS_KINDS = new Set<SymbolKind>([
   "class",
@@ -278,6 +279,7 @@ class UsagesLensPlugin {
       let unavailable = false;
       let retry = false;
       for (let i = 0; i < todo.length && !unavailable; i += CONCURRENCY) {
+        // oxlint-disable-next-line no-await-in-loop -- batched in groups of CONCURRENCY; a batch's flags decide whether the next batch runs
         await Promise.all(
           todo.slice(i, i + CONCURRENCY).map(async (t) => {
             const request = nextRequestId();
@@ -328,6 +330,18 @@ class UsagesLensPlugin {
       }
       const allowNoUsages = editorPrefs().inlay.codeVisionNoUsages;
       const lenses: CodeLens[] = [];
+      // WebStorm's Code Vision on a Vue single-file component: its usages from other files, on request.
+      if (usagesWanted && doc.language === "vue" && !doc.virtual) {
+        const path = doc.path;
+        lenses.push({
+          pos: 0,
+          title: tx("Show component usages"),
+          tooltip: tx("Find where this component is imported and used"),
+          order: 5,
+          kind: "usages",
+          run: () => void showFileUsages(path),
+        });
+      }
       for (const t of visible) {
         const offset = posToOffset(text, { line: t.line, col: t.col });
         const who = lines && authorSummary(lines, t.startLine, t.endLine);

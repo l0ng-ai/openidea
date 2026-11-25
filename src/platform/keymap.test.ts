@@ -521,6 +521,23 @@ describe("keymap", () => {
       expect(up(3100).defaultPrevented).toBe(false);
     });
 
+    it("leaves a single press to a plain binding of the same key", async () => {
+      const { above, mod, up } = setup();
+      const scroll = vi.fn();
+      registerAction({ id: "t.scrollUp", title: "scroll up", run: scroll });
+      useKeymap.setState({ overrides: { ...useKeymap.getState().overrides, "t.scrollUp": ["Alt+Up"] } });
+      mod("keydown", "Alt", 1000);
+      mod("keyup", "Alt", 1100);
+      mod("keydown", "Alt", 1200);
+      up(1500);
+      mod("keyup", "Alt", 1800);
+      mod("keydown", "Alt", 3000);
+      expect(up(3100).defaultPrevented).toBe(true);
+      await Promise.resolve();
+      expect(above).toHaveBeenCalledOnce();
+      expect(scroll).toHaveBeenCalledOnce();
+    });
+
     it("fires a bare double tap of another modifier on its second release", async () => {
       const { anything, mod } = setup();
       mod("keydown", "Control", 1000);
@@ -547,6 +564,7 @@ describe("keymap", () => {
         ctrlKey: true,
         altKey: true,
         bubbles: true,
+        composed: true,
         cancelable: true,
       });
       Object.defineProperty(e, "getModifierState", { value: (k: string) => k === "AltGraph" });
@@ -562,6 +580,8 @@ describe("keymap", () => {
       uninstall = installKeyboardDispatcher(window);
       const input = document.body.appendChild(document.createElement("textarea"));
       expect(altGr("}", "Digit0", input).defaultPrevented).toBe(false);
+      const root = document.body.appendChild(document.createElement("div")).attachShadow({ mode: "open" });
+      expect(altGr("}", "Digit0", root.appendChild(document.createElement("textarea"))).defaultPrevented).toBe(false);
       await Promise.resolve();
       expect(run).not.toHaveBeenCalled();
       // No AltGr character on that key (or not typing): it is the shortcut.

@@ -46,7 +46,7 @@ describe("remote invoke", () => {
     const progress = vi.fn();
     const channel = new Channel<ExecutionEvent>(progress);
     try {
-      expect(await call(commands.dbExecuteStream(1, "test-db", [], 10, null, channel))).toBeNull();
+      expect(await call(commands.dbExecuteStream(1, "test-db", [], 10, null, null, channel))).toBeNull();
       expect(unregisterCallback).toHaveBeenCalledExactlyOnceWith(channel.id);
       expect(progress).toHaveBeenCalledExactlyOnceWith(done);
     } finally {

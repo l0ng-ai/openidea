@@ -34,6 +34,7 @@ beforeEach(() => {
 
 it("says once that a remote Java launch got no agent, naming the plugins with a granted one", async () => {
   for (const kind of ["application", "spring-boot", "jar-application"]) {
+    // oxlint-disable-next-line no-await-in-loop -- assert each kind in order so a failure names the offending kind
     expect(await remoteJavaAgentNote({ kind })).toBe(
       "Java agents of Spring Agent were not added: they load only in local projects.\n",
     );

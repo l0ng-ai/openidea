@@ -34,8 +34,10 @@ export async function modifyReviewedApply(root: string, review: ApplyCommitRevie
         if (file.staged === "deleted") continue;
         const path = stripSlash(file.path);
         try {
+          // oxlint-disable-next-line no-await-in-loop -- the staged text must be read before preparing this file's edits, with a cancellation check and early continue between steps
           const before = await call(commands.vcsStagedText(path));
           if (!before) continue;
+          // oxlint-disable-next-line no-await-in-loop -- language-server edits depend on the text just read and are composed in order with the cancellation check
           const result = await prepareSnapshotModifications(file, before.text, mods, isCurrent);
           if (!result) continue;
           staged.push({ path, version: before.version, text: result.text });
@@ -51,6 +53,7 @@ export async function modifyReviewedApply(root: string, review: ApplyCommitRevie
       for (const { path, before, edits } of working) {
         if (!isCurrent()) return;
         try {
+          // oxlint-disable-next-line no-await-in-loop -- editor edits are synced one file at a time and stop as soon as the review is no longer current
           await syncCommitEdits(path, before, edits, isCurrent);
         } catch (error) {
           logConsole("info", `Before-commit edits skipped for ${baseName(path)}: ${errorMessage(error)}`);

@@ -193,6 +193,19 @@ export function computeGraph(
   };
   const describe = (s: GraphSegment, lane: Lane) =>
     track ? { ...s, edge: `${lane.source ?? ""}\0${lane.id}`, source: lane.source, kind: lane.kind } : s;
+  // A lane keeps its slot until it reaches its target, so the rows it passes can share one
+  // straight segment (later passes copy a segment before editing it). Only tracked segments
+  // are shared: an untracked one is cheaper to rebuild than to look up. A lane's last row
+  // (`ends`) reuses its segment but doesn't cache it, so a lane spanning one row costs nothing.
+  const straight = new Map<Lane, GraphSegment>();
+  const straightOf = (l: Lane, i: number, ends = false) => {
+    let s = straight.get(l);
+    if (!s) {
+      s = describe(seg(i, i, l.color, l.dashed), l);
+      if (!ends) straight.set(l, s);
+    }
+    return s;
+  };
 
   let nextColor = state.nextColor;
   const rows: GraphRow[] = [];
@@ -214,7 +227,11 @@ export function computeGraph(
     const up: GraphSegment[] = [];
     const upTargets: string[] = [];
     lanes.forEachLane((l, i) => {
-      up.push(describe(seg(i, l.id === c.id ? lane : i, l.color, l.dashed), l));
+      up.push(
+        track && (l.id !== c.id || lane === i)
+          ? straightOf(l, i, l.id === c.id)
+          : describe(seg(i, l.id === c.id ? lane : i, l.color, l.dashed), l),
+      );
       upTargets.push(l.id);
     });
     for (const m of matching) lanes.vacate(m);
@@ -223,7 +240,7 @@ export function computeGraph(
     const down: GraphSegment[] = [];
     const downTargets: string[] = [];
     lanes.forEachLane((l, i) => {
-      down.push(describe(seg(i, i, l.color, l.dashed), l));
+      down.push(track ? straightOf(l, i) : seg(i, i, l.color, l.dashed));
       downTargets.push(l.id);
     });
 

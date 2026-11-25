@@ -25,6 +25,7 @@ export async function testsBySubproject(
   if (!isGradle(derived) || !derived.args.includes("test") || !paths.length) return derived;
   const groups = new Map<string, string[]>();
   for (const path of paths) {
+    // oxlint-disable-next-line no-await-in-loop -- a class outside exactly one module aborts derivation; later lookups must not run
     const modules = await findModules(path[0]!.split("$")[0]!);
     if (modules.length !== 1) return derived;
     const filters = groups.get(modules[0]!) ?? [];

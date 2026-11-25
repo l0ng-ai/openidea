@@ -194,6 +194,144 @@ const consoleOutput: Scenario = {
 };
 
 /**
+ * Run console with 10 KiB long lines and high-rate output without newlines
+ * (with Find open while streaming). `OPENIDEA_PERF_SCALE` scales counts across
+ * 1× / 10× / 100× (default 10×).
+ *
+ * Why `consoleOutput` above missed the stall: its `SAMPLE_LINES`
+ * (`src/features/run/store.ts`) are short (~70–150 char), newline-terminated
+ * lines with Find closed, so it never runs link detection on multi-KiB lines.
+ * The `x` fill is the worst case for path matching: one long run of path characters.
+ */
+const consoleLongLines: Scenario = {
+  id: "consoleLongLines",
+  title: "Stream 10 KiB long lines and no-newline output in the Run console",
+  async run(h) {
+    const scale = Math.max(1, Number(process.env.OPENIDEA_PERF_SCALE ?? "10"));
+    const longCount = Math.round(100 * scale);
+    const longPerFrame = Math.max(2, Math.ceil(longCount / 50));
+    const noLfCount = Math.round(1_000 * scale);
+    const noLfPerFrame = Math.max(20, Math.ceil(noLfCount / 60));
+
+    type ConsolePerfWindow = {
+      __openideaPerf: {
+        openConsoleSession(mode: "long" | "no-lf"): Promise<string>;
+        streamConsoleOutput(o: {
+          mode: "long" | "no-lf";
+          count: number;
+          perFrame: number;
+          sessionId?: string;
+        }): Promise<{
+          lines: number;
+          dropped: number;
+        }>;
+      };
+    };
+
+    await h.openFile(SAMPLE);
+    const refresh = await h.refreshMs();
+
+    // Phase 1: 10 KiB unique long lines streaming (each splits at 8,000 + 2,239 chars in ConsoleModel).
+    const longSessionId = await h.page.evaluate(() =>
+      (window as never as ConsolePerfWindow).__openideaPerf.openConsoleSession("long"),
+    );
+    const longLog = h.page.locator('section[aria-label="Run"] [role="log"][aria-label="Sample long output"]').first();
+    await longLog.waitFor({ timeout: 10_000 });
+    const tLong = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const longStream = h.page.evaluate(
+      async ({ sessionId, count, perFrame }) => {
+        const started = performance.now();
+        await (window as never as ConsolePerfWindow).__openideaPerf.streamConsoleOutput({
+          mode: "long",
+          sessionId,
+          count,
+          perFrame,
+        });
+        return performance.now() - started;
+      },
+      { sessionId: longSessionId, count: longCount, perFrame: longPerFrame },
+    );
+    const longBox = await longLog.boundingBox();
+    if (longBox) {
+      await h.page.mouse.move(longBox.x + longBox.width / 2, longBox.y + longBox.height / 2);
+      for (let i = 0; i < 6; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- wheel steps scroll the log one after another while it streams
+        await h.page.mouse.wheel(0, -180);
+        // oxlint-disable-next-line no-await-in-loop -- spaces the wheel steps out
+        await h.page.waitForTimeout(40);
+      }
+    }
+    const longStreamMs = await longStream;
+    const longFrames = await h.inPage((p) => p.stopFrames());
+    const longSummary = frameSummary(longFrames, refresh);
+    const longTbtMs = totalBlockingTime(await h.longTasksSince(tLong));
+    const longDomNodes = await h.page.evaluate(() => document.querySelectorAll("*").length);
+
+    // Phase 2: mount the no-newline session and open Find ("t") before measurement or streaming starts,
+    // so the entire stream is measured, then scroll horizontally across the 8,000-char rows.
+    const noLfSessionId = await h.page.evaluate(() =>
+      (window as never as ConsolePerfWindow).__openideaPerf.openConsoleSession("no-lf"),
+    );
+    const noLfLog = h.page.locator('section[aria-label="Run"] [role="log"][aria-label="Sample no-lf output"]').first();
+    await noLfLog.waitFor({ timeout: 10_000 });
+    const findBtn = h.page.locator('section[aria-label="Run"] button[aria-label="Find…"]').first();
+    await findBtn.waitFor({ timeout: 10_000 });
+    await findBtn.click();
+    const findInput = h.page.locator("[data-console-find] input").first();
+    await findInput.waitFor({ timeout: 10_000 });
+    await findInput.fill("t");
+
+    const tNoLf = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const noLfStreamMs = await h.page.evaluate(
+      async ({ sessionId, count, perFrame }) => {
+        const started = performance.now();
+        await (window as never as ConsolePerfWindow).__openideaPerf.streamConsoleOutput({
+          mode: "no-lf",
+          sessionId,
+          count,
+          perFrame,
+        });
+        return performance.now() - started;
+      },
+      { sessionId: noLfSessionId, count: noLfCount, perFrame: noLfPerFrame },
+    );
+    // Sweep scrollLeft across the wide 8,000-char rows with Find open.
+    await noLfLog.evaluate(async (el) => {
+      const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+      const steps = 12;
+      for (let i = 1; i <= steps; i++) {
+        el.scrollLeft = Math.round((maxLeft * i) / steps);
+        // oxlint-disable-next-line no-await-in-loop -- one horizontal scroll position per frame
+        await new Promise(requestAnimationFrame);
+      }
+      el.scrollLeft = 0;
+      await new Promise(requestAnimationFrame);
+    });
+    const noLfFrames = await h.inPage((p) => p.stopFrames());
+    const noLfSummary = frameSummary(noLfFrames, refresh);
+    const noLfTbtMs = totalBlockingTime(await h.longTasksSince(tNoLf));
+    const noLfDomNodes = await h.page.evaluate(() => document.querySelectorAll("*").length);
+
+    return {
+      longStreamMs,
+      longFrameP95Ms: longSummary.frameP95Ms,
+      longFrameMaxMs: longSummary.frameMaxMs,
+      longDroppedFramesPct: longSummary.droppedFramesPct,
+      longTbtMs,
+      longDomNodes,
+      noLfStreamMs,
+      noLfFrameP95Ms: noLfSummary.frameP95Ms,
+      noLfFrameMaxMs: noLfSummary.frameMaxMs,
+      noLfDroppedFramesPct: noLfSummary.droppedFramesPct,
+      noLfTbtMs,
+      noLfDomNodes,
+    };
+  },
+};
+
+/**
  * A full-screen agent TUI (Claude Code, Grok) repainting the terminal 10 times a second
  * for 6 s — every row rewritten, only the spinner row changed — while the user types in
  * an editor. Guards the terminal's unchanged-row skip: without it every frame restyles
@@ -301,7 +439,9 @@ const scroll: Scenario = {
     const wheel = async (steps: number, dy: number) => {
       await h.inPage((p) => p.startFrames());
       for (let i = 0; i < steps; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- wheel notches scroll one at a time; direction depends on the step index
         await h.page.mouse.wheel(0, i < steps / 2 ? dy : -dy);
+        // oxlint-disable-next-line no-await-in-loop -- 16 ms between wheel notches is part of the measured frame pacing
         await h.page.waitForTimeout(16);
       }
       await h.page.waitForTimeout(200);
@@ -365,7 +505,9 @@ const gitLog: Scenario = {
     await h.inPage((p) => p.startFrames());
     // Far enough to load several more pages on the way.
     for (let i = 0; i < 160; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- wheel notches must scroll in order to load several Git Log pages
       await h.page.mouse.wheel(0, i < 120 ? 600 : -600);
+      // oxlint-disable-next-line no-await-in-loop -- 16 ms between wheel notches is part of the measured frame pacing
       await h.page.waitForTimeout(16);
     }
     await h.page.waitForTimeout(200);
@@ -401,6 +543,7 @@ const gitLogScrollbar: Scenario = {
     await list.evaluate(async (element) => {
       for (let i = 0; i < 300 && element.scrollHeight < 6000 * 26; i++) {
         element.scrollTop = element.scrollHeight;
+        // oxlint-disable-next-line no-await-in-loop -- each scroll to the bottom waits a frame for the fake log to load more rows
         await new Promise(requestAnimationFrame);
       }
       if (element.scrollHeight < 6000 * 26) throw new Error("Git Log did not finish loading");
@@ -414,6 +557,7 @@ const gitLogScrollbar: Scenario = {
       const max = element.scrollHeight - element.clientHeight;
       for (let i = 0; i < 180; i++) {
         element.scrollTop = ((i < 90 ? i : 180 - i) / 90) * max;
+        // oxlint-disable-next-line no-await-in-loop -- scrollbar drag advances one position per frame
         await new Promise(requestAnimationFrame);
       }
     });
@@ -455,7 +599,9 @@ const resizePanels: Scenario = {
       // Out and back twice, one pointer move a frame.
       for (let i = 0; i < 120; i++) {
         const t = Math.sin((i / 60) * Math.PI);
+        // oxlint-disable-next-line no-await-in-loop -- pointer moves follow the drag path one frame at a time
         await h.page.mouse.move(x + dx * t, y + dy * t);
+        // oxlint-disable-next-line no-await-in-loop -- 16 ms between pointer moves is part of the measured drag pacing
         await h.page.waitForTimeout(16);
       }
       await h.page.mouse.up();
@@ -506,6 +652,7 @@ const tabs: Scenario = {
     for (let i = 0; i < 8; i++) {
       const name = `Module${i}.ts`;
       names.push(name);
+      // oxlint-disable-next-line no-await-in-loop -- opening files seeds and shows them in one shared editor; tab order matters
       await h.openFile(`${ROOT}/src/tabs/${name}`, tsSource(2_000, `tab-${i}`));
     }
     const switches: number[] = [];
@@ -513,10 +660,13 @@ const tabs: Scenario = {
     let viewsRebuilt = 0;
     let switchWork = await h.counters();
     for (let round = 0; round < 3; round++) {
+      // oxlint-disable-next-line no-await-in-loop -- counters are snapshotted between rounds, not concurrently with the switches
       if (round === 1) switchWork = await h.counters();
       for (let i = 0; i < names.length; i++) {
         const tab = h.page.getByRole("tab", { name: names[i], exact: true });
+        // oxlint-disable-next-line no-await-in-loop -- each tab click is measured with its own armed page token; a concurrent click would cross-match the previous target
         switches.push(await h.measure(() => tab.click(), ".cm-content", `// tab-${i}`));
+        // oxlint-disable-next-line no-await-in-loop -- view freshness must be checked right after this tab's measured click
         const fresh = await h.page.evaluate(() => {
           const view = document.querySelector("[data-editor-host] .cm-editor") as { perfSeen?: boolean } | null;
           if (!view || view.perfSeen) return false;
@@ -532,7 +682,9 @@ const tabs: Scenario = {
     const switcher: number[] = [];
     for (let i = 0; i < 10; i++) {
       const tag = i % 2 ? names.length - 1 : names.length - 2;
+      // oxlint-disable-next-line no-await-in-loop -- Switcher toggles are measured in order between the two most recent tabs
       switcher.push(await h.measure(() => h.pressAction("navigate.switcher"), ".cm-content", `// tab-${tag}`));
+      // oxlint-disable-next-line no-await-in-loop -- 150 ms settle between Switcher toggles is part of the measured sequence
       await h.page.waitForTimeout(150);
     }
     const switcherWork = Harness.delta(before, await h.counters());
@@ -569,12 +721,15 @@ const agentTabs: Scenario = {
     const title = (n: number) => `(Sample task ${n})`;
     // Visit each conversation to let it finish painting and laying out its history.
     for (const n of [1, 2]) {
+      // oxlint-disable-next-line no-await-in-loop -- visit conversations in order so each history is laid out before the next
       await h.page.getByRole("tab", { name: `Sample task ${n}` }).click();
+      // oxlint-disable-next-line no-await-in-loop -- wait for this tab's conversation to attach before it can settle
       await h.page
         .locator(SHOWN, { hasText: title(n) })
         .filter({ hasText: "Turn 0:" })
         .first()
         .waitFor({ state: "attached", timeout: 30_000 });
+      // oxlint-disable-next-line no-await-in-loop -- settle wait belongs to this tab's visit, before the next tab
       await h.page.waitForTimeout(300);
     }
     // WebKit restyles a hidden conversation in full when it is shown again (Chromium keeps its
@@ -592,7 +747,9 @@ const agentTabs: Scenario = {
     const before = await h.counters();
     const switches: number[] = [];
     for (let i = 0; i < 10; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- Switcher toggles are measured in order between the two conversations
       switches.push(await h.measure(() => h.pressAction("navigate.switcher"), SHOWN, title(i % 2 ? 2 : 1)));
+      // oxlint-disable-next-line no-await-in-loop -- 150 ms settle between Switcher toggles is part of the measured sequence
       await h.page.waitForTimeout(150);
     }
     const work = Harness.delta(before, await h.counters());
@@ -616,7 +773,9 @@ const agentTabs: Scenario = {
         stream.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
         stream.scrollTop -= 120;
         const by = scrolled - stream.scrollTop;
+        // oxlint-disable-next-line no-await-in-loop -- two frame ticks per fake wheel step; row movement is read after them
         await frame();
+        // oxlint-disable-next-line no-await-in-loop -- the second frame tick completes this step before its jump is measured
         await frame();
         if (Math.abs(row.getBoundingClientRect().top - from - by) > 2) jumps++;
       }
@@ -631,7 +790,9 @@ const agentTabs: Scenario = {
     const t1 = await h.now();
     await h.inPage((p) => p.startFrames());
     for (let i = 0; i < 120; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- wheel steps scroll the conversation up one at a time
       await h.page.mouse.wheel(0, -120);
+      // oxlint-disable-next-line no-await-in-loop -- 16 ms between wheel steps is part of the measured frame pacing
       await h.page.waitForTimeout(16);
     }
     await h.page.waitForTimeout(200);
@@ -708,13 +869,16 @@ const toolWindows: Scenario = {
     const all: number[] = [];
     for (const [action, title] of TOOL_WINDOWS) {
       // Until the view's content is laid out (lazily loaded views render nothing at first).
+      // oxlint-disable-next-line no-await-in-loop -- tool windows are shown and measured one at a time in the shared page
       const ms = await h.measure(
         () => h.pressAction(action),
         `section[aria-label="${title}"] [data-toolwindow-body] > *`,
       );
       m[`${title.toLowerCase()}Ms`] = ms;
       all.push(ms);
+      // oxlint-disable-next-line no-await-in-loop -- hide this window before showing the next one
       await h.pressAction(action);
+      // oxlint-disable-next-line no-await-in-loop -- wait for the hide before the next measurement starts
       await h.page.locator(`section[aria-label="${title}"]`).waitFor({ state: "hidden" });
     }
     return { maxMs: Math.max(...all), ...m };
@@ -744,7 +908,9 @@ const projectTree: Scenario = {
     const t0 = await h.now();
     await h.inPage((p) => p.startFrames());
     for (let i = 0; i < 60; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- wheel steps scroll the tree one at a time
       await h.page.mouse.wheel(0, 500);
+      // oxlint-disable-next-line no-await-in-loop -- 16 ms between wheel steps is part of the measured frame pacing
       await h.page.waitForTimeout(16);
     }
     await h.page.waitForTimeout(200);
@@ -758,6 +924,187 @@ const projectTree: Scenario = {
   },
 };
 
+/**
+ * Selects from `item<first>.json` of the 10 000-entry folder to the end of the tree (speed search,
+ * Escape, Shift+End), then presses Copy and Delete. `items`: the count the Delete dialog shows;
+ * `copyMs`: key → next frame; `deleteMs`: key → dialog shown (then cancelled).
+ */
+async function copyAndDelete(h: Harness, first: number) {
+  const tree = h.page.getByRole("tree", { name: "Project" });
+  await h.page.keyboard.type(`item${first}.json`);
+  await tree.getByRole("treeitem", { name: `item${first}.json`, exact: true, selected: true }).waitFor();
+  await h.page.keyboard.press("Escape");
+  await h.page.keyboard.press("Shift+End");
+  await h.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  // Hold the modifiers first: only the main key's keydown is measured.
+  const [copyKey] = await h.keysFor("project.copy");
+  const mods = copyKey!.split("+");
+  const key = mods.pop()!;
+  // oxlint-disable-next-line no-await-in-loop -- modifiers go down (and up) one at a time
+  for (const m of mods) await h.page.keyboard.down(m);
+  const [copyMs] = await h.pressMeasured([key], 50);
+  // oxlint-disable-next-line no-await-in-loop -- modifiers go down (and up) one at a time
+  for (const m of mods) await h.page.keyboard.up(m);
+  const deleteMs = await h.measure(
+    () => h.pressAction("project.delete"),
+    '[role="dialog"]',
+    "Items are moved to the Trash.",
+    120_000,
+  );
+  const dialog = h.page.getByRole("dialog", { name: "Delete", exact: true });
+  const text = (await dialog.textContent()) ?? "";
+  const items = Number(/Delete (\d+) items/.exec(text)?.[1]);
+  if (!items) throw new Error(`unexpected Delete dialog: ${text}`);
+  await h.page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+  return { items, copyMs: copyMs!, deleteMs };
+}
+
+/** Project tree: Copy and Delete on about 10, 1 000, 5 000 and 10 000 selected rows. */
+const projectTreeSelection: Scenario = {
+  id: "projectTreeSelection",
+  title: "Copy and Delete thousands of selected tree rows",
+  async run(h) {
+    const generated = h.page.locator('[role="treeitem"][aria-level="2"]', { hasText: "generated" }).first();
+    await generated.click();
+    await generated.and(h.page.locator('[aria-selected="true"]')).waitFor();
+    await h.page.keyboard.press("ArrowRight");
+    await h.page.getByRole("treeitem", { name: "item1.json", exact: true }).waitFor();
+    const out: Metrics = {};
+    for (const [label, first] of [
+      ["10", 9995],
+      ["1k", 9001],
+      ["5k", 5001],
+      ["All", 1],
+    ] as const) {
+      // oxlint-disable-next-line no-await-in-loop -- one selection at a time in the same tree
+      const m = await copyAndDelete(h, first);
+      out[`items${label}`] = m.items;
+      out[`copy${label}Ms`] = m.copyMs;
+      out[`delete${label}Ms`] = m.deleteMs;
+    }
+    return out;
+  },
+};
+
+/** Files in the `combinedDiff` scenarios (`OPENIDEA_PERF_COMBINED_FILES`). */
+const COMBINED_FILES = Number(process.env.OPENIDEA_PERF_COMBINED_FILES ?? 500);
+/** Farthest the wheel pass scrolls before turning back: about 100 files of 40 lines. */
+const COMBINED_WHEEL_PX = 100_000;
+
+/**
+ * Opens an all-in-one diff of `COMBINED_FILES` files from a key press, then scrolls down and back
+ * up, for at most 60 s each way. `wheel`: 120 px per 16 ms of wall time (a fast wheel; the
+ * compositor keeps scrolling through a slow frame), down to the end or `COMBINED_WHEEL_PX`.
+ * `stress`: a viewport (or 1/300 of the whole height, if more) a frame, down to the end.
+ * `blankFrames`: frames whose viewport centre shows neither a diff nor a file header.
+ * `slowFrameMs` / `slowTimePct`: time in frames over 33 ms, and its share of the scroll time:
+ * shares of frame counts mislead when one side renders far fewer, longer frames.
+ */
+async function combinedDiffScroll(h: Harness, mode: "wheel" | "stress") {
+  // Opened from a key press, the measured input (no default shortcut opens it).
+  await h.page.evaluate((n) => {
+    const w = window as never as {
+      __openideaPerf: { openCombinedDiff(n: number): Promise<{ first: string; last: string }> };
+      __combinedPaths?: Promise<{ first: string; last: string }>;
+    };
+    addEventListener("keydown", () => (w.__combinedPaths = w.__openideaPerf.openCombinedDiff(n)), {
+      capture: true,
+      once: true,
+    });
+  }, COMBINED_FILES);
+  const openMs = await h.measure(
+    () => h.page.keyboard.press("Pause"),
+    "[data-combined-scroll] .cm-content",
+    null,
+    30_000,
+  );
+  const paths = await h.page.evaluate(
+    () => (window as never as { __combinedPaths: Promise<{ first: string; last: string }> }).__combinedPaths,
+  );
+  await h.page.waitForTimeout(500);
+  const refresh = await h.refreshMs();
+  const t0 = await h.now();
+  await h.inPage((p) => p.startFrames());
+  const pass = await h.page.locator("[data-combined-scroll]").evaluate(
+    async (el, { first, last, wheel, maxPx }) => {
+      const editors = () => el.querySelectorAll(".cm-editor").length;
+      const box = el.getBoundingClientRect();
+      const blank = () => {
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return !hit?.closest(".cm-editor, [data-combined-block] > :first-child");
+      };
+      const shown = (path: string) => !!el.querySelector(`[data-combined-block="${CSS.escape(path)}"]`);
+      const step = () => Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
+      let peakEditors = editors();
+      let blankFrames = 0;
+      let frames = 0;
+      let reachedEnd = false;
+      const walk = async (down: boolean) => {
+        const started = performance.now();
+        const from = el.scrollTop;
+        // The end only once the view has stayed there for 30 frames: blocks loading near the bottom
+        // still grow the view, so a first touch of the bottom isn't the end of the whole change.
+        let settled = 0;
+        while (performance.now() - started < 60_000) {
+          const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 1 && shown(last);
+          settled = down && atEnd ? settled + 1 : 0;
+          if (settled >= 30) reachedEnd = true;
+          if (down ? reachedEnd || (wheel && el.scrollTop - from >= maxPx) : el.scrollTop <= 0 && shown(first))
+            return true;
+          const moved = wheel ? ((performance.now() - started) * 120) / 16 : 0;
+          if (wheel) el.scrollTop = down ? Math.min(from + moved, from + maxPx) : Math.max(0, from - moved);
+          else el.scrollTop = down ? el.scrollTop + step() : Math.max(0, el.scrollTop - step());
+          // oxlint-disable-next-line no-await-in-loop -- rAF ticks advance the simulated scroll and its frame counters together
+          await new Promise(requestAnimationFrame);
+          frames++;
+          if (blank()) blankFrames++;
+          peakEditors = Math.max(peakEditors, editors());
+        }
+        return false;
+      };
+      await walk(true);
+      const scrolledPx = el.scrollTop;
+      const backAtTop = await walk(false);
+      return { reachedEnd, backAtTop, scrolledPx, peakEditors, blankFrames, frames };
+    },
+    { ...paths, wheel: mode === "wheel", maxPx: COMBINED_WHEEL_PX },
+  );
+  const frames = await h.inPage((p) => p.stopFrames());
+  const tbtMs = totalBlockingTime(await h.longTasksSince(t0));
+  const slow = frames.filter((f) => f > 33);
+  const slowFrameMs = slow.reduce((sum, f) => sum + f, 0);
+  const totalMs = frames.reduce((sum, f) => sum + f, 0);
+  return {
+    openMs,
+    ...frameSummary(frames, refresh),
+    slowFramesPct: frames.length ? (100 * slow.length) / frames.length : 0,
+    slowFrameMs,
+    slowTimePct: totalMs ? (100 * slowFrameMs) / totalMs : 0,
+    tbtMs,
+    peakEditors: pass.peakEditors,
+    blankFrames: pass.blankFrames,
+    scrollFrames: pass.frames,
+    blankPct: pass.frames ? (100 * pass.blankFrames) / pass.frames : 0,
+    scrolledPx: pass.scrolledPx,
+    reachedEnd: pass.reachedEnd ? 1 : 0,
+    backAtTop: pass.backAtTop ? 1 : 0,
+    domNodes: (await h.counters()).Nodes ?? NaN,
+  };
+}
+
+const combinedDiff: Scenario = {
+  id: "combinedDiff",
+  title: `Wheel through an all-in-one diff of ${COMBINED_FILES} files`,
+  run: (h) => combinedDiffScroll(h, "wheel"),
+};
+
+const combinedDiffStress: Scenario = {
+  id: "combinedDiffStress",
+  title: `Scroll an all-in-one diff of ${COMBINED_FILES} files a screen a frame`,
+  run: (h) => combinedDiffScroll(h, "stress"),
+};
+
 /** Opening and closing editors repeatedly must not grow the heap or the DOM. */
 const leaks: Scenario = {
   id: "leaks",
@@ -765,6 +1112,7 @@ const leaks: Scenario = {
   async run(h) {
     const cycle = async (n: number) => {
       for (let i = 0; i < 10; i++)
+        // oxlint-disable-next-line no-await-in-loop -- files open into one shared editor; parallel opens would race on its state
         await h.openFile(`${ROOT}/src/leak/File${n}_${i}.ts`, tsSource(1_500, `leak-${n}-${i}`));
       await h.page.evaluate(() =>
         (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
@@ -777,6 +1125,7 @@ const leaks: Scenario = {
     await h.gc();
     const heap0 = await h.heapMb();
     const c0 = await h.counters();
+    // oxlint-disable-next-line no-await-in-loop -- leak cycles run one after another; parallel cycles would invalidate heap growth
     for (let n = 1; n <= 3; n++) await cycle(n);
     await h.gc();
     const c1 = await h.counters();
@@ -795,6 +1144,7 @@ export const SCENARIOS: Scenario[] = [
   typingAngular,
   completion,
   consoleOutput,
+  consoleLongLines,
   terminalTui,
   gitLog,
   gitLogScrollbar,
@@ -806,5 +1156,8 @@ export const SCENARIOS: Scenario[] = [
   popups,
   toolWindows,
   projectTree,
+  projectTreeSelection,
+  combinedDiff,
+  combinedDiffStress,
   leaks,
 ];

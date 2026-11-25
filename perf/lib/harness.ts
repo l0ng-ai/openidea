@@ -67,6 +67,7 @@ export class Harness {
   }
 
   async pressAction(actionId: string) {
+    // oxlint-disable-next-line no-await-in-loop -- key strokes of one binding must be pressed in order (e.g. Shift Shift)
     for (const k of await this.keysFor(actionId)) await this.page.keyboard.press(k);
   }
 
@@ -171,9 +172,12 @@ export class Harness {
     try {
       for (const [index, key] of keys.entries()) {
         const started = Date.now();
+        // oxlint-disable-next-line no-await-in-loop -- each key press is a measured input; latency must be recorded in press order
         await this.page.keyboard.press(key);
+        // oxlint-disable-next-line no-await-in-loop -- afterKey asserts this key's edit and advances the state used by the next key
         await afterKey?.(key, index);
         const wait = intervalMs - (Date.now() - started);
+        // oxlint-disable-next-line no-await-in-loop -- intervalMs spacing is measured from this key's press start
         if (wait > 0) await this.page.waitForTimeout(wait);
       }
       await this.inPage((p) => p.afterNextPaint().then(() => p.afterNextPaint()));

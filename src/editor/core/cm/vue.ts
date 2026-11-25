@@ -1,11 +1,12 @@
 /**
  * Vue single-file components: `@codemirror/lang-vue`'s parser over an HTML
- * base that also highlights `<style lang="scss|sass">` with the Sass grammar —
- * stock `vue()` parses every `<style>` as plain CSS, which loses the SCSS
- * colours.
+ * base that also highlights `<style lang="scss|sass">` with the Sass grammar
+ * and `<style lang="less">` with the Less one — stock `vue()` parses every
+ * `<style>` as plain CSS, which loses their variables, nesting and mixins.
  */
 import { indentNodeProp, LanguageSupport, type LRLanguage, type TreeIndentContext } from "@codemirror/language";
 import { html } from "@codemirror/lang-html";
+import { lessLanguage } from "@codemirror/lang-less";
 import { sassLanguage } from "@codemirror/lang-sass";
 import { vue } from "@codemirror/lang-vue";
 
@@ -27,13 +28,14 @@ export function vueLanguage(): LanguageSupport {
   const base = html({
     selfClosingTags: true,
     // `<style>` without `lang` (or with `lang="css"`) keeps HTML's own CSS
-    // nesting; only an explicit SCSS/Sass dialect re-parses it.
+    // nesting; only an explicit SCSS/Sass/Less dialect re-parses it.
     nestedLanguages: [
       {
         tag: "style",
         attrs: (a) => a.lang === "scss" || a.lang === "sass",
         parser: sassLanguage.parser,
       },
+      { tag: "style", attrs: (a) => a.lang === "less", parser: lessLanguage.parser },
     ],
   });
   const language = (base.language as LRLanguage).configure({ props: [indentNodeProp.add({ Element: elementIndent })] });

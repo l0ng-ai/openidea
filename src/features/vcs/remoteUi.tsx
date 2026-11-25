@@ -1572,6 +1572,7 @@ export async function pushTargets(targets: readonly RemoteTarget<PushOp>[]): Pro
   let pending = [...targets].sort((a, b) => (b.repo?.length ?? 0) - (a.repo?.length ?? 0));
   let method: UpdateMethod | null = null;
   for (let attempt = 1; ; attempt++) {
+    // oxlint-disable-next-line no-await-in-loop -- each push attempt must finish before its failures are inspected and recovery is chosen
     const failures = await runRemoteRound(pending, pending.length === 1 ? pending[0]?.detail : undefined, options);
     if (!failures || useProject.getState().project !== project) return false;
     if (!failures.length) {
@@ -1592,14 +1593,17 @@ export async function pushTargets(targets: readonly RemoteTarget<PushOp>[]): Pro
       if (op.op === "pushSelected")
         return pushLeaseMoved(`${op.selection.remote}/${op.selection.target}`, rejectedSelection(failures[0]!));
       if (op.op === "push") {
+        // oxlint-disable-next-line no-await-in-loop -- a force-push offer confirms with the user as part of this ordered attempt; nothing else runs afterwards
         await offerForcePush(op, detail, repo);
         return false;
       }
     }
+    // oxlint-disable-next-line no-await-in-loop -- all rejections are inspected together after the round; recovery depends on the complete set
     const rejected = (await Promise.all(failures.map(rejectedTrackedPush))).filter((r) => r !== null);
     if (rejected.length !== failures.length || attempt >= MAX_PUSH_ATTEMPTS)
       return pushFailed(failures, targets.length, rejected.length === failures.length, pushed);
     const roots = allRepos();
+    // oxlint-disable-next-line no-await-in-loop -- the recovery choice is a user dialog that depends on the inspected rejections
     const choice: UpdateMethod | "force" | null = method ?? (await choosePushRecovery(rejected, roots));
     if (useProject.getState().project !== project) return false;
     if (!choice) return pushFailed(failures, targets.length, true, pushed);
@@ -1609,6 +1613,7 @@ export async function pushTargets(targets: readonly RemoteTarget<PushOp>[]): Pro
         return pushFailed(failures, targets.length, true, pushed);
       const { source, remote, target } = divergence;
       const destination = `${remote}/${target}`;
+      // oxlint-disable-next-line no-await-in-loop -- the force retry is its own remote round and must finish before its result is handled
       const failed = await runRemoteRound(
         [
           {
@@ -1634,7 +1639,9 @@ export async function pushTargets(targets: readonly RemoteTarget<PushOp>[]): Pro
       return true;
     }
     method = choice;
+    // oxlint-disable-next-line no-await-in-loop -- editors are saved before checking whether the rejected branches are still tracked
     await saveAll();
+    // oxlint-disable-next-line no-await-in-loop -- tracking is checked after saving and before the update; all rejections are inspected together
     const stillTracked = await Promise.all(
       rejected.map(async ({ repo, source, upstream }) => {
         const branch = await call(commands.vcsBranchInfo(repo)).catch(() => null);
@@ -1644,6 +1651,7 @@ export async function pushTargets(targets: readonly RemoteTarget<PushOp>[]): Pro
     if (useProject.getState().project !== project) return false;
     if (stillTracked.includes(false)) return pushFailed(failures, targets.length, true, pushed);
     const pull = { op: "pull" as const, rebase: method === "rebase" };
+    // oxlint-disable-next-line no-await-in-loop -- the update must finish before the next push attempt begins
     if (!(await runRemote(pull, tx("updating after rejected push"), roots))) return false;
     pending = failures.map((failure) => failure.target);
   }

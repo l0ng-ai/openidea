@@ -144,6 +144,7 @@ export function createVenv(
  * Hatch may install plugins first, so the caller cancels it when it no longer needs it.
  */
 export function hatchEnvs(): Streamed<string[]> {
+  if (!isTauri()) return { promise: Promise.resolve([]), cancel: () => {} };
   const request = nextRequestId();
   return {
     promise: call(commands.sdkPythonHatchEnvs(request)),

@@ -23,6 +23,7 @@ import {
   activateToolWindow,
   hideActiveToolWindow,
   hideAllToolWindows,
+  hideSideToolWindows,
   hideToolWindow,
   jumpToLastToolWindow,
   lastUsedToolWindow,
@@ -246,6 +247,15 @@ export function installToolWindowActions(): () => void {
       category: "Window",
       when: "projectOpen && !popupOpen",
       run: hideActiveToolWindow,
+    },
+    {
+      // IDEA's HideSideWindows: every window on the active window's side.
+      id: "toolwindow.hideSide",
+      title: "Hide Side Tool Windows",
+      category: "Window",
+      keywords: ["tool window"],
+      when: "projectOpen && !popupOpen",
+      run: hideSideToolWindows,
     },
     {
       // Close Content, as IDEA (⌘W / Ctrl+F4 in a tool window): the selected closable tab, else the window.

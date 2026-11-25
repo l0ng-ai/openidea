@@ -303,7 +303,9 @@ async function smoke(c: Case) {
 for (const [language, cases] of Object.entries(CASES)) {
   test(language, async () => {
     for (const [i, c] of [cases].flat().entries()) {
+      // oxlint-disable-next-line no-await-in-loop -- the previous case's server and run state must be torn down before the next starts.
       if (i > 0) await close();
+      // oxlint-disable-next-line no-await-in-loop -- cases share the global server, project and run store, so they run one at a time.
       await smoke(c);
     }
   });

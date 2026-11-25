@@ -72,6 +72,7 @@ import {
   type DiffData,
 } from "./diffInput";
 import { buildChangeTree, changeFileNodes, changeGroupPaths, selectedChangeNodes, type ChangeNode } from "./changes";
+import { currentChangeModules } from "./changeModules";
 import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
 import {
@@ -190,6 +191,9 @@ export function currentChangeTree(): ChangeNode[] {
     undefined,
     commit.groupByRepo,
     commit.showUnversionedSeparately,
+    [],
+    currentChangeModules(),
+    commit.groupByModule,
   );
 }
 
@@ -799,6 +803,7 @@ export function registerVcsActions(): () => void {
         }
         for (const target of targets.slice(0, 5)) {
           const data = typeof target === "string" ? groupDiffData(tree, target) : changeNodeDiffData(tree, target);
+          // oxlint-disable-next-line no-await-in-loop -- diff tabs open in selection order
           await openVcsDiff({ ...data, line }, { preview: targets.length === 1 });
         }
       },

@@ -28,9 +28,11 @@ import {
   provideToolWindowService,
   type ToolWindowService,
 } from "@/workbench/contributions";
-import { hotReloadSession, supportsHotReload } from "./flutterHotReload";
+import { useFlutterRunApps } from "@/workbench/flutterRunApps";
+import { hotReloadSession, supportsHotReload, syncFlutterRunApps } from "./flutterHotReload";
+import { machineLine } from "./flutterMachine";
 import { SessionPanel } from "./RunView";
-import { resetRuns, startRun, useRun } from "./store";
+import { resetRuns, runtime, startRun, useRun } from "./store";
 
 const flutter = (args: string[] = [], extra: Partial<RunConfig> = {}): RunConfig => ({
   id: "flutter:run",
@@ -47,12 +49,38 @@ const flutter = (args: string[] = [], extra: Partial<RunConfig> = {}): RunConfig
 });
 
 const current = (id: string) => useRun.getState().sessions.find((s) => s.id === id)!;
+const event = (name: string, params: object) => JSON.stringify([{ event: name, params }]);
+const WS = "ws://127.0.0.1:50300/abc=/ws";
+
+/** Starts `flutter run --machine` and has it print `lines`, up to `app.started`. */
+async function startedApp(...lines: string[]) {
+  const session = (await startRun(flutter(["--machine"])))!;
+  const channel = ipc.runStart.mock.calls.at(-1)![1] as { onmessage: (c: unknown) => void };
+  const out = [
+    event("daemon.connected", { version: "0.6.1", pid: 1 }),
+    event("app.start", { appId: "A1", deviceId: "sim-1", supportsRestart: true, mode: "debug" }),
+    "Launching lib/main.dart on iPhone in debug mode...",
+    event("app.debugPort", { appId: "A1", port: 50300, wsUri: WS }),
+    event("app.started", { appId: "A1" }),
+    ...lines,
+  ];
+  channel.onmessage({ kind: "stdout", text: out.map((l) => `${l}\n`).join("") });
+  await vi.waitFor(() => expect(useFlutterRunApps.getState()[session.id]?.started).toBe(true));
+  return session;
+}
+
+const consoleText = (id: string) =>
+  runtime(id)!
+    .console.textChunks()
+    .map((c) => c.text)
+    .join("");
 const button = (name: string) => screen.queryByRole("button", { name: new RegExp(`^${name}`) });
 
 beforeEach(() => {
   resetRuns();
   ipc.runStart.mockClear();
   ipc.runStdin.mockClear();
+  useFlutterRunApps.setState({}, true);
   provideToolWindowService({ show: vi.fn(), isVisible: () => true } as unknown as ToolWindowService);
   provideNotificationService({ notify: () => undefined });
 });
@@ -61,37 +89,89 @@ describe("Flutter hot reload in the Run tool window", () => {
   it("applies only to flutter run in a mode with hot reload", () => {
     expect(supportsHotReload(flutter())).toBe(true);
     expect(supportsHotReload(flutter(["-d", "macos", "--flavor", "dev"]))).toBe(true);
-    for (const flag of ["--release", "--profile", "--jit-release", "--no-hot", "--trace-startup", "--machine"])
+    expect(supportsHotReload(flutter(["--machine"]))).toBe(true);
+    for (const flag of ["--release", "--profile", "--jit-release", "--no-hot", "--trace-startup"])
       expect(supportsHotReload(flutter([flag]))).toBe(false);
     expect(supportsHotReload(flutter([], { args: ["test"] }))).toBe(false);
     expect(supportsHotReload(flutter([], { kind: "shell" }))).toBe(false);
   });
 
-  it("puts both buttons after Stop and sends their keys to the process", async () => {
-    const session = (await startRun(flutter()))!;
+  it("follows the app from the --machine events and shows its output as plain lines", async () => {
+    const session = await startedApp(
+      event("app.log", { appId: "A1", log: "flutter: hello" }),
+      event("app.progress", { appId: "A1", id: "1", progressId: "hot.reload", message: "Performing hot reload..." }),
+      event("app.progress", { appId: "A1", id: "1", progressId: "hot.reload", finished: true }),
+      "Reloaded 1 of 700 libraries in 250ms.",
+      JSON.stringify([{ id: 1, result: { code: 0, message: "Reloaded 1 of 700 libraries" } }]),
+      event("daemon.logMessage", { level: "error", message: "Lost connection to device." }),
+      JSON.stringify([{ id: 2, result: { code: 1, message: "Reload rejected" } }]),
+    );
+    expect(useFlutterRunApps.getState()[session.id]).toMatchObject({
+      appId: "A1",
+      device: "sim-1",
+      vmServiceUri: WS,
+      supportsRestart: true,
+      live: true,
+    });
+    await vi.waitFor(() =>
+      expect(consoleText(session.id)).toBe(
+        [
+          "Launching lib/main.dart on iPhone in debug mode...",
+          "flutter: hello",
+          "Performing hot reload...",
+          "Reloaded 1 of 700 libraries in 250ms.",
+          "Lost connection to device.",
+          "Reload rejected",
+          "",
+        ].join("\n"),
+      ),
+    );
+    expect(machineLine(session.id, "[{not json")).toBe("[{not json\n");
+  });
+
+  it("puts both buttons after Stop and sends app.restart requests", async () => {
+    const session = await startedApp();
     render(<SessionPanel session={current(session.id)} />);
     const names = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? "");
     const stop = names.findIndex((n) => n.startsWith("Stop"));
     expect(names[stop + 1]).toMatch(/^Hot Reload/);
     expect(names[stop + 2]).toMatch(/^Hot Restart/);
+    expect(hotReloadSession()?.id).toBe(session.id);
 
     fireEvent.click(button("Hot Reload")!);
     fireEvent.click(button("Hot Restart")!);
-    expect(ipc.runStdin.mock.calls).toEqual([
-      [9, "r"],
-      [9, "R"],
+    const sent = ipc.runStdin.mock.calls.map(([id, data]) => {
+      expect(id).toBe(9);
+      expect(data).toMatch(/\n$/);
+      return JSON.parse(data as string)[0].params;
+    });
+    expect(sent).toEqual([
+      { appId: "A1", fullRestart: false, pause: false, reason: "manual" },
+      { appId: "A1", fullRestart: true, pause: false, reason: "manual" },
     ]);
   });
 
-  it("disables the buttons once the process ended", async () => {
-    const session = (await startRun(flutter()))!;
+  it("disables the buttons until the app started", async () => {
+    const session = (await startRun(flutter(["--machine"])))!;
+    render(<SessionPanel session={current(session.id)} />);
+    expect(button("Hot Reload")).toHaveProperty("disabled", true);
+    expect(hotReloadSession()).toBeUndefined();
+  });
+
+  it("disables the buttons once the process ended, and ends the app", async () => {
+    const session = await startedApp();
     useRun.setState((s) => ({
       sessions: s.sessions.map((x) => (x.id === session.id ? { ...x, status: "finished" as const } : x)),
     }));
+    syncFlutterRunApps(useRun.getState().sessions);
     render(<SessionPanel session={current(session.id)} />);
     expect(button("Hot Reload")).toHaveProperty("disabled", true);
     expect(button("Hot Restart")).toHaveProperty("disabled", true);
     expect(hotReloadSession()).toBeUndefined();
+    // DevTools pages stay on an ended app's address until another starts.
+    expect(useFlutterRunApps.getState()[session.id]).toMatchObject({ live: false, vmServiceUri: WS });
+    syncFlutterRunApps([]);
+    expect(useFlutterRunApps.getState()[session.id]).toBeUndefined();
   });
 
   it("shows no buttons for other configurations", async () => {

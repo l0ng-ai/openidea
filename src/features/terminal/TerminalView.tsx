@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type M
 import clsx from "clsx";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow, projectLocation, useRemote } from "@/platform/remote";
-import { toolWindowService } from "@/workbench/contributions";
+import { EDITOR_TAB_MIME, toolWindowService } from "@/workbench/contributions";
 import { ToolWindowHeader, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { usePlatform } from "@/platform/platformInfo";
 import { commands, isTauri } from "@/platform/ipc";
@@ -50,15 +50,12 @@ import {
   type GroupLayout,
   type TerminalTab,
 } from "./store";
+import { TERMINAL_TAB_MIME, cliEditorPayload, moveEditorToTerminal } from "./cli";
 import { openTerminalFind, TerminalFindBar } from "./FindBar";
 import styles from "./Terminal.module.css";
 
 const TAB_PREFIX = "openidea-terminal";
-/**
- * Drag type of terminal tabs: dragging one reorders its group's strip or moves
- * it to another group's, like IDEA's terminal tabs.
- */
-const TAB_MIME = "application/x-openidea-terminal-tab";
+const TAB_MIME = TERMINAL_TAB_MIME;
 
 /** Session title and working directory, even when available space trims the label. */
 function tabTooltip(tab: TerminalTab, sessions: Parameters<typeof tabTitle>[1]): string | undefined {
@@ -195,12 +192,26 @@ function TabGroup({ group, corners }: { group: string; corners: Corners | null }
       const tab = tabs.find((t) => t.id === id);
       return tab && (tab.group !== group || groupTabs(tabs, group).length > 1) ? zone : null;
     };
+    const editorZoneAt = (x: number, y: number): DropEdge | "center" => {
+      const rect = panelsRef.current?.getBoundingClientRect();
+      const zone = rect && y >= rect.top ? dropZoneAt(x, y, rect) : "center";
+      return zone !== "center" && groupTabs(useTerminals.getState().tabs, group).length === 0 ? "center" : zone;
+    };
     return registerDropTarget(el, {
-      accepts: (type) => type === TAB_MIME,
-      over: (data, x, y) => setDropZone(zoneAt(data.payload, x, y)),
+      accepts: (type, data) =>
+        type === TAB_MIME || (type === EDITOR_TAB_MIME && cliEditorPayload(data.payload) !== null),
+      over: (data, x, y) =>
+        setDropZone(data.type === EDITOR_TAB_MIME ? editorZoneAt(x, y) : zoneAt(data.payload, x, y)),
       leave: () => setDropZone(null),
       drop: (data, x, y) => {
         setDropZone(null);
+        if (data.type === EDITOR_TAB_MIME) {
+          const input = cliEditorPayload(data.payload);
+          if (!input) return;
+          const zone = editorZoneAt(x, y);
+          void moveEditorToTerminal(input, zone === "center" ? { group } : { group, edge: zone });
+          return;
+        }
         const zone = zoneAt(data.payload, x, y);
         if (!zone) return;
         if (zone === "center") moveTab(data.payload, group, groupTabs(useTerminals.getState().tabs, group).length);
@@ -484,6 +495,11 @@ function GroupTabs({ group }: { group: string }) {
           onDrop: (id, index) => {
             moveTab(id, group, index);
             focusActiveTab(focusRaf);
+          },
+          accepts: (data) => data.type === EDITOR_TAB_MIME && cliEditorPayload(data.payload) !== null,
+          onExternalDrop: (data, index) => {
+            const input = cliEditorPayload(data.payload);
+            if (input) void moveEditorToTerminal(input, { group, index });
           },
         }}
         trailing={

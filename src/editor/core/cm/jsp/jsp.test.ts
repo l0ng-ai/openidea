@@ -120,7 +120,7 @@ describe("JSP pages", () => {
       "%>:pi",
       "<%!:pi",
       "private:keyword",
-      "int:type",
+      "int:keyword",
       "count:def",
       "0:num",
       "%>:pi",

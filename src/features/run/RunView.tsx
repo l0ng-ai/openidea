@@ -51,10 +51,13 @@ import { rerunFailedConfigs } from "./testing/rerun";
 import { formatDuration, nodeOutput } from "./testing";
 import { TestStatusBar, TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
+import { ThreadDumpPanel } from "./threadDump/ThreadDumpPanel";
+import { isJvmRun } from "./threadDump/actions";
 import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
-import { hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
+import { useFlutterRunApps } from "@/workbench/flutterRunApps";
+import { canHotReload, hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
 import { configIcon } from "./configs";
 import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
@@ -112,8 +115,12 @@ export function SessionPanel({
   const hasTests = !!rt?.tests;
   const canUpdateApplication = isUpdatable(session.config);
   const hasFlutterActions = supportsHotReload(session.config);
+  const reloadable = canHotReload(session, useFlutterRunApps());
+  const canDumpThreads = isJvmRun(session.config);
   // Eight standard buttons with group spacing and insets, then 24 px plus gap per extra button.
-  const fullToolbarWidth = 228 + 26 * (Number(hasTests) + Number(canUpdateApplication) + 2 * Number(hasFlutterActions));
+  const fullToolbarWidth =
+    228 +
+    26 * (Number(hasTests) + Number(canUpdateApplication) + Number(canDumpThreads) + 2 * Number(hasFlutterActions));
   useLayoutEffect(() => {
     const pane = body.current;
     if (!hasRuntime || !pane || (!showLifecycle && !hasTests)) return;
@@ -280,6 +287,15 @@ export function SessionPanel({
                 onClick={() => showApplicationUpdate(session.id)}
               />
             )}
+            {canDumpThreads && (
+              <IconButton
+                icon="thread-dump"
+                title="Dump Threads"
+                action="run.dumpThreads"
+                actionArg={session.id}
+                disabled={session.status !== "running"}
+              />
+            )}
             {hasFlutterActions && (
               <>
                 {stopButton}
@@ -287,14 +303,14 @@ export function SessionPanel({
                   icon="hot-reload"
                   title="Hot Reload"
                   shortcut={shortcutLabel("run.flutterHotReload")}
-                  disabled={!acceptsInput(session)}
+                  disabled={!reloadable}
                   onClick={() => hotReload(session.id)}
                 />
                 <IconButton
                   icon="refresh"
                   title="Hot Restart"
                   shortcut={shortcutLabel("run.flutterHotRestart")}
-                  disabled={!acceptsInput(session)}
+                  disabled={!reloadable}
                   onClick={() => hotRestart(session.id)}
                 />
               </>
@@ -549,6 +565,8 @@ export function RunView() {
       >
         {"session" in current ? (
           <SessionPanel key={id} session={current.session} />
+        ) : current.trace.kind === "threads" ? (
+          <ThreadDumpPanel key={id} tab={current.trace} />
         ) : (
           <StackTracePanel key={id} tab={current.trace} />
         )}

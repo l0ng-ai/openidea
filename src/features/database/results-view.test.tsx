@@ -94,6 +94,7 @@ const result = (columns: Array<{ name: string }>, rows: (string | null)[][]): Db
   hasMore: false,
   elapsedMs: 1,
   executionMs: 1,
+  truncated: [],
 });
 
 let nextId = 1;
@@ -246,7 +247,7 @@ describe("editable result grid", () => {
     useDatabase.setState({ consoles: { "console.sql": "pg" }, consoleSchemas: { "console.sql": schema } });
     await executeConsole("console.sql", "SELECT * FROM users", 0, 0);
     const expected = schema || "public";
-    expect(backend.execute.mock.calls.at(-1)?.at(-1)).toBe(expected);
+    expect(backend.execute.mock.calls.at(-1)?.[5]).toBe(expected);
     expect(useDatabase.getState().results.at(-1)?.schema).toBe(expected);
   });
 
@@ -416,7 +417,7 @@ describe("editable result grid", () => {
     expect(backend.applyEdits).toHaveBeenCalledWith("pg", "s2", "users", [
       { kind: "update", key: [{ column: "id", value: "1" }], values: [{ column: "name", value: "Changed" }] },
     ]);
-    expect(backend.execute.mock.calls.at(-1)?.at(-1)).toBe("s2");
+    expect(backend.execute.mock.calls.at(-1)?.[5]).toBe("s2");
   });
 
   it("preserves pending edits and shows the error when submit fails", async () => {
@@ -811,24 +812,26 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     pinResult(pinned, true);
     let sendDone!: () => void;
     let acknowledge!: () => void;
-    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
-      const completed = [
-        { ...result([], []), affected: 3 },
-        { ...result([], []), affected: 0 },
-        result([{ name: "v" }], [["first"]]),
-      ];
-      completed.forEach((query, index) => {
-        channel.onmessage({ type: "started", index });
-        channel.onmessage({
-          type: "completed",
-          index,
-          outcome: { statement: statements[index]!, result: query, error: null },
+    backend.stream.mockImplementationOnce(
+      async (_r, _id, statements: SqlStatement[], _max, _schema, _limit, channel) => {
+        const completed = [
+          { ...result([], []), affected: 3 },
+          { ...result([], []), affected: 0 },
+          result([{ name: "v" }], [["first"]]),
+        ];
+        completed.forEach((query, index) => {
+          channel.onmessage({ type: "started", index });
+          channel.onmessage({
+            type: "completed",
+            index,
+            outcome: { statement: statements[index]!, result: query, error: null },
+          });
         });
-      });
-      sendDone = () => channel.onmessage({ type: "done", error: null });
-      await new Promise<void>((resolve) => (acknowledge = resolve));
-      return { status: "ok", data: null };
-    });
+        sendDone = () => channel.onmessage({ type: "done", error: null });
+        await new Promise<void>((resolve) => (acknowledge = resolve));
+        return { status: "ok", data: null };
+      },
+    );
     vi.useFakeTimers();
     const pending = runIn("a.sql", "UPDATE t SET n = 3; CREATE TABLE saved (id INT); SELECT first; SELECT missing");
     const affected = () => useDatabase.getState().output.filter((line) => line.text === "3 rows affected in 1 ms");
@@ -871,29 +874,31 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       useDatabase.setState({ manualCommit: new Set(["pg"]) });
       let acknowledge!: () => void;
       let sendDone!: () => void;
-      backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
-        channel.onmessage({ type: "started", index: 0 });
-        channel.onmessage({
-          type: "completed",
-          index: 0,
-          outcome: { statement: statements[0]!, result: { ...result([], []), affected: 3 }, error: null },
-        });
-        channel.onmessage({ type: "started", index: 1 });
-        sendDone = () => {
-          if (!cancelled)
-            channel.onmessage({
-              type: "completed",
-              index: 1,
-              outcome: { statement: statements[1]!, result: result([{ name: "v" }], [["actual"]]), error: null },
-            });
+      backend.stream.mockImplementationOnce(
+        async (_r, _id, statements: SqlStatement[], _max, _schema, _limit, channel) => {
+          channel.onmessage({ type: "started", index: 0 });
           channel.onmessage({
-            type: "done",
-            error: cancelled ? { kind: "cancelled", message: "Cancelled", data: null } : null,
+            type: "completed",
+            index: 0,
+            outcome: { statement: statements[0]!, result: { ...result([], []), affected: 3 }, error: null },
           });
-        };
-        await new Promise<void>((resolve) => (acknowledge = resolve));
-        return { status: "ok", data: null };
-      });
+          channel.onmessage({ type: "started", index: 1 });
+          sendDone = () => {
+            if (!cancelled)
+              channel.onmessage({
+                type: "completed",
+                index: 1,
+                outcome: { statement: statements[1]!, result: result([{ name: "v" }], [["actual"]]), error: null },
+              });
+            channel.onmessage({
+              type: "done",
+              error: cancelled ? { kind: "cancelled", message: "Cancelled", data: null } : null,
+            });
+          };
+          await new Promise<void>((resolve) => (acknowledge = resolve));
+          return { status: "ok", data: null };
+        },
+      );
       const pending = runIn("a.sql", "UPDATE t SET n = 3; SELECT n FROM t");
       try {
         await vi.waitFor(() => expect(acknowledge).toBeTypeOf("function"));
@@ -932,19 +937,21 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     "keeps the completed write and reports transaction state after cancellation $label",
     async ({ started, terminal, pending }) => {
       useDatabase.setState({ manualCommit: new Set(["pg"]) });
-      backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
-        channel.onmessage({ type: "started", index: 0 });
-        channel.onmessage({
-          type: "completed",
-          index: 0,
-          outcome: { statement: statements[0]!, result: { ...result([], []), affected: 3 }, error: null },
-        });
-        if (started) channel.onmessage({ type: "started", index: 1 });
-        const error = { kind: "cancelled", message: "Cancelled", data: null };
-        if (!terminal) return { status: "error", error };
-        channel.onmessage({ type: "done", error });
-        return { status: "ok", data: null };
-      });
+      backend.stream.mockImplementationOnce(
+        async (_r, _id, statements: SqlStatement[], _max, _schema, _limit, channel) => {
+          channel.onmessage({ type: "started", index: 0 });
+          channel.onmessage({
+            type: "completed",
+            index: 0,
+            outcome: { statement: statements[0]!, result: { ...result([], []), affected: 3 }, error: null },
+          });
+          if (started) channel.onmessage({ type: "started", index: 1 });
+          const error = { kind: "cancelled", message: "Cancelled", data: null };
+          if (!terminal) return { status: "error", error };
+          channel.onmessage({ type: "done", error });
+          return { status: "ok", data: null };
+        },
+      );
       await runIn("a.sql", "UPDATE t SET n = 3; SELECT n FROM t");
       const output = useDatabase.getState().output.map((line) => line.text);
       expect(output.filter((line) => line === "3 rows affected in 1 ms")).toHaveLength(1);
@@ -960,19 +967,21 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     const texts = Array.from({ length: 16 }, (_, i) => `SELECT ${i}`);
     const text = texts.join("; ");
     let finish!: () => void;
-    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
-      statements.forEach((statement, index) => {
-        channel.onmessage({ type: "started", index });
-        channel.onmessage({
-          type: "completed",
-          index,
-          outcome: { statement, result: result([{ name: "v" }], [[String(index)]]), error: null },
+    backend.stream.mockImplementationOnce(
+      async (_r, _id, statements: SqlStatement[], _max, _schema, _limit, channel) => {
+        statements.forEach((statement, index) => {
+          channel.onmessage({ type: "started", index });
+          channel.onmessage({
+            type: "completed",
+            index,
+            outcome: { statement, result: result([{ name: "v" }], [[String(index)]]), error: null },
+          });
         });
-      });
-      await new Promise<void>((resolve) => (finish = resolve));
-      channel.onmessage({ type: "done", error: null });
-      return { status: "ok", data: null };
-    });
+        await new Promise<void>((resolve) => (finish = resolve));
+        channel.onmessage({ type: "done", error: null });
+        return { status: "ok", data: null };
+      },
+    );
     const publish = vi.fn();
     const pending = executeConsole("a.sql", text, 0, text.length, undefined, publish);
     try {
@@ -991,19 +1000,21 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
 
   it("ignores results from a superseded request after an early invocation reply", async () => {
     let stale!: () => void;
-    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
-      const emit = (event: ExecutionEvent) => channel.onmessage(event);
-      emit({ type: "started", index: 0 });
-      stale = () => {
-        emit({
-          type: "completed",
-          index: 0,
-          outcome: { statement: statements[0]!, result: result([{ name: "v" }], [["stale"]]), error: null },
-        });
-        emit({ type: "done", error: null });
-      };
-      return { status: "ok", data: null };
-    });
+    backend.stream.mockImplementationOnce(
+      async (_r, _id, statements: SqlStatement[], _max, _schema, _limit, channel) => {
+        const emit = (event: ExecutionEvent) => channel.onmessage(event);
+        emit({ type: "started", index: 0 });
+        stale = () => {
+          emit({
+            type: "completed",
+            index: 0,
+            outcome: { statement: statements[0]!, result: result([{ name: "v" }], [["stale"]]), error: null },
+          });
+          emit({ type: "done", error: null });
+        };
+        return { status: "ok", data: null };
+      },
+    );
     const superseded = runIn("a.sql", "SELECT stale; SELECT later");
     await vi.waitFor(() => expect(stale).toBeTypeOf("function"));
     const oldRequest = useDatabase.getState().running["a.sql"];
@@ -1026,16 +1037,18 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
   it("syncs a lost connection reported by a superseded run", async () => {
     useDatabase.setState({ connected: new Set(["pg"]) });
     let finish!: () => void;
-    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
-      await new Promise<void>((resolve) => (finish = resolve));
-      channel.onmessage({
-        type: "completed",
-        index: 0,
-        outcome: { statement: statements[0], result: null, error: "Connection lost" },
-      });
-      channel.onmessage({ type: "done", error: null });
-      return { status: "ok", data: null };
-    });
+    backend.stream.mockImplementationOnce(
+      async (_r, _id, statements: SqlStatement[], _max, _schema, _limit, channel) => {
+        await new Promise<void>((resolve) => (finish = resolve));
+        channel.onmessage({
+          type: "completed",
+          index: 0,
+          outcome: { statement: statements[0], result: null, error: "Connection lost" },
+        });
+        channel.onmessage({ type: "done", error: null });
+        return { status: "ok", data: null };
+      },
+    );
     const older = runIn("a.sql", "SELECT old; SELECT untouched");
     try {
       await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
@@ -1145,6 +1158,7 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
   it("drops the oldest unpinned results beyond 12 but never pinned or new ones", async () => {
     const paths = Array.from({ length: 12 }, (_, i) => `c${i}.sql`);
     useDatabase.setState((s) => ({ consoles: { ...s.consoles, ...Object.fromEntries(paths.map((p) => [p, "pg"])) } }));
+    // oxlint-disable-next-line no-await-in-loop -- runs establish result recency order; parallel runs would race which tabs count as oldest and get dropped
     for (const path of paths) await runIn(path, "SELECT 0");
     pinResult(ids()[0]!, true);
     await runIn("a.sql", "SELECT 1; SELECT 2");

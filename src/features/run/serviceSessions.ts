@@ -69,6 +69,7 @@ export async function stopServiceSessions(sessions: readonly ServiceSession[]): 
   }
   const groups = new Map<number, DebugServiceSession[]>();
   for (const d of roots.values()) {
+    // oxlint-disable-next-line no-await-in-loop -- this pass stops detached roots and groups the rest as it goes; debugger stops mutate shared debug state and emit ordered console events
     if (d.processId === null) await d.stop();
     else {
       const group = groups.get(d.processId) ?? [];
@@ -80,18 +81,24 @@ export async function stopServiceSessions(sessions: readonly ServiceSession[]): 
     const run = [...runs.values()].find((s) => s.runId === processId);
     if (run) {
       // Detaching a live JVM republishes its JDWP port and can trigger another attachment.
+      // oxlint-disable-next-line no-await-in-loop -- stop the owning Run before any root of this process is detached
       await stopSession(run.id);
+      // oxlint-disable-next-line no-await-in-loop -- wait for the process to exit before detaching; a still-live JVM must not be detached or JDWP can reattach
       await waitForExit([run.id]);
       if (useRun.getState().sessions.some((s) => s.id === run.id && running(s))) {
         runs.delete(run.id);
         continue;
       }
+      // oxlint-disable-next-line no-await-in-loop -- detach shared roots one at a time, before the last root stops the process; detach order drives JDWP and console output order
       for (const d of group) await d.stop({ stopProcess: false });
     } else {
+      // oxlint-disable-next-line no-await-in-loop -- detach all but the last root in order; the last one below stops the shared process
       for (const d of group.slice(0, -1)) await d.stop({ stopProcess: false });
+      // oxlint-disable-next-line no-await-in-loop -- the final root stops the process only after every other root detached
       await group.at(-1)!.stop();
     }
     for (const [id, run] of runs) if (run.runId === processId) runs.delete(id);
   }
+  // oxlint-disable-next-line no-await-in-loop -- leftover runs are stopped after every group was torn down and `runs` pruned; sequential stops keep lifecycle transitions and output ordered
   for (const run of runs.values()) await stopSession(run.id);
 }

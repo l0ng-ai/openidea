@@ -171,6 +171,7 @@ async function docAt(target: { path: string; line: number; col: number }): Promi
   const line = (await readFileLines(target.path))?.[target.line] ?? "";
   return withDocument(target.path, async (doc) => {
     for (const col of hoverCandidates(line, target.col)) {
+      // oxlint-disable-next-line no-await-in-loop -- returns the first non-empty hover; later candidates must not be requested
       const hover = await lspRequest(() => commands.lspHover(nextRequestId(), doc, { line: target.line, col })).catch(
         () => null,
       );

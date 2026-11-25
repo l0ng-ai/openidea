@@ -37,6 +37,7 @@ fn query(pattern: &str, is_regex: bool) -> SearchQuery {
         max_matches: 0,
         context: Default::default(),
         include_excluded: false,
+        skip_large_files: false,
     }
 }
 
@@ -107,5 +108,21 @@ fn dense_files(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench, excluded_subtrees, dense_files);
+// A minified bundle: one line with a hit every ~45 bytes, cut into tens of thousands of windows.
+// The search stops at the 10 000-match default limit, but only after the whole line is cut.
+fn long_line(c: &mut Criterion) {
+    let chunk = r#"function(e,t,n){"use strict";var r=n(12),o=n(7);e.exports=function(i){return r(o(i))}},"#;
+    let mut group = c.benchmark_group("search_long_line");
+    group.sample_size(10);
+    for mb in [1, 5, 20] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bundle.min.js"), chunk.repeat(mb * 1_000_000 / chunk.len())).unwrap();
+        let q = query("function", false);
+        assert_eq!(run(dir.path(), &q), 1);
+        group.bench_function(format!("{mb}mb"), |b| b.iter(|| black_box(run(dir.path(), &q))));
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench, excluded_subtrees, dense_files, long_line);
 criterion_main!(benches);

@@ -18,6 +18,7 @@ import { gotoDiagnostic, showErrorDescription } from "./diagnostics";
 import { applyKindSilently, applyQuickFix, runKindAction, showIntentions } from "./intentions";
 import { docOf, reportLspError } from "./lsp";
 import { languageSemantics } from "./semantic";
+import { caretAnchor, openPopup } from "./popupStore";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
 import { formatDocument, reformatDialog, type FormatResult } from "./format";
@@ -38,8 +39,8 @@ import { tx } from "@/platform/i18n";
 export const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 /**
- * Languages whose servers offer Generate (constructors, accessors, overrides…).
- * Elsewhere the Generate shortcut (⌘N / Alt+Insert) yields to the New popup, as in IDEA.
+ * Languages whose servers (or, for Python, the editor itself) offer Generate (constructors,
+ * accessors, overrides…). Elsewhere the Generate shortcut (⌘N / Alt+Insert) yields to the New popup, as in IDEA.
  */
 const GENERATE_LANGUAGES = [
   "java",
@@ -60,6 +61,7 @@ const GENERATE_LANGUAGES = [
   "swift",
   "dart",
   "php",
+  "python",
 ];
 export const GENERATE_KEY_WHEN = GENERATE_LANGUAGES.map((id) => `editorLangId == ${id}`).join(" || ");
 
@@ -76,6 +78,7 @@ async function mountedEditor(path: string, frames = 60): Promise<TextEditorHandl
   for (let i = 0; i < frames; i++) {
     const ed = editorsFor(path)[0];
     if (ed) return ed;
+    // oxlint-disable-next-line no-await-in-loop -- polling for the editor to mount; each delay follows the previous check
     await new Promise((r) => setTimeout(r, 16));
   }
   return null;
@@ -461,6 +464,18 @@ export function registerLspActions(): () => void {
           label: tx("Generate"),
           compact: true,
           actionIcon: generateActionIcon,
+          fallback: async () => {
+            const entries = languageSemantics(docOf(v)?.language)?.generate?.(v) ?? [];
+            if (!entries.length) return false;
+            openPopup({
+              kind: "list",
+              anchor: caretAnchor(v, v.state.selection.main.head),
+              title: tx("Generate"),
+              compact: true,
+              items: entries.map((e) => ({ id: e.id, label: tx(e.label), icon: e.icon, run: () => void e.run() })),
+            });
+            return true;
+          },
         }),
       { keyWhen: GENERATE_KEY_WHEN },
     ),
@@ -482,7 +497,12 @@ export function registerLspActions(): () => void {
       }),
     ),
     editorAction("code.overrideMethods", "Override Methods…", "Code", (v) =>
-      runKindAction(v, "", { title: OVERRIDE_TITLE, none: "Nothing to override", label: "Override Members" }),
+      runKindAction(v, "", {
+        title: OVERRIDE_TITLE,
+        none: "Nothing to override",
+        label: "Override Members",
+        fallback: () => languageSemantics(docOf(v)?.language)?.overrideMethods?.(v) ?? Promise.resolve(false),
+      }),
     ),
     editorAction("code.expressionTypeInfo", "Expression Type Info", "View", expressionTypeInfo, {
       keywords: ["type of expression", "show type"],

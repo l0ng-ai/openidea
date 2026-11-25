@@ -12,6 +12,7 @@ mod astro;
 pub mod container_python;
 mod discover;
 mod exec;
+pub mod flutter;
 pub mod go;
 pub mod godot;
 pub mod java;
@@ -57,6 +58,8 @@ pub enum SdkKind {
     Zig,
     /// .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins.
     Dotnet,
+    /// Flutter SDK roots.
+    Flutter,
 }
 
 /// One installed interpreter / toolchain.

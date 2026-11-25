@@ -3,6 +3,7 @@ use super::*;
 use crate::Host;
 use crate::Project;
 use crate::ops::Channel;
+use crate::ops::blocking;
 use ide_command::command;
 use ide_core::error::PushDivergence;
 use ide_core::ipc_path::IpcPath;
@@ -411,10 +412,6 @@ fn per_backend(
     f: impl Fn(&dyn Backend, &[PathBuf]) -> IdeResult<()>,
 ) -> IdeResult<()> {
     per_repo(project, paths, recorded, |r, paths| f(r as &dyn Backend, paths))
-}
-
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| ide_core::IdeError::internal(e.to_string()))?
 }
 
 fn with_shelf_batch<T>(project: &Project, batch: Option<String>, operation: impl FnOnce() -> T) -> T {

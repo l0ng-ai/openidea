@@ -277,13 +277,17 @@ it("suggests successful non-default destinations when the same branch is pushed 
     "review/old",
     "review/upstream",
   ]) {
+    // oxlint-disable-next-line no-await-in-loop -- each iteration drives one full push dialog and mock setup before the next
     await act(() => showPushDialog());
+    // oxlint-disable-next-line no-await-in-loop -- the field belongs to the dialog opened in this iteration
     const field = await screen.findByRole("combobox", { name: "Target branch" });
     fireEvent.change(field, { target: { value: name } });
     if (name === "review/tags") fireEvent.click(screen.getByRole("checkbox", { name: "Push tags:" }));
     if (name === "review/upstream") fireEvent.click(screen.getByRole("checkbox", { name: "Set upstream" }));
     fireEvent.click(screen.getByRole("button", { name: "Push" }));
+    // oxlint-disable-next-line no-await-in-loop -- this dialog must close before the next iteration opens another
     await waitFor(() => expect(field).not.toBeInTheDocument());
+    // oxlint-disable-next-line no-await-in-loop -- remoteBusy is shared state; the next push must wait for this one to settle
     await waitFor(() => expect(useVcs.getState().remoteBusy).toBeNull());
   }
   await act(() => showPushDialog());

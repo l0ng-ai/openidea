@@ -1,20 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { codeFolding, foldEffect, foldService, foldable, foldedRanges } from "@codemirror/language";
+import { codeFolding, foldEffect, foldService, foldable, foldedRanges, syntaxTree } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";
 import { javascript } from "@codemirror/lang-javascript";
 import {
   backendFoldingChanged,
   backendFolds,
+  compactFoldFits,
   enclosingFoldRange,
   expandToLevelEffects,
   foldChipWidth,
   foldSelectionEffects,
   foldsFromRanges,
+  markdownImageFolds,
   foldingExtension,
   foldToExpand,
   setBackendFolds,
 } from "./folding";
+import { findLanguageDescription, loadSupport } from "./languages";
 
 /** Folds `{ … }` blocks whose header line ends with `{`. */
 const braces = foldService.of((state, from, to) => {
@@ -96,6 +99,85 @@ describe("foldsFromRanges", () => {
     view.dispatch({ effects: foldEffect.of({ from: f!.from, to: f!.to }) });
     expect(view.dom.querySelector(".cm-line")?.textContent).toBe("import …");
     view.destroy();
+  });
+
+  it("shows Go statements with their source highlighting and expands them on click or edit", async () => {
+    const support = await loadSupport(findLanguageDescription("Go", "/p/main.go")!);
+    const doc = [
+      "package main",
+      "func print(mode string) error {",
+      "  switch mode {",
+      '  case "go":',
+      '    fmt.Println("ready")',
+      "  }",
+      '  if mode == "" {',
+      '    return fmt.Errorf("missing")',
+      "  }",
+      "  return nil",
+      "}",
+    ].join("\n");
+    const view = new EditorView({ doc, extensions: [support!, foldingExtension(true)], parent: document.body });
+    try {
+      view.dispatch({
+        effects: setBackendFolds.of([
+          { start_line: 3, end_line: 4, kind: "compact" },
+          { start_line: 6, end_line: 8, kind: "compact" },
+        ]),
+      });
+      const [singleCase, guard] = view.state.field(backendFolds);
+      expect(compactFoldFits(view.state, singleCase!, 40)).toBe(true);
+      expect(compactFoldFits(view.state, guard!, 40)).toBe(false);
+      view.dispatch({ effects: [foldEffect.of(singleCase!), foldEffect.of(guard!)] });
+      const chips = view.dom.querySelectorAll<HTMLElement>(".cm-foldCompact");
+      expect([...chips].map((chip) => chip.parentElement?.textContent)).toEqual([
+        '  case "go": fmt.Println("ready")',
+        '  if mode == "" { return fmt.Errorf("missing") }',
+      ]);
+      expect([...chips[1]!.querySelectorAll("span")].map((span) => span.textContent)).toContain("return");
+      expect([...chips[0]!.querySelectorAll("span")].map((span) => span.textContent)).toContain("Println");
+      expect(view.state.doc.toString()).toBe(doc);
+      chips[0]!.click();
+      const body = view.state.doc.line(8);
+      view.dispatch({ changes: { from: body.from, to: body.to, insert: "    return nil" } });
+      expect(view.dom.querySelectorAll(".cm-foldCompact")).toHaveLength(0);
+      expect(view.dom.textContent).toContain("return nil");
+    } finally {
+      view.destroy();
+    }
+  });
+
+  it("highlights a compact Go statement beyond the initial syntax tree", async () => {
+    expect.assertions(3);
+    const support = await loadSupport(findLanguageDescription("Go", "/p/main.go")!);
+    const prefix = ["package main", ...Array.from({ length: 200 }, (_, i) => `var example${i} = "filler"`)];
+    let state = EditorState.create({
+      doc: [
+        ...prefix,
+        "func example() error {",
+        "  if err != nil {",
+        "    return err",
+        "  }",
+        "  return nil",
+        "}",
+      ].join("\n"),
+      extensions: [support!, foldingExtension(true)],
+    });
+    state = state.update({
+      effects: setBackendFolds.of([{ start_line: prefix.length + 1, end_line: prefix.length + 3, kind: "compact" }]),
+    }).state;
+    const [fold] = state.field(backendFolds);
+    expect(syntaxTree(state).length).toBeLessThan(fold!.from);
+    state = state.update({ effects: foldEffect.of(fold!) }).state;
+    const view = new EditorView({ state });
+    try {
+      foldedRanges(state).between(fold!.from, fold!.to, (_from, _to, decoration) => {
+        const chip = decoration.spec.widget.toDOM(view);
+        expect(chip.textContent).toBe(" return err ");
+        expect(chip.querySelector("span")?.textContent).toBe("return");
+      });
+    } finally {
+      view.destroy();
+    }
   });
 
   it("starts an Allman block's fold on its declaration line", () => {
@@ -458,4 +540,25 @@ describe("foldChipWidth", () => {
     expect(foldChipWidth(anchor)).toBe(0);
     view.destroy();
   });
+});
+
+it("folds long embedded image payloads without changing the Markdown source", () => {
+  const data = "abcd".repeat(100);
+  const url = "data:image/png;base64," + data;
+  const first = `![a](<${url}>)`;
+  const second = `<img alt="b" src="${url}">`;
+  const source = [first, second, "```md", first, "```", "![small](data:image/png;base64,YQ==)"].join("\n");
+  const state = EditorState.create({ doc: source, extensions: codeFolding() });
+  const folded = state.update({ effects: markdownImageFolds(state) }).state;
+  const ranges: number[][] = [];
+  foldedRanges(folded).between(0, source.length, (from, to) => {
+    ranges.push([from, to]);
+  });
+  const a = first.indexOf(data),
+    b = first.length + 1 + second.indexOf(data);
+  expect(ranges).toEqual([
+    [a, a + data.length],
+    [b, b + data.length],
+  ]);
+  expect(folded.doc.toString()).toBe(source);
 });

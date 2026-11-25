@@ -334,7 +334,7 @@ test("long Git Log filter values shorten inside their buttons", async ({ workben
   const branch = toolbar.getByRole("button", { name: `Branch: ${branchName}`, exact: true });
   const value = branch.getByText(branchName, { exact: true });
   const clear = toolbar.getByRole("button", { name: "Clear Branch filter", exact: true });
-  for (const width of [1120, 620]) {
+  for (const width of [1120, 680]) {
     await page.setViewportSize({ width, height: 720 });
     await expect(branch).toBeVisible();
     await expect(value).toHaveCSS("text-overflow", "ellipsis");
@@ -356,7 +356,7 @@ test("long Git Log filter values shorten inside their buttons", async ({ workben
   await expect(page.getByRole("menuitem", { name: `Branch: ${branchName}`, exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
 
-  await page.setViewportSize({ width: 620, height: 720 });
+  await page.setViewportSize({ width: 680, height: 720 });
   await clear.click();
   await expect(toolbar.getByRole("button", { name: "Branch", exact: true })).toBeVisible();
   await expect(clear).toBeHidden();

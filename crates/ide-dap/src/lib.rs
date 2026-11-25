@@ -27,7 +27,7 @@ use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
 pub use exception_classes::{ExceptionClassBreakpoint, ExceptionClassSupport};
 use futures::future::join_all;
-use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
+use ide_core::{DebugSessionId, IdeError, IdeResult, RunId, SharedSink};
 use ide_language::LanguageRegistry;
 pub use js_cdp::JsResponseRule;
 pub use js_debug::JsResponseBody;
@@ -460,6 +460,15 @@ fn child_name(configuration: &Value, parent: &str) -> String {
     }
 }
 
+/// `extra_json` key naming the run whose JVM an attach debugs; IDE-side, never sent to the
+/// adapter.
+pub const RUN_LINK: &str = "__openideaRun";
+
+fn take_run_link(arguments: &mut Value) -> Option<RunId> {
+    let run = arguments.as_object_mut()?.remove(RUN_LINK)?;
+    serde_json::from_value(run).ok()
+}
+
 /// Builds the `launch`/`attach` arguments: our fields first, then `extra_json` merged on top.
 pub fn launch_arguments(config: &LaunchConfig) -> IdeResult<Value> {
     // VS Code puts `type`, `request` and `name` in the arguments; js-debug picks launch
@@ -888,6 +897,21 @@ impl DebugManager {
         if config.adapter == "rdbg" {
             rdbg_command_line(&mut spec, &config, &cwd)?;
         }
+        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
+        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
+        // is Flutter-only). Plain Dart projects keep the configured `dart`. Before
+        // `custom_command`, which picks the Flutter SDK setting's `flutter`.
+        if config.adapter == "dart" {
+            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
+            if force_flutter || is_flutter_project(&cwd, program) {
+                if spec.command == "dart" {
+                    spec.command = "flutter".into();
+                }
+                if let Some(device) = flutter_device {
+                    add_flutter_device(&mut arguments, device);
+                }
+            }
+        }
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
@@ -901,20 +925,6 @@ impl DebugManager {
             };
             if let Some(python) = python {
                 spec.command = python;
-            }
-        }
-        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
-        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
-        // is Flutter-only). Plain Dart projects keep the configured `dart`.
-        if config.adapter == "dart" {
-            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
-            if force_flutter || is_flutter_project(&cwd, program) {
-                if spec.command == "dart" {
-                    spec.command = "flutter".into();
-                }
-                if let Some(device) = flutter_device {
-                    add_flutter_device(&mut arguments, device);
-                }
             }
         }
         let id = DebugSessionId::next();
@@ -1047,7 +1057,7 @@ impl DebugManager {
         adapter_name: String,
         parent: Option<DebugSessionId>,
         request: String,
-        arguments: Value,
+        mut arguments: Value,
         spec: AdapterSpec,
         reuse_port: Option<u16>,
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
@@ -1067,6 +1077,7 @@ impl DebugManager {
             .flatten();
         let mut session = Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child);
         session.exception_classes = exception_classes;
+        session.run = take_run_link(&mut arguments);
         let session = Arc::new(session);
         if let Some(launch_type) = arguments.get("type").and_then(Value::as_str) {
             let _ = session.launch_type.set(launch_type.to_owned());
@@ -1965,6 +1976,41 @@ impl DebugManager {
     ) -> IdeResult<JvmHeapOutcome> {
         let session = self.session(s)?;
         jvm_memory::session_heap_dump(session, dir, cancel).await
+    }
+
+    /// `Thread.print -l` of the session's JVM, taking the session's class-table turn, and on JDK
+    /// 21+ the JSON dump written into `json_dir`. A JVM the debugger holds suspended is asked
+    /// only when it is 17 or later and its listener already runs: otherwise the request would hang
+    /// until the program resumes.
+    pub async fn jvm_thread_dump(&self, s: DebugSessionId, json_dir: Option<PathBuf>) -> IdeResult<JvmThreadsResult> {
+        let session = self.session(s)?;
+        jvm_memory::session_thread_dump(session, json_dir).await
+    }
+
+    /// `Thread.print -l` of `pid`, the JVM of `run`, when a live session debugs it (a build
+    /// tool's run started for Debug, Attach to Process): taken as [`Self::jvm_thread_dump`] takes
+    /// it, under that session's turn and suspension, so a suspended JVM is not asked for the JSON
+    /// dump either. `None` when no session debugs `pid`.
+    pub async fn debugged_jvm_thread_dump(
+        &self,
+        run: RunId,
+        pid: u32,
+        json_dir: Option<PathBuf>,
+    ) -> Option<IdeResult<JvmThreadsResult>> {
+        let session = self.jvm_session_of(run, pid)?;
+        Some(jvm_memory::debugged_run_thread_dump(session, pid, json_dir).await)
+    }
+
+    /// A session attached to `run` first: one whose JVM is not located yet (its attach-time scan
+    /// found no listener) still holds `pid`.
+    fn jvm_session_of(&self, run: RunId, pid: u32) -> Option<Arc<Session>> {
+        let sessions = self.live_sessions();
+        let linked = || sessions.iter().filter(|s| jvm_memory::attached_to_run(s, run, pid));
+        linked()
+            .find(|s| jvm_memory::debugs_jvm(s, pid))
+            .or_else(|| linked().next())
+            .or_else(|| sessions.iter().find(|s| jvm_memory::debugs_jvm(s, pid)))
+            .cloned()
     }
 
     /// Gives the session the backend for [`Self::jvm_memory_instances`] and the debugger's class

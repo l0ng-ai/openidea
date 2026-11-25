@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { expect, stubDesktop, test } from "./fixtures";
 
 test("terminal output menu groups session, clipboard and split actions and opens Find", async ({ workbench: page }) => {
   await page.evaluate(async () => {
@@ -334,4 +334,389 @@ test("terminal shows URLs in the link colour with an underline without hovering,
     if (process.env.OPENIDEA_TERMINAL_SHOTS)
       await terminal.screenshot({ path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/terminal-links-${theme}.png` });
   }
+});
+
+test("terminal composition follows a drawn caret inside the session", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const layout = "/src/workbench/toolwindows/store.ts";
+    (await import(layout)).showToolWindow("terminal", true);
+  });
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  const textarea = terminal.locator(".xterm-helper-textarea");
+  await expect(textarea).toBeFocused();
+  await page.evaluate(async () => {
+    const module = "/src/features/terminal/runtime.ts";
+    const { term } = (await import(module)).activeSession();
+    term.reset();
+    // Hide the hardware cursor, draw a reverse-video cell at column five, then park at the right edge.
+    await new Promise<void>((done) => term.write("\x1b[?25l\x1b[1;5H\x1b[7mX\x1b[0m\x1b[1;999H", done));
+  });
+  const caret = terminal.locator(".xterm-rows .xterm-bg-257", { hasText: "X" });
+  await expect(caret).toBeVisible();
+  await expect
+    .poll(async () => {
+      const [input, drawn] = await Promise.all([textarea.boundingBox(), caret.boundingBox()]);
+      return input && drawn && Math.abs(input.x - drawn.x) <= 1 && Math.abs(input.y - drawn.y) <= 1;
+    })
+    .toBe(true);
+});
+
+test("dragging terminal tabs into editor strips and split edges preserves live sessions and scrollback", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const handlers = window.__ipc.handlers;
+    let id = 0;
+    const killed: number[] = [];
+    (window as unknown as { __killedPtys: number[] }).__killedPtys = killed;
+    handlers.term_default_shell = () => "/bin/zsh";
+    handlers.term_available_shells = () => ["/bin/zsh"];
+    handlers.term_spawn = () => ({ id: ++id, title: "zsh", pid: id });
+    handlers.term_resize = () => null;
+    handlers.term_write = () => null;
+    handlers.term_is_busy = () => false;
+    handlers.term_kill = (args: unknown) => {
+      killed.push((args as { id: number }).id);
+      return null;
+    };
+
+    const contributions = "/src/workbench/contributions.ts";
+    const editor = (await import(contributions)).editorService();
+    await editor.openFile("/dev/acme-api/App.tsx", { focus: false });
+    await editor.openFile("/dev/acme-api/README.md", { focus: false });
+    const store = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(store);
+    layout.setToolWindowSize("bottom", 240);
+    layout.showToolWindow("terminal", true);
+  });
+
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+
+  // Open a second terminal tab and write distinct output into both sessions.
+  await terminal.getByRole("button", { name: "New Tab", exact: true }).click();
+  const termStrip = terminal.getByRole("tablist", { name: "Terminal sessions" });
+  await expect(termStrip.getByRole("tab")).toHaveCount(2);
+
+  await page.evaluate(async () => {
+    const store = "/src/features/terminal/store.ts";
+    const rt = await import(store);
+    const [first, second] = rt.useTerminals.getState().tabs;
+    const s1 = rt.getSession(first!.session)!;
+    const s2 = rt.getSession(second!.session)!;
+    await new Promise<void>((done) => s1.term.write("ALPHA-SESSION-OUTPUT\r\n", done));
+    await new Promise<void>((done) => s2.term.write("BETA-TEST-RUNNER\r\n", done));
+  });
+
+  // 1) Drag "Local" into the editor tab strip between App.tsx and README.md.
+  const localTab = termStrip.getByRole("tab", { name: "Local", exact: true });
+  const readmeTab = page.getByRole("tablist", { name: "Editor tabs" }).getByRole("tab", { name: "README.md" });
+  const from1 = (await localTab.boundingBox())!;
+  const to1 = (await readmeTab.boundingBox())!;
+  await page.mouse.move(from1.x + from1.width / 2, from1.y + from1.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to1.x + 6, to1.y + to1.height / 2, { steps: 8 });
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await page.screenshot({
+      path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/after-strip-hover.png`,
+      animations: "disabled",
+    });
+  await page.mouse.up();
+
+  const editorLists = page.getByRole("tablist", { name: "Editor tabs" });
+  await expect(editorLists.first().getByRole("tab")).toHaveText(["App.tsx", "Local", "README.md"]);
+  await expect(termStrip.getByRole("tab")).toHaveCount(1);
+
+  const editorArea = page.locator("[data-pane-id]");
+  await expect(editorArea.locator(".xterm-rows")).toContainText("ALPHA-SESSION-OUTPUT");
+  await expect(editorArea.locator(".xterm-helper-textarea")).toBeFocused();
+
+  // 2) Drag the remaining "Local (2)" onto the right edge of the editor pane to split it, hiding the empty tool window.
+  const local2Tab = termStrip.getByRole("tab", { name: "Local (2)", exact: true });
+  const paneBox = (await editorArea.first().locator('[role="tabpanel"]').boundingBox())!;
+  const from2 = (await local2Tab.boundingBox())!;
+  await page.mouse.move(from2.x + from2.width / 2, from2.y + from2.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(paneBox.x + paneBox.width - 20, paneBox.y + paneBox.height / 2, { steps: 8 });
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await page.screenshot({
+      path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/after-split-hover.png`,
+      animations: "disabled",
+    });
+  await page.mouse.up();
+
+  await expect(terminal).toBeHidden();
+  await expect(editorArea).toHaveCount(2);
+  await expect(editorArea.nth(1).locator(".xterm-rows")).toContainText("BETA-TEST-RUNNER");
+  await expect(editorArea.nth(1).locator(".xterm-helper-textarea")).toBeFocused();
+
+  // 3) Resize the editor split divider and confirm both panes and the live PTY survive.
+  const widthBefore = (await editorArea.nth(1).boundingBox())!.width;
+  const divider = page.locator("[data-editor-area]").getByRole("separator");
+  const divBox = (await divider.boundingBox())!;
+  await page.mouse.move(divBox.x + divBox.width / 2, divBox.y + divBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(divBox.x - 100, divBox.y + divBox.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => (await editorArea.nth(1).boundingBox())!.width).toBeGreaterThan(widthBefore + 50);
+  await expect(editorArea.nth(1).locator(".xterm-rows")).toContainText("BETA-TEST-RUNNER");
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await page.screenshot({
+      path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/after-final.png`,
+      animations: "disabled",
+    });
+  expect(await page.evaluate(() => (window as unknown as { __killedPtys: number[] }).__killedPtys)).toEqual([]);
+});
+
+test("editor terminal tabs move and drag back to the Terminal stripe, tab strip, and split edges", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const handlers = window.__ipc.handlers;
+    let id = 0;
+    const killed: number[] = [];
+    (window as unknown as { __killedPtys: number[] }).__killedPtys = killed;
+    handlers.term_default_shell = () => "/bin/zsh";
+    handlers.term_available_shells = () => ["/bin/zsh"];
+    handlers.term_spawn = () => ({ id: ++id, title: "zsh", pid: id });
+    handlers.term_resize = () => null;
+    handlers.term_write = () => null;
+    handlers.term_is_busy = () => true;
+    handlers.term_kill = (args: unknown) => {
+      killed.push((args as { id: number }).id);
+      return null;
+    };
+
+    const contributions = "/src/workbench/contributions.ts";
+    const editor = (await import(contributions)).editorService();
+    await editor.openFile("/dev/acme-api/App.tsx", { focus: false });
+    await editor.openFile("/dev/acme-api/README.md", { focus: false });
+    const store = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(store);
+    layout.setToolWindowSize("bottom", 240);
+    layout.showToolWindow("terminal", true);
+  });
+
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+  await terminal.getByRole("button", { name: "New Tab", exact: true }).click();
+  const termStrip = terminal.getByRole("tablist", { name: "Terminal sessions" });
+  await expect(termStrip.getByRole("tab")).toHaveCount(2);
+
+  await page.evaluate(async () => {
+    const store = "/src/features/terminal/store.ts";
+    const rt = await import(store);
+    const [first, second] = rt.useTerminals.getState().tabs;
+    await new Promise<void>((done) => rt.getSession(first!.session)!.term.write("ALPHA-SESSION-OUTPUT\r\n", done));
+    await new Promise<void>((done) => rt.getSession(second!.session)!.term.write("BETA-TEST-RUNNER\r\n", done));
+    const actions = "/src/platform/actions.ts";
+    const { executeAction } = await import(actions);
+    await executeAction("terminal.moveToEditor", first!.id);
+    await executeAction("terminal.moveToEditor", second!.id);
+  });
+
+  await expect(terminal).toBeHidden();
+  const editorTabs = page.getByRole("tablist", { name: "Editor tabs" });
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "README.md", "Local", "Local (2)"]);
+
+  // 1) Drag "Local" from the editor onto the Terminal stripe button while Terminal is hidden.
+  const editorLocal = editorTabs.getByRole("tab", { name: "Local", exact: true });
+  const stripeBtn = page.locator('[data-stripe-button="terminal"]');
+  const from1 = (await editorLocal.boundingBox())!;
+  const to1 = (await stripeBtn.boundingBox())!;
+  await page.mouse.move(from1.x + from1.width / 2, from1.y + from1.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to1.x + to1.width / 2, to1.y + to1.height / 2, { steps: 8 });
+  await page.mouse.up();
+
+  await expect(terminal).toBeVisible();
+  await expect(termStrip.getByRole("tab", { name: "Local", exact: true })).toBeVisible();
+  await expect(terminal.locator(".xterm-rows")).toContainText("ALPHA-SESSION-OUTPUT");
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+
+  // 2) Drag "Local (2)" from the editor onto the right edge of the Terminal pane to create a split.
+  const editorLocal2 = editorTabs.getByRole("tab", { name: "Local (2)", exact: true });
+  const termPanelBox = (await terminal.getByRole("tabpanel").boundingBox())!;
+  const from2 = (await editorLocal2.boundingBox())!;
+  await page.mouse.move(from2.x + from2.width / 2, from2.y + from2.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(termPanelBox.x + termPanelBox.width - 20, termPanelBox.y + termPanelBox.height / 2, {
+    steps: 8,
+  });
+  await page.mouse.up();
+
+  const termStrips = terminal.getByRole("tablist", { name: "Terminal sessions" });
+  await expect(termStrips).toHaveCount(2);
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "README.md"]);
+  await expect(terminal.locator(".xterm-rows").nth(1)).toContainText("BETA-TEST-RUNNER");
+
+  // 3) Context menu round-trip: Move to Editor -> editor tab context menu Move to Terminal.
+  await termStrips.nth(1).getByRole("tab", { name: "Local (2)", exact: true }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Move to Editor" }).click();
+  const reopenedEditorTab = editorTabs.getByRole("tab", { name: "Local (2)", exact: true });
+  await expect(reopenedEditorTab).toBeVisible();
+  await reopenedEditorTab.click({ button: "right" });
+  const moveBackItem = page.getByRole("menuitem", { name: "Move to Terminal" });
+  await expect(moveBackItem).toBeVisible();
+  await moveBackItem.click();
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "README.md"]);
+  await expect(termStrip.getByRole("tab")).toHaveText(["Local", "Local (2)"]);
+  expect(await page.evaluate(() => (window as unknown as { __killedPtys: number[] }).__killedPtys)).toEqual([]);
+});
+
+test("⌘+hover turns existing terminal files and folders into hyperlinks and routes clicks by target kind and project scope", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const handlers = window.__ipc.handlers;
+    let id = 0;
+    const revealed: string[][] = [];
+    (window as unknown as { __revealedInFinder: string[][] }).__revealedInFinder = revealed;
+    const entries: Record<string, "file" | "dir"> = {
+      "/dev/acme-api/App.tsx": "file",
+      "/dev/acme-api/src": "dir",
+      "/tmp/outside.log": "file",
+      "/tmp/outside-dir": "dir",
+    };
+    handlers.term_default_shell = () => "/bin/zsh";
+    handlers.term_available_shells = () => ["/bin/zsh"];
+    handlers.term_spawn = () => ({ id: ++id, title: "zsh", pid: id });
+    handlers.term_resize = () => null;
+    handlers.term_write = () => null;
+    handlers.term_is_busy = () => false;
+    handlers.term_kill = () => null;
+    handlers.fs_entry_kind = (args) => {
+      const p = String(args.path ?? "");
+      if (p in entries) return entries[p];
+      throw { kind: "notFound", message: `No such entry: ${p}` };
+    };
+    handlers.fs_read_dir = (args) => {
+      if (args.path === "/dev/acme-api/src") {
+        return [{ name: "main.ts", path: "/dev/acme-api/src/main.ts", kind: "file", ignored: false }];
+      }
+      return [];
+    };
+    handlers.find_files = () => [];
+    handlers["plugin:opener|reveal_item_in_dir"] = (args) => {
+      revealed.push(args.paths as string[]);
+      return null;
+    };
+
+    const store = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(store);
+    layout.hideToolWindow("project");
+    layout.setToolWindowSize("bottom", 240);
+    layout.showToolWindow("terminal", true);
+  });
+
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+
+  // Row 0 has all 6 cases: in-project file, non-existent file, in-project dir, non-existent dir,
+  // out-of-project file, out-of-project dir, and non-existent out-of-project dir.
+  const line = "App.tsx  missing.ts  src  no_dir/  /tmp/outside.log  /tmp/outside-dir  /tmp/nope";
+  await page.evaluate(async (text) => {
+    const store = "/src/features/terminal/store.ts";
+    const rt = await import(store);
+    const s = rt.getSession(rt.useTerminals.getState().tabs[0]!.session)!;
+    s.term.reset();
+    await new Promise<void>((done) => s.term.write(`${text}\r\n`, done));
+  }, line);
+
+  const screen = terminal.locator(".xterm-screen");
+  const pointFor = async (token: string) => {
+    const startCol = line.indexOf(token);
+    const box = (await screen.boundingBox())!;
+    const dims = await page.evaluate(async () => {
+      const store = "/src/features/terminal/store.ts";
+      const rt = await import(store);
+      const { term } = rt.getSession(rt.useTerminals.getState().tabs[0]!.session)!;
+      return { cols: term.cols, rows: term.rows };
+    });
+    return {
+      x: box.x + ((startCol + Math.min(2, token.length / 2)) / dims.cols) * box.width,
+      y: box.y + (0.5 / dims.rows) * box.height,
+    };
+  };
+
+  const pathLink = terminal.locator(".openidea-terminal-path-link");
+  const editorTabs = page.getByRole("tablist", { name: "Editor tabs" });
+
+  // 1) Hover & click `App.tsx` WITHOUT ⌘: no link decoration and no editor tab opens.
+  const appPt = await pointFor("App.tsx");
+  await page.mouse.move(appPt.x, appPt.y);
+  await expect(pathLink).toHaveCount(0);
+  await page.mouse.click(appPt.x, appPt.y);
+  await expect(editorTabs).toHaveCount(0);
+
+  // 2) Press ⌘ while already hovering `App.tsx`: becomes a hyperlink; ⌘+click opens `App.tsx` in editor!
+  await page.keyboard.down("Meta");
+  await expect(pathLink).toHaveCount(1);
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await page.screenshot({
+      path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/pr3-hover-file.png`,
+      animations: "disabled",
+    });
+  await page.mouse.click(appPt.x, appPt.y);
+  await page.keyboard.up("Meta");
+  await expect(editorTabs.getByRole("tab", { name: "App.tsx", selected: true })).toBeVisible();
+
+  // 3) Non-existent targets (`missing.ts`, `no_dir/`, `/tmp/nope`) do NOT turn into links on ⌘+hover or ⌘+click.
+  for (const absent of ["missing.ts", "no_dir/", "/tmp/nope"]) {
+    const pt = await pointFor(absent);
+    await page.keyboard.down("Meta");
+    await page.mouse.move(pt.x, pt.y);
+    await expect(pathLink).toHaveCount(0);
+    await page.mouse.click(pt.x, pt.y);
+    await page.keyboard.up("Meta");
+  }
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx"]);
+
+  // 4) Out-of-project existing file (`/tmp/outside.log`) opens in an editor tab of the current window.
+  const outFilePt = await pointFor("/tmp/outside.log");
+  await page.keyboard.down("Meta");
+  await page.mouse.move(outFilePt.x, outFilePt.y);
+  await expect(pathLink).toHaveCount(1);
+  await page.mouse.click(outFilePt.x, outFilePt.y);
+  await page.keyboard.up("Meta");
+  await expect(editorTabs.getByRole("tab", { name: "outside.log", selected: true })).toBeVisible();
+
+  // 5) In-project folder (`src`) opens the Project tool window on the left, expands `src`, and selects it.
+  const projectRegion = page.getByRole("region", { name: "Project", exact: true });
+  await expect(projectRegion).toBeHidden();
+  const srcPt = await pointFor("src");
+  await page.keyboard.down("Meta");
+  await page.mouse.move(srcPt.x, srcPt.y);
+  await expect(pathLink).toHaveCount(1);
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await page.screenshot({
+      path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/pr3-hover-folder.png`,
+      animations: "disabled",
+    });
+  await page.mouse.click(srcPt.x, srcPt.y);
+  await page.keyboard.up("Meta");
+  await expect(projectRegion).toBeVisible();
+  const srcItem = projectRegion.getByRole("treeitem", { name: "src", exact: true });
+  await expect(srcItem).toHaveAttribute("aria-expanded", "true");
+  await expect(srcItem).toHaveAttribute("aria-selected", "true");
+  await expect(projectRegion.getByRole("treeitem", { name: "main.ts", exact: true })).toBeVisible();
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await page.screenshot({
+      path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/pr3-opened-folder.png`,
+      animations: "disabled",
+    });
+
+  // 6) Out-of-project folder (`/tmp/outside-dir`) reveals in Finder instead of changing Project selection.
+  const outDirPt = await pointFor("/tmp/outside-dir");
+  await page.keyboard.down("Meta");
+  await page.mouse.move(outDirPt.x, outDirPt.y);
+  await expect(pathLink).toHaveCount(1);
+  await page.mouse.click(outDirPt.x, outDirPt.y);
+  await page.keyboard.up("Meta");
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __revealedInFinder: string[][] }).__revealedInFinder))
+    .toEqual([["/tmp/outside-dir"]]);
 });

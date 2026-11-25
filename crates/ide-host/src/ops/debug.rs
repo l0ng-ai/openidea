@@ -114,6 +114,12 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         extra["__adapterJavaHome"] = serde_json::json!(runtime.home);
         config.extra_json = Some(extra.to_string());
     }
+    if finds_java_sources(&config)
+        && let Ok(project) = host.project(window)
+    {
+        let roots = host.blocking(move || Ok(java_source_roots(&project))).await?;
+        config = add_java_source_paths(config, &roots);
+    }
     let root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
     let mut ruby_tools = Vec::new();
     if config.adapter == "rdbg" && config.request == "launch" {
@@ -304,6 +310,46 @@ fn start_java_attach_listener(mut config: LaunchConfig, windows: bool) -> Launch
         format!("{} {vm_args}", ide_jvm_attach::START_LISTENER_FLAG)
     };
     extra.insert("vmArgs".into(), vm_args.into());
+    config.extra_json = Some(serde_json::Value::Object(extra).to_string());
+    config
+}
+
+/// The project's source and test roots, as the IDE detects them (no Maven / Gradle import needed).
+fn java_source_roots(project: &crate::project::Project) -> Vec<PathBuf> {
+    use ide_workspace::roots::RootKind;
+    project
+        .roots()
+        .roots
+        .iter()
+        .filter(|r| matches!(r.kind, RootKind::Source | RootKind::Test))
+        .map(|r| project.root.join(&r.path))
+        .filter(|p| p.is_dir())
+        .collect()
+}
+
+/// Debuggers that look a frame's source up in `sourcePaths` when their own model has no file:
+/// java-debug after jdtls (which has not imported a project whose Maven sync failed), and
+/// java-analyzer after the module it debugs (whose sibling modules it does not load).
+fn finds_java_sources(config: &LaunchConfig) -> bool {
+    matches!(config.adapter.as_str(), "java-debug" | ide_dap::adapter::JAVA_ANALYZER)
+}
+
+/// Without a file for the stopped frame the editor cannot follow the execution point, so Java
+/// sessions get every source root of the project. The user's own list wins.
+fn add_java_source_paths(mut config: LaunchConfig, roots: &[PathBuf]) -> LaunchConfig {
+    if !finds_java_sources(&config) || roots.is_empty() {
+        return config;
+    }
+    let mut extra = match config.extra_json.as_deref().map(serde_json::from_str) {
+        None => serde_json::Map::new(),
+        Some(Ok(serde_json::Value::Object(extra))) => extra,
+        Some(_) => return config,
+    };
+    if extra.get("sourcePaths").is_some_and(|v| !v.is_null()) {
+        return config;
+    }
+    let paths: Vec<String> = roots.iter().map(|r| r.to_string_lossy().into_owned()).collect();
+    extra.insert("sourcePaths".into(), paths.into());
     config.extra_json = Some(serde_json::Value::Object(extra).to_string());
     config
 }
@@ -671,6 +717,23 @@ pub async fn debug_jvm_memory_classes(
     host.debugger.jvm_memory_classes(session).await
 }
 
+/// A `Thread.print -l` of the debuggee JVM (with the JSON dump on JDK 21+), or why it cannot be
+/// taken.
+#[command(trust = trusted)]
+pub async fn debug_jvm_thread_dump(host: &Host, window: &str, session: DebugSessionId) -> IdeResult<JvmThreadsResult> {
+    host.require_trust(window)?;
+    let heap_root = host.heap.root().to_path_buf();
+    let dir = host.blocking(move || Ok(super::thread_dump::json_dir(&heap_root))).await?;
+    let result = host.debugger.jvm_thread_dump(session, dir.clone()).await;
+    let _ = host
+        .blocking(move || {
+            super::thread_dump::discard_json_dir(dir);
+            Ok(())
+        })
+        .await;
+    result
+}
+
 /// Up to `limit` live instances of the class in the stopped JVM.
 #[command(trust = trusted)]
 pub async fn debug_jvm_memory_instances(
@@ -728,6 +791,34 @@ mod tests {
 
     fn vm_args(config: &LaunchConfig) -> serde_json::Value {
         serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()["vmArgs"].clone()
+    }
+
+    #[test]
+    fn java_debug_sessions_look_up_sources_in_project_roots() {
+        let roots = [PathBuf::from("/p/src/main/java"), PathBuf::from("/p/src/test/java")];
+        let source_paths = |config: &LaunchConfig| {
+            serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()["sourcePaths"]
+                .clone()
+        };
+        for adapter in ["java-debug", ide_dap::adapter::JAVA_ANALYZER] {
+            for request in ["launch", "attach"] {
+                let config = add_java_source_paths(launch(adapter, request, serde_json::json!({"port": 5005})), &roots);
+                assert_eq!(source_paths(&config), serde_json::json!(["/p/src/main/java", "/p/src/test/java"]));
+            }
+        }
+        let mut bare = launch("java-debug", "attach", serde_json::json!({}));
+        bare.extra_json = None;
+        assert_eq!(
+            source_paths(&add_java_source_paths(bare, &roots)),
+            serde_json::json!(["/p/src/main/java", "/p/src/test/java"])
+        );
+
+        let own = launch("java-debug", "launch", serde_json::json!({"sourcePaths": ["/elsewhere"]}));
+        assert_eq!(source_paths(&add_java_source_paths(own, &roots)), serde_json::json!(["/elsewhere"]));
+        let other = launch("debugpy", "launch", serde_json::json!({}));
+        assert_eq!(add_java_source_paths(other.clone(), &roots).extra_json, other.extra_json);
+        let none = launch("java-debug", "launch", serde_json::json!({}));
+        assert_eq!(add_java_source_paths(none.clone(), &[]).extra_json, none.extra_json);
     }
 
     #[test]
@@ -867,6 +958,7 @@ ide_command::domain!(
     debug_jvm_memory_fields,
     debug_jvm_memory_instances,
     debug_jvm_memory_referrers,
+    debug_jvm_thread_dump,
     debug_listen_for_jvm,
     debug_pause,
     debug_redefine_classes,

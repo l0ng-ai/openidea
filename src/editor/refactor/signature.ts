@@ -194,8 +194,10 @@ export async function changeSignature(
   let changed: ServerRefactored;
   try {
     for (;;) {
+      // oxlint-disable-next-line no-await-in-loop -- sync before each confirmation round
       await whenSynced(view);
       const token: string | null = confirmation;
+      // oxlint-disable-next-line no-await-in-loop -- request carries the previous confirmation
       changed = await cancellable(signal, (id, wanted) =>
         lspRequest(() => commands.lspChangeSignature(id, request.doc, request.pos, signature, delegate, token), wanted),
       );
@@ -204,6 +206,7 @@ export async function changeSignature(
       if (fatal || (!changed.edit && !changed.confirmation))
         return { status: "stay", error: fatal?.message ?? "Nothing to change" };
       if (!changed.confirmation) break;
+      // oxlint-disable-next-line no-await-in-loop -- the confirmation gates the next request
       if (!(await confirmProblems(changed.problems.map((p) => p.message))) || signal?.aborted)
         return { status: "stay" };
       confirmation = changed.confirmation;

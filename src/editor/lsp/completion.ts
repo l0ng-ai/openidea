@@ -627,6 +627,7 @@ async function fallback(ctx: CompletionContext): Promise<CompletionResult | null
   );
   for (const s of sources) {
     const source = typeof s === "function" ? s : completeFromList(s);
+    // oxlint-disable-next-line no-await-in-loop -- falls back to the next source only when this one has no result; first answer wins
     const r = await source(ctx);
     if (r) return r;
   }
@@ -661,11 +662,9 @@ export function makeCompletion(item: CompletionItem, req: RequestContext): LspCo
  * for none) and `typeText` (the right-aligned type column), like LSP items.
  */
 const contributedSource: CompletionSource = async (ctx) => {
-  const results: CompletionResult[] = [];
-  for (const source of ctx.state.languageDataAt<CompletionSource>("openideaCompletion", ctx.pos)) {
-    const result = await source(ctx);
-    if (result) results.push(result);
-  }
+  const sources = ctx.state.languageDataAt<CompletionSource>("openideaCompletion", ctx.pos);
+  const answers = await Promise.all(sources.map((source) => source(ctx)));
+  const results = answers.filter((r): r is CompletionResult => !!r);
   return mergeResults(results);
 };
 

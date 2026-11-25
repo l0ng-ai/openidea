@@ -48,21 +48,26 @@ describe("summarizeWork", () => {
 });
 
 describe("foldedTurns", () => {
-  it("folds a finished turn's work before its reply", () => {
+  it("folds earlier finished turns' work before their reply and keeps the latest turn open", () => {
     const entries = [user("q"), tool("read"), agent("mid"), tool("edit"), agent("done"), user("next"), agent("ok")];
-    expect([...foldedTurns(entries, 0, false).values()]).toEqual([{ user: 0, reply: 4, sentMs: 1000, doneMs: 5000 }]);
+    expect([...foldedTurns(entries, 0).values()]).toEqual([{ user: 0, reply: 4, sentMs: 1000, doneMs: 5000 }]);
   });
 
-  it("leaves the turn in progress, turns without work, and turns ending otherwise open", () => {
-    const working = [user("q"), tool("read"), agent("a")];
-    expect(foldedTurns(working, 0, true).size).toBe(0);
-    expect(foldedTurns(working, 0, false).size).toBe(1);
-    expect(foldedTurns([user("q"), agent("a")], 0, false).size).toBe(0);
-    expect(foldedTurns([user("q"), tool("read")], 0, false).size).toBe(0);
-    expect(foldedTurns([user("q"), tool("read"), agent("a"), { type: "error", message: "x" }], 0, false).size).toBe(0);
-    expect(foldedTurns([user("q"), { type: "error", message: "x" }, tool("read"), agent("a")], 0, false).size).toBe(0);
-    expect(foldedTurns([user("q"), tool("read"), user("more", { steered: true }), agent("a")], 0, false).size).toBe(0);
-    expect(foldedTurns([user("q"), tool("read"), agent("a")], 1, false).size).toBe(0);
+  it("leaves the latest turn, turns without work, and turns ending otherwise open", () => {
+    const latestOnly = [user("q"), tool("read"), agent("a")];
+    expect(foldedTurns(latestOnly, 0).size).toBe(0);
+    expect(foldedTurns([user("q"), agent("a"), user("next")], 0).size).toBe(0);
+    expect(foldedTurns([user("q"), tool("read"), user("next")], 0).size).toBe(0);
+    expect(
+      foldedTurns([user("q"), tool("read"), agent("a"), { type: "error", message: "x" }, user("next")], 0).size,
+    ).toBe(0);
+    expect(
+      foldedTurns([user("q"), { type: "error", message: "x" }, tool("read"), agent("a"), user("next")], 0).size,
+    ).toBe(0);
+    expect(
+      foldedTurns([user("q"), tool("read"), user("more", { steered: true }), agent("a"), user("next")], 0).size,
+    ).toBe(0);
+    expect(foldedTurns([user("q"), tool("read"), agent("a"), user("next")], 1).size).toBe(0);
   });
 });
 

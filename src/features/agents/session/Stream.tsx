@@ -5,10 +5,8 @@ import {
   Button,
   copyMenuFor,
   EmptyState,
-  hideNativeScrollbar,
   Icon,
   IconButton,
-  Scrollbar,
   selectableText,
   showContextMenu,
   Spinner,
@@ -29,6 +27,7 @@ import {
   type RefObject,
 } from "react";
 import { useAgentSettings } from "../agentSettings";
+import { clampSelectionToRow } from "./clampSelection";
 import { ImageStrip } from "../ImageStrip";
 import {
   entriesKey,
@@ -133,6 +132,14 @@ function useOffscreenRows(
     mark();
     const rows = new MutationObserver(mark);
     rows.observe(el, { childList: true });
+    // Earlier rows load in front of the first one shown, which then loses its author header while
+    // it may be off-screen: lay it out again, or it keeps the height it had with the header.
+    const authors = new MutationObserver((records) => {
+      for (const { target } of records)
+        if (target.parentNode === el) (target as Element).removeAttribute("data-measured");
+      mark();
+    });
+    authors.observe(el, { subtree: true, attributes: true, attributeFilter: ["data-author"] });
     const resize = new ResizeObserver(() => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
@@ -140,11 +147,12 @@ function useOffscreenRows(
         mark();
       }, 200);
     });
-    if (el.parentElement) resize.observe(el.parentElement);
+    resize.observe(el);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(timer);
       rows.disconnect();
+      authors.disconnect();
       resize.disconnect();
     };
   }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
@@ -178,7 +186,6 @@ interface StreamProps {
 
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
-const MIN_THUMB_SIZE = 64;
 /** How long a conversation stays behind other tabs before it drops the entries painted above its tail. */
 const HIDDEN_TRIM_MS = 30_000;
 
@@ -207,6 +214,12 @@ function scrollsUpInside(target: EventTarget | null, root: HTMLElement): boolean
 /** A wheel gesture's events arrive closer together than this; a pause starts a new one. */
 const WHEEL_GESTURE_MS = 150;
 
+/** Keeps a double- or triple-click selection within the message it was made in. */
+function clampMultiClick(target: EventTarget) {
+  const row = target instanceof Element ? target.closest(`.${styles.conversationRow}`) : null;
+  if (row) clampSelectionToRow(document.getSelection(), row);
+}
+
 export function Stream({
   loadError,
   task,
@@ -220,8 +233,6 @@ export function Stream({
   drafts,
 }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const content = useRef<HTMLDivElement>(null);
-  const track = useRef<HTMLDivElement>(null);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
   useSelectionBoundary(ref);
@@ -278,7 +289,7 @@ export function Stream({
   const loadEarlier = useCallback(() => {
     const el = ref.current;
     if (!visible || !el || start <= 0 || dragging.current || anchor.current) return;
-    const first = content.current?.firstElementChild;
+    const first = el.firstElementChild;
     if (!position.current.stick && first) anchor.current = { el: first, top: first.getBoundingClientRect().top };
     startTransition(() => setShown((n) => n + ENTRY_BATCH));
   }, [start, visible]);
@@ -293,11 +304,8 @@ export function Stream({
   }, [loadEarlier]);
   useEffect(() => {
     const down = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (!ref.current?.contains(target) && !(event.button === 0 && track.current?.contains(target))) return;
+      if (!ref.current?.contains(event.target as Node)) return;
       dragging.current = true;
-      markUserScroll();
-      scrollingUp.current = false;
       if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
     };
     const up = () => {
@@ -316,7 +324,7 @@ export function Stream({
       window.removeEventListener("blur", up);
       if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
     };
-  }, [loadWhenStill, markUserScroll]);
+  }, [loadWhenStill]);
   useEffect(() => {
     // Following the end, paint the rest in the background. A user who scrolled away
     // gets them only after stopping near the top (`loadWhenStill`), so the scrollbar
@@ -344,7 +352,7 @@ export function Stream({
     return () => window.clearTimeout(timer);
   }, [visible]);
   const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
-  useOffscreenRows(content, visible, !finding, fitWindowWidth, fontZoom);
+  useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
   /**
    * Blank space after the conversation that lets a section folded near the end keep its header
    * in place. It is only ever what the view shows below the content: scrolling up or new rows
@@ -434,16 +442,14 @@ export function Stream({
    */
   useEffect(() => {
     const el = ref.current;
-    const scrollbar = track.current;
-    if (!el || !scrollbar) return;
+    if (!el) return;
     let gesture: { owner: HTMLElement; at: number } | null = null;
     const onWheel = (e: WheelEvent) => {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey) return;
       if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
-      const overTrack = e.currentTarget === scrollbar;
       const now = performance.now();
       const latched = gesture && now - gesture.at < WHEEL_GESTURE_MS && gesture.owner.isConnected;
-      const owner = overTrack ? el : latched ? gesture!.owner : scrollOwner(e.target, el);
+      const owner = latched ? gesture!.owner : scrollOwner(e.target, el);
       gesture = { owner, at: now };
       if (owner !== el) {
         const room = e.deltaY < 0 ? owner.scrollTop : owner.scrollHeight - owner.clientHeight - owner.scrollTop;
@@ -451,25 +457,11 @@ export function Stream({
         return;
       }
       markUserScroll();
-      if (e.deltaY < 0) stopFollowing(overTrack ? el : e.target);
+      if (e.deltaY < 0) stopFollowing(e.target);
       else if (e.deltaY > 0) scrollingUp.current = false;
-      if (overTrack) {
-        e.preventDefault();
-        const unit =
-          e.deltaMode === WheelEvent.DOM_DELTA_PAGE
-            ? el.clientHeight
-            : e.deltaMode === WheelEvent.DOM_DELTA_LINE
-              ? 16
-              : 1;
-        el.scrollTop += e.deltaY * unit;
-      }
     };
     el.addEventListener("wheel", onWheel, { passive: false });
-    scrollbar.addEventListener("wheel", onWheel, { passive: false });
-    return () => {
-      el.removeEventListener("wheel", onWheel);
-      scrollbar.removeEventListener("wheel", onWheel);
-    };
+    return () => el.removeEventListener("wheel", onWheel);
   }, [markUserScroll, stopFollowing]);
   /**
    * The reader opened or closed a section: put its header back where it was, in the run or
@@ -523,8 +515,8 @@ export function Stream({
   const rows = useMemo(() => {
     if (!entries) return [];
     const rows = conversationRows(entries, start, toolCalls === "grouped");
-    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start, busy)) : rows;
-  }, [entries, start, busy, foldTurns, toolCalls, finding]);
+    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start)) : rows;
+  }, [entries, start, foldTurns, toolCalls, finding]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
     const byAgent = (row: ConversationRow) =>
@@ -618,7 +610,7 @@ export function Stream({
           <div
             ref={ref}
             // The conversation is read and copied like a document; focusable so ⌘F reaches it.
-            className={clsx(styles.stream, selectableText, hideNativeScrollbar)}
+            className={clsx(styles.stream, selectableText)}
             tabIndex={-1}
             onTouchStart={(e) => {
               touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
@@ -642,6 +634,17 @@ export function Stream({
                 (e.key === " " && !e.shiftKey)
               )
                 scrollingUp.current = false;
+            }}
+            onPointerDown={() => {
+              markUserScroll();
+              scrollingUp.current = false;
+            }}
+            onMouseDown={(e) => {
+              // WebKit makes a double- or triple-click selection after this handler.
+              if (e.detail >= 2) setTimeout(() => clampMultiClick(e.target));
+            }}
+            onMouseUp={(e) => {
+              if (e.detail >= 2) clampMultiClick(e.target);
             }}
             onScroll={(e) => {
               const el = e.currentTarget;
@@ -685,39 +688,36 @@ export function Stream({
               showContextMenu(e, items);
             }}
           >
-            <div ref={content} className={styles.streamContent}>
-              {loadError && (
-                <div role="alert">
-                  <EmptyState
-                    title={tx`Couldn't load the conversation: ${loadError}`}
-                    actions={
-                      <Button
-                        onClick={() =>
-                          void executeAction("agents.retryConversation", {
-                            task: task.id,
-                            subagent: subagent?.id ?? null,
-                          })
-                        }
-                      >
-                        Retry
-                      </Button>
-                    }
-                  />
-                </div>
-              )}
-              {entries === null ? (
-                !loadError && <Spinner />
-              ) : entries.length === 0 && !busy && !loadError ? (
-                <EmptyState title="No conversation history" />
-              ) : (
-                <RowRenderer.Provider value={renderConversationRow}>{renderedRows}</RowRenderer.Provider>
-              )}
-              <WorkingRow task={task} entries={entries} subagent={subagent} />
-            </div>
+            {loadError && (
+              <div role="alert">
+                <EmptyState
+                  title={tx`Couldn't load the conversation: ${loadError}`}
+                  actions={
+                    <Button
+                      onClick={() =>
+                        void executeAction("agents.retryConversation", {
+                          task: task.id,
+                          subagent: subagent?.id ?? null,
+                        })
+                      }
+                    >
+                      Retry
+                    </Button>
+                  }
+                />
+              </div>
+            )}
+            {entries === null ? (
+              !loadError && <Spinner />
+            ) : entries.length === 0 && !busy && !loadError ? (
+              <EmptyState title="No conversation history" />
+            ) : (
+              <RowRenderer.Provider value={renderConversationRow}>{renderedRows}</RowRenderer.Provider>
+            )}
+            <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>
           {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
         </div>
-        <Scrollbar target={ref} content={content} trackRef={track} fullHeight minThumbSize={MIN_THUMB_SIZE} />
       </KeepFoldHeader.Provider>
     </OpenFolds.Provider>
   );

@@ -170,8 +170,10 @@ async function partialCommitFiles(paths: readonly string[]): Promise<{ files: Pa
   const whole: string[] = [];
   const { excludedHunks, excludedHunkLines } = useCommit.getState();
   for (const path of paths) {
+    // oxlint-disable-next-line no-await-in-loop -- head and disk are read together, but paths are processed in order so a stale exclusion aborts before reading later files
     const [head, disk] = await Promise.all([call(commands.vcsFileAt(path, "HEAD")), call(commands.fsReadText(path))]);
     const text = disk.replace(/\r\n?/g, "\n");
+    // oxlint-disable-next-line no-await-in-loop -- hunks are diffed per path before the stale-diff check and before pushing to the ordered result arrays
     const hunks = await commands.vcsDiffHunks(head ?? "", text);
     const keys = hunkKeys(text, hunks);
     const excluded = excludedHunks.get(path) ?? excludedHunks.get(`${path}/`);
@@ -273,11 +275,9 @@ async function pendingChanges(): Promise<CommitChanges | null> {
   const plan = currentPlan();
   if (!plan.included.length) return { revision: rev, roots: [], patch: "" };
   const selection = await selectionOf(plan);
-  const patches: string[] = [];
-  for (const { root, options } of selection.repositories) {
-    const patch = await call(commands.vcsPendingPatch(root, options));
-    if (patch.trim()) patches.push(patch);
-  }
+  const patches = (
+    await Promise.all(selection.repositories.map(({ root, options }) => call(commands.vcsPendingPatch(root, options))))
+  ).filter((patch) => patch.trim());
   return { revision: rev, roots: selection.repositories.map((r) => r.root), patch: patches.join("\n") };
 }
 
@@ -305,6 +305,7 @@ export async function contributedCheckProblems(selection: CommitSelection): Prom
       .map((c) => c.key)
       .filter((k) => !off.has(k));
     if (!keys.length) continue;
+    // oxlint-disable-next-line no-await-in-loop -- contributed checks are plugin code; providers run in registration order and their problems are collected in that order
     for (const p of await provider.run(selection, keys)) {
       const at = p.path ? `${baseName(p.path)}${p.line === undefined ? "" : `:${p.line + 1}`}` : null;
       const path = p.path;

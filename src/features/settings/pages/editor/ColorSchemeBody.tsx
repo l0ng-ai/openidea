@@ -920,6 +920,17 @@ const SAMPLES: Record<string, CodeSample> = {
         ["];", "javascript.operator"],
       ],
       [
+        ["type ", "javascript.keyword"],
+        ["Pair", "javascript.typeAlias"],
+        ["<", "javascript.operator"],
+        ["T", "javascript.typeParameter"],
+        ["> = [", "javascript.operator"],
+        ["T", "javascript.typeParameter"],
+        [", ", "javascript.operator"],
+        ["T", "javascript.typeParameter"],
+        ["];", "javascript.operator"],
+      ],
+      [
         ["@Component", "javascript.decorator"],
         ["({ ", "javascript.operator"],
         ["selector", "javascript.field"],
@@ -930,6 +941,8 @@ const SAMPLES: Record<string, CodeSample> = {
       [
         ["export class ", "javascript.keyword"],
         ["Quiz", "javascript.className"],
+        [" implements ", "javascript.keyword"],
+        ["Named", "javascript.interface"],
         [" {", "javascript.operator"],
       ],
       [
@@ -942,8 +955,16 @@ const SAMPLES: Record<string, CodeSample> = {
         [");", "javascript.operator"],
       ],
       [
+        ["  static ", "javascript.keyword"],
+        ["empty", "javascript.staticMethod"],
+        ["() { ", "javascript.operator"],
+        ["return new ", "javascript.keyword"],
+        ["Quiz", "javascript.className"],
+        ["(); }", "javascript.operator"],
+      ],
+      [
         ["  ", "text"],
-        ["count", "javascript.functionDeclaration"],
+        ["count", "javascript.instanceMethod"],
         ["(", "javascript.operator"],
         ["n", "javascript.parameter"],
         [": ", "javascript.operator"],
@@ -969,7 +990,7 @@ const SAMPLES: Record<string, CodeSample> = {
         [".", "javascript.operator"],
         ["store", "javascript.field"],
         [".", "javascript.operator"],
-        ["add", "javascript.functionCall"],
+        ["add", "javascript.instanceMethod"],
         ["(", "javascript.operator"],
         ["total", "javascript.identifier"],
         [");", "javascript.operator"],

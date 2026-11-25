@@ -330,6 +330,31 @@ pub async fn pypi_package(
     result
 }
 
+/// PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
+/// PyPI's name list, which the first search downloads and a search a day later refreshes.
+#[command(trust = outside_restricted)]
+pub async fn pypi_search(host: &Host, window: &str, query: String, request: RequestId) -> IdeResult<Vec<String>> {
+    let names = host.pypi_names.clone();
+    let cancel = host.begin_project_read_request(window, request);
+    let result = host
+        .blocking(move || {
+            let fetch: pypi::Fetch = std::sync::Arc::new(|cancel: &CancellationToken| {
+                let search_path = std::env::var_os("PATH").unwrap_or_default();
+                ide_tools::Http::new(&search_path)?
+                    .https_only()
+                    .accept(pypi::SIMPLE_INDEX_ACCEPT)
+                    .compressed()
+                    .get_text_limited(pypi::SIMPLE_INDEX_URL, Some(256 * 1024 * 1024), cancel)
+            });
+            let index = names.index(&cancel, fetch)?;
+            // One more than shown, so the UI can tell the list was cut.
+            index.search(&query, 51, &cancel)
+        })
+        .await;
+    host.end_request(request);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,4 +481,4 @@ mod tests {
     }
 }
 
-ide_command::domain!(dependencies: dependency_versions, python_requirements, pypi_package);
+ide_command::domain!(dependencies: dependency_versions, python_requirements, pypi_package, pypi_search);

@@ -33,19 +33,43 @@
 .grow {
   flex: 1;
 }
+/* A list of the files beside the diffs, under the shared toolbar. */
+.split {
+  flex: 1;
+  min-height: 0;
+}
+.files,
+.diffs {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.files > *,
+.diffs > .scroll {
+  flex: 1;
+  min-height: 0;
+}
 .scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-2) var(--space-3);
 }
+/* Only the blocks near the viewport are rendered, each at its offset in the full height. */
+.blocks {
+  position: relative;
+}
+.slot {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  /* The gap between blocks, inside the measured slot. */
+  padding-bottom: 10px;
+}
 .block {
   border: 1px solid var(--border);
   border-radius: var(--radius-popup-large);
   background: var(--bg-editor);
-}
-.block + .block {
-  margin-top: 10px;
 }
 /* The file's header stays at the top while its diff scrolls by. */
 .header {
@@ -100,7 +124,6 @@
 .body[hidden] {
   display: none;
 }
-/* Space a block takes before its diff loads, so the scrollbar is roughly right. */
 .placeholder {
   height: 160px;
 }
@@ -120,6 +143,6 @@
 :global(:root[data-compact]) .header {
   padding-block: 7px;
 }
-:global(:root[data-compact]) .block + .block {
-  margin-top: var(--space-1);
+:global(:root[data-compact]) .slot {
+  padding-bottom: var(--space-1);
 }

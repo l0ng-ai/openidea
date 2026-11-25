@@ -324,7 +324,12 @@ describe("context configuration", () => {
       command: ".venv/bin/python",
       args: ["tools/gen.py"],
     });
-    expect(contextConfig("scripts/build.sh", configs)).toMatchObject({ command: "sh", args: ["scripts/build.sh"] });
+    // Run in a terminal, as IDEA's Shell Script "Execute in the terminal": interactive scripts work.
+    expect(contextConfig("scripts/build.sh", configs)).toMatchObject({
+      command: "sh",
+      args: ["scripts/build.sh"],
+      emulateTerminal: true,
+    });
     expect(contextConfig("scripts/build.bat", configs, undefined, true)).toMatchObject({
       command: "cmd.exe",
       args: ["/c", "build.bat"],

@@ -20,11 +20,15 @@ export type TurnRow = Extract<ConversationRow, { kind: "turn" }>;
 export const liveTool = (entry: AgentEntry) =>
   entry.type === "tool" && (entry.status === "running" || entry.status === "pending");
 
+const EXPLORATION_KINDS = new Set(["read", "search", "fetch", "think"]);
+
 /**
- * Reasoning and tool calls fold together, running ones included: the run keeps its place while
- * a call finishes, and its summary line says what is running.
+ * Reasoning and read-only exploration tool calls fold together, running ones included: the run
+ * keeps its place while a call finishes, and its summary line says what is running. Edits,
+ * commands and other side-effecting calls stay visible as their own rows.
  */
-export const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || entry.type === "tool";
+export const isProcessEntry = (entry: AgentEntry) =>
+  entry.type === "thought" || (entry.type === "tool" && EXPLORATION_KINDS.has(entry.kind) && entry.diffs.length === 0);
 
 /**
  * The conversation's rows from `from`: a run of reasoning and finished tool calls becomes
@@ -57,7 +61,11 @@ export function foldTurnRows(rows: ConversationRow[], turns: ReadonlyMap<number,
   let open: Extract<ConversationRow, { kind: "turn" }> | null = null;
   for (const row of rows) {
     if (open && row.index < open.turn.reply) {
-      open.rows.push(row);
+      if (row.kind === "process") {
+        for (const item of row.entries) open.rows.push({ kind: "entry", ...item });
+      } else {
+        open.rows.push(row);
+      }
       continue;
     }
     open = null;

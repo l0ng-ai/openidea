@@ -164,6 +164,7 @@ async function parseSliced(parser: Language["parser"], text: string): Promise<Re
       const tree = parse.advance();
       if (tree) return tree;
     }
+    // oxlint-disable-next-line no-await-in-loop -- a stateful parse resumes after yielding to input and rendering
     await new Promise((r) => setTimeout(r, 0));
   }
 }

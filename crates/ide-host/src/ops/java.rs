@@ -4,9 +4,11 @@ pub(crate) mod cache;
 use crate::Host;
 use ide_command::command;
 
+use super::Channel;
 use super::build::{load, with_profiles, workspace};
+use cache::LaunchEvents;
 use ide_build::BuildModel;
-use ide_build::compile;
+use ide_build::compile::{self, BuildEvent};
 use ide_core::error::ErrorKind;
 use ide_core::settings::Settings;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
@@ -18,6 +20,8 @@ use std::path::{Path, PathBuf};
 /// Builds according to `policy`, then resolves the runtime (or test)
 /// classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 /// A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+/// The build streams its console, messages and progress on `on_event` while it runs; a launch
+/// whose build another launch's build joins receives that build's events.
 #[command(trust = trusted)]
 pub async fn java_resolve_launch(
     host: &Host,
@@ -26,12 +30,16 @@ pub async fn java_resolve_launch(
     test: bool,
     policy: BuildPolicy,
     request: RequestId,
+    on_event: Channel<BuildEvent>,
 ) -> IdeResult<JavaLaunchInfo> {
     // Resources a Gradle build filters or renames are processed by Gradle, replacing the language
     // server's plain copies.
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result = resolve_launch(host, window, module, test, policy, &cancel).await;
+    let events: LaunchEvents = std::sync::Arc::new(move |event| {
+        let _ = on_event.send(event);
+    });
+    let result = resolve_launch(host, window, module, test, policy, &cancel, Some(events)).await;
     host.end_request(request);
     result
 }
@@ -43,8 +51,15 @@ pub(crate) async fn resolve_launch(
     test: bool,
     policy: BuildPolicy,
     cancel: &CancellationToken,
+    events: Option<LaunchEvents>,
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
+    let progress = |message: &str| {
+        if let Some(events) = &events {
+            events(BuildEvent::Progress { message: message.to_owned(), fraction: None });
+        }
+    };
+    progress("Resolving the module");
     let project = host.project(window)?;
     let module = ide_core::project_roots::resolve(&project.root, &module);
     let scope = {
@@ -54,11 +69,11 @@ pub(crate) async fn resolve_launch(
             .map_err(|e| IdeError::internal(e.to_string()))??
     };
     if !project.lsp.java_served_by_jdtls(&module) {
-        return resolve_launch_without_jdtls(host, &project, module, scope, test, policy, cancel).await;
+        return resolve_launch_without_jdtls(host, &project, module, scope, test, policy, cancel, events).await;
     }
     let scope = std::sync::Arc::new(scope);
     let launches = project.java_launches.for_cache(&scope.cache);
-    let waiting = launches.waiting.add(module.clone(), test, policy);
+    let waiting = launches.waiting.add(module.clone(), test, policy, events.clone());
     let prefer_maven = scope.settings.languages.java.maven.delegate_build;
     // A launch builds incrementally unless the configuration asks for Rebuild or NoBuild.
     let build = policy != BuildPolicy::NoBuild;
@@ -90,6 +105,9 @@ pub(crate) async fn resolve_launch(
     };
     let mut external_build =
         if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
+    if build && !delegated {
+        progress("Compiling with the Java language server");
+    }
     let mut info = project.lsp.java_launch(&module, test, build && !delegated, full, delegated, cancel).await?;
     if info.errors.iter().any(|e| processor_recreated_a_file(&e.message)) {
         if build && !delegated && is_maven {
@@ -118,6 +136,11 @@ pub(crate) async fn resolve_launch(
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;
         let (root, cache, settings) = (&scope.root, &scope.cache, &scope.settings);
+        let on_event = |event: BuildEvent| {
+            if let Some(events) = &events {
+                events(event);
+            }
+        };
         let local_repo = ide_sdk::apply::maven_local_repository(root, settings);
         // Module outputs the launch runs from a snapshot of: the originals must not come back.
         let mut snapshotted = Vec::new();
@@ -130,7 +153,7 @@ pub(crate) async fn resolve_launch(
                 root,
                 &model,
                 &module,
-                cache::BuildOptions { test, policy, rebuild_on_jdt_errors, members },
+                cache::BuildOptions { test, policy, rebuild_on_jdt_errors, members, events: events.clone() },
                 local_repo.clone(),
                 &cancel,
             )?;
@@ -140,7 +163,7 @@ pub(crate) async fn resolve_launch(
             snapshotted = outputs.originals;
             copies
         } else if external {
-            let built = compile::build_for_launch(root, &model, &module, test, build_kind, &cancel)?;
+            let built = compile::build_for_launch(root, &model, &module, test, build_kind, &cancel, &on_event)?;
             if let Some(failure) = built.failure {
                 if policy != BuildPolicy::MakeAndContinueOnErrors {
                     return Err(IdeError::internal(failure));
@@ -154,6 +177,7 @@ pub(crate) async fn resolve_launch(
         };
         let mut class_paths: Vec<String> = built.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         if delegated {
+            on_event(BuildEvent::Progress { message: "Resolving the classpath".into(), fraction: None });
             // m2e runs inside jdtls on the server JDK and can resolve a different
             // Maven profile/classifier than the module build. Ask the same Maven
             // process that built the module for its runtime/test dependencies.
@@ -203,6 +227,7 @@ fn is_maven_module(root: &Path, model: &BuildModel, module: &Path) -> bool {
 
 /// A launch of a module jdtls doesn't serve (another Java language server, or none): the
 /// build tool compiles it, and the classpath comes from that server, else from Maven.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_launch_without_jdtls(
     host: &Host,
     project: &std::sync::Arc<crate::Project>,
@@ -211,18 +236,24 @@ async fn resolve_launch_without_jdtls(
     test: bool,
     policy: BuildPolicy,
     cancel: &CancellationToken,
+    events: Option<LaunchEvents>,
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
     let scope = std::sync::Arc::new(scope);
     let kind = if policy == BuildPolicy::Rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
     let (model, built) = {
-        let (scope, module, cancel) = (scope.clone(), module.clone(), cancel.clone());
+        let (scope, module, cancel, events) = (scope.clone(), module.clone(), cancel.clone(), events.clone());
         tokio::task::spawn_blocking(move || {
             let model = load_launch_model(&scope);
+            let on_event = |event: BuildEvent| {
+                if let Some(events) = &events {
+                    events(event);
+                }
+            };
             let built = if policy == BuildPolicy::NoBuild {
                 None
             } else {
-                Some(compile::build_for_launch(&scope.root, &model, &module, test, kind, &cancel))
+                Some(compile::build_for_launch(&scope.root, &model, &module, test, kind, &cancel, &on_event))
             };
             (model, built)
         })
@@ -254,6 +285,9 @@ async fn resolve_launch_without_jdtls(
         }
     }
     let build_ms = started.elapsed().as_millis();
+    if let Some(events) = &events {
+        events(BuildEvent::Progress { message: "Resolving the classpath".into(), fraction: None });
+    }
     let from_server = project.lsp.java_server_classpath(&module, test, cancel).await?;
     let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
@@ -474,6 +508,7 @@ async fn build_members(
         members.push(cache::Member {
             module: launch.module.clone(),
             rebuild_on_jdt_errors: rebuild_on_jdt_errors(launch.policy, prefer_maven, errors),
+            events: launch.events.clone(),
         });
     }
     Ok(members)
@@ -646,6 +681,129 @@ pub async fn java_build_workspace(
     result
 }
 
+/// The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
+/// the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
+/// classpath has one; from the engine's repository, else downloaded once from Maven Central), and,
+/// for a Maven module, what its Surefire configuration gives the forked test JVM.
+#[command(trust = trusted)]
+pub async fn java_junit_runner(
+    host: &Host,
+    window: &str,
+    module: PathBuf,
+    class_paths: Vec<String>,
+) -> IdeResult<JunitLaunch> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let module = ide_core::project_roots::resolve(&project.root, &module);
+    let data_dir = host.local_data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let scope = workspace::scope_for(&project, &module)?;
+        let model = load_launch_model(&scope);
+        let surefire = model
+            .maven
+            .as_ref()
+            .and_then(|maven| ide_build::surefire::surefire_config(&scope.root, &scope.cache, maven, &module))
+            .unwrap_or_default();
+        let runner = ide_sdk::java::junit_runner_jar(&data_dir)
+            .ok_or_else(|| IdeError::internal("Cannot install the JUnit runner"))?;
+        let launcher = match ide_sdk::java::junit_launcher(&class_paths) {
+            ide_sdk::java::JunitLauncher::OnClasspath => None,
+            ide_sdk::java::JunitLauncher::Found(path) => Some(path),
+            ide_sdk::java::JunitLauncher::Missing(version) => Some(download_junit_launcher(&data_dir, &version)?),
+            ide_sdk::java::JunitLauncher::NoPlatform => {
+                return Err(IdeError::unavailable(
+                    "No JUnit Platform (junit-platform-engine) on the test classpath. To run these tests through \
+                     Maven, set Settings › Build Tools › Maven › Run tests using to Maven.",
+                ));
+            }
+        };
+        Ok(junit_launch(&module, class_paths, surefire, [Some(runner), launcher].into_iter().flatten()))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// The test JVM of OpenIDEA's JUnit runner.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JunitLaunch {
+    pub class_paths: Vec<String>,
+    /// Surefire's `argLine`, then its system properties as `-Dkey=value`.
+    pub vm_args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub working_directory: Option<String>,
+    /// The Surefire settings that were applied (`argLine`, `systemPropertyVariables`…), for the console.
+    pub surefire: Vec<String>,
+}
+
+fn junit_launch(
+    module: &Path,
+    class_paths: Vec<String>,
+    surefire: ide_build::surefire::SurefireConfig,
+    runner: impl Iterator<Item = PathBuf>,
+) -> JunitLaunch {
+    let mut applied = Vec::new();
+    let mut note = |used: bool, name: &str| {
+        if used {
+            applied.push(name.to_owned());
+        }
+    };
+    note(!surefire.arg_line.is_empty(), "argLine");
+    note(!surefire.system_properties.is_empty(), "systemPropertyVariables");
+    note(!surefire.environment.is_empty(), "environmentVariables");
+    note(surefire.working_directory.is_some(), "workingDirectory");
+    note(!surefire.additional_classpath.is_empty(), "additionalClasspathElements");
+    note(!surefire.classpath_excludes.is_empty(), "classpathDependencyExcludes");
+    // `group:artifact` in a Maven repository (`g/r/p/artifact/…`) or the Gradle cache (`g.r.p/artifact/…`).
+    let excluded = |path: &str| {
+        let path = path.replace('\\', "/");
+        surefire.classpath_excludes.iter().any(|e| {
+            e.split_once(':').is_some_and(|(group, artifact)| {
+                path.contains(&format!("/{}/{artifact}/", group.replace('.', "/")))
+                    || path.contains(&format!("/{group}/{artifact}/"))
+            })
+        })
+    };
+    let mut class_paths: Vec<String> = class_paths.into_iter().filter(|p| !excluded(p)).collect();
+    class_paths.extend(surefire.additional_classpath);
+    class_paths.extend(runner.map(|p| p.to_string_lossy().into_owned()));
+    let mut vm_args = surefire.arg_line;
+    vm_args.extend(surefire.system_properties.into_iter().map(|(k, v)| format!("-D{k}={v}")));
+    JunitLaunch {
+        class_paths,
+        vm_args,
+        env: surefire.environment,
+        working_directory: surefire.working_directory.map(|d| module.join(d).to_string_lossy().into_owned()),
+        surefire: applied,
+    }
+}
+
+fn download_junit_launcher(data_dir: &Path, version: &str) -> IdeResult<PathBuf> {
+    if version.is_empty() || !version.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+        return Err(IdeError::invalid(format!("Unexpected JUnit Platform version '{version}'")));
+    }
+    let name = format!("junit-platform-launcher-{version}.jar");
+    let dest = data_dir.join("junit").join(&name);
+    if dest.is_file() {
+        return Ok(dest);
+    }
+    std::fs::create_dir_all(dest.parent().expect("has a parent"))?;
+    let url = format!("https://repo1.maven.org/maven2/org/junit/platform/junit-platform-launcher/{version}/{name}");
+    let partial = dest.with_extension("jar.part");
+    // ponytail: unverified like the Lombok download (Central publishes SHA-1 only); HTTPS from Central.
+    let fetched = ide_tools::Http::new(&ide_core::tool_path::search_path())
+        .map(ide_tools::Http::https_only)
+        .and_then(|http| http.download(&url, &partial, None, &CancellationToken::new(), &|_| {}))
+        .and_then(|()| Ok(std::fs::rename(&partial, &dest)?));
+    fetched.map(|()| dest).map_err(|e| {
+        IdeError::unavailable(format!(
+            "Cannot download {name} from Maven Central ({}). Add org.junit.platform:junit-platform-launcher to the \
+             test dependencies, or set Settings › Build Tools › Maven › Run tests using to Maven.",
+            e.message
+        ))
+    })
+}
+
 /// An annotation processor's error for writing a file this build already wrote (JDT's
 /// `IdeFilerImpl`: "Source file already created", javac's Filer: "Attempt to recreate a file").
 fn processor_recreated_a_file(message: &str) -> bool {
@@ -662,6 +820,35 @@ fn drop_processor_recreate_errors(info: &mut JavaLaunchInfo) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn junit_launch_applies_the_surefire_configuration() {
+        let surefire = ide_build::surefire::SurefireConfig {
+            arg_line: vec!["-Xmx1g".into()],
+            system_properties: [("openidea.fail".to_owned(), "true".to_owned())].into(),
+            environment: [("TZ".to_owned(), "UTC".to_owned())].into(),
+            working_directory: Some("work".into()),
+            additional_classpath: vec!["/extra".into()],
+            classpath_excludes: vec!["org.slf4j:slf4j-simple".into(), "com.acme:gone".into()],
+        };
+        let classpath = vec![
+            "/m/target/test-classes".into(),
+            "/m2/org/slf4j/slf4j-simple/2.0/slf4j-simple-2.0.jar".into(),
+            "/gradle/files-2.1/com.acme/gone/1/abc/gone-1.jar".into(),
+            "/m2/org/slf4j/slf4j-api/2.0/slf4j-api-2.0.jar".into(),
+        ];
+        let launch = junit_launch(Path::new("/m"), classpath, surefire, [PathBuf::from("/runner.jar")].into_iter());
+        assert_eq!(
+            launch.class_paths,
+            ["/m/target/test-classes", "/m2/org/slf4j/slf4j-api/2.0/slf4j-api-2.0.jar", "/extra", "/runner.jar"]
+        );
+        assert_eq!(launch.vm_args, ["-Xmx1g", "-Dopenidea.fail=true"]);
+        assert_eq!(launch.env["TZ"], "UTC");
+        assert_eq!(launch.working_directory.as_deref(), Path::new("/m").join("work").to_str());
+        assert_eq!(launch.surefire.len(), 6);
+        let plain = junit_launch(Path::new("/m"), vec![], Default::default(), std::iter::empty());
+        assert!(plain.surefire.is_empty() && plain.vm_args.is_empty() && plain.working_directory.is_none());
+    }
 
     fn fake_jdk(dir: &Path, version: Option<&str>) -> PathBuf {
         let bin = dir.join("bin");
@@ -946,4 +1133,4 @@ mod tests {
     }
 }
 
-ide_command::domain!(java: java_build_workspace, java_debug_adapter, java_debug_server, java_resolve_launch);
+ide_command::domain!(java: java_build_workspace, java_debug_adapter, java_debug_server, java_junit_runner, java_resolve_launch);
