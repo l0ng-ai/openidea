@@ -11,6 +11,7 @@
  */
 import type { RunConfig } from "@/platform/ipc";
 import { ipcPath, isSameOrInside } from "@/platform/paths";
+import { isDotnetProjectPath } from "@/features/dotnet/target";
 import { isTestPath } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { applicationConfig, jvmModuleDir } from "./application";
@@ -28,6 +29,7 @@ import {
   relToCwd as relativeToCwd,
 } from "./context";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { dotnetProjectProduction } from "./dotnetTypes";
 import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { isWindows } from "./jvmTypes";
 import { inheritedRunTargets } from "./inheritedMain";
@@ -819,6 +821,11 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
   const rel = s.idPath;
 
   if (s.inProject) {
+    // #5635: Rider's "Run '<name>'" on a project file, Debug through its netcoredbg adapter.
+    if (isDotnetProjectPath(rel)) {
+      const config = dotnetProjectProduction(rel);
+      return { name: config.name, scope: "file", config };
+    }
     if (lang === "c" || lang === "cpp") {
       const target = cmakeTargets(input)[0];
       if (target) return { name: target.name, scope: "file", config: target };
