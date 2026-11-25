@@ -12,11 +12,11 @@ import { useProject } from "@/platform/project";
 import { notifications, registerMenuSlotItem } from "@/workbench/contributions";
 import { isFlutterConfig } from "@/workbench/flutterDevices";
 import { withExpandedCwd } from "./cwdMacros";
+import { dartTool } from "./flutterType";
 import { joinPath } from "./links";
 import { startRun, useRun } from "./store";
 
-// ponytail: #5773 adds `dartTool` to flutterType.ts as the one place choosing the executable; use it once it lands.
-const FLUTTER = "flutter";
+const FLUTTER = dartTool(true);
 
 /** The Flutter plugin's build actions (`flutter build <target>`); iOS builds need a Mac. */
 const FLUTTER_BUILDS = [

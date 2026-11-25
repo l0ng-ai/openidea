@@ -47,7 +47,7 @@ async function inspect(pubspec: string): Promise<Package> {
     mtimesIn(`${dir}/.dart_tool`),
   ]);
   const flutter = /^\s+sdk:\s*flutter\b/m.test(text);
-  // A workspace member's package config sits at the workspace root; no prompt there.
+  // ponytail: a workspace member's package config sits at the workspace root; no prompt there.
   if (/^resolution:\s*workspace\b/m.test(text)) return { flutter, pubGet: null };
   const at = (m: Map<string, number | null>, name: string) => m.get(name) ?? null;
   const config = at(tool, "package_config.json");
