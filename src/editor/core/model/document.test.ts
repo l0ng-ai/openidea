@@ -273,6 +273,19 @@ describe("DocumentManager + slots", () => {
     expect(backend.docs.get(model.doc)?.text).toBe(">hello world\n");
   });
 
+  it("clears the modified mark when an edit returns the buffer to the saved text", async () => {
+    const { manager, frame } = setup({ "/p/a.txt": "hello\n" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    slot.dispatchLocal({ changes: { from: 0, insert: "x" } });
+    await frame();
+    expect(model.getMeta().dirty).toBe(true);
+    slot.dispatchLocal({ changes: { from: 0, to: 1 }, userEvent: "undo" });
+    expect(model.getMeta().dirty).toBe(true);
+    await frame();
+    expect(model.getMeta().dirty).toBe(false);
+  });
+
   it("applies backend patches to every slot, annotated as remote", async () => {
     const { backend, manager, frame } = setup({ "/p/a.txt": "abc" });
     const model = await manager.acquire("/p/a.txt");
