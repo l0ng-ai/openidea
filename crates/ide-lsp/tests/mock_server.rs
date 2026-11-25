@@ -1550,6 +1550,119 @@ async fn flutter_outline_follows_the_document_and_the_server_instance() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn property_editor_lists_the_dart_servers_arguments_and_applies_its_edit() {
+    let h = harness(&[("dart", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("dart", ServerStatus::Ready).await;
+    let s = h.launcher.state("dart");
+    let arg = |name: &str, extra: Value| {
+        let mut a = json!({ "name": name, "hasArgument": false, "isRequired": false, "isNullable": true,
+            "isDeprecated": false, "isEditable": true });
+        a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        a
+    };
+    let at = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":9}});
+    s.respond(
+        "dart/textDocument/editableArguments",
+        json!({ "textDocument": { "uri": uri_of(&path), "version": 1 }, "name": "Text", "range": at, "arguments": [
+            arg("data", json!({ "type": "string", "value": "x", "hasArgument": true, "isRequired": true, "isNullable": false })),
+            arg("textAlign", json!({ "type": "enum", "options": ["TextAlign.left", "TextAlign.center"] })),
+            arg("maxLines", json!({ "type": "int", "value": 2, "hasArgument": true })),
+            // An older SDK leaves out flags it doesn't know yet.
+            json!({ "name": "softWrap", "type": "bool", "hasArgument": false }),
+        ]}),
+    );
+    let args = h.mgr.editable_arguments(doc, Pos::new(0, 2)).await.unwrap().unwrap();
+    assert_eq!(args.name.as_deref(), Some("Text"));
+    assert_eq!(
+        (args.arguments[0].kind.as_str(), args.arguments[0].value.clone()),
+        ("string", Some(ArgumentValue::Text("x".into())))
+    );
+    assert_eq!(args.arguments[1].options.as_ref().unwrap()[1], "TextAlign.center");
+    assert_eq!(args.arguments[1].value, None);
+    assert!(args.arguments[3].is_editable && !args.arguments[3].is_deprecated && !args.arguments[3].is_required);
+    assert_eq!(args.arguments[2].value, Some(ArgumentValue::Int(2)));
+    let asked = s.requested("dart/textDocument/editableArguments");
+    assert_eq!(asked[0]["position"], json!({"line":0,"character":2}));
+
+    // The server answers editArgument with null and sends the edit as workspace/applyEdit.
+    let applied: Arc<Mutex<Vec<WorkspaceEdit>>> = Arc::default();
+    let received = applied.clone();
+    h.mgr.set_apply_edit_hook(Box::new(move |e| {
+        received.lock().push(e);
+        true
+    }));
+    let uri = uri_of(&path);
+    *s.responder.lock() = Some(Arc::new(move |s, method, _| {
+        (method == "dart/textDocument/editArgument").then(|| {
+            let edit = json!({ "changes": { uri.clone(): [{ "range":
+                {"start":{"line":0,"character":5},"end":{"line":0,"character":8}}, "newText": "'y'" }] } });
+            let reply: Value = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(s.peer().request(
+                    "workspace/applyEdit",
+                    json!({ "edit": edit }),
+                    None,
+                ))
+            })
+            .unwrap();
+            assert_eq!(reply, json!({"applied": true}));
+            Value::Null
+        })
+    }));
+    h.mgr.edit_argument(doc, Pos::new(0, 2), "data".into(), Some(ArgumentValue::Text("y".into()))).await.unwrap();
+    let sent = s.requested("dart/textDocument/editArgument");
+    assert_eq!(sent[0]["edit"], json!({ "name": "data", "newValue": "y" }));
+    assert_eq!(sent[0]["position"], json!({"line":0,"character":2}));
+    let edits = applied.lock().clone();
+    assert!(
+        matches!(&edits[..], [e] if matches!(&e.files[0], FileEdit::Edit { edits, .. } if edits[0].new_text == "'y'"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn property_editor_has_nothing_without_a_dart_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(h.mgr.editable_arguments(doc, Pos::new(0, 2)).await.unwrap().is_none());
+    assert!(h.launcher.state("mock").requested("dart/textDocument/editableArguments").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_labels_join_the_inlay_hints_until_the_next_edit() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Center(\n  child: Text('x'))\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.respond("textDocument/inlayHint", json!([]));
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::InlayHints, .. }))
+            .count()
+    };
+    let at = |l0: u32, c0: u32, c1: u32| json!({"start":{"line":l0,"character":c0},"end":{"line":1,"character":c1}});
+    let labels = json!({ "uri": uri_of(&path), "labels": [
+        { "range": at(1, 9, 18), "label": "Text" },
+        { "range": at(0, 0, 19), "label": "Center" },
+    ]});
+    s.peer().notify("dart/textDocument/publishClosingLabels", labels).unwrap();
+    eventually(|| refreshes() == 1).await;
+    let whole = Range::new(Pos::new(0, 0), Pos::new(2, 0));
+    let hints = h.mgr.inlay_hints(doc, whole).await.unwrap();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].label, "// Text // Center");
+    assert_eq!(hints[0].position, Pos::new(1, 19));
+    assert_eq!(hints[0].kind, InlayKind::ClosingLabel);
+    assert!(h.mgr.inlay_hints(doc, Range::new(Pos::new(0, 0), Pos::new(0, 7))).await.unwrap().is_empty());
+
+    // Edited text: the labels wait for the next analysis.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 0), " ")], &|| unreachable!());
+    assert!(h.mgr.inlay_hints(doc, whole).await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn diagnostics_become_events_and_feed_code_actions() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "let unused = 1;\nlet y = 2;\n");
@@ -2130,7 +2243,9 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     h.wait_status("mock", ServerStatus::Busy).await;
     let old = task_of("Old work").unwrap();
     let mgr = h.mgr.clone();
-    let search = tokio::spawn(async move { mgr.references(doc, Pos::new(0, 1), true, true, Default::default()).await });
+    let search = tokio::spawn(async move {
+        mgr.references_streaming(doc, Pos::new(0, 1), true, true, true, Default::default(), None).await
+    });
     eventually(|| !s.requested("textDocument/references").is_empty()).await;
 
     peer.notify("$/progress", begin("New work")).unwrap();
@@ -2151,7 +2266,8 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     assert_eq!(s.notified("window/workDoneProgress/cancel"), [json!({ "token": 7 })]);
     assert_eq!(h.statuses("mock").last(), Some(&ServerStatus::Busy));
     assert!(!search.is_finished(), "replacement must not release a search waiting for idle");
-    let refs = h.mgr.references(doc, Pos::new(0, 1), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 1), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
 
     for _ in 0..2 {
@@ -4403,7 +4519,12 @@ async fn navigation_rename_format_and_decorations() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
 
     s.respond("textDocument/references", json!([{ "uri": uri, "range": r(0,3,0,6) }, { "uri": uri, "range": r(1,0,1,3) }, { "uri": uri, "range": r(1,0,1,3) }]));
-    let refs = h.mgr.references(doc, Pos::new(1, 1), true, true, Default::default()).await.unwrap().locations;
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(1, 1), true, true, true, Default::default(), None)
+        .await
+        .unwrap()
+        .locations;
     assert_eq!(refs.len(), 2);
     assert_eq!(s.requested("textDocument/references")[0]["context"]["includeDeclaration"], true);
 
@@ -4634,7 +4755,9 @@ async fn angular_references_leave_out_the_declaration_unless_asked() {
 
     let mgr = &h.mgr;
     let found = |include_declaration: bool| async move {
-        let refs = mgr.references(doc, Pos::new(0, 11), include_declaration, false, Default::default()).await;
+        let refs = mgr
+            .references_streaming(doc, Pos::new(0, 11), include_declaration, false, true, Default::default(), None)
+            .await;
         let mut v: Vec<(PathBuf, Range)> =
             refs.unwrap().locations.iter().map(|l| (l.path.to_path_buf(), l.range)).collect();
         v.sort();
@@ -4929,7 +5052,12 @@ async fn virtual_locations_and_text_document_content() {
         "textDocument/references",
         json!([{ "uri": uri_of(&path), "range": r(0, 4, 0, 9) }, { "uri": lib, "range": r(2, 4, 2, 9) }]),
     );
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap().locations;
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None)
+        .await
+        .unwrap()
+        .locations;
     assert_eq!(refs.iter().map(|l| l.uri.is_some()).collect::<Vec<_>>(), vec![false, true]);
     s.respond(
         "textDocument/prepareTypeHierarchy",
@@ -5886,7 +6014,8 @@ async fn covered_candidates_do_not_count_toward_the_open_limit() {
         let seen = grep_candidates(&h);
         let (doc, _) = h.open("a.mk", "def target\n");
         h.wait_status("mock", ServerStatus::Ready).await;
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
         assert!(seen.lock().iter().all(|q| q.limit > ide_lsp::MAX_CANDIDATES));
         let opened = s.notified("textDocument/didOpen").len() - 1;
         if covers_all {
@@ -5927,7 +6056,7 @@ async fn candidates_skip_the_directories_the_server_covers() {
         let seen = grep_candidates(&h);
         let (doc, _) = h.open("a.mk", "def target\n");
         h.wait_status("mock", ServerStatus::Ready).await;
-        h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
         let skipped: Vec<Vec<PathBuf>> = seen.lock().iter().map(|q| q.skip.clone()).collect();
         let expected = if commands.as_array().unwrap().len() == 2 && reported.is_array() { vec![src] } else { vec![] };
         assert_eq!(skipped, vec![expected], "{commands} {reported}");
@@ -5947,7 +6076,8 @@ async fn references_open_unopened_files_that_mention_the_name() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 2).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     let mut paths: Vec<PathBuf> = refs.locations.iter().map(|l| l.path.to_path_buf()).collect();
     paths.sort();
     assert_eq!(paths, vec![a.clone(), b.clone(), d.clone()]);
@@ -5971,12 +6101,13 @@ async fn references_open_unopened_files_that_mention_the_name() {
 
     // When every candidate file is already in the answer, no second request is made.
     std::fs::remove_file(&b).unwrap();
-    h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(s.requested("textDocument/references").len(), 3);
 
     // Without project_wide only the server's scope counts: no project search.
     std::fs::write(&b, "call target\n").unwrap();
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(seen.lock().len(), 2);
 }
@@ -6133,7 +6264,8 @@ async fn go_searches_open_nothing_when_no_other_module_uses_the_declaration() {
     h.wait_status("gopls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(uris(&s.notified("textDocument/didOpen")).len(), 1, "only a.go");
     assert!(s.requested("textDocument/definition").len() <= 1);
@@ -6152,7 +6284,8 @@ async fn references_never_reopen_or_close_the_users_files() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 2).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 1);
     assert_eq!(uris(&s.notified("textDocument/didOpen")).iter().filter(|u| **u == uri_of(&d)).count(), 1);
     assert!(s.notified("textDocument/didClose").is_empty());
@@ -6171,7 +6304,8 @@ async fn references_report_a_capped_candidate_search() {
     let (doc, _) = h.open("a.mk", "def target\n");
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
 }
@@ -6204,10 +6338,12 @@ async fn classified_java_references_widen_without_losing_metadata() {
     h.wait_status("jdtls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
     let seen = grep_candidates(&h);
-    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(scoped.locations.len(), 1);
     assert!(seen.lock().is_empty());
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(refs.classified.len(), 2);
     assert!(refs.classified.iter().all(|r| matches!(r.access, Some(ReferenceAccess::ReadWrite))));
@@ -6224,7 +6360,8 @@ async fn classified_java_references_widen_without_losing_metadata() {
             files: vec![skipped.clone()],
             limit_hit,
         }));
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
         assert_eq!(
             refs.incomplete,
             Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
@@ -6274,18 +6411,21 @@ async fn java_usages_of_an_unused_method_do_not_wait_for_background_work() {
         .unwrap();
     h.wait_status("jdtls", ServerStatus::Busy).await;
     // Until the project is imported, finding nothing may only mean it is not indexed yet.
-    let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
     s.peer().notify("language/status", json!({"type": "ServiceReady", "message": "ServiceReady"})).unwrap();
     for _ in 0..200 {
-        let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 6), true, false, true, Default::default(), None).await.unwrap();
         if refs.incomplete.is_none() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let started = std::time::Instant::now();
-    let refs = h.mgr.references(doc, Pos::new(0, 6), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), true, true, true, Default::default(), None).await.unwrap();
     assert!(started.elapsed() < Duration::from_secs(2), "waited {:?}", started.elapsed());
     assert!(refs.locations.is_empty());
     assert_eq!(refs.incomplete, None);
@@ -6378,7 +6518,8 @@ async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
         s.requested("workspace/executeCommand")[3..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
     assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources"))]);
     // Scoped probes (code lenses) search everything at once.
-    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(scoped.locations.len(), 2);
 }
 
@@ -6394,7 +6535,11 @@ async fn failed_java_command_falls_back_to_unclassified_native_references() {
         let (doc, path) = h.open("a.java", "int target;");
         h.wait_status("jdtls", ServerStatus::Ready).await;
         eventually(|| s.docs.lock().len() == 1).await;
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, project_wide, Default::default()).await.unwrap();
+        let refs = h
+            .mgr
+            .references_streaming(doc, Pos::new(0, 5), true, project_wide, true, Default::default(), None)
+            .await
+            .unwrap();
         assert_eq!(refs.locations.len(), 1);
         assert_eq!(refs.locations[0].path, path);
         assert!(refs.classified.is_empty());
@@ -6433,7 +6578,8 @@ async fn failed_widened_java_command_retries_with_native_references() {
     let (doc, _) = h.open("a.java", "int target;");
     h.wait_status("jdtls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert!(refs.classified.is_empty());
     assert_eq!(s.requested("workspace/executeCommand").len(), 2);
@@ -6457,7 +6603,8 @@ async fn superseded_java_command_does_not_fall_back() {
         // Invalid extension response after the source version changed.
         Some(json!({"failed": true}))
     }));
-    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    let err =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
     assert!(s.requested("textDocument/references").is_empty());
 }
@@ -6471,7 +6618,8 @@ async fn cancelled_java_command_does_not_fall_back() {
     s.errors.lock().insert("workspace/executeCommand".into(), (-32800, "cancelled".into()));
     let (doc, _) = h.open("a.java", "int target;");
     h.wait_status("jdtls", ServerStatus::Ready).await;
-    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    let err =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
     assert!(s.requested("textDocument/references").is_empty());
 }
@@ -6481,7 +6629,7 @@ async fn incomplete_reports(h: &Harness, doc: DocId) -> Vec<(&'static str, Optio
     let at = Pos::new(0, 5);
     let cancel = ide_core::CancellationToken::new;
     vec![
-        ("references", h.mgr.references(doc, at, true, true, cancel()).await.unwrap().incomplete),
+        ("references", h.mgr.references_streaming(doc, at, true, true, true, cancel(), None).await.unwrap().incomplete),
         ("rename", h.mgr.rename(doc, at, "renamed".into(), cancel()).await.unwrap().incomplete),
         ("callers", h.mgr.call_hierarchy(doc, at, HierarchyDirection::Incoming, cancel()).await.unwrap().incomplete),
     ]
@@ -6600,7 +6748,7 @@ async fn cancelling_a_references_search_stops_the_candidate_search_and_closes_fi
         tokio::time::sleep(Duration::from_millis(100)).await;
         later.cancel();
     });
-    let err = h.mgr.references(doc, Pos::new(0, 5), true, true, cancel).await.unwrap_err();
+    let err = h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, cancel, None).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
 
     // Cancelled while the server answers with a file opened for the search.
@@ -6621,7 +6769,7 @@ async fn cancelling_a_references_search_stops_the_candidate_search_and_closes_fi
     let mgr = h.mgr.clone();
     let search = tokio::spawn({
         let cancel = cancel.clone();
-        async move { mgr.references(doc, Pos::new(0, 5), true, true, cancel).await }
+        async move { mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, cancel, None).await }
     });
     eventually(|| gate.entered()).await;
     cancel.cancel();
@@ -6654,7 +6802,8 @@ async fn diagnostics_of_files_opened_for_a_search_stay_out_of_problems() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     // Published right after the didClose (analysis still running): dropped too.
     s.peer().notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&b), "diagnostics": diag })).unwrap();
@@ -6685,7 +6834,9 @@ async fn opening_a_file_during_a_search_takes_it_over() {
     eventually(|| s.docs.lock().len() == 1).await;
 
     let mgr = h.mgr.clone();
-    let search = tokio::spawn(async move { mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await });
+    let search = tokio::spawn(async move {
+        mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await
+    });
     // The server answers with the copy opened for the search.
     eventually(|| gate.entered()).await;
     let user_doc = DocId::next();
@@ -6736,7 +6887,8 @@ async fn an_empty_answer_while_indexing_is_retried_when_indexing_ends() {
         eventually(|| answered.load(Ordering::SeqCst)).await;
         peer.notify("$/progress", json!({ "token": "idx", "value": { "kind": "end" } })).unwrap();
     });
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 1);
     assert_eq!(refs.incomplete, None);
     assert_eq!(s.requested("textDocument/references").len(), 2);
@@ -6746,10 +6898,12 @@ async fn an_empty_answer_while_indexing_is_retried_when_indexing_ends() {
         .notify("$/progress", json!({ "token": "again", "value": { "kind": "begin", "title": "Indexing" } }))
         .unwrap();
     h.wait_status("mock", ServerStatus::Busy).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!((refs.locations.len(), refs.incomplete), (1, None));
     s.respond("textDocument/references", json!([]));
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 0);
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
 }
@@ -6873,11 +7027,13 @@ async fn external_projects_carry_plugin_files_and_module_aliases() {
     let geterr = s.requested("workspace/executeCommand").into_iter().find(|r| r["arguments"][0] == "geterr").unwrap();
     assert_eq!(geterr["arguments"][1]["files"], json!([app]), "an open file has a project in tsserver");
     assert_eq!(geterr["arguments"][2]["isAsync"], true);
-    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 18), false, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
     diagnostics.open();
     h.wait_status("vtsls", ServerStatus::Ready).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 18), false, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, None);
     let requests = s.requested("workspace/executeCommand");
     let args = &requests[0]["arguments"][1];
@@ -7181,10 +7337,12 @@ async fn configuration_usages_merge_native_and_unsaved_profiles_without_sibling_
         1,
         "app:\n  time-out: still-wrong\n",
     );
-    let scoped = h.mgr.references(doc, Pos::new(0, 6), false, false, Default::default()).await.unwrap();
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), false, false, true, Default::default(), None).await.unwrap();
     assert_eq!(scoped.locations.len(), 1);
     assert!(s.requested("workspace/executeCommand").is_empty());
-    let refs = h.mgr.references(doc, Pos::new(0, 6), false, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), false, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 4, "{refs:?}");
     assert!(refs.locations.iter().all(|l| !l.path.to_path_buf().starts_with(&sibling)));
     assert!(refs.locations.iter().any(|l| l.path.to_path_buf() == overlay));
@@ -7607,6 +7765,58 @@ async fn gradle_incompatible_jdk_log_is_surfaced_once_across_message_channels() 
     assert_eq!(messages, vec![failure, "after"]);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_gradle_sync_is_surfaced_once_unless_an_incompatible_jdk_explains_it() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let sync = |project: &str, cause: &str| {
+        format!(
+            "Nov 25, 2026, 2:00:14 PM Synchronize project {project} failed due to an error connecting to the Gradle build.\n\
+             org.gradle.tooling.BuildActionFailureException: The supplied phased action failed with an exception.\n\
+             \tat org.gradle.tooling.internal.consumer.DefaultPhasedBuildActionExecuter.run(DefaultPhasedBuildActionExecuter.java:68)\n\
+             Caused by: java.lang.IllegalArgumentException: {cause}\n\
+             \tat org.gradle.groovy.scripts.DefaultScript.apply(DefaultScript.java:133)"
+        )
+    };
+    // jdtls logs it below error level, and again on every sync.
+    for _ in 0..2 {
+        let message = sync("repro", "Unable to determine constructor argument #2");
+        s.peer().notify("window/logMessage", json!({ "type": 3, "message": message })).unwrap();
+    }
+    // An incompatible JDK fails the sync too, and jdtls then says so with its own fix.
+    s.peer()
+        .notify(
+            "window/logMessage",
+            json!({ "type": 3, "message": sync("old", "Unsupported class file major version 71") }),
+        )
+        .unwrap();
+    let jdk = "Can't use Java 27.0.1 and Gradle 7.5.1 to import Gradle project old.";
+    s.peer()
+        .notify("window/logMessage", json!({ "type": 1, "message": format!("{jdk}\njava.lang.Exception: details") }))
+        .unwrap();
+    let notes = || -> Vec<(String, String)> {
+        h.events
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::Notify { title, body: Some(b), .. } => Some((title.clone(), b.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    eventually(|| notes().iter().any(|(t, _)| t == "Gradle project sync failed")).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let notes = notes();
+    let synced: Vec<_> =
+        notes.iter().filter(|(t, _)| t == "Gradle project sync failed").map(|(_, b)| b.as_str()).collect();
+    assert_eq!(synced.len(), 1, "{notes:?}");
+    assert!(synced[0].starts_with("Gradle could not sync repro. "), "{notes:?}");
+    assert!(synced[0].ends_with(" Cause: Unable to determine constructor argument #2"), "{notes:?}");
+    assert!(notes.iter().any(|(_, b)| b == jdk), "{notes:?}");
+}
+
 /// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.
 #[tokio::test(flavor = "multi_thread")]
 async fn java_hierarchy_refactorings_use_the_extension_commands() {
@@ -7999,7 +8209,8 @@ async fn injected_documents_route_and_resolve_without_exposing_virtual_files() {
             assert_eq!(locations[0].path.0, path);
             assert_eq!(locations[0].range, rng(0, 4, 0, 7));
         }
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
         assert_eq!(refs.locations[0].path.0, path);
         let highlights = h.mgr.document_highlights(doc, Pos::new(0, 5)).await.unwrap();
         assert_eq!(highlights[0].range, rng(0, 4, 0, 7));

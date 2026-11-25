@@ -74,6 +74,7 @@ export async function saveImage(
   for (let n = 0; ; n++) {
     const target = imageTarget(markdown, folder, `${stem}${n ? `-${n}` : ""}${ext}`);
     try {
+      // oxlint-disable-next-line no-await-in-loop -- retry loop: the next filename is only tried after this one reports alreadyExists
       await create(target, data);
       return `![](${relativeImagePath(markdown, target)})`;
     } catch (error) {
@@ -157,11 +158,14 @@ export function markdownImages(options: ImageOptions): Extension {
           const links: string[] = [];
           try {
             for (const source of sources) {
+              // oxlint-disable-next-line no-await-in-loop -- images are read one at a time so the loop stops as soon as the view is gone
               const { blob, name } = await source();
               if (!this.alive) return;
+              // oxlint-disable-next-line no-await-in-loop -- each conversion ends with an alive check before more work is started
               const bytes = await imageBytes(blob);
               if (!this.alive) return;
               links.push(
+                // oxlint-disable-next-line no-await-in-loop -- saveImage allocates names via alreadyExists retries; same-named images would race in parallel
                 await saveImage(
                   options.path,
                   options.folder,

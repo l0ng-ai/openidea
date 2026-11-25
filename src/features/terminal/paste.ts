@@ -164,7 +164,9 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
       for (const item of result.items) {
         const mime = item.types.find(isMedia);
         if (mime) {
+          // oxlint-disable-next-line no-await-in-loop -- the first clipboard item with a supported image type wins
           const image = await item.getType(mime);
+          // oxlint-disable-next-line no-await-in-loop -- this one image is pasted, then the loop stops; later items are not read
           if (target.current()) await pasteMedia(image, target, paste);
           return;
         }

@@ -46,7 +46,8 @@ async function siblingGoPackage(directory: string): Promise<string | null> {
   }
 }
 
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/;
+// `Gradle` / `<module>/Gradle` marks the source sets a Gradle sync reported (ide-host `with_gradle_roots`).
+const JVM_BUILD = /(^|\/)(Gradle|pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
 
 /** JVM source and test roots (project-relative) that packages are counted from. */
 function packageRoots(): string[] {
@@ -63,6 +64,7 @@ async function composerNamespace(directory: string, root: string | null): Promis
   for (;;) {
     let text: string | null = null;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- nearest composer.json wins; ancestors are read in order and stop at the first
       text = await call(commands.fsReadText(`${dir}/composer.json`));
     } catch {
       /* no composer.json here */
@@ -80,11 +82,13 @@ async function csharpNamespace(directory: string, root: string | null): Promise<
   const start = directory.replace(/\/+$/, "");
   const top = root?.replace(/\/+$/, "") ?? null;
   for (let dir = start; ; dir = dirname(dir)) {
+    // oxlint-disable-next-line no-await-in-loop -- nearest .csproj wins; ancestors are listed in order and stop at the first
     const csproj = await call(commands.fsReadDir(dir)).then(
       (entries) => entries.find((e) => e.kind === "file" && /\.csproj$/i.test(e.name)),
       () => undefined,
     );
     if (csproj) {
+      // oxlint-disable-next-line no-await-in-loop -- the nearest .csproj's text is read before returning its namespace
       const text = await call(commands.fsReadText(csproj.path)).catch(() => "");
       const rootNamespace = csprojRootNamespace(text, csproj.name);
       return { name: inferCsharpNamespace(start.slice(dir.length), rootNamespace), fileScoped: csprojFileScoped(text) };

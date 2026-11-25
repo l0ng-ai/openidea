@@ -9,6 +9,14 @@
 //! With IBus behind it, a dead key waiting for its second key makes WebKit collapse every
 //! new selection in the window to its caret (Select All, mouse drags, text fields) until a
 //! composition completes. GTK's own IBus module does not, so IBus sessions use that.
+//! Fcitx's GTK module is the other way round on GNOME: Wayland gives it only coordinates
+//! inside the window, so with several monitors its candidate window opens on the wrong
+//! one. Through the compositor (Mutter hands text-input to Fcitx's IBus frontend) it
+//! follows the caret, so GNOME Wayland sessions drop `GTK_IM_MODULE=fcitx`.
+//!
+//! WSLg's Wayland compositor has no usable GPU path for WebKitGTK (Mesa reports an
+//! incompatible driver and the window stays blank); its X server works, so WSL uses X11
+//! unless `GDK_BACKEND` is set.
 
 const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 const DISABLE_EXPLICIT_SYNC: &str = "__NV_DISABLE_EXPLICIT_SYNC";
@@ -17,6 +25,10 @@ const IM_MODULE: &str = "GTK_IM_MODULE";
 /// Run before other threads start (`set_var`).
 #[cfg(target_os = "linux")]
 pub fn configure() {
+    if use_x11_on_wsl(|k| std::env::var(k).ok()) {
+        tracing::info!("WSLg: GDK_BACKEND=x11");
+        unsafe { std::env::set_var("GDK_BACKEND", "x11") };
+    }
     let nvidia = ["/proc/driver/nvidia/version", "/sys/module/nvidia"].iter().any(|p| std::path::Path::new(p).exists());
     if disable_explicit_sync(|k| std::env::var(k).ok(), nvidia) {
         tracing::info!("Wayland with the NVIDIA driver: {DISABLE_EXPLICIT_SYNC}=1");
@@ -26,6 +38,23 @@ pub fn configure() {
         tracing::info!("Wayland with IBus: {IM_MODULE}=ibus");
         unsafe { std::env::set_var(IM_MODULE, "ibus") };
     }
+    if drop_fcitx_module(|k| std::env::var(k).ok()) {
+        tracing::info!("GNOME Wayland with Fcitx: input method through the compositor");
+        unsafe { std::env::remove_var(IM_MODULE) };
+    }
+}
+
+/// GNOME on Wayland with Fcitx's GTK module selected (the session default `im-config` and
+/// Fcitx's setup write).
+fn drop_fcitx_module(var: impl Fn(&str) -> Option<String>) -> bool {
+    let gnome = var("XDG_CURRENT_DESKTOP").is_some_and(|d| d.split(':').any(|d| d.eq_ignore_ascii_case("gnome")));
+    gnome && var(IM_MODULE).is_some_and(|m| matches!(m.trim(), "fcitx" | "fcitx5")) && gdk_wayland(&var)
+}
+
+/// Under WSL with WSLg's X server available, unless the user chose a GDK backend.
+fn use_x11_on_wsl(var: impl Fn(&str) -> Option<String>) -> bool {
+    let set = |k: &str| var(k).is_some_and(|v| !v.is_empty());
+    (set("WSL_DISTRO_NAME") || set("WSL_INTEROP")) && set("DISPLAY") && !set("GDK_BACKEND")
 }
 
 /// GTK 3's IBus input method module (`ibus-gtk3`), wherever the distribution keeps it.
@@ -130,6 +159,32 @@ mod tests {
         assert!(!decide_im(&[("WAYLAND_DISPLAY", "wayland-0")], true));
         assert!(!decide_im(&[("DISPLAY", ":0"), ("XMODIFIERS", "@im=ibus")], true));
         assert!(!decide_im(&[gnome[0], gnome[1], ("GDK_BACKEND", "x11")], true));
+    }
+
+    fn env(vars: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        let vars = vars.to_vec();
+        move |k| vars.iter().find(|(name, _)| *name == k).map(|(_, v)| v.to_string())
+    }
+
+    #[test]
+    fn gnome_wayland_drops_the_fcitx_module() {
+        let gnome = [("XDG_CURRENT_DESKTOP", "ubuntu:GNOME"), ("WAYLAND_DISPLAY", "wayland-0"), (IM_MODULE, "fcitx")];
+        assert!(drop_fcitx_module(env(&gnome)));
+        assert!(drop_fcitx_module(env(&[gnome[0], gnome[1], (IM_MODULE, "fcitx5")])));
+        assert!(!drop_fcitx_module(env(&[("XDG_CURRENT_DESKTOP", "KDE"), gnome[1], gnome[2]])));
+        assert!(!drop_fcitx_module(env(&[gnome[0], gnome[2], ("DISPLAY", ":0")])), "X11 session");
+        assert!(!drop_fcitx_module(env(&[gnome[0], gnome[1], gnome[2], ("GDK_BACKEND", "x11")])));
+        assert!(!drop_fcitx_module(env(&[gnome[0], gnome[1], (IM_MODULE, "ibus")])));
+    }
+
+    #[test]
+    fn wsl_uses_x11_unless_a_backend_is_chosen() {
+        let wslg = [("WSL_DISTRO_NAME", "Ubuntu-24.04"), ("WAYLAND_DISPLAY", "wayland-0"), ("DISPLAY", ":0")];
+        assert!(use_x11_on_wsl(env(&wslg)));
+        assert!(use_x11_on_wsl(env(&[("WSL_INTEROP", "/run/WSL/1_interop"), ("DISPLAY", ":0")])));
+        assert!(!use_x11_on_wsl(env(&[wslg[0], wslg[1], wslg[2], ("GDK_BACKEND", "wayland")])));
+        assert!(!use_x11_on_wsl(env(&[wslg[0], wslg[1]])), "no X server");
+        assert!(!use_x11_on_wsl(env(&[wslg[1], wslg[2]])), "not WSL");
     }
 
     #[test]

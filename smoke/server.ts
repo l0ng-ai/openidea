@@ -48,6 +48,7 @@ async function waitForGroupExit(pid: number, timeoutMs = 5000): Promise<void> {
       }
     });
     if (!alive || Date.now() - start > timeoutMs) return;
+    // oxlint-disable-next-line no-await-in-loop -- deliberate backoff between liveness checks of the process group.
     await new Promise((r) => setTimeout(r, 50));
   }
 }

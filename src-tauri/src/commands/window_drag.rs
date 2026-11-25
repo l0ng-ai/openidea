@@ -3,7 +3,7 @@
 use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult};
 use std::path::PathBuf;
-use tauri::WebviewWindow;
+use tauri::Window;
 
 /// Starts dragging `window` while the primary mouse button is still down; returns whether a drag began.
 ///
@@ -12,7 +12,7 @@ use tauri::WebviewWindow;
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_start_drag(window: WebviewWindow) -> IdeResult<bool> {
+pub fn window_start_drag(window: Window) -> IdeResult<bool> {
     #[cfg(target_os = "macos")]
     if objc2_app_kit::NSEvent::pressedMouseButtons() & 1 == 0 {
         return Ok(false);
@@ -27,7 +27,7 @@ pub fn window_start_drag(window: WebviewWindow) -> IdeResult<bool> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_drag_files(window: WebviewWindow, paths: Vec<PathBuf>) -> IdeResult<bool> {
+pub async fn window_drag_files(window: Window, paths: Vec<PathBuf>) -> IdeResult<bool> {
     let paths = ide_drag_out::local_paths(paths)?;
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();

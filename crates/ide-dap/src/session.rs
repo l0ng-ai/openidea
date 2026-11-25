@@ -8,7 +8,7 @@ use crate::{Breakpoint, BreakpointState, DataBreakpoint, DebugManager, FunctionB
 use ide_core::event::DebugEvent;
 #[cfg(unix)]
 use ide_core::process::process_tree;
-use ide_core::{DebugSessionId, IdeEvent, TaskId};
+use ide_core::{DebugSessionId, IdeEvent, RunId, TaskId};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
@@ -117,6 +117,9 @@ pub(crate) struct Session {
     pub jvm_located: watch::Sender<bool>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
+    /// The run whose JVM this session attached to (Debug of a build tool's run, Attach to
+    /// Process on a run): that run's thread dumps go through this session.
+    pub run: Option<RunId>,
     pub stream_tracer: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::StreamTracer>>>,
     /// Given at start: the class breakpoints must be armed before `configurationDone`.
     pub(crate) exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
@@ -333,6 +336,7 @@ impl Session {
             jvm_located: watch::channel(false).0,
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
+            run: None,
             stream_tracer: parking_lot::Mutex::new(None),
             exception_classes: None,
             exception_turn: tokio::sync::Mutex::default(),
@@ -1057,7 +1061,8 @@ fn reap_on_exit(mut child: Box<dyn portable_pty::Child + Send + Sync>, exited: A
 /// starts a launcher that gives the program its terminal, and the program reads input only from
 /// a terminal), forwards its output to the console, and keeps the terminal for typed input.
 pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, String> {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use ide_core::pty::native_pty_system;
+    use portable_pty::{CommandBuilder, PtySize};
     let argv: Vec<String> = args
         .get("args")
         .and_then(Value::as_array)

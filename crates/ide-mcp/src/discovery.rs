@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
 /// The discovery file, relative to the app data directory.
-pub const DISCOVERY_FILE: &str = "mcp/server.json";
+const DISCOVERY_FILE: &str = "mcp/server.json";
 
 /// The discovery file of the IDE whose app data directory is `app_data`.
 pub fn discovery_path(app_data: &Path) -> PathBuf {
@@ -17,7 +17,7 @@ pub fn discovery_path(app_data: &Path) -> PathBuf {
 }
 
 /// The kept token, relative to the app data directory.
-pub const TOKEN_FILE: &str = "mcp/token";
+const TOKEN_FILE: &str = "mcp/token";
 
 /// The kept token of the IDE whose app data directory is `app_data`.
 pub fn token_path(app_data: &Path) -> PathBuf {

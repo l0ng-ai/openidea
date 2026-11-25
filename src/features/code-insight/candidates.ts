@@ -33,6 +33,7 @@ export function filesMentioning(request: RequestId, word: string): Promise<Candi
       exclude: [],
       scope: { kind: "project" as const },
       maxMatches: 0,
+      skipLargeFiles: true,
     };
     call(commands.searchStart(request, query, channel)).then(
       // `done` normally arrives on the channel; don't hang if it never does.

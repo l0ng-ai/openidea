@@ -44,18 +44,27 @@ export function textColumns(text: string, tabSize: number): number {
  */
 export class WidestColumns {
   private last: object | null = null;
+  private lastId: number | null = null;
   private max = 0;
 
   constructor(private readonly tabSize = 4) {}
 
-  measure(lines: readonly { text: string }[]): number {
+  measure(lines: readonly { text: string; id?: number }[]): number {
     let from = this.last ? lines.lastIndexOf(this.last as { text: string }) : -1;
+    // A store that replaces the growing last line with a copy keeps its id: find it by that,
+    // walking back only over the lines added since.
+    if (from < 0 && this.lastId != null) {
+      let i = lines.length - 1;
+      while (i >= 0 && (lines[i]!.id ?? -Infinity) > this.lastId) i--;
+      if (i >= 0 && lines[i]!.id === this.lastId) from = i;
+    }
     if (from < 0) {
       this.max = 0;
       from = 0;
     }
     for (let i = from; i < lines.length; i++) this.max = Math.max(this.max, textColumns(lines[i]!.text, this.tabSize));
     this.last = lines.at(-1) ?? null;
+    this.lastId = lines.at(-1)?.id ?? null;
     return this.max;
   }
 }

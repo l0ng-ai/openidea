@@ -134,8 +134,10 @@ export async function extractInterface(
   let extracted: ServerRefactored;
   try {
     for (;;) {
+      // oxlint-disable-next-line no-await-in-loop -- sync before each confirmation round
       await whenSynced(view);
       const token: string | null = confirmation;
+      // oxlint-disable-next-line no-await-in-loop -- request carries the previous confirmation
       extracted = await cancellable(signal, (id, wanted) =>
         lspRequest(
           () => commands.lspExtractInterface(id, request.doc, request.pos, [...members], name, pkg.json, token),
@@ -147,6 +149,7 @@ export async function extractInterface(
       if (fatal || (!extracted.edit && !extracted.confirmation))
         return { status: "stay", error: fatal?.message ?? "Nothing to change" };
       if (!extracted.confirmation) break;
+      // oxlint-disable-next-line no-await-in-loop -- the confirmation gates the next request
       if (!(await confirmProblems(extracted.problems.map((p) => p.message))) || signal?.aborted)
         return { status: "stay" };
       confirmation = extracted.confirmation;

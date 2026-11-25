@@ -158,9 +158,17 @@ export function ReviewCommentBody({
     <div>
       {blocks.map((b, i) =>
         b.type === "markdown" ? (
+          // oxlint-disable-next-line react/no-array-index-key -- repeated markdown blocks need positional keys
           <Markdown key={i} text={b.text} />
         ) : (
-          <SuggestionBox key={i} number={number} thread={thread} target={target} lines={b.lines} />
+          <SuggestionBox
+            // oxlint-disable-next-line react/no-array-index-key -- repeated suggestions need positional keys
+            key={i}
+            number={number}
+            thread={thread}
+            target={target}
+            lines={b.lines}
+          />
         ),
       )}
     </div>

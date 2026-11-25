@@ -204,21 +204,24 @@ describe("pythonTypeHintIntentions", () => {
     useProject.setState({ project: { root: "/p" } } as never);
     ipc.lspInlayHints.mockResolvedValue({ status: "ok", data: [] });
     ipc.lspHover.mockResolvedValue(hover("(variable) maybe: str | None"));
-    for (const prefix of [
-      '"""\nfrom __future__ import annotations\n"""',
-      "from __future__ import division as annotations",
-      "from __future__ import division # annotations",
-    ]) {
-      const view = mount(`${prefix}\nmaybe = find()\n`, "maybe");
-      expect(await pythonTypeHintIntentions(view, new AbortController().signal)).toEqual([]);
-    }
-    for (const prefix of [
-      "from __future__ import (\n    annotations,\n)",
-      "from __future__ import annotations; pass",
-    ]) {
-      const view = mount(`${prefix}\nmaybe = find()\n`, "maybe");
-      expect((await run(view, "Add type annotation ': str | None'")).text).toContain("maybe: str | None = find()");
-    }
+    await Promise.all(
+      [
+        '"""\nfrom __future__ import annotations\n"""',
+        "from __future__ import division as annotations",
+        "from __future__ import division # annotations",
+      ].map(async (prefix) => {
+        const view = mount(`${prefix}\nmaybe = find()\n`, "maybe");
+        expect(await pythonTypeHintIntentions(view, new AbortController().signal)).toEqual([]);
+      }),
+    );
+    await Promise.all(
+      ["from __future__ import (\n    annotations,\n)", "from __future__ import annotations; pass"].map(
+        async (prefix) => {
+          const view = mount(`${prefix}\nmaybe = find()\n`, "maybe");
+          expect((await run(view, "Add type annotation ': str | None'")).text).toContain("maybe: str | None = find()");
+        },
+      ),
+    );
   });
 
   it("falls back to hover for older servers returning hints without insertion edits", async () => {

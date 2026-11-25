@@ -22,7 +22,7 @@ import { IconButton } from "./Button";
 import { Menu, type MenuItem } from "./Menu";
 import { HiddenTabsPopup } from "./HiddenTabsPopup";
 import { tooltipAttrs } from "./Tooltip";
-import { isOutsideWindow, registerDropTarget, startPointerDrag } from "./pointerDrag";
+import { isOutsideWindow, registerDropTarget, startPointerDrag, type DragData } from "./pointerDrag";
 import { Given } from "./T";
 import styles from "./Tabs.module.css";
 import { tx, useGivenTx } from "@/platform/i18n";
@@ -69,6 +69,9 @@ export interface TabsDnd {
   type: string;
   payload: (id: string) => string;
   onDrop: (payload: string, index: number) => void;
+  /** Extra drag payloads accepted onto this strip (shown with the cross-strip insertion line). */
+  accepts?: (data: DragData) => boolean;
+  onExternalDrop?: (data: DragData, index: number) => void;
   /**
    * A dragged tab released with no accepting target (the pointer left the
    * window): the editor uses it to detach the tab into a new window. Gets the
@@ -155,6 +158,11 @@ export interface TabsProps {
   closePosition?: "right" | "left";
   /** `vertical`: a column of tabs (editor tabs placed left / right); always scrolls, `layout` is ignored. */
   orientation?: "horizontal" | "vertical";
+  /**
+   * Clicking a tab leaves keyboard focus where it was (a scope strip under a search field, like the
+   * Find in Files scopes); keyboard navigation of a focused strip is unchanged.
+   */
+  keepFocusOnClick?: boolean;
 }
 
 export function Tabs({
@@ -177,6 +185,7 @@ export function Tabs({
   hiddenTabsOnly = false,
   closePosition = "right",
   orientation = "horizontal",
+  keepFocusOnClick = false,
   ...aria
 }: TabsProps) {
   const vertical = orientation === "vertical";
@@ -184,6 +193,7 @@ export function Tabs({
   const given = useGivenTx();
   const scrollRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const middlePressedTab = useRef<HTMLDivElement | null>(null);
   const [overflow, setOverflow] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = useCallback(() => setMenuOpen(false), [setMenuOpen]);
@@ -241,12 +251,15 @@ export function Tabs({
       return next ? items.indexOf(next) : items.length;
     };
     return registerDropTarget(el, {
-      accepts: (type) => type === dropState.current.dnd?.type,
+      accepts: (type, data) => type === dropState.current.dnd?.type || !!dropState.current.dnd?.accepts?.(data),
       over: (_, x, y) => setDrop(indexAt(x, y)),
       leave: () => setDrop(null),
       drop: (data, x, y) => {
         setDrop(null);
-        dropState.current.dnd?.onDrop(data.payload, indexAt(x, y));
+        const current = dropState.current.dnd;
+        const at = indexAt(x, y);
+        if (data.type === current?.type) current.onDrop(data.payload, at);
+        else current?.onExternalDrop?.(data, at);
       },
     });
   }, [dndType]);
@@ -458,10 +471,20 @@ export function Tabs({
                   : undefined
               }
               onMouseDown={(e) => {
-                if (e.button === 1 && closable) {
-                  e.preventDefault();
-                  onClose!(item.id);
-                }
+                if (e.button !== 1 || !closable) return;
+                e.preventDefault();
+                middlePressedTab.current = e.currentTarget;
+              }}
+              onMouseLeave={(e) => {
+                if (middlePressedTab.current === e.currentTarget) middlePressedTab.current = null;
+              }}
+              onMouseUp={(e) => {
+                if (e.button !== 1 || middlePressedTab.current !== e.currentTarget) return;
+                middlePressedTab.current = null;
+                if (!closable) return;
+                // WebKitGTK pastes the primary selection on release. Cancel it before closing the tab moves focus.
+                e.preventDefault();
+                onClose!(item.id);
               }}
               onContextMenu={onContextMenu ? (e) => onContextMenu(item.id, e) : undefined}
             >
@@ -479,6 +502,7 @@ export function Tabs({
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
                 className={clsx(styles.tabButton, item.dimmed && styles.dimmed)}
                 style={item.color ? { color: item.color } : undefined}
+                onMouseDown={keepFocusOnClick ? (e) => e.preventDefault() : undefined}
                 onClick={(e) => {
                   // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.
                   if (closeOnShiftClick && e.shiftKey && e.detail > 0 && closable) {

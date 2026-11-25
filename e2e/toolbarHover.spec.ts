@@ -23,7 +23,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.getByRole("option", { name: "Current File", exact: true }).click();
     const project = page.getByRole("region", { name: "Project", exact: true });
     const buttons = [
-      ...["Select Opened File", "Expand All", "Collapse All", "Options", "Hide"].map((name) =>
+      ...["Select Opened File", "Expand Selected", "Collapse All", "Options", "Hide"].map((name) =>
         project.getByRole("button", { name, exact: true }),
       ),
       ...[
@@ -66,7 +66,8 @@ for (const theme of ["light", "dark"] as const) {
       await expect(button).toHaveCSS("outline-width", "2px");
     }
 
-    const expand = project.getByRole("button", { name: "Expand All", exact: true });
+    const expand = project.getByRole("button", { name: "Expand Selected", exact: true });
+    await project.getByRole("treeitem", { name: "src", exact: true }).click();
     await expand.hover();
     const hover = await expand.evaluate((button) => getComputedStyle(button).backgroundColor);
     await page.mouse.down();
@@ -74,6 +75,12 @@ for (const theme of ["light", "dark"] as const) {
     await page.mouse.up();
     await expect(project.getByRole("treeitem", { name: "src", exact: true })).toHaveAttribute("aria-expanded", "true");
     await project.getByRole("button", { name: "Collapse All", exact: true }).click();
+    const projectRoot = project.getByRole("treeitem", { name: /^acme-api/ });
+    await expect(projectRoot).toHaveAttribute("aria-expanded", "false");
+    await expect(project.getByRole("treeitem", { name: "src", exact: true })).toHaveCount(0);
+    await projectRoot.click();
+    await project.getByRole("tree", { name: "Project" }).press("ArrowRight");
+    await expect(projectRoot).toHaveAttribute("aria-expanded", "true");
     await expect(project.getByRole("treeitem", { name: "src", exact: true })).toHaveAttribute("aria-expanded", "false");
 
     await project.getByRole("button", { name: "Options", exact: true }).click();

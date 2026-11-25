@@ -157,7 +157,11 @@ function EntryView({
             <T>Plan</T>
           </div>
           {entry.items.map((item, i) => (
-            <div key={i} className={clsx(styles.planItem, item.status === "completed" && styles.planDone)}>
+            <div
+              // oxlint-disable-next-line react/no-array-index-key -- plan items can repeat; position is the identity
+              key={i}
+              className={clsx(styles.planItem, item.status === "completed" && styles.planDone)}
+            >
               <Icon
                 name={item.status === "completed" ? "check" : item.status === "in_progress" ? "run" : "minus"}
                 size={12}
@@ -303,8 +307,8 @@ function UserMessage({
               size="small"
               icon="diff-revert"
               iconSize={14}
-              title="Retract Message"
-              action="agents.retractMessage"
+              title="Roll Back to Here"
+              action="agents.rollBackToMessage"
               actionArg={{ task: task.id, turn }}
             />
           )}
@@ -315,7 +319,12 @@ function UserMessage({
               title={inPlace ? "Run Again From Here" : "Send Again"}
               onClick={() =>
                 void (
-                  inPlace ? rerunFrom(task.id, turn, entry.text, images) : resendMessage(task.id, entry.text)
+                  inPlace
+                    ? rerunFrom(task.id, turn, entry.text, images, {
+                        title: "Run Again From Here",
+                        later: turn < turnCount - 1,
+                      })
+                    : resendMessage(task.id, entry.text)
                 ).catch(fail)
               }
             />
@@ -340,6 +349,7 @@ function UserMessage({
         {files.length > 0 && (
           <div className={styles.attachments}>
             {files.map((a, i) => (
+              // oxlint-disable-next-line react/no-array-index-key -- attachments from different directories can share a basename
               <span key={i} className={styles.attachment}>
                 <Icon name={fileIconName(a)} size={12} />
                 {a}
@@ -425,11 +435,16 @@ function MessageEditor({
         </div>
       )}
       <div className={styles.editBar}>
-        {later && (
-          <span className={styles.muted}>
-            <T>The messages after this one are replaced. Files the agent changed stay as they are.</T>
-          </span>
-        )}
+        <span className={styles.muted}>
+          {later ? (
+            <T>
+              The messages after this one are replaced, and the files the agent changed since go back to how they were
+              before this message was sent.
+            </T>
+          ) : (
+            <T>The files the agent changed since go back to how they were before this message was sent.</T>
+          )}
+        </span>
         <span className={styles.editButtons}>
           <IconButton icon="close" title="Cancel" disabled={sending} onClick={onCancel} />
           <SubmitButton

@@ -76,6 +76,10 @@ impl AppState {
         // Caches: the previous tree moves first, so a pending invalidation still
         // wipes what was just moved.
         let identifier = app.config().identifier.clone();
+        // Windows: the WebView2 profile follows the local data directory too, and must be in
+        // place before the first window opens (the scheduled move below runs before them too).
+        #[cfg(windows)]
+        ide_host::data_dirs::adopt_webview_profile(&identifier, &local_data_dir);
         ide_host::data_dirs::apply_custom_migration(&identifier, &local_data_dir);
         // File › Invalidate Caches… requested at the last run.
         let removed = ide_workspace::caches::apply_pending(&data_dir, &local_data_dir);
@@ -91,22 +95,25 @@ impl AppState {
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
         let sink_app = app.clone();
         let sink_runtime = runtime.clone();
-        let host = Arc::new(Host::new(ide_host::HostConfig {
-            config_dir: config_dir.clone(),
-            data_dir: data_dir.clone(),
-            local_data_dir,
-            languages: languages.clone(),
-            syntax,
-            sink_for: Box::new(move |window| {
-                coalescing_sink(
-                    Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) }),
-                    sink_runtime.clone(),
-                )
-            }),
-            owner: Self::owner_window,
-            runtime,
-            project_environment: false,
-        }));
+        let host = Arc::new(
+            Host::new(ide_host::HostConfig {
+                config_dir: config_dir.clone(),
+                data_dir: data_dir.clone(),
+                local_data_dir,
+                languages: languages.clone(),
+                syntax,
+                sink_for: Box::new(move |window| {
+                    coalescing_sink(
+                        Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) }),
+                        sink_runtime.clone(),
+                    )
+                }),
+                owner: Self::owner_window,
+                runtime,
+                project_environment: false,
+            })
+            .with_local_database_tunnels(),
+        );
         let announce = global_sink.clone();
         host.set_background_projects_observer(Arc::new(move || announce.emit(IdeEvent::McpBackgroundProjectsChanged)));
         host.start_background_sweeper();

@@ -278,6 +278,26 @@ describe("SeController", () => {
     expect(last().sections.get("symbols")!.items).toHaveLength(1);
   });
 
+  it("asks the language server for the name of a qualified symbol query", async () => {
+    const workspaceSymbols = vi.fn(async () => [
+      {
+        name: "getTypeList",
+        kind: "method" as const,
+        container: "App\\Models\\Category",
+        location: { path: "/p/Category.php", range: { start: { line: 4, col: 2 }, end: { line: 4, col: 13 } } },
+      },
+    ]);
+    const { c, last } = setup({ findSymbols: async () => [], workspaceSymbols });
+    c.run({ query: "Category::getTypeList", tab: "symbols", includeNonProject: false, extra: {} });
+    await flush();
+    expect(workspaceSymbols).toHaveBeenCalledWith(expect.anything(), "getTypeList");
+    expect(
+      last()
+        .sections.get("symbols")!
+        .items.map((i) => i.key),
+    ).toEqual(["s:/p/Category.php:4:2:getTypeList"]);
+  });
+
   it("streams text matches up to the limit", async () => {
     const searchText = vi.fn(async (_id: number, q: SearchQuery, onFile: (f: FileMatches) => void) => {
       expect(q.maxMatches).toBe(7);

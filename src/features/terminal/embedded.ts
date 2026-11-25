@@ -20,21 +20,24 @@ import { terminalKeyAction } from "./keys";
 import { useProject } from "@/platform/project";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { OutputGate } from "./outputGate";
 import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPtyOptions } from "./windowsPty";
 import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
 import { MIN_CONTRAST_RATIO, readLinkColor, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
+import { installModifierPathLinks, type ModifierPathLinksController } from "./pathLinks";
 
-const live = new Map<Terminal, LinkHighlightController>();
+const live = new Map<Terminal, { links: LinkHighlightController; paths: ModifierPathLinksController }>();
 
 /** Follows a theme change (called with the terminal sessions' own update). */
 export function applyThemeToEmbedded() {
   const theme = readTerminalTheme();
-  for (const [t, links] of live) {
+  for (const [t, { links, paths }] of live) {
     t.options.theme = theme;
     links.refresh();
+    paths.refresh();
   }
 }
 
@@ -74,6 +77,9 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
         noteCopySource(text, { kind: "terminal", title: "Terminal" });
         void writeClipboardText(text).catch(() => undefined);
       }
+    } else if (action.kind === "paste") {
+      // Keep xterm from sending Ctrl+V as ^V; the native paste reaches its textarea.
+      return false;
     } else {
       return true;
     }
@@ -82,7 +88,12 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  live.set(term, installLinkHighlights(term, readLinkColor));
+  const linkHighlights = installLinkHighlights(term, readLinkColor);
+  const pathLinks = installModifierPathLinks(term, host, {
+    cwd: () => opts.cwd ?? useProject.getState().project?.root ?? "",
+    color: readLinkColor,
+  });
+  live.set(term, { links: linkHighlights, paths: pathLinks });
   let lastSize = { cols: term.cols, rows: term.rows };
   const processResize = settledResize((cols, rows) => {
     if (cols === lastSize.cols && rows === lastSize.rows) return;
@@ -121,9 +132,9 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   }
 
   const fitter = fitScheduler(() => {
-    if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return;
+    if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return false;
     const dims = fit.proposeDimensions();
-    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return false;
     if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
     processResize.resized(dims.cols, dims.rows);
   });
@@ -138,19 +149,33 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   // The owner learns the initial size even when it matches xterm's default.
   queueMicrotask(() => opts.onResize(term.cols, term.rows));
 
-  return {
+  // Max FPS paces Run console output too (#5897), and a hidden window paints slowly.
+  const gate = new OutputGate({
+    maxFps: () => workflowSettings().terminal.maxFps,
+    hidden: () => typeof document !== "undefined" && document.hidden,
     write: (data) => term.write(data),
-    clear: () => term.reset(),
+  });
+
+  return {
+    write: (data) => gate.push(data),
+    clear: () => {
+      gate.clear();
+      term.reset();
+    },
     focus: () => term.focus(),
     fit: () => fitter.flush(),
     dispose: () => {
+      gate.clear();
+      gate.dispose();
       fitter.cancel();
       processResize.cancel();
       observer.disconnect();
       removePaste();
       removeDrop();
       for (const d of disposables) d.dispose();
-      live.get(term)?.dispose();
+      const controllers = live.get(term);
+      controllers?.links.dispose();
+      controllers?.paths.dispose();
       live.delete(term);
       term.dispose();
     },

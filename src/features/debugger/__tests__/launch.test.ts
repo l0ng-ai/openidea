@@ -100,6 +100,24 @@ describe("Flutter device", () => {
     expect(attach({ device: "chrome" }).toolArgs).toEqual(["-d", "chrome"]);
   });
 
+  it("debugs the build mode and flavor of the command line", () => {
+    const launch = launchConfigFor(
+      flutter({ args: ["run", "-t", "lib/main.dart", "--profile", "--flavor=dev"] }),
+      "/p",
+    );
+    expect(extra(launch).toolArgs).toEqual(["--profile", "--flavor=dev"]);
+  });
+
+  it("attaches a Flutter configuration with its entry point and attach args", () => {
+    const config = flutter({
+      args: ["run", "-t", "lib/dev.dart", "--flavor=dev"],
+      params: { entry: "lib/dev.dart", flavor: "dev", attachArgs: "--debug-port 9000", request: "attach" },
+    });
+    const launch = launchConfigFor(config, "/p");
+    expect(launch).toMatchObject({ request: "attach", program: "/p/lib/dev.dart" });
+    expect(extra(launch)).toEqual({ __flutter: true, toolArgs: ["-d", "macos", "--debug-port", "9000"] });
+  });
+
   it("leaves the choice to flutter without a device list", () => {
     useFlutterDevices.setState({ list: null });
     expect(launchConfigFor(flutter(), "/p")?.extraJson).toBeNull();
@@ -231,6 +249,19 @@ describe("run config → launch config", () => {
 
     const django = debug("pdm", ["run", "python", "manage.py", "runserver"]);
     expect(extra(django)).toMatchObject({ django: true, python: ["pdm", "run", "python"] });
+
+    // The manager's own options stay with it; `uv run app.py` / `-m app` start Python directly (#5874).
+    const withOptions = debug("uv", ["run", "--with", "rich", "--no-sync", "main.py", "-v"]);
+    expect(withOptions.program).toBe("/p/main.py");
+    expect(withOptions.args).toEqual(["-v"]);
+    expect(extra(withOptions)).toMatchObject({ python: ["uv", "run", "--with", "rich", "--no-sync", "python"] });
+    expect(extra(withOptions).module).toBeUndefined();
+    const member = debug("uv", ["run", "--project", "member", "--module", "app", "x"]);
+    expect(extra(member)).toMatchObject({ module: "app", python: ["uv", "run", "--project", "member", "python"] });
+    expect(member.args).toEqual(["x"]);
+    const toolWithOptions = debug("uv", ["run", "--frozen", "pytest", "-x"]);
+    expect(extra(toolWithOptions)).toMatchObject({ module: "pytest", python: ["uv", "run", "--frozen", "python"] });
+    expect(toolWithOptions.args).toEqual(["-x"]);
   });
 
   it("debugpy: Windows falls back to python, not the python3 Store alias", () => {

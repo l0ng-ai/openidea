@@ -1,4 +1,5 @@
-use ide_core::NullSink;
+mod common;
+
 #[cfg(unix)]
 use ide_host::ops;
 use ide_host::{Host, HostConfig, catalogue::TrustClass, trust::TrustStore};
@@ -8,17 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn host(base: &Path, environment: bool) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: environment,
-    }))
+    Arc::new(Host::new(HostConfig { project_environment: environment, ..common::host_config(base) }))
 }
 
 /// Each class against each window state: a trusted project, a Restricted one, and no project.
@@ -89,7 +80,7 @@ async fn welcome_window_browses_selected_ssh_host_without_executing_commands() {
         auth: SshAuth::Password,
         ..Default::default()
     }]);
-    ssh.set_secret("selected-host", Some("secret".into()), false);
+    ssh.set_secret("selected-host", Some("secret".into()), false).unwrap();
     assert!(ssh.session("selected-host").await.is_err());
     ssh.trust_host("selected-host").await.unwrap();
 

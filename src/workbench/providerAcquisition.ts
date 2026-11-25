@@ -15,6 +15,7 @@ export class ProviderAcquisitions<T extends { id: string }> {
     let closing: Promise<unknown>;
     do {
       closing = this.closing;
+      // oxlint-disable-next-line no-await-in-loop -- re-checks this.closing after each wait so a rollback in flight is never reused
       await closing;
     } while (closing !== this.closing);
     ++this.pending;

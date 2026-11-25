@@ -454,38 +454,99 @@ export function mavenPomForImport(picked: string): string {
   return isPomFileName(path) ? path : `${path}/pom.xml`;
 }
 
+/** Gradle files that make a directory a Gradle build, most specific first. */
+const GRADLE_BUILD_FILES = ["settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle"];
+
 /**
- * Project Structure › Modules › Import Module from Existing Sources.
- * A directory is the module folder; a `pom.xml` is that file. Either way the
- * opened folder stays the project root and the existing link pipeline stores the POM.
+ * How a picked module directory (or its `pom.xml`) is imported: by its `pom.xml`, else by its
+ * Gradle settings or build script, else as plain sources. One listing of the directory itself,
+ * not a scan of its children; `null` when it can't be read.
+ */
+export async function moduleImportKind(
+  picked: string,
+): Promise<{ kind: "maven" | "gradle"; file: string } | { kind: "sources"; dir: string } | null> {
+  const path = lexicalPath(comparablePath(picked)).replace(/\/$/, "");
+  const dir = isPomFileName(path) ? path.slice(0, path.lastIndexOf("/")) || "/" : path;
+  const files = await fileNames(dir);
+  if (!files) return null;
+  const has = (name: string) =>
+    hostOs() === "windows" ? [...files].find((f) => f.toLowerCase() === name.toLowerCase()) : files.has(name) && name;
+  const child = (name: string) => `${dir === "/" ? "" : dir}/${name}`;
+  const pom = has("pom.xml");
+  if (pom) return { kind: "maven", file: child(pom) };
+  for (const name of GRADLE_BUILD_FILES) {
+    const found = has(name);
+    if (found) return { kind: "gradle", file: child(found) };
+  }
+  return { kind: "sources", dir };
+}
+
+/**
+ * Project Structure › Modules › Import Module from Existing Sources: any directory, like IDEA.
+ * A `pom.xml` is linked as a Maven project, a Gradle settings or build script as a Gradle build;
+ * the opened folder stays the project root and no build file is edited. A directory without
+ * either outside the project is attached as another root, where its sources are detected; one
+ * inside the project is already part of it.
  */
 export async function importModuleFromExistingSources() {
   const root = useProject.getState().project?.root;
   if (!root || useProject.getState().project?.workspace || !isTauri()) return;
-  try {
-    const { toolWindowService } = await import("@/workbench/contributions");
-    toolWindowService().show("maven");
-  } catch {
-    /* Tests and hosts without the tool-window service still link the POM. */
-  }
   const path = await choosePath({
     title: tx`Import Module from Existing Sources`,
     directory: true,
     defaultPath: root,
   });
   if (!path) return;
-  const pom = mavenPomForImport(path);
-  if (!(await directoryListsPom(pom))) {
+  const found = await moduleImportKind(path);
+  if (!found) {
     notifications().notify({
       group: "tools",
       level: "warning",
-      title: tx`Maven project was not imported`,
-      body: tx`This directory has no pom.xml, so it was not imported.`,
-      key: "maven-import-no-pom",
+      title: tx`Module was not imported`,
+      body: tx`Cannot read ${path}.`,
+      key: "module-import-unreadable",
     });
     return;
   }
-  const { link, rejected } = classifyPickedPoms(root, [pom]);
+  const showTool = async (id: string) => {
+    try {
+      const { toolWindowService } = await import("@/workbench/contributions");
+      toolWindowService().show(id);
+    } catch {
+      /* Tests and hosts without the tool-window service still link the build. */
+    }
+  };
+  if (found.kind === "gradle") {
+    await showTool("gradle");
+    await linkGradleBuildFiles(root, [found.file]);
+    return;
+  }
+  if (found.kind === "sources") {
+    const dir = lexicalPath(comparablePath(found.dir));
+    const base = lexicalPath(comparablePath(root).replace(/\/$/, ""));
+    const name = dir.split("/").pop() || dir;
+    if (dir === base || isInsideRoot(base, dir)) {
+      notifications().notify({
+        group: "tools",
+        level: "info",
+        title: tx`Already in the project`,
+        body: tx`${name} is inside the opened project, so its sources are already part of it.`,
+        key: "module-import-inside",
+      });
+      return;
+    }
+    if (
+      await confirm({
+        title: tx`Import Module from Existing Sources`,
+        message: tx`${name} has no pom.xml or Gradle build file. Attach it to this project as another root? Its source folders are detected automatically.`,
+        ok: tx`Attach`,
+      })
+    )
+      await executeAction("project.attachFolder", path);
+    return;
+  }
+  await showTool("maven");
+  const { link, rejected } = classifyPickedPoms(root, [found.file]);
   if (link.length) await setLinked(root, link, true);
   if (rejected.length)
     notifications().notify({
@@ -497,22 +558,19 @@ export async function importModuleFromExistingSources() {
     });
 }
 
-/** One directory listing: the selection's own `pom.xml`, not a scan of its children. */
-async function directoryListsPom(pom: string): Promise<boolean> {
-  const slash = pom.lastIndexOf("/");
-  const dir = slash > 0 ? pom.slice(0, slash) : slash === 0 ? "/" : "";
-  const name = pom.slice(slash + 1);
-  if (!dir) return false;
+/** The names of the regular files (or links to one) in `dir`; `null` when it can't be listed. */
+async function fileNames(dir: string): Promise<Set<string> | null> {
+  if (!dir) return null;
   try {
     const { call, commands } = await import("@/platform/ipc");
     const entries = await call(commands.fsReadDir(dir));
-    return entries.some(
-      (entry) =>
-        (hostOs() === "windows" ? entry.name.toLowerCase() === name.toLowerCase() : entry.name === name) &&
-        (entry.kind === "file" || (entry.kind === "symlink" && entry.targetKind === "file")),
+    return new Set(
+      entries
+        .filter((entry) => entry.kind === "file" || (entry.kind === "symlink" && entry.targetKind === "file"))
+        .map((entry) => entry.name),
     );
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -534,6 +592,13 @@ export async function linkGradleProjects() {
     filters: [{ name: "Gradle build files", extensions: ["gradle", "kts"] }],
   });
   if (!paths.length || useProject.getState().project?.root !== root || gen !== generation) return;
+  await linkGradleBuildFiles(root, paths);
+}
+
+/** Links the Gradle builds of `paths` (settings or build scripts) into the project at `root`. */
+async function linkGradleBuildFiles(root: string, paths: string[]) {
+  const gen = generation;
+  if (useProject.getState().project?.trusted === false) return;
   const model = await call(commands.gradleLinkProjects(paths));
   if (useProject.getState().project?.root !== root || gen !== generation) return;
   const configs = await call(commands.runConfigs()).catch(() => useBuild.getState().configs);
@@ -634,6 +699,7 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
               settings.maven.profiles,
             )
           : [];
+      // oxlint-disable-next-line no-await-in-loop -- roots sync in order; cancellation is checked between them and the last model wins
       next = await call(commands.buildSync(tool, request, offline, profiles, dir, channel));
     }
     if (!next) return;
@@ -744,6 +810,7 @@ export async function generateSources(pom?: string | null): Promise<void> {
   const projects = maven.projects.filter((p) => (pom ? p.pom === pom : !p.aggregated));
   let ran = false;
   for (const project of projects) {
+    // oxlint-disable-next-line no-await-in-loop -- goals run one project at a time in the Run tool window and stop on cancellation
     const code = await runToExit(mavenGoalConfig(project, ["generate-sources"], maven, settings.maven));
     if (code === null) return;
     ran ||= code === 0;

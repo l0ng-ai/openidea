@@ -100,17 +100,22 @@ export async function openSshTerminal(
   let trusted = false;
   for (let attempt = 0; ; attempt++) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- each retry depends on the failure of the previous attempt
       return await deps.open(config.id, cols, rows, output);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       const remedy = attempt < 4 ? sshRemedy(message, config.auth) : null;
       if (remedy === "trustHost" && !trusted) {
+        // oxlint-disable-next-line no-await-in-loop -- declining the trust prompt must abort before the host is trusted
         if (!(await deps.confirmTrust(message))) throw e;
+        // oxlint-disable-next-line no-await-in-loop -- the host must be trusted before the connection is retried
         await deps.trustHost(config.id);
         trusted = true;
       } else if (remedy === "secret") {
+        // oxlint-disable-next-line no-await-in-loop -- the secret prompt answers this specific failure
         const secret = await deps.askSecret(message);
         if (!secret) throw e;
+        // oxlint-disable-next-line no-await-in-loop -- the credential must be saved before the connection is retried
         await deps.setSecret(config.id, secret, config.saveSecret);
       } else throw e;
     }

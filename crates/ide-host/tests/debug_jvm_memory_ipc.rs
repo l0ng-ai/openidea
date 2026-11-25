@@ -2,9 +2,11 @@
 //! that sends no real window (the desktop shell once passed `""`) never reaches the debugger,
 //! and a project in Restricted Mode never reads the debuggee's memory.
 
-use ide_core::{IdeError, NullSink};
+mod common;
+
+use ide_core::IdeError;
+use ide_host::Host;
 use ide_host::rpc::{self, Dispatcher, Invoke};
-use ide_host::{Host, HostConfig};
 use ide_jsonrpc::{Handler, Peer};
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
@@ -24,13 +26,14 @@ async fn invoke(peer: &Peer, window: &str, cmd: &str, args: Value) -> Result<Val
 
 const NO_SESSION: i64 = 4242;
 
-fn calls() -> [(&'static str, Value); 4] {
+fn calls() -> [(&'static str, Value); 5] {
     let object = json!({"generation": 1, "id": 7});
     [
         ("debug_jvm_memory_classes", json!({"session": NO_SESSION})),
         ("debug_jvm_memory_instances", json!({"session": NO_SESSION, "className": "java.lang.String", "limit": 10})),
         ("debug_jvm_memory_fields", json!({"session": NO_SESSION, "object": object})),
         ("debug_jvm_memory_referrers", json!({"session": NO_SESSION, "object": object, "limit": 10})),
+        ("debug_jvm_thread_dump", json!({"session": NO_SESSION})),
     ]
 }
 
@@ -39,17 +42,7 @@ fn host(trusted: bool) -> (Arc<Host>, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("project");
     std::fs::create_dir(&root).unwrap();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(tmp.path())));
     host.trust.decide(&root, trusted, false).unwrap();
     host.open_project("main", &root).unwrap();
     (host, tmp)
@@ -86,5 +79,16 @@ async fn class_table_is_refused_in_restricted_mode() {
     let (host, _tmp) = host(false);
     let session = ide_core::DebugSessionId(NO_SESSION as u32);
     let error = ide_host::ops::debug::debug_jvm_memory_classes(&host, "main", session).await.unwrap_err();
+    assert!(error.message.contains("Restricted Mode"), "{error:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thread_dumps_are_refused_in_restricted_mode() {
+    let (host, _tmp) = host(false);
+    let session = ide_core::DebugSessionId(NO_SESSION as u32);
+    let error = ide_host::ops::debug::debug_jvm_thread_dump(&host, "main", session).await.unwrap_err();
+    assert!(error.message.contains("Restricted Mode"), "{error:?}");
+    let error =
+        ide_host::ops::thread_dump::run_jvm_thread_dump(&host, "main", ide_core::RunId(1), None).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"), "{error:?}");
 }

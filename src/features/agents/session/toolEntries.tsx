@@ -13,10 +13,10 @@ import { subagentTitle, subagentWorking, type SubagentEntry } from "../model";
 import { useRevealedText } from "../reveal";
 import { toolDuration, toolRun } from "../timeline";
 import { cancelTask } from "../store";
-import { openChangeDiff } from "./ChangesPane";
+import { openChangeDiff } from "./ChangesTab";
 import { Fold } from "./Folds";
 import { liveTool } from "./conversationRows";
-import { shortTitle, useNow } from "./shared";
+import { commandTitle, shortTitle, useNow } from "./shared";
 
 /** A location as the agent reported it: absolute on any platform, or relative to the task's folder. */
 const isAbsolute = (path: string) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
@@ -104,14 +104,23 @@ export const ToolEntry = memo(function ToolEntry({
   const live = liveTool(entry);
   const took = toolDuration(entry);
   const run = entry.kind === "execute" ? toolRun(entry) : null;
-  const title = shortTitle(task, entry.title || entry.kind);
+  // Commands lose the `cd <dir> &&` agents start them with; another folder shows as a tag.
+  const { title, dir } =
+    entry.kind === "execute"
+      ? commandTitle(task, entry.title || entry.kind)
+      : { title: shortTitle(task, entry.title || entry.kind), dir: null };
   // A title that already names the file ("Read pom.xml") needs no second link to it.
   const links =
     entry.kind === "execute" ? [] : entry.locations.slice(0, 3).filter((path) => !title.includes(basename(path)));
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} className={styles.toolKindIcon} />
-      <span className={clsx(styles.toolTitle, live && styles.shimmer)} title={entry.title || entry.kind}>
+      {dir && (
+        <span className={styles.toolDir} title={dir}>
+          {basename(dir)}
+        </span>
+      )}
+      <span className={styles.toolTitle} title={entry.title || entry.kind}>
         {title}
       </span>
       {links.map((path) => (
@@ -144,8 +153,8 @@ export const ToolEntry = memo(function ToolEntry({
           <span className={styles.added}>+{d.added}</span> <span className={styles.removed}>−{d.removed}</span>
         </button>
       ))}
-      {run?.exitCode != null && (
-        <span className={clsx(styles.exitCode, run.exitCode !== 0 && styles.exitFailed)} title={tx("Exit code")}>
+      {run?.exitCode != null && run.exitCode !== 0 && (
+        <span className={styles.exitCode} title={tx("Exit code")}>
           {run.exitCode}
         </span>
       )}
@@ -161,7 +170,7 @@ export const ToolEntry = memo(function ToolEntry({
       </span>
     </>
   );
-  const className = clsx(styles.process, styles.toolEntry, styles[`kind-${entry.kind}`], live && styles.toolLive);
+  const className = clsx(styles.process, styles.toolEntry);
   if (!entry.output)
     return (
       <div className={className}>

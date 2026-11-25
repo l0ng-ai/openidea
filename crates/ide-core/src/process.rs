@@ -402,12 +402,14 @@ mod windows_job {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
     use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
         SetInformationJobObject, TerminateJobObject,
     };
-    use windows_sys::Win32::System::Threading::{IO_COUNTERS, OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+    use windows_sys::Win32::System::Threading::{
+        IO_COUNTERS, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
 
     /// A job object holding one launch's processes. The handle is kept open for the
     /// launch's lifetime: `KILL_ON_JOB_CLOSE` ends anything still in the job when the
@@ -508,6 +510,21 @@ mod windows_job {
             // SAFETY: the process handle was opened above and is owned here.
             unsafe { drop(OwnedHandle::from_raw_handle(handle)) };
             ok != 0
+        }
+
+        /// Whether the running process belongs to this specific launch's job.
+        pub fn contains_pid(&self, pid: u32) -> bool {
+            // SAFETY: a non-null result is a process handle owned by this call.
+            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if handle.is_null() {
+                return false;
+            }
+            // SAFETY: the process handle was just opened above and the job handle is owned here.
+            let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+            let mut contained = 0;
+            // SAFETY: both handles remain valid and `contained` is a writable BOOL.
+            (unsafe { IsProcessInJob(handle.as_raw_handle(), self.0.as_raw_handle(), &mut contained) }) != 0
+                && contained != 0
         }
 
         /// Terminates every process in the job. `false` when the call failed (the job
@@ -1332,6 +1349,45 @@ mod tests {
         cmd.env("PATH", "/custom");
         prepare(&mut cmd);
         assert_eq!(cmd.get_envs().find(|(k, _)| *k == "PATH").and_then(|(_, v)| v), Some(OsStr::new("/custom")));
+    }
+
+    #[test]
+    fn unix_uses_the_name_as_is() {
+        assert_eq!(executable_names("kotlinc", false, Some(".BAT")), ["kotlinc"]);
+    }
+
+    #[test]
+    fn windows_appends_pathext_extensions() {
+        assert_eq!(
+            executable_names("kotlinc", true, None),
+            ["kotlinc.com", "kotlinc.exe", "kotlinc.bat", "kotlinc.cmd"]
+        );
+        assert_eq!(executable_names("npx", true, Some(".EXE;.CMD;;")), ["npx.exe", "npx.cmd"]);
+        assert_eq!(executable_names("npx", true, Some("  ")), executable_names("npx", true, None));
+        // Already has an executable extension (any case): only that file.
+        assert_eq!(executable_names("rustc.EXE", true, None), ["rustc.EXE"]);
+        assert_eq!(executable_names("gradlew.bat", true, None), ["gradlew.bat"]);
+        // A dot that is not an executable extension (`clang++`, `python3.12`).
+        assert_eq!(executable_names("python3.12", true, Some(".EXE")), ["python3.12.exe"]);
+    }
+
+    #[test]
+    fn finds_batch_files_and_skips_extensionless_scripts_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        // `node_modules/.bin` style: a POSIX script next to its `.cmd` shim.
+        std::fs::write(a.join("tsx"), "#!/bin/sh\n").unwrap();
+        std::fs::write(b.join("tsx.cmd"), "@echo off\n").unwrap();
+        std::fs::write(b.join("kotlinc.bat"), "@echo off\n").unwrap();
+        let search = std::env::join_paths([&a, &b]).unwrap();
+        assert_eq!(find_executable_in("tsx", &search, true, None), Some(b.join("tsx.cmd")));
+        assert_eq!(find_executable_in("kotlinc", &search, true, None), Some(b.join("kotlinc.bat")));
+        assert_eq!(find_executable_in("tsx", &search, false, None), Some(a.join("tsx")));
+        assert_eq!(find_executable_in("kotlinc", &search, false, None), None);
+        assert_eq!(find_executable_in("nope", &search, true, None), None);
     }
 
     #[test]

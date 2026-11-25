@@ -269,7 +269,8 @@ describe("Git Log branches pane with several repositories", () => {
     expect(screen.queryByText("other")).toBeNull();
     expect(screen.getByText("dev").closest("[data-row]")).toHaveTextContent(/dev\s*current/);
     fireEvent.doubleClick(screen.getByText("dev"));
-    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], paths: [linked], repositories: [linked] });
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], paths: [linked] });
+    expect(useGitLog.getState().filters.repositories ?? []).toEqual([]);
   });
 
   it("keeps the current marker ahead of the repository names, which may be cut off", async () => {
@@ -304,12 +305,34 @@ describe("Git Log branches pane with several repositories", () => {
     expect(screen.getByLabelText("3 incoming commits")).toHaveTextContent("3");
   });
 
-  it("double click filters the log to the repositories that have the branch within the visible scope", async () => {
+  it("double click filters the log by branch and keeps every repository listed", async () => {
     render(<BranchesPanel />);
     fireEvent.doubleClick(await screen.findByText("solo"));
-    expect(useGitLog.getState().filters).toMatchObject({ branches: ["solo"], repositories: ["/p/a"] });
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["solo"] });
+    expect(useGitLog.getState().filters.repositories ?? []).toEqual([]);
+    expect(screen.getByText("other")).toBeInTheDocument();
     fireEvent.doubleClick(screen.getByText("dev"));
-    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], repositories: ["/p/a"] });
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"] });
+    expect(useGitLog.getState().filters.repositories ?? []).toEqual([]);
+  });
+
+  it("double click in a repository group keeps the other repositories listed", async () => {
+    render(<BranchesPanel />);
+    await screen.findByText("solo");
+    fireEvent.click(screen.getByRole("button", { name: "Group by Repository" }));
+    fireEvent.doubleClick(await screen.findByText("other"));
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["other"] });
+    expect(useGitLog.getState().filters.repositories ?? []).toEqual([]);
+    expect(useGitLog.getState().filters.paths ?? []).toEqual([]);
+    expect(screen.getByText("solo")).toBeInTheDocument();
+    expect(screen.getAllByText("dev")).toHaveLength(2);
+  });
+
+  it("keeps a repository filter chosen elsewhere when a branch is double-clicked", async () => {
+    act(() => useGitLog.setState({ filters: { ...emptyFilters(), repositories: ["/p/b"] } }));
+    render(<BranchesPanel />);
+    fireEvent.doubleClick(await screen.findByText("other"));
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["other"], repositories: ["/p/b"] });
   });
 
   it("a branch in several repositories gets the common menu", async () => {

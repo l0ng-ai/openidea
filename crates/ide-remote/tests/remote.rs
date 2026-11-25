@@ -64,6 +64,157 @@ fn no_progress() -> impl FnMut(&str, usize, usize) + Send {
 }
 
 #[tokio::test]
+async fn direct_uploads_merge_only_with_confirmation_and_preserve_cancelled_replacements() {
+    let env = env().await;
+    let outside = env._tmp.path().join("outside");
+    std::fs::create_dir_all(outside.join("assets/empty")).unwrap();
+    std::fs::write(outside.join("assets/banner.svg"), "new banner").unwrap();
+    std::fs::write(outside.join("notes.txt"), "outside project").unwrap();
+    for sftp in [false, true] {
+        let fs = if sftp { RemoteFs::new(env.session.sftp().await.unwrap()) } else { RemoteFs::Local };
+        let base = if sftp {
+            "/direct".to_owned()
+        } else {
+            env.server_root.join("direct-local").to_string_lossy().into_owned()
+        };
+        fs.mkdir_all(&base).await.unwrap();
+        let cancel = CancellationToken::new();
+        let paths = vec![
+            outside.join("assets"),
+            outside.join("assets/banner.svg"),
+            outside.join("notes.txt"),
+            outside.join("notes.txt"),
+        ];
+        let report =
+            ide_remote::upload::upload_into(&fs, &paths, &base, false, &cancel, &mut no_progress()).await.unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(report.files, 2);
+        assert!(fs.stat(&format!("{base}/assets/empty")).await.unwrap().unwrap().is_dir);
+        assert_eq!(fs.read(&format!("{base}/notes.txt")).await.unwrap(), b"outside project");
+
+        std::fs::write(outside.join("assets/banner.svg"), "replacement").unwrap();
+        std::fs::write(outside.join("assets/added.txt"), "added").unwrap();
+        let paths = vec![outside.join("assets")];
+        let report =
+            ide_remote::upload::upload_into(&fs, &paths, &base, false, &cancel, &mut no_progress()).await.unwrap();
+        assert_eq!(report.errors.len(), 1, "{report:?}");
+        assert_eq!(fs.read(&format!("{base}/assets/banner.svg")).await.unwrap(), b"new banner");
+        assert!(fs.stat(&format!("{base}/assets/added.txt")).await.unwrap().is_none());
+        let report =
+            ide_remote::upload::upload_into(&fs, &paths, &base, true, &cancel, &mut no_progress()).await.unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(report.files, 2);
+        assert_eq!(fs.read(&format!("{base}/assets/banner.svg")).await.unwrap(), b"replacement");
+        assert_eq!(fs.read(&format!("{base}/notes.txt")).await.unwrap(), b"outside project");
+
+        let cancelled = CancellationToken::new();
+        std::fs::write(outside.join("notes.txt"), "cancelled replacement").unwrap();
+        let error = ide_remote::upload::upload_into(
+            &fs,
+            &[outside.join("notes.txt")],
+            &base,
+            true,
+            &cancelled,
+            &mut |_, _, _| cancelled.cancel(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
+        assert_eq!(fs.read(&format!("{base}/notes.txt")).await.unwrap(), b"outside project");
+        assert!(!fs.list(&base).await.unwrap().iter().any(|e| e.name.starts_with(".openidea-upload-")));
+        fs.close().await;
+        std::fs::write(outside.join("assets/banner.svg"), "new banner").unwrap();
+        std::fs::remove_file(outside.join("assets/added.txt")).unwrap();
+        std::fs::write(outside.join("notes.txt"), "outside project").unwrap();
+    }
+}
+
+#[tokio::test]
+async fn direct_uploads_validate_sources_before_writing_and_reject_self_copies() {
+    let env = env().await;
+    let fs = RemoteFs::new(env.session.sftp().await.unwrap());
+    fs.mkdir_all("/target").await.unwrap();
+    let second = env._tmp.path().join("second");
+    std::fs::create_dir(&second).unwrap();
+    std::fs::write(second.join("README.md"), "duplicate").unwrap();
+    let cancel = CancellationToken::new();
+    let error = ide_remote::upload::upload_into(
+        &fs,
+        &[env.project.join("src/main.py"), env.project.join("README.md"), second.join("README.md")],
+        "/target",
+        false,
+        &cancel,
+        &mut no_progress(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("same name"));
+    assert!(fs.list("/target").await.unwrap().is_empty());
+    let error =
+        ide_remote::upload::upload_into(&fs, &["relative.txt".into()], "/target", false, &cancel, &mut no_progress())
+            .await
+            .unwrap_err();
+    assert!(error.message.contains("absolute"));
+    fs.close().await;
+    let error = ide_remote::upload::upload_into(
+        &RemoteFs::Local,
+        std::slice::from_ref(&env.project),
+        env.project.join("src").to_str().unwrap(),
+        true,
+        &cancel,
+        &mut no_progress(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("itself"));
+}
+
+#[tokio::test]
+async fn direct_uploads_report_type_conflicts_and_missing_sources_without_stopping_other_files() {
+    let env = env().await;
+    let fs = RemoteFs::new(env.session.sftp().await.unwrap());
+    fs.mkdir_all("/target/README.md").await.unwrap();
+    let paths = vec![env.project.join("README.md"), env.project.join("missing.txt"), env.project.join("src/main.py")];
+    let report =
+        ide_remote::upload::upload_into(&fs, &paths, "/target", true, &CancellationToken::new(), &mut no_progress())
+            .await
+            .unwrap();
+    assert_eq!(report.files, 1, "{report:?}");
+    assert_eq!(report.errors.len(), 2, "{report:?}");
+    assert!(fs.stat("/target/README.md").await.unwrap().unwrap().is_dir);
+    assert_eq!(fs.read("/target/main.py").await.unwrap(), b"print('hi')\n");
+    fs.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn direct_uploads_skip_source_links_and_refuse_destination_links() {
+    let env = env().await;
+    std::os::unix::fs::symlink(".", env.project.join("cycle")).unwrap();
+    std::os::unix::fs::symlink("README.md", env.project.join("readme-link")).unwrap();
+    let fs = RemoteFs::new(env.session.sftp().await.unwrap());
+    fs.mkdir_all("/target/project").await.unwrap();
+    fs.mkdir_all("/outside").await.unwrap();
+    fs.symlink("../../outside", "/target/project/src").await.unwrap();
+    let report = ide_remote::upload::upload_into(
+        &fs,
+        &[env.project],
+        "/target",
+        true,
+        &CancellationToken::new(),
+        &mut no_progress(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.files, 2, "{report:?}");
+    assert_eq!(report.errors.len(), 1, "{report:?}");
+    assert_eq!(report.skipped, 3, "{report:?}");
+    assert!(fs.list("/outside").await.unwrap().is_empty());
+    assert_eq!(fs.read("/target/project/README.md").await.unwrap(), b"# demo\n");
+    fs.close().await;
+}
+
+#[tokio::test]
 async fn client_imports_preserve_conflicts_and_report_failure_over_sftp_and_local() {
     let env = env().await;
     for sftp in [false, true] {

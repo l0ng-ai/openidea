@@ -7,6 +7,7 @@ import { iconNode } from "@/ui/iconNode";
 import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 import { tx } from "@/platform/i18n";
 import { invokeLocal } from "@/platform/tauriCore";
+import { toBase64 } from "@/platform/base64";
 import { openLayer, trapTab } from "@/ui/popupState";
 import { notifications } from "@/workbench/contributions";
 import { attachPanZoom } from "../panZoom";
@@ -168,16 +169,24 @@ function naturalSize(svg: SVGSVGElement): { w: number; h: number } {
   return { w: rect.width > 0 ? rect.width : 800, h: rect.height > 0 ? rect.height : 600 };
 }
 
-async function saveDiagram(svg: SVGSVGElement): Promise<void> {
+/** Saves `svg` as an image file the user picks: a PNG, or the SVG itself when `formats` offers it and the name ends in `.svg`. */
+export async function saveDiagram(
+  svg: SVGSVGElement,
+  name = "mermaid-diagram",
+  formats: ReadonlyArray<"png" | "svg"> = ["png"],
+): Promise<void> {
   try {
     const { save } = await import("@/platform/dialog");
     const path = await save({
       title: tx("Save diagram"),
-      defaultPath: "mermaid-diagram.png",
-      filters: [{ name: tx("PNG image"), extensions: ["png"] }],
+      defaultPath: `${name}.${formats[0]}`,
+      filters: formats.map((f) => ({ name: f === "png" ? tx("PNG image") : tx("SVG image"), extensions: [f] })),
     });
     if (!path) return;
-    const base64 = await diagramPng(svg);
+    const base64 =
+      formats.includes("svg") && /\.svg$/i.test(path)
+        ? toBase64(new TextEncoder().encode(new XMLSerializer().serializeToString(svg)))
+        : await diagramPng(svg);
     // The path comes from this machine's save dialog, so write it here even when
     // the project lives on a remote host.
     await invokeLocal("plugin_web_save_file", { path, base64 });

@@ -24,6 +24,7 @@ import {
   IconButton,
   lockDragCursor,
   Menu,
+  registerDropTarget,
   showContextMenu,
   tooltipAttrs,
   type MenuItem,
@@ -399,14 +400,32 @@ function StripeButton({
   const iconSize = useChromeIconSize();
   const shortcut = shortcutLabel(`toolwindow.${tw.id}`);
   const dragged = useStripeDrag((s) => s.id === tw.id);
+  const ref = useRef<HTMLButtonElement>(null);
+  const [dropOver, setDropOver] = useState(false);
+  const stripeDrop = tw.onStripeDrop;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !stripeDrop) return;
+    return registerDropTarget(el, {
+      accepts: (type, data) => stripeDrop.accepts(type, data),
+      over: () => setDropOver(true),
+      leave: () => setDropOver(false),
+      drop: (data) => {
+        setDropOver(false);
+        stripeDrop.drop(data);
+      },
+    });
+  }, [stripeDrop]);
   return (
     <button
+      ref={ref}
       type="button"
       className={clsx(
         styles.stripeButton,
         showName && styles.stripeNamed,
         active && styles.stripeActive,
         active && focused && styles.stripeFocused,
+        dropOver && styles.stripeDropOver,
         dragged && styles.stripeDragged,
       )}
       aria-label={toolWindowTitle(tw)}
@@ -624,12 +643,11 @@ export function ToolWindowHeader({
   children,
 }: ToolWindowHeaderProps) {
   const tw = useContext(ToolWindowFrame)?.tw;
+  const registry = useMemo(() => (tw && closeTarget ? contentTabRegistry(tw.id) : null), [tw, closeTarget]);
   if (!tw) return null;
   return (
     <HeaderRow tw={tw} title={title} actions={actions}>
-      <TabStripRegistry.Provider value={closeTarget ? contentTabRegistry(tw.id) : null}>
-        {children}
-      </TabStripRegistry.Provider>
+      <TabStripRegistry.Provider value={registry}>{children}</TabStripRegistry.Provider>
     </HeaderRow>
   );
 }
@@ -637,9 +655,8 @@ export function ToolWindowHeader({
 /** Makes the tab strips in `children`, rendered in a tool window's content, the ones Close Tab (⌘W) acts on. */
 export function ToolWindowContentTabs({ children }: { children: ReactNode }) {
   const tw = useContext(ToolWindowFrame)?.tw;
-  return (
-    <TabStripRegistry.Provider value={tw ? contentTabRegistry(tw.id) : null}>{children}</TabStripRegistry.Provider>
-  );
+  const registry = useMemo(() => (tw ? contentTabRegistry(tw.id) : null), [tw]);
+  return <TabStripRegistry.Provider value={registry}>{children}</TabStripRegistry.Provider>;
 }
 
 /**
@@ -796,7 +813,9 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
   const focusRequest = useToolWindowLayout((s) => s.focusRequest);
   const [ownHeader, setOwnHeader] = useState(false);
   const frame = useMemo(() => ({ tw, setOwnHeader }), [tw]);
+  const tabRegistry = useMemo(() => contentTabRegistry(tw.id), [tw.id]);
   const Content = tw.component;
+  const content = useMemo(() => <Content id={tw.id} />, [Content, tw.id]);
   const Tabs = tw.headerContent;
 
   useEffect(() => {
@@ -863,7 +882,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       {!ownHeader && (
         <HeaderRow tw={tw} title actions>
           {Tabs && (
-            <TabStripRegistry.Provider value={contentTabRegistry(tw.id)}>
+            <TabStripRegistry.Provider value={tabRegistry}>
               <Tabs id={tw.id} />
             </TabStripRegistry.Provider>
           )}
@@ -871,9 +890,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       )}
       <div className={styles.body} data-toolwindow-body="">
         <ToolWindowFrame.Provider value={frame}>
-          <ToolWindowShownProvider value={!hidden}>
-            <Content id={tw.id} />
-          </ToolWindowShownProvider>
+          <ToolWindowShownProvider value={!hidden}>{content}</ToolWindowShownProvider>
         </ToolWindowFrame.Provider>
       </div>
     </section>

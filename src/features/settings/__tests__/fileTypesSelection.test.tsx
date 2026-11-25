@@ -11,6 +11,7 @@ import { RecognizedFileTypes } from "../pages/FileTypes";
 function language(id: string, name: string, extension: string): LanguageInfo {
   return { id, name, extensions: [extension], uiMode: null, lineComment: null, blockComment: null, indent: null };
 }
+const FILE_TYPES_CONTEXT = { pageId: "editor.files", scope: "global" } as const;
 
 const types = () => within(screen.getByRole("listbox", { name: "Recognized file types" }));
 const patternsOf = (name: string) => screen.getByRole("listbox", { name: `File name patterns of ${name}` });
@@ -37,7 +38,7 @@ describe("filtering recognized file types", () => {
     useProject.setState({ settings: structuredClone(DEFAULT_SETTINGS) as Settings, project: null });
     openSettings("editor.files");
     render(
-      <PageContext.Provider value={{ pageId: "editor.files", scope: "global" }}>
+      <PageContext.Provider value={FILE_TYPES_CONTEXT}>
         <RecognizedFileTypes />
       </PageContext.Provider>,
     );

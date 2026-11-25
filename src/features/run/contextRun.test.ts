@@ -115,6 +115,20 @@ describe("run context menu group", () => {
     expect(contextMenuItems("projectView", { paths: [`${ROOT}/src/components`], dirs: [true] })).toEqual([]);
   });
 
+  it("project view: Run / Debug '<project>' on a .NET project file (#5635)", () => {
+    const items = contextMenuItems("projectView", { paths: [`${ROOT}/src/App/App.csproj`], dirs: [false] });
+    expect(items[0]).toMatchObject({
+      action: "run.runContext",
+      label: "Run 'App'",
+      icon: "run",
+      arg: { path: `${ROOT}/src/App/App.csproj`, dir: false },
+    });
+    expect(items[1]).toMatchObject({ action: "run.debugContext", label: "Debug 'App'", icon: "debug" });
+    // A solution or a shared props file gets no Run / Debug entries.
+    expect(contextMenuItems("projectView", { paths: [`${ROOT}/src/App/App.sln`], dirs: [false] })).toEqual([]);
+    expect(contextMenuItems("projectView", { paths: [`${ROOT}/Directory.Build.props`], dirs: [false] })).toEqual([]);
+  });
+
   it("routes an attached Spring Boot main and its tests through the member's Maven build", () => {
     const member = "/work/spring";
     const project = useProject.getState().project!;
@@ -154,7 +168,13 @@ describe("run context menu group", () => {
     ).toMatchObject({
       kind: "maven",
       cwd: member,
-      args: ["test", "-Dtest=demo.AppTest#starts", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      args: [
+        "test",
+        "-Dtest=demo.AppTest#starts",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ],
     });
     expect(produceContext({ ...main, path: `${ROOT}/src/main/java/demo/App.java` }, OPTIMISTIC)?.config).toMatchObject({
       kind: "spring-boot",

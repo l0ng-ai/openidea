@@ -232,6 +232,16 @@ mod imp {
         wit::ui::pick(title, &pick_items(items)).map_err(error)
     }
 
+    pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+        let filters = dialog
+            .filters
+            .iter()
+            .map(|f| wit::ui::FileFilter { name: f.name.clone(), extensions: f.extensions.clone() })
+            .collect();
+        wit::ui::pick_file(title, &wit::ui::FileDialog { save: dialog.save, name: dialog.name.clone(), filters })
+            .map_err(error)
+    }
+
     pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
         wit::ui::pick_directory(title, initial).map_err(error)
     }
@@ -444,6 +454,36 @@ mod imp {
             .collect::<Vec<_>>();
         wit::decorations::set(path, set, &items).map_err(error)
     }
+    pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::MarkdownDecoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+                markdown_hover: d.markdown_hover.clone(),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set_markdown(path, set, &items).map_err(error)
+    }
+    pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::StyledDecoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+                markdown_hover: d.markdown_hover.clone(),
+                colors: d.colors.as_ref().map(|c| wit::decorations::DecorationColors {
+                    foreground: c.foreground.clone(),
+                    background: c.background.clone(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set_styled(path, set, &items).map_err(error)
+    }
     pub fn clear_decorations(set: &str) -> Result<(), Error> {
         wit::decorations::clear(set).map_err(error)
     }
@@ -530,6 +570,26 @@ mod imp {
 
     pub fn vcs_remotes(p: &ProjectRes) -> Result<Vec<(String, String)>, Error> {
         wit::vcs::remotes(p).map_err(error)
+    }
+
+    pub fn vcs_roots(p: &ProjectRes) -> Result<Vec<String>, Error> {
+        wit::vcs::roots(p).map_err(error)
+    }
+
+    pub fn vcs_repository_at(p: &ProjectRes, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        wit::vcs::repository_at(p, path)
+            .map(|r| {
+                r.map(|r| RepositoryInfo {
+                    root: r.root,
+                    relative_path: r.relative_path,
+                    branch: r.branch,
+                    commit: r.commit,
+                    upstream: r.upstream,
+                    ahead: r.ahead,
+                    remotes: r.remotes,
+                })
+            })
+            .map_err(error)
     }
 
     pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
@@ -1291,6 +1351,17 @@ impl Project {
         imp::vcs_remotes(&self.inner)
     }
 
+    /// Mapped Git worktrees within or enclosing this project (API 1.16). Needs `vcs.read`.
+    pub fn vcs_roots(&self) -> Result<Vec<String>, Error> {
+        imp::vcs_roots(&self.inner)
+    }
+
+    /// The innermost mapped worktree for an existing file or directory in this project,
+    /// or `None` outside Git (API 1.16). Needs `vcs.read` and a trusted project.
+    pub fn vcs_repository_at(&self, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        imp::vcs_repository_at(&self.inner, path)
+    }
+
     /// Fetches all remotes. Needs `vcs.write`; long-running, so call it in a [`Task`].
     pub fn vcs_fetch(&self) -> Result<(), Error> {
         imp::vcs_fetch(&self.inner)
@@ -1912,6 +1983,12 @@ pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<Strin
     imp::pick_directory(title, initial)
 }
 
+/// Choose a file in the invoking window. Returns its absolute host path or `None` on cancellation.
+/// The choice grants no filesystem access and requires an interactive call.
+pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+    imp::pick_file(title, dialog)
+}
+
 /// Requests the normal File > Open flow, including project trust, in the
 /// invoking window (`false`) or a new window (`true`). No capability.
 /// Only commands/events of a window can request this; errors opening the
@@ -2050,6 +2127,17 @@ pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
 pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
     imp::set_decorations(path, set, items)
 }
+/// Replace a file's editor decorations with Markdown hover cards (API 1.16).
+/// Requires project.read; the same limits and set ids as [`set_decorations`].
+pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+    imp::set_markdown_decorations(path, set, items)
+}
+/// Replace a file's editor decorations with items that carry their own `#rrggbb` / `#rrggbbaa`
+/// foreground and background (API 1.17); an item may leave `style` empty when it has colors.
+/// Requires project.read; the same limits and set ids as [`set_decorations`].
+pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+    imp::set_styled_decorations(path, set, items)
+}
 /// Clear this plugin's editor decoration set in all projects. Requires project.read.
 pub fn clear_decorations(set: &str) -> Result<(), Error> {
     imp::clear_decorations(set)
@@ -2142,12 +2230,12 @@ pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, 
 }
 
 /// Fork a recorded native agent session into a new task in the open project,
-/// returning the new task id (API 1.15). Requires the `agents` capability and an
+/// returning the new task id (API 1.17). Requires the `agents` capability and an
 /// invoking window. The session must belong to that window's project and have
 /// been recorded in `cwd`; the host builds the fork invocation and names the
 /// fork's session id for claude (codex assigns its own). `agent` is a
 /// native provider (`claude` or `codex`). The new task's first turn continues the
-/// recording as the agent's own fork. Needs `engines.openidea = "^1.15"`.
+/// recording as the agent's own fork. Needs `engines.openidea = "^1.17"`.
 pub fn fork_agent_session(agent: &str, session_id: &str, cwd: &str) -> Result<String, Error> {
     imp::fork_agent_session(agent, session_id, cwd)
 }

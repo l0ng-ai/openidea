@@ -1,7 +1,9 @@
 #![cfg(any(unix, windows))]
 
+mod common;
+
 use ide_core::{NullSink, TerminalId};
-use ide_host::{Host, HostConfig, ops};
+use ide_host::{Host, ops};
 use ide_terminal::TerminalOptions;
 use std::sync::Arc;
 
@@ -10,17 +12,7 @@ async fn storage_requires_a_registered_terminal() {
     let root = tempfile::tempdir().unwrap();
     let data_dir = root.path().join("data");
     std::fs::create_dir(&data_dir).unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: root.path().join("config"),
-        data_dir: data_dir.clone(),
-        local_data_dir: data_dir.clone(),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(root.path()));
     assert!(ops::term::term_store_image(&host, TerminalId::next(), vec![1].into(), "image/png".into()).await.is_err());
     assert!(!data_dir.join("terminal-images").exists());
     let terminal = host
@@ -38,6 +30,7 @@ async fn storage_requires_a_registered_terminal() {
             "main".into(),
             Arc::new(NullSink),
             Box::new(|_| {}),
+            None,
         )
         .unwrap();
     for mime in ["image/png", "audio/mpeg", "video/mp4"] {

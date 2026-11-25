@@ -514,6 +514,7 @@ fn cmd_keygen(args: &[String]) -> Result<(), String> {
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed).map_err(|e| format!("random: {e}"))?;
     let key = PublisherKey::from_seed(seed);
+    create_parent(Path::new(file))?;
     std::fs::write(file, key.seed_base64()).map_err(|e| format!("{file}: {e}"))?;
     #[cfg(unix)]
     {
@@ -577,7 +578,8 @@ fn cmd_pack(args: &[String]) -> Result<(), String> {
     let out = a.value("out").map(PathBuf::from).unwrap_or_else(|| {
         PathBuf::from(format!("{}-{}.{}", manifest.id, manifest.version, package::PACKAGE_EXTENSION))
     });
-    package::pack(&dir, &files, &out, signature.as_ref())?;
+    create_parent(&out)?;
+    package::pack(&dir, &files, &out, signature.as_ref()).map_err(|e| format!("{}: {e}", out.display()))?;
     let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
     let signed = signature.as_ref().map_or("unsigned".to_owned(), |s| format!("signed by {}", s.publisher));
     println!("-> {} ({}, {signed})", out.display(), human_size(size));
@@ -764,8 +766,17 @@ fn cmd_merge(args: &[String]) -> Result<(), String> {
     write_index(&index, Path::new(out))
 }
 
+/// Creates the directories an output file goes into.
+fn create_parent(file: &Path) -> Result<(), String> {
+    match file.parent() {
+        Some(parent) => std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display())),
+        None => Ok(()),
+    }
+}
+
 fn write_index(index: &Index, out: &Path) -> Result<(), String> {
     let json = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
+    create_parent(out)?;
     std::fs::write(out, json).map_err(|e| format!("{}: {e}", out.display()))?;
     println!("-> {} ({} plugins)", out.display(), index.plugins.len());
     Ok(())
@@ -854,6 +865,48 @@ mod tests {
             .chain([out.join(format!("{id}-{version}.oiplugin")).to_string_lossy().into_owned()])
             .collect::<Vec<_>>();
         cmd_pack(&args).unwrap();
+    }
+
+    #[test]
+    fn output_files_go_into_missing_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let key = t.join("config/openidea/acme.key");
+        cmd_keygen(&strings(&[key.to_str().unwrap()])).unwrap();
+        assert!(read_key(key.to_str().unwrap()).is_ok());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let key = key.to_string_lossy().into_owned();
+        // `signed_theme` creates `out` itself, so pack into a directory it doesn't know about.
+        signed_theme(t, "acme.night", "acme", &key, &t.join("staging"));
+        let package = t.join("dist/v1/acme.night.oiplugin");
+        let src = t.join("src/acme.night-0.1.0");
+        cmd_pack(&strings(&[
+            src.to_str().unwrap(),
+            "--key",
+            &key,
+            "--publisher",
+            "acme",
+            "--out",
+            package.to_str().unwrap(),
+        ]))
+        .unwrap();
+        assert!(package.is_file());
+        let index = t.join("site/market/index.json");
+        cmd_index(&strings(&[
+            t.join("dist/v1").to_str().unwrap(),
+            "--publisher",
+            "acme",
+            "--key",
+            &key,
+            "--out",
+            index.to_str().unwrap(),
+        ]))
+        .unwrap();
+        assert!(index.is_file());
     }
 
     #[test]

@@ -103,7 +103,9 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
         await openProjectWithPolicy(root);
       } else {
         for (const path of included.filter((p) => !workspace?.projects.includes(p))) {
+          // oxlint-disable-next-line no-await-in-loop -- trust prompts are modal and must not stack for multiple paths
           await confirmProjectTrust(path);
+          // oxlint-disable-next-line no-await-in-loop -- the status check follows this path's trust confirmation
           if (!(await call(commands.projectTrustStatus(path))).trusted) {
             setError(
               tx`Cannot attach ${path} because it is restricted. Open it separately and choose Trust Project, then attach it again.`,

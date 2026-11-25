@@ -33,6 +33,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 }));
 
 const { lensTargets, usagesLensExtension } = await import("./codeLens");
+const { navigationStarted } = await import("./foreground");
 const { lspDoc } = await import("./lsp");
 const { useProject } = await import("@/platform/project");
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
@@ -128,6 +129,30 @@ describe("author hint", () => {
     author.run!(view, new MouseEvent("click"));
     author.run!(view, new MouseEvent("click"));
     expect(executeAction.mock.calls).toEqual([["vcs.annotate"], ["vcs.annotate"]]);
+  });
+});
+
+describe("Vue component usages", () => {
+  const vue = { doc: 8, path: "/p/Hello.vue", language: "vue", uiMode: "Vue", readOnly: false };
+
+  it("offers Show component usages above a .vue file, and nothing extra elsewhere", async () => {
+    ipc.docOutline.mockResolvedValue(ok([]));
+    const view = editor(1, undefined, vue);
+    await settle();
+    const lens = view.state.facet(codeLenses).find((l) => l.title === "Show component usages");
+    expect(lens).toMatchObject({ pos: 0, kind: "usages" });
+    const rust = editor();
+    await settle();
+    expect(titles(rust)).not.toContain("Show component usages");
+  });
+
+  it("is hidden with the usages hints", async () => {
+    useProject.setState({
+      settings: { editor: { inlay: { codeVisionUsages: false, codeVisionAuthor: false } } } as never,
+    });
+    const view = editor(1, undefined, vue);
+    await settle();
+    expect(titles(view)).toEqual([]);
   });
 });
 
@@ -274,7 +299,10 @@ describe("background usage counts", () => {
   it("stops asking again while the server keeps saying it is indexing, until it settles", async () => {
     ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
     const view = editor();
-    for (let i = 0; i < 10; i++) await settle();
+    for (let i = 0; i < 10; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- each settle advances fake timers one retry step at a time
+      await settle();
+    }
     expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
     expect(titles(view)).toEqual([]);
     ipc.lspReferences.mockResolvedValue(refs(2));
@@ -379,6 +407,33 @@ describe("background usage counts", () => {
     pending.resolve(refs(1));
     await settle();
     expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
+  });
+
+  it("gives way to Go to Declaration: cancels in-flight counts and asks again once it is done", async () => {
+    const pending = deferred<ReturnType<typeof refs>>();
+    ipc.lspReferences.mockReturnValueOnce(pending.promise);
+    const view = editor();
+    await settle();
+    const request = ipc.lspReferences.mock.calls[0]![0];
+    const done = navigationStarted();
+    expect(ipc.cancelRequest).toHaveBeenCalledWith(request);
+    pending.resolve(refs(99));
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(1);
+    done();
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("starts no counts while a navigation runs", async () => {
+    const done = navigationStarted();
+    const view = editor();
+    await settle();
+    expect(ipc.lspReferences).not.toHaveBeenCalled();
+    done();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
   });
 
   it("cancels pending counts when the feature is disabled", async () => {
@@ -517,6 +572,7 @@ describe("file changes on disk", () => {
     const first = await settledEditors(n);
     for (let i = 0; i < 10; i++) {
       fsChanged(["/p/logo.png"]);
+      // oxlint-disable-next-line no-await-in-loop -- fake timers must advance one debounce window per file event
       await vi.advanceTimersByTimeAsync(1000);
     }
     fsChanged([], ["/p"]);

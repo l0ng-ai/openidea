@@ -202,7 +202,7 @@ The **Log** tab of the Git tool window shows the commit graph.
 - The details pane shows the changed files, the commit message, who committed it, which branches contain it and its signature.
 - In the **Signature** column, hover over a badge to see the verification result, signer, and key fingerprint when available. After changing your verification keys or trust settings, click **Refresh** in the log toolbar to check again.
 
-Right-click a commit for **Copy Revision Number** (`⌥⇧⌘C` / `Ctrl+Alt+Shift+C`), **Create Patch…**, **Cherry-Pick**, **Checkout Revision**, **Show Repository at Revision**, **Compare with Local**, **Reset Current Branch to Here…**, **Revert Commit**, **Undo Commit…**, **New Branch…**, **New Tag…**, **View in Browser** and more. With two commits selected, **Compare Versions** diffs them. With the commit list focused, `F2` edits the commit message, `⌥⌘N` / `Ctrl+Alt+N` creates a branch, `←` / `→` go to the child or parent commit, and `F3` / `F11` toggles a commit bookmark (`⌥F3` / `Ctrl+F11` with a mnemonic).
+Right-click a commit for **Copy Revision Number** (`⌥⇧⌘C` / `Ctrl+Alt+Shift+C`), **Create Patch…**, **Cherry-Pick**, **Checkout Revision**, **Show Repository at Revision**, **Compare with Local**, **Reset Current Branch to Here…**, **Revert Commit**, **Undo Commit…**, **New Branch…**, **New Tag…**, **View in Browser** and more. With two commits selected, **Compare Versions** diffs them. With the commit list focused, `F2` edits the commit message, `⌥⌘N` / `Ctrl+Alt+N` creates a branch, `←` / `→` go to the child or parent commit, and `F3` / `F11` toggles a commit bookmark (`⌥F3` / `Ctrl+F11` with a mnemonic). **Copy Commit Subject**, run from **Find Action** or a shortcut you assign in **Settings › Keymap**, copies the subject lines of the selected commits, one per line.
 
 In the changed-files pane, use **Apply Selected Changes** to bring only the selected files' changes into the working tree.
 Use **Extract Selected Changes** on part of a commit to move those files' changes into a new commit immediately after it. The operation preserves the tip's tree, local edits, and staged changes. The success notification offers **Undo** while HEAD still points to the rewritten tip.
@@ -247,6 +247,7 @@ Turn on **Combine stashes and shelves in one tab** in the Git settings to show b
 ## Blame and history
 
 - **Annotate with Git Blame** shows author and date per line in the gutter (also from the gutter's context menu). Click an entry to open the commit in the log. **Show inline blame for the current line** in the Git settings shows the author at the end of the caret line; a click on it opens the commit unless **Open the commit when the inline blame is clicked** is off.
+- **Options › Names** in the gutter's context menu shows authors as **Initials**, **Last Name** (the default), **First Name** or **Full Name** in every annotated editor.
 - **Annotate Previous Revision** in an annotated line's menu opens the file as it was before that commit, annotated, next to the commit's version.
 - **Annotate at Revision…** picks any revision the file has and shows it annotated next to the working copy.
 - **Show History** opens the file's history in a tab of the Git tool window.

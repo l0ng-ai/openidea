@@ -178,6 +178,14 @@ fn handle(&mut self, _view: &str, event: ViewEvent, ctx: &Invocation) -> Result<
 
 它需要 `editor.read` 和 `editor.write`。
 
+处理大型二进制文件时，在网页自定义编辑器中设置 `binary = true`、`layout = "tab"`，并在清单中声明
+`engines.openidea = "^1.16"`。IDE 打开文件时无需创建文本文档。页面可以访问只读文档的文件名，并通过网页视图桥接
+API 分段读取文件。插件代码收到此编辑器的消息时，编辑器上下文指向当前打开的二进制文件。
+
+如果组件需要文件路径，可以从页面发送消息，在处理视图事件时调用 `host::pick_file`（API 1.16）。
+该方法返回项目所在主机上的路径，取消时返回 `None`。例如，Parquet 查看器可选择第二个数据集，
+再使用已获授权的 DuckDB 进程进行比较。若需要在页面中读写文件内容，请使用 `openFile` 或 `saveFile`。
+
 ## HTML 主体
 
 `Body::Html` 在沙箱 frame 中运行：不透明源（opaque origin），CSP 只允许其内联脚本、内联样式和 `data:` 图片，
@@ -221,6 +229,8 @@ web = "web/index.html"   # 页面；它所在的目录就是它能加载的范�
 | `window.openidea`                    | 作用                                                                                        |
 | ------------------------------------ | ------------------------------------------------------------------------------------------- |
 | `document.get()`                     | 自定义编辑器文档的 `{ version, text, readOnly, name }`（工具窗口中没有）                    |
+| `document.size()`                    | 当前二进制文件的字节数                                                                      |
+| `document.readRange(offset, length)` | 从当前二进制文件的字节偏移处读取最多 1 MiB，返回 `Uint8Array`；到达文件末尾时可能更短       |
 | `document.edit(version, edits)`      | 把 `[{ from, to, insert }]`（UTF-16 偏移）作为一次可撤销修改应用；版本不符时以 `stale` 拒绝 |
 | `document.replace(version, text)`    | 同上，但替换整个文本                                                                        |
 | `document.onChange(fn)`              | 其他地方（文本编辑器、撤销、另一个窗口）修改后收到 `{ version, text }`                      |
@@ -241,6 +251,25 @@ web = "web/index.html"   # 页面；它所在的目录就是它能加载的范�
   padding-right: var(--openidea-corner-inset-width, 0px);
 }
 ```
+
+**嵌入页面**（API 1.16）。在声明的 `frames` 中列出来源后，网页可以用 `<iframe>` 嵌入这些站点。每个来源写作
+`https://host[:port]`（或指向 `localhost`、`127.0.0.1`、`[::1]` 的 `http://`），不带路径，并且必须被清单中的
+`net:<host>` 权限覆盖，这样安装页面会列出它：
+
+```toml
+[capabilities]
+optional = ["net:play.example.com"]
+
+[[contributes.views]]
+id = "hall"
+title = "Game Hall"
+web = "web/index.html"
+frames = ["https://play.example.com"]   # 最多 16 个来源
+```
+
+该目录下的页面获得的 `frame-src` 只包含用户已授权的声明来源；权限被拒绝或撤销的来源会被去掉，不声明 `frames`
+的页面不能嵌入任何内容。被嵌入的页面保留框架的沙箱（可运行脚本、不透明源、没有 cookie 和存储），拿不到
+`window.openidea`，插件页面自身仍然没有网络。拒绝被嵌入的站点（`X-Frame-Options`、`frame-ancestors`）会显示为空白。
 
 [Graphviz](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/graphviz) 是完整示例：`web-src/` 中的
 Vite + React 页面由 `plugins/build.sh official/graphviz` 构建到 `web/`，插件代码把 Graphviz 报告的错误发布为问题。

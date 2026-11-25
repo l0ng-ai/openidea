@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { FileMatches, SearchQuery, SearchSummary } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import type { ProjectInfo } from "@/bindings";
+import { useProjectRoots } from "@/platform/projectRoots";
 import type { ReplaceRequest } from "../find/replaceFlow";
 
 const replaced: ReplaceRequest[] = [];
@@ -314,6 +316,17 @@ describe("Find in Files popup", () => {
     expect(screen.getByRole("button", { name: "Open in Find Window" })).toBeEnabled();
   });
 
+  it("clicking a scope tab keeps focus in the search field", async () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "order" }));
+    await settle();
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    screen.getByRole("tab", { name: "Module" }).dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Module" }));
+    expect(useFindPopup.getState().scopeTab).toBe("module");
+  });
+
   it("closing remembers the search text", async () => {
     render(<FindInFilesOverlay />);
     act(() => showFindPopup(false, { query: "order" }));
@@ -615,5 +628,64 @@ describe("empty results, as IDEA", () => {
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Search with Regex" }));
     expect(useFindPopup.getState().isRegex).toBe(true);
+  });
+});
+
+describe("Find in Files module picker", () => {
+  it("shows module names as written in Chinese and translates only the unnamed project", async () => {
+    const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+    await setLocale("zh");
+    try {
+      // Precondition: the zh catalog translates these words, so a translated label would differ.
+      expect(tx("dev")).not.toBe("dev");
+      expect(tx("Project")).not.toBe("Project");
+      useFindPopup.setState({ scopeTab: "module", module: "" });
+      render(<FindInFilesOverlay />);
+      act(() => showFindPopup(false, { query: "order" }));
+      await settle();
+      const picker = screen.getByRole("button", { name: tx("Module") });
+      expect(picker).toHaveTextContent(tx("Project"));
+
+      act(() => {
+        useProject.setState({
+          project: {
+            root: "/ws",
+            name: "Workspace",
+            trusted: true,
+            isGit: false,
+            workspace: { version: 1, name: "Workspace", projects: ["/ws/dev", "/ws/test"] },
+          } as ProjectInfo,
+        });
+        useFindPopup.setState({ module: "/ws/dev" });
+      });
+      expect(picker).toHaveTextContent(/^dev$/);
+      fireEvent.click(picker);
+      expect(
+        within(screen.getByRole("listbox", { name: tx("Module") }))
+          .getAllByRole("option")
+          .map((o) => o.textContent),
+      ).toEqual(["dev/ws/dev", "test/ws/test"]);
+      fireEvent.keyDown(screen.getByRole("listbox", { name: tx("Module") }), { key: "Escape" });
+
+      // A module detected inside a project shows its project-relative folder as the detail.
+      act(() => {
+        useProject.setState({ project: { root: "/p", name: "p", trusted: true, isGit: false } as ProjectInfo });
+        useProjectRoots.setState({
+          root: "/p",
+          detected: [{ path: "/p/test/src", kind: "source", detectedFrom: "test/pom.xml" }] as never,
+        });
+        useFindPopup.setState({ module: "test" });
+      });
+      expect(picker).toHaveTextContent(/^test$/);
+      fireEvent.click(picker);
+      expect(
+        within(screen.getByRole("listbox", { name: tx("Module") }))
+          .getAllByRole("option")
+          .map((o) => o.textContent),
+      ).toEqual(["p", "testtest"]);
+    } finally {
+      useProjectRoots.setState({ root: null, detected: [] });
+      _resetI18nForTests();
+    }
   });
 });

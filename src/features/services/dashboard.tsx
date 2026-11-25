@@ -113,6 +113,20 @@ export function bytesToUnits(bytes: number, precision = 1): string {
   return `${val.toFixed(precision)} ${units[idx]!}`;
 }
 
+export function bytesToDecimalUnits(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0B";
+  const units = ["B", "kB", "MB", "GB", "TB", "PB"];
+  let idx = 0;
+  let val = bytes;
+  while (val >= 1000 && idx < units.length - 1) {
+    val /= 1000;
+    idx++;
+  }
+  if (idx === 0) return `${Math.round(val)}B`;
+  const text = val.toFixed(3).replace(/\.?0+$/, "");
+  return `${text}${units[idx]!}`;
+}
+
 export function parsePercent(raw: string | undefined | null): number {
   if (!raw) return 0;
   const n = Number.parseFloat(raw.replace(/%/g, "").trim());
@@ -816,9 +830,11 @@ function ContainerLinkChip({ conn, container }: { conn: string; container: Docke
   );
 }
 
-function VolumeLinkChip({ conn, volume }: { conn: string; volume: DockerVolume }) {
+function VolumeLinkChip({ conn, volume, size }: { conn: string; volume: DockerVolume; size?: string }) {
   const composeVol = volume.labels?.["com.docker.compose.volume"];
-  const meta = composeVol && composeVol !== volume.name ? `${composeVol} · ${volume.driver}` : volume.driver;
+  const meta = [composeVol && composeVol !== volume.name ? composeVol : null, volume.driver, size]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <button
       type="button"
@@ -841,6 +857,9 @@ const STATS_CONCURRENCY = 6;
 /** Default `top` refresh delay (3s) between live `docker stats --no-stream` samples. */
 export const CONTAINER_STATS_POLL_MS = 3000;
 
+/** Between `docker system df -v` samples, which make the daemon measure every volume. */
+export const VOLUME_SIZES_POLL_MS = 30_000;
+
 async function fetchContainerStatsMap(
   conn: string,
   ids: readonly string[],
@@ -852,6 +871,7 @@ async function fetchContainerStatsMap(
     while (next < ids.length) {
       const id = ids[next++]!;
       try {
+        // oxlint-disable-next-line no-await-in-loop -- each worker claims the next id from a shared cursor; fan-out is already bounded by STATS_CONCURRENCY workers
         out[id] = await call(commands.dockerContainerStats(endpoint, id));
       } catch {
         // Container may have stopped before stats were sampled.
@@ -932,6 +952,88 @@ function useLiveContainerStats(
   };
 }
 
+function useLiveVolumeSizes(
+  conn: string,
+  scopeKey: string,
+  enabled = true,
+): {
+  byName: Record<string, string>;
+  loading: boolean;
+} {
+  const shown = useToolWindowShown();
+  const fullScope = `${conn}\0${scopeKey}`;
+  const [sizeState, setSizeState] = useState<{
+    conn: string;
+    byName: Record<string, string>;
+    settledScope: string;
+  }>({ conn: "", byName: {}, settledScope: "" });
+
+  useEffect(() => {
+    if (!enabled || !scopeKey || !shown || !isTauri()) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let inFlight = false;
+
+    const clearTimer = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+
+    const isDocumentHidden = () => document.visibilityState === "hidden";
+
+    const sample = async () => {
+      clearTimer();
+      if (!alive || inFlight || isDocumentHidden()) return;
+      inFlight = true;
+      try {
+        const raw = await call(commands.dockerVolumeSizes(endpointOf(conn)));
+        if (alive) {
+          const byName: Record<string, string> = {};
+          for (const [k, v] of Object.entries(raw)) {
+            if (v) byName[k] = v;
+          }
+          setSizeState({ conn, byName, settledScope: fullScope });
+        }
+      } catch {
+        if (alive) {
+          setSizeState((prev) => ({
+            conn,
+            byName: prev.conn === conn ? prev.byName : {},
+            settledScope: fullScope,
+          }));
+        }
+      } finally {
+        inFlight = false;
+        if (alive && !isDocumentHidden()) {
+          timer = setTimeout(() => void sample(), VOLUME_SIZES_POLL_MS);
+        }
+      }
+    };
+
+    const onVisibility = () => {
+      if (isDocumentHidden()) clearTimer();
+      else void sample();
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    if (!isDocumentHidden()) void sample();
+
+    return () => {
+      alive = false;
+      clearTimer();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [conn, scopeKey, enabled, shown, fullScope]);
+
+  const active = Boolean(enabled && scopeKey) && shown && isTauri();
+  return {
+    byName: sizeState.conn === conn ? sizeState.byName : {},
+    loading: active && sizeState.settledScope !== fullScope,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Container Dashboard & Processes View
 
@@ -978,6 +1080,18 @@ export function ContainerDashboard({
 
   const { byId: statsById, loading: statsLoading } = useLiveContainerStats(conn, running ? container.id : "");
   const stats = running ? (statsById[container.id] ?? null) : null;
+
+  const mountedVolumesKey = useMemo(() => {
+    const names = inspect?.mounts.length
+      ? inspect.mounts.filter((m) => m.type === "volume" && m.name).map((m) => m.name!)
+      : (container.mounts ?? []).filter((m) => snapshot.volumes.some((v) => v.name === m));
+    return [...new Set(names)].sort().join("\0");
+  }, [inspect, container.mounts, snapshot.volumes]);
+  const { byName: volumeSizes, loading: volumeSizesLoading } = useLiveVolumeSizes(
+    conn,
+    mountedVolumesKey,
+    Boolean(mountedVolumesKey),
+  );
 
   const cpuPct = stats ? parsePercent(stats.cpuPerc) : 0;
   const memPair = stats ? parseUsagePair(stats.memUsage) : null;
@@ -1222,13 +1336,18 @@ export function ContainerDashboard({
               <T>Destination</T>
             </span>
             <span>
+              <T>Size</T>
+            </span>
+            <span>
               <T>Mode</T>
             </span>
           </div>
-          {inspect.mounts.map((m, idx) => {
-            const volumeObj = m.name ? snapshot.volumes.find((v) => v.name === m.name) : undefined;
+          {inspect.mounts.map((m) => {
+            const volumeName = m.type === "volume" ? m.name : undefined;
+            const volumeObj = volumeName ? snapshot.volumes.find((v) => v.name === volumeName) : undefined;
+            const mountSize = volumeName ? volumeSizes[volumeName] : undefined;
             return (
-              <div key={`${m.destination}:${idx}`} className={styles.dataRow}>
+              <div key={`${m.destination}:${m.type}:${m.source}`} className={styles.dataRow}>
                 <span className={styles.badgeMuted}>{m.type}</span>
                 <span className={styles.mono} title={m.source}>
                   {volumeObj ? (
@@ -1251,6 +1370,14 @@ export function ContainerDashboard({
                 <span className={styles.mono} title={m.destination}>
                   {m.destination}
                 </span>
+                <span className={clsx(styles.mono, styles.nowrapCell)}>
+                  {mountSize ??
+                    (volumeName && volumeSizesLoading ? (
+                      <Spinner size={12} />
+                    ) : (
+                      <span className={styles.mutedMeta}>—</span>
+                    ))}
+                </span>
                 <span className={styles.mono}>{m.rw ? m.mode || "rw" : "ro"}</span>
               </div>
             );
@@ -1260,24 +1387,13 @@ export function ContainerDashboard({
         <div className={styles.chipGroup}>
           {container.mounts.map((m) => {
             const volumeObj = snapshot.volumes.find((v) => v.name === m);
+            const mountSize = volumeSizes[m];
             return volumeObj ? (
-              <button
-                key={m}
-                type="button"
-                className={styles.entityChip}
-                onClick={() => {
-                  selectServicesTreeKey(
-                    treeKey(conn, { kind: "volume", key: `volume:${volumeObj.name}`, volume: volumeObj }),
-                  );
-                  showDetail("dashboard");
-                }}
-              >
-                <Icon name="docker-volumes" size={14} />
-                <span className={styles.mono}>{m}</span>
-              </button>
+              <VolumeLinkChip key={m} conn={conn} volume={volumeObj} size={mountSize} />
             ) : (
               <span key={m} className={styles.entityChip}>
                 <span className={styles.mono}>{m}</span>
+                {mountSize && <span className={styles.chipMeta}>{mountSize}</span>}
               </span>
             );
           })}
@@ -1402,19 +1518,30 @@ export function ContainerProcessesView({ conn, id, running }: { conn: string; id
           <table className={styles.gridTable}>
             <thead>
               <tr>
-                {data.titles.map((title, i) => (
-                  <th key={`${title}:${i}`}>{title}</th>
+                {data.titles.map((title, idx) => (
+                  // oxlint-disable-next-line react/no-array-index-key -- column titles can repeat; position is the identity
+                  <th key={idx}>{title}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {data.processes.map((row, rIdx) => (
-                <tr key={rIdx}>
-                  {data.titles.map((_, cIdx) => (
-                    <td key={cIdx} className={styles.mono}>
-                      {row[cIdx] ?? ""}
-                    </td>
-                  ))}
+                <tr
+                  // oxlint-disable-next-line react/no-array-index-key -- process rows can repeat; position is the identity
+                  key={rIdx}
+                >
+                  {data.titles.map((_, cIdx) => {
+                    const value = row[cIdx] ?? "";
+                    return (
+                      <td
+                        // oxlint-disable-next-line react/no-array-index-key -- cell values repeat; position is the identity
+                        key={cIdx}
+                        className={styles.mono}
+                      >
+                        {value}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -1617,6 +1744,7 @@ export function ImageLayersView({ conn, id }: { conn: string; id: string }) {
               const bytes = unitsToBytes(layer.size);
               const pct = bytes > 0 ? (bytes / maxBytes) * 100 : 0;
               return (
+                // oxlint-disable-next-line react/no-array-index-key -- multiple image layers can report the same missing ID
                 <tr key={`${layer.id}:${idx}`}>
                   <td className={styles.mutedMeta}>{idx + 1}</td>
                   <td>
@@ -1657,6 +1785,8 @@ export function VolumeDashboard({
   const target: DockerTarget = { conn, node: { kind: "volume", key: `volume:${volume.name}`, volume } };
   const usingContainers = useMemo(() => containersUsingVolume(snapshot, volume), [snapshot, volume]);
   const labels = Object.entries(volume.labels ?? {}).sort((a, b) => a[0].localeCompare(b[0]));
+  const { byName: volumeSizes, loading: volumeSizesLoading } = useLiveVolumeSizes(conn, volume.name);
+  const diskUsage = volumeSizes[volume.name];
 
   return (
     <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
@@ -1675,6 +1805,17 @@ export function VolumeDashboard({
       <div className={styles.propList}>
         <PropRow label={<T>Name</T>}>
           <span className={styles.mono}>{volume.name}</span>
+        </PropRow>
+        <PropRow label={<T>Disk usage</T>}>
+          {diskUsage ? (
+            <span className={styles.mono}>{diskUsage}</span>
+          ) : volumeSizesLoading ? (
+            <span className={styles.mutedMeta}>
+              <T>Loading…</T>
+            </span>
+          ) : (
+            <span className={styles.mutedMeta}>—</span>
+          )}
         </PropRow>
         <PropRow label={<T>Driver</T>}>
           <span className={styles.mono}>{volume.driver}</span>
@@ -1796,8 +1937,8 @@ export function NetworkDashboard({
         </PropRow>
         <PropRow label={<T>Subnet / Gateway</T>} hidden={!inspect?.ipamConfigs.length}>
           <div className={styles.chipGroupInline}>
-            {inspect?.ipamConfigs.map((cfg, idx) => (
-              <span key={idx} className={styles.entityChip}>
+            {inspect?.ipamConfigs.map((cfg) => (
+              <span key={`${cfg.subnet}:${cfg.gateway}`} className={styles.entityChip}>
                 <span className={styles.mono}>
                   {[cfg.subnet, cfg.gateway ? `gw ${cfg.gateway}` : ""].filter(Boolean).join(" · ")}
                 </span>
@@ -1863,6 +2004,21 @@ export function ComposeProjectDashboard({
   const first = containers[0];
   const runningCount = containers.filter(isRunning).length;
   const namedVolumes = useMemo(() => volumesInComposeProject(snapshot, project), [snapshot, project]);
+  const namedVolumesKey = useMemo(
+    () =>
+      namedVolumes
+        .map((v) => v.name)
+        .sort()
+        .join("\0"),
+    [namedVolumes],
+  );
+  const { byName: volumeSizes } = useLiveVolumeSizes(conn, namedVolumesKey, namedVolumes.length > 0);
+  const totalVolumeSize = useMemo(() => {
+    const sizes = namedVolumes.map((v) => volumeSizes[v.name]).filter((s): s is string => Boolean(s));
+    if (sizes.length === 0) return null;
+    if (sizes.length === 1) return sizes[0]!;
+    return bytesToDecimalUnits(sizes.reduce((sum, s) => sum + unitsToBytes(s), 0));
+  }, [namedVolumes, volumeSizes]);
 
   const runningIdsKey = useMemo(
     () =>
@@ -1876,7 +2032,7 @@ export function ComposeProjectDashboard({
   const { byId: activeStats, loading: statsLoading } = useLiveContainerStats(conn, runningIdsKey);
 
   return (
-    <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
+    <div className={styles.detailBody}>
       <div className={styles.dashboardActions}>
         <OpButton busy={busy === "start"} disabled={!canStart(target)} onClick={() => void start(target)}>
           Start
@@ -1892,144 +2048,156 @@ export function ComposeProjectDashboard({
         </Button>
       </div>
 
-      <SectionBanner>{txTemplate(`Compose project '${project}'`)}</SectionBanner>
-      <div className={styles.propList}>
-        <PropRow label={<T>Project</T>}>
-          <span className={styles.mono}>{project}</span>
-        </PropRow>
-        <PropRow label={<T>Status</T>}>
-          <span>
-            {runningCount}/{containers.length} running
-          </span>
-        </PropRow>
-        <PropRow label={<T>Working directory</T>} hidden={!first?.composeWorkingDir}>
-          <span className={styles.mono}>{first?.composeWorkingDir}</span>
-        </PropRow>
-        <PropRow label={<T>Compose files</T>} hidden={!first?.composeFiles.length}>
-          <span className={styles.inlineRow}>
-            {first?.composeFiles.map((file) => (
-              <button
-                key={file}
-                type="button"
-                className={styles.link}
-                onClick={() => void openComposeFile(file, first.composeWorkingDir)}
-              >
-                <span className={styles.mono}>{file}</span>
-              </button>
-            ))}
-          </span>
-        </PropRow>
-      </div>
+      <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
+        <SectionBanner>{txTemplate(`Compose project '${project}'`)}</SectionBanner>
+        <div className={styles.propList}>
+          <PropRow label={<T>Project</T>}>
+            <span className={styles.mono}>{project}</span>
+          </PropRow>
+          <PropRow label={<T>Status</T>}>
+            <span>
+              {runningCount}/{containers.length} running
+            </span>
+          </PropRow>
+          <PropRow label={<T>Working directory</T>} hidden={!first?.composeWorkingDir}>
+            <span className={styles.mono}>{first?.composeWorkingDir}</span>
+          </PropRow>
+          <PropRow label={<T>Compose files</T>} hidden={!first?.composeFiles.length}>
+            <span className={styles.inlineRow}>
+              {first?.composeFiles.map((file) => (
+                <button
+                  key={file}
+                  type="button"
+                  className={styles.link}
+                  onClick={() => void openComposeFile(file, first.composeWorkingDir)}
+                >
+                  <span className={styles.mono}>{file}</span>
+                </button>
+              ))}
+            </span>
+          </PropRow>
+        </div>
 
-      <SectionBanner>
-        <T>Services</T>
-      </SectionBanner>
-      <div className={styles.composeTableWrap}>
-        <table className={clsx(styles.gridTable, styles.composeServicesTable)}>
-          <thead>
-            <tr>
-              <th>
-                <T>Service</T>
-              </th>
-              <th>
-                <T>Status</T>
-              </th>
-              <th>
-                <T>CPU</T>
-              </th>
-              <th>
-                <T>Memory</T>
-              </th>
-              <th>
-                <T>Network I/O</T>
-              </th>
-              <th>
-                <T>Block I/O</T>
-              </th>
-              <th>
-                <T>PIDs</T>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {containers.map((c) => {
-              const running = isRunning(c);
-              const stats = running ? activeStats[c.id] : undefined;
-              const cpuPct = stats ? parsePercent(stats.cpuPerc) : 0;
-              const memPair = stats ? parseUsagePair(stats.memUsage) : null;
-              const memPct = memPair ? memPair.percent : stats ? parsePercent(stats.memPerc) : 0;
-              return (
-                <tr key={c.id}>
-                  <td className={styles.composeServiceCell}>
-                    <button type="button" className={styles.link} onClick={() => selectContainerInTree(conn, c)}>
-                      <span className={clsx(styles.statusDot, running ? styles.dotOk : styles.dotMuted)} />
-                      <span className={styles.mono}>{c.name}</span>
-                    </button>
-                    {c.composeService && !c.name.includes(c.composeService) && (
-                      <span className={styles.mutedMeta}>{c.composeService}</span>
-                    )}
-                  </td>
-                  <td className={styles.nowrapCell}>
-                    <StatusBadge state={c.state} text={c.status || c.state} />
-                  </td>
-                  <td className={styles.composeMetricCell}>
-                    {stats ? (
-                      <div className={styles.composeMetric}>
-                        <span className={styles.mono}>{stats.cpuPerc}</span>
-                        <LineProgress percent={cpuPct} />
-                      </div>
-                    ) : running && statsLoading ? (
-                      <Spinner size={12} />
-                    ) : (
-                      <span className={styles.mutedMeta}>—</span>
-                    )}
-                  </td>
-                  <td className={styles.composeMemoryCell}>
-                    {stats ? (
-                      <div className={styles.composeMetric}>
-                        <span className={styles.mono}>
-                          {stats.memUsage} ({stats.memPerc})
+        <SectionBanner>
+          <T>Services</T>
+        </SectionBanner>
+        <div className={styles.composeTableWrap}>
+          <table className={clsx(styles.gridTable, styles.composeServicesTable)}>
+            <thead>
+              <tr>
+                <th>
+                  <T>Service</T>
+                </th>
+                <th>
+                  <T>Status</T>
+                </th>
+                <th>
+                  <T>CPU</T>
+                </th>
+                <th>
+                  <T>Memory</T>
+                </th>
+                <th>
+                  <T>Network I/O</T>
+                </th>
+                <th>
+                  <T>Block I/O</T>
+                </th>
+                <th>
+                  <T>PIDs</T>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {containers.map((c) => {
+                const running = isRunning(c);
+                const stats = running ? activeStats[c.id] : undefined;
+                const cpuPct = stats ? parsePercent(stats.cpuPerc) : 0;
+                const memPair = stats ? parseUsagePair(stats.memUsage) : null;
+                const memPct = memPair ? memPair.percent : stats ? parsePercent(stats.memPerc) : 0;
+                return (
+                  <tr key={c.id}>
+                    <td className={styles.composeServiceCell}>
+                      <button type="button" className={styles.link} onClick={() => selectContainerInTree(conn, c)}>
+                        <span className={clsx(styles.statusDot, running ? styles.dotOk : styles.dotMuted)} />
+                        <span className={styles.mono}>{c.name}</span>
+                      </button>
+                      {c.composeService && !c.name.includes(c.composeService) && (
+                        <span className={styles.mutedMeta}>{c.composeService}</span>
+                      )}
+                    </td>
+                    <td className={styles.nowrapCell}>
+                      <StatusBadge state={c.state} text={c.status || c.state} />
+                    </td>
+                    <td className={styles.composeMetricCell}>
+                      {stats ? (
+                        <div className={styles.composeMetric}>
+                          <span className={styles.mono}>{stats.cpuPerc}</span>
+                          <LineProgress percent={cpuPct} />
+                        </div>
+                      ) : running && statsLoading ? (
+                        <Spinner size={12} />
+                      ) : (
+                        <span className={styles.mutedMeta}>—</span>
+                      )}
+                    </td>
+                    <td className={styles.composeMemoryCell}>
+                      {stats ? (
+                        <div className={styles.composeMetric}>
+                          <span className={styles.mono}>
+                            {stats.memUsage} ({stats.memPerc})
+                          </span>
+                          <LineProgress percent={memPct} />
+                        </div>
+                      ) : running && statsLoading ? (
+                        <span className={styles.mutedMeta}>
+                          <T>Loading…</T>
                         </span>
-                        <LineProgress percent={memPct} />
-                      </div>
-                    ) : running && statsLoading ? (
-                      <span className={styles.mutedMeta}>
-                        <T>Loading…</T>
-                      </span>
-                    ) : (
-                      <span className={styles.mutedMeta}>—</span>
-                    )}
-                  </td>
-                  <td className={clsx(styles.mono, styles.nowrapCell)}>
-                    {stats?.netIo || <span className={styles.mutedMeta}>—</span>}
-                  </td>
-                  <td className={clsx(styles.mono, styles.nowrapCell)}>
-                    {stats?.blockIo || <span className={styles.mutedMeta}>—</span>}
-                  </td>
-                  <td className={clsx(styles.mono, styles.nowrapCell)}>
-                    {stats?.pids || <span className={styles.mutedMeta}>—</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                      ) : (
+                        <span className={styles.mutedMeta}>—</span>
+                      )}
+                    </td>
+                    <td className={clsx(styles.mono, styles.nowrapCell)}>
+                      {stats?.netIo || <span className={styles.mutedMeta}>—</span>}
+                    </td>
+                    <td className={clsx(styles.mono, styles.nowrapCell)}>
+                      {stats?.blockIo || <span className={styles.mutedMeta}>—</span>}
+                    </td>
+                    <td className={clsx(styles.mono, styles.nowrapCell)}>
+                      {stats?.pids || <span className={styles.mutedMeta}>—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
 
-      <SectionBanner>
-        <T>Volumes</T>
-      </SectionBanner>
-      {namedVolumes.length > 0 ? (
-        <div className={styles.chipGroup}>
-          {namedVolumes.map((v) => (
-            <VolumeLinkChip key={v.name} conn={conn} volume={v} />
-          ))}
-        </div>
-      ) : (
-        <div className={styles.emptySection}>
-          <T>No named volumes</T>
-        </div>
-      )}
+        <SectionBanner
+          action={
+            totalVolumeSize ? (
+              <span className={styles.bannerMeta}>
+                <T>Disk usage</T>
+                {": "}
+                <span className={styles.mono}>{totalVolumeSize}</span>
+              </span>
+            ) : undefined
+          }
+        >
+          <T>Volumes</T>
+        </SectionBanner>
+        {namedVolumes.length > 0 ? (
+          <div className={styles.chipGroup}>
+            {namedVolumes.map((v) => (
+              <VolumeLinkChip key={v.name} conn={conn} volume={v} size={volumeSizes[v.name]} />
+            ))}
+          </div>
+        ) : (
+          <div className={styles.emptySection}>
+            <T>No named volumes</T>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

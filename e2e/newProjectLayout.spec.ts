@@ -9,6 +9,7 @@ const java: GeneratorInfo = {
   order: 1,
   description: "A plain Java application built with Maven or Gradle.",
   git: true,
+  directory: null,
   dynamic: false,
   fields: [
     {
@@ -32,7 +33,7 @@ const java: GeneratorInfo = {
       default: "",
       hint: "",
       visible: {},
-      kind: { type: "sdk", sdk: "jdk" },
+      kind: { type: "sdk", sdk: "jdk", version: false, min: null },
     },
   ],
 };

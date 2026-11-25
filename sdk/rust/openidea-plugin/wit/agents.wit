@@ -1,6 +1,6 @@
-package openidea:plugin@1.15.0;
+package openidea:plugin@1.17.0;
 
-/// Forking recorded native agent sessions into new tasks (API 1.15). Requires
+/// Forking recorded native agent sessions into new tasks (API 1.17). Requires
 /// the `agents` capability. The session must belong to the invoking window's
 /// project and have been recorded in `cwd`; the host builds the fork invocation
 /// and names the fork's id for claude (codex assigns its own).

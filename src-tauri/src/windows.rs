@@ -24,8 +24,9 @@ use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::utils::config::{Color, WindowConfig};
 use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuilder};
@@ -289,7 +290,7 @@ pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Opt
     };
     if let Some(remote) = launch.remote.clone() {
         let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(&remote.target, &remote.path));
-        if let Some(w) = open.and_then(|label| app.get_webview_window(&label)) {
+        if let Some(w) = open.and_then(|label| app.workbench_window(&label)) {
             return Ok(Some(w));
         }
         let title = remote
@@ -309,6 +310,7 @@ pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Opt
 
 #[derive(Default)]
 pub struct WindowsState {
+    primary: Mutex<HashMap<String, WebviewWindow>>,
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
     pub groups_restored: AtomicBool,
     /// Serialises writes of the saved session. Holds the previous run's session once read: it is
@@ -320,15 +322,16 @@ pub struct WindowsState {
     cli: Mutex<cli::Queue>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
-    /// Set by Quit while windows close one by one.
+    /// Set by Quit while windows close in parallel.
     quitting: AtomicBool,
     /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
     #[cfg(target_os = "macos")]
     pub keep_alive: AtomicBool,
-    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
-    /// once, so its members ask together.
-    close_requests: Mutex<Vec<String>>,
-    /// Project tabs closing one by one (Close Other Tabs and friends).
+    /// Coordinates parallel window/tab-group closes so clean tabs hide together in one frame
+    /// and interactive prompts still run one at a time.
+    close: Mutex<CloseState>,
+    pub close_notify: Arc<tokio::sync::Notify>,
+    /// Project tabs closing in parallel (Close Other Tabs and friends).
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
     restart: AtomicBool,
@@ -355,20 +358,221 @@ pub(crate) struct AuxGeometry {
     pub maximized: bool,
 }
 
+/// Tauri's WebviewWindow lookup and command argument both stop matching as soon as a
+/// window has a second webview. Keep addressing its original, trusted workbench instead.
+pub(crate) trait WorkbenchWindows {
+    fn workbench_window(&self, label: &str) -> Option<WebviewWindow>;
+    fn workbench_windows(&self) -> HashMap<String, WebviewWindow>;
+}
+
+impl WorkbenchWindows for AppHandle {
+    fn workbench_window(&self, label: &str) -> Option<WebviewWindow> {
+        self.state::<WindowsState>().primary.lock().get(label).cloned()
+    }
+    fn workbench_windows(&self) -> HashMap<String, WebviewWindow> {
+        self.state::<WindowsState>().primary.lock().clone()
+    }
+}
+
+pub struct WorkbenchWindow(WebviewWindow);
+
+impl std::ops::Deref for WorkbenchWindow {
+    type Target = WebviewWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> tauri::ipc::CommandArg<'a, tauri::Wry> for WorkbenchWindow {
+    fn from_command(item: tauri::ipc::CommandItem<'a, tauri::Wry>) -> Result<Self, tauri::ipc::InvokeError> {
+        let view = item.message.webview_ref();
+        view.app_handle()
+            .workbench_window(view.label())
+            .map(Self)
+            .ok_or_else(|| tauri::ipc::InvokeError::from("Not a workbench webview"))
+    }
+}
+
+impl specta::function::FunctionArg for WorkbenchWindow {
+    fn to_datatype(_: &mut specta::Types) -> Option<specta::datatype::DataType> {
+        None
+    }
+}
+
+#[derive(Default)]
+struct CloseState {
+    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
+    /// once, so its members ask together; Quit and Close Other Tabs also close members in parallel.
+    pending: Vec<String>,
+    /// Members that passed their close guard and are waiting at the batch barrier before destroying.
+    ready: HashSet<String>,
+    /// Members whose batch was cancelled while they waited; they stay open.
+    aborted: HashSet<String>,
+    /// Windows already hidden as part of their closing cohort so hiding only runs once per batch.
+    hidden: HashSet<String>,
+    /// Window currently showing an interactive close dialog (at most one across a batch).
+    prompt_holder: Option<String>,
+}
+
 impl WindowsState {
     pub fn close_requested(&self, label: &str) {
-        let mut requests = self.close_requests.lock();
-        if !requests.iter().any(|l| l == label) {
-            requests.push(label.to_owned());
+        let mut close = self.close.lock();
+        close.aborted.remove(label);
+        close.ready.remove(label);
+        close.hidden.remove(label);
+        if !close.pending.iter().any(|l| l == label) {
+            close.pending.push(label.to_owned());
         }
     }
 
     pub fn close_settled(&self, label: &str) {
-        self.close_requests.lock().retain(|l| l != label);
+        {
+            let mut close = self.close.lock();
+            close.pending.retain(|l| l != label);
+            close.ready.remove(label);
+            close.aborted.remove(label);
+            close.hidden.remove(label);
+            if close.prompt_holder.as_deref() == Some(label) {
+                close.prompt_holder = None;
+            }
+        }
+        self.close_notify.notify_waiters();
     }
 
     pub fn pending_closes(&self) -> Vec<String> {
-        self.close_requests.lock().clone()
+        self.close.lock().pending.clone()
+    }
+
+    pub fn is_closing(&self, label: &str) -> bool {
+        let in_close = {
+            let close = self.close.lock();
+            close.pending.iter().any(|l| l == label) || close.ready.contains(label)
+        };
+        in_close || self.in_tab_close_batch(label)
+    }
+
+    pub fn has_other_pending_closes(&self, exclude: &str) -> bool {
+        let other_pending = self.close.lock().pending.iter().any(|l| l != exclude);
+        other_pending || self.tab_closes.lock().as_ref().is_some_and(|b| b.has_other(exclude))
+    }
+
+    pub fn in_tab_close_batch(&self, label: &str) -> bool {
+        self.tab_closes.lock().as_ref().is_some_and(|b| b.contains(label))
+    }
+
+    /// Marks `label` ready to destroy. Returns `false` if its batch was already cancelled.
+    pub fn mark_ready(&self, label: &str) -> bool {
+        let ok = {
+            let mut close = self.close.lock();
+            if close.aborted.remove(label) {
+                close.pending.retain(|l| l != label);
+                close.ready.remove(label);
+                close.hidden.remove(label);
+                if close.prompt_holder.as_deref() == Some(label) {
+                    close.prompt_holder = None;
+                }
+                false
+            } else {
+                if close.prompt_holder.as_deref() == Some(label) {
+                    close.prompt_holder = None;
+                }
+                close.ready.insert(label.to_owned());
+                true
+            }
+        };
+        self.close_notify.notify_waiters();
+        ok
+    }
+
+    pub fn is_ready(&self, label: &str) -> bool {
+        self.close.lock().ready.contains(label)
+    }
+
+    pub fn take_aborted(&self, label: &str) -> bool {
+        let mut close = self.close.lock();
+        if close.aborted.remove(label) {
+            close.pending.retain(|l| l != label);
+            close.ready.remove(label);
+            close.hidden.remove(label);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Marks `labels` as hidden once and returns those newly claimed for hiding.
+    pub fn claim_hide(&self, labels: &[String]) -> Vec<String> {
+        let mut close = self.close.lock();
+        labels.iter().filter(|l| close.hidden.insert((*l).clone())).cloned().collect()
+    }
+
+    /// Marks `labels` as aborted so peers waiting at the close barrier or prompt turn stay open.
+    pub fn abort_batch(&self, labels: impl IntoIterator<Item = String>) {
+        {
+            let mut close = self.close.lock();
+            for label in labels {
+                close.ready.remove(&label);
+                close.hidden.remove(&label);
+                close.pending.retain(|l| l != &label);
+                close.aborted.insert(label);
+            }
+            close.prompt_holder = None;
+        }
+        self.close_notify.notify_waiters();
+    }
+
+    /// Aborts every in-flight close except `initiator` (used when cancelling Quit).
+    pub fn abort_all_closing(&self, initiator: Option<&str>) {
+        {
+            let mut close = self.close.lock();
+            let mut targets: Vec<String> = std::mem::take(&mut close.pending);
+            for label in close.ready.drain() {
+                if !targets.iter().any(|l| l == &label) {
+                    targets.push(label);
+                }
+            }
+            close.hidden.clear();
+            close.prompt_holder = None;
+            for label in targets {
+                if initiator != Some(label.as_str()) {
+                    close.aborted.insert(label);
+                }
+            }
+        }
+        self.close_notify.notify_waiters();
+    }
+
+    /// Tries to acquire the interactive prompt turn. `Err(())` means this close was aborted.
+    pub fn try_acquire_prompt(&self, label: &str) -> Result<bool, ()> {
+        let mut close = self.close.lock();
+        if close.aborted.contains(label) {
+            return Err(());
+        }
+        if close.prompt_holder.is_none() || close.prompt_holder.as_deref() == Some(label) {
+            close.prompt_holder = Some(label.to_owned());
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn release_prompt(&self, label: &str) {
+        let released = {
+            let mut close = self.close.lock();
+            if close.prompt_holder.as_deref() == Some(label) {
+                close.prompt_holder = None;
+                true
+            } else {
+                false
+            }
+        };
+        if released {
+            self.close_notify.notify_waiters();
+        }
+    }
+
+    pub fn has_prompt_holder(&self) -> bool {
+        self.close.lock().prompt_holder.is_some()
     }
 
     pub fn set_launch(&self, label: &str, launch: Launch) {
@@ -429,6 +633,7 @@ impl WindowsState {
     }
 
     pub fn forget(&self, label: &str) {
+        self.primary.lock().remove(label);
         self.close_settled(label);
         {
             let mut launches = self.launches.lock();
@@ -614,7 +819,7 @@ pub fn state_key(label: &str) -> &str {
 
 /// `parent`'s auxiliary windows that show its project's documents.
 pub fn document_windows(app: &AppHandle, parent: &str) -> Vec<String> {
-    app.webview_windows()
+    app.workbench_windows()
         .into_keys()
         .filter(|label| auxiliary(label).is_some_and(|(kind, p)| kind.shares_documents() && p == parent))
         .collect()
@@ -624,7 +829,7 @@ pub fn document_windows(app: &AppHandle, parent: &str) -> Vec<String> {
 /// Windows with documents are destroyed: the parent's leave guard has already settled their
 /// unsaved changes (`closeAuxiliaryWindows` in the UI).
 pub fn close_auxiliary_windows(app: &AppHandle, parent: &str) {
-    for (label, window) in app.webview_windows() {
+    for (label, window) in app.workbench_windows() {
         match auxiliary(&label) {
             Some((kind, p)) if p == parent && kind.shares_documents() => drop(window.destroy()),
             Some((_, p)) if p == parent => drop(window.close()),
@@ -635,7 +840,7 @@ pub fn close_auxiliary_windows(app: &AppHandle, parent: &str) {
 
 /// Project windows, excluding auxiliary windows, for counting and cycling.
 pub fn project_window_labels(app: &AppHandle) -> Vec<String> {
-    sorted_labels(app.webview_windows().keys().map(String::as_str).filter(|l| auxiliary_parent(l).is_none()))
+    sorted_labels(app.workbench_windows().keys().map(String::as_str).filter(|l| auxiliary_parent(l).is_none()))
 }
 
 /// Sort key: `main` first, then `project-<n>` by n, then anything else.
@@ -747,29 +952,75 @@ pub fn focus(window: &WebviewWindow) {
     let _ = window.set_focus();
 }
 
-/// Present one project's save prompt at a time, including hidden group members.
-pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
-    if !app.state::<WindowsState>().quitting() {
+pub fn hide_windows(windows: Vec<WebviewWindow>) {
+    #[cfg(target_os = "macos")]
+    crate::macos::hide_windows(windows);
+    #[cfg(not(target_os = "macos"))]
+    for window in windows {
+        let _ = window.hide();
+    }
+}
+
+/// Closes every project window in parallel without flipping focus across clean tabs.
+/// Windows that need user confirmation acquire the prompt turn one at a time via `begin_prompt`.
+pub fn start_quit(app: &AppHandle) {
+    let state = app.state::<WindowsState>();
+    let labels = project_window_labels(app);
+    if labels.is_empty() {
+        app.exit(0);
         return;
     }
-    let next = project_window_labels(app)
-        .into_iter()
-        .filter(|label| Some(label.as_str()) != closed)
-        .find_map(|label| app.get_webview_window(&label));
-    if let Some(window) = next {
-        focus(&window);
-        if window.close().is_err() {
-            app.state::<WindowsState>().set_quitting(false);
+    for label in &labels {
+        state.close_requested(label);
+    }
+    let mut any_sent = false;
+    for label in labels {
+        if let Some(window) = app.workbench_window(&label)
+            && window.close().is_ok()
+        {
+            any_sent = true;
+            continue;
         }
-    } else {
+        state.close_settled(&label);
+    }
+    if !any_sent {
+        if project_window_labels(app).is_empty() {
+            app.exit(0);
+        } else {
+            state.set_quitting(false);
+        }
+    }
+}
+
+/// Exits once every project window has finished closing during Quit.
+pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
+    let state = app.state::<WindowsState>();
+    if !state.quitting() {
+        return;
+    }
+    let remaining: Vec<String> =
+        project_window_labels(app).into_iter().filter(|label| Some(label.as_str()) != closed).collect();
+    if remaining.is_empty() {
         app.exit(0);
+        return;
+    }
+    // Close any window that appeared after Quit began and was not yet asked to close.
+    for label in remaining {
+        if !state.is_closing(&label)
+            && let Some(window) = app.workbench_window(&label)
+        {
+            state.close_requested(&label);
+            if window.close().is_err() {
+                state.close_settled(&label);
+            }
+        }
     }
 }
 
 /// The window whose open project is `root` (already canonical).
 pub fn find_project_window(app: &AppHandle, root: &Path) -> Option<WebviewWindow> {
     let state = app.try_state::<AppState>()?;
-    app.webview_windows().into_iter().filter(|(label, _)| auxiliary_parent(label).is_none()).find_map(|(label, w)| {
+    app.workbench_windows().into_iter().filter(|(label, _)| auxiliary_parent(label).is_none()).find_map(|(label, w)| {
         let project = state.project(&label).ok()?;
         (project.root == root && !project.light).then_some(w)
     })
@@ -788,7 +1039,7 @@ fn send_files_at(app: &AppHandle, window: &WebviewWindow, files: Vec<PathBuf>, p
 
 /// The focused window, else the last focused, else any.
 pub fn target_window(app: &AppHandle) -> Option<WebviewWindow> {
-    let windows = app.webview_windows();
+    let windows = app.workbench_windows();
     if let Some(w) = windows.values().find(|w| w.is_focused().unwrap_or(false)) {
         return Some(w.clone());
     }
@@ -850,13 +1101,24 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     }
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
+    // Windows opens a project window at the configured size (window-state restores only the
+    // maximized flag there), which Restore Down returns to.
+    #[cfg(windows)]
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let area = monitor.work_area().size.to_logical::<f64>(monitor.scale_factor());
+        let min = (config.min_width.unwrap_or(0.0), config.min_height.unwrap_or(0.0));
+        let (size, min) = fit_new_window((config.width, config.height), min, (area.width, area.height));
+        (config.width, config.height) = size;
+        (config.min_width, config.min_height) = (Some(min.0), Some(min.1));
+    }
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
+        .and_then(|b| dev_font_preferences(webview_profile(app, b)).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
+    app.state::<WindowsState>().primary.lock().insert(window.label().into(), window.clone());
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
-    crate::page_swipe::install(&window);
+    crate::macos_webview_input::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, app.try_state::<WindowsState>().is_some_and(|w| w.opens_project(window.label())));
@@ -967,7 +1229,7 @@ fn create_window_for(
     let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
     // The label is free only until the window exists, so concurrent opens take turns.
     let creating = CREATING.lock();
-    let windows = app.webview_windows();
+    let windows = app.workbench_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
     config.label = label.clone();
@@ -1103,7 +1365,7 @@ pub fn open_remote_window(
     new_window: bool,
 ) -> IdeResult<OpenOutcome> {
     tracing::info!("open_remote_window {target:?}:{path} new_window={new_window}");
-    let windows = app.webview_windows();
+    let windows = app.workbench_windows();
     let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(target, path));
     if let Some(w) = open.and_then(|label| windows.get(&label)) {
         focus(w);
@@ -1387,18 +1649,18 @@ pub(crate) fn run_open_at(
     for step in steps {
         match step {
             OpenStep::Focus(label) => {
-                if let Some(w) = app.get_webview_window(&label) {
+                if let Some(w) = app.workbench_window(&label) {
                     focus(&w);
                 }
             }
-            OpenStep::Files(label, files) => match app.get_webview_window(&label) {
+            OpenStep::Files(label, files) => match app.workbench_window(&label) {
                 Some(w) => send_files_at(app, &w, files, positions),
                 None => windows.add_files_at(&label, files, positions),
             },
             OpenStep::Launch(label, mut launch) => {
                 launch.add_positions(positions);
                 windows.set_launch(&label, *launch);
-                if let Some(w) = app.get_webview_window(&label) {
+                if let Some(w) = app.workbench_window(&label) {
                     let _ = app.emit_to(&label, LAUNCH_EVENT, ());
                     focus(&w);
                 }
@@ -1457,7 +1719,7 @@ fn dispatch_cli(app: &AppHandle, args: Vec<String>, cwd: String) {
     {
         let target = target_window(app)
             .filter(|window| auxiliary_parent(window.label()).is_none())
-            .or_else(|| project_window_labels(app).into_iter().find_map(|label| app.get_webview_window(&label)));
+            .or_else(|| project_window_labels(app).into_iter().find_map(|label| app.workbench_window(&label)));
         if let Some(window) = target {
             let _ = app.emit_to(
                 window.label(),
@@ -1539,7 +1801,7 @@ fn open_diff_files_at(app: &AppHandle, diff: DiffFilesLaunch, wait_for_window: b
             && matches!(holds(app, window.label()), Holds::Nothing | Holds::Project(_) | Holds::LightEdit)
     };
     let target = target_window(app).filter(local).or_else(|| {
-        project_window_labels(app).into_iter().filter_map(|label| app.get_webview_window(&label)).find(local)
+        project_window_labels(app).into_iter().filter_map(|label| app.workbench_window(&label)).find(local)
     });
     if let Some(window) = target {
         app.state::<WindowsState>().add_diff(window.label(), diff);
@@ -1604,7 +1866,7 @@ fn drain_cli(app: &AppHandle) {
 }
 
 pub fn cycle(app: &AppHandle, current: &str, forward: bool) {
-    let windows = app.webview_windows();
+    let windows = app.workbench_windows();
     let sorted = project_window_labels(app);
     if let Some(w) = cycle_target(&sorted, current, forward).and_then(|l| windows.get(&l)) {
         focus(w);
@@ -1622,8 +1884,8 @@ pub struct AuxWindow {
     pub background: Option<String>,
 }
 
-/// Opens an auxiliary window of `caller`'s project window, centred over it. A kind with one window
-/// per parent reuses it: the new launch is handed over ([`LAUNCH_EVENT`]) and the window focused.
+/// Opens an auxiliary window of `caller`'s project window, centred over it. A matching window
+/// receives the new launch ([`LAUNCH_EVENT`]) and is focused.
 pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWindow) -> IdeResult<()> {
     // Asked from an auxiliary window itself: open it for that window's parent.
     let parent_label = auxiliary_parent(caller.label()).unwrap_or(caller.label()).to_owned();
@@ -1641,15 +1903,15 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     } else {
         format!("{}-{parent_label}", aux.kind.name())
     };
-    if let Some(existing) = app.get_webview_window(&label) {
-        if aux.kind != AuxKind::Diff && aux.launch != Launch::default() {
+    if let Some(existing) = app.workbench_window(&label) {
+        if aux.launch != Launch::default() {
             windows.set_launch(&label, aux.launch);
             let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
         }
         focus(&existing);
         return Ok(());
     }
-    let parent = app.get_webview_window(&parent_label).ok_or_else(|| IdeError::not_found("no parent window"))?;
+    let parent = app.workbench_window(&parent_label).ok_or_else(|| IdeError::not_found("no parent window"))?;
     let mut config = window_config(app)?;
     config.label = label.clone();
     config.title = aux.title.into();
@@ -1689,14 +1951,15 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     // display's Space, so macOS keeps it too.
     #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
-    let window = builder.and_then(|b| dev_font_preferences(b).build()).map_err(|e| {
+    let window = builder.and_then(|b| dev_font_preferences(webview_profile(app, b)).build()).map_err(|e| {
         windows.forget(&label);
         IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
     })?;
+    windows.primary.lock().insert(label.clone(), window.clone());
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
-    crate::page_swipe::install(&window);
+    crate::macos_webview_input::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, false);
@@ -1776,7 +2039,7 @@ pub fn open_settings_from_menu(app: &AppHandle, target: &WebviewWindow, action: 
     else {
         return false;
     };
-    let Some(parent) = app.get_webview_window(parent_label) else {
+    let Some(parent) = app.workbench_window(parent_label) else {
         return false;
     };
     match open_settings_window(app, &parent, page, new_projects, None) {
@@ -2104,6 +2367,18 @@ fn fit_over_parent(
     rx.recv_timeout(FIT_ON_MAIN_TIMEOUT).map_err(|_| tauri::Error::FailedToReceiveMessage)
 }
 
+/// A new window's size and minimum size (logical pixels) shrunk to fit `area`, the work area of
+/// the monitor it opens on: the default 1440×900 is taller than a 1920×1080 laptop screen at
+/// 150 % scaling once the taskbar is taken off.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn fit_new_window(size: (f64, f64), min: (f64, f64), area: (f64, f64)) -> ((f64, f64), (f64, f64)) {
+    if area.0 <= 0.0 || area.1 <= 0.0 {
+        return (size, min);
+    }
+    let size = (size.0.min(area.0), size.1.min(area.1));
+    (size, (min.0.min(size.0), min.1.min(size.1)))
+}
+
 /// Centres the settings window over its owner, inside the owner's monitor work area. The window
 /// may still be on another display with a different scale, so its size is converted with its own
 /// scale and its position is given in physical pixels.
@@ -2194,6 +2469,23 @@ fn open_popup_in_browser<R: tauri::Runtime>(
         tracing::warn!("cannot open {url}: {e}");
     }
     tauri::webview::NewWindowResponse::Deny
+}
+
+/// On Windows every window keeps WebView2's profile (localStorage, IndexedDB) in the local
+/// data directory, so a custom location from Settings › System Settings › Caches holds it too;
+/// Tauri would always use the default one. All windows share it: one WebView2 browser process
+/// serves a single profile folder.
+fn webview_profile<'a>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    #[cfg(windows)]
+    if let Some(state) = app.try_state::<AppState>() {
+        return builder.data_directory(state.host.local_data_dir.clone());
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    builder
 }
 
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
@@ -2927,6 +3219,19 @@ mod tests {
     }
 
     #[test]
+    fn a_new_window_fits_the_work_area() {
+        // 1920×1080 at 150 % with a 48-pixel taskbar (#5750).
+        let area = (1280.0, 1032.0 / 1.5);
+        assert_eq!(fit_new_window((1440.0, 900.0), (400.0, 500.0), area), ((1280.0, 688.0), (400.0, 500.0)));
+        // A minimum larger than the screen gives way too.
+        assert_eq!(fit_new_window((1440.0, 900.0), (400.0, 800.0), area).1, (400.0, 688.0));
+        // A large screen keeps the configured size; an unknown work area changes nothing.
+        let big = ((1440.0, 900.0), (400.0, 500.0));
+        assert_eq!(fit_new_window(big.0, big.1, (2560.0, 1400.0)), big);
+        assert_eq!(fit_new_window(big.0, big.1, (0.0, 0.0)), big);
+    }
+
+    #[test]
     fn settings_bounds_fit_current_work_area() {
         for (parent, size, work, expected) in [
             // 1920×1080 at 150% scaling, with a 40-physical-pixel taskbar.
@@ -3053,5 +3358,39 @@ mod tests {
         assert_eq!(menu_settings_launch("main", false, false, "file.settings", None), None);
         assert_eq!(menu_settings_launch("main", true, true, "file.settings", None), None);
         assert_eq!(menu_settings_launch("main", false, true, "file.openProject", None), None);
+    }
+
+    #[test]
+    fn parallel_close_coordination_tracks_ready_prompt_and_abort() {
+        let st = WindowsState::default();
+        st.close_requested("main");
+        st.close_requested("project-1");
+        assert!(st.is_closing("main"));
+        assert!(st.has_other_pending_closes("main"));
+
+        // Prompt turn allows only one holder at a time.
+        assert_eq!(st.try_acquire_prompt("main"), Ok(true));
+        assert_eq!(st.try_acquire_prompt("project-1"), Ok(false));
+        assert!(st.has_prompt_holder());
+
+        // Marking ready releases the prompt turn.
+        assert!(st.mark_ready("main"));
+        assert!(!st.has_prompt_holder());
+        assert_eq!(st.try_acquire_prompt("project-1"), Ok(true));
+
+        // Cancelling the batch aborts waiting ready peers and clears the prompt holder.
+        st.abort_all_closing(Some("project-1"));
+        assert!(!st.has_prompt_holder());
+        assert!(st.take_aborted("main"));
+        assert!(!st.is_closing("main"));
+        assert!(!st.take_aborted("project-1"));
+
+        // A fresh close clears any stale aborted state and claims hide once per cohort.
+        st.close_requested("main");
+        assert_eq!(
+            st.claim_hide(&["main".into(), "project-1".into()]),
+            vec!["main".to_string(), "project-1".to_string()]
+        );
+        assert!(st.claim_hide(&["main".into(), "project-1".into()]).is_empty());
     }
 }

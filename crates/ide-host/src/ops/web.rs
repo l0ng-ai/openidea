@@ -8,7 +8,7 @@ use ide_core::proxy_settings::{ProxyMode, ProxySettings};
 use std::time::Duration;
 
 /// Whether `url` names this machine (`localhost` or a loopback address).
-fn is_loopback(url: &reqwest::Url) -> bool {
+pub fn is_loopback(url: &reqwest::Url) -> bool {
     let host = url.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']');
     host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }

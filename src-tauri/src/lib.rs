@@ -3,10 +3,11 @@
 //! This crate is glue only. `commands/<domain>.rs` holds the commands only the desktop runs; the
 //! Tauri adapters of project-host commands are derived from their `ide-host` declarations. No
 //! domain logic lives here.
-// `commands::catalogue!` recurses a few times per command domain.
-#![recursion_limit = "256"]
+// `commands::catalogue!` recurses once per command, so the limit grows with the command count.
+#![recursion_limit = "512"]
 
 mod application_focus;
+mod browser_picker;
 mod cli;
 mod commands;
 #[cfg(debug_assertions)]
@@ -20,9 +21,9 @@ mod linux_window_state;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
-mod menu;
 #[cfg(target_os = "macos")]
-mod page_swipe;
+mod macos_webview_input;
+mod menu;
 mod plugin_web;
 #[cfg(target_os = "macos")]
 mod relaunch;
@@ -47,6 +48,8 @@ mod windows_error_mode;
 mod windows_webview_keys;
 #[cfg(windows)]
 mod windows_webview_recovery;
+
+use crate::windows::WorkbenchWindows;
 
 use parking_lot::Mutex;
 use state::AppState;
@@ -185,6 +188,10 @@ pub fn run() {
     });
     app.invoke_handler(move |request| {
         let webview = request.message.webview_ref();
+        if browser_picker::is_guest(webview.label()) {
+            request.resolver.reject("Browser pages cannot invoke IDE commands");
+            return true;
+        }
         if let Some(state) = webview.try_state::<AppState>() {
             let label = AppState::owner_window(webview.label());
             let command = request.message.command();
@@ -275,6 +282,12 @@ pub fn run() {
     })
     .on_window_event(|window, event| match event {
         tauri::WindowEvent::CloseRequested { .. } => {
+            // A dead web engine never answers the page's close handler: close the window here.
+            #[cfg(windows)]
+            if windows_webview_recovery::browser_failed(window.app_handle()) {
+                let _ = window.destroy();
+                return;
+            }
             #[cfg(target_os = "linux")]
             linux_window_state::save_before_close(window.app_handle());
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -292,6 +305,7 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            browser_picker::forget(window.label());
             // Also release a view that failed during startup, before the parent could watch it.
             if let Some(state) = window.try_state::<AppState>()
                 && let Ok(project) = state.host.project(window.label())
@@ -301,7 +315,7 @@ pub fn run() {
             window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
             {
-                page_swipe::forget(window.label());
+                macos_webview_input::forget(window.label());
                 titlebar::forget(window);
             }
             if windows::auxiliary_parent(window.label()).is_none() {
@@ -360,6 +374,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             windows::flush_auxiliary_geometry(app);
             if let Some(state) = app.try_state::<AppState>() {
+                ide_db::stop_external_tunnels_on_exit();
                 state.host.stop_processes_on_exit();
                 state.host.mcp.stop(&state.host);
                 state.host.clear_workspace_edit_history_on_exit();
@@ -394,12 +409,14 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 /// Routes IDE menu items to the focused window's frontend (`executeAction`).
 fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id().as_ref();
+    #[cfg(target_os = "macos")]
+    if macos_webview_input::perform_native_history_if_needed(id) {
+        return;
+    }
     menu::restore_check(app, &app.state::<menu::MenuState>(), id);
     // A keymap accelerator only draws the shortcut: its key reached the menu because the keymap declined it.
     #[cfg(target_os = "macos")]
-    if !menu::fires_natively(&menu::spec(menu::Os::Mac), id)
-        && (macos::handling_key_press() || macos::native_modal_open())
-    {
+    if !menu::macos_native_action(id) && (macos::handling_key_press() || macos::native_modal_open()) {
         return;
     }
     dispatch_menu_action(app, id);
@@ -420,7 +437,7 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
             let label = match windows::menu_destination(w.label(), &route.action) {
                 windows::MenuDestination::Own => w.label(),
                 windows::MenuDestination::Parent { label, raise } => {
-                    if raise && let Some(parent) = app.get_webview_window(label) {
+                    if raise && let Some(parent) = app.workbench_window(label) {
                         windows::focus(&parent);
                         return_to = Some(w.label());
                     }

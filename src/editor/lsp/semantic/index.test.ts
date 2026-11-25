@@ -63,6 +63,7 @@ describe("semantic decorations vs the syntax highlighter", () => {
       [semanticExtension(), syntaxMark("tok-variableName")],
       [syntaxMark("tok-variableName"), semanticExtension()],
     ]) {
+      // oxlint-disable-next-line no-await-in-loop -- fake timers and shared semantic mocks make these two orders a sequence
       const view = await editor(extensions);
       const sem = view.contentDOM.querySelector(".cm-sem-property");
       expect(sem).not.toBeNull();

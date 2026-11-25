@@ -125,12 +125,15 @@ export const commands = {
 	agentRename: (task: string, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rename", { task, title })),
 	/**  Answers a permission request; `option: null` cancels it. */
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
-	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
-	agentRollback: (task: string, turns: number) => typedError<{
+	/**
+	 *  Drops the task's turns after its first `turns`; returns the message of the first dropped one.
+	 *  With `files`, the files those turns changed go back as they were before them.
+	 */
+	agentRollback: (task: string, turns: number, files: boolean) => typedError<{
 	text: string,
 	files: IpcPath[],
 	images: AgentImage[],
-} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns })),
+} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns, files })),
 	/**  Rollback: the task's changed files among `paths` (all without) back as `view` compares them. */
 	agentRollbackChanges: (task: string, paths: string[] | null, view: 
 /**  Everything since the commit the task started from. */
@@ -220,7 +223,7 @@ export const commands = {
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
 	 */
 	appMetrics: () => typedError<AppMetrics, IdeError>(__TAURI_INVOKE("app_metrics")),
-	/**  Quits: closes every window, each of which runs its own unsaved-changes check. */
+	/**  Quits: closes every window in parallel, each of which runs its own unsaved-changes check. */
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 	/**
 	 *  Release notes of `version` from the update manifest (`latest.json`), read
@@ -239,11 +242,10 @@ export const commands = {
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	/**
-	 *  Build › Compile File: compiles one Java source of a linked Maven module with
-	 *  `javac`, streaming the console and messages on `on_event`; cancellable with
-	 *  `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
-	 *  build) are cleared first; the new messages are published as `build`
-	 *  diagnostics.
+	 *  Build › Recompile: compiles one Java source file with `javac`, streaming the
+	 *  console and messages on `on_event`; cancellable with `cancel_request(request)`.
+	 *  Diagnostics of `clear` (the files of the previous build) are cleared first;
+	 *  the new messages are published as `build` diagnostics.
 	 */
 	buildCompileFile: (file: string, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_compile_file", { file, request, clear, onEvent })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */
@@ -311,6 +313,8 @@ export const commands = {
 	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
+	/**  Copies image pixels to this computer's clipboard, including from remote project windows. */
+	clipboardWriteImage: (png: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_image", { png })),
 	/**  Writes text locally, without WebView user-activation requirements. */
 	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
@@ -329,6 +333,8 @@ export const commands = {
 	/**  Cucumber feature files and step definition files, for step navigation. */
 	cucumberSources: () => typedError<StepSource[], IdeError>(__TAURI_INVOKE("cucumber_sources")),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
+	/**  Records the exact helper and destination reviewed in the local data-source dialog. */
+	dbApproveExternalTunnel: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_external_tunnel", { source })),
 	dbApproveJdbcSource: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_jdbc_source", { source })),
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
@@ -340,12 +346,12 @@ export const commands = {
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
-	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
+	dbDisconnect: (id: string, wholeSource: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id, wholeSource })),
 	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
-	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, onProgress })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -358,8 +364,15 @@ export const commands = {
 	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
 	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
+	/**  Closes what the pages of a result keep open on the server (its result tab was closed). */
+	dbReleaseResult: (id: string, statement: string, schema: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_result", { id, statement, schema })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbRemoveJdbcDriver: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_jdbc_driver", { id })),
+	/**
+	 *  Row `row` (from 0) of the result of `statement`, whole: what a page of a run with a
+	 *  `cell_limit` shows cut short.
+	 */
+	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema })),
 	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	/**
 	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
@@ -383,9 +396,12 @@ export const commands = {
 	dbSources: () => typedError<DataSource_Serialize[], IdeError>(__TAURI_INVOKE("db_sources")),
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
+	dbTableGrants: (id: string, schema: string, table: string) => typedError<DbTableGrant[], IdeError>(__TAURI_INVOKE("db_table_grants", { id, schema, table })),
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	/**  Tests the reviewed helper once, without persisting approval for subsequent connections. */
+	dbTestExternalTunnel: (request: RequestId, source: DataSource_Deserialize, password: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_external_tunnel", { request, source, password })),
 	/**  Data Source › SSH/SSL › Test SSH Tunnel. */
 	dbTestTunnel: (source: DataSource_Deserialize, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_tunnel", { source, sshSecret })),
 	/**  Installed copies of `tool`, newest first. */
@@ -454,6 +470,11 @@ export const commands = {
 	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
 	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
 	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
+	/**
+	 *  A `Thread.print -l` of the debuggee JVM (with the JSON dump on JDK 21+), or why it cannot be
+	 *  taken.
+	 */
+	debugJvmThreadDump: (session: DebugSessionId) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("debug_jvm_thread_dump", { session })),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -579,6 +600,11 @@ export const commands = {
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
 	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
+	/**
+	 *  Rearrange Code: the edits that put the document's class members in arrangement order (Python
+	 *  for now); none when they already are or the language has no arrangement.
+	 */
+	docRearrange: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("doc_rearrange", { doc })),
 	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
 	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
@@ -637,6 +663,8 @@ export const commands = {
 	dockerSettings: () => typedError<DockerSettings, IdeError>(__TAURI_INVOKE("docker_settings")),
 	/**  Availability plus containers, images, volumes and networks. */
 	dockerSnapshot: (endpoint: DockerEndpoint) => typedError<DockerSnapshot, IdeError>(__TAURI_INVOKE("docker_snapshot", { endpoint })),
+	/**  Disk usage per volume name (`docker system df -v`). */
+	dockerVolumeSizes: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_volume_sizes", { endpoint })),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
@@ -676,6 +704,14 @@ export const commands = {
 	 *  exited is only started again by the next request.
 	 */
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
+	/**  Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`. */
+	flutterEmulatorLaunch: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("flutter_emulator_launch", { id })),
+	/**
+	 *  The address of the project's Widget Preview page, its server started on first use with the
+	 *  project's DevTools for its inspector. A server that failed or exited is only started again by
+	 *  the next request.
+	 */
+	flutterWidgetPreviewUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_widget_preview_url")),
 	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -815,12 +851,24 @@ export const commands = {
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**
+	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
+	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
+	 *  classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
+	 *  Maven Central), and,
+	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
+	 */
+	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
+	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+	 *  The build streams its console, messages and progress on `on_event` while it runs; a launch
+	 *  whose build another launch's build joins receives that build's events.
+	 *  A Maven module is built by the IDE's Java build, except for a `debug` launch the language
+	 *  server serves: java-debug's HotSwap reloads the classes the language server compiles.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request })),
+	javaResolveLaunch: (module: string, test: boolean, debug: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, debug, policy, request, onEvent })),
 	/**
 	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
@@ -859,10 +907,26 @@ export const commands = {
 	lspCodeActionQuery: (request: RequestId, doc: DocId, range: Range, only: string[]) => typedError<CodeActionQuery, IdeError>(__TAURI_INVOKE("lsp_code_action_query", { request, doc, range, only })),
 	lspCodeActions: (doc: DocId, range: Range, only: string[]) => typedError<CodeAction[], IdeError>(__TAURI_INVOKE("lsp_code_actions", { doc, range, only })),
 	lspCodeLens: (doc: DocId) => typedError<CodeLens[], IdeError>(__TAURI_INVOKE("lsp_code_lens", { doc })),
+	/**  How the server that reported `color` writes it with new components. */
+	lspColorPresentations: (doc: DocId, color: DocumentColor) => typedError<ColorPresentation[], IdeError>(__TAURI_INVOKE("lsp_color_presentations", { doc, color })),
 	lspCompletion: (request: RequestId, doc: DocId, pos: Pos, trigger: string | null) => typedError<CompletionList, IdeError>(__TAURI_INVOKE("lsp_completion", { request, doc, pos, trigger })),
+	/**  Colors in a document from its language servers (Tailwind classes, CSS values…). */
+	lspDocumentColors: (doc: DocId) => typedError<DocumentColor[], IdeError>(__TAURI_INVOKE("lsp_document_colors", { doc })),
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
+	/**
+	 *  Sets an argument of the call at `pos`; the edit reaches the document as the server's
+	 *  `workspace/applyEdit`, undoable like any other.
+	 */
+	lspEditArgument: (doc: DocId, pos: Pos, name: string, value: boolean | number | number | null | string | null) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_edit_argument", { doc, pos, name, value })),
+	/**  The Flutter Property Editor's arguments of the call at `pos`. */
+	lspEditableArguments: (doc: DocId, pos: Pos) => typedError<{
+	/**  The widget's (or callee's) name. */
+	name: string | null,
+	documentation: string | null,
+	arguments: EditableArgument[],
+} | null, IdeError>(__TAURI_INVOKE("lsp_editable_arguments", { doc, pos })),
 	/**  The Throwable class the caret at `pos` names, for the exception breakpoint intention. */
 	lspExceptionClassAt: (request: RequestId, doc: DocId, pos: Pos) => typedError<{
 	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
@@ -878,6 +942,11 @@ export const commands = {
 	lspExecuteCommand: (doc: DocId, command: Command) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_execute_command", { doc, command })),
 	lspExtractInterface: (request: RequestId, doc: DocId, pos: Pos, members: string[], name: string, destination: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_extract_interface", { request, doc, pos, members, name, destination, confirmation })),
 	lspExtractInterfaceInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<ExtractInterfaceInfo, IdeError>(__TAURI_INVOKE("lsp_extract_interface_info", { request, doc, pos })),
+	/**
+	 *  Where other files import the document's file (Find Usages on a file, a Vue component's
+	 *  usages). Cancel with `cancel_request(request)`.
+	 */
+	lspFileReferences: (request: RequestId, doc: DocId) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_file_references", { request, doc })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -1103,6 +1172,11 @@ export const commands = {
 	 *  for native inheritance gutter markers.
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
+	/**
+	 *  The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
+	 *  functions and classes declared in both: PyCharm's stub gutter markers.
+	 */
+	navPythonStubs: (doc: DocId) => typedError<PythonStubLinks, IdeError>(__TAURI_INVOKE("nav_python_stubs", { doc })),
 	/**
 	 *  The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
 	 *  no project or content root has it.
@@ -1390,6 +1464,21 @@ export const commands = {
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**  A project on pypi.org by its exact name; `None` when PyPI has no such project. */
+	pypiPackage: (name: string, request: RequestId) => typedError<{
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+} | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
+	/**
+	 *  PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
+	 *  PyPI's name list, which the first search downloads and a search a day later refreshes.
+	 */
+	pypiSearch: (query: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("pypi_search", { query, request })),
 	/**
 	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
 	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
@@ -1437,6 +1526,8 @@ export const commands = {
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 } | null>("remote_current"),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
@@ -1454,6 +1545,11 @@ export const commands = {
 	remoteForwardPort: (remotePort: number) => typedError<ForwardedPort, IdeError>(__TAURI_INVOKE("remote_forward_port", { remotePort })),
 	/**  The remote ports this window forwards to this machine. */
 	remoteForwardedPorts: () => __TAURI_INVOKE<ForwardedPort[]>("remote_forwarded_ports"),
+	/**
+	 *  Read the same host-wide value for the close dialog and the idle timer: another project's
+	 *  daemon may have edited the file since this host loaded its settings.
+	 */
+	remoteIdleTimeoutMinutes: () => typedError<number, IdeError>(__TAURI_INVOKE("remote_idle_timeout_minutes")),
 	/**  A client OS file belongs to this machine even when its destination is remote. */
 	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
 	/**
@@ -1467,12 +1563,18 @@ export const commands = {
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
+	/**
+	 *  Stops the persistent `openidea-server` daemon for this window's remote project,
+	 *  terminating its terminals, runs, language servers and agent sessions, then disconnects.
+	 */
+	remoteStopBackend: () => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_backend")),
 	/**  Stops forwarding `remote_port` of `host` (`None`: the remote host itself). */
 	remoteStopForwarding: (remotePort: number, host: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort, host })),
 	/**  Records the user's trust decision for the window's remote project on this machine. */
 	remoteTrustSet: (trusted: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("remote_trust_set", { trusted })),
 	/**  This machine's trust decision for the window's remote project (see [`Connection::authorize`]). */
 	remoteTrustStatus: () => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("remote_trust_status")),
+	remoteUploadInto: (connection: FsConnection, paths: IpcPath[], target: string, replace: boolean, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_upload_into", { connection, paths, target, replace, request })),
 	removeRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent", { path })),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	/**
@@ -1495,6 +1597,11 @@ export const commands = {
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
 	/**  Kept temporary configurations with the current settings applied. */
 	runApplySettings: (configs: RunConfig_Deserialize[]) => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_apply_settings", { configs })),
+	/**
+	 *  Reattaches to a running process `id` on this host, returning its buffered output
+	 *  and configuration while streaming subsequent chunks to `on_output`.
+	 */
+	runAttach: (id: RunId, onOutput: Channel<OutputChunk>) => typedError<RunAttach_Serialize, IdeError>(__TAURI_INVOKE("run_attach", { id, onOutput })),
 	runCloseStdin: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_close_stdin", { id })),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
@@ -1509,6 +1616,11 @@ export const commands = {
 	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  Project files run configurations can be imported from (`.vscode/launch.json`). */
 	runImportSources: () => typedError<RunImportSource[], IdeError>(__TAURI_INVOKE("run_import_sources")),
+	/**
+	 *  A `Thread.print -l` of the JVM a run started: the deepest HotSpot JVM of the run's process
+	 *  tree, else the one carrying `token` (the run's marker property).
+	 */
+	runJvmThreadDump: (id: RunId, token: string | null) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("run_jvm_thread_dump", { id, token })),
 	runList: () => __TAURI_INVOKE<RunInfo[]>("run_list"),
 	/**  Terminal size of a run started with "Emulate terminal in output console". */
 	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
@@ -1610,6 +1722,17 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("sdk_container_python_refresh")),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	/**
+	 *  `flutter --version --machine` of the Flutter SDK at `path`, or of the `flutter` on the
+	 *  search path when `path` is empty; `None` when there is no Flutter SDK.
+	 */
+	sdkFlutterAt: (path: string) => typedError<{
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
+} | null, IdeError>(__TAURI_INVOKE("sdk_flutter_at", { path })),
 	/**  The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home. */
 	sdkJdkAt: (path: string) => typedError<{
 	/**
@@ -1652,12 +1775,14 @@ export const commands = {
 	 */
 	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
 	/**
-	 *  Creates a Python environment with `tool` (`venv` / `uv` / `poetry` / `pipenv`); output streams through
-	 *  `on_output`. `install_packages` also installs what the project's `Pipfile` declares (pipenv).
+	 *  Creates a Python environment and streams its output through `on_output`.
+	 *  With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
 	 */
 	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, installPackages: boolean, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, installPackages, request, onOutput })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
+	/**  The environments the window's project defines for Hatch, `default` first (hatch must be on PATH). */
+	sdkPythonHatchEnvs: (request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("sdk_python_hatch_envs", { request })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -1678,7 +1803,9 @@ export const commands = {
 	/**  Rust standard library sources, Go default GOPATH. */
 	extra: IpcPath | null,
 } | null, IdeError>(__TAURI_INVOKE("sdk_python_interpreter", { path })),
-	sdkPythonPackages: (python: string, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, request })),
+	/**  A package index other than PyPI that installing from `python` uses; `None` for PyPI. */
+	sdkPythonPackageIndex: (python: string, request: RequestId) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_package_index", { python, request })),
+	sdkPythonPackages: (python: string, outdated: boolean, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, outdated, request })),
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
 	/**  The Python interpreters of the recently opened projects, each with its project. */
@@ -1743,6 +1870,14 @@ export const commands = {
 	 *  `cancel_request(request)`.
 	 */
 	spellCheck: (doc: DocId, scope: SpellScope, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, scope, request })),
+	/**
+	 *  Appends `word` to the custom dictionary `dictionary` (a
+	 *  `spelling.customDictionaries` entry: `~/…` from home, relative from the
+	 *  project root) and reports which file was written, creating it when missing.
+	 *  A Hunspell `.dic` with a `.aff` beside it keeps its word count line current;
+	 *  the speller picks the change up through its own mtime cache.
+	 */
+	spellSaveToDictionary: (dictionary: string, word: string) => typedError<string, IdeError>(__TAURI_INVOKE("spell_save_to_dictionary", { dictionary, word })),
 	/**  Replacements for a misspelt `word`, best first (Typo › Change to…). */
 	spellSuggest: (word: string) => typedError<string[], IdeError>(__TAURI_INVOKE("spell_suggest", { word })),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
@@ -1752,6 +1887,8 @@ export const commands = {
 	/**  Ids of the configurations with an open connection. */
 	sshConnected: () => __TAURI_INVOKE<string[]>("ssh_connected"),
 	sshDisconnect: (id: string) => __TAURI_INVOKE<void>("ssh_disconnect", { id }),
+	/**  `Some` means legacy credentials remain in plaintext on this host. */
+	sshLegacyPasswords: (action: LegacyPasswordAction) => typedError<string | null, IdeError>(__TAURI_INVOKE("ssh_legacy_passwords", { action })),
 	/**  Whether connecting with configuration `id` needs a password first. */
 	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
 	/**
@@ -1822,6 +1959,11 @@ export const commands = {
 	 *  already registered to another app. Empty everywhere but Windows.
 	 */
 	systemProbeHotkeys: (combos: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("system_probe_hotkeys", { combos })),
+	/**
+	 *  Reattaches to an existing terminal session `id`, returning its buffered output
+	 *  and streaming subsequent chunks to `on_output`.
+	 */
+	termAttach: (id: TerminalId, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalAttach, IdeError>(__TAURI_INVOKE("term_attach", { id, cols, rows, onOutput })),
 	/**  Installed shells for the Terminal's "New Predefined Session" menu. */
 	termAvailableShells: () => __TAURI_INVOKE<string[]>("term_available_shells"),
 	/**  Shell used when Settings › Terminal › Shell path is empty. */
@@ -1832,6 +1974,8 @@ export const commands = {
 	 */
 	termIsBusy: (id: TerminalId) => typedError<boolean, IdeError>(__TAURI_INVOKE("term_is_busy", { id })),
 	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),
+	/**  Live terminal sessions of this window, for reattaching after a reconnect. */
+	termList: () => __TAURI_INVOKE<TerminalSessionInfo[]>("term_list"),
 	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
 	/**
 	 *  Async to stay off the main thread: forking the IDE (its whole address space)
@@ -2128,6 +2272,9 @@ export const commands = {
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	/**  Create Patch › Save to file. */
 	vcsWritePatch: (path: string, patch: string, encoding: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch, encoding })),
+	webBrowserControl: (session: RequestId, action: BrowserAction) => typedError<BrowserStatus, IdeError>(__TAURI_INVOKE("web_browser_control", { session, action })),
+	/**  Creates a private localhost browser session owned by this window and project. */
+	webBrowserOpen: (url: string, session: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("web_browser_open", { url, session })),
 	/**  The browsers installed on this machine. */
 	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
@@ -2146,6 +2293,11 @@ export const commands = {
 	 *  HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
 	 */
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
+	/**
+	 *  Acquires the interactive prompt turn for a batch close and brings this window forward.
+	 *  Returns `false` if the batch was cancelled while waiting.
+	 */
+	windowBeginPrompt: () => __TAURI_INVOKE<boolean>("window_begin_prompt"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
 	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
@@ -2157,6 +2309,8 @@ export const commands = {
 	 *  with whether a target took the files.
 	 */
 	windowDragFiles: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_drag_files", { paths })),
+	/**  Releases the interactive prompt turn held by this window. */
+	windowEndPrompt: () => __TAURI_INVOKE<void>("window_end_prompt"),
 	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
@@ -2236,6 +2390,11 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**
+	 *  Signals that this window passed its close checks and waits for peers closing in the same
+	 *  batch/tab group so they hide together in one frame. Returns `false` if the batch was cancelled.
+	 */
+	windowReadyToClose: () => __TAURI_INVOKE<boolean>("window_ready_to_close"),
 	/**  Appearance › Smooth scrolling for this window's web view (Linux only) */
 	windowSetSmoothScrolling: (enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_smooth_scrolling", { enabled })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
@@ -2591,10 +2750,10 @@ form?: AgentForm | null;
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Deserialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Deserialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -2607,6 +2766,12 @@ export type AgentEvent_Deserialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2616,7 +2781,7 @@ export type AgentEvent_Deserialize =
 /**  The task needs attention once (finished turn, explicit input, or failure). */
 ({ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason }) & { catalog?: never; entry?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; subagent?: never; text?: never };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Serialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Serialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -2629,6 +2794,12 @@ export type AgentEvent_Serialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2875,8 +3046,6 @@ export type AgentSettings_Deserialize = {
 	showUsageLimits?: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost?: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns?: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -2920,8 +3089,6 @@ export type AgentSettings_Serialize = {
 	showUsageLimits: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -3348,6 +3515,8 @@ export type AppearanceSettings_Deserialize = {
 	contrastScrollbars?: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision?: boolean,
+	/**  Turn off animations and transitions (also on when the OS asks for reduced motion). */
+	reduceMotion?: boolean,
 	differentToolWindowBackground?: boolean,
 	compactMode?: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
@@ -3423,6 +3592,8 @@ export type AppearanceSettings_Serialize = {
 	contrastScrollbars: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision: boolean,
+	/**  Turn off animations and transitions (also on when the OS asks for reduced motion). */
+	reduceMotion: boolean,
 	differentToolWindowBackground: boolean,
 	compactMode: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
@@ -3503,6 +3674,9 @@ export type ArduinoSettings = {
 	cliConfig?: string,
 	fqbn?: string,
 };
+
+/**  A literal argument value. Ints stay ints: the server rejects `1.0` for an `int` parameter. */
+export type ArgumentValue = boolean | number | number | null | string;
 
 /**  Packaging artifact definition (Project Structure › Artifacts). */
 export type ArtifactConfig = {
@@ -3757,6 +3931,26 @@ export type Browser = {
 	/**  `chrome`, `firefox`, `safari`, `edge`, `brave`, `chromium`. */
 	id: string,
 	name: string,
+};
+
+export type BrowserAction = { type: "navigate"; url: string } | { type: "back" } | { type: "forward" } | { type: "reload" } | { type: "inspect" } | { type: "cancel" } | { type: "layout"; bounds: BrowserBounds | null } | { type: "status" };
+
+/**  CSS pixels measured from the top left of the workbench viewport, along with the viewport size. */
+export type BrowserBounds = {
+	x: number | null,
+	y: number | null,
+	width: number | null,
+	height: number | null,
+	viewportWidth: number | null,
+	viewportHeight: number | null,
+};
+
+export type BrowserStatus = {
+	url: string,
+	canBack: boolean,
+	canForward: boolean,
+	inspecting: boolean,
+	element: InspectedElement | null,
 };
 
 export type BuildEvent = 
@@ -4095,6 +4289,10 @@ export type CloseContext = {
 	quitting: boolean,
 	/**  Number of open project windows (settings windows excluded), including the caller. */
 	windows: number,
+	/**  Whether this window currently has auxiliary document windows that must settle first. */
+	hasDocumentWindows: boolean,
+	/**  Whether this close runs alongside other windows or on a background tab (prompts serialize and raise). */
+	batch: boolean,
 };
 
 export type CodeAction = {
@@ -4136,6 +4334,7 @@ export type CodeEditingSettings = {
 	/**  Next / previous error goes to errors only (skips warnings). */
 	nextErrorErrorsOnly?: boolean,
 	stickyLinesMax?: number,
+	stickyLinesDisabledLanguages?: string[],
 };
 
 export type CodeLens = {
@@ -4202,6 +4401,15 @@ export type ColorInfo = {
 	green: number | null,
 	blue: number | null,
 	alpha: number | null,
+};
+
+/**
+ *  One way to write a picked color (`textDocument/colorPresentation`): `edits` replace the
+ *  color's range (with `label` unless the server gave its own edit), then any extra edits.
+ */
+export type ColorPresentation = {
+	label: string,
+	edits: TextEdit[],
 };
 
 export type Command = {
@@ -4855,6 +5063,7 @@ export type DataSource_Deserialize = {
 	readOnly?: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh?: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor?: string,
 	color?: DbColor | null,
@@ -4901,6 +5110,7 @@ export type DataSource_Serialize = {
 	readOnly: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor: string,
 	color: DbColor | null,
@@ -5049,6 +5259,12 @@ export type DbDumpKind =
 "mysqlSql" | "unknown";
 
 export type DbDumpStatements = "copy" | "inserts" | "columnInserts";
+
+/**  A foreground program that forwards an IDE-assigned loopback port to the database. */
+export type DbExternalTunnel = {
+	executable: string,
+	arguments: string[],
+};
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -5265,6 +5481,8 @@ export type DbQueryResult = {
 	elapsedMs: number | null,
 	/**  Until the server's first answer; the rest of `elapsed_ms` is fetching. */
 	executionMs: number | null,
+	/**  Cells of `rows` cut short by [`QueryResult::cap_cells`], in row order. */
+	truncated: DbTruncatedCell[],
 };
 
 export type DbResultColumn = {
@@ -5401,6 +5619,17 @@ export type DbTableDetails = {
 	triggers: DbTriggerInfo[],
 };
 
+/**
+ *  One object privilege on a table: `grantee` may run `privilege` (`SELECT`, …), granted
+ *  by `grantor` (unknown on MySQL), and may grant it on when `grantable`.
+ */
+export type DbTableGrant = {
+	grantee: string,
+	grantor: string | null,
+	privilege: string,
+	grantable: boolean,
+};
+
 export type DbTableInfo = {
 	name: string,
 	kind: DbTableKind,
@@ -5442,6 +5671,19 @@ export type DbTriggerInfo = {
 	timing: string,
 	/**  `insert`, `update or delete`… */
 	events: string,
+};
+
+/**  A cell of a [`QueryResult`] whose text was cut to a prefix. */
+export type DbTruncatedCell = {
+	row: number,
+	column: number,
+	/**  Length of the whole value in UTF-16 code units (what a JavaScript string counts). */
+	length: number,
+	/**
+	 *  FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+	 *  so a client that reads the value again can tell whether it is the one that was cut.
+	 */
+	hash: number,
 };
 
 /**  Transaction control of the data source's consoles. */
@@ -5566,6 +5808,8 @@ export type DebuggerSettings = {
 	debugServerPage?: boolean,
 	/**  Flutter: saving a Dart file of a running debug session hot reloads the app. */
 	flutterHotReloadOnSave?: boolean,
+	/**  Java: whether to reload changed classes into running debug sessions after compilation. */
+	hotSwapAfterCompile?: HotSwapPolicy,
 	python?: PythonDebuggerSettings,
 };
 
@@ -5575,6 +5819,19 @@ export type Decoration = {
 	style: string,
 	hover: string | null,
 	after: string | null,
+	/**
+	 *  Markdown rendered in the editor's hover card (API 1.16); `hover` is the
+	 *  plain-text fallback shown when this is absent.
+	 */
+	markdownHover: string | null,
+	/**  The item's own colors (API 1.17 `set-styled`), validated `#rrggbb` / `#rrggbbaa`. */
+	colors?: DecorationColors | null,
+};
+
+/**  Colors of a styled editor decoration (API 1.17). */
+export type DecorationColors = {
+	foreground: string | null,
+	background: string | null,
 };
 
 /**  A plugin-owned editor or project-tree decoration set for one file. */
@@ -5992,6 +6249,8 @@ export type DockerConnection = {
 	id: string,
 	name: string,
 	endpoint: DockerEndpoint,
+	/**  Whether the user explicitly disconnected this connection in Services. */
+	disconnected?: boolean,
 };
 
 export type DockerContainer = {
@@ -6156,6 +6415,16 @@ export type DocumentChanged = {
 	changes: DocumentTextChange[],
 };
 
+/**  A color a server found in a document (`textDocument/documentColor`); components are 0–1. */
+export type DocumentColor = {
+	range: Range,
+	red: number | null,
+	green: number | null,
+	blue: number | null,
+	alpha: number | null,
+	server: ServerId,
+};
+
 /**  Encoding and BOM currently applied to an open document. */
 export type DocumentEncoding = {
 	encoding: string,
@@ -6271,6 +6540,36 @@ export type DynamicItem = {
 	label: string,
 	/**  Drawn with a check mark in this state; `None` for a plain item. */
 	checked?: boolean | null,
+};
+
+export type EditableArgument = {
+	name: string,
+	documentation: string | null,
+	/**  How to edit it: `string`, `int`, `double`, `bool` or `enum`. */
+	type: string,
+	/**  The literal value in the code (only while `has_argument`); an expression has `display_value`. */
+	value: ArgumentValue | null,
+	hasArgument?: boolean,
+	defaultValue: ArgumentValue | null,
+	displayValue: string | null,
+	isRequired?: boolean,
+	isNullable?: boolean,
+	isDeprecated?: boolean,
+	isEditable?: boolean,
+	notEditableReason: string | null,
+	/**  An enum's values, as `EnumName.value`. */
+	options: string[] | null,
+};
+
+/**
+ *  The arguments the Flutter Property Editor edits: those of the widget (or other) call at a
+ *  position, as the Dart server's `dart/textDocument/editableArguments` reports them.
+ */
+export type EditableArguments = {
+	/**  The widget's (or callee's) name. */
+	name: string | null,
+	documentation: string | null,
+	arguments: EditableArgument[],
 };
 
 /**  Editor › General › Appearance. */
@@ -6572,7 +6871,12 @@ report?: PushReport | null } |
 /**  Git updated some refs before a later ref or push URL failed. */
 { type: "pushPartiallyApplied"; report: PushReport } | 
 /**  A conflicted history replay left an amend commit ready to keep separately. */
-{ type: "amendConflict"; commit: string };
+{ type: "amendConflict"; commit: string } | 
+/**
+ *  jdtls could not set a module up as a Java project: the errors on its build files and
+ *  the builds enclosing it (`path: message`, the path relative to the project), nearest first.
+ */
+{ type: "javaBuildProblems"; problems: string[] };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  The requested state is stale; the UI must use the current snapshot. */
@@ -6692,9 +6996,9 @@ export type ExternalDiffSide = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff";
+export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff" | "black";
 
-/**  An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
 export type ExternalFormatterSettings = {
 	/**  Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH. */
 	path?: string,
@@ -6783,8 +7087,11 @@ export type Field = {
 };
 
 export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
-/**  An installed SDK of this kind (`jdk`); the value is its home, empty = automatic. */
-{ type: "sdk"; sdk: string } | 
+/**
+ *  An installed SDK of this kind (`jdk`); the value is its home (its version when
+ *  `version`), empty = automatic. SDKs older than `min` are not offered.
+ */
+{ type: "sdk"; sdk: string; version: boolean; min: string | null } | 
 /**  Several ids out of grouped items; the value is comma-separated. */
 { type: "dependencies"; groups: DependencyGroup[] };
 
@@ -7051,12 +7358,42 @@ export type FlutterDevice = {
 	emulator: boolean,
 	/**  The adb state keeping it from being used (`unauthorized`, `offline`, …). */
 	unavailable: string | null,
+	/**  The [`FlutterEmulator`] it runs on: an AVD name, or `apple_ios_simulator`. */
+	emulatorId?: string | null,
 };
 
 /**  The project's Flutter devices, best default first. */
 export type FlutterDeviceList = {
 	status: FlutterDaemonStatus,
 	devices: FlutterDevice[],
+	/**  The emulators that no listed device runs on. */
+	emulators?: FlutterEmulator[],
+};
+
+/**  An Android emulator (AVD) or the iOS Simulator that `flutter emulators --launch` can start. */
+export type FlutterEmulator = {
+	id: string,
+	name: string,
+	/**  `android` or `ios`. */
+	platformType: string | null,
+};
+
+/**  The Flutter plugin's "Flutter SDK path". */
+export type FlutterSettings = {
+	/**
+	 *  Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+	 *  `PATH`. Empty = `PATH`.
+	 */
+	sdk?: string,
+};
+
+/**  What `flutter --version --machine` reports of an SDK. */
+export type FlutterVersion = {
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
 };
 
 export type FocusedEditor = {
@@ -7066,7 +7403,7 @@ export type FocusedEditor = {
 	selectedText: string,
 };
 
-export type FoldKind = "region" | "comment" | "imports";
+export type FoldKind = "region" | "comment" | "imports" | "compact";
 
 export type FoldRange = {
 	start_line: number,
@@ -7083,6 +7420,7 @@ export type FoldingSettings = {
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
+	goShortBlocks?: boolean,
 };
 
 /**
@@ -7214,6 +7552,11 @@ export type GeneratorInfo = {
 	/**  Offer "Create Git repository". */
 	git: boolean,
 	fields: Field[],
+	/**
+	 *  The project folder's name when it isn't the project name: a template over the fields
+	 *  shown (a hidden field has its default), like [`Field::default`]; empty renders the name.
+	 */
+	directory: string | null,
 	/**  More fields come from `scaffold_options` (a project service's metadata). */
 	dynamic: boolean,
 };
@@ -7797,6 +8140,9 @@ export type HistoryTip = {
 /**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
 export type HotReloadReason = "manual" | "save";
 
+/**  Whether compiled classes are reloaded into running Java debug sessions after compilation. */
+export type HotSwapPolicy = "ask" | "always" | "never";
+
 /**  Result of [`DebugManager::redefine_classes`]. */
 export type HotSwapResult = {
 	/**  Fully qualified names of the classes reloaded (empty: nothing had changed). */
@@ -7912,11 +8258,8 @@ export type IdeEvent =
 { type: "mcpBackgroundProjectsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
-/**
- *  This remote window's connection to its host ended on its own (network loss, the host or
- *  its server went away); the window's project is unreachable until it reconnects.
- */
-{ type: "remoteConnectionLost"; host: string } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+/**  This remote window's connection ended or another window took over the session. */
+{ type: "remoteConnectionLost"; host: string; takenOver?: boolean } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**
  *  The project's direnv environment (`.envrc`) could not be loaded, or a file it is read
  *  from changed and it can be reloaded.
@@ -8155,6 +8498,8 @@ export type InlayHintsSettings = {
 	parameters?: boolean,
 	/**  Hints of other kinds (chaining, closing labels…). */
 	other?: boolean,
+	/**  The Dart server's closing labels (`// Column` after a widget's closing bracket). */
+	closingLabels?: boolean,
 	disabledLanguages?: string[],
 	/**  Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on. */
 	codeVision?: boolean,
@@ -8170,7 +8515,9 @@ export type InlayHintsSettings = {
 	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
-export type InlayKind = "type" | "parameter" | "other";
+export type InlayKind = "type" | "parameter" | "other" | 
+/**  What a closing bracket ends, at the end of its line (the Dart server's closing labels). */
+"closingLabel";
 
 /**  One part of an inlay hint label, e.g. a type name that navigates to its declaration. */
 export type InlayLabelPart = {
@@ -8228,6 +8575,12 @@ export type InspectSummary = {
 	failed: number,
 	cancelled: boolean,
 	elapsedMs: number,
+};
+
+export type InspectedElement = {
+	selector: string,
+	html: string,
+	styles: string,
 };
 
 export type InspectedFile = {
@@ -8558,6 +8911,17 @@ export type JsResponseRule = {
 	body: string,
 };
 
+/**  The test JVM of OpenIDEA's JUnit runner. */
+export type JunitLaunch = {
+	classPaths: string[],
+	/**  Surefire's `argLine`, then its system properties as `-Dkey=value`. */
+	vmArgs: string[],
+	env: { [key in string]: string },
+	workingDirectory: string | null,
+	/**  The Surefire settings that were applied (`argLine`, `systemPropertyVariables`…), for the console. */
+	surefire: string[],
+};
+
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
 export type JvmBackendState = { kind: "ready" } | 
 /**  Turned off for the rest of the session: the debug adapter lacks what it needs. */
@@ -8670,6 +9034,30 @@ export type JvmReferrer = {
 
 export type JvmReferrersResult = { status: "ready"; referrers: JvmReferrer[]; truncated: boolean } | { status: "unavailable"; reason: JvmInspectUnavailable };
 
+export type JvmThreadDump = {
+	text: string,
+	pid: number,
+	/**  Empty when unknown. */
+	javaVersion: string,
+	takenWhileSuspended: boolean,
+	/**  Wall time of the `Thread.print` request. */
+	elapsedMs: number,
+	/**  `Thread.dump_to_file -format=json`, which also lists virtual threads; JDK 21+ only. */
+	virtualJson: string | null,
+	/**  Why `virtual_json` is missing from a JDK 21+ dump; none below 21. */
+	virtualNote: VirtualThreadsNote | null,
+};
+
+export type JvmThreadsResult = { status: "ready"; dump: JvmThreadDump } | { status: "unavailable"; reason: JvmThreadsUnavailable };
+
+export type JvmThreadsUnavailable = 
+/**  The reason a class table could not be read applies to the dump too. */
+{ kind: "jvm"; reason: JvmMemoryUnavailable } | 
+/**  The JVM ignored the request to open its attach listener (`-XX:+DisableAttachMechanism`). */
+{ kind: "listenerDidNotStart" } | 
+/**  A run on a remote host, whose JVM this machine cannot attach to. */
+{ kind: "remoteRun" } | { kind: "failed"; message: string };
+
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
 export type JvmValue = { kind: "null" } | { kind: "primitive"; typeName: string; text: string } | 
@@ -8697,6 +9085,10 @@ export type LanguageCodeStyle_Deserialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -8717,6 +9109,10 @@ export type LanguageCodeStyle_Serialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -8862,11 +9258,13 @@ export type LanguagesSettings = {
 	oxfmt?: ExternalFormatterSettings,
 	biome?: ExternalFormatterSettings,
 	ruff?: ExternalFormatterSettings,
+	black?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
 	zig?: ZigSettings,
+	flutter?: FlutterSettings,
 };
 
 export type LargeCommitFile = {
@@ -8959,6 +9357,8 @@ export type Launch_Serialize = {
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
 };
+
+export type LegacyPasswordAction = "check" | "retry" | "removePlaintext";
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
 export type LibraryGroup = {
@@ -9229,6 +9629,8 @@ export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" |
 
 export type MainToolbarSettings = {
 	left?: string[],
+	/**  Centred in the toolbar (between the other two groups when they leave too little room). */
+	center?: string[],
 	right?: string[],
 	/**  Widgets the user removed. */
 	hidden?: string[],
@@ -9365,6 +9767,16 @@ export type MavenProject = {
 	env: { [key in string]: string },
 };
 
+/**
+ *  Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+ *  and run actions are delegated to Maven.
+ */
+export type MavenRunTestsUsing = 
+/**  OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`). */
+"ide" | 
+/**  Surefire (`mvn test -Dtest=…`). */
+"maven";
+
 /**  Build Tools › Maven. */
 export type MavenSettings = {
 	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
@@ -9415,6 +9827,8 @@ export type MavenSettings = {
 	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
 	 */
 	updateSnapshots?: boolean,
+	/**  Who runs the JUnit 5 tests of the gutter's Run / Debug. */
+	runTestsUsing?: MavenRunTestsUsing,
 };
 
 /**  What keeps an idle background project loaded. */
@@ -9715,6 +10129,8 @@ export type MenuConfig = {
 	dynamic?: { [key in string]: DynamicItem[] },
 	/**  Ids of the toggle actions currently on. */
 	checked?: string[],
+	/**  Whether the focused editor owns its undo history. */
+	editorOwnsHistory?: boolean,
 };
 
 /**
@@ -10562,6 +10978,12 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
  */
 ({ type: "clipboardRequested"; pluginId: string; requestId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
 
+/**  A group of file extensions in a plugin's native chooser. */
+export type PluginFileFilter = {
+	name: string,
+	extensions: string[],
+};
+
 /**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
 export type PluginIcon = {
 	light: string,
@@ -11190,7 +11612,7 @@ export type ProjectUpdateTarget = {
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | 
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | { kind: "pickFile"; title: string; save: boolean; name: string | null; filters: PluginFileFilter[] } | 
 /**
  *  The host's own question under `net:ask` (never plugin-initiated): the
  *  plugin reached an HTTPS host its manifest does not list.
@@ -11329,11 +11751,23 @@ export type PushTargetChoices = {
 
 export type PushTargetState = "ready" | "diverged" | "fetchRequired";
 
+export type PypiPackage = {
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+};
+
 /**  A class definition and the methods it declares. */
 export type PythonClassFacts = {
 	name: string,
 	/**  The class name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**  Base names as written, a qualified name reduced to its last segment. */
 	bases: string[],
 	methods: PythonMethodFacts[],
@@ -11348,6 +11782,8 @@ export type PythonDebuggerSettings = {
 /**  One Python module's classes, in source order. */
 export type PythonFacts = {
 	classes: PythonClassFacts[],
+	/**  `# noinspection` comments, in source order. */
+	suppressions: PythonSuppression[],
 };
 
 /**  A method definition the inspections can reason about. */
@@ -11355,6 +11791,8 @@ export type PythonMethodFacts = {
 	name: string,
 	/**  The method name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**
 	 *  Parameter names in order; `None` for a form whose forwarding cannot be compared
 	 *  (`*args`, `**kwargs`, keyword-only, positional-only).
@@ -11365,11 +11803,20 @@ export type PythonMethodFacts = {
 	/**  Decorated with `override` from `typing` / `typing_extensions`. */
 	overrideDecorated: boolean,
 	body: MethodBody,
+	/**
+	 *  For 'Method may be static': the receiver parameter up to the next parameter (what
+	 *  Make method static deletes), when the method is undecorated and not a dunder, and its
+	 *  body does more than `pass`, `...`, a docstring or one `raise` without ever naming the
+	 *  receiver, `super` or `__class__`.
+	 */
+	unusedReceiver: Range | null,
 };
 
 export type PythonPackage = {
 	name: string,
 	version: string,
+	/**  The newest release the interpreter can install; only [`list_packages`] with `outdated` sets it. */
+	latestVersion?: string | null,
 };
 
 export type PythonRequirements = {
@@ -11405,6 +11852,24 @@ export type PythonSettings = {
 	 *  by interpreter executable; absolute or `~/`.
 	 */
 	interpreterPaths?: { [key in string]: string[] },
+};
+
+export type PythonStubLinks = {
+	/**  The stub of a `.py` document, the implementation of a `.pyi` one. */
+	counterpart: IpcPath | null,
+	links: StubLink[],
+	/**  Every place the counterpart was looked for: a change to one of them may change the answer. */
+	candidates: IpcPath[],
+};
+
+/**
+ *  A `# noinspection Id1,Id2` comment (PyCharm's) and the code it covers: the statement
+ *  right below it (a whole `def` / `class` with its decorators), or the whole file when it
+ *  sits among the file's leading comments, followed by a blank line.
+ */
+export type PythonSuppression = {
+	ids: string[],
+	range: Range,
 };
 
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */
@@ -11627,6 +12092,12 @@ export type Remote = {
 	resolvedUrl?: string | null,
 };
 
+/**  Tools › Remote Development. This is a user setting on the remote host. */
+export type RemoteDevelopmentSettings = {
+	/**  Zero disables idle shutdown. Positive values from older configurations keep their meaning. */
+	idleTimeoutMinutes?: number,
+};
+
 /**  Manage Remotes edits. */
 export type RemoteEdit = { op: "add"; name: string; url: string } | { op: "remove"; name: string } | 
 /**  Renames `name` to `new_name` (when different) and sets its URL. */
@@ -11644,6 +12115,11 @@ export type RemoteEntry = {
 	mtime: number | null,
 	/**  `rwxr-xr-x`. */
 	permissions: string,
+};
+
+/**  Advertised only by a persistent backend with an editable idle timeout. */
+export type RemoteIdlePolicy = {
+	overrideSeconds: number | null,
 };
 
 /**  A project folder on an SSH host, in a WSL distribution or in a dev container. */
@@ -11698,6 +12174,7 @@ export type RemoteProject_Deserialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Deserialize,
@@ -11710,18 +12187,34 @@ export type RemoteProject_Serialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
 };
 
-export type RemoteSession = {
+export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;
+
+export type RemoteSession_Deserialize = {
 	target: RemoteTarget,
 	root: string,
 	host: string,
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
+};
+
+export type RemoteSession_Serialize = {
+	target: RemoteTarget,
+	root: string,
+	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
+	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 };
 
 export type RemoteSkillBrowseResult = {
@@ -11898,6 +12391,23 @@ export type RouteSource = {
 export type RubySettings = {
 	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
 	interpreter?: string,
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach = RunAttach_Serialize | RunAttach_Deserialize;
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Deserialize = {
+	info: RunInfo,
+	config: RunConfig_Deserialize,
+	buffered: OutputChunk[],
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Serialize = {
+	info: RunInfo,
+	config: RunConfig_Serialize,
+	buffered: OutputChunk[],
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
@@ -12243,7 +12753,11 @@ export type SdkKind = "python" | "node" |
 /**  Maven homes. */
 "maven" | "ruby" | 
 /**  Zig toolchain directories. */
-"zig";
+"zig" | 
+/**  .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins. */
+"dotnet" | 
+/**  Flutter SDK roots. */
+"flutter";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -12274,6 +12788,11 @@ export type SearchQuery = {
 	 *  adds none of the project's exclusions either).
 	 */
 	includeExcluded?: boolean,
+	/**
+	 *  Leave out files over [`MAX_CODE_INSIGHT_FILE_BYTES`], as IDEA's TODO and word indexes do:
+	 *  a background scan never reads a log or a database dump.
+	 */
+	skipLargeFiles?: boolean,
 };
 
 export type SearchScope = { kind: "project" } | { kind: "directory"; path: IpcPath } | { kind: "files"; paths: IpcPath[] } | 
@@ -12407,7 +12926,7 @@ export type SettingsWindowInit = SettingsWindowInit_Serialize | SettingsWindowIn
 
 export type SettingsWindowInit_Deserialize = {
 	launch: Launch_Deserialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Deserialize | null,
 	project: ProjectInfo_Deserialize | null,
 	globalSettings: Settings_Deserialize,
 	updates: boolean,
@@ -12415,7 +12934,7 @@ export type SettingsWindowInit_Deserialize = {
 
 export type SettingsWindowInit_Serialize = {
 	launch: Launch_Serialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Serialize | null,
 	project: ProjectInfo_Serialize | null,
 	globalSettings: Settings_Serialize,
 	updates: boolean,
@@ -12476,6 +12995,7 @@ export type Settings_Deserialize = {
 	spelling?: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh?: SshSettings,
+	remoteDevelopment?: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -12552,6 +13072,7 @@ export type Settings_Serialize = {
 	spelling: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh: SshSettings,
+	remoteDevelopment: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -12744,6 +13265,12 @@ export type SpellingSettings = {
 	projectWords?: string[],
 	/**  Custom dictionaries: plain word lists or Hunspell `.dic` files. */
 	customDictionaries?: string[],
+	/**
+	 *  Where "Save '…' to dictionary" writes: `project`, `application`, or a
+	 *  `spelling.customDictionaries` entry verbatim; empty (the default) is
+	 *  project when one is open, application otherwise.
+	 */
+	defaultDictionary?: string | null,
 };
 
 /**  One row of SQL Resolution Scopes. */
@@ -13071,6 +13598,18 @@ export type StructureSupport = {
 	locals: boolean,
 };
 
+/**  A declaration of the document and its counterpart in the other file. */
+export type StubLink = {
+	/**  Qualified name, `Class.method`. */
+	name: string,
+	/**  The declaration's identifier in the document. */
+	range: Range,
+	/**  The declaration's whole extent in the document. */
+	extent: Range,
+	/**  The counterpart's identifier in `PythonStubLinks::counterpart`. */
+	target: Range,
+};
+
 export type SubmoduleRollbackSource = "head" | "index";
 
 export type SymbolFilter = "all" | 
@@ -13199,6 +13738,12 @@ export type TableSort = {
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
 
+/**  Snapshot and live binding returned when reattaching to an existing session. */
+export type TerminalAttach = {
+	session: TerminalSessionInfo,
+	buffered: string,
+};
+
 /**  TerminalExited data exchanged with the IDE. */
 export type TerminalExited = {
 	id: string,
@@ -13226,6 +13771,16 @@ export type TerminalOptions = {
 	rows: number,
 	/**  Make zsh / bash / fish report their working directory (OSC 7) at every prompt. */
 	shellIntegration?: boolean,
+};
+
+/**  Live terminal session state for reattaching across window reconnects. */
+export type TerminalSessionInfo = {
+	id: TerminalId,
+	title: string,
+	pid: number | null,
+	cwd: string,
+	appTitle: string | null,
+	commandRunning: boolean,
 };
 
 /**  Tools › Terminal. */
@@ -13439,10 +13994,10 @@ export type ToolCallDisplay =
 "each";
 
 /**
- *  Tools › Download sources: a mirror the installer tries when `github.com` is slow or
- *  unreachable.
+ *  Tools › Download sources: mirrors the installer tries, in order, when `github.com` is slow
+ *  or unreachable.
  * 
- *  The mirror is a proxy prefix: the official URL is appended to it unchanged
+ *  A mirror is a proxy prefix: the official URL is appended to it unchanged
  *  (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
  *  public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
  *  hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
@@ -13450,8 +14005,9 @@ export type ToolCallDisplay =
  */
 export type ToolDownloadSettings = {
 	/**
-	 *  Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
-	 *  every download on its official host.
+	 *  Proxy prefixes prepended to `https://github.com/…` archive addresses only, separated by
+	 *  commas or whitespace and tried in order before the official host; empty keeps every
+	 *  download on its official host.
 	 */
 	githubMirror?: string,
 };
@@ -13800,7 +14356,9 @@ export type VenvTool =
 /**  `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH). */
 "conda" | 
 /**  `pipenv --python <base>` in the project (pipenv must be on PATH). */
-"pipenv";
+"pipenv" | 
+/**  `hatch env create <env>` in the project (hatch must be on PATH). */
+"hatch";
 
 /**  What a view or custom editor shows. */
 export type View = {
@@ -13889,6 +14447,12 @@ export type VirtualDocument = {
 	 */
 	canReloadEncoding: boolean,
 };
+
+export type VirtualThreadsNote = 
+/**  A debugger holds the VM, which would hang the JSON request until it resumes. */
+"whileSuspended" | 
+/**  Over the attach reply limit (64 MiB). */
+"tooLarge" | "failed";
 
 /**  Declared (or conventional) visibility of an outline symbol. */
 export type Visibility = "public" | "protected" | 

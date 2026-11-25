@@ -1,14 +1,15 @@
 //! Security audit lead 2: every `vcs_*` command Restricted Mode allows, run against a
 //! repository whose config names a program for a signed commit, an index read, an external
 //! diff, a clean filter and a missing object. None may run.
-use ide_core::{NullSink, RequestId};
-use ide_host::{Host, HostConfig, catalogue::TrustClass, ops, ops::vcs};
+mod common;
+
+use ide_core::RequestId;
+use ide_host::{Host, catalogue::TrustClass, ops, ops::vcs};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 
 /// Allowed in Restricted Mode and not swept: none of them starts git for the project.
 const NOT_THE_PROJECT_REPOSITORY: [&str; 8] = [
@@ -141,17 +142,7 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
     clear(&markers);
     let project = arm(&base.join("project"), &markers);
     let external = arm(&base.join("external"), &markers);
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&project.root, false, false).unwrap();
     clear(&markers);
     assert!(!host.open_project("main", &project.root).unwrap().is_trusted());

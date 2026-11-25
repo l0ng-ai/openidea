@@ -221,6 +221,13 @@ export function removeAllSpecial() {
   setLists({ methods: [], fields: [] });
 }
 
+/** Removes the method breakpoints / watchpoints located in `path`. */
+export function removeSpecialIn(path: string) {
+  const { methods, fields } = useSpecialBreakpoints.getState();
+  if (![...methods, ...fields].some((b) => b.path === path)) return;
+  setLists({ methods: methods.filter((m) => m.path !== path), fields: fields.filter((f) => f.path !== path) });
+}
+
 /** Method breakpoints / watchpoints whose gutter icon is in `path`. */
 export function specialAt(path: string): SpecialBreakpoint[] {
   const { methods, fields } = useSpecialBreakpoints.getState();

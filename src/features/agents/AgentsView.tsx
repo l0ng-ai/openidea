@@ -42,7 +42,8 @@ import {
   showImportSessions,
   useAgents,
 } from "./store";
-import { groupMenu, taskMenu } from "./taskActions";
+import { canArchive, groupMenu, taskMenu } from "./taskActions";
+import { setFocusedTaskList } from "./taskListFocus";
 import { matchTask } from "./taskSearch";
 import { SessionEditor } from "./SessionEditor";
 import { HomeEditor } from "./HomeEditor";
@@ -187,7 +188,13 @@ export function AgentsView() {
     const task = sessionTask(maybeEditorService()?.activeInput?.());
     return new Set(task ? [task] : []);
   });
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+  useEffect(() => () => setFocusedTaskList(null), []);
   const organize = useAgents((s) => s.organize);
+  const pinned = useMemo(() => new Set(organize.pinned), [organize.pinned]);
   const [query, setQuery] = useState("");
   const treeRef = useRef<TreeHandle>(null);
   // Follow the active session tab.
@@ -264,8 +271,43 @@ export function AgentsView() {
   const dragTask = (e: ReactPointerEvent<HTMLSpanElement>, task: string) =>
     startPointerDrag(e, e.currentTarget, { type: TASK_DRAG, payload: task });
 
+  // The tasks under `task` in its section, for Archive All Below.
+  const tasksBelow = (task: string): AgentTask[] => {
+    for (const root of roots) {
+      const members = root.kind === "group" ? root.group.tasks : root.kind === "task" ? [] : root.tasks;
+      const at = members.findIndex((t) => t.id === task);
+      if (at >= 0) return members.slice(at + 1);
+    }
+    return [];
+  };
+  const rowButton = (label: string, icon: "pin" | "archive", run: () => void) => (
+    <button
+      type="button"
+      className={styles.rowAction}
+      aria-label={tx(label)}
+      title={tx(label)}
+      // The row selects on mouse down and opens on double click; these buttons do neither.
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        run();
+      }}
+    >
+      <Icon name={icon} size={14} />
+    </button>
+  );
+
   const taskList = (
-    <div className={styles.tasks}>
+    <div
+      className={styles.tasks}
+      onFocus={() => setFocusedTaskList(() => [...selectedRef.current])}
+      onBlur={(e) => {
+        if (!(e.relatedTarget instanceof Element && e.currentTarget.contains(e.relatedTarget)))
+          setFocusedTaskList(null);
+      }}
+    >
       {tasks.size > 0 && (
         <SearchField
           className={styles.taskSearch}
@@ -340,7 +382,7 @@ export function AgentsView() {
             const task = tasks.get(id);
             return task ? [task] : [];
           });
-          showContextMenu(e, taskMenu(selection));
+          showContextMenu(e, taskMenu(selection, selection.length === 1 ? tasksBelow(n.task.id) : []));
         }}
         renderNode={(n) => {
           switch (n.kind) {
@@ -381,8 +423,6 @@ export function AgentsView() {
                       n.task.title
                     )}
                   </span>
-                  {/* Ready tasks say so by their group; the others show what they're doing. */}
-                  {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
                   {unread.has(n.task.id) && (
                     <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
                   )}
@@ -393,6 +433,20 @@ export function AgentsView() {
                   )}
                   {n.task.isolation === "worktree" && (
                     <span className={styles.detail}>{branchLabel(n.task.branch)}</span>
+                  )}
+                  <span className={styles.rowActions}>
+                    {pinned.has(n.task.id)
+                      ? rowButton("Unpin", "pin", () => pinTasks([n.task.id], false))
+                      : rowButton("Pin", "pin", () => pinTasks([n.task.id], true))}
+                    {canArchive(n.task) &&
+                      rowButton("Archive", "archive", () => void executeAction("agents.archiveTasks", [n.task.id]))}
+                  </span>
+                  {/* Ready tasks say so by their group; the others show what they're doing, in a column
+                      beside the age so the marks line up whatever the title length. */}
+                  {n.task.status !== "ready" && (
+                    <span className={styles.status}>
+                      <TaskStatusIcon status={n.task.status} />
+                    </span>
                   )}
                   <span className={styles.age}>{age(n.task.updatedMs ?? 0)}</span>
                 </span>

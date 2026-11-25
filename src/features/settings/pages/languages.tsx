@@ -1,6 +1,6 @@
 /**
  * PyCharm's top-level "Python" group (Interpreter) and
- * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript / Zig. Pages live in
+ * Languages & Frameworks › Flutter / Go / Java / Markdown / Node.js / PHP / Rust / TypeScript / Zig. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GO_BUILD_TAG_SECTIONS, GoBuildTagsPage } from "../languages/GoBuildTags";
@@ -29,11 +29,15 @@ const DocstringsPage = lazyPage("python.docstrings", () =>
   import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
 );
 const RuffPage = lazyPage("python.ruff", () => import("../languages/FormatterPage").then((m) => m.RuffPage));
+const BlackPage = lazyPage("python.black", () => import("../languages/FormatterPage").then((m) => m.BlackPage));
 const PhpPage = lazyPage("languages.php", () => import("../languages/LanguagePages").then((m) => m.PhpPage));
 const RubyPage = lazyPage("languages.ruby", () => import("../languages/LanguagePages").then((m) => m.RubyPage));
 const RustPage = lazyPage("languages.rust", () => import("../languages/LanguagePages").then((m) => m.RustPage));
 const TypeScriptPage = lazyPage("languages.typescript", () =>
   import("../languages/LanguagePages").then((m) => m.TypeScriptPage),
+);
+const FlutterPage = lazyPage("languages.flutter", () =>
+  import("../languages/LanguagePages").then((m) => m.FlutterPage),
 );
 const ZigPage = lazyPage("languages.zig", () => import("../languages/LanguagePages").then((m) => m.ZigPage));
 
@@ -96,6 +100,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "uv",
     ],
     component: PythonInterpretersPage,
+  },
+  {
+    id: "languages.flutter",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Flutter",
+    group: LANGUAGES_GROUP,
+    order: 389,
+    keywords: ["flutter sdk path", "dart sdk", "flutter", "dart", "pub", "flutter daemon"],
+    component: FlutterPage,
   },
   {
     id: "languages.go",
@@ -246,6 +260,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "format on save",
     ],
     component: RuffPage,
+  },
+  {
+    id: "python.black",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Black formatter",
+    group: LANGUAGES_GROUP,
+    order: 403.4,
+    keywords: ["formatter", "black", "python", "pyproject.toml", "tool.black", "format on save"],
+    component: BlackPage,
   },
   {
     id: "languages.php",

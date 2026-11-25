@@ -42,6 +42,7 @@ describe("flushIntervalMs", () => {
     expect(flushIntervalMs("60", false)).toBe(17);
     expect(flushIntervalMs("30", false)).toBe(33);
     expect(flushIntervalMs("10", false)).toBe(100);
+    expect(flushIntervalMs("5", false)).toBe(200);
     expect(flushIntervalMs("unlimited", true)).toBe(HIDDEN_FLUSH_MS);
     expect(flushIntervalMs("60", true)).toBe(HIDDEN_FLUSH_MS);
   });

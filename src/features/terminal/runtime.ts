@@ -1,13 +1,17 @@
 /** Everything that needs xterm.js; loaded on first use through `loader.ts`. */
 export {
   activeSession,
+  adoptTab,
   applySettingsToAll,
   applyThemeToAll,
   closeAll,
+  createDetachedSession,
   detachTab,
   newTab,
   newTabRunning,
+  nextTabName,
   pluginSession,
+  rememberTerminals,
   syncTerminalProject,
   tabTitle,
   unbindTerminals,
@@ -28,9 +32,11 @@ export {
   cliSession,
   cliSessionForTerminalId,
   cliSessionFromElement,
+  detachCli,
   disposeAllClis,
   disposeCli,
   isCliSession,
+  reattachCli,
   startCli,
 } from "./cliSessions";
 export { CliEditor } from "./CliEditor";

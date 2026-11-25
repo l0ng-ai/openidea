@@ -1,4 +1,4 @@
-package openidea:plugin@1.15.0;
+package openidea:plugin@1.17.0;
 
 /// Writes to the IDE log, tagged with the plugin id.
 interface log {
@@ -165,6 +165,18 @@ interface ui {
     /// Native folder chooser; an absolute path, or `none` when dismissed.
     /// Only from a command or event of a window; waiting is excluded from the budget.
     pick-directory: func(title: string, initial: option<string>) -> result<option<string>, error>;
+    record file-filter {
+        name: string,
+        extensions: list<string>,
+    }
+    record file-dialog {
+        save: bool,
+        name: option<string>,
+        filters: list<file-filter>,
+    }
+    /// Choose an existing file or a save destination in the calling window.
+    /// Returns an absolute host path or none on cancellation. Requires an interactive call.
+    pick-file: func(title: string, dialog: file-dialog) -> result<option<string>, error>;
     /// Like `pick`, with any number of items chosen.
     pick-many: func(title: string, items: list<pick-item>) -> result<option<list<string>>, error>;
     /// Asks for a line of text, pre-filled with `value`; `none` when dismissed.

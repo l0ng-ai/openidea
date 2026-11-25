@@ -169,7 +169,7 @@ export function activate(): () => void {
         when: PROJECT,
         run: () => {
           const id = currentConnection();
-          if (id && !connectionState(id).disconnected) disconnectConnection(id);
+          if (id && !connectionState(id).disconnected) void disconnectConnection(id);
         },
       },
       {

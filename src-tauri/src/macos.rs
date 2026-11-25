@@ -1,4 +1,6 @@
 //! macOS project tabs: native window tab groups behind the page's own tab bar.
+use crate::windows::WorkbenchWindows;
+
 use crate::windows::{Launch, WindowsState};
 use ide_core::{IdeError, IdeResult};
 use ide_workspace::window_groups::{TabbingPreference, should_group_new_project};
@@ -31,7 +33,7 @@ fn tabbing_preference(app: &AppHandle) -> IdeResult<TabbingPreference> {
 
 /// Capture before building the new window, which takes focus itself.
 pub fn new_project_tab_target(app: &AppHandle, launch: &Launch) -> IdeResult<Option<WebviewWindow>> {
-    let windows = app.webview_windows();
+    let windows = app.workbench_windows();
     let active = windows
         .values()
         .find(|w| w.is_focused().unwrap_or(false))
@@ -124,6 +126,26 @@ pub fn move_tab_to_new_window(window: &WebviewWindow) -> tauri::Result<()> {
         }
         hide_tab_bar(native);
     })
+}
+
+/// Hides `windows` together in a single main-thread turn so a closing window or tab group
+/// disappears at once instead of flipping through remaining tabs while webviews tear down.
+/// Native fullscreen windows are left for AppKit's own Space close transition.
+pub fn hide_windows(windows: Vec<WebviewWindow>) {
+    if windows.is_empty() {
+        return;
+    }
+    let first = windows[0].clone();
+    let _ = on_main(&first, move || {
+        for window in &windows {
+            if window.is_fullscreen().unwrap_or(false) {
+                continue;
+            }
+            if let Some(native) = native(window) {
+                native.orderOut(None);
+            }
+        }
+    });
 }
 
 fn has_tab_bar(view: &objc2_app_kit::NSView) -> bool {

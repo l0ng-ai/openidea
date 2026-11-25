@@ -41,6 +41,7 @@ describe("before-launch build results", () => {
         expect(getContext()["build.lastStatus"]).toBeNull();
         expect(finished).toBe(false);
         finish();
+        // oxlint-disable-next-line no-await-in-loop -- each case registers an action and asserts its result before the next case's setup
         expect(await task).toBe(error);
         dispose();
       }

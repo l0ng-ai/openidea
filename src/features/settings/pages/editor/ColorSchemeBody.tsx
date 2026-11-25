@@ -224,6 +224,7 @@ function revealPreviewAttr(attrId: string, ids: Set<string>, reveal: (id: string
 }
 
 type Seg = [string, string?];
+
 interface CodeSample {
   code: Seg[][];
   /** Line shown with the caret-row background. */
@@ -919,6 +920,17 @@ const SAMPLES: Record<string, CodeSample> = {
         ["];", "javascript.operator"],
       ],
       [
+        ["type ", "javascript.keyword"],
+        ["Pair", "javascript.typeAlias"],
+        ["<", "javascript.operator"],
+        ["T", "javascript.typeParameter"],
+        ["> = [", "javascript.operator"],
+        ["T", "javascript.typeParameter"],
+        [", ", "javascript.operator"],
+        ["T", "javascript.typeParameter"],
+        ["];", "javascript.operator"],
+      ],
+      [
         ["@Component", "javascript.decorator"],
         ["({ ", "javascript.operator"],
         ["selector", "javascript.field"],
@@ -929,6 +941,8 @@ const SAMPLES: Record<string, CodeSample> = {
       [
         ["export class ", "javascript.keyword"],
         ["Quiz", "javascript.className"],
+        [" implements ", "javascript.keyword"],
+        ["Named", "javascript.interface"],
         [" {", "javascript.operator"],
       ],
       [
@@ -941,8 +955,16 @@ const SAMPLES: Record<string, CodeSample> = {
         [");", "javascript.operator"],
       ],
       [
+        ["  static ", "javascript.keyword"],
+        ["empty", "javascript.staticMethod"],
+        ["() { ", "javascript.operator"],
+        ["return new ", "javascript.keyword"],
+        ["Quiz", "javascript.className"],
+        ["(); }", "javascript.operator"],
+      ],
+      [
         ["  ", "text"],
-        ["count", "javascript.functionDeclaration"],
+        ["count", "javascript.instanceMethod"],
         ["(", "javascript.operator"],
         ["n", "javascript.parameter"],
         [": ", "javascript.operator"],
@@ -968,7 +990,7 @@ const SAMPLES: Record<string, CodeSample> = {
         [".", "javascript.operator"],
         ["store", "javascript.field"],
         [".", "javascript.operator"],
-        ["add", "javascript.functionCall"],
+        ["add", "javascript.instanceMethod"],
         ["(", "javascript.operator"],
         ["total", "javascript.identifier"],
         [");", "javascript.operator"],
@@ -1442,11 +1464,16 @@ function GitPreview({
         <div className={styles.gitSectionTitle}>{tx("Editor inline blame")}</div>
         <div className={styles.gitEditor}>
           {GIT_EDITOR_LINES.map((line, i) => (
-            <div key={i} className={`${styles.previewLine} ${line.blame ? styles.previewCaretLine : ""}`}>
+            <div
+              // oxlint-disable-next-line react/no-array-index-key -- sample lines repeat; position is the identity
+              key={i}
+              className={`${styles.previewLine} ${line.blame ? styles.previewCaretLine : ""}`}
+            >
               <span className={styles.previewGutter}>{i + 1}</span>
               <code>
                 {line.segs.map(([text, attrId], j) => (
                   <span
+                    // oxlint-disable-next-line react/no-array-index-key -- coloured segments repeat; position is the identity
                     key={j}
                     style={tokenStyle(attrId ? A(attrId) : undefined)}
                     className={attrId ? styles.clickable : undefined}
@@ -1484,6 +1511,7 @@ function GitPreview({
                 <span className={styles.gitSuffix}>
                   {suffixOf(root).map((s, j) => (
                     <span
+                      // oxlint-disable-next-line react/no-array-index-key -- suffix segments repeat; position is the identity
                       key={j}
                       className={`${styles.gitSuffixSegment} ${styles.clickable}`}
                       style={tokenStyle(A(s.attr))}
@@ -1911,7 +1939,11 @@ export function ColorSchemePage({
             ) : (
               <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
                 {sample.code.map((line, i) => (
-                  <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
+                  <div
+                    // oxlint-disable-next-line react/no-array-index-key -- sample lines repeat; position is the identity
+                    key={i}
+                    className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}
+                  >
                     <span className={styles.previewGutter}>{i + 1}</span>
                     <code>
                       {line.map(([text, attrId], j) => {
@@ -1919,6 +1951,7 @@ export function ColorSchemePage({
                         const inPage = attr !== undefined && ids.has(attrId!);
                         return (
                           <span
+                            // oxlint-disable-next-line react/no-array-index-key -- coloured segments repeat; position is the identity
                             key={j}
                             style={tokenStyle(attr)}
                             className={attr ? styles.clickable : undefined}

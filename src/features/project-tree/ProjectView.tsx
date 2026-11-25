@@ -90,6 +90,7 @@ import {
   clearRevealRequest,
   explainHiddenPath,
   loadDir,
+  loadVisibleDirs,
   loadOutline,
   previewTabEnabled,
   revealPath,
@@ -392,6 +393,7 @@ function DecorationSuffix({ segments, color }: DecorationSuffixProps) {
             : undefined;
         return (
           <span
+            // oxlint-disable-next-line react/no-array-index-key -- decoration segments can repeat; position is the identity
             key={i}
             className={styles.suffixSegment}
             role={s.label ? "img" : undefined}
@@ -511,7 +513,7 @@ export function ProjectView() {
 
   // Load folders that are expanded (restored state, reveal, chains) but not read yet.
   useEffect(() => {
-    for (const p of info.pending) void loadDir(p);
+    loadVisibleDirs(info.pending);
   }, [info.pending]);
 
   // Restored file expansion and enabling Show Members also need outlines.

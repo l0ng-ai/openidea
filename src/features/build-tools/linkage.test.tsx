@@ -124,6 +124,7 @@ it("re-reads the build model when an applied Groovy or Kotlin script changes", a
   try {
     for (const path of ["/p/gradle/dependencies.gradle", "/p/gradle/dependencies.gradle.kts"]) {
       const calls = mocks.model.mock.calls.length;
+      // oxlint-disable-next-line no-await-in-loop -- fake-timer steps and call-count assertions stay in path order
       await act(async () => {
         emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [path], removed: [] });
         await vi.advanceTimersByTimeAsync(300);
@@ -285,19 +286,63 @@ it("imports a module directory from Project Structure when that directory contai
   expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.linkedProjects", '["/B/pom.xml"]');
 });
 
-it("does not link a module directory that has no pom.xml", async () => {
+const fileEntry = (dir: string, name: string) => ({
+  name,
+  path: `${dir}/${name}`,
+  kind: "file" as const,
+  size: 1,
+  mtimeMs: 1,
+  ignored: false,
+  excluded: false,
+  hidden: false,
+});
+
+it("imports a module directory with a Gradle build as a linked Gradle build", async () => {
   mocks.open.mockResolvedValue("/B");
+  mocks.readDir.mockResolvedValue([fileEntry("/B", "build.gradle.kts"), fileEntry("/B", "settings.gradle.kts")]);
+  mocks.link.mockResolvedValue(model);
+  await act(async () => {
+    await executeAction("maven.importExternal");
+  });
+  expect(mocks.show).toHaveBeenCalledWith("gradle");
+  expect(mocks.link).toHaveBeenCalledWith(["/B/settings.gradle.kts"]);
+  expect(mocks.set).not.toHaveBeenCalled();
+});
+
+it("attaches a module directory without a build file outside the project, after asking", async () => {
+  const attached = vi.fn();
+  const off = registerAction({ id: "project.attachFolder", title: "Attach", run: ({ arg }) => attached(arg) });
+  mocks.open.mockResolvedValue("/code/B");
+  mocks.readDir.mockResolvedValue([fileEntry("/code/B", "Main.java")]);
+  await act(async () => {
+    await executeAction("maven.importExternal");
+  });
+  off();
+  expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ ok: "Attach" }));
+  expect(attached).toHaveBeenCalledWith("/code/B");
+  expect(mocks.set).not.toHaveBeenCalled();
+  expect(mocks.link).not.toHaveBeenCalled();
+});
+
+it("says a module directory without a build file inside the project is already part of it", async () => {
+  mocks.open.mockResolvedValue("/p/lib");
   mocks.readDir.mockResolvedValue([]);
+  await act(async () => {
+    await executeAction("maven.importExternal");
+  });
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Already in the project" }));
+});
+
+it("reports a module directory that can't be read", async () => {
+  mocks.open.mockResolvedValue("/B");
+  mocks.readDir.mockRejectedValue(new Error("denied"));
   await act(async () => {
     await executeAction("maven.importExternal");
   });
   expect(mocks.set).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith(
-    expect.objectContaining({
-      level: "warning",
-      title: "Maven project was not imported",
-      body: expect.stringContaining("pom.xml"),
-    }),
+    expect.objectContaining({ level: "warning", title: "Module was not imported" }),
   );
 });
 

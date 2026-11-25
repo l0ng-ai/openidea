@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { addStackTrace, countFrames, normalizeTrace, traceTitle, useStackTraces } from "./stackTrace";
 import { useRun } from "./store";
+import jdk25Sync from "./threadDump/__fixtures__/jdk25-sync.txt?raw";
 
 const JVM = `Exception in thread "main" java.lang.IllegalStateException: boom\r
 \tat com.acme.OrderController.list(OrderController.kt:22)   \r
@@ -36,8 +37,20 @@ describe("Analyze Stack Trace", () => {
     const s = useStackTraces.getState();
     expect(useRun.getState().activeSession).toBe(id);
     const tab = s.tabs.find((t) => t.id === id)!;
+    if (tab.kind !== "trace") throw new Error("expected a trace tab");
     expect(tab.title).toBe("IllegalStateException");
     expect(tab.model.lines.map((l) => l.text)).toHaveLength(3);
     expect(tab.model.lines[1]!.text).toContain("OrderController.kt:22");
+  });
+
+  it("opens a pasted thread dump in the thread viewer", () => {
+    const id = addStackTrace(jdk25Sync)!;
+    const tab = useStackTraces.getState().tabs.find((t) => t.id === id)!;
+    expect(useRun.getState().activeSession).toBe(id);
+    if (tab.kind !== "threads") throw new Error("expected a thread dump tab");
+    expect(tab.title).toBe("Thread dump");
+    expect(tab.source).toBeNull();
+    expect(tab.dump.deadlocks).toHaveLength(1);
+    expect(tab.dump.threads[tab.selected!]!.name).toBe("sync-1");
   });
 });

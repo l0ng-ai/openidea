@@ -84,6 +84,7 @@ it("sends explicit configure and build configurations to Build without creating 
   const dispose = registerActions([{ id: "build.buildProject", title: "Build Project", run }]);
   try {
     for (const c of [configure, build, target]) {
+      // oxlint-disable-next-line no-await-in-loop -- asserts each build's call before the next iteration; startRun shares run state
       expect(await startRun(c)).toBeNull();
       expect(run).toHaveBeenLastCalledWith(expect.objectContaining({ arg: { cmake: c.id, activate: true } }));
     }

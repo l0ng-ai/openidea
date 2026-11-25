@@ -7,6 +7,7 @@ import type {
   AcpImportOutcome,
   AgentCliOffer,
   AgentCliUpdateResult,
+  AgentModelCatalog,
   AgentProvider,
   AgentRegistry,
   CustomAgentInput,
@@ -31,6 +32,7 @@ export interface CommandsBackend {
   updateCli(id: string, offer: AgentCliOffer, request: RequestId): Promise<AgentCliUpdateResult>;
   cancel(request: RequestId): void;
   providers(): Promise<AgentProvider[]>;
+  refreshModels?(id: string, model: string | null): Promise<AgentModelCatalog>;
   set(id: string, command: string | null): Promise<void>;
   setEnv(id: string, env: Record<string, string>): Promise<void>;
   chooseExecutable(title: string, current?: string, location?: "desktop"): Promise<string | null>;
@@ -58,6 +60,7 @@ export const tauriCommands: CommandsBackend = {
   updateCli: (id, offer, request) => call(commands.agentCliUpdate(id, offer, request)),
   cancel: tauriRegistry.cancel,
   providers: () => call(commands.agentProviders()),
+  refreshModels: (id, model) => call(commands.agentRefreshModels(id, false, model)),
   chooseExecutable: async (title, current, location) => {
     if (location !== "desktop") return choosePath({ title, defaultPath: current, directory: false });
     const picked = await open({ title, defaultPath: current || undefined, directory: false, multiple: false });

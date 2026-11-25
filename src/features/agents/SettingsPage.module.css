@@ -23,7 +23,7 @@
 
 .title {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--fs-input-large);
   font-weight: 600;
   color: var(--fg-strong);
 }
@@ -67,8 +67,9 @@
   gap: var(--space-1-5);
   padding: 6px 8px;
   border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  background: var(--bg-feedback-error);
+  box-shadow: inset 0 0 0 1px var(--border-feedback-error);
+  color: var(--fg);
   font-size: var(--fs-small);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -108,7 +109,6 @@
   font: inherit;
   font-weight: 600;
   text-align: left;
-  cursor: pointer;
 }
 
 .chevron {
@@ -133,12 +133,10 @@
   justify-content: center;
   min-width: 18px;
   height: 18px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--bg-hover);
+  padding: 0 4px;
   color: var(--fg-muted);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: var(--fs-tiny);
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
@@ -191,7 +189,6 @@
   color: inherit;
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 
 .cardMain {
@@ -216,21 +213,19 @@
   gap: var(--space-1);
   height: 18px;
   padding: 0 6px;
-  border-radius: var(--radius-small, 3px);
+  border-radius: var(--radius-small);
   background: var(--bg-floating-toolbar);
   color: var(--fg-secondary);
   font-size: var(--fs-tiny);
-  font-weight: 500;
   white-space: nowrap;
 }
 
+/* Tags share one neutral fill; only a warning colours its text. */
 .tagAccent {
-  background: color-mix(in srgb, var(--accent) 18%, var(--bg-elev));
-  color: var(--link);
+  color: var(--fg-strong);
 }
 
 .tagWarning {
-  background: color-mix(in srgb, var(--warning) 18%, var(--bg-elev));
   color: var(--warning);
 }
 

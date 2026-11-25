@@ -1,9 +1,11 @@
+use crate::windows::WorkbenchWindows;
 use ide_core::{EventSink, IdeEvent, SharedSink};
+
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, UserAttentionType};
+use tauri::{AppHandle, Emitter, UserAttentionType};
 
 /// Name of the single backend → UI event. Payload: [`IdeEvent`].
 pub const IDE_EVENT: &str = "ide://event";
@@ -149,7 +151,7 @@ fn flash_taskbar_unless_focused(app: &AppHandle) {
         if crate::application_focus::application_active(&handle) {
             return;
         }
-        for window in handle.webview_windows().values() {
+        for window in handle.workbench_windows().values() {
             let _ = window.request_user_attention(Some(UserAttentionType::Informational));
         }
     });
@@ -188,7 +190,7 @@ impl EventSink for TauriSink {
         {
             let app = self.app.clone();
             let _ = self.app.run_on_main_thread(move || {
-                if let Some(window) = app.get_webview_window(&label) {
+                if let Some(window) = app.workbench_window(&label) {
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -226,6 +228,14 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let saved = events.clone();
         (coalescing_sink(Arc::new(move |event| saved.lock().push(event)), tokio::runtime::Handle::current()), events)
+    }
+
+    /// Waits for the coalescing window to flush `n` events (a fixed sleep is too short on slow CI timers).
+    async fn wait_for_events(events: &Mutex<Vec<IdeEvent>>, n: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while events.lock().len() < n && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     fn diagnostics(path: &str, source: &str, message: &str) -> IdeEvent {
@@ -316,9 +326,7 @@ mod tests {
         sink.emit(diagnostics("/p/b.rs", "rust-analyzer", "other"));
 
         assert!(events.lock().is_empty());
-        tokio::task::yield_now().await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        tokio::task::yield_now().await;
+        wait_for_events(&events, 3).await;
 
         {
             let saved_events = events.lock();
@@ -381,7 +389,7 @@ mod tests {
         }
         assert_eq!(events.lock().len(), MAX_PENDING_DIAGNOSTICS);
 
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        wait_for_events(&events, MAX_PENDING_DIAGNOSTICS + 1).await;
         assert_eq!(events.lock().len(), MAX_PENDING_DIAGNOSTICS + 1);
     }
 

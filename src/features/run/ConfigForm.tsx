@@ -800,6 +800,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                     onClick: (e: MouseEvent<HTMLButtonElement>) => setTaskMenu({ index: i, anchor: e.currentTarget }),
                   };
                   return (
+                    // oxlint-disable-next-line react/no-array-index-key -- tasks of one kind can repeat; position is the identity
                     <div key={i} role="listitem" className={styles.taskTag}>
                       {t.kind === "command" ? (
                         <>
@@ -957,8 +958,9 @@ function TypeField({
   }, [field]);
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
-    const options = [...(field.options ?? []), ...loaded];
-    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value });
+    // Loaded options are detected data (JDKs, build modules), not catalog text.
+    const options: SelectOption[] = [...(field.options ?? []), ...loaded.map((o) => ({ ...o, verbatim: true }))];
+    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
     return (
       <Select
         value={value || (options[0]?.value ?? "")}

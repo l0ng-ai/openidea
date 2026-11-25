@@ -95,7 +95,10 @@ describe.each(["prettier", "oxfmt", "biome", "ruff"])("%s formatter errors", (na
       const stderr = "Formatting timed out";
       failWith({ kind: "invalidInput", message: stderr, data: tool });
       const view = viewFor();
-      for (let i = 0; i < 3; i++) await formatDocument(view, { explicit: false, onSave: true });
+      for (let i = 0; i < 3; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- repeated saves on the same view replace one notification
+        await formatDocument(view, { explicit: false, onSave: true });
+      }
       const notes = useNotifications.getState().items;
       expect(notes).toHaveLength(1);
       expect(notes[0]).toMatchObject({ sticky: false, title: `${display} 格式化失败` });

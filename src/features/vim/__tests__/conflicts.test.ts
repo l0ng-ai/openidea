@@ -16,7 +16,8 @@ import { DEFAULT_VIM_SETTINGS, parseVimSettings, type VimSettings } from "../set
 
 describe("vim shortcut conflicts", () => {
   it("defaults like IdeaVim: typical Vim keys to Vim, Escape to the IDE first", () => {
-    for (const k of ["Ctrl+R", "Ctrl+V", "Ctrl+D", "Ctrl+W", "Ctrl+U", "Ctrl+["]) expect(handlerFor(k, {})).toBe("vim");
+    for (const k of ["Ctrl+R", "Ctrl+V", "Ctrl+D", "Ctrl+W", "Ctrl+U", "Ctrl+[", "Ctrl+K"])
+      expect(handlerFor(k, {})).toBe("vim");
     expect(handlerFor("Escape", {})).toBe("ide");
     expect(handlerFor("Ctrl+C", {})).toBe("ide");
     expect(handlerFor("Meta+R", {})).toBeNull();

@@ -230,7 +230,7 @@ export function ThreePaneDiff({
         {labels.map((label, i) => {
           const file = titlePaths?.[i];
           return (
-            <span key={i} title={file ? `${label} ${file}` : label}>
+            <span key={label} title={file ? `${label} ${file}` : label}>
               {file && (
                 <span className={styles.labelFile}>
                   <Icon name={fileIconName(file)} size={16} />

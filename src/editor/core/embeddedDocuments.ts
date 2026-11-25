@@ -37,13 +37,17 @@ export function activateEmbeddedDocuments() {
       offSettings();
       offColor();
       manager.stop();
-      for (const model of manager.byPath.values()) {
-        await model.sync.whenIdle();
-        model.dispose();
-        await ipcBackend.close(model.doc);
-      }
+      const results = await Promise.allSettled(
+        [...manager.byPath.values()].map(async (model) => {
+          await model.sync.whenIdle();
+          model.dispose();
+          await ipcBackend.close(model.doc);
+        }),
+      );
       manager.byPath.clear();
       manager.byId.clear();
+      const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (failure) throw failure.reason;
     },
   };
 }

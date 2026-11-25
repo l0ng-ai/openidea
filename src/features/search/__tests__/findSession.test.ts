@@ -164,6 +164,7 @@ describe("FindSession", () => {
       expect(last().files).toHaveLength(1);
       for (let i = 1; i < 1000; i++) {
         running[0]!.onFile(file(`f${i}.kt`, [1]));
+        // oxlint-disable-next-line no-await-in-loop -- fake timers must advance 1ms per file to exercise the batching window
         await vi.advanceTimersByTimeAsync(1);
       }
       await vi.advanceTimersByTimeAsync(100);

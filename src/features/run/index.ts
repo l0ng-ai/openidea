@@ -4,9 +4,11 @@
  */
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
+import { useBuildModel } from "@/platform/buildModel";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { projectFolder, useProject } from "@/platform/project";
+import { parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { isSameOrInside } from "@/platform/paths";
 import { agentRunSettings, onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
@@ -26,6 +28,7 @@ import {
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
+import { useFlutterRunApps } from "@/workbench/flutterRunApps";
 import { restartFlutterDaemon, selectFlutterDevice, useFlutterDevices } from "@/workbench/flutterDevices";
 import { chooserJustClosed, ConfigChooserOverlay } from "./ConfigChooser";
 import {
@@ -45,6 +48,7 @@ import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { openImport } from "./importConfigs";
 import { registerComposerInstall } from "./composerInstall";
+import { registerPubspecCommands } from "./pubspec";
 import { registerGoActions } from "./goActions";
 import { registerRunTabActions } from "./runTabs";
 import { invalidateGoModules } from "./goModules";
@@ -60,7 +64,7 @@ import {
 } from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { ServiceImportHost } from "./serviceImport";
-import { cmakeBuildId } from "./cmake";
+import { selectedBuildTarget } from "./buildTarget";
 import { configurationChecks } from "./configurationChecks";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
@@ -69,15 +73,21 @@ import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { isZigBuildStep, zigDebugTarget } from "./zigDebug";
 import { junitType } from "./junitType";
-import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
-import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
+import {
+  installBuildTomcatSync,
+  listenForApplicationDeactivation,
+  showApplicationUpdate,
+  updatableSessions,
+} from "./applicationUpdate";
+import { hotReload, hotReloadSession, hotRestart, syncFlutterRunApps } from "./flutterHotReload";
+import { registerFlutterBuildActions } from "./flutterBuild";
 import { npmGutter } from "./npmGutter";
-import { startNpmScriptsWatch } from "./npmScripts";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
 import { markdownCommandGutter } from "./markdownCommands";
 import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
+import { activateThreadDumps } from "./threadDump/actions";
 import { clearRuntimeCache } from "./runtimes";
 import {
   adoptTemporary,
@@ -288,6 +298,22 @@ async function runCurrentFile(debug: boolean) {
   selectConfig(CURRENT_FILE);
 }
 
+/** Flutter Attach: `flutter attach` with the selected Flutter configuration, to an app started elsewhere. */
+async function flutterAttachSelected() {
+  await ensureConfigs();
+  const config = selectedConfig();
+  if (config?.kind !== "flutter") {
+    notifications().notify({
+      group: "run",
+      level: "info",
+      title: "Select a Flutter run configuration to attach with",
+      key: "run-flutter-attach",
+    });
+    return;
+  }
+  await executeAction("debug.startConfig", { ...config, params: { ...config.params, request: "attach" } });
+}
+
 function nothingToRun() {
   notifications().notify({
     group: "run",
@@ -438,14 +464,15 @@ export function activate(): () => void {
       headerContent: lazyComponent(() => import("./RunView").then((m) => m.RunTabs)),
       useBadge: useRunningCount,
     }),
-    startNpmScriptsWatch(),
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
     registerRunConfigType(junitType),
     registerGoActions(),
+    registerFlutterBuildActions(),
     registerRunTabActions(),
     registerComposerInstall(),
+    registerPubspecCommands(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({
       id: "run.editConfigs",
@@ -481,7 +508,9 @@ export function activate(): () => void {
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
+    activateThreadDumps(),
     listenForApplicationDeactivation(),
+    installBuildTomcatSync(),
     trackRecentConfigurations(),
     trackFailedTestSelection(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
@@ -619,6 +648,15 @@ export function activate(): () => void {
         category: "Run",
         when: "flutterProject",
         run: () => restartFlutterDaemon(),
+      },
+      {
+        id: "run.flutterAttach",
+        title: "Flutter Attach",
+        category: "Run",
+        icon: "debug",
+        description: "Attach the debugger to the app of the selected Flutter configuration, started elsewhere",
+        when: "flutterProject",
+        run: () => flutterAttachSelected(),
       },
       {
         id: "run.flutterHotReload",
@@ -781,6 +819,15 @@ export function activate(): () => void {
         run: () => testTree.toggleDurations?.(),
       },
       {
+        id: "run.toggleSelectFirstFailedTest",
+        title: "Select First Failed Test When Finished",
+        category: "Run",
+        when: "projectOpen",
+        enabled: () => testTree.toggleSelectFirstFailed !== null,
+        toggled: () => testTree.selectFirstFailed === true,
+        run: () => testTree.toggleSelectFirstFailed?.(),
+      },
+      {
         id: "run.reloadConfigs",
         title: "Reload Run Configurations",
         category: "Run",
@@ -900,26 +947,58 @@ export function activate(): () => void {
     ]),
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
     onIdeEvent("projectRootsChanged", scheduleReload),
-    // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
-    useRun.subscribe((s) => {
-      const selected = s.configs.find((c) => c.id === s.selectedId);
-      setContext("run.selectedKind", selected?.kind ?? "");
-      const cmake = selected ?? s.configs.find((c) => c.kind === "cmake" && c.args[0] === "--build");
-      setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
-      setContext("run.updatableRunning", updatableSessions().length > 0);
-      setContext("run.flutterHotReloadable", !!hotReloadSession());
-    }),
+    // Lets other title items follow the selected configuration (e.g. Build targets the selected run configuration).
+    (() => {
+      const syncBuildTarget = () => {
+        const s = useRun.getState();
+        const selected = s.configs.find((c) => c.id === s.selectedId);
+        const projectRoot = useProject.getState().project?.root ?? null;
+        const gradle = useBuildModel.getState().model?.gradle ?? [];
+        const build = selectedBuildTarget(selected, s.configs, projectRoot, gradle);
+        setContext("run.selectedKind", selected?.kind ?? "");
+        setContext("run.cmakeBuild", build.cmake);
+        setContext("run.buildTarget", build.target);
+        setContext("run.buildTargetName", build.name);
+      };
+      syncBuildTarget();
+      const unsubRun = useRun.subscribe((s) => {
+        syncBuildTarget();
+        setContext("run.updatableRunning", updatableSessions().length > 0);
+        syncFlutterRunApps(s.sessions);
+        setContext("run.flutterHotReloadable", !!hotReloadSession());
+      });
+      const unsubModel = useBuildModel.subscribe(syncBuildTarget);
+      const unsubProject = useProject.subscribe((s, prev) => {
+        if (s.project?.root !== prev.project?.root) syncBuildTarget();
+      });
+      return () => {
+        unsubRun();
+        unsubModel();
+        unsubProject();
+        setContext("run.selectedKind", "");
+        setContext("run.cmakeBuild", null);
+        setContext("run.buildTarget", null);
+        setContext("run.buildTargetName", null);
+      };
+    })(),
+    useFlutterRunApps.subscribe(() => setContext("run.flutterHotReloadable", !!hotReloadSession())),
     // Agent tabs (`run_command`): the archive keeps at most Settings' number of them.
     useRun.subscribe((s, prev) => {
       if (s.sessions !== prev.sessions) trimAgentArchive();
     }),
     onWorkflowSettingsChange(() => agentRunSettings(), trimAgentArchive),
-    useProject.subscribe((s, prev) => {
-      if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
-      resetRuns();
-      useStackTraces.setState({ tabs: [], dialog: null });
-      if (s.project) void loadConfigs();
-    }),
+    (() => {
+      let prevLocation = projectLocation(useProject.getState().project?.root);
+      return useProject.subscribe((s, prev) => {
+        const nextLocation = projectLocation(s.project?.root);
+        if (nextLocation === prevLocation && s.project?.trusted === prev.project?.trusted) return;
+        const wasRemote = !!prevLocation && parseRemoteLocation(prevLocation) !== null;
+        prevLocation = nextLocation;
+        resetRuns(!wasRemote);
+        useStackTraces.setState({ tabs: [], dialog: null });
+        if (s.project) void loadConfigs();
+      });
+    })(),
   ];
 
   setBeforeLaunchRunner(runBeforeLaunch);

@@ -5,6 +5,8 @@
 
 pub mod agent_secrets;
 pub mod catalogue;
+#[cfg(unix)]
+pub mod daemon;
 pub mod data_dirs;
 pub mod diagnostics_store;
 mod direnv;
@@ -58,7 +60,29 @@ pub struct HostConfig {
     pub project_environment: bool,
 }
 
+#[cfg(test)]
+impl HostConfig {
+    /// A host under `base` for unit tests: `config`, `data` and `data` again for the machine-local
+    /// directory, built-in languages, no grammars, a sink that drops events, the window as its own
+    /// owner, the current tokio runtime and no project environment. Override fields with
+    /// `HostConfig { sink_for: .., ..HostConfig::for_test(base) }`. Call it inside a runtime.
+    pub(crate) fn for_test(base: &Path) -> Self {
+        Self {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("data"),
+            languages: Arc::new(LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        }
+    }
+}
+
 pub struct Host {
+    local_database_tunnels: bool,
     pub(crate) mcp_executable: Arc<RwLock<Option<PathBuf>>>,
     pub mcp: mcp::McpService,
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
@@ -83,6 +107,7 @@ pub struct Host {
     syntax: Arc<OnceLock<Arc<Syntax>>>,
     pub global_settings: SettingsStore,
     pub dependency_versions: Arc<ide_workspace::dependencies::VersionCache>,
+    pub pypi_names: Arc<ide_workspace::dependencies::pypi::NameCache>,
     pub terminals: TerminalManager,
     pub processes: ProcessManager,
     /// Debug sessions (adapters run on this machine, next to the project).
@@ -93,6 +118,8 @@ pub struct Host {
     pub(crate) heap_windows: Mutex<HashMap<ide_heap::HeapSnapshotId, String>>,
     pub(crate) heap_requests: ops::heap::HeapRequests,
     pub(crate) rebase_editors: Arc<ops::vcs::RebaseEditors>,
+    /// The IDE's Java build: resident javac processes shared by every window's launches.
+    pub(crate) java_build: Arc<ide_build::jbuild::JavaBuildService>,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
@@ -119,9 +146,29 @@ pub struct Host {
     requests: requests::Requests,
     project_requests: RwLock<HashMap<String, Vec<RequestId>>>,
     /// Shutdowns of projects closed with [`Host::close_project_detached`].
-    closing: parking_lot::Mutex<Vec<std::thread::JoinHandle<()>>>,
+    closing: parking_lot::Mutex<Vec<DetachedClose>>,
     /// One open at a time per window (see [`Host::opening`]).
     open_locks: parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<()>>>>,
+}
+
+struct DetachedClose {
+    root: Option<std::path::PathBuf>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+struct ShutdownWork {
+    notebooks: Vec<Arc<notebook::NotebookService>>,
+    bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
+    lsp: Option<Arc<ide_lsp::LspManager>>,
+    debug: Option<(Arc<ide_dap::DebugManager>, String, Option<std::path::PathBuf>)>,
+    agents: Vec<Arc<ide_agent::AgentManager>>,
+    terminals: Option<ide_terminal::DetachedTerminals>,
+    processes: Option<ide_run::DetachedProcessKills>,
+    retired: Option<Arc<Project>>,
+}
+
+fn roots_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || a.starts_with(b) || b.starts_with(a)
 }
 
 /// How long exit waits for project shutdown before giving up.
@@ -142,6 +189,12 @@ impl Host {
         windows
     }
 
+    /// Enables user-approved database helper processes on the local desktop.
+    pub fn with_local_database_tunnels(mut self) -> Self {
+        self.local_database_tunnels = true;
+        self
+    }
+
     pub fn new(config: HostConfig) -> Self {
         let HostConfig {
             config_dir,
@@ -159,9 +212,12 @@ impl Host {
         let sink_for: SinkFactory = diagnostics_store::recording_sink_factory(diagnostics.clone(), sink_for);
         let global_settings = SettingsStore::load(&config_dir, None);
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
+        let migration = ssh.clone();
+        runtime.spawn_blocking(move || migration.start_password_migration());
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),
+            local_database_tunnels: false,
             mcp_executable: Arc::default(),
             mcp: Default::default(),
             diagnostics,
@@ -184,6 +240,7 @@ impl Host {
             dependency_versions: Arc::new(ide_workspace::dependencies::VersionCache::new(
                 data_dir.join("cache/dependency-versions"),
             )),
+            pypi_names: Arc::new(ide_workspace::dependencies::pypi::NameCache::new(data_dir.join("cache"))),
             // Sessions, runs and terminals report to the window that started them (`window_sink`).
             terminals: TerminalManager::new(),
             processes: ProcessManager::new(),
@@ -192,6 +249,7 @@ impl Host {
             heap_windows: Mutex::default(),
             heap_requests: Default::default(),
             rebase_editors: Default::default(),
+            java_build: Default::default(),
             languages,
             syntax,
             config_dir,
@@ -298,7 +356,7 @@ impl Host {
     /// [`Self::close_project_detached`] there.
     pub fn close_project(&self, window: &str) {
         if let Some(shutdown) = self.begin_close(window) {
-            self.wait_blocking(shutdown);
+            self.wait_blocking(shutdown.handle);
         }
     }
 
@@ -308,15 +366,15 @@ impl Host {
     pub fn close_project_detached(&self, window: &str) {
         if let Some(shutdown) = self.begin_close(window) {
             let mut closing = self.closing.lock();
-            closing.retain(|handle| !handle.is_finished());
+            closing.retain(|entry| !entry.handle.is_finished());
             closing.push(shutdown);
         }
     }
 
-    /// Detaches the project from `window` and stops what it started, synchronously,
-    /// so the window can open another project at once. Returns the thread that
-    /// finishes shutting down its workers.
-    fn begin_close(&self, window: &str) -> Option<std::thread::JoinHandle<()>> {
+    /// Detaches the project from `window` synchronously so the caller (including the UI
+    /// event-loop thread) never blocks on disk I/O or process shutdown, and returns the
+    /// background handle that stops its workers, agents, terminals and processes.
+    fn begin_close(&self, window: &str) -> Option<DetachedClose> {
         self.mcp_reports.forget_window(window);
         self.mcp_requests.forget_window(window);
         self.mcp_agent_runs.forget_window(window);
@@ -363,77 +421,115 @@ impl Host {
             phpstan.stop();
         }
         project.documents.clear_workspace_edit_history();
-        project.agents.shutdown();
+        project.agents.detach_sinks();
         project.flutter.stop();
         project.devtools.stop();
+        project.widget_preview.stop();
         project.notebooks.stop_admission();
-        // What the closing window started goes with it — the builds and searches it
-        // asked for, its runs, its shells and its debug sessions — and its language
-        // servers shut down.
-        self.processes.kill_project(&project.root);
-        self.terminals.kill_key(self.owner_window(window));
-        Some(self.spawn_project_shutdown(
-            vec![project.notebooks.clone()],
-            project.kotlin_bridge.iter().cloned().collect(),
-            Some(project.lsp.clone()),
+        // Detach runs and terminals synchronously so a new project opened in the same window
+        // never collides with them, then terminate them and shut down agents on the background thread.
+        let processes = self.processes.detach_project_kills(&project.root);
+        let terminals = self.terminals.detach_key(self.owner_window(window));
+        let root = (!project.light).then(|| project.root.clone());
+        let handle = self.spawn_project_shutdown(ShutdownWork {
+            notebooks: vec![project.notebooks.clone()],
+            bridges: project.kotlin_bridge.iter().cloned().collect(),
+            lsp: Some(project.lsp.clone()),
             // Debug sessions under the root belong to windows: a project served without one starts none.
-            Some((self.debugger.clone(), window.to_owned(), (!background).then(|| project.root.clone()))),
-            Some(project),
-        ))
+            debug: Some((self.debugger.clone(), window.to_owned(), (!background).then(|| project.root.clone()))),
+            agents: vec![project.agents.clone()],
+            terminals: Some(terminals),
+            processes: Some(processes),
+            retired: Some(project),
+        });
+        Some(DetachedClose { root, handle })
     }
 
-    /// Project/window destruction must finish owned kernel cleanup, not enqueue
+    /// Project/window destruction must finish owned kernel and agent cleanup, not enqueue
     /// work which can be lost as the desktop runtime exits: the returned thread is
     /// joined by the closer or, for a detached close, before exit.
-    fn spawn_project_shutdown(
-        &self,
-        notebooks: Vec<Arc<notebook::NotebookService>>,
-        bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
-        lsp: Option<Arc<ide_lsp::LspManager>>,
-        debug: Option<(Arc<ide_dap::DebugManager>, String, Option<std::path::PathBuf>)>,
-        retired: Option<Arc<Project>>,
-    ) -> std::thread::JoinHandle<()> {
-        for bridge in &bridges {
+    fn spawn_project_shutdown(&self, work: ShutdownWork) -> std::thread::JoinHandle<()> {
+        for bridge in &work.bridges {
             bridge.stop();
         }
-        for service in &notebooks {
+        for service in &work.notebooks {
             service.stop_admission();
         }
         let runtime = self.runtime.clone();
         std::thread::spawn(move || {
+            if let Some(processes) = work.processes {
+                processes.kill();
+            }
+            if let Some(terminals) = work.terminals {
+                terminals.terminate();
+            }
+            let agents = (!work.agents.is_empty()).then(|| {
+                let agents = work.agents;
+                std::thread::spawn(move || {
+                    for manager in agents {
+                        manager.shutdown();
+                    }
+                })
+            });
             // Dropping the project stops its file watcher and index worker, which first finish the
             // batch they are applying (many file events while a build writes its output), so it
             // isn't done on the closing caller's thread (the UI thread for a window close).
-            let retired = retired.map(|project| std::thread::spawn(move || drop(project)));
+            let retired = work.retired.map(|project| std::thread::spawn(move || drop(project)));
             runtime.block_on(async move {
-                for bridge in bridges {
+                for bridge in work.bridges {
                     bridge.shutdown().await;
                 }
-                for service in notebooks {
+                for service in work.notebooks {
                     service.shutdown().await;
                 }
-                if let Some(lsp) = lsp {
+                if let Some(lsp) = work.lsp {
                     lsp.shutdown_all().await;
                 }
-                if let Some((debug, key, root)) = debug {
+                if let Some((debug, key, root)) = work.debug {
                     debug.stop_key(&key).await;
                     if let Some(root) = root {
                         debug.stop_under(&root).await;
                     }
                 }
             });
+            if let Some(agents) = agents {
+                let _ = agents.join();
+            }
             if let Some(retired) = retired {
                 let _ = retired.join();
             }
         })
     }
 
-    /// Waits for detached closes, so a project opened next never races the
-    /// language servers of one still shutting down (e.g. over a shared workspace).
+    /// Waits for every detached close to finish.
+    #[cfg(test)]
     pub(crate) fn wait_detached_closes(&self) {
         let pending: Vec<_> = self.closing.lock().drain(..).collect();
         for shutdown in pending {
-            self.wait_blocking(shutdown);
+            self.wait_blocking(shutdown.handle);
+        }
+    }
+
+    /// Waits only for detached closes whose root overlaps `root`, so opening an unrelated project
+    /// never blocks on another project's background shutdown.
+    pub(crate) fn wait_detached_closes_for(&self, root: &std::path::Path) {
+        let matching = {
+            let mut closing = self.closing.lock();
+            closing.retain(|entry| !entry.handle.is_finished());
+            let mut wait = Vec::new();
+            let mut keep = Vec::new();
+            for entry in closing.drain(..) {
+                if entry.root.as_deref().is_some_and(|other| roots_overlap(other, root)) {
+                    wait.push(entry.handle);
+                } else {
+                    keep.push(entry);
+                }
+            }
+            *closing = keep;
+            wait
+        };
+        for handle in matching {
+            self.wait_blocking(handle);
         }
     }
 
@@ -459,18 +555,23 @@ impl Host {
 
     /// Called before the desktop runtime exits, including update/restart exits, on
     /// the event-loop thread: waits for detached closes and the open projects'
-    /// kernels, but no longer than [`EXIT_SHUTDOWN_WAIT`], so a runtime worker
+    /// kernels and agents, but no longer than [`EXIT_SHUTDOWN_WAIT`], so a runtime worker
     /// stuck on the event loop cannot keep the process from exiting.
     pub fn shutdown_notebooks_on_exit(&self) {
         let projects = self.projects();
-        let mut pending: Vec<_> = self.closing.lock().drain(..).collect();
-        pending.push(self.spawn_project_shutdown(
-            projects.iter().map(|project| project.notebooks.clone()).collect(),
-            projects.iter().filter_map(|project| project.kotlin_bridge.clone()).collect(),
-            None,
-            None,
-            None,
-        ));
+        let mut pending: Vec<_> = self.closing.lock().drain(..).map(|entry| entry.handle).collect();
+        if !projects.is_empty() {
+            pending.push(self.spawn_project_shutdown(ShutdownWork {
+                notebooks: projects.iter().map(|project| project.notebooks.clone()).collect(),
+                bridges: projects.iter().filter_map(|project| project.kotlin_bridge.clone()).collect(),
+                lsp: None,
+                debug: None,
+                agents: projects.iter().map(|project| project.agents.clone()).collect(),
+                terminals: None,
+                processes: None,
+                retired: None,
+            }));
+        }
         let deadline = std::time::Instant::now() + EXIT_SHUTDOWN_WAIT;
         while pending.iter().any(|handle| !handle.is_finished()) {
             if std::time::Instant::now() >= deadline {
@@ -495,6 +596,7 @@ impl Host {
         for project in self.projects() {
             project.flutter.kill();
             project.devtools.kill();
+            project.widget_preview.kill();
         }
     }
 
@@ -505,6 +607,25 @@ impl Host {
         }
     }
 
+    /// Cleans up per-connection client state when a remote window disconnects from a
+    /// persistent daemon, leaving the project, index, language servers, terminals,
+    /// runs and agent sessions running.
+    pub fn client_disconnected(&self) {
+        let windows: Vec<String> = self.projects.read().keys().cloned().collect();
+        for window in &windows {
+            self.mcp_reports.forget_window(window);
+            self.mcp_requests.forget_window(window);
+            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+                self.cancel_request(request);
+            }
+        }
+        self.terminals.detach_output();
+        self.processes.detach_output();
+        for project in self.projects() {
+            project.documents.release_client_refs();
+        }
+    }
+
     /// Stops what this host started: heap snapshots, notebook kernels, language servers, agents,
     /// runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
@@ -512,13 +633,13 @@ impl Host {
         // A capture's dump may hold secrets from the debuggee's memory: delete it before exiting.
         ops::heap::shutdown(self).await;
         self.environment.shutdown();
-        self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
             project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
             project.flutter.kill();
             project.devtools.kill();
+            project.widget_preview.kill();
         }
         for project in &projects {
             project.plugin_diagnostics.close();
@@ -532,22 +653,33 @@ impl Host {
             project.notebooks.stop_admission();
             project.agents.shutdown();
         }
+        let stop_processes = async {
+            for project in &projects {
+                self.debugger.stop_under(&project.root).await;
+            }
+            self.processes.shutdown().await;
+        };
         // Kernel cleanup owns its interrupt/termination/reaping deadlines. An
         // outer LSP timeout must never abort it before owned children are reaped.
-        for project in &projects {
-            if let Some(bridge) = &project.kotlin_bridge {
-                bridge.shutdown().await;
+        let stop_kernels = async {
+            for project in &projects {
+                if let Some(bridge) = &project.kotlin_bridge {
+                    bridge.shutdown().await;
+                }
+                project.notebooks.shutdown().await;
             }
-            project.notebooks.shutdown().await;
-        }
+        };
         let stop_language_servers = async {
             for project in &projects {
                 project.lsp.shutdown_all().await;
             }
         };
-        if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
-            tracing::warn!("language servers did not shut down in time");
-        }
+        let stop_lsp = async {
+            if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
+                tracing::warn!("language servers did not shut down in time");
+            }
+        };
+        tokio::join!(stop_processes, stop_kernels, stop_lsp);
     }
 
     // ---- cancellable requests: the UI allocates ids, `cancel_request` cancels ----
@@ -622,17 +754,7 @@ mod tests {
         let root = base.join("project");
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = Arc::downgrade(&host.open_project("main", &root).unwrap());
         host.close_project_detached("main");
         assert!(host.project("main").is_err());

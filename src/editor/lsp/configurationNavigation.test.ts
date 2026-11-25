@@ -270,7 +270,9 @@ describe("configuration navigation result reuse", () => {
 
   it("bounds retained entries", async () => {
     const view = editor(1, "properties", Array.from({ length: 130 }, (_, i) => `key${i}=x\n`).join(""));
-    for (let i = 1; i <= 130; i++) await requestNavigation(view, view.state.doc.line(i).from, "definition");
+    await Promise.all(
+      Array.from({ length: 130 }, (_, i) => requestNavigation(view, view.state.doc.line(i + 1).from, "definition")),
+    );
     await requestNavigation(view, 0, "definition");
     expect(lspGoto).toHaveBeenCalledTimes(131);
   });

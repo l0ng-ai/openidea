@@ -408,6 +408,7 @@ export async function persistChanges(
   let error: string | null = null;
   for (const c of changes) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- writes are ordered, stop at the first failure, and each response replaces the shared project settings
       const settings = await deps.set(c.scope, c.key, JSON.stringify(c.value));
       useProject.setState({ settings });
       written.push(stageKey(c.scope, c.key));
@@ -455,6 +456,7 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
       if (current.stagedSecrets[id] !== secret) continue;
       try {
         if (config && config.auth !== "openSsh" && deps.backend) {
+          // oxlint-disable-next-line no-await-in-loop -- staged secrets are re-read from live state each iteration; the first failure stops the loop
           await deps.setSecret(id, secret, config.saveSecret);
         }
         useSettingsDialog.setState((s) => {
@@ -472,6 +474,7 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
     for (const [id, change] of external) {
       if (useSettingsDialog.getState().stagedExternal[id] !== change) continue;
       try {
+        // oxlint-disable-next-line no-await-in-loop -- each change rechecks live staged state and publishes its applied value before the next
         const value = await change.apply();
         useSettingsDialog.setState((s) => {
           const stagedExternal = { ...s.stagedExternal };

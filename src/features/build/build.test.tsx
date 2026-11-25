@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { executeAction, getAction, isActionEnabled } from "@/platform/actions";
-import { getContext, setContext } from "@/platform/context";
-import { bindingsFor } from "@/platform/keymap";
+import { clearContext, getContext, setContext } from "@/platform/context";
+import { bindingsFor, installKeyboardDispatcher } from "@/platform/keymap";
 import { IpcError, type BuildEvent, type BuildMessage, type BuildResult } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
   menuGroupItems,
+  onBuildCompleted,
   provideEditorService,
   provideNotificationService,
   provideToolWindowService,
   useContributions,
+  type BuildCompletedEvent,
   type EditorService,
   type NotificationService,
   type ToolWindowService,
@@ -32,6 +34,7 @@ import {
 } from "./model";
 import {
   BUILD_TASK_ID,
+  followLaunchBuild,
   rerunBuild,
   setBuildBackend,
   startBuild,
@@ -179,17 +182,33 @@ describe("build feature", () => {
     useProject.setState({ project: null, settings: null });
     setContext("projectOpen", false);
     setContext("run.cmakeBuild", null);
+    setContext("run.buildTarget", null);
+    setContext("run.buildTargetName", null);
+    setContext("run.selectedKind", "");
+    setContext("build.maven", false);
+    setContext("build.gradle", false);
+    clearContext("editorPath");
   });
 
   it("shows the CMake hammer and builds the selected target through the shared action", async () => {
     setContext("run.cmakeBuild", "cmake:release:hello:build");
+    setContext("run.buildTargetName", "hello [Release]");
     render(<BuildTitleItem />);
-    expect(screen.getByRole("button", { name: "Build Project" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Build Project" }));
+    const button = screen.getByRole("button", { name: "Build 'hello [Release]'" });
+    expect(button).toBeVisible();
+    fireEvent.click(button);
     await act(async () => {});
     expect(fake.calls.at(-1)).toMatchObject({ cmake: "cmake:release:hello:build" });
     await act(async () => {
       fake.resolve(result([], true));
+    });
+    // Rerun repeats the same CMake target.
+    const rerun = rerunBuild();
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ cmake: "cmake:release:hello:build" });
+    await act(async () => {
+      fake.resolve(result([], true));
+      await rerun;
     });
     const explicit = executeAction("build.buildProject", { cmake: "cmake:debug:other:build", activate: false });
     await act(async () => {});
@@ -200,13 +219,54 @@ describe("build feature", () => {
     });
   });
 
+  it("builds the selected run configuration's module from the toolbar hammer while Cmd+F9 builds the project", async () => {
+    setContext("run.buildTarget", "/p/fixtures/java-app");
+    setContext("run.buildTargetName", "App");
+    setContext("run.selectedKind", "application");
+    render(<BuildTitleItem />);
+    const button = screen.getByRole("button", { name: "Build 'App'" });
+    expect(button).toBeVisible();
+    fireEvent.click(button);
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toEqual({ kind: "build", file: "/p/fixtures/java-app", clear: [] });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+
+    // Build Project action keeps project-wide semantics (`file: null`).
+    const projectBuild = executeAction("build.buildProject");
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toEqual({ kind: "build", file: null, clear: [] });
+    await act(async () => {
+      fake.resolve(result([], true));
+      await projectBuild;
+    });
+  });
+
+  it("falls back to Build Project on the hammer when no module target is selected in a Maven project", async () => {
+    setContext("build.maven", true);
+    setContext("run.selectedKind", "");
+    render(<BuildTitleItem />);
+    const button = screen.getByRole("button", { name: "Build Project" });
+    expect(button).toBeVisible();
+    fireEvent.click(button);
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toEqual({ kind: "build", file: null, clear: [] });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+  });
+
   it("registers the Build menu actions, shortcuts and an on-use bottom tool window", () => {
     for (const id of ["build.buildProject", "build.buildModule", "build.rebuildProject", "build.buildArtifacts"]) {
       expect(getAction(id), id).toBeDefined();
       expect(isActionEnabled(getAction(id)!)).toBe(true);
     }
+    expect(getAction("build.compileFile")).toBeDefined();
+    expect(isActionEnabled(getAction("build.compileFile")!)).toBe(false);
     expect(bindingsFor("build.buildProject")).toContain("Meta+F9");
-    expect(bindingsFor("build.buildModule")).toContain("Meta+Shift+F9");
+    expect(bindingsFor("build.compileFile")).toContain("Meta+Shift+F9");
+    expect(bindingsFor("build.buildModule")).toEqual([]);
     const tw = useContributions.getState().toolWindows.get("build");
     expect(tw).toMatchObject({ anchor: "bottom", stripe: "onUse", icon: "toolwindow-build" });
     expect(menuGroupItems("projectView", { paths: ["/p/core"] })).toContainEqual({
@@ -262,6 +322,32 @@ describe("build feature", () => {
     });
     expect(notes.at(-1)).toMatchObject({ level: "info", title: "Build completed successfully in 3 s" });
     expect(show).toHaveBeenCalledTimes(3);
+  });
+
+  it("says how many earlier lines the console line cap discarded", async () => {
+    const run = startBuild("build");
+    await act(async () => {});
+    render(<BuildView />);
+    await act(async () => {
+      fake.emit!({ kind: "started", system: "maven", title: "demo" });
+      fake.emit!({ kind: "output", text: "line\n".repeat(MAX_CONSOLE_LINES + 5_000), stderr: false });
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(useBuildRun.getState().lines).toHaveLength(MAX_CONSOLE_LINES);
+    expect(screen.getByText("5,000 earlier lines were discarded")).toBeInTheDocument();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+
+    // The next build starts with an empty console and no notice.
+    const second = startBuild("build");
+    await act(async () => {});
+    expect(screen.queryByText(/earlier lines were discarded/)).not.toBeInTheDocument();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await second;
+    });
   });
 
   it.each([
@@ -565,6 +651,177 @@ describe("build feature", () => {
     } as unknown as EditorService);
     await executeAction("build.compileFile", { activate: false });
     expect(fake.calls.at(-1)).toMatchObject({ kind: "compileFile", file: "/p/core/src/A.java" });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+  });
+
+  it("publishes onBuildCompleted only when a build finishes successfully", async () => {
+    const events: BuildCompletedEvent[] = [];
+    const off = onBuildCompleted((e) => events.push(e));
+    try {
+      const single = startCompileFile("/p/core/src/A.java", true);
+      await act(async () => {});
+      fake.resolve(result([], true));
+      await single;
+      expect(events).toEqual([
+        { kind: "compileFile", file: "/p/core/src/A.java", system: "maven", userInitiated: true },
+      ]);
+
+      const failed = startCompileFile("/p/core/src/Broken.java", true);
+      await act(async () => {});
+      fake.resolve(result([err("/p/core/src/Broken.java", 3)], false));
+      await failed;
+      expect(events).toHaveLength(1);
+    } finally {
+      off();
+    }
+  });
+
+  it("gates Recompile to local Java files and offers context menu labels", () => {
+    const compileFile = getAction("build.compileFile")!;
+    let currentPath: string | null = "/p/core/src/A.java";
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => currentPath,
+    } as unknown as EditorService);
+    expect(isActionEnabled(compileFile)).toBe(true);
+
+    for (const nonTarget of [
+      "/p/core/pom.xml",
+      "jdt://contents/rt.jar/java/lang/String.class",
+      "untitled:Untitled-1.java",
+      null,
+    ]) {
+      currentPath = nonTarget;
+      expect(isActionEnabled(compileFile), String(nonTarget)).toBe(false);
+    }
+    expect(isActionEnabled(compileFile, getContext(), "/p/core/src/Explicit.java")).toBe(true);
+
+    for (const menu of ["editor", "editorTab", "projectView"] as const) {
+      expect(menuGroupItems(menu, { paths: ["/p/core/src/A.java"] })).toContainEqual({
+        kind: "action",
+        action: "build.compileFile",
+        arg: "/p/core/src/A.java",
+        label: "Recompile 'A.java'",
+      });
+      expect(
+        menuGroupItems(menu, { paths: ["jdt://contents/rt.jar/java/lang/String.java"] }).some(
+          (i) => i.kind === "action" && i.action === "build.compileFile",
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("dispatches Shift+Cmd+F9 to Recompile for the active Java file only", async () => {
+    let currentPath: string | null = "/p/core/src/OnlyThis.java";
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => currentPath,
+    } as unknown as EditorService);
+    const uninstall = installKeyboardDispatcher(window);
+    try {
+      fireEvent.keyDown(window, { code: "F9", key: "F9", metaKey: true, shiftKey: true });
+      await act(async () => {});
+      expect(fake.calls).toEqual([{ kind: "compileFile", file: "/p/core/src/OnlyThis.java", clear: [] }]);
+      expect(isActionEnabled(getAction("build.compileFile")!)).toBe(false);
+      await act(async () => {
+        fake.resolve(result([], true));
+      });
+
+      currentPath = "/p/core/pom.xml";
+      fireEvent.keyDown(window, { code: "F9", key: "F9", metaKey: true, shiftKey: true });
+      await act(async () => {});
+      expect(fake.calls).toHaveLength(1);
+    } finally {
+      uninstall();
+    }
+  });
+
+  it("streams single-file compile errors to BuildView and opens the first error", async () => {
+    const run = startCompileFile("/p/core/src/Broken.java");
+    await act(async () => {});
+    const messages = [err("/p/core/src/Broken.java", 7, "cannot find symbol")];
+    await act(async () => {
+      fake.emit!({ kind: "started", system: "javac", title: "Compile Broken.java" });
+      fake.emit!({ kind: "step", command: "javac -encoding UTF-8 Broken.java", cwd: "/p/core" });
+      fake.emit!({ kind: "output", text: "/p/core/src/Broken.java:8: error: cannot find symbol\n", stderr: true });
+      fake.emit!({ kind: "message", message: messages[0]! });
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    render(<BuildView />);
+    expect(screen.getByText("Compile Broken.java")).toBeInTheDocument();
+    await act(async () => {
+      fake.resolve({ ...result(messages, false), system: "javac", title: "Compile Broken.java" });
+      await run;
+    });
+    expect(useBuildRun.getState().status).toBe("failed");
+    expect(useBuildRun.getState().selected).toBe(firstError(messages)!.key);
+    expect(show).toHaveBeenCalledWith("build", false);
+    expect(openFile).toHaveBeenCalledWith(
+      "/p/core/src/Broken.java",
+      expect.objectContaining({ focus: true, selection: { line: 7, col: 4 } }),
+    );
+    expect(screen.getByRole("document", { name: "Build message" })).toHaveTextContent("cannot find symbol");
+  });
+
+  it("follows a launch's build: status bar progress, its commands in the console, its output in Build", async () => {
+    vi.useFakeTimers();
+    try {
+      const report = vi.fn();
+      const follower = followLaunchBuild(42 as never, "Build before launch: App", report);
+      follower.onEvent({ kind: "progress", message: "Resolving the module", fraction: null });
+      expect(useTasks.getState().tasks.find((t) => t.id === "launch-build:42")).toMatchObject({
+        title: "Build before launch: App",
+        message: "Resolving the module",
+      });
+      follower.onEvent({ kind: "started", system: "maven", title: "demo: build module 'app'" });
+      follower.onEvent({ kind: "step", command: "mvn -pl app -am compile", cwd: "/p" });
+      follower.onEvent({ kind: "output", text: "[INFO] Building app 1 [2/2]\n", stderr: false });
+      follower.onEvent({ kind: "progress", message: "Building app", fraction: 0.5 });
+      follower.onEvent({ kind: "message", message: err("/p/app/A.java", 3) });
+      vi.advanceTimersByTime(20);
+      expect(report).toHaveBeenCalledWith("mvn -pl app -am compile\n", "system");
+      expect(useTasks.getState().tasks.find((t) => t.id === "launch-build:42")).toMatchObject({
+        message: "Building app",
+        fraction: 0.5,
+      });
+      expect(useBuildRun.getState()).toMatchObject({
+        request: 42,
+        status: "running",
+        title: "demo: build module 'app'",
+      });
+      expect(useBuildRun.getState().lines.map((l) => l.text)).toEqual([
+        "mvn -pl app -am compile",
+        "[INFO] Building app 1 [2/2]",
+      ]);
+      // A launch build stays out of sight at start, as Build before launch does.
+      expect(show).not.toHaveBeenCalled();
+      // Cancel in the status bar cancels the launch's request.
+      useTasks.getState().tasks.find((t) => t.id === "launch-build:42")!.cancel!();
+      expect(fake.cancelled).toEqual([42]);
+      follower.finish("failed");
+      expect(useBuildRun.getState()).toMatchObject({ request: null, status: "failed" });
+      expect(getContext()["build.running"]).toBe(false);
+      expect(show).toHaveBeenCalledWith("build", false);
+      expect(openFile).toHaveBeenCalledWith("/p/app/A.java", expect.objectContaining({ focus: true }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the Build window to a build that is already running", async () => {
+    void startBuild("build");
+    await act(async () => {});
+    const running = useBuildRun.getState().request;
+    const follower = followLaunchBuild(43 as never, "Build before launch: App");
+    follower.onEvent({ kind: "started", system: "maven", title: "launch" });
+    follower.onEvent({ kind: "output", text: "launch output\n", stderr: false });
+    follower.finish("success");
+    expect(useBuildRun.getState().request).toBe(running);
+    expect(useBuildRun.getState().lines.some((l) => l.text === "launch output")).toBe(false);
     await act(async () => {
       fake.resolve(result([], true));
     });

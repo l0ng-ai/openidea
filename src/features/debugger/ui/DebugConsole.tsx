@@ -36,7 +36,7 @@ import {
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { findOutputLinks, type OutputLink } from "@/features/run/links";
-import { debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
+import { consoleLinkMenu, debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
@@ -81,6 +81,7 @@ const DebugLine = memo(
           const marked = seg.mark ? { "data-find-match": "", "data-find-current": seg.current ? "" : undefined } : {};
           return seg.link ? (
             <a
+              // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
               key={i}
               href={seg.link.kind === "url" ? seg.link.url : undefined}
               className={styles.link}
@@ -93,10 +94,12 @@ const DebugLine = memo(
               {seg.text}
             </a>
           ) : seg.mark ? (
+            // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
             <mark key={i} className={styles.findMatch} style={style} {...marked}>
               {seg.text}
             </mark>
           ) : (
+            // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
             <span key={i} style={style}>
               {seg.text}
             </span>
@@ -119,6 +122,8 @@ export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
 
 export function DebugConsole({ session, interactive = true }: { session: DebugSession; interactive?: boolean }) {
   const lines = useDebug((s) => s.console[session.id]);
+  const dropped = useDebug((s) => s.consoleDropped[session.id] ?? 0);
+  const count = dropped.toLocaleString();
   const scroller = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   // Scroll to End: follows new output; scrolling up turns it off, back to the end turns it on.
@@ -396,6 +401,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     e.preventDefault();
     const selection = selectedOutput();
     showContextMenu(e, [
+      ...consoleLinkMenu(e.target),
       {
         label: "Copy",
         icon: "copy",
@@ -447,6 +453,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
             onClose={closeFind}
           />
         )}
+        {dropped > 0 && <div className={styles.consoleNotice}>{tx`${count} earlier lines were discarded`}</div>}
         <div
           ref={scroller}
           className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}

@@ -778,6 +778,7 @@ function FindInFilesDialog() {
             }))}
             activeId={s.scopeTab}
             onSelect={(id) => selectScope(id as ScopeTab)}
+            keepFocusOnClick
           />
           <div className={styles.scopeDetail}>
             {s.scopeTab === "directory" && (
@@ -809,8 +810,10 @@ function FindInFilesDialog() {
                 options={modules.map((m) => ({
                   value: m.path,
                   label: m.name || m.path || "Project",
+                  verbatim: !!(m.name || m.path),
                   icon: "module",
                   detail: m.path || undefined,
+                  verbatimDetail: true,
                 }))}
                 onChange={(v) => set({ module: v })}
                 aria-label="Module"

@@ -175,6 +175,7 @@ export async function runBeforeLaunch(
     signal?.throwIfAborted();
     let error: string | null;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- tasks run in order; the first failure aborts the launch and cancellation is checked between tasks
       error = await runTask(task, config, chain, show, signal);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);

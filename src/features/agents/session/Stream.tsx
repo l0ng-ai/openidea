@@ -27,6 +27,7 @@ import {
   type RefObject,
 } from "react";
 import { useAgentSettings } from "../agentSettings";
+import { clampSelectionToRow } from "./clampSelection";
 import { ImageStrip } from "../ImageStrip";
 import {
   entriesKey,
@@ -41,18 +42,12 @@ import {
 import { selectionIn } from "../selection";
 import styles from "../Session.module.css";
 import { useAgents } from "../store";
-import { foldedTurns, thoughtDurations } from "../timeline";
-import {
-  conversationRows,
-  foldTurnRows,
-  isProcessEntry,
-  type ConversationRow,
-  type EntryRow,
-} from "./conversationRows";
+import { thoughtDurations } from "../timeline";
+import { conversationRows, isProcessEntry, rowEntries, type ConversationRow, type EntryRow } from "./conversationRows";
 import { FindBar } from "./FindBar";
 import { KeepFoldHeader, OpenFolds } from "./Folds";
 import { Entry } from "./messages";
-import { ProcessRun, RowRenderer, TurnFold } from "./ProcessRows";
+import { ProcessRun } from "./ProcessRows";
 import { type QuestionAnswer } from "./QuestionForm";
 import { providerName } from "./shared";
 import { WorkingRow } from "./WorkingRow";
@@ -131,6 +126,14 @@ function useOffscreenRows(
     mark();
     const rows = new MutationObserver(mark);
     rows.observe(el, { childList: true });
+    // Earlier rows load in front of the first one shown, which then loses its author header while
+    // it may be off-screen: lay it out again, or it keeps the height it had with the header.
+    const authors = new MutationObserver((records) => {
+      for (const { target } of records)
+        if (target.parentNode === el) (target as Element).removeAttribute("data-measured");
+      mark();
+    });
+    authors.observe(el, { subtree: true, attributes: true, attributeFilter: ["data-author"] });
     const resize = new ResizeObserver(() => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
@@ -143,6 +146,7 @@ function useOffscreenRows(
       cancelAnimationFrame(frame);
       window.clearTimeout(timer);
       rows.disconnect();
+      authors.disconnect();
       resize.disconnect();
     };
   }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
@@ -153,9 +157,7 @@ function useOffscreenRows(
 
 /** Images remain visible beside the work's folded summary, without duplicating them when it opens. */
 function toolImages(row: ConversationRow): AgentImage[] {
-  if (row.kind === "turn") return row.rows.flatMap(toolImages);
-  const entries = row.kind === "process" ? row.entries.map(({ entry }) => entry) : [row.entry];
-  return entries.flatMap((entry) => (entry.type === "tool" ? (entry.images ?? []) : []));
+  return rowEntries(row).flatMap((entry) => (entry.type === "tool" ? (entry.images ?? []) : []));
 }
 
 interface StreamProps {
@@ -176,6 +178,8 @@ interface StreamProps {
 
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
+/** How long a conversation stays behind other tabs before it drops the entries painted above its tail. */
+const HIDDEN_TRIM_MS = 30_000;
 
 function scrollsY(el: Element): boolean {
   if (el.scrollHeight - el.clientHeight <= 1) return false;
@@ -202,6 +206,12 @@ function scrollsUpInside(target: EventTarget | null, root: HTMLElement): boolean
 /** A wheel gesture's events arrive closer together than this; a pause starts a new one. */
 const WHEEL_GESTURE_MS = 150;
 
+/** Keeps a double- or triple-click selection within the message it was made in. */
+function clampMultiClick(target: EventTarget) {
+  const row = target instanceof Element ? target.closest(`.${styles.conversationRow}`) : null;
+  if (row) clampSelectionToRow(document.getSelection(), row);
+}
+
 export function Stream({
   loadError,
   task,
@@ -215,6 +225,8 @@ export function Stream({
   drafts,
 }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
+  // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
+  const visible = useEditorShown();
   useSelectionBoundary(ref);
   const [openFolds] = useState(() => new Map<string, boolean>());
   const key = entriesKey(task.id, subagent?.id ?? null);
@@ -268,11 +280,11 @@ export function Stream({
   const anchor = useRef<{ el: Element; top: number } | null>(null);
   const loadEarlier = useCallback(() => {
     const el = ref.current;
-    if (!el || start <= 0 || dragging.current || anchor.current) return;
+    if (!visible || !el || start <= 0 || dragging.current || anchor.current) return;
     const first = el.firstElementChild;
     if (!position.current.stick && first) anchor.current = { el: first, top: first.getBoundingClientRect().top };
     startTransition(() => setShown((n) => n + ENTRY_BATCH));
-  }, [start]);
+  }, [start, visible]);
   const loadTimer = useRef<number | null>(null);
   /** Load the next batch once the user stops scrolling near the top. */
   const loadWhenStill = useCallback(() => {
@@ -308,13 +320,30 @@ export function Stream({
   useEffect(() => {
     // Following the end, paint the rest in the background. A user who scrolled away
     // gets them only after stopping near the top (`loadWhenStill`), so the scrollbar
-    // is not resized mid-drag.
-    if (start > 0 && position.current.stick && !dragging.current)
+    // is not resized mid-drag. A hidden tab paints nothing more.
+    if (visible && start > 0 && position.current.stick && !dragging.current)
       startTransition(() => setShown((n) => n + ENTRY_BATCH));
-  }, [start]);
-  // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
-  const visible = useEditorShown();
-  const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
+  }, [start, visible]);
+  useEffect(() => {
+    // A conversation read to its end gives back the history painted above its recent entries
+    // once it stays behind other tabs: a few kept-alive tabs would otherwise hold every turn
+    // as DOM. One scrolled away keeps them, its offset needs the rows above.
+    if (visible) return;
+    const timer = window.setTimeout(() => {
+      const stream = ref.current;
+      if (!stream || !position.current.stick) return;
+      // A row can still hold an unsent edit or a selection after scrolling to the end.
+      if (
+        stream.querySelector(`.${styles.editMessage}`) ||
+        stream.contains(stream.ownerDocument.activeElement) ||
+        selectionIn(stream)
+      )
+        return;
+      setShown(ENTRY_BATCH);
+    }, HIDDEN_TRIM_MS);
+    return () => window.clearTimeout(timer);
+  }, [visible]);
+  const { toolCalls, fitWindowWidth } = useAgentSettings();
   useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
   /**
    * Blank space after the conversation that lets a section folded near the end keep its header
@@ -477,9 +506,8 @@ export function Stream({
   // Keep the row stable when earlier history is prepended; its author can move with the work.
   const rows = useMemo(() => {
     if (!entries) return [];
-    const rows = conversationRows(entries, start, toolCalls === "grouped");
-    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start, busy)) : rows;
-  }, [entries, start, busy, foldTurns, toolCalls, finding]);
+    return conversationRows(entries, start, toolCalls === "grouped");
+  }, [entries, start, toolCalls]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
     const byAgent = (row: ConversationRow) =>
@@ -512,21 +540,57 @@ export function Stream({
     ),
     [task, turns, replies, times, thinking, lastIndex, busy, drafts, onOpenSubagent, onDiagramDrawn],
   );
-  const renderConversationRow = (row: ConversationRow): ReactNode =>
-    row.kind === "turn" ? (
-      <TurnFold row={row} />
-    ) : row.kind === "process" ? (
-      <ProcessRun
-        row={row}
-        task={task}
-        lastIndex={lastIndex}
-        busy={busy}
-        thinking={thinking}
-        onDiagramDrawn={onDiagramDrawn}
-      />
-    ) : (
-      renderRow(row)
-    );
+  const renderConversationRow = useCallback(
+    (row: ConversationRow): ReactNode =>
+      row.kind === "process" ? (
+        <ProcessRun
+          row={row}
+          task={task}
+          lastIndex={lastIndex}
+          busy={busy}
+          thinking={thinking}
+          onDiagramDrawn={onDiagramDrawn}
+        />
+      ) : (
+        renderRow(row)
+      ),
+    [task, lastIndex, busy, thinking, onDiagramDrawn, renderRow],
+  );
+  const agentName = providerName(task.provider);
+  // Switching tabs changes visibility without changing the conversation rows.
+  const renderedRows = useMemo(
+    () =>
+      rows.map((row) => {
+        const images = toolImages(row);
+        return (
+          <div
+            key={row.index}
+            className={styles.conversationRow}
+            data-message={
+              (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+            }
+            data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+            data-author={authorHeaders.has(row.index) || undefined}
+          >
+            {authorHeaders.has(row.index) && (
+              <div className={styles.agentAuthor}>
+                <div className={styles.role}>
+                  <Icon name={providerIcon(task.provider)} size={13} />
+                  <span>{agentName}</span>
+                </div>
+              </div>
+            )}
+            {renderConversationRow(row)}
+            {images.length > 0 && (
+              <div className={styles.toolImages}>
+                <ImageStrip images={images} />
+              </div>
+            )}
+          </div>
+        );
+      }),
+    [rows, authorHeaders, task.provider, agentName, renderConversationRow],
+  );
   return (
     <OpenFolds.Provider value={openFolds}>
       <KeepFoldHeader.Provider value={keepFoldHeader}>
@@ -563,6 +627,13 @@ export function Stream({
             onPointerDown={() => {
               markUserScroll();
               scrollingUp.current = false;
+            }}
+            onMouseDown={(e) => {
+              // WebKit makes a double- or triple-click selection after this handler.
+              if (e.detail >= 2) setTimeout(() => clampMultiClick(e.target));
+            }}
+            onMouseUp={(e) => {
+              if (e.detail >= 2) clampMultiClick(e.target);
             }}
             onScroll={(e) => {
               const el = e.currentTarget;
@@ -630,37 +701,7 @@ export function Stream({
             ) : entries.length === 0 && !busy && !loadError ? (
               <EmptyState title="No conversation history" />
             ) : (
-              <RowRenderer.Provider value={renderConversationRow}>
-                {rows.map((row) => {
-                  const images = toolImages(row);
-                  return (
-                    <div
-                      key={row.index}
-                      className={styles.conversationRow}
-                      data-message={
-                        (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-                      }
-                      data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-                      data-author={authorHeaders.has(row.index) || undefined}
-                    >
-                      {authorHeaders.has(row.index) && (
-                        <div className={styles.agentAuthor}>
-                          <div className={styles.role}>
-                            <Icon name={providerIcon(task.provider)} size={13} />
-                            <span>{providerName(task.provider)}</span>
-                          </div>
-                        </div>
-                      )}
-                      {renderConversationRow(row)}
-                      {images.length > 0 && (
-                        <div className={styles.toolImages}>
-                          <ImageStrip images={images} />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </RowRenderer.Provider>
+              renderedRows
             )}
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>

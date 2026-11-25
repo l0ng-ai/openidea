@@ -11,7 +11,6 @@
   color: var(--fg-secondary);
   font: inherit;
   white-space: nowrap;
-  cursor: pointer;
   transition: background var(--dur-fast) var(--ease);
 }
 
@@ -68,12 +67,11 @@
 .resetBtn {
   padding: 2px 6px;
   border: 0;
-  border-radius: var(--radius-small, 3px);
+  border-radius: var(--radius-small);
   background: transparent;
   color: var(--link);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 
 .resetBtn:hover {
@@ -130,7 +128,7 @@
 }
 
 .name {
-  font-weight: 500;
+  font-weight: 600;
   color: var(--fg-strong);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -150,16 +148,14 @@
   align-items: center;
   height: 16px;
   padding: 0 5px;
-  border-radius: var(--radius-small, 3px);
+  border-radius: var(--radius-small);
   background: var(--bg-floating-toolbar);
   color: var(--fg-secondary);
-  font-size: 10px;
-  font-weight: 500;
+  font-size: var(--fs-tiny);
 }
 
 .pillSession {
-  background: color-mix(in srgb, var(--accent) 20%, var(--bg-elev));
-  color: var(--link);
+  color: var(--fg-strong);
 }
 
 .rowControls {
@@ -191,13 +187,12 @@
 .inlineLink {
   padding: 2px 6px;
   border: 0;
-  border-radius: var(--radius-small, 3px);
+  border-radius: var(--radius-small);
   background: var(--bg-elev);
   box-shadow: inset 0 0 0 1px var(--border-button);
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-tiny);
-  cursor: pointer;
 }
 
 .inlineLink:hover {

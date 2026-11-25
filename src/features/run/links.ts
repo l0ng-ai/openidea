@@ -40,108 +40,275 @@ export type OutputLink =
   | { kind: "url"; start: number; end: number; url: string }
   | { kind: "file"; start: number; end: number; target: FileTarget };
 
-interface Pattern {
-  re: RegExp;
-  /** Builds the link from a match; `start`/`end` are relative to the whole line. */
-  build: (m: RegExpMatchArray) => OutputLink | null;
-}
-
 const num = (s: string | undefined) => (s ? Number(s) : undefined);
 
-/** Index of capture group `g` within the line (requires the `d` flag). */
-function groupRange(m: RegExpMatchArray, g: number): [number, number] {
-  const r = (m as RegExpMatchArray & { indices?: Array<[number, number] | undefined> }).indices?.[g];
-  if (r) return r;
-  const start = m.index! + m[0].indexOf(m[g]!);
-  return [start, start + m[g]!.length];
+// All link matchers anchor on a fixed delimiter or bounded suffix so scanning
+// stays strictly linear even on multi-kilobyte lines with no matches.
+const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/g;
+const PYTHON_RE = /File "([^"]+)", line (\d+)/g;
+const JVM_FRAME_RE = /\(([\w$.-]+\.(?:java|kt|kts|scala|groovy|clj)):(\d+)\)/g;
+const NODE_SUFFIX_RE = /(\.[A-Za-z]\w{0,9}):(\d+):(\d+)/g;
+const GENERIC_SUFFIX_RE = /(\.[A-Za-z]\w{0,9})(?::\[?(\d+)(?::(\d+)|,(\d+)\])?|\((\d+)(?:,(\d+))?\))/g;
+
+function isWord(c: number): boolean {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
 }
 
-const PATH = String.raw`(?:[A-Za-z]:[\\/]|~?\/|\.{1,2}\/)?(?:[\w.@+\-]+[\\/])*[\w@+\-][\w.@+\-]*\.[A-Za-z][\w]{0,9}`;
+function isAsciiLetter(c: number): boolean {
+  return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+}
 
-const PATTERNS: Pattern[] = [
-  // Python: File "app/main.py", line 12, in <module>
-  {
-    re: /File "([^"]+)", line (\d+)/dg,
-    build: (m) => {
-      const [start, end] = [m.index!, m.index! + m[0].length];
-      return { kind: "file", start, end, target: { path: m[1]!, line: num(m[2]), resolve: "path" } };
-    },
-  },
-  // JVM: at com.acme.OrderController.list(OrderController.kt:22)
-  {
-    re: /(?:([\w$]+(?:\.[\w$]+)*)\.[\w$<>-]+)?\(([\w$.-]+\.(?:java|kt|kts|scala|groovy|clj)):(\d+)\)/dg,
-    build: (m) => {
-      const [start] = groupRange(m, 2);
-      const [, end] = groupRange(m, 3);
-      return { kind: "file", start, end, target: jvmFrameTarget(m[1], m[2]!, num(m[3])) };
-    },
-  },
-  // JS / Node: at foo (src/a.ts:3:7) · at file:///abs/a.mjs:3:7 · at /abs/a.js:3:7
-  {
-    re: new RegExp(String.raw`(?:file:\/\/)?(${PATH}):(\d+):(\d+)`, "dg"),
-    build: (m) => {
-      const [start, end] = [m.index!, m.index! + m[0].length];
-      return {
-        kind: "file",
-        start,
-        end,
-        target: { path: m[1]!, line: num(m[2]), col: num(m[3]), resolve: "path" },
-      };
-    },
-  },
-  // Generic `path:line` (Go `file.go:12`, Rust `--> src/main.rs:10`, gcc, eslint…),
-  // `path(line,col)` (tsc) and Maven's `path:[line,col]` (`[ERROR] /p/A.java:[12,5] msg`).
-  {
-    re: new RegExp(String.raw`(${PATH})(?::\[?(\d+)(?::(\d+)|,(\d+)\])?|\((\d+)(?:,(\d+))?\))`, "dg"),
-    build: (m) => {
-      if (m.index! > 0 && /[\w/.~-]/.test(m.input![m.index! - 1]!)) return null;
-      const [start, end] = [m.index!, m.index! + m[0].length];
-      return {
-        kind: "file",
-        start,
-        end,
-        target: { path: m[1]!, line: num(m[2] ?? m[5]), col: num(m[3] ?? m[4] ?? m[6]), resolve: "path" },
-      };
-    },
-  },
-];
+function isSlash(c: number): boolean {
+  return c === 47 || c === 92;
+}
 
-const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/g;
+function isJvmClassChar(c: number): boolean {
+  return isWord(c) || c === 36;
+}
+
+function isJvmMethodChar(c: number): boolean {
+  return isWord(c) || c === 36 || c === 60 || c === 62 || c === 45;
+}
+
+function isPathSegChar(c: number): boolean {
+  return isWord(c) || c === 46 || c === 64 || c === 43 || c === 45;
+}
+
+function isGenericBoundaryBlock(c: number): boolean {
+  return isWord(c) || c === 47 || c === 46 || c === 126 || c === 45;
+}
+
+/** Extracts `com.acme.Foo` from `…com.acme.Foo.bar(` immediately before `parenIdx`. */
+function jvmClassBefore(text: string, parenIdx: number): string | undefined {
+  let methodStart = parenIdx;
+  while (methodStart > 0 && isJvmMethodChar(text.charCodeAt(methodStart - 1))) methodStart--;
+  if (methodStart === parenIdx || methodStart === 0 || text.charCodeAt(methodStart - 1) !== 46) return undefined;
+  const dotIdx = methodStart - 1;
+  let pos = dotIdx;
+  let classStart = dotIdx;
+  for (;;) {
+    let i = pos;
+    while (i > 0 && isJvmClassChar(text.charCodeAt(i - 1))) i--;
+    if (i === pos) break;
+    classStart = i;
+    if (i > 0 && text.charCodeAt(i - 1) === 46) pos = i - 1;
+    else break;
+  }
+  return classStart < dotIdx ? text.slice(classStart, dotIdx) : undefined;
+}
+
+/**
+ * Finds the leftmost start index (>= `minStart`) of a valid path ending at `dotIdx`,
+ * matching `(?:[A-Za-z]:[\\/]|~?\/|\.{1,2}\/)?(?:[\w.@+\-]+[\\/])*[\w@+\-][\w.@+\-]*`,
+ * or -1 if no valid stem precedes `dotIdx`.
+ */
+function findPathStart(text: string, dotIdx: number, minStart: number): number {
+  let segStart = dotIdx;
+  while (segStart > minStart && isPathSegChar(text.charCodeAt(segStart - 1))) segStart--;
+  if (segStart === dotIdx) return -1;
+  if (text.charCodeAt(segStart) === 46) {
+    let stemStart = segStart + 1;
+    while (stemStart < dotIdx && text.charCodeAt(stemStart) === 46) stemStart++;
+    return stemStart < dotIdx ? stemStart : -1;
+  }
+  let pos = segStart;
+  while (pos > minStart && isSlash(text.charCodeAt(pos - 1))) {
+    const slashIdx = pos - 1;
+    let seg = slashIdx;
+    while (seg > minStart && isPathSegChar(text.charCodeAt(seg - 1))) seg--;
+    if (seg < slashIdx) {
+      pos = seg;
+      continue;
+    }
+    if (
+      slashIdx - 2 >= minStart &&
+      text.charCodeAt(slashIdx - 1) === 58 &&
+      isAsciiLetter(text.charCodeAt(slashIdx - 2))
+    ) {
+      pos = slashIdx - 2;
+    } else if (text.charCodeAt(slashIdx) === 47) {
+      pos = slashIdx - 1 >= minStart && text.charCodeAt(slashIdx - 1) === 126 ? slashIdx - 1 : slashIdx;
+    }
+    break;
+  }
+  return pos;
+}
 
 function trimUrl(url: string): string {
-  let out = url;
-  for (;;) {
-    const last = out[out.length - 1];
-    if (!last) return out;
-    if (".,;:!?'\"".includes(last)) {
-      out = out.slice(0, -1);
-      continue;
-    }
-    if (last === ")" && out.split("(").length < out.split(")").length) {
-      out = out.slice(0, -1);
-      continue;
-    }
-    return out;
+  let end = url.length;
+  let open = 0;
+  let close = 0;
+  for (let i = 0; i < end; i++) {
+    const c = url.charCodeAt(i);
+    if (c === 40) open++;
+    else if (c === 41) close++;
   }
+  while (end > 0) {
+    const last = url[end - 1]!;
+    if (".,;:!?'\"".includes(last)) {
+      end--;
+      continue;
+    }
+    if (last === ")" && open < close) {
+      close--;
+      end--;
+      continue;
+    }
+    break;
+  }
+  return end === url.length ? url : url.slice(0, end);
+}
+
+/** Merges sorted non-overlapping `added` links into sorted non-overlapping `existing` links. */
+function mergeLinks(existing: OutputLink[], added: OutputLink[]): OutputLink[] {
+  if (added.length === 0) return existing;
+  if (existing.length === 0) return added;
+  const out: OutputLink[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < existing.length && j < added.length) {
+    if (existing[i]!.start <= added[j]!.start) out.push(existing[i++]!);
+    else out.push(added[j++]!);
+  }
+  while (i < existing.length) out.push(existing[i++]!);
+  while (j < added.length) out.push(added[j++]!);
+  return out;
+}
+
+/** Linear overlap filter for sorted candidate links against sorted `existing` links. */
+function makeOverlapFilter(existing: readonly OutputLink[]): (s: number, e: number) => boolean {
+  if (existing.length === 0) return () => true;
+  let cursor = 0;
+  return (s: number, e: number) => {
+    while (cursor < existing.length && existing[cursor]!.end <= s) cursor++;
+    return cursor >= existing.length || existing[cursor]!.start >= e;
+  };
 }
 
 /** Finds non-overlapping links in `text`; earlier (more specific) patterns win. */
 export function findOutputLinks(text: string): OutputLink[] {
+  // Lifting this limit made streaming wide rows full of links drop frames in WebKit.
   if (text.length > 4000) return [];
-  const links: OutputLink[] = [];
-  const free = (s: number, e: number) => !links.some((l) => s < l.end && e > l.start);
-  for (const m of text.matchAll(URL_RE)) {
-    const url = trimUrl(m[0]);
-    links.push({ kind: "url", start: m.index, end: m.index + url.length, url });
-  }
-  for (const p of PATTERNS) {
-    p.re.lastIndex = 0;
-    for (const m of text.matchAll(p.re)) {
-      const link = p.build(m);
-      if (link && free(link.start, link.end)) links.push(link);
+  const hasColon = text.includes(":");
+  const hasParen = text.includes("(");
+  const hasDot = text.includes(".");
+  const hasPython = text.includes('File "');
+  if (!hasColon && !hasParen && !hasPython) return [];
+
+  let links: OutputLink[] = [];
+
+  if (hasColon && text.includes("://")) {
+    URL_RE.lastIndex = 0;
+    for (let m = URL_RE.exec(text); m; m = URL_RE.exec(text)) {
+      const url = trimUrl(m[0]);
+      links.push({ kind: "url", start: m.index, end: m.index + url.length, url });
     }
   }
-  return links.sort((a, b) => a.start - b.start);
+
+  if (hasPython) {
+    const free = makeOverlapFilter(links);
+    const added: OutputLink[] = [];
+    PYTHON_RE.lastIndex = 0;
+    for (let m = PYTHON_RE.exec(text); m; m = PYTHON_RE.exec(text)) {
+      const start = m.index;
+      const end = start + m[0].length;
+      if (free(start, end)) {
+        added.push({ kind: "file", start, end, target: { path: m[1]!, line: num(m[2]), resolve: "path" } });
+      }
+    }
+    links = mergeLinks(links, added);
+  }
+
+  if (hasParen && hasColon && hasDot) {
+    const free = makeOverlapFilter(links);
+    const added: OutputLink[] = [];
+    JVM_FRAME_RE.lastIndex = 0;
+    for (let m = JVM_FRAME_RE.exec(text); m; m = JVM_FRAME_RE.exec(text)) {
+      const parenIdx = m.index;
+      const file = m[1]!;
+      const lineStr = m[2]!;
+      const start = parenIdx + 1;
+      const end = start + file.length + 1 + lineStr.length;
+      if (free(start, end)) {
+        added.push({
+          kind: "file",
+          start,
+          end,
+          target: jvmFrameTarget(jvmClassBefore(text, parenIdx), file, num(lineStr)),
+        });
+      }
+    }
+    links = mergeLinks(links, added);
+  }
+
+  if (hasColon && hasDot) {
+    const free = makeOverlapFilter(links);
+    const added: OutputLink[] = [];
+    NODE_SUFFIX_RE.lastIndex = 0;
+    let minStart = 0;
+    for (let m = NODE_SUFFIX_RE.exec(text); m; m = NODE_SUFFIX_RE.exec(text)) {
+      const dotIdx = m.index;
+      const extEnd = dotIdx + m[1]!.length;
+      const end = dotIdx + m[0].length;
+      const pathStart = findPathStart(text, dotIdx, minStart);
+      if (pathStart < 0) continue;
+      let start = pathStart;
+      let filePathStart = pathStart;
+      if (pathStart >= minStart + 7 && text.startsWith("file://", pathStart - 7)) {
+        start = pathStart - 7;
+      } else if (
+        text.charCodeAt(pathStart) === 47 &&
+        pathStart + 1 < dotIdx &&
+        pathStart >= minStart + 6 &&
+        text.startsWith("file://", pathStart - 6)
+      ) {
+        start = pathStart - 6;
+        filePathStart = pathStart + 1;
+      }
+      minStart = end;
+      if (free(start, end)) {
+        added.push({
+          kind: "file",
+          start,
+          end,
+          target: { path: text.slice(filePathStart, extEnd), line: num(m[2]), col: num(m[3]), resolve: "path" },
+        });
+      }
+    }
+    links = mergeLinks(links, added);
+  }
+
+  if (hasDot && (hasColon || hasParen)) {
+    const free = makeOverlapFilter(links);
+    const added: OutputLink[] = [];
+    GENERIC_SUFFIX_RE.lastIndex = 0;
+    let minStart = 0;
+    for (let m = GENERIC_SUFFIX_RE.exec(text); m; m = GENERIC_SUFFIX_RE.exec(text)) {
+      const dotIdx = m.index;
+      const extEnd = dotIdx + m[1]!.length;
+      const end = dotIdx + m[0].length;
+      const pathStart = findPathStart(text, dotIdx, minStart);
+      if (pathStart < 0) continue;
+      minStart = end;
+      if (pathStart > 0 && isGenericBoundaryBlock(text.charCodeAt(pathStart - 1))) continue;
+      if (free(pathStart, end)) {
+        added.push({
+          kind: "file",
+          start: pathStart,
+          end,
+          target: {
+            path: text.slice(pathStart, extEnd),
+            line: num(m[2] ?? m[5]),
+            col: num(m[3] ?? m[4] ?? m[6]),
+            resolve: "path",
+          },
+        });
+      }
+    }
+    links = mergeLinks(links, added);
+  }
+
+  return links;
 }
 
 /** Joins `path` onto `base` (POSIX), normalising `.`/`..`. Absolute paths are kept. */

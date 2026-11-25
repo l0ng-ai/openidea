@@ -1238,11 +1238,22 @@ fn flutter_flavors_entry_points_arguments_and_envs() {
     assert_eq!(c.kind, "flutter");
     assert_eq!(
         c.args,
-        s(&["run", "-t", "lib/main_dev.dart", "--dart-define=API=https://dev.example", "--verbose", "--flavor=dev"])
+        s(&["run", "-t", "lib/main_dev.dart", "--flavor=dev", "--dart-define=API=https://dev.example", "--verbose"])
     );
     assert_eq!(cwd(c), Some(PathBuf::from("app")));
     assert_eq!(c.env, BTreeMap::from([("FLUTTER_LOG".into(), "1".into())]));
-    assert_eq!(ignored(&r, "Dev"), ["attachArgs"]);
+    // The Flutter form's fields, Additional attach args among them.
+    let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    assert_eq!(
+        c.extras.params,
+        params(&[
+            ("entry", "lib/main_dev.dart"),
+            ("flavor", "dev"),
+            ("arguments", r#"--dart-define=API="https://dev.example" --verbose"#),
+            ("attachArgs", "--debug-port 9000"),
+        ])
+    );
+    assert!(ignored(&r, "Dev").is_empty());
     assert_eq!(reason(&r, "Gone"), &SkipReason::MissingFile { file: "pubspec.yaml".into() });
     assert_eq!(reason(&r, "No entry"), &SkipReason::NothingToRun);
 }

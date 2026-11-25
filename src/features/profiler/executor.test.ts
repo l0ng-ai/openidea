@@ -103,6 +103,7 @@ describe("profiler executors", () => {
 
   it("prepare sends the executor's mode", async () => {
     for (const mode of ["cpu", "allocations", "liveObjects"] as const) {
+      // oxlint-disable-next-line no-await-in-loop -- each iteration asserts the last prepare call for its mode before the next mode runs.
       await profilerExecutor(mode).prepare(config);
       expect(ipc.prepare).toHaveBeenLastCalledWith(config, mode);
     }

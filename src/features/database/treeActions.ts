@@ -48,6 +48,7 @@ import {
   removeSource,
 } from "./store";
 import { tableInput } from "./tableInput";
+import { DIAGRAM_TABLE_LIMIT, diagramInput, type DiagramData, type DiagramTable } from "./erDiagram";
 import { dumpScope, mysqlDumpScope } from "./dumpTools";
 import { tx } from "@/platform/i18n";
 import { chooseItem } from "@/workbench/inputDialogs";
@@ -105,6 +106,58 @@ async function tablesIn(id: string, schema: string): Promise<DbTableInfo[]> {
   return l?.status === "ok" ? l.value : [];
 }
 
+/** The nodes an action on `arg` runs on: the tree's selection when `arg` is part of it. */
+function nodesFrom(arg: unknown): DbNode[] {
+  const { selectedNodes } = useDatabase.getState();
+  if (!isNode(arg)) return selectedNodes;
+  return selectedNodes.some((n) => n.key === arg.key) ? selectedNodes : [arg];
+}
+
+/**
+ * Diagrams › Show Diagram (in a tab) and Show Diagram Popup: the selected
+ * tables and views, and the tables of selected schemas and table folders.
+ */
+async function showDiagram(nodes: DbNode[], popup: boolean): Promise<void> {
+  const refs = new Map<string, { id: string; schema: string; name: string }>();
+  const add = (id: string, schema: string, name: string) =>
+    refs.set(detailsKey(id, schema, name), { id, schema, name });
+  for (const n of nodes) {
+    if (n.kind === "table") add(n.id, n.schema, n.table.name);
+    else if (
+      n.kind === "schema" ||
+      (n.kind === "folder" && ["tables", "views", "materializedViews"].includes(n.folder))
+    )
+      // oxlint-disable-next-line no-await-in-loop -- one schema at a time: its tables load over the same connection
+      for (const t of await tablesIn(n.id, n.schema))
+        if (n.kind === "schema" ? t.kind === "table" : tableFolder(t.kind) === n.folder) add(n.id, n.schema, t.name);
+  }
+  const all = [...refs.values()];
+  if (!all.length) return;
+  const shown = all.slice(0, DIAGRAM_TABLE_LIMIT);
+  const missing = shown.filter(
+    (t) => useDatabase.getState().details[detailsKey(t.id, t.schema, t.name)]?.status !== "ok",
+  );
+  await Promise.all(missing.map((t) => loadDetails(t.id, t.schema, t.name)));
+  const { details } = useDatabase.getState();
+  const tables = shown.flatMap((t): DiagramTable[] => {
+    const d = details[detailsKey(t.id, t.schema, t.name)];
+    return d?.status === "ok" ? [{ ...t, details: d.value }] : [];
+  });
+  if (!tables.length) return;
+  const [limit, total] = [tables.length, all.length];
+  if (total > limit)
+    notifications().notify({
+      level: "info",
+      title: tx`Showing the first ${limit} of ${total} tables in the diagram`,
+      key: "db-diagram-limit",
+    });
+  const one = nodes.length === 1 ? nodes[0]! : null;
+  const title = one?.kind === "table" ? one.table.name : one && "schema" in one ? one.schema : tx("Diagram");
+  const data: DiagramData = { title, tables };
+  if (popup) openDialog({ kind: "diagram", data });
+  else void editorService().openInput(diagramInput(data), { focus: true });
+}
+
 /**
  * Connects to `target` before a dump / restore dialog opens (a password prompt would replace
  * the dialog) and reads the server's version; `undefined` when the user cancelled.
@@ -146,6 +199,7 @@ async function ddlOf(n: DbNode): Promise<{ id: string; text: string } | null> {
     }
     const parts: string[] = [];
     for (const schema of schemas) {
+      // oxlint-disable-next-line no-await-in-loop -- schemas load in turn so cancellation is checked after each schema and DDL stays grouped by schema
       const tables = (await tablesIn(id, schema)).filter(
         (t) => n.kind !== "folder" || tableFolder(t.kind) === n.folder,
       );
@@ -153,6 +207,7 @@ async function ddlOf(n: DbNode): Promise<{ id: string; text: string } | null> {
       // Tables before views: views select from them.
       tables.sort((a, b) => Number(a.kind !== "table") - Number(b.kind !== "table"));
       for (const t of tables) {
+        // oxlint-disable-next-line no-await-in-loop -- DDL text is appended in table order (tables before views) and stops when the request is superseded
         parts.push(await one(schema, t.name));
         if (!current()) return null;
       }
@@ -605,6 +660,22 @@ export function registerDatabaseTreeActions(): () => void {
         const n = nodeFrom(arg);
         if (n?.kind === "foreignKey") void revealInTree(n.id, n.fk.refSchema, n.fk.refTable, "table");
       },
+    }),
+    tree({
+      id: "db.showDiagram",
+      title: "Show Diagram",
+      description: "Show the selected tables, or the tables of a schema, as an ER diagram linked by foreign keys",
+      icon: "db-table",
+      keywords: ["er diagram", "uml", "visualization", "foreign keys", "relationships"],
+      run: ({ arg }) => showDiagram(nodesFrom(arg), false),
+    }),
+    tree({
+      id: "db.showDiagramPopup",
+      title: "Show Diagram Popup",
+      description: "Show the ER diagram of the selected tables in a popup",
+      icon: "db-table",
+      keywords: ["er diagram", "uml", "visualization", "foreign keys", "relationships"],
+      run: ({ arg }) => showDiagram(nodesFrom(arg), true),
     }),
     tree({
       id: "db.new",

@@ -38,11 +38,18 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
   const projects = useMemo(
     () =>
       tool === "maven"
-        ? (maven?.projects ?? []).map((p) => ({ value: p.pom, label: p.displayName, detail: p.dir || "." }))
+        ? (maven?.projects ?? []).map((p) => ({
+            value: p.pom,
+            label: p.displayName,
+            detail: p.dir || ".",
+            verbatim: true,
+            verbatimDetail: true,
+          }))
         : (gradle ?? []).flatMap((build) =>
             build.projects.map((p) => ({
               value: gradleProjectKey(build, p),
               label: p.name,
+              verbatim: true,
               detail: `${build.dir || "."} ${p.path}`,
             })),
           ),

@@ -1,13 +1,27 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup, fireEvent, within } from "@testing-library/react";
 import { newConfigOfType, missingParams } from "./types";
-import { tomcatType, tomcatBrowserUrl, syncTomcatOutputs } from "./tomcat";
+import {
+  syncTomcatOutputs,
+  tomcatBrowserUrl,
+  tomcatDeploymentConfigs,
+  tomcatDeployments,
+  tomcatType,
+  withTomcatDeployments,
+  type TomcatDeployment,
+} from "./tomcat";
 import { jdwpLaunch } from "./javaDebug";
 import { TomcatSettings } from "./TomcatSettings";
 import { typeRows } from "./AddConfigPopup";
-import { commands } from "@/platform/ipc";
+import { commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage = null;
+  },
+}));
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
   commands: {
@@ -278,7 +292,14 @@ describe("updating a running Tomcat deployment", () => {
   it("compiles the selected WAR module and copies its outputs instead of rebuilding the WAR", async () => {
     const c = config({ deployment: "artifact", artifact: "maven:web/pom.xml" });
     expect(await syncTomcatOutputs(c, false)).toBe(true);
-    expect(commands.javaResolveLaunch).toHaveBeenCalledWith("web", false, "make", expect.anything());
+    expect(commands.javaResolveLaunch).toHaveBeenCalledWith(
+      "web",
+      false,
+      false,
+      "make",
+      expect.anything(),
+      expect.anything(),
+    );
     expect(commands.runTomcatSync).toHaveBeenCalledWith(c, "web", ["/p/web/target/classes", "/m2/lib.jar"], false);
   });
 
@@ -296,5 +317,73 @@ describe("updating a running Tomcat deployment", () => {
       data: { build: "withErrors", classPaths: [] },
     } as never);
     await expect(syncTomcatOutputs(config({ deployment: "artifact" }), false)).rejects.toThrow();
+  });
+});
+
+describe("several Tomcat deployments", () => {
+  const base = () => ({ ...newConfigOfType(tomcatType, []), id: "t", cwd: "web" });
+  const web: TomcatDeployment = {
+    deployment: "artifact",
+    artifact: "maven:web/pom.xml",
+    artifactName: "web",
+    contextPath: "/web",
+    module: "web",
+  };
+  const service: TomcatDeployment = {
+    deployment: "artifact",
+    artifact: "maven:pom.xml",
+    artifactName: "hello",
+    contextPath: "/hello",
+    module: "hello",
+  };
+
+  it("keeps the first deployment in the config's own params and the others as a list", () => {
+    const c = withTomcatDeployments(base(), [web, service]);
+    expect(c.cwd).toBe("web");
+    expect(c.params).toMatchObject({ deployment: "artifact", artifact: "maven:web/pom.xml", contextPath: "/web" });
+    expect(JSON.parse(c.params!.extraDeployments!)).toEqual([service]);
+    expect(tomcatDeployments(c)).toEqual([web, service]);
+    // Removing the first promotes the next one.
+    const promoted = withTomcatDeployments(c, [service]);
+    expect(promoted.cwd).toBe("hello");
+    expect(promoted.params).toMatchObject({ artifact: "maven:pom.xml", contextPath: "/hello" });
+    expect(promoted.params?.extraDeployments).toBeUndefined();
+    expect(tomcatDeployments(withTomcatDeployments(c, []))).toEqual([]);
+  });
+
+  it("reads a single-deployment config from before the list unchanged", () => {
+    const c = { ...base(), params: { deployment: "war", deploymentPath: "/x/app.war", contextPath: "/app" } };
+    expect(tomcatDeployments(c)).toEqual([
+      { deployment: "war", deploymentPath: "/x/app.war", contextPath: "/app", module: "web" },
+    ]);
+  });
+
+  it("builds and syncs every artifact deployment as a config of its own", async () => {
+    const c = withTomcatDeployments(base(), [web, service]);
+    const [first, second] = tomcatDeploymentConfigs(c);
+    expect(first).toBe(c);
+    expect(second?.cwd).toBe("hello");
+    expect(second?.params).toMatchObject({ artifact: "maven:pom.xml", deploymentIndex: "1" });
+    expect(second?.params?.extraDeployments).toBeUndefined();
+    vi.mocked(commands.runTomcatSync).mockClear();
+    expect(await syncTomcatOutputs(c, false)).toBe(true);
+    expect(commands.runTomcatSync).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(commands.runTomcatSync).mock.calls[1]?.[0]).toEqual(second);
+  });
+
+  it("adds deployments to the list instead of replacing the first", async () => {
+    const change = vi.fn();
+    const c = withTomcatDeployments({ ...base(), params: { ...base().params, tomcatHome: "/tomcat" } }, [web]);
+    render(<TomcatSettings config={c} onChange={change} />);
+    await screen.findByText(/Apache Tomcat\/10\.1\.61/);
+    await waitFor(() => expect(commands.runTomcatArtifacts).toHaveBeenCalled());
+    await Promise.resolve();
+    fireEvent.click(screen.getByRole("tab", { name: "Deployment" }));
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    const toolbar = screen.getByRole("toolbar", { name: "Deploy at the server startup" });
+    fireEvent.click(within(toolbar).getAllByRole("button")[0]!);
+    await waitFor(() => expect(change).toHaveBeenCalled());
+    const next = change.mock.lastCall![0] as RunConfig;
+    expect(tomcatDeployments(next).map((d) => d.artifact)).toEqual(["maven:web/pom.xml", "maven:pom.xml"]);
   });
 });

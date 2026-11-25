@@ -273,6 +273,13 @@
   min-height: 0;
   display: flex;
 }
+.consoleNotice {
+  flex: none;
+  padding: 4px 12px;
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  border-bottom: 1px solid var(--border);
+}
 .consoleToolbar {
   flex: none;
   width: 32px;

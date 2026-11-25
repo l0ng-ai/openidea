@@ -4,6 +4,7 @@
 //! feature crates depend on `ide-core` and never on each other's internals.
 //! All IPC-facing types derive `specta::Type`, which generates `src/bindings.ts`.
 
+pub mod cli_process;
 pub mod editor_settings;
 pub mod error;
 pub mod event;
@@ -18,12 +19,14 @@ pub mod java_runtime;
 pub mod jsonc;
 pub mod memory;
 pub mod output_encoding;
+pub mod output_rate;
 pub mod platform;
 pub mod process;
 pub mod project_dir;
 pub mod project_env;
 pub mod project_roots;
 pub mod proxy_settings;
+pub mod pty;
 pub mod real_path;
 pub mod remote_settings;
 pub mod settings;
@@ -31,6 +34,7 @@ pub mod task;
 pub mod text;
 pub mod tool_path;
 pub mod updates;
+pub mod utf8;
 pub mod version_managers;
 pub mod workflow_settings;
 pub mod wsl;

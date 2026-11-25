@@ -1058,16 +1058,48 @@ async function handleRunningRemoteServers(
   }
 }
 
-export async function runDogfoodRemote(root: string, cliArgs: readonly string[]) {
-  const parsed = parseDogfoodRemoteArgs(cliArgs);
+export interface DogfoodRemoteTarget {
+  remoteConfig: SshRemoteConfig;
+  remoteContext: RemoteContext;
+  sshArgs: string[];
+  version: string;
+  rustVersion: string;
+  localDataDir: string;
+}
+
+export function resolveDogfoodRemoteTarget(root: string, parsed: DogfoodRemoteArgs): DogfoodRemoteTarget {
   const { version, rustVersion } = readWorkspaceMetadata(root);
   const { configDir, localDataDir } = resolveAppDirs();
-
   const envOpts = (process.env.DOGFOOD_SSH_OPTS ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
   const extraSshOpts = [...envOpts, ...parsed.sshOpts];
+  const configs = loadSshConfigs(configDir, root);
+  const remoteConfig = resolveSshConfig(configs, parsed.remoteName!);
+  const remoteContext: RemoteContext = {
+    name: remoteConfig.name,
+    endpoint: formatRemoteEndpoint(remoteConfig),
+  };
+  const sshArgs = buildSshArgs(remoteConfig, extraSshOpts);
+  return { remoteConfig, remoteContext, sshArgs, version, rustVersion, localDataDir };
+}
+
+export async function finishDogfoodRemoteRestart(root: string, parsed: DogfoodRemoteArgs) {
+  if (parsed.restart === "never" || !parsed.remoteName) return;
+  const { remoteContext, sshArgs, version, localDataDir } = resolveDogfoodRemoteTarget(root, parsed);
+  const { os, arch } = probeRemote(sshArgs, remoteContext);
+  const markerPath = join(localDataDir, "server", version, `${os}-${arch}`, DOGFOOD_MARKER_FILE);
+  if (!existsSync(markerPath)) return;
+  const buildId = readFileSync(markerPath, "utf8").trim();
+  if (!buildId) return;
+  await handleRunningRemoteServers(sshArgs, remoteContext, buildId, parsed.restart);
+}
+
+export async function runDogfoodRemote(root: string, cliArgs: readonly string[]) {
+  const parsed = parseDogfoodRemoteArgs(cliArgs);
+  const { version } = readWorkspaceMetadata(root);
+  const { localDataDir } = resolveAppDirs();
 
   if (parsed.clean && !parsed.remoteName) {
     const cleaned = cleanLocalDogfoodServers(localDataDir, version);
@@ -1083,13 +1115,7 @@ export async function runDogfoodRemote(root: string, cliArgs: readonly string[])
     return;
   }
 
-  const configs = loadSshConfigs(configDir, root);
-  const remoteConfig = resolveSshConfig(configs, parsed.remoteName!);
-  const remoteContext: RemoteContext = {
-    name: remoteConfig.name,
-    endpoint: formatRemoteEndpoint(remoteConfig),
-  };
-  const sshArgs = buildSshArgs(remoteConfig, extraSshOpts);
+  const { remoteConfig, remoteContext, sshArgs, rustVersion } = resolveDogfoodRemoteTarget(root, parsed);
   const probe = probeRemote(sshArgs, remoteContext);
   const { os, arch } = probe;
   const platformKey = `${os}-${arch}`;

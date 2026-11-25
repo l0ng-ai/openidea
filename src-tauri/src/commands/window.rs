@@ -2,6 +2,7 @@
 
 use crate::menu::{self, MenuConfig, MenuState};
 use crate::state::AppState;
+use crate::windows::WorkbenchWindow;
 use crate::windows::{self, Launch, OpenOutcome, WindowsState};
 use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult, RequestId};
@@ -11,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, WebviewWindow, Window};
+use tauri::{AppHandle, State, Window};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -37,7 +38,7 @@ pub async fn window_open_project(
 #[specta::specta]
 pub async fn window_open_files(
     app: AppHandle,
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     files: Vec<PathBuf>,
 ) -> IdeResult<Vec<ide_core::IpcPath>> {
     Ok(windows::open_files_window(&app, window.label(), files))
@@ -87,7 +88,7 @@ pub async fn window_new(app: AppHandle) -> IdeResult<String> {
 #[specta::specta]
 pub async fn window_open_settings(
     app: AppHandle,
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     page: Option<String>,
     new_projects: bool,
     background: Option<String>,
@@ -102,7 +103,7 @@ pub async fn window_open_settings(
 #[specta::specta]
 pub async fn window_open_comparison(
     app: AppHandle,
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     comparison: windows::ComparisonLaunch,
     background: Option<String>,
 ) -> IdeResult<()> {
@@ -116,7 +117,7 @@ pub async fn window_open_comparison(
 #[specta::specta]
 pub async fn window_open_diff(
     app: AppHandle,
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     diff: windows::DiffLaunch,
     background: Option<String>,
 ) -> IdeResult<()> {
@@ -130,7 +131,7 @@ pub async fn window_open_diff(
 #[specta::specta]
 pub async fn window_open_editor(
     app: AppHandle,
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     editor: windows::EditorLaunch,
     background: Option<String>,
 ) -> IdeResult<()> {
@@ -144,7 +145,7 @@ pub async fn window_open_editor(
 #[specta::specta]
 pub async fn window_open_deployment(
     app: AppHandle,
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     server: String,
     paths: Vec<PathBuf>,
     background: Option<String>,
@@ -156,14 +157,14 @@ pub async fn window_open_deployment(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_cycle(app: AppHandle, window: WebviewWindow, forward: bool) {
+pub fn window_cycle(app: AppHandle, window: WorkbenchWindow, forward: bool) {
     windows::cycle(&app, window.label(), forward);
 }
 
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
+pub fn window_toggle_fullscreen(window: WorkbenchWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
@@ -171,7 +172,7 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
+pub fn window_toggle_zoom(window: WorkbenchWindow) -> IdeResult<bool> {
     crate::window_zoom::toggle(&window)
 }
 
@@ -182,7 +183,7 @@ pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()> {
+pub fn window_flash_taskbar(window: WorkbenchWindow, flash: bool) -> IdeResult<()> {
     if flash && window.is_focused().unwrap_or(false) {
         return Ok(());
     }
@@ -195,7 +196,7 @@ pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()>
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_set_smooth_scrolling(window: WebviewWindow, enabled: bool) -> IdeResult<()> {
+pub fn window_set_smooth_scrolling(window: WorkbenchWindow, enabled: bool) -> IdeResult<()> {
     #[cfg(target_os = "linux")]
     window
         .with_webview(move |platform| crate::linux_webkit::set_smooth_scrolling(&platform, enabled))
@@ -209,7 +210,7 @@ pub fn window_set_smooth_scrolling(window: WebviewWindow, enabled: bool) -> IdeR
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResult<()> {
+pub fn window_set_titlebar_height(window: WorkbenchWindow, height: f64) -> IdeResult<()> {
     if !height.is_finite() || !(1.0..=1000.0).contains(&height) {
         return Err(IdeError::invalid("invalid title bar height"));
     }
@@ -224,7 +225,7 @@ pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResu
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
+pub fn window_take_launch(window: WorkbenchWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
     windows.take_launch(window.label())
 }
 
@@ -245,24 +246,17 @@ pub struct SettingsWindowInit {
 #[specta::specta]
 pub fn window_take_settings_init(
     app: AppHandle,
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     windows: State<'_, WindowsState>,
     state: State<'_, AppState>,
 ) -> SettingsWindowInit {
     let owner = AppState::owner_window(window.label());
     let launch = windows.take_launch(window.label());
     let (remote, project) = if let Some(c) = state.remote_dev.get(owner) {
-        let session = crate::remote_dev::RemoteSession {
-            target: c.target.clone(),
-            root: c.root.clone(),
-            host: c.host.clone(),
-            os: c.os.clone(),
-            commands: c.commands.clone(),
-        };
         // Leave `project` empty on remote sessions: the Settings page tree renders immediately
         // from local client settings, and `projectCurrent()` fills in project-scoped settings
         // right after first paint without keeping a shadow cache in sync.
-        (Some(session), None)
+        (Some(c.snapshot()), None)
     } else {
         let project = state.project(owner).ok().filter(|p| !p.light).map(|p| ide_host::ops::project::info(&p));
         (None, project)
@@ -280,7 +274,7 @@ pub fn window_take_settings_init(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_complete_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> IdeResult<()> {
+pub fn window_complete_launch(window: WorkbenchWindow, windows: State<'_, WindowsState>) -> IdeResult<()> {
     windows.complete_launch(window.label());
     Ok(())
 }
@@ -302,7 +296,7 @@ pub struct OpenProject {
 #[specta::specta]
 pub fn window_open_projects(
     app: AppHandle,
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     state: State<'_, AppState>,
 ) -> IdeResult<Vec<OpenProject>> {
     Ok(windows::project_window_labels(&app)
@@ -330,7 +324,7 @@ pub fn window_open_projects(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
+pub fn window_is_fullscreen(window: WorkbenchWindow) -> bool {
     window.is_fullscreen().unwrap_or(false)
 }
 
@@ -341,6 +335,10 @@ pub struct CloseContext {
     pub quitting: bool,
     /// Number of open project windows (settings windows excluded), including the caller.
     pub windows: u32,
+    /// Whether this window currently has auxiliary document windows that must settle first.
+    pub has_document_windows: bool,
+    /// Whether this close runs alongside other windows or on a background tab (prompts serialize and raise).
+    pub batch: bool,
 }
 
 #[desktop_command(trust = always)]
@@ -357,10 +355,40 @@ pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, W
         Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
         _ => all.len(),
     };
-    CloseContext { quitting: windows.quitting(), windows: count as u32 }
+    let quitting = windows.quitting();
+    let has_document_windows = !windows::document_windows(&app, window.label()).is_empty();
+    let hidden_tab = windows.groups.lock().group(window.label()).is_some_and(|g| g.selected != window.label());
+    let batch = quitting || pending.len() > 1 || windows.in_tab_close_batch(window.label()) || hidden_tab;
+    CloseContext { quitting, windows: count as u32, has_document_windows, batch }
 }
 
-/// Quits: closes every window, each of which runs its own unsaved-changes check.
+/// Acquires the interactive prompt turn for a batch close and brings this window forward.
+/// Returns `false` if the batch was cancelled while waiting.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_begin_prompt(app: AppHandle, window: WorkbenchWindow) -> bool {
+    crate::window_groups::begin_prompt(&app, &window).await
+}
+
+/// Releases the interactive prompt turn held by this window.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_end_prompt(app: AppHandle, window: Window) {
+    crate::window_groups::end_prompt(&app, window.label());
+}
+
+/// Signals that this window passed its close checks and waits for peers closing in the same
+/// batch/tab group so they hide together in one frame. Returns `false` if the batch was cancelled.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_ready_to_close(app: AppHandle, window: WorkbenchWindow) -> bool {
+    crate::window_groups::ready_to_close(&app, &window).await
+}
+
+/// Quits: closes every window in parallel, each of which runs its own unsaved-changes check.
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
@@ -369,15 +397,17 @@ pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
         return;
     }
     windows.set_quitting(true);
-    windows::continue_quit(&app, None);
+    windows::start_quit(&app);
 }
 
 /// A window vetoed the quit (user cancelled its unsaved-changes prompt).
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
+pub fn app_cancel_quit(app: AppHandle, window: Window, windows: State<'_, WindowsState>) {
     windows.set_quitting(false);
+    windows.abort_all_closing(Some(window.label()));
+    windows.close_settled(window.label());
     tauri::async_runtime::spawn(async move {
         let _ = crate::window_groups::persist(&app).await;
     });
@@ -390,7 +420,7 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     app: AppHandle,
     menu_state: State<'_, MenuState>,
     state: State<'_, AppState>,
@@ -442,7 +472,7 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn menu_set_disabled(window: WebviewWindow, app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
+pub fn menu_set_disabled(window: WorkbenchWindow, app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
     // The window whose menu runs: a project window also while its Settings window is focused.
     if menu::native_menu_bar()
         && windows::target_window(&app).is_some_and(|target| !owns_menu_config(window.label(), target.label()))
@@ -630,7 +660,7 @@ pub(crate) async fn check_update(app: &AppHandle, source: UpdateSource) -> IdeRe
 #[specta::specta]
 pub fn app_update_window_ready(
     app: AppHandle,
-    window: WebviewWindow,
+    window: WorkbenchWindow,
     ready: bool,
     system_locale: String,
 ) -> IdeResult<()> {
@@ -933,9 +963,11 @@ ide_command::desktop_domain!(
     menu_model,
     menu_refresh,
     menu_set_disabled,
+    window_begin_prompt,
     window_close_context,
     window_complete_launch,
     window_cycle,
+    window_end_prompt,
     window_flash_taskbar,
     window_is_fullscreen,
     window_new,
@@ -949,6 +981,7 @@ ide_command::desktop_domain!(
     window_open_projects,
     window_open_remote,
     window_open_settings,
+    window_ready_to_close,
     window_set_smooth_scrolling,
     window_set_titlebar_height,
     window_take_launch,

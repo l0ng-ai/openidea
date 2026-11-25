@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getContext } from "@/platform/context";
+import { getContext, setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { actionToggled, executeAction, getAction } from "@/platform/actions";
 import { registerToolWindow } from "../contributions";
@@ -14,6 +14,7 @@ import {
   restoreSidesAfterNarrowWindow,
   hideActiveToolWindow,
   hideAllToolWindows,
+  hideSideToolWindows,
   hideToolWindow,
   hasStripeButton,
   removeFromStripe,
@@ -108,6 +109,58 @@ describe("tool window semantics", () => {
     expect(isToolWindowVisible("project")).toBe(true);
   });
 
+  it("hide side hides every window docked on the active window's side", () => {
+    moveToolWindow("structure", "left-split");
+    showToolWindow("structure");
+    showToolWindow("terminal");
+    setFocusedToolWindow("structure");
+    hideSideToolWindows();
+    expect(useToolWindowLayout.getState().visible).toMatchObject({
+      left: null,
+      "left-split": null,
+      bottom: "terminal",
+    });
+    expect(useToolWindowLayout.getState().lastActive).toBeNull();
+    // Again with the side empty and nothing active: nothing else is hidden.
+    hideSideToolWindows();
+    expect(isToolWindowVisible("terminal")).toBe(true);
+  });
+
+  it("hide side falls back to the last active window, and does nothing when it is hidden", () => {
+    showToolWindow("terminal");
+    showToolWindow("project");
+    setFocusedToolWindow(null);
+    expect(useToolWindowLayout.getState().lastActive).toBe("project");
+    hideSideToolWindows();
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+    showToolWindow("structure");
+    hideToolWindow("structure");
+    useToolWindowLayout.setState({ lastActive: "structure" });
+    hideSideToolWindows();
+    expect(isToolWindowVisible("terminal")).toBe(true);
+  });
+
+  it("hide side restores a maximized side and leaves another maximized side alone", () => {
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    setFocusedToolWindow("terminal");
+    hideSideToolWindows();
+    expect(useToolWindowLayout.getState()).toMatchObject({
+      maximized: null,
+      visible: { bottom: null, left: "project" },
+    });
+    showToolWindow("terminal");
+    expect(useToolWindowLayout.getState().maximized).toBe("bottom");
+    // The left side is covered by the maximized bottom: its window is not the one shown.
+    useToolWindowLayout.setState({ focused: null, lastActive: "project" });
+    hideSideToolWindows();
+    expect(useToolWindowLayout.getState()).toMatchObject({
+      maximized: "bottom",
+      visible: { bottom: "terminal", left: "project" },
+    });
+  });
+
   it("restores the maximized side through the shared Hide All toggle", () => {
     showToolWindow("terminal");
     toggleMaximizeToolWindow("terminal");
@@ -199,6 +252,83 @@ describe("tool window persistence", () => {
     expect(isToolWindowVisible("project")).toBe(true);
   });
 
+  it("remembers a tool window's maximized state across hide, reopen, and reload until explicitly restored", () => {
+    const disposeK8s = registerToolWindow({
+      id: "plugin.k8s.view:kubernetes",
+      title: "Kubernetes",
+      icon: "box",
+      anchor: "right",
+      secondary: true,
+      component: Empty,
+    });
+    try {
+      showToolWindow("plugin.k8s.view:kubernetes", true);
+      toggleMaximizeToolWindow("plugin.k8s.view:kubernetes");
+      expect(useToolWindowLayout.getState().maximized).toBe("right");
+
+      // Hiding reveals the editor and other tool windows, then clicking the stripe button restores maximize.
+      toggleToolWindow("plugin.k8s.view:kubernetes");
+      expect(isToolWindowVisible("plugin.k8s.view:kubernetes")).toBe(false);
+      expect(useToolWindowLayout.getState().maximized).toBeNull();
+      expect(isToolWindowVisible("project")).toBe(true);
+
+      toggleToolWindow("plugin.k8s.view:kubernetes");
+      expect(useToolWindowLayout.getState().maximized).toBe("right");
+      expect(useToolWindowLayout.getState().visible["right-split"]).toBe("plugin.k8s.view:kubernetes");
+
+      // Opening a non-maximized window on another side unmaximizes; switching back restores maximize.
+      toggleToolWindow("plugin.k8s.view:kubernetes");
+      showToolWindow("terminal", true);
+      expect(useToolWindowLayout.getState().maximized).toBeNull();
+      showToolWindow("plugin.k8s.view:kubernetes", true);
+      expect(useToolWindowLayout.getState().maximized).toBe("right");
+
+      // Persisted per project across reload (starts unmaximized on reload, restores on hide/reopen).
+      hideToolWindow("plugin.k8s.view:kubernetes");
+      loadToolWindowLayout("/work/a");
+      expect(useToolWindowLayout.getState().maximized).toBeNull();
+      showToolWindow("plugin.k8s.view:kubernetes", true);
+      expect(useToolWindowLayout.getState().maximized).toBe("right");
+
+      // Explicit Restore Size clears the remembered state.
+      toggleMaximizeToolWindow("plugin.k8s.view:kubernetes");
+      expect(useToolWindowLayout.getState().maximized).toBeNull();
+      hideToolWindow("plugin.k8s.view:kubernetes");
+      showToolWindow("plugin.k8s.view:kubernetes", true);
+      expect(useToolWindowLayout.getState().maximized).toBeNull();
+
+      // Manual resize after navigation-restore also clears the remembered state.
+      toggleMaximizeToolWindow("plugin.k8s.view:kubernetes");
+      restoreMaximizedToolWindow();
+      setToolWindowSize("right", 420);
+      hideToolWindow("plugin.k8s.view:kubernetes");
+      showToolWindow("plugin.k8s.view:kubernetes", true);
+      expect(useToolWindowLayout.getState().maximized).toBeNull();
+    } finally {
+      disposeK8s();
+    }
+  });
+
+  it("does not leak remembered maximize to another window in the same slot and clears it on Restore Default Layout", () => {
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    expect(useToolWindowLayout.getState().maximized).toBe("bottom");
+
+    // Replacing terminal in the bottom slot with a non-maximized window unmaximizes.
+    showToolWindow("problems", true);
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    // Switching back to terminal restores its maximized state.
+    showToolWindow("terminal", true);
+    expect(useToolWindowLayout.getState().maximized).toBe("bottom");
+
+    // Restore Default Layout forgets remembered maximize.
+    resetToolWindowPlacements();
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    hideToolWindow("terminal");
+    showToolWindow("terminal", true);
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+  });
+
   it("persists visible windows and sizes per project root", () => {
     showToolWindow("structure");
     showToolWindow("terminal");
@@ -244,6 +374,22 @@ describe("tool window persistence", () => {
 });
 
 describe("tool window actions", () => {
+  it("runs Hide Side Tool Windows on the active window", async () => {
+    const dispose = installToolWindowActions();
+    try {
+      setContext("projectOpen", true);
+      showToolWindow("terminal");
+      setFocusedToolWindow("project");
+      expect(getAction("toolwindow.hideSide")?.title).toBe("Hide Side Tool Windows");
+      await executeAction("toolwindow.hideSide");
+      expect(isToolWindowVisible("project")).toBe(false);
+      expect(isToolWindowVisible("terminal")).toBe(true);
+    } finally {
+      setContext("projectOpen", false);
+      dispose();
+    }
+  });
+
   it("titles Hide All Tool Windows 'Restore Tool Windows' while it would restore them", async () => {
     const dispose = installToolWindowActions();
     try {
@@ -543,6 +689,18 @@ describe("view modes", () => {
     expect(isToolWindowVisible("project")).toBe(false);
     expect(isToolWindowVisible("terminal")).toBe(true);
 
+    setFocusedToolWindow(null, true);
+    expect(isToolWindowVisible("terminal")).toBe(false);
+  });
+
+  it("an undocked window activated from a menu survives the menu returning focus to the editor", () => {
+    setToolWindowViewMode("terminal", "undock");
+    showToolWindow("terminal", true);
+    // The closing menu restores focus to the editor before the window takes it.
+    setFocusedToolWindow(null, true);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+
+    setFocusedToolWindow("terminal");
     setFocusedToolWindow(null, true);
     expect(isToolWindowVisible("terminal")).toBe(false);
   });

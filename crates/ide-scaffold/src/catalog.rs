@@ -103,7 +103,9 @@ pub(crate) fn field(def: &FieldDef) -> Field {
             segmented: *segmented,
         },
         FieldKindDef::Checkbox => FieldKind::Checkbox,
-        FieldKindDef::Sdk { sdk } => FieldKind::Sdk { sdk: sdk.clone() },
+        FieldKindDef::Sdk { sdk, version, min } => {
+            FieldKind::Sdk { sdk: sdk.clone(), version: *version, min: min.clone() }
+        }
     };
     Field {
         id: def.id.clone(),
@@ -125,6 +127,7 @@ pub(crate) fn info(def: &Def) -> GeneratorInfo {
         description: def.description.clone(),
         git: def.git,
         fields: def.fields.iter().map(field).collect(),
+        directory: def.directory.clone(),
         dynamic: def.service.is_some(),
     }
 }

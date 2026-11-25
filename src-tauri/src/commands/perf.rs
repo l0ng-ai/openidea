@@ -1,10 +1,13 @@
 //! Diagnostics for the memory indicator / performance overlay.
 
+#[cfg(target_os = "macos")]
+use crate::windows::WorkbenchWindows;
+
 use crate::state::AppState;
 use ide_command::desktop_command;
 use ide_core::IdeResult;
 use ide_core::event::ServerStatus;
-use ide_host::ops::doc::blocking;
+use ide_host::ops::blocking;
 use ide_language::SyntaxCacheStats;
 use ide_workspace::memory::{self, CpuSampler, MemoryCategory, MemoryRoot, ProcessMemory, ProcessTable};
 use serde::{Deserialize, Serialize};
@@ -166,9 +169,8 @@ fn openidea_root(pid: u32, label: String, detail: Option<String>) -> MemoryRoot 
 async fn webview_processes(app: &AppHandle, state: &AppState) -> Vec<MemoryRoot> {
     use std::collections::BTreeMap;
     use std::time::Duration;
-    use tauri::Manager;
     let mut pending = Vec::new();
-    for (label, w) in app.webview_windows() {
+    for (label, w) in app.workbench_windows() {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let sent = w.with_webview(move |pv| {
             // SAFETY: `with_webview` runs on the main thread with the live WKWebView.
