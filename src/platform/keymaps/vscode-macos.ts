@@ -314,6 +314,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "coverage.manageReports": [],
   "web.openInBrowser": [],
   "debug.toggleBreakpoint": ["F9"],
+  "debug.toggleBreakpointEnabled": [],
   "debug.viewBreakpoints": [],
   "debug.removeAllBreakpoints": [],
   "debug.removeAllBreakpointsInFile": [],
