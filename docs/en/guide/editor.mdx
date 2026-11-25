@@ -39,6 +39,7 @@ Choose **Inspect Element**, then click an element in the page. Review its select
 | ----------------------------------------------- | --------------- | ---------------------------------------------- |
 | **Duplicate Line or Selection**                 | `⌘D`            | `Ctrl+D`                                       |
 | **Delete Line**                                 | `⌘⌫`            | `Ctrl+Y`                                       |
+| **Cut up to Line End**                          | `⌃K`            | —                                              |
 | **Move Line Up** / **Move Line Down**           | `⌥⇧↑` / `⌥⇧↓`   | `Alt+Shift+Up` / `Alt+Shift+Down`              |
 | **Move Statement Up** / **Move Statement Down** | `⇧⌘↑` / `⇧⌘↓`   | `Ctrl+Shift+Up` / `Ctrl+Shift+Down`            |
 | **Move Element Left** / **Move Element Right**  | `⌥⇧⌘←` / `⌥⇧⌘→` | `Ctrl+Alt+Shift+Left` / `Ctrl+Alt+Shift+Right` |
@@ -59,6 +60,8 @@ Choose **Inspect Element**, then click an element in the page. Review its select
 **Move Caret to Page Top** / **Bottom** put the caret on the first / last line the editor shows in full, in the same column, without scrolling; with `⇧` / `Shift` added they select up to it.
 
 **Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones.
+
+**Cut up to Line End** cuts from each caret to the end of its line, together with the line break when only whitespace is left (or the caret is already at the line end), so pressing it again on the same caret cuts the next line too; those repeated cuts collect into one clipboard entry. **Delete to Line Start** and **Delete to Line End** delete the same way without copying (to the line start, or the line break before the caret at the line start), or delete the selection. They have no default shortcut except in the Eclipse keymaps (`⇧⌘⌦` / `Ctrl+Shift+Delete` for Delete to Line End).
 
 **Duplicate Entire Lines** copies every line touched by a caret or selection below itself, even when only part of a line is selected, and keeps the selection on the copy. It has no default shortcut; run it from **Find Action** or assign one in **Settings › Keymap**.
 

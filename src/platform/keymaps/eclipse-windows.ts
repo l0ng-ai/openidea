@@ -37,6 +37,7 @@ export const eclipseWindows: Record<string, string[]> = {
   "agents.archiveTasks": [],
   "editor.codeBlockEnd": ["Ctrl+]"],
   "code.deleteLine": ["Ctrl+D"],
+  "code.deleteToLineEnd": ["Shift+Ctrl+Delete"],
   "code.duplicateLine": [],
   "code.moveElementLeft": ["Alt+Shift+Left"],
   "code.moveElementRight": ["Alt+Shift+Right"],
