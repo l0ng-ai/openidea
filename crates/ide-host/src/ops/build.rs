@@ -971,6 +971,7 @@ pub async fn build_run(
     host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
+    let file = file.map(|f| ide_core::project_roots::resolve(&root, &f));
     let settings = project.settings.effective();
     let detected = project.detected_roots.read().clone();
     let config_dir = host.config_dir.clone();
