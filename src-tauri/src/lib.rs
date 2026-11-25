@@ -315,6 +315,7 @@ pub fn run() {
             window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
             {
+                macos::forget_webview_keys(window);
                 page_swipe::forget(window.label());
                 titlebar::forget(window);
             }
