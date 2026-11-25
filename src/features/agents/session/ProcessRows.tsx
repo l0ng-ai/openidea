@@ -17,7 +17,7 @@ import {
   type TurnRow,
 } from "./conversationRows";
 import { Fold } from "./Folds";
-import { samePropsExcept, shortTitle } from "./shared";
+import { commandTitle, samePropsExcept, shortTitle } from "./shared";
 import { ThoughtEntry, ToolEntry } from "./toolEntries";
 
 /** "Edited 2 files · Read 4 files": what a run of work did; "Reasoning" when it only thought. */
@@ -124,7 +124,9 @@ export const ProcessRun = memo(function ProcessRun({
   const live = [...tools].reverse().find(({ entry }) => liveTool(entry))?.entry;
   const last = row.entries.at(-1)!.entry;
   const current = live
-    ? shortTitle(task, live.title || live.kind)
+    ? live.kind === "execute"
+      ? commandTitle(task, live.title || live.kind).title
+      : shortTitle(task, live.title || live.kind)
     : working && last.type === "thought"
       ? tx("Thinking")
       : null;
