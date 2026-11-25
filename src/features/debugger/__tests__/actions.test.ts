@@ -463,6 +463,7 @@ describe("debugger actions (IDEA parity)", () => {
     for (const action of ["debug.toggleBreakpoint", "debug.toggleTemporaryBreakpoint"]) {
       for (const line of [1, 2]) {
         caret("/p/a.py", "python", "x = 1\n\n   \ny = 2", line);
+        // oxlint-disable-next-line no-await-in-loop -- caret setup and the breakpoint assertion share editor/breakpoint state, so each action must run before the next caret change
         await executeAction(action);
       }
       expect(breakpointsOf("/p/a.py"), action).toHaveLength(0);

@@ -77,11 +77,13 @@ export function memoryRefactorBackend(): FileRefactorBackend {
       const done: FileMove[] = [];
       try {
         for (const m of moves) {
+          // oxlint-disable-next-line no-await-in-loop -- moves apply in order; a failure rolls back only the completed ones
           await fs().rename(m.from, m.to);
           done.push(m);
         }
       } catch (e) {
         for (const m of done.reverse())
+          // oxlint-disable-next-line no-await-in-loop -- rollback undoes the completed moves in reverse order
           await fs()
             .rename(m.to, m.from)
             .catch(() => {});
@@ -95,7 +97,9 @@ export function memoryRefactorBackend(): FileRefactorBackend {
       if (!moves) throw new Error("The refactoring can no longer be undone");
       records.delete(id);
       const back = [...moves].reverse().map((m) => ({ from: m.to, to: m.from }));
-      for (const m of back) await fs().rename(m.from, m.to);
+      for (const m of back)
+        // oxlint-disable-next-line no-await-in-loop -- undo restores the moves in reverse order
+        await fs().rename(m.from, m.to);
       return { moves: back, conflicts: [] };
     },
   };

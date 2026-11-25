@@ -923,6 +923,7 @@ export async function expandAll(from?: string, limit = 400) {
       continue;
     }
     const path = pathOfKey(dir);
+    // oxlint-disable-next-line no-await-in-loop -- breadth-first walk loads one folder at a time; generation is checked before enqueuing children
     await loadDir(path);
     if (gen !== generation) return;
     const s = get();

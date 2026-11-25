@@ -37,6 +37,7 @@ export async function markDirectory(path: string, role: FolderRole | null): Prom
     const next = markFolder(attached.structure, rel, role, attached.detected);
     for (const key of PROJECT_STRUCTURE_KEYS) {
       if (JSON.stringify(attached.structure[key]) !== JSON.stringify(next[key])) {
+        // oxlint-disable-next-line no-await-in-loop -- settings keys are written in order to the same member settings
         await call(
           commands.projectWorkspaceMemberSet(attached.root, `projectStructure.${key}`, JSON.stringify(next[key])),
         );
@@ -50,6 +51,7 @@ export async function markDirectory(path: string, role: FolderRole | null): Prom
   const next = markFolder(before, rel, role, currentDetectedRoots());
   for (const key of PROJECT_STRUCTURE_KEYS) {
     if (JSON.stringify(before[key]) !== JSON.stringify(next[key])) {
+      // oxlint-disable-next-line no-await-in-loop -- settings keys are written in order to the same project settings
       await call(commands.settingsSet("project", `projectStructure.${key}`, JSON.stringify(next[key])));
     }
   }

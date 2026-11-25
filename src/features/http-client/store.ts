@@ -236,6 +236,7 @@ export async function runAll(path: string | null, text: string): Promise<void> {
   if (path && !useHttpClient.getState().environments[path]) await loadEnvironments(path);
   const environment = effectiveEnvironment(path, selection);
   for (const b of blocks) {
+    // oxlint-disable-next-line no-await-in-loop -- requests run in order and stop at the first failure
     if (!(await runRequest(path, text, b.index, environment))) return;
   }
 }

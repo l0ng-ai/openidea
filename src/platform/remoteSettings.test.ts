@@ -118,6 +118,7 @@ describe("remote client settings", () => {
         commands: [command],
       });
       invoke.mockResolvedValue(JSON.stringify({ gradle, maven: null }));
+      // oxlint-disable-next-line no-await-in-loop -- each command reconfigures global remote routing, then asserts against it
       expect(await routedInvoke(command)).toEqual({ gradle: expected, maven: null });
     }
   });

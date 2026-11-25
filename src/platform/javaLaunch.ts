@@ -210,6 +210,7 @@ export async function classModules(binaryName: string): Promise<string[]> {
   const configs = await call(commands.runConfigs());
   const modules = new Set<string>();
   for (const file of matches) {
+    // oxlint-disable-next-line no-await-in-loop -- keep read errors in candidate order and hold only one source text at a time
     const text = await call(commands.fsReadText(file.path));
     const sourcePackage = /^\s*package\s+([\w.]+)\s*[;\r\n]/m.exec(text)?.[1] ?? "";
     if (sourcePackage === pkg) modules.add(jvmModuleDir(root ? relativePath(root, file.path) : file.relPath, configs));

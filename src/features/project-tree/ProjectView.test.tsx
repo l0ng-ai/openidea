@@ -433,6 +433,7 @@ describe("ProjectView", () => {
           burst(clicks);
           const toggles = singleClickExpand ? Math.ceil(clicks / 2) : Math.floor(clicks / 2);
           if (toggles % 2) expanded = !expanded;
+          // oxlint-disable-next-line no-await-in-loop -- each click burst is asserted before the next burst is fired
           await waitFor(() => expect(rows().includes("App.kt")).toBe(expanded));
         }
       }
