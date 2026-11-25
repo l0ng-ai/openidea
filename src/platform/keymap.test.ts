@@ -111,6 +111,21 @@ describe("keymap", () => {
     expect(
       strokeOf({ code: "BracketRight", key: "}", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }),
     ).toBe("Shift+Meta+]");
+    // Letters and digits keep their names: AZERTY's M sits on physical Semicolon, with or
+    // without Shift, and its unshifted digit row types symbols (`&` on Digit1).
+    expect(
+      strokeOf({ code: "Semicolon", key: "M", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }),
+    ).toBe("Shift+Meta+M");
+    expect(strokeOf({ code: "Digit1", key: "&", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+1",
+    );
+    // Non-Latin layouts keep the physical key: Russian Ctrl+С is still Ctrl+C.
+    expect(strokeOf({ code: "KeyC", key: "с", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false })).toBe(
+      "Ctrl+C",
+    );
+    expect(strokeOf({ code: "Comma", key: "б", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false })).toBe(
+      "Ctrl+,",
+    );
     // Alt (⌥ on macOS, AltGr) keeps the physical key: it types symbols.
     expect(strokeOf({ code: "KeyM", key: "µ", metaKey: false, ctrlKey: false, altKey: true, shiftKey: false })).toBe(
       "Alt+M",

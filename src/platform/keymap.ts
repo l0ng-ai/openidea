@@ -377,27 +377,30 @@ export function letterOf(e: Pick<KeyboardEvent, "code" | "key"> & { altKey?: boo
   return null;
 }
 
+/** A printable ASCII character other than a letter, digit or space. */
+const ASCII_PUNCTUATION = /^[!-/:-@[-`{-~]$/;
+
 /** Converts a keydown event into a canonical stroke, or null for bare modifiers. */
 export function strokeOf(
   e: Pick<KeyboardEvent, "code" | "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
   let key: string | undefined;
-  if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
+  if (/^[a-zA-Z]$/.test(e.key) && !e.altKey) key = e.key.toUpperCase();
+  else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
   else if (/^Numpad\d$/.test(e.code)) key = e.code.slice(6);
   else if (/^F\d{1,2}$/.test(e.code)) key = e.code;
   else if (/^Numpad/.test(e.code)) key = CODE_NAMES[e.code];
-  // Unshifted characters follow the layout, not the QWERTY position (AZERTY's
-  // comma sits on KeyM, so ⌘, must record `Meta+,` not `Meta+M`). Shift-held
-  // events keep the physical key — presets are written `Meta+Shift+]` — and
-  // so do Alt-held ones, since ⌥ on macOS and AltGr type symbols.
-  else if (!e.altKey && !e.shiftKey && e.key.length === 1 && e.key !== " ")
-    key = /^[a-zA-Z]$/.test(e.key) ? e.key.toUpperCase() : e.key;
-  else key = CODE_NAMES[e.code];
+  // Unshifted ASCII punctuation follows the layout, not the QWERTY position
+  // (AZERTY's comma sits on KeyM, so ⌘, must record `Meta+,` not `Meta+M`).
+  // Shift-held events keep the physical key — presets are written
+  // `Meta+Shift+]` — and so do Alt-held ones, since ⌥ on macOS and AltGr type
+  // symbols. Other characters (Cyrillic, Greek, accented letters) keep the
+  // physical key too, so Ctrl+C stays Ctrl+C on those layouts.
+  else if (!e.altKey && !e.shiftKey && ASCII_PUNCTUATION.test(e.key)) key = e.key;
+  else key = letterOf(e) ?? CODE_NAMES[e.code];
   if (!key) {
-    const letter = letterOf(e);
-    if (letter) key = letter;
-    else if (["Shift", "Meta", "Control", "Alt"].includes(e.key)) return null;
-    else key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    if (["Shift", "Meta", "Control", "Alt"].includes(e.key)) return null;
+    key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
   }
   return modifiedStroke(e, key);
 }
