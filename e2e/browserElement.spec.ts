@@ -94,7 +94,7 @@ async function stubBrowser(page: Page) {
 
 async function visit(page: Page, url: string) {
   await page.getByLabel("Local page URL").fill(url);
-  await page.getByRole("region", { name: "Browser" }).getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByLabel("Local page URL").press("Enter");
 }
 
 for (const key of ["home", "checkout-task"]) {
@@ -181,8 +181,9 @@ test("cancelling or revoking trust discards a delayed selection", async ({ workb
   await visit(page, "http://localhost:3000");
   const inspect = page.getByRole("button", { name: "Inspect Element", exact: true });
   await inspect.click();
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(inspect).toBeEnabled();
+  await expect(inspect).toHaveAttribute("aria-pressed", "true");
+  await inspect.click();
+  await expect(inspect).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("button", { name: "Add to Agent Draft" })).toHaveCount(0);
   await inspect.click();
   await page.evaluate(async () => {

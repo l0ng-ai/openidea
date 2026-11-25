@@ -1575,6 +1575,7 @@
   "Open Local Browser": "Open Local Browser",
   "Open in Browser Tool Window": "Open in Browser Tool Window",
   "Local page URL": "Local page URL",
+  "Enter a localhost URL and press Enter.": "Enter a localhost URL and press Enter.",
   "Inspect Element": "Inspect Element",
   "Click an element to inspect it": "Click an element to inspect it",
   "Element inspection requires a trusted local project.": "Element inspection requires a trusted local project.",

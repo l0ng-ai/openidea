@@ -3,10 +3,12 @@ import { useTx } from "@/platform/i18n";
 import { type BrowserBounds, type RequestId } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
-import { Button, Input } from "@/ui";
+import { Button, IconButton, Input } from "@/ui";
 import { appendAgentDraftBlock } from "@/workbench/contributions";
 import { closeBrowser, control, useBrowserSession, visit } from "./browserSession";
 import styles from "./Web.module.css";
+
+const EDGE = 8;
 
 /** Native siblings sit above HTML. Hide the guest when workbench popups or dialogs need that space. */
 function Viewport({ id }: { id: RequestId }) {
@@ -26,8 +28,9 @@ function Viewport({ id }: { id: RequestId }) {
         rect.width > 1 &&
         rect.height > 1 &&
         !document.querySelector('[aria-modal="true"], [data-popup]') &&
-        document.elementFromPoint(rect.left + 1, rect.top + 1) === node &&
-        document.elementFromPoint(rect.right - 1, rect.bottom - 1) === node;
+        // Corners sampled a little inside: the tool window's resize handles overlap its edges.
+        document.elementFromPoint(rect.left + EDGE, rect.top + EDGE) === node &&
+        document.elementFromPoint(rect.right - EDGE, rect.bottom - EDGE) === node;
       const bounds: BrowserBounds | null = visible
         ? {
             x: Math.round(rect.left * dpr),
@@ -90,20 +93,40 @@ function Browser() {
   const [draft, setDraft] = useState<string | null>(null);
   const url = draft ?? location?.url ?? "";
   const text = element ? [element.selector, element.html, element.styles].join("\n\n") : "";
+  const navigate = (action: "back" | "forward") => {
+    setDraft(null);
+    if (id !== null) void control(id, { type: action });
+  };
   return (
     <section className={styles.inspector} aria-label={t("Browser")}>
       <form
+        className={styles.toolbar}
         onSubmit={(e) => {
           e.preventDefault();
           const address = url.trim();
+          if (!address || (id !== null && !ready)) return;
           void visit(address).then(() => {
             if (!useBrowserSession.getState().error) setDraft((value) => (value?.trim() === address ? null : value));
           });
         }}
       >
-        <label htmlFor="browser-inspector-url">{t("Local page URL")}</label>
+        {ready && id !== null && (
+          <>
+            <IconButton icon="arrow-left" title="Back" disabled={!location?.canBack} onClick={() => navigate("back")} />
+            <IconButton
+              icon="arrow-right"
+              title="Forward"
+              disabled={!location?.canForward}
+              onClick={() => navigate("forward")}
+            />
+            <IconButton icon="refresh" title="Reload" onClick={() => void control(id, { type: "reload" })} />
+          </>
+        )}
         <Input
-          id="browser-inspector-url"
+          className={styles.address}
+          aria-label={t("Local page URL")}
+          // oxlint-disable-next-line jsx-a11y/no-autofocus -- the panel opens to type an address
+          autoFocus={id === null}
           type="url"
           required
           value={url}
@@ -112,51 +135,42 @@ function Browser() {
           spellCheck={false}
           onChange={(e) => setDraft(e.target.value)}
         />
-        <Button type="submit" disabled={!url.trim() || (id !== null && !ready)}>
-          {t("Open")}
-        </Button>
-      </form>
-      {ready && id !== null && (
-        <>
-          <div className={styles.navigation} role="group" aria-label={t("Browser")}>
-            <Button
-              disabled={!location?.canBack}
-              onClick={() => {
-                setDraft(null);
-                void control(id, { type: "back" });
-              }}
-            >
-              {t("Back")}
-            </Button>
-            <Button
-              disabled={!location?.canForward}
-              onClick={() => {
-                setDraft(null);
-                void control(id, { type: "forward" });
-              }}
-            >
-              {t("Forward")}
-            </Button>
-            <Button onClick={() => void control(id, { type: "reload" })}>{t("Reload")}</Button>
-            <Button onClick={() => void control(id, { type: location?.inspecting ? "cancel" : "inspect" })}>
-              {location?.inspecting ? t("Cancel") : t("Inspect Element")}
-            </Button>
-            <Button
+        {ready && id !== null && (
+          <>
+            <IconButton
+              icon="locate"
+              title="Inspect Element"
+              pressed={!!location?.inspecting}
+              onClick={() => void control(id, { type: location?.inspecting ? "cancel" : "inspect" })}
+            />
+            <IconButton
+              icon="close"
+              title="Close"
               onClick={() => {
                 setDraft(url);
                 closeBrowser();
               }}
-            >
-              {t("Close")}
-            </Button>
-          </div>
-          {location?.inspecting && <p role="status">{t("Click an element to inspect it")}</p>}
-          <Viewport id={id} />
-        </>
+            />
+          </>
+        )}
+      </form>
+      {location?.inspecting && (
+        <p className={styles.hint} role="status">
+          {t("Click an element to inspect it")}
+        </p>
       )}
-      {error && <p role="alert">{error}</p>}
+      {ready && id !== null ? (
+        <Viewport id={id} />
+      ) : (
+        !error && <p className={styles.hint}>{t("Enter a localhost URL and press Enter.")}</p>
+      )}
+      {error && (
+        <p className={styles.hint} role="alert">
+          {error}
+        </p>
+      )}
       {element && (
-        <>
+        <div className={styles.details}>
           <h3>{t("Selected element")}</h3>
           <pre>{text}</pre>
           <Button
@@ -170,7 +184,7 @@ function Browser() {
           >
             {t("Add to Agent Draft")}
           </Button>
-        </>
+        </div>
       )}
     </section>
   );

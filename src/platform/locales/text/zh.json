@@ -2526,6 +2526,7 @@
   "Open Local Browser": "打开本地浏览器",
   "Open in Browser Tool Window": "在浏览器工具窗口中打开",
   "Local page URL": "本地页面地址",
+  "Enter a localhost URL and press Enter.": "输入本机地址并按 Enter。",
   "Inspect Element": "检查元素",
   "Click an element to inspect it": "单击要检查的元素",
   "Element inspection requires a trusted local project.": "检查元素需要受信任的本地项目。",
