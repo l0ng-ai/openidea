@@ -154,3 +154,22 @@ it("flushes output while an unfocused webview suspends animation frames", () => 
   expect(lines(13).map((l) => l.text)).toEqual(["Spring Boot starting…\n"]);
   expect(useDebug.getState().sessions[13]?.status).toBe("running");
 });
+
+it("shows queued output at most at the Max FPS rate (#5897)", () => {
+  vi.useFakeTimers();
+  const workflow = settings.workflowSettings();
+  vi.spyOn(settings, "workflowSettings").mockReturnValue({
+    ...workflow,
+    terminal: { ...workflow.terminal, maxFps: "5" },
+  });
+  adoptSession(15);
+  appendConsoleQueued(15, "stdout", "one\n");
+  vi.advanceTimersToNextFrame();
+  expect(lines(15).map((l) => l.text)).toEqual(["one\n"]);
+  appendConsoleQueued(15, "stdout", "two\n");
+  appendConsoleQueued(15, "stdout", "three\n");
+  vi.advanceTimersByTime(150);
+  expect(lines(15)).toHaveLength(1);
+  vi.advanceTimersByTime(60);
+  expect(lines(15).map((l) => l.text)).toEqual(["one\n", "two\n", "three\n"]);
+});

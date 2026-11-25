@@ -260,7 +260,7 @@ function TerminalOptions() {
       <SettingSelect
         k="terminal.maxFps"
         label="Maximum refresh rate"
-        hint="Caps how often fast terminal output is painted. Hidden windows always paint more slowly."
+        hint="Caps how often fast output is sent and painted in the terminal and the Run and Debug consoles. Hidden windows always paint more slowly."
         options={TERMINAL_MAX_FPS_OPTIONS}
       />
     </>

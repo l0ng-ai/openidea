@@ -17,6 +17,11 @@ use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
 const BATCH_INTERVAL: Duration = Duration::from_millis(8);
+
+/// The batch interval at the current Max FPS setting (`ide_core::output_rate`).
+fn batch_interval() -> Duration {
+    ide_core::output_rate::batch_interval(BATCH_INTERVAL)
+}
 const BATCH_BYTES: usize = 64 * 1024;
 /// Size of one pipe read, so the most one queued [`Msg::Data`] holds.
 const READ_BUF: usize = 16 * 1024;
@@ -1366,8 +1371,8 @@ fn spawn_pump(
         loop {
             let now = Instant::now();
             let wait = [
-                batch_started.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
-                held_since.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
+                batch_started.map(|t| (t + batch_interval()).saturating_duration_since(now)),
+                held_since.map(|t| (t + batch_interval()).saturating_duration_since(now)),
                 drain_deadline.map(|t| t.saturating_duration_since(now)),
             ]
             .into_iter()
@@ -1402,7 +1407,7 @@ fn spawn_pump(
                         break;
                     }
                     // Nothing more came: show a held prompt.
-                    if held_since.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                    if held_since.is_some_and(|t| t.elapsed() >= batch_interval()) {
                         held_since = None;
                         for (stream, dec, notice) in [
                             (Stream::Stdout, &mut out_dec, &mut out_notice),
@@ -1420,7 +1425,7 @@ fn spawn_pump(
                             batch_started = Some(Instant::now());
                         }
                     }
-                    if batch_started.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                    if batch_started.is_some_and(|t| t.elapsed() >= batch_interval()) {
                         flush(&mut pending, pending_stream, &mut batch_started);
                     }
                 }
