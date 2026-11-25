@@ -92,13 +92,14 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     setFindOpen(false);
     pane.current?.focus();
   };
-  // A click on the toggle leaves the focus nowhere in WebKit (it does not focus buttons): give it to the body.
+  // WebKit does not focus a clicked button, so the toggle's click leaves the focus on an outer
+  // container (the tool window) where ⌘F misses this view: give it to the body.
+  const root = useRef<HTMLDivElement>(null);
   const refocus = useRef(false);
   useEffect(() => {
     if (!refocus.current) return;
     refocus.current = false;
-    const focused = document.activeElement;
-    if (!focused || focused === document.body) pane.current?.focus();
+    if (!root.current?.contains(document.activeElement)) pane.current?.focus();
   }, [raw]);
   const goToMatch = (step: number) => {
     const n = found.matches.length;
@@ -120,7 +121,7 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     }
   };
   return (
-    <div className={styles.exchange} onKeyDown={onKeyDown}>
+    <div ref={root} className={styles.exchange} onKeyDown={onKeyDown}>
       <div className={styles.statusLine}>
         {r ? (
           <>

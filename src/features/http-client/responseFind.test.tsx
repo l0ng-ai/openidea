@@ -75,7 +75,12 @@ describe("HTTP response find", () => {
       response: { ...exchange.response!, contentType: "application/json", body: '{"a":[1,2]}' },
     };
     useHttpClient.setState({ history: [json.entry], exchanges: [json], selected: "e1" });
-    render(<HttpClientView />);
+    // The tool window around the view is focusable, as in the app.
+    render(
+      <section tabIndex={-1} aria-label="Tool window">
+        <HttpClientView />
+      </section>,
+    );
     const find = () => screen.queryByLabelText("Find in response", { selector: "input" });
     // Where the click leaves the focus: on the button (Chromium) …
     const toggle = screen.getByRole("button", { name: "Show Raw" });
@@ -85,8 +90,8 @@ describe("HTTP response find", () => {
     expect(find()).toBeTruthy();
     fireEvent.keyDown(find()!, { key: "Escape" });
     expect(find()).toBeNull();
-    // … or nowhere (WebKit does not focus a clicked button): the body takes it back.
-    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    // … or on the tool window (WebKit does not focus a clicked button): the body takes it back.
+    act(() => screen.getByRole("region", { name: "Tool window" }).focus());
     fireEvent.click(screen.getByRole("button", { name: "Show Formatted" }));
     expect(screen.getByLabelText("Response body").parentElement!.contains(document.activeElement)).toBe(true);
     fireEvent.keyDown(document.activeElement!, { key: "f", metaKey: true, ctrlKey: true });
