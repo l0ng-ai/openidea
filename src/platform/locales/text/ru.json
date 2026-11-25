@@ -1021,6 +1021,7 @@
   "Scroll here, click with Ctrl, Alt or Command held, or use a middle or side mouse button": "Прокрутите здесь, щёлкните с зажатой клавишей Ctrl, Alt или Command либо используйте среднюю или боковую кнопку мыши",
   "On Linux, middle-button rectangular selection conflicts with primary selection paste.": "В Linux прямоугольное выделение средней кнопкой мыши конфликтует со вставкой основного выделения.",
   "Add Carets to Ends of Selected Lines": "Добавить каретки в конец выделенных строк",
+  "Select Line at Caret": "Выделить строку у каретки",
   "Unselect Occurrence": "Снять выделение с вхождения",
   "Paste from History…": "Вставить из истории…",
   "Sort Lines": "Сортировать строки",

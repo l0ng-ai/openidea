@@ -76,6 +76,8 @@ describe("IDEA keymap parity", () => {
     ["code.deleteToLineStart", [], []],
     ["code.deleteToLineEnd", [], []],
     ["code.hungryBackspace", [], []],
+    // EditorSelectLine has no shortcut.
+    ["editor.selectLine", [], []],
     // CopyAsPlainText / CopyAsRichText have no shortcut.
     ["code.copyAsPlainText", [], []],
     ["code.copyAsRichText", [], []],

@@ -106,6 +106,7 @@
   "Toggle Case": "Przełącz wielkość liter",
   "Cycle Identifier Case": "Przełączaj wielkość liter identyfikatora",
   "Add Carets to Ends of Selected Lines": "Dodaj kursory na końcach zaznaczonych wierszy",
+  "Select Line at Caret": "Zaznacz wiersz z kursorem",
   "Unselect Occurrence": "Odznacz wystąpienie",
   "Paste from History…": "Wklej z historii…",
   "Sort Lines": "Sortuj wiersze",
