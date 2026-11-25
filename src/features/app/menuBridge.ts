@@ -65,6 +65,7 @@ export function routeMenuEvent(
   if (!isMenuRoute(payload) || !payload.action) return Promise.resolve(false);
   if (payload.arg === "editorHistory" && (payload.action === "edit.undo" || payload.action === "edit.redo")) {
     const view = focusedHistoryView();
+    // Focus may have moved while the event was queued. WebKit's undo stack can target a background editor.
     if (!view) return Promise.resolve(false);
     // Use the same history hooks as WebKit, including shared document and workspace history.
     const inputType = payload.action === "edit.undo" ? "historyUndo" : "historyRedo";

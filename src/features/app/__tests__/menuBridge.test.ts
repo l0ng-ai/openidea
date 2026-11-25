@@ -294,8 +294,9 @@ describe("menu event routing", () => {
       view.contentDOM.focus();
       view.dispatch({ changes: { from: 0, to: 6 }, userEvent: "delete.cut" });
       view.dispatch({ changes: { from: 0, insert: "paste" }, userEvent: "input.paste" });
-      const undo = () => routeMenuEvent({ action: "edit.undo", arg: "editorHistory" });
-      const redo = () => routeMenuEvent({ action: "edit.redo", arg: "editorHistory" });
+      const run = vi.fn(async () => true);
+      const undo = () => routeMenuEvent({ action: "edit.undo", arg: "editorHistory" }, run);
+      const redo = () => routeMenuEvent({ action: "edit.redo", arg: "editorHistory" }, run);
       await expect(undo()).resolves.toBe(true);
       expect(view.state.doc.toString()).toBe("");
       await expect(undo()).resolves.toBe(true);
@@ -307,6 +308,8 @@ describe("menu event routing", () => {
 
       find.focus();
       await expect(undo()).resolves.toBe(false);
+      await expect(redo()).resolves.toBe(false);
+      expect(run).not.toHaveBeenCalled();
       expect(view.state.doc.toString()).toBe("paste");
     } finally {
       view.destroy();

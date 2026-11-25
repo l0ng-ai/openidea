@@ -1155,9 +1155,14 @@ fn ids_with_accel(entries: &[Entry], out: &mut Vec<(&'static str, &'static str)>
     }
 }
 
-/// Quit and window cycling own their accelerators independently of the workbench keymap.
+/// Fixed menu shortcuts must still run when the focused webview declines the key.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn macos_native_action(id: &str) -> bool {
+    matches!(id, EDITOR_UNDO | EDITOR_REDO) || has_spec_accelerator(id)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn has_spec_accelerator(id: &str) -> bool {
     static ACTIONS: std::sync::OnceLock<Vec<(&str, &str)>> = std::sync::OnceLock::new();
     let actions = ACTIONS.get_or_init(|| {
         let mut actions = Vec::new();
@@ -1771,6 +1776,7 @@ pub fn restore_check<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, id:
 
 /// Workbench accelerators that AppKit could claim before Wry's child webview sees the key.
 /// A native role wins collisions, including Copy/Cut/Paste shared with the project tree.
+/// Editor history needs the page first for CodeMirror edits and a menu fallback if it declines.
 #[cfg(target_os = "macos")]
 fn workbench_command_keys(rendered: &[RenderedMenu]) -> HashSet<crate::macos_webview_input::CommandKey> {
     use crate::macos_webview_input::CommandKey;
@@ -1782,7 +1788,7 @@ fn workbench_command_keys(rendered: &[RenderedMenu]) -> HashSet<crate::macos_web
                     continue;
                 }
                 RenderedItem::Native { kind, .. } => (kind.implicit_accelerator(), true),
-                RenderedItem::Action { id, accel: Some(accel), .. } => (Some(accel.as_str()), macos_native_action(id)),
+                RenderedItem::Action { id, accel: Some(accel), .. } => (Some(accel.as_str()), has_spec_accelerator(id)),
                 _ => continue,
             };
             if let Some(key) = binding.and_then(CommandKey::from_binding) {
@@ -2201,7 +2207,9 @@ mod tests {
     }
 
     #[test]
-    fn only_spec_accelerators_fire_natively() {
+    fn native_menu_accelerators_fire_when_the_keymap_declines() {
+        assert!(macos_native_action(EDITOR_UNDO));
+        assert!(macos_native_action(EDITOR_REDO));
         assert!(macos_native_action("app.quit"));
         assert!(macos_native_action("window.next"));
         assert!(!macos_native_action("file.save"));
