@@ -51,9 +51,12 @@ const initial: State = {
 export const useDotnet = create<State>(() => initial);
 let controller: AbortController | undefined;
 let generation = 0;
+/** The workspace scan a context action starts when the model was never loaded; concurrent calls share it (#5635). */
+let contextScan: Promise<unknown> | undefined;
 export function resetDotnet() {
   generation++;
   controller?.abort();
+  contextScan = undefined;
   useDotnet.setState(initial);
 }
 export const selectedProject = () =>
@@ -65,21 +68,36 @@ export const selectedProject = () =>
  * the project of the active editor's file, else the solution — or, in a workspace with
  * no solution, the project selected in the NuGet window.
  */
-function contextTarget(arg?: unknown): string | null {
+async function contextTarget(arg?: unknown): Promise<string | null> {
   if (typeof arg === "string" && arg) return arg;
-  const tree = useProjectTree.getState();
-  const target = contextDotnetTarget({
-    selected: [...(tree.lead ? [tree.lead] : []), ...tree.selected],
-    editorFile: maybeEditorService()?.activePath() ?? null,
-    model: useDotnet.getState().model,
-  });
-  return target ?? (useDotnet.getState().selected || null);
+  const resolve = () => {
+    const tree = useProjectTree.getState();
+    return (
+      contextDotnetTarget({
+        selected: [...(tree.lead ? [tree.lead] : []), ...tree.selected],
+        editorFile: maybeEditorService()?.activePath() ?? null,
+        model: useDotnet.getState().model,
+      }) ??
+      (useDotnet.getState().selected || null)
+    );
+  };
+  // A selected `.csproj` / `.sln` resolves without the model. Otherwise a fresh
+  // session may never have scanned the workspace yet (#5635): load it once
+  // instead of silently doing nothing. A workspace without .NET stays a no-op
+  // after that single scan, and a selected file never triggers one.
+  const target = resolve();
+  if (target) return target;
+  const { model } = useDotnet.getState();
+  if (model.projects.length || model.solutions.length || !useProject.getState().project?.root) return null;
+  contextScan ??= Promise.resolve(reloadDotnet());
+  await contextScan;
+  return resolve();
 }
 
 /** The context's target as an evaluated project: a solution has no single project, so the selected one stands in. */
 async function contextProject(): Promise<DotnetProject | null> {
+  const target = await contextTarget();
   const s = useDotnet.getState();
-  const target = contextTarget();
   const path = target && !isDotnetSolutionPath(target) ? target : s.selected;
   const known = s.model.projects.find((p) => p.path === path);
   if (known || !path) return known ?? null;
@@ -164,8 +182,8 @@ export function selectDotnet(path: string, configuration?: string, framework?: s
   });
 }
 
-export function buildDotnet(operation: "build" | "restore" | "clean", arg?: unknown) {
-  const target = contextTarget(arg);
+export async function buildDotnet(operation: "build" | "restore" | "clean", arg?: unknown) {
+  const target = await contextTarget(arg);
   if (!target) return;
   // A solution builds as a whole: `dotnet` takes the `.sln` directly, there is no
   // project to re-evaluate afterwards.
