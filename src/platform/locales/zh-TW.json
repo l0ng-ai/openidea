@@ -502,6 +502,8 @@
   "menu.code.moveElementLeft": "向左移動元素",
   "menu.code.moveElementRight": "向右移動元素",
   "menu.code.collapseBlock": "摺疊程式碼塊",
+  "menu.code.expandDocComments": "展開文件註解",
+  "menu.code.collapseDocComments": "摺疊文件註解",
   "menu.analyze.inspectFile": "檢查目前檔案",
   "menu.project.copyElement": "複製…",
   "menu.run.chooseDebugConfig": "偵錯…",

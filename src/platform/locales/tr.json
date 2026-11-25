@@ -502,6 +502,8 @@
   "menu.code.moveElementLeft": "Öğeyi Sola Taşı",
   "menu.code.moveElementRight": "Öğeyi Sağa Taşı",
   "menu.code.collapseBlock": "Kod Bloğunu Katla",
+  "menu.code.expandDocComments": "Belgelendirme Yorumlarını Genişlet",
+  "menu.code.collapseDocComments": "Belgelendirme Yorumlarını Daralt",
   "menu.analyze.inspectFile": "Geçerli Dosyayı İncele",
   "menu.project.copyElement": "Kopyala…",
   "menu.run.chooseDebugConfig": "Hata Ayıkla…",

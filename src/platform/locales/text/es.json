@@ -1036,6 +1036,8 @@
   "Indent Block": "Aplicar sangría al bloque",
   "Indent Each Line": "Aplicar sangría a cada línea",
   "Collapse Recursively": "Contraer recursivamente",
+  "Expand Doc Comments": "Expandir comentarios de documentación",
+  "Collapse Doc Comments": "Contraer comentarios de documentación",
   "Expand Recursively": "Expandir recursivamente",
   "Move Caret to Matching Brace": "Mover cursor a la llave coincidente",
   "Toggle Insert/Overwrite": "Alternar insertar/sobrescribir",

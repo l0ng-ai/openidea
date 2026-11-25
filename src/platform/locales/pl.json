@@ -427,6 +427,8 @@
   "menu.code.moveElementLeft": "Przenieś element w lewo",
   "menu.code.moveElementRight": "Przenieś element w prawo",
   "menu.code.collapseBlock": "Zwiń blok kodu",
+  "menu.code.expandDocComments": "Rozwiń komentarze dokumentacyjne",
+  "menu.code.collapseDocComments": "Zwiń komentarze dokumentacyjne",
   "menu.analyze.inspectFile": "Sprawdź bieżący plik",
   "menu.project.copyElement": "Kopiuj…",
   "menu.run.chooseDebugConfig": "Debuguj…",

@@ -61,6 +61,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   ExpandRegion: "code.unfold",
   CollapseAllRegions: "code.foldAll",
   ExpandAllRegions: "code.unfoldAll",
+  ExpandDocComments: "code.expandDocComments",
+  CollapseDocComments: "code.collapseDocComments",
   RenameElement: "refactor.rename",
   "Refactorings.QuickListPopupAction": "refactor.thisMenu",
   ChangeSignature: "refactor.changeSignature",

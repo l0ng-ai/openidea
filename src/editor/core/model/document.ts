@@ -39,7 +39,7 @@ import {
   uiModeForPath,
 } from "../cm/languages";
 import { foldEffect } from "@codemirror/language";
-import { backendFolds, compactFoldFits, setBackendFolds } from "../cm/folding";
+import { backendFolds, compactFoldFits, setBackendFolds, type BackendFold } from "../cm/folding";
 import { setSyntaxHighlights } from "../cm/syntaxHighlight";
 import {
   caretFor,
@@ -89,6 +89,29 @@ export function isFileHeaderFold(
   if (lineComment && text.startsWith(lineComment)) return true;
   if (blockComment && text.startsWith(blockComment[0])) return true;
   return false;
+}
+
+/** 1-based number of the first line that is neither blank nor a shebang; 0 when there is none. */
+function firstCodeLine(state: EditorState): number {
+  for (let n = 1; n <= state.doc.lines; n++) {
+    const t = state.doc.line(n).text.trim();
+    if (t && !t.startsWith("#!")) return n;
+  }
+  return 0;
+}
+
+/** Whether comment fold `r` is the file header (see `isFileHeaderFold`). */
+function isHeaderComment(state: EditorState, r: BackendFold, firstCode: number, info: LanguageInfo | undefined) {
+  const first = state.doc.lineAt(r.from);
+  return isFileHeaderFold(first.number, firstCode, first.text, info?.lineComment, info?.blockComment);
+}
+
+/** The documentation comment folds: every comment fold but the file header. */
+export function docCommentFolds(state: EditorState, info: LanguageInfo | undefined): BackendFold[] {
+  const firstCode = firstCodeLine(state);
+  return (state.field(backendFolds, false) ?? []).filter(
+    (r) => r.kind === "comment" && !isHeaderComment(state, r, firstCode, info),
+  );
 }
 
 export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
@@ -678,13 +701,7 @@ export class DocModel {
       if (!folds.length) continue;
       const info = this.info;
       const head = state.selection.main.head;
-      const firstCodeLine = (() => {
-        for (let n = 1; n <= state.doc.lines; n++) {
-          const t = state.doc.line(n).text.trim();
-          if (t && !t.startsWith("#!")) return n;
-        }
-        return 0;
-      })();
+      const firstCode = firstCodeLine(state);
       const chosen = folds.filter((r) => {
         if (r.kind === "imports") return f.imports;
         if (r.kind === "compact")
@@ -698,9 +715,7 @@ export class DocModel {
         // Keeping the position check keeps ordinary doc comments further down
         // under "documentation comments"; the token check keeps a Python module
         // docstring (which opens with quotes) out of the file-header toggle.
-        const first = state.doc.lineAt(r.from);
-        const header = isFileHeaderFold(first.number, firstCodeLine, first.text, info?.lineComment, info?.blockComment);
-        return header ? f.fileHeader : f.docComments;
+        return isHeaderComment(state, r, firstCode, info) ? f.fileHeader : f.docComments;
       });
       const effects: StateEffect<unknown>[] = chosen.map((r) => foldEffect.of({ from: r.from, to: r.to }));
       // Folding the header / imports shifts everything below: keep a navigation

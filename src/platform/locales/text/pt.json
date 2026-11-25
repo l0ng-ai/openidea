@@ -1028,6 +1028,8 @@
   "Indent Block": "Indentar bloco",
   "Indent Each Line": "Indentar cada linha",
   "Collapse Recursively": "Recolher recursivamente",
+  "Expand Doc Comments": "Expandir comentários de documentação",
+  "Collapse Doc Comments": "Recolher comentários de documentação",
   "Expand Recursively": "Expandir recursivamente",
   "Move Caret to Matching Brace": "Mover cursor para a chave correspondente",
   "Toggle Insert/Overwrite": "Alternar Inserir/Sobrescrever",

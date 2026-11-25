@@ -2123,6 +2123,8 @@
   "Indent Block": "缩进块",
   "Indent Each Line": "缩进每一行",
   "Collapse Recursively": "递归折叠",
+  "Expand Doc Comments": "展开文档注释",
+  "Collapse Doc Comments": "折叠文档注释",
   "Expand Recursively": "递归展开",
   "Move Caret to Matching Brace": "将文本光标移至匹配的大括号",
   "Toggle Insert/Overwrite": "切换插入/改写",

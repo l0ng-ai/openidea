@@ -2097,6 +2097,8 @@
   "Indent Block": "Увеличить отступ блока",
   "Indent Each Line": "Увеличить отступ каждой строки",
   "Collapse Recursively": "Свернуть рекурсивно",
+  "Expand Doc Comments": "Развернуть комментарии документации",
+  "Collapse Doc Comments": "Свернуть комментарии документации",
   "Expand Recursively": "Развернуть рекурсивно",
   "Move Caret to Matching Brace": "Переместить каретку к парной скобке",
   "Toggle Insert/Overwrite": "Переключить режим вставки/замены",

@@ -433,6 +433,8 @@
   "menu.code.moveElementLeft": "요소 왼쪽으로 이동",
   "menu.code.moveElementRight": "요소 오른쪽으로 이동",
   "menu.code.collapseBlock": "코드 블록 접기",
+  "menu.code.expandDocComments": "문서 주석 펼치기",
+  "menu.code.collapseDocComments": "문서 주석 접기",
   "menu.analyze.inspectFile": "현재 파일 검사",
   "menu.project.copyElement": "복사…",
   "menu.run.chooseDebugConfig": "디버그…",

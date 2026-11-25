@@ -509,6 +509,8 @@
   "menu.code.moveElementLeft": "Move Element Left",
   "menu.code.moveElementRight": "Move Element Right",
   "menu.code.collapseBlock": "Fold Code Block",
+  "menu.code.expandDocComments": "Expand Doc Comments",
+  "menu.code.collapseDocComments": "Collapse Doc Comments",
   "menu.analyze.inspectFile": "Inspect Current File",
   "menu.project.copyElement": "Copy…",
   "menu.run.chooseDebugConfig": "Debug…",

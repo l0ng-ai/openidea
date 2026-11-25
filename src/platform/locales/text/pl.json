@@ -1028,6 +1028,8 @@
   "Indent Block": "Zwiększ wcięcie bloku",
   "Indent Each Line": "Zwiększ wcięcie każdego wiersza",
   "Collapse Recursively": "Zwiń rekurencyjnie",
+  "Expand Doc Comments": "Rozwiń komentarze dokumentacyjne",
+  "Collapse Doc Comments": "Zwiń komentarze dokumentacyjne",
   "Expand Recursively": "Rozwiń rekurencyjnie",
   "Move Caret to Matching Brace": "Przesuń kursor do pasującego nawiasu",
   "Toggle Insert/Overwrite": "Przełącz Wstawianie/Nadpisywanie",

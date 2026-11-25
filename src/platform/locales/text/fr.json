@@ -973,6 +973,8 @@
   "Indent Block": "Indenter le bloc",
   "Indent Each Line": "Indenter chaque ligne",
   "Collapse Recursively": "Réduire récursivement",
+  "Expand Doc Comments": "Développer les commentaires de documentation",
+  "Collapse Doc Comments": "Réduire les commentaires de documentation",
   "Expand Recursively": "Développer récursivement",
   "Move Caret to Matching Brace": "Déplacer le curseur vers l'accolade correspondante",
   "Toggle Insert/Overwrite": "Basculer entre insertion et remplacement",

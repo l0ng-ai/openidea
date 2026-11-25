@@ -1708,6 +1708,8 @@
   "Indent Block": "縮排塊",
   "Indent Each Line": "縮排每一行",
   "Collapse Recursively": "遞迴摺疊",
+  "Expand Doc Comments": "展開文件註解",
+  "Collapse Doc Comments": "摺疊文件註解",
   "Expand Recursively": "遞迴展開",
   "Move Caret to Matching Brace": "將文字游標移至符合的大括號",
   "Toggle Insert/Overwrite": "切換插入/改寫",

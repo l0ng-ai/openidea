@@ -1072,6 +1072,8 @@
   "Indent Block": "블록 들여쓰기",
   "Indent Each Line": "각 줄 들여쓰기",
   "Collapse Recursively": "재귀적으로 접기",
+  "Expand Doc Comments": "문서 주석 펼치기",
+  "Collapse Doc Comments": "문서 주석 접기",
   "Expand Recursively": "재귀적으로 펼치기",
   "Move Caret to Matching Brace": "캐럿을 일치하는 중괄호로 이동",
   "Toggle Insert/Overwrite": "삽입/덮어쓰기 전환",
