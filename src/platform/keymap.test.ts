@@ -258,6 +258,46 @@ describe("keymap", () => {
       }
     });
 
+    it("lets a plugin frame without ide.commands toggle its enclosing or own plugin tool window, but not another plugin's", async () => {
+      const ownWindow = vi.fn();
+      const ownSibling = vi.fn();
+      const otherPluginWindow = vi.fn();
+      const ownCommand = vi.fn();
+      const disposers = [
+        registerAction({ id: "toolwindow.plugin.acme.k8s.explorer", title: "Kubernetes", run: ownWindow }),
+        registerAction({ id: "toolwindow.plugin.acme.k8s.cluster", title: "Cluster", run: ownSibling }),
+        registerAction({ id: "toolwindow.plugin.other.ext.panel", title: "Other", run: otherPluginWindow }),
+        registerAction({ id: "plugin.acme.k8s.sync", title: "Sync", run: ownCommand }),
+      ];
+      useKeymap.setState({
+        overrides: {
+          "toolwindow.plugin.acme.k8s.explorer": ["Meta+4"],
+          "toolwindow.plugin.acme.k8s.cluster": ["Meta+5"],
+          "toolwindow.plugin.other.ext.panel": ["Meta+6"],
+          "plugin.acme.k8s.sync": ["Meta+7"],
+        },
+      });
+      uninstall = installKeyboardDispatcher(window);
+      const pane = document.body.appendChild(document.createElement("section"));
+      pane.setAttribute("data-toolwindow", "plugin.acme.k8s.explorer");
+      const frame = pane.appendChild(document.createElement("iframe"));
+      frame.setAttribute("data-plugin-webview", "acme.k8s");
+      try {
+        dispatchForwardedKey(frame, { key: "4", code: "Digit4", metaKey: true });
+        dispatchForwardedKey(frame, { key: "5", code: "Digit5", metaKey: true });
+        dispatchForwardedKey(frame, { key: "6", code: "Digit6", metaKey: true });
+        dispatchForwardedKey(frame, { key: "7", code: "Digit7", metaKey: true });
+        await Promise.resolve();
+        expect(ownWindow).toHaveBeenCalledOnce();
+        expect(ownSibling).toHaveBeenCalledOnce();
+        expect(otherPluginWindow).not.toHaveBeenCalled();
+        expect(ownCommand).not.toHaveBeenCalled();
+      } finally {
+        pane.remove();
+        for (const dispose of disposers) dispose();
+      }
+    });
+
     it("lets passed-on keys run only actions the app registers, by exact id", () => {
       const root = import.meta.dirname.replace(/[\\/]platform$/, "");
       const sources: string[] = [];
