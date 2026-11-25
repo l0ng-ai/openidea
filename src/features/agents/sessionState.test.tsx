@@ -482,10 +482,13 @@ describe("tool result images", () => {
       tool("preview", { images: [image] }),
       tool("inspect", { output: "Preview ready" }),
       { type: "agent", text: "Here is the result." },
+      { type: "user", text: "Thanks", attachments: [], steered: false, sentMs: 3000, doneMs: 4000 },
+      { type: "agent", text: "You're welcome." },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Here is the result.");
+    expect(!!stream().querySelector(`.${styles.turnFold}`)).toBe(foldTurns);
     const preview = screen.getByRole("img", { name: "Image" });
     expect(preview).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
     expect(preview.closest("details")).toBeNull();
@@ -567,6 +570,7 @@ describe("turn folding", () => {
   });
 
   it("leaves the turn the agent works on open", async () => {
+    useProject.setState({ settings: { agents: { foldTurns: true } } as never });
     backend.entries.set("A", [
       {
         type: "user",

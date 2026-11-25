@@ -61,6 +61,15 @@ const entries: AgentEntry[] = [
     diffs: [],
   },
   { type: "agent", text: "The preview is ready: front, side and back." },
+  {
+    type: "user",
+    text: "Looks good.",
+    attachments: [],
+    sentMs: 3000,
+    doneMs: 4000,
+    steered: false,
+  },
+  { type: "agent", text: "Glad it helped." },
 ];
 
 async function showImages(page: Page, foldTurns = true) {
@@ -103,6 +112,8 @@ for (const foldTurns of [true, false]) {
     expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
     const fold = page.locator("details").first();
     await expect(fold).not.toHaveAttribute("open");
+    if (foldTurns) await expect(fold.locator("summary").first()).toContainText("1s");
+    else await expect(fold.locator("summary").first()).not.toContainText("1s");
     await preview.click();
     const dialog = page.getByRole("dialog", { name: "Image", exact: true });
     await expect(dialog.getByRole("img")).toHaveJSProperty("naturalWidth", 900);
