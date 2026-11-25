@@ -520,7 +520,8 @@ fn rename_after_restoring_inplace_typing_saves_but_real_unsaved_work_stays_dirty
         docs.edit(info.id, version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: text.into() }] })
             .unwrap();
     }
-    assert!(docs.snapshot(info.id).unwrap().dirty);
+    // Typing reverted to the text on disk leaves the document clean.
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
     docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     assert!(!docs.snapshot(info.id).unwrap().dirty);
@@ -598,7 +599,8 @@ fn undo_accepts_typing_that_was_reverted_to_the_saved_refactoring() {
         )
         .unwrap();
     }
-    assert!(docs.snapshot(info.id).unwrap().dirty);
+    // Typing reverted to the saved refactoring leaves the document clean.
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
     docs.undo_workspace_edit(id).unwrap();
     assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
     assert_eq!(docs.snapshot(info.id).unwrap().text, "old");

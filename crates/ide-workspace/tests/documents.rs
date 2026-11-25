@@ -1447,3 +1447,48 @@ fn editorconfig_charset_applies_to_a_native_to_ascii_properties_file() {
     assert_eq!(doc.encoding, "windows-1252", "the escapes are ASCII bytes");
     assert_eq!(f.docs.text_of(&path).as_deref(), Some("greeting=Olá\n"));
 }
+
+/// Undoing back to the text on disk leaves the document clean (as in IntelliJ);
+/// redo, a save in between, or a pending line-ending change make it modified again.
+#[test]
+fn undo_back_to_the_disk_text_leaves_the_document_clean() {
+    let f = fixture();
+    let path = f.root.join("undo.txt");
+    fs::write(&path, "alpha\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap());
+    let v = f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(!f.docs.is_dirty(id).unwrap(), "undo back to the disk text");
+    let v = f.docs.edit(id, v, change(0, 0, "x")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap(), "redo");
+    assert_eq!(dirty_events(&f.events.lock()), vec![true, false, true]);
+
+    // After saving "xalpha", undoing to "alpha" differs from the file again.
+    f.docs.save(id).unwrap();
+    let v = f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap(), "undo past a save");
+    let v = f.docs.edit(id, v, change(0, 0, "x")).unwrap();
+    assert!(!f.docs.is_dirty(id).unwrap(), "redo back to the saved text");
+
+    // A pending line-ending change is written on save whatever the text.
+    f.docs.set_line_ending(id, LineEnding::CrLf).unwrap();
+    let v = f.docs.edit(id, v, change(0, 0, "y")).unwrap();
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap(), "line ending still differs from the file");
+}
+
+/// A buffer undone back to the disk text follows a checkout instead of warning about it.
+#[test]
+fn undo_back_to_the_disk_text_reloads_on_checkout() {
+    let f = fixture();
+    let path = f.root.join("undo.txt");
+    fs::write(&path, "alpha\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, "checked out\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "checked out\n");
+}
