@@ -9,8 +9,10 @@
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
-import type { RunConfig } from "@/platform/ipc";
+import { call, commands, isCancelled, nextRequestId, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { buildTask } from "./buildTask";
+import { BUILD_ACTION } from "./beforeLaunch";
 import { projectLocation, useRemote } from "@/platform/remote";
 import { tx, useT, useTxTemplate } from "@/platform/i18n";
 import { Button, EmptyState, T, lazyComponent, showContextMenu } from "@/ui";
@@ -18,6 +20,7 @@ import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
   notifications,
+  maybeEditorService,
   useRunConfigTypes,
   useDebugRunSessions,
   useServicesRunningCount,
@@ -486,20 +489,106 @@ function showOutput(s: RunSession) {
   toolWindowService().show("run", true);
 }
 
+/**
+ * Builds before a Services launch, like IDEA's Run Dashboard "Build"
+ * before-launch task: always incremental, never clean. Java projects compile
+ * through the IDE's own compiler (jdtls `java/buildWorkspace`, the same path
+ * a HotSwap build takes): ECJ recompiles only changed files in about a
+ * second, where a Maven `test-compile` subprocess pays JVM startup and
+ * plugin resolution every time. Projects jdtls does not serve (no Java, or
+ * the server not ready) fall back to the build tool's incremental build,
+ * whose fingerprint check still skips a no-op. A failed build aborts the
+ * launch (IDEA's default), and the Build tool window stays quiet unless it
+ * fails.
+ */
+async function ensureBuilt(): Promise<boolean> {
+  try {
+    await maybeEditorService()?.saveAll();
+  } catch {
+    /* saving is best effort */
+  }
+  // The empty module is the project root: the workspace build covers it. A
+  // cold jdtls (first import) can block for minutes, so the build shows a
+  // sticky notification with a Cancel that cancels the request — without it
+  // the launch looks dead while the build runs.
+  const request = nextRequestId();
+  let status: string | null = null;
+  notifications().notify({
+    group: "run",
+    level: "info",
+    key: "services-build",
+    title: tx`Building…`,
+    sticky: true,
+    actions: [{ label: tx`Cancel`, run: () => void commands.cancelRequest(request).catch(() => {}) }],
+  });
+  try {
+    status = await call(commands.javaBuildWorkspace("", request));
+  } catch (e) {
+    if (isCancelled(e)) {
+      notifications().expire?.("services-build");
+      return true; // cancelled: let the launch itself report
+    }
+    status = null; // no jdtls serving this project: fall back to the build tool
+  }
+  if (status !== null) {
+    // `withErrors` is often a stale jdtls model (a class its incremental state
+    // lost) while the build tool compiles the project fine, so it does not
+    // abort the launch — the launch path runs its own build and decides. Only
+    // a failed build (jdtls could not compile at all) stops it.
+    if (status === "failed") {
+      const name = "configuration";
+      notifications().notify({
+        group: "run",
+        level: "error",
+        title: tx`Build failed; '${name}' was not started.`,
+        body: "The Java build failed.",
+      });
+      return false;
+    }
+    return true;
+  }
+  const error = await buildTask(BUILD_ACTION, { activate: false });
+  notifications().expire?.("services-build");
+  if (error) {
+    const name = "configuration";
+    notifications().notify({
+      group: "run",
+      level: "error",
+      title: tx`Build failed; '${name}' was not started.`,
+      body: error,
+    });
+    return false;
+  }
+  return true;
+}
+
 /** Runs (or reruns, in its tab) a configuration; the output stays in Services instead of opening Run. */
 function run(r: Resolved) {
   const debug = serviceDebugger(r.session);
   if (debug) (debug.rerunInPlace ?? debug.rerun)?.();
   else if (r.session?.run) {
     const s = r.session.run;
-    void startRun(rerunConfig(s), s.id, s.baseConfig, { show: false });
-  } else if (r.config) void startRun(r.config, undefined, undefined, { show: false });
+    void (async () => {
+      if (!(await ensureBuilt())) return;
+      void startRun(rerunConfig(s), s.id, s.baseConfig, { show: false });
+    })();
+  } else if (r.config) {
+    void (async () => {
+      if (!(await ensureBuilt())) return;
+      void startRun(r.config!, undefined, undefined, { show: false });
+    })();
+  }
 }
 
 function debug(r: Resolved) {
   const session = serviceDebugger(r.session);
   if (session) (session.rerunInPlace ?? session.rerun)?.();
-  else if (r.config) void executeAction("run.debugConfig", { config: r.config, show: false });
+  else if (r.config) {
+    void (async () => {
+      if (!(await ensureBuilt())) return;
+      void executeAction("run.debugConfig", { config: r.config, show: false });
+    })();
+  }
 }
 
 /** The configurations of a type's group (of one of its folders), in their order there. */
@@ -543,6 +632,8 @@ async function startAll(kind: string, restart: boolean, folder?: string): Promis
       null,
     );
   }
+  // Build once before launching all configs (IDEA Run Dashboard behavior)
+  if (!(await ensureBuilt())) return;
   for (const config of entries) {
     if (useProject.getState().project?.root !== root) return;
     const running = serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions);

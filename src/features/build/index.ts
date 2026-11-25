@@ -123,9 +123,12 @@ export function activate(): () => void {
         icon: "build-rebuild",
         when: WHEN,
         keywords: ["clean", "compile"],
-        run: () => {
+        run: ({ arg }) => {
           const cmake = getContext()["run.cmakeBuild"];
-          void startBuild("rebuild", null, true, typeof cmake === "string" ? cmake : null);
+          // `activate: false` (before-launch builds, Services window): keep the
+          // Build tool window quiet; a failure still opens it.
+          const activate = !(typeof arg === "object" && arg !== null && "activate" in arg && arg.activate === false);
+          void startBuild("rebuild", null, activate, typeof cmake === "string" ? cmake : null);
         },
       },
       {

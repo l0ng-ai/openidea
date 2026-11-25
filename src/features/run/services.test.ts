@@ -4,7 +4,10 @@ import { pickServices } from "./serviceImport";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
-const ipc = vi.hoisted(() => ({ runConfigs: vi.fn() }));
+const ipc = vi.hoisted(() => ({
+  runConfigs: vi.fn(),
+  javaBuildWorkspace: vi.fn(async () => ({ status: "ok", data: "succeeded" })),
+}));
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
   isTauri: () => true,

@@ -8119,6 +8119,8 @@
   "dev,integration": "开发,集成",
   "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.": "以逗号分隔的 profiles（-P），与 Maven 工具窗口中的选择合并；!id 排除指定 profile。运行配置自身的 -P 会替代这些 profiles。",
   "Build failed; '{name}' was not started.": "构建失败；'{name}' 未启动。",
+  "Building…": "正在构建…",
+  "The Java build failed.": "Java 构建失败。",
   "Build has compile errors; '{name}' was not started.": "构建存在编译错误；'{name}' 未启动。",
   "Automatic (incremental)": "自动（增量）",
   "Build (Make)": "构建（Make）",

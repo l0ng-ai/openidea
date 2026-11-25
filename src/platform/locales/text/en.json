@@ -1604,6 +1604,7 @@
   "Active profiles": "Active profiles",
   "Build failed; '{name}' was not started.": "Build failed; '{name}' was not started.",
   "Build has compile errors; '{name}' was not started.": "Build has compile errors; '{name}' was not started.",
+  "Building…": "Building…",
   "Automatic (incremental)": "Automatic (incremental)",
   "Build (Make)": "Build (Make)",
   "Rebuild": "Rebuild",

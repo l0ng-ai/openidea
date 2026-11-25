@@ -513,6 +513,9 @@ export function mavenGoalConfig(
     detected: false,
     isTest: !options.skipTests && !args.includes("-DskipTests") && goals.some((g) => MAVEN_TEST_GOALS.test(g)),
     debugAdapter: null,
+    // Maven tool window runs surface their output in the Run window and focus it,
+    // matching IDEA's Maven tool window behaviour.
+    focusToolWindow: true,
   };
 }
 
@@ -567,6 +570,7 @@ export function gradleTaskConfig(
     detected: false,
     isTest: !options.skipTests && names.some((t) => /(^|:)(test|check|build|integrationTest)$/.test(t)),
     debugAdapter: null,
+    focusToolWindow: true,
   };
 }
 
