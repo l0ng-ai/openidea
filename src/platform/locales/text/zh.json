@@ -381,6 +381,7 @@
   "Make configurations pinned by default": "默认固定运行/调试标签页",
   "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.": "固定的标签页结束后会保留：之后的运行会打开新标签页，而不是替换它。",
   "Cannot paste the image into {name}": "无法将图片粘贴为 {name}",
+  "Cannot paste {name}": "无法粘贴 {name}",
   "New Worktree from '{name}'…": "从“{name}”新建工作树…",
   "Prune Worktrees": "清理工作树",
   "Prune Worktrees…": "清理工作树…",

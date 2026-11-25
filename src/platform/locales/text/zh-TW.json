@@ -132,6 +132,7 @@
   "Make configurations pinned by default": "預設固定執行/偵錯分頁",
   "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.": "固定的分頁結束後會保留：之後的執行會開啟新分頁，而不是取代它。",
   "Cannot paste the image into {name}": "無法將圖片貼上為 {name}",
+  "Cannot paste {name}": "無法貼上 {name}",
   "Worktree Conflict": "工作樹衝突",
   "Branch '{branch}' is already checked out in a worktree at:\n{path}": "分支 '{branch}' 已在以下位置的工作樹中籤出：\n{path}",
   "Checkout Anyway": "仍然簽出",

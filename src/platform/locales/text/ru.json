@@ -371,6 +371,7 @@
   "Make configurations pinned by default": "Закреплять конфигурации по умолчанию",
   "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.": "Завершённая закреплённая вкладка остаётся открытой: последующий запуск откроет новую вкладку вместо замены текущей.",
   "Cannot paste the image into {name}": "Не удалось вставить изображение в {name}",
+  "Cannot paste {name}": "Не удалось вставить {name}",
   "New Worktree from '{name}'…": "Новый Worktree из «{name}»…",
   "Prune Worktrees": "Очистить Worktree",
   "Prune Worktrees…": "Очистить Worktree…",
