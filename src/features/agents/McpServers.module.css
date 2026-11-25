@@ -251,7 +251,6 @@
   color: var(--fg-muted);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 
 .segmentActive {
@@ -278,7 +277,6 @@
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 
 .agentChip:hover {

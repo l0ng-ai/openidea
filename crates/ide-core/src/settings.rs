@@ -145,7 +145,7 @@ impl Default for AgentSettings {
             show_work_time: true,
             show_usage_limits: true,
             show_cost: false,
-            fold_turns: true,
+            fold_turns: false,
             smooth_text: true,
             fit_window_width: false,
             thinking: ThinkingDisplay::Auto,
@@ -2113,8 +2113,10 @@ mod tests {
         assert!(old.agents.show_cost);
         assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
         assert!(!old.agents.fit_window_width);
+        assert!(!old.agents.fold_turns);
         assert!(!Settings::default().agents.show_cost);
         assert!(!Settings::default().agents.fit_window_width);
+        assert!(!Settings::default().agents.fold_turns);
         let mut settings = Settings::default();
         settings.agents.show_usage_limits = false;
         settings.agents.fit_window_width = true;

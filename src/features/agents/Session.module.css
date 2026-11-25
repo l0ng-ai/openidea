@@ -127,7 +127,6 @@
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  cursor: pointer;
 }
 .statusChip:hover {
   background: var(--bg-toolbar-hover);
@@ -253,7 +252,6 @@
   border-radius: var(--radius-toolbar-button);
   background: var(--bg-app);
   color: var(--fg-muted);
-  cursor: pointer;
 }
 /* Over the stream's text: keep it opaque against the icon button's translucent hover fill. */
 .streamArea .jumpToLatest:not(:disabled):hover {
@@ -568,7 +566,6 @@
   border-radius: var(--radius-small);
   background: var(--bg-elev);
   color: var(--fg-secondary);
-  cursor: pointer;
   opacity: 0;
   -webkit-user-select: none;
   user-select: none;
@@ -747,7 +744,6 @@
   background: var(--bg-elev);
   color: var(--fg-secondary);
   font: inherit;
-  cursor: pointer;
 }
 .loadImage:hover {
   background: var(--bg-toolbar-hover);
@@ -771,7 +767,7 @@
 }
 .thought summary,
 .toolDetails > summary {
-  cursor: pointer;
+  cursor: default;
   list-style: none;
 }
 .thought summary::-webkit-details-marker,
@@ -863,7 +859,6 @@
   background: none;
   padding: 0 4px;
   border-radius: var(--radius-small);
-  cursor: pointer;
   white-space: nowrap;
 }
 .toolDiff:hover {
@@ -872,7 +867,7 @@
 
 /* Reasoning and tool calls between messages, folded as one block per turn. */
 .processRun > summary {
-  cursor: pointer;
+  cursor: default;
   list-style: none;
 }
 .processRun > summary::-webkit-details-marker {
@@ -1233,7 +1228,6 @@
   background: var(--bg-popup);
   box-shadow: 0 0 0 1px var(--border);
   color: var(--fg);
-  cursor: pointer;
 }
 /* Opaque on hover too: the icon button's own hover fill is translucent over the image. */
 .imageItem .removeImage:not(:disabled):hover {
@@ -1384,7 +1378,6 @@
   color: var(--fg);
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 .subagentOpen:hover {
   background: var(--bg-hover);
@@ -1427,7 +1420,7 @@
   padding-left: 22px;
   color: var(--fg-muted);
   font-size: var(--agent-fs-small, var(--fs-small));
-  cursor: pointer;
+  cursor: default;
   list-style: none;
 }
 .subagentSection > summary::-webkit-details-marker {
@@ -1524,7 +1517,6 @@
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .subagentChip:hover {
   background: var(--bg-toolbar-hover);
@@ -1774,7 +1766,7 @@
 
 /* A finished turn's work, folded under its message. */
 .turnFold > summary {
-  cursor: pointer;
+  cursor: default;
   list-style: none;
 }
 .turnFold > summary::-webkit-details-marker {
@@ -1822,7 +1814,6 @@
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .trayChip:hover,
 .trayChip[aria-expanded="true"] {
@@ -1943,7 +1934,6 @@
 }
 .meterButton {
   composes: meter;
-  cursor: pointer;
   color: inherit;
   font: inherit;
   border: 0;
@@ -2005,7 +1995,7 @@
   flex-basis: 0;
 }
 .contextDetails summary {
-  cursor: pointer;
+  cursor: default;
   color: var(--fg);
 }
 .contextDetails ul {

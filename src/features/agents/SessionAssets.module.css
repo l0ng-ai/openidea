@@ -24,7 +24,6 @@
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  cursor: pointer;
   transition:
     background var(--dur-fast) var(--ease),
     border-color var(--dur-fast) var(--ease),
@@ -99,7 +98,6 @@
   font: inherit;
   font-size: var(--fs-ui);
   text-align: left;
-  cursor: pointer;
 }
 
 .rowMain:focus-visible {

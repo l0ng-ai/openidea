@@ -506,8 +506,8 @@ export function Stream({
   const rows = useMemo(() => {
     if (!entries) return [];
     const rows = conversationRows(entries, start, toolCalls === "grouped");
-    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start, busy)) : rows;
-  }, [entries, start, busy, foldTurns, toolCalls, finding]);
+    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start)) : rows;
+  }, [entries, start, foldTurns, toolCalls, finding]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
     const byAgent = (row: ConversationRow) =>

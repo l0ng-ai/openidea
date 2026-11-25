@@ -101,13 +101,12 @@ export interface FoldedTurn {
 }
 
 /**
- * The finished turns whose work before their last reply folds into one line. A turn
- * folds when it has ended, ended with a reply, and did something before that reply (and
- * neither the user sent anything into it nor it ran into an error meanwhile); the
- * latest turn stays open while the agent works. Turns asked before `from` aren't shown
- * and so don't fold.
+ * The earlier finished turns whose work before their last reply folds into one line. A turn
+ * folds once a later turn has started, when it ended with a reply and did something before
+ * that reply (and neither the user sent anything into it nor it ran into an error meanwhile);
+ * the latest turn always stays open. Turns asked before `from` aren't shown and so don't fold.
  */
-export function foldedTurns(entries: readonly AgentEntry[], from: number, busy: boolean): Map<number, FoldedTurn> {
+export function foldedTurns(entries: readonly AgentEntry[], from: number): Map<number, FoldedTurn> {
   const turns = new Map<number, FoldedTurn>();
   const starts: number[] = [];
   entries.forEach((e, i) => {
@@ -116,7 +115,7 @@ export function foldedTurns(entries: readonly AgentEntry[], from: number, busy: 
   starts.forEach((user, k) => {
     const end = starts[k + 1] ?? entries.length;
     const last = k === starts.length - 1;
-    if (last && busy) return;
+    if (last) return;
     const asked = entries[user] as Extract<AgentEntry, { type: "user" }>;
     let reply = -1;
     for (let i = end - 1; i > user; i--) {
