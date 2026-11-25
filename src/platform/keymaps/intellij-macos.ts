@@ -468,6 +468,7 @@ export const intellijMacos: Record<string, string[]> = {
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
   "db.showDiagram": ["Meta+Alt+Shift+U"],
+  "db.showDiagramPopup": ["Meta+Alt+U"],
   "db.selectOpened": [],
   "db.expandAll": [],
   "db.collapseAll": [],

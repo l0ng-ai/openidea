@@ -135,5 +135,6 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   "ChangesView.ShelveSilently": "vcs.shelveSilently",
   "ChangesView.UnshelveSilently": "vcs.unshelveSilently",
   ShowUmlDiagram: "db.showDiagram",
+  ShowUmlDiagramPopup: "db.showDiagramPopup",
   "Vcs.CopyCommitSubjectAction": "vcs.log.copyCommitSubject",
 };

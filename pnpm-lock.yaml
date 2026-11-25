@@ -130,6 +130,9 @@ importers:
       dompurify:
         specifier: ^3.4.17
         version: 3.4.17
+      elkjs:
+        specifier: 0.9.3
+        version: 0.9.3
       emmet:
         specifier: 2.4.11
         version: 2.4.11

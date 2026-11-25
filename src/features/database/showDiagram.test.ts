@@ -6,7 +6,7 @@ import type { DbNode } from "./nodes";
 import { detailsKey, tablesKey, useDatabase } from "./store";
 import { registerDatabaseTreeActions } from "./treeActions";
 import { nodeMenu } from "./treeMenu";
-import type { DiagramData } from "./erDiagram";
+import { diagramModel, type DiagramData } from "./erDiagram";
 
 const ui = vi.hoisted(() => ({ notify: vi.fn() }));
 vi.mock("@/workbench/contributions", async (importOriginal) => {
@@ -79,7 +79,7 @@ afterEach(() => {
   ui.notify.mockReset();
 });
 
-const entities = (source: string) => [...source.matchAll(/^ {2}t\d+\["([^"]*)"\]/gm)].map((m) => m[1]);
+const shownNames = (data = diagram()) => data?.tables.map((t) => t.name);
 
 describe("Diagrams › Show Diagram", () => {
   it("is in the Diagrams submenu of tables, schemas and table folders only", () => {
@@ -88,7 +88,9 @@ describe("Diagrams › Show Diagram", () => {
         (item) =>
           "submenu" in item &&
           item.label === "Diagrams" &&
-          item.submenu?.some((s) => "action" in s && s.action === "db.showDiagram"),
+          ["db.showDiagram", "db.showDiagramPopup"].every((a) =>
+            item.submenu?.some((s) => "action" in s && s.action === a),
+          ),
       );
     expect([tableNode("users"), schema, folder("tables"), folder("routines")].map(has)).toEqual([
       true,
@@ -102,23 +104,22 @@ describe("Diagrams › Show Diagram", () => {
     const selection = [tableNode("orders"), tableNode("audit")];
     useDatabase.setState({ selectedNodes: selection });
     await showDiagram(selection[1]);
-    expect(entities(diagram()!.source)).toEqual(["orders", "audit"]);
-    expect(diagram()!.source).toContain('t0 ||--o{ t1 : "oid"');
-    expect(diagram()!.source).not.toContain("users");
+    expect(shownNames()).toEqual(["orders", "audit"]);
+    expect(diagramModel(diagram()!.tables).edges).toEqual([expect.objectContaining({ from: 1, to: 0 })]);
   });
 
   it("shows only the clicked table when it is outside the selection", async () => {
     useDatabase.setState({ selectedNodes: [tableNode("orders"), tableNode("audit")] });
     await showDiagram(tableNode("users"));
-    expect(diagram()).toEqual({ title: "users", source: expect.stringContaining('t0["users"]') });
-    expect(entities(diagram()!.source)).toEqual(["users"]);
+    expect(diagram()!.title).toBe("users");
+    expect(shownNames()).toEqual(["users"]);
   });
 
   it("shows every table of a schema, without its views", async () => {
     await showDiagram(schema);
     expect(diagram()!.title).toBe("public");
-    expect(entities(diagram()!.source)).toEqual(["users", "orders", "audit"]);
-    expect(diagram()!.source.match(/--o\{/g)).toHaveLength(2);
+    expect(shownNames()).toEqual(["users", "orders", "audit"]);
+    expect(diagramModel(diagram()!.tables).edges).toHaveLength(2);
     expect(ui.notify).not.toHaveBeenCalled();
   });
 
@@ -131,33 +132,24 @@ describe("Diagrams › Show Diagram", () => {
       ),
     });
     await showDiagram(schema);
-    expect(entities(diagram()!.source)).toHaveLength(50);
+    expect(shownNames()).toHaveLength(50);
     expect(ui.notify).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Showing the first 50 of 60 tables in the diagram" }),
     );
   });
 
-  it("leaves out tables that would take the source past Mermaid's size limit, and says so", async () => {
-    const names = Array.from({ length: 20 }, (_, i) => `wide_${i}`);
-    const wide = Array.from({ length: 60 }, (_, i) => ({
-      ...col(`column_with_a_long_name_${i}`),
-      dataType: "varchar(255)",
-    }));
-    useDatabase.setState({
-      tables: { [tablesKey(id, "public")]: { status: "ok", value: names.map((name) => ({ name, kind: "table" })) } },
-      details: Object.fromEntries(
-        names.map((name) => [detailsKey(id, "public", name), { status: "ok", value: details(wide) }]),
-      ),
-    });
-    await showDiagram(schema);
-    const { source } = diagram()!;
-    const shown = entities(source).length;
-    expect(source.length).toBeLessThanOrEqual(50_000);
-    expect(shown).toBeGreaterThan(1);
-    expect(shown).toBeLessThan(20);
-    expect(ui.notify).toHaveBeenCalledWith(
-      expect.objectContaining({ title: `Showing the first ${shown} of 20 tables in the diagram` }),
-    );
+  it("shows the same diagram in a popup, and gives the tab the same key whatever the selection order", async () => {
+    const selection = [tableNode("orders"), tableNode("audit")];
+    useDatabase.setState({ selectedNodes: selection });
+    await getAction("db.showDiagramPopup")!.run({ arg: selection[0] } as never);
+    expect(opened).not.toHaveBeenCalled();
+    const popup = useDatabase.getState().dialog;
+    expect(popup?.kind === "diagram" && shownNames(popup.data)).toEqual(["orders", "audit"]);
+    useDatabase.setState({ dialog: null });
+    await showDiagram(selection[0]);
+    useDatabase.setState({ selectedNodes: [...selection].reverse() });
+    await showDiagram(selection[0]);
+    expect(opened.mock.calls[0]![0].key).toBe(opened.mock.calls[1]![0].key);
   });
 
   it("opens nothing without tables", async () => {
