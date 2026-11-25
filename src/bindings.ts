@@ -5807,6 +5807,14 @@ export type Decoration = {
 	 *  plain-text fallback shown when this is absent.
 	 */
 	markdownHover: string | null,
+	/**  The item's own colors (API 1.17 `set-styled`), validated `#rrggbb` / `#rrggbbaa`. */
+	colors?: DecorationColors | null,
+};
+
+/**  Colors of a styled editor decoration (API 1.17). */
+export type DecorationColors = {
+	foreground: string | null,
+	background: string | null,
 };
 
 /**  A plugin-owned editor or project-tree decoration set for one file. */

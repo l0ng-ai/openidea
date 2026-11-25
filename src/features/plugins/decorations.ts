@@ -9,7 +9,7 @@ import {
   type DecorationSet as CmDecorations,
   type Tooltip,
 } from "@codemirror/view";
-import type { DecorationSet, Range } from "@/bindings";
+import type { Decoration as PluginDecoration, DecorationSet, Range } from "@/bindings";
 import { registerEditorContribution, useEditorRegistry, type EditorDocContext } from "@/editor/api";
 import { resizableDecorationHover } from "./decorationHover";
 import { highlightInto, loadMarkdown, markupToHtml, renderMarkup } from "@/editor/lsp/markdown";
@@ -133,6 +133,27 @@ function offsetOf(el: HTMLElement, property: string): number {
   return Number.parseFloat(getComputedStyle(el).getPropertyValue(property)) || 0;
 }
 
+/** A host-validated `set-styled` color; anything else is dropped rather than injected into a style. */
+const HEX_COLOR = /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/;
+
+function hexColor(color: string | null | undefined): string | null {
+  return color && HEX_COLOR.test(color) ? color : null;
+}
+
+/** Inline CSS for an item's own colors (API 1.17), or null. */
+function colorStyle(item: PluginDecoration, background: boolean): string | null {
+  const foreground = hexColor(item.colors?.foreground);
+  const fill = background ? hexColor(item.colors?.background) : null;
+  const css = [foreground && `color: ${foreground}`, fill && `background-color: ${fill}`].filter(Boolean);
+  return css.length ? `${css.join("; ")};` : null;
+}
+
+/** The class an editor item renders with: a palette style, or none for an item that brings its own colors. */
+function itemClass(item: PluginDecoration): string | null {
+  if (Object.hasOwn(colors, item.style)) return styles[item.style] ?? "";
+  return item.style === "" && colorStyle(item, true) ? "" : null;
+}
+
 class AfterText extends WidgetType {
   /** Last offset applied, so the observer does not rewrite the style on every keystroke. */
   private appliedWidth = -1;
@@ -143,6 +164,7 @@ class AfterText extends WidgetType {
     readonly style: string,
     readonly hover: string | null,
     readonly markdown: string | null,
+    readonly css: string | null = null,
   ) {
     super();
   }
@@ -151,7 +173,8 @@ class AfterText extends WidgetType {
       this.text === other.text &&
       this.style === other.style &&
       this.hover === other.hover &&
-      this.markdown === other.markdown
+      this.markdown === other.markdown &&
+      this.css === other.css
     );
   }
   /**
@@ -194,6 +217,7 @@ class AfterText extends WidgetType {
     const text = document.createElement("span");
     text.className = `${styles.afterInner ?? ""} ${this.style}`;
     text.textContent = this.text;
+    if (this.css) text.style.cssText = this.css;
     // The Markdown hover card replaces the native tooltip; two would stack.
     if (this.hover && !this.markdown) text.title = this.hover;
     span.appendChild(text);
@@ -252,7 +276,7 @@ function refreshedMarkdown(card: OpenHover) {
       for (const item of set.items)
         if (
           item.markdownHover &&
-          Object.hasOwn(colors, item.style) &&
+          itemClass(item) != null &&
           item.after === card.after &&
           sameRange(item.range, card.range)
         )
@@ -340,8 +364,8 @@ export function decorationExtension(ctx: EditorDocContext) {
       for (const set of currentSets(sets, false))
         if (!set.tree && String(set.path) === String(ctx.path)) {
           for (const item of set.items) {
-            const className = Object.hasOwn(colors, item.style) ? styles[item.style] : undefined;
-            if (!className) continue;
+            const className = itemClass(item);
+            if (className == null) continue;
             const from = offset(doc, item.range.start),
               to = offset(doc, item.range.end);
             if (from == null || to == null || from > to) continue;
@@ -360,7 +384,10 @@ export function decorationExtension(ctx: EditorDocContext) {
               ranges.push(
                 Decoration.mark({
                   class: className,
-                  attributes: item.hover && !markdown ? { title: item.hover } : {},
+                  attributes: {
+                    ...(item.hover && !markdown ? { title: item.hover } : {}),
+                    ...(colorStyle(item, true) ? { style: colorStyle(item, true)! } : {}),
+                  },
                 }).range(from, to),
               );
             if (item.after) {
@@ -370,7 +397,7 @@ export function decorationExtension(ctx: EditorDocContext) {
               const end = doc.lineAt(to);
               ranges.push(
                 Decoration.widget({
-                  widget: new AfterText(item.after, className, item.hover, markdown),
+                  widget: new AfterText(item.after, className, item.hover, markdown, colorStyle(item, false)),
                   side: 1,
                 }).range(end.to),
               );

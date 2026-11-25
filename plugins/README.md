@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints, decorations
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.16.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.17.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -427,9 +427,23 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.17
+
+API 1.17.0 is in development on `main`. Use `engines.openidea = "^1.17"` and the
+matching SDK. Plugins for 1.16 and earlier keep working. New in 1.17:
+
+- [Editor decorations](#editor-and-project-snapshots-api-14):
+  `host::set_styled_decorations` (`decorations.set-styled`) draws the same items as
+  `set_markdown_decorations` with their own `colors`: a `#rrggbb` or `#rrggbbaa`
+  foreground and background, for colors the theme palette does not have (a TODO
+  highlighter's user-chosen colors). An item with colors may leave `style` empty;
+  with a palette style the colors paint over it. Any other color string is rejected
+  with `Error::Invalid`. Set ids, limits and `clear_decorations` are shared with
+  `set_decorations`.
+
 ### API 1.16
 
-API 1.16.0 is in development on `main`. Use `engines.openidea = "^1.16"` and the
+API 1.16.0 shipped with OpenIDEA 0.1.52. Use `engines.openidea = "^1.16"` and the
 matching SDK. Plugins for 1.15 and earlier keep working. New in 1.16:
 
 - `Project::vcs_repository_at(path)` returns the mapped worktree owning an existing project file
@@ -836,6 +850,7 @@ then run `openidea-plugin check`.
 | `TextEditor::set_selections(ranges)`, `reveal(range)`                                                          | `editor.text-editor`                         | API 1.4: selections or scrolling in this window's already open editor; no capability. Commands/events only, UTF-16 coordinates.                                                                                                                                                                                                                           |
 | `host::set_decorations`, `clear_decorations`                                                                   | `decorations.{set,clear}`                    | API 1.4: project-scoped editor annotations cleared on plugin stop. Requires `project.read`.                                                                                                                                                                                                                                                               |
 | `host::set_markdown_decorations`                                                                               | `decorations.set-markdown`                   | API 1.16: the same sets with `markdown_hover` cards; shares set ids and limits with `set_decorations`. Requires `project.read`.                                                                                                                                                                                                                           |
+| `host::set_styled_decorations`                                                                                 | `decorations.set-styled`                     | API 1.17: those items with their own `#rrggbb` / `#rrggbbaa` `colors`; `style` may be empty when colors are set; shares set ids and limits with `set_decorations`. Requires `project.read`.                                                                                                                                                               |
 | `host::set_file_decoration`, `clear_file_decorations`                                                          | `decorations.{set-file,clear-file}`          | API 1.4: project-tree badges/styles. Requires `project.read`.                                                                                                                                                                                                                                                                                             |
 | `host::set_file_note`                                                                                          | `decorations.set-file-note`                  | API 1.7: a note after the name in the project tree (one line, at most 200 characters). Requires `project.read`.                                                                                                                                                                                                                                           |
 | `host::set_file_icon`, `set_file_icons`                                                                        | `decorations.{set-file-icon,set-file-icons}` | API 1.8: assign one of the plugin's declared `[[contributes.fileIcons]]` icons to a file or plain folder by path (individually or up to 10,000 entries per set). Requires `project.read`.                                                                                                                                                                 |
@@ -1333,7 +1348,11 @@ unloading or crashing the plugin withdraws them; idle reclamation preserves them
 API 1.16 adds `set_markdown_decorations`: the same items, limits and set ids, with
 `markdown_hover` rendered as a hover card (the editor's Markdown hover, including
 code highlighting and safe links) while the pointer rests on the range or its
-`after` label. `hover` remains the plain-text fallback. A plugin that pushes
+`after` label. `hover` remains the plain-text fallback. API 1.17 adds
+`set_styled_decorations`: those items plus `colors` (`foreground` / `background`,
+each `#rrggbb` or `#rrggbbaa`). Palette styles follow the theme; use colors only
+when the user chose them (or the plugin's own data defines them), since they do not
+adapt to light and dark themes. The line-end `after` label takes the foreground only. A plugin that pushes
 labels when a file is opened or focused should subscribe to
 `file-opened`/`editor-focused` and call `clear_decorations` when its data no
 longer applies; the host already bounds what a set can carry.
