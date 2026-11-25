@@ -7171,6 +7171,8 @@
   "Resolve Using Yours": "Принять свою версию",
   "Resolve Using Theirs": "Принять чужую версию",
   "All changes processed": "Все изменения обработаны",
+  "All changes have been processed.": "Все изменения обработаны.",
+  "Save changes and finish merging": "Сохранить изменения и завершить слияние",
   "{pending} change left": "Осталось {pending} изменение",
   "{pending} changes left": "Осталось изменений: {pending}",
   "Compare Contents": "Сравнить содержимое",
