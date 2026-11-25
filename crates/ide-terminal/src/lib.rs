@@ -19,8 +19,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-/// Output is flushed to the UI at most this long after the first unsent byte.
+/// Output is flushed to the UI at most this long after the first unsent byte (Max FPS
+/// Unlimited; a lower setting batches longer, see `ide_core::output_rate`).
 const BATCH_INTERVAL: Duration = Duration::from_millis(4);
+
+fn batch_interval() -> Duration {
+    ide_core::output_rate::batch_interval(BATCH_INTERVAL)
+}
 /// …or as soon as this much text is pending.
 const BATCH_BYTES: usize = 64 * 1024;
 /// After the shell exits, how long to keep draining output still in flight.
@@ -907,7 +912,7 @@ fn spawn_pump(
 
         loop {
             let now = Instant::now();
-            let batch_wait = batch_started.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now));
+            let batch_wait = batch_started.map(|t| (t + batch_interval()).saturating_duration_since(now));
             let drain_wait = drain_deadline.map(|t| t.saturating_duration_since(now));
             let wait = match (batch_wait, drain_wait) {
                 (Some(a), Some(b)) => a.min(b),
@@ -934,7 +939,7 @@ fn spawn_pump(
                     if drain_deadline.is_some_and(|d| Instant::now() >= d) {
                         break;
                     }
-                    if batch_started.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                    if batch_started.is_some_and(|t| t.elapsed() >= batch_interval()) {
                         flush(&mut pending, &mut batch_started);
                     }
                 }

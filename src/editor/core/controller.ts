@@ -956,6 +956,14 @@ export class EditorController implements SlotHost {
                   arg: [{ path: slot.model.path, lines: { from: first, to: last } }],
                 },
               ] as MenuItem[])),
+          // As in IDEA: only the format Rich-Text Copy doesn't already give; rich text takes one selection.
+          ...(!hasSel
+            ? []
+            : editorPrefs().general.richTextCopy
+              ? ([{ kind: "action", action: "code.copyAsPlainText" }] as MenuItem[])
+              : view.state.selection.ranges.length === 1
+                ? ([{ kind: "action", action: "code.copyAsRichText" }] as MenuItem[])
+                : []),
           { kind: "action", action: "code.pasteAsPlainText" },
           { kind: "action", action: "code.pasteFromHistory" },
         ],
