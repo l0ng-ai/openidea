@@ -1998,7 +1998,15 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                 // member's own venv / pin.
                 if !own && let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
-                    if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
+                    // Options for the runner itself (`uv run --with rich …`, `--no-sync`,
+                    // `--project member`) only mean something to it: keep that command (#5874).
+                    let runner_options = runner
+                        && c.args.first().map(String::as_str) == Some("run")
+                        && c.args.get(1).is_some_and(|a| a.starts_with('-'));
+                    if (c.kind == "python" || c.kind == "django-test")
+                        && !runner_options
+                        && (runner || is_python_command(&c.command))
+                    {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
                             // `uv run python …` → `<interpreter> …`
                             let skip = if c.args.get(1).is_some_and(|a| is_python_command(a)) { 2 } else { 1 };
