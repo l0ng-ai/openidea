@@ -14,7 +14,7 @@ import { GraphCell } from "./GraphCell";
 import { RowResizeHandle } from "./RowResizeHandle";
 import { commitMenu } from "./commitMenu";
 import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
-import { columnPrev } from "./useColumnResize";
+import { REPOSITORY_WIDTH, columnPrev } from "./useColumnResize";
 
 function CommitRowView({
   id,
@@ -161,6 +161,11 @@ function CommitRowView({
       </Popup>
     </span>
   );
+  const repository = opts.showRepository && !!commitRepo(c) && useVcs.getState().roots.length > 1;
+  // The header's neighbours: an id without a shown column (a hidden one) is skipped.
+  const visibleIds = columnSequence(opts.columnOrder, columns).filter(
+    (cid) => cid === SUBJECT_COLUMN.id || columns.some((col) => col.id === cid),
+  );
   return (
     <div
       id={id}
@@ -182,12 +187,16 @@ function CommitRowView({
         showContextMenu(e, commitMenu(c, selectedCommits(), fileHistoryTarget));
       }}
     >
-      {opts.showRepository && commitRepo(c) && useVcs.getState().roots.length > 1 && (
-        <span className={styles.colRepository} title={commitRepo(c)!}>
+      {repository && (
+        <span
+          className={styles.colRepository}
+          style={{ width: opts.columnWidths.repository ?? REPOSITORY_WIDTH }}
+          title={commitRepo(c)!}
+        >
           {repoName(commitRepo(c)!)}
         </span>
       )}
-      {columnSequence(opts.columnOrder, columns).map((cid, _index, ids) => {
+      {visibleIds.map((cid, _index, ids) => {
         if (cid === SUBJECT_COLUMN.id) return subjectCell;
         const column = columns.find((col) => col.id === cid);
         if (!column) return null;
@@ -205,7 +214,9 @@ function CommitRowView({
             title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
           >
             {column.render(c)}
-            <RowResizeHandle target={{ id: column.id, width, ...columnPrev(ids, column.id, opts, columns) }} />
+            <RowResizeHandle
+              target={{ id: column.id, width, ...columnPrev(ids, column.id, opts, columns, repository) }}
+            />
           </span>
         );
       })}

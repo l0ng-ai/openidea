@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { provideToolWindowService, type ToolWindowService } from "@/workbench/contributions";
 import { getContext, setContext } from "@/platform/context";
-import { closeAll, closeTab, getSession, newTab, useTerminals } from "./store";
+import { closeAll, closeTab, detachTab, getSession, newTab, useTerminals } from "./store";
 
 const { focused } = vi.hoisted(() => ({ focused: [] as string[] }));
 
@@ -118,6 +118,13 @@ describe("terminalFocus after the focused pane goes away", () => {
     const tab = newTab("/repo");
     typeInto(tab.session);
     closeTab(tab.id);
+    expect(getContext().terminalFocus).toBe(false);
+  });
+
+  it("is cleared when the focused tab is detached to the editor", () => {
+    const tab = newTab("/repo");
+    typeInto(tab.session);
+    expect(detachTab(tab.id)?.key).toBe(tab.session);
     expect(getContext().terminalFocus).toBe(false);
   });
 
