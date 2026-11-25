@@ -331,4 +331,33 @@ describe("the all-in-one diff tab with many files", () => {
     expect(error.mock.calls.flat().join(" ")).not.toMatch(/same key/);
     error.mockRestore();
   });
+
+  it("opens at the staged or the unstaged entry of a partially staged file, whichever was opened", async () => {
+    setAllInOneDiff(true);
+    const path = "/r/src/Partial.ts";
+    const change = [
+      diff(path, { right: { type: "rev", rev: ":0" } }),
+      ...many(10),
+      diff(path, { left: { type: "rev", rev: ":0" } }),
+      ...many(10).map((d) => ({ ...d, path: d.path.replace("File", "Other") })),
+    ];
+    const topIndex = () => {
+      const el = document.querySelector<HTMLElement>("[data-combined-scroll]")!;
+      const slot = [...el.querySelectorAll<HTMLElement>("[data-index]")].find(
+        (s) => Number.parseFloat(s.style.top) === el.scrollTop,
+      );
+      return Number(slot?.dataset.index);
+    };
+    const openAt = async (at: number) => {
+      openInput.mockClear();
+      await openDiff(withChain(change, at));
+      const { unmount } = render(<CombinedDiffTab input={openInput.mock.calls[0]![0]} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      const top = topIndex();
+      unmount();
+      return top;
+    };
+    expect(await openAt(0)).toBe(0);
+    expect(await openAt(11)).toBe(11);
+  });
 });
