@@ -33,9 +33,14 @@
   z-index: 1;
 }
 
-/* Always-on underline for highlighted URLs (linkHighlights); the decoration's foreground colour tints the text. */
+/* Always-on underline for highlighted URLs (linkHighlights) and modifier-hovered paths (pathLinks). */
 .xterm .xterm-decoration.openidea-terminal-link {
   box-sizing: border-box;
   border-bottom: 1px solid var(--link, var(--accent));
   pointer-events: none;
+}
+
+.xterm.openidea-terminal-path-hover,
+.xterm.openidea-terminal-path-hover.enable-mouse-events {
+  cursor: pointer;
 }

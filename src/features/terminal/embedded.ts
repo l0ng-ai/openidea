@@ -26,15 +26,17 @@ import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
 import { MIN_CONTRAST_RATIO, readLinkColor, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
+import { installModifierPathLinks, type ModifierPathLinksController } from "./pathLinks";
 
-const live = new Map<Terminal, LinkHighlightController>();
+const live = new Map<Terminal, { links: LinkHighlightController; paths: ModifierPathLinksController }>();
 
 /** Follows a theme change (called with the terminal sessions' own update). */
 export function applyThemeToEmbedded() {
   const theme = readTerminalTheme();
-  for (const [t, links] of live) {
+  for (const [t, { links, paths }] of live) {
     t.options.theme = theme;
     links.refresh();
+    paths.refresh();
   }
 }
 
@@ -85,7 +87,12 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  live.set(term, installLinkHighlights(term, readLinkColor));
+  const linkHighlights = installLinkHighlights(term, readLinkColor);
+  const pathLinks = installModifierPathLinks(term, host, {
+    cwd: () => opts.cwd ?? useProject.getState().project?.root ?? "",
+    color: readLinkColor,
+  });
+  live.set(term, { links: linkHighlights, paths: pathLinks });
   let lastSize = { cols: term.cols, rows: term.rows };
   const processResize = settledResize((cols, rows) => {
     if (cols === lastSize.cols && rows === lastSize.rows) return;
@@ -153,7 +160,9 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       removePaste();
       removeDrop();
       for (const d of disposables) d.dispose();
-      live.get(term)?.dispose();
+      const controllers = live.get(term);
+      controllers?.links.dispose();
+      controllers?.paths.dispose();
       live.delete(term);
       term.dispose();
     },
