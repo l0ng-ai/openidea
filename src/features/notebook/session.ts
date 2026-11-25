@@ -64,11 +64,25 @@ export interface CellReveal {
   seq: number;
 }
 
-/** The caret of a cell editor as a reveal position: 0-based line and UTF-16 column. */
-function caretOf(state: EditorState): { line: number; col: number } {
-  const head = state.selection.main.head;
-  const line = state.doc.lineAt(head);
-  return { line: line.number - 1, col: head - line.from };
+/** Offset `pos` of `text` as a reveal position: 0-based line and UTF-16 column. */
+function positionOf(text: string, pos: number): { line: number; col: number } {
+  const before = text.slice(0, pos);
+  const lineStart = before.lastIndexOf("\n") + 1;
+  return { line: before.split("\n").length - 1, col: pos - lineStart };
+}
+
+/**
+ * Where the caret goes after undo/redo turned `before` into `after`: the end of the changed
+ * text, as IDEA puts it at the undone change; the old caret when the cell did not change.
+ */
+export function caretAfterHistory(before: string, after: string, head: number): { line: number; col: number } {
+  if (before === after) return positionOf(after, Math.min(head, after.length));
+  let prefix = 0;
+  const max = Math.min(before.length, after.length);
+  while (prefix < max && before[prefix] === after[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < max - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
+  return positionOf(after, after.length - suffix);
 }
 
 /** One session/queue per file; tabs and mounted React views do not own its lifetime. */
@@ -387,13 +401,16 @@ export class NotebookSession {
     // The response re-accepts a full snapshot and the cell views re-render, which
     // drops the caret; put it back where the change happened once it is authoritative.
     const focused = this.focusedCell;
-    const state = focused ? this.editors.get(focused) : null;
-    const caret = state ? caretOf(state) : null;
+    const editor = focused ? this.editors.get(focused) : null;
+    const before = editor?.doc.toString();
+    const head = editor?.selection.main.head ?? 0;
     this.pending.push({ edit: { type: direction }, committed: false });
     this.publish();
     this.blocked = false;
     await this.pump();
-    if (focused && caret && this.showsEditor(focused)) this.reveal(focused, caret, "auto");
+    const after = this.state.snapshot?.cells.find((c) => c.id === focused)?.source;
+    if (focused && before !== undefined && after !== undefined && this.showsEditor(focused))
+      this.reveal(focused, caretAfterHistory(before, after, head), "auto");
   }
   /** Whether the cell shows a CodeMirror editor the reveal can move the caret into. */
   private showsEditor(cell: string): boolean {
