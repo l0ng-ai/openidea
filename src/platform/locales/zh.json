@@ -481,6 +481,7 @@
   "menu.layout.delete": "删除布局…",
   "menu.activeToolWindow": "活动工具窗口",
   "menu.toolwindow.hideActive": "隐藏活动工具窗口",
+  "menu.toolwindow.hideSide": "隐藏侧边工具窗口",
   "menu.toolwindow.maximize": "最大化工具窗口",
   "menu.toolwindow.closeContent": "关闭活动标签页",
   "menu.toolwindow.jumpToLast": "跳转到上一个工具窗口",

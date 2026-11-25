@@ -481,6 +481,7 @@
   "menu.layout.delete": "Delete Layout…",
   "menu.activeToolWindow": "Active Tool Window",
   "menu.toolwindow.hideActive": "Hide Active Tool Window",
+  "menu.toolwindow.hideSide": "Hide Side Tool Windows",
   "menu.toolwindow.maximize": "Maximize Tool Window",
   "menu.toolwindow.closeContent": "Close Active Tab",
   "menu.toolwindow.jumpToLast": "Jump to Last Tool Window",
