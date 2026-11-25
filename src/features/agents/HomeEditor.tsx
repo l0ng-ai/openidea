@@ -184,7 +184,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
       className={clsx(styles.home, docked && styles.docked, fitWindowWidth && styles.fitWidth)}
       style={zoomStyle}
     >
-      {/* In the tool window the box sits at the bottom, under the question centred in the space above. */}
+      {/* In the tool window the box sits at the bottom, with the question as a hint line just above it. */}
       {docked && (
         <div className={styles.dockedIntro}>
           <h1 className={styles.heading}>
