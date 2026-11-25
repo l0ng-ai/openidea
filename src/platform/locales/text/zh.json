@@ -10323,5 +10323,10 @@
   "Couldn't roll back": "无法回滚",
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "这条消息及之后的消息会被移除，Agent 在此之后改动的文件会恢复到这条消息发送前的状态。消息会放回输入框。",
   "Changes: {task}": "改动：{task}",
-  "Resize changed files": "调整改动文件列表宽度"
+  "Resize changed files": "调整改动文件列表宽度",
+  "Folder Already Exists": "文件夹已存在",
+  "File Already Exists": "文件已存在",
+  "{name} already exists in {folder}.": "{folder} 中已存在 {name}。",
+  "Create Copy": "创建副本",
+  "Do this for the other conflicts": "其余冲突也这样处理"
 }

@@ -723,9 +723,41 @@ function openCopyDialogFor(paths: string[], target: string, dir?: boolean) {
   });
 }
 
+type ConflictChoice = "overwrite" | "skip" | "copy";
+
+/**
+ * A file dropped or pasted from outside the project whose name is taken in `target`: replace
+ * the existing one, skip it, or keep both under a new name (`Foo copy.kt`). A folder can't
+ * be overwritten. `null` cancels the rest of the import.
+ */
+async function askNameConflict(
+  name: string,
+  target: string,
+  dir: boolean,
+  more: boolean,
+): Promise<{ choice: ConflictChoice; all: boolean } | null> {
+  const folder = nameOf(target) || target;
+  const r = await ask({
+    title: dir ? "Folder Already Exists" : "File Already Exists",
+    body: tx`${name} already exists in ${folder}.`,
+    icon: "warning",
+    buttons: [
+      ...(dir ? [] : [{ id: "overwrite", label: "Overwrite" }]),
+      { id: "skip", label: "Skip" },
+      { id: "copy", label: "Create Copy", primary: true },
+    ],
+    checkbox: more ? "Do this for the other conflicts" : undefined,
+  });
+  return r.button === "overwrite" || r.button === "skip" || r.button === "copy"
+    ? { choice: r.button, all: r.checked }
+    : null;
+}
+
 /**
  * Moves or copies `paths` into `target`. Copies take `name` (a single item) or
- * get a non-conflicting name (`Foo copy.kt`); moves refuse to overwrite.
+ * get a non-conflicting name (`Foo copy.kt`); moves refuse to overwrite. Files
+ * from outside the project (`local`) whose name is taken ask first: overwrite,
+ * skip or keep both.
  * Returns whether anything changed (for copies: the first copy's path).
  */
 export async function transfer(
@@ -750,6 +782,9 @@ export async function transfer(
   let first: string | null = null;
   const newName = name;
   const upload = source === "local" && isRemoteWindow() ? beginLocalImport() : undefined;
+  const ask = source === "local" && !(paths.length === 1 && newName);
+  let conflictsLeft = ask ? paths.filter((p) => isTaken(nameOf(p))).length : 0;
+  let forAll: ConflictChoice | null = null;
   try {
     for (const src of paths) {
       if (upload?.cancelled) break;
@@ -765,9 +800,33 @@ export async function transfer(
       }
       const srcIsDir =
         get().listings.has(src) || currentModel().byKey.get(currentModel().keyOfPath.get(src) ?? src)?.dir === true;
-      const finalName = paths.length === 1 && newName ? newName : uniqueName(name, isTaken, srcIsDir);
+      let finalName = paths.length === 1 && newName ? newName : uniqueName(name, isTaken, srcIsDir);
+      let replace = false;
+      if (ask && isTaken(name)) {
+        conflictsLeft--;
+        // A dropped folder isn't in the listings: what decides is the entry already there.
+        const existing = (get().listings.get(target) ?? []).find((e) =>
+          caseInsensitive ? e.name.toLowerCase() === name.toLowerCase() : e.name === name,
+        );
+        const folder = existing?.kind !== "file";
+        let choice: ConflictChoice | null = forAll;
+        if (!choice) {
+          // oxlint-disable-next-line no-await-in-loop -- one question per conflicting file, in order
+          const answer = await askNameConflict(name, target, folder, conflictsLeft > 0);
+          if (!answer) break;
+          choice = answer.choice;
+          if (answer.all) forAll = choice;
+        }
+        if (choice === "skip") continue;
+        // A folder is never overwritten: "for all" keeps both instead.
+        replace = choice === "overwrite" && !folder;
+        if (replace) finalName = name;
+      }
       const to = joinPath(target, finalName);
       try {
+        // The replaced file goes to Local History, like any delete.
+        // oxlint-disable-next-line no-await-in-loop -- the file is replaced before its copy is written
+        if (replace) await fs.delete(to);
         if (source === "local") {
           // oxlint-disable-next-line no-await-in-loop -- cancellation is checked per source; each import feeds the taken-name set
           const skipped = await fs.importLocal(src, to, upload);

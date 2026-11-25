@@ -9284,5 +9284,10 @@
   "Convert Indents to Tabs": "將縮排轉換為定位字元",
   "Roll Back to Here": "回滾到這裡",
   "Couldn't roll back": "無法回滾",
-  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "這條訊息及之後的訊息會被移除，Agent 在此之後改動的檔案會恢復到這條訊息傳送前的狀態。訊息會放回輸入框。"
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "這條訊息及之後的訊息會被移除，Agent 在此之後改動的檔案會恢復到這條訊息傳送前的狀態。訊息會放回輸入框。",
+  "Folder Already Exists": "資料夾已存在",
+  "File Already Exists": "檔案已存在",
+  "{name} already exists in {folder}.": "{folder} 中已存在 {name}。",
+  "Create Copy": "建立副本",
+  "Do this for the other conflicts": "其餘衝突也這樣處理"
 }
