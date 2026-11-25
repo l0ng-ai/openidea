@@ -364,6 +364,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.unshelveSilently": [],
   "vcs.changelist.edit": [],
   "vcs.log.copyRevision": [],
+  "vcs.log.copyCommitSubject": [],
   "vcs.log.goToRef": [],
   "vcs.log.editMessage": [],
   "vcs.log.newBranch": [],

@@ -353,6 +353,7 @@ export const intellijWindows: Record<string, string[]> = {
   "vcs.unshelveSilently": ["Ctrl+Alt+U"],
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Ctrl+Alt+Shift+C"],
+  "vcs.log.copyCommitSubject": [],
   "vcs.log.goToRef": ["Ctrl+F"],
   "vcs.log.editMessage": ["F2", "Shift+F6"],
   "vcs.log.newBranch": ["Ctrl+Alt+N"],
