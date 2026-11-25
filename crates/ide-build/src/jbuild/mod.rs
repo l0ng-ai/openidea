@@ -71,6 +71,18 @@ pub struct JavaBuild<'a> {
     pub jdk: &'a (dyn Fn(Option<u32>) -> Option<PathBuf> + Sync),
 }
 
+/// One source set to compile, and where its reactor's build keeps its state.
+#[derive(Clone, Copy)]
+struct SetBuild<'a> {
+    top: &'a maven::MavenProject,
+    dir: &'a Path,
+    project: &'a ProjectModel,
+    test: bool,
+    outputs: &'a HashMap<PathBuf, (String, bool)>,
+    /// Sources to compile even unchanged (Recompile).
+    force: &'a BTreeSet<PathBuf>,
+}
+
 /// What a launch runs after its build.
 #[derive(Debug, Default)]
 pub struct LaunchOutputs {
@@ -320,6 +332,21 @@ fn diagnostic(reply: &Reply) -> Option<BuildMessage> {
     })
 }
 
+/// What a build compiles.
+#[derive(Clone, Copy, Debug)]
+pub enum Target<'p> {
+    /// What the launch of the module at this folder runs: its main (or test) classes and the
+    /// reactor projects they depend on.
+    Launch { module: &'p Path, test: bool },
+    /// Build Module: the main and test classes of the module holding this file or folder, and
+    /// the reactor projects they depend on.
+    Module(&'p Path),
+    /// Build Project: every module of every linked reactor.
+    Project,
+    /// Recompile: this source, even unchanged, and what its changes reach.
+    File(&'p Path),
+}
+
 impl JavaBuild<'_> {
     /// Builds what the launch of `module` runs (its main or test classes and the reactor
     /// projects they depend on) and returns the classpath to run it with.
@@ -331,79 +358,172 @@ impl JavaBuild<'_> {
         cancel: &CancellationToken,
         on_event: &(dyn Fn(BuildEvent) + Sync),
     ) -> IdeResult<Built> {
-        let Some(m) = &self.model.maven else { return Ok(Built::Unsupported("not a Maven project".into())) };
+        self.build(Target::Launch { module, test }, kind, cancel, on_event)
+    }
+
+    /// The classpath a launch of `module` runs with when it doesn't build (Before launch: no
+    /// build): the outputs of the last build, `None` when the module was never built here.
+    pub fn recorded_launch(&self, module: &Path, test: bool) -> Option<Vec<PathBuf>> {
+        let m = self.model.maven.as_ref()?;
         let rel = module.strip_prefix(self.root).unwrap_or(module).to_string_lossy().replace('\\', "/");
-        let Some(top) = maven_reactor_dir(m, &rel) else {
-            return Ok(Built::Unsupported("the module belongs to no linked Maven reactor".into()));
+        let top = maven_reactor_dir(m, &rel)?;
+        let record = model::load_record(&model::reactor_dir(self.cache, &top.dir))?;
+        let project = record.model.projects.iter().find(|p| p.dir == module)?;
+        let paths = class_paths(project, test);
+        paths.first().is_some_and(|p| p.is_dir()).then_some(paths)
+    }
+
+    /// Builds `target`. A launch gets the classpath to run with; the others an empty one.
+    pub fn build(
+        &self,
+        target: Target,
+        kind: BuildKind,
+        cancel: &CancellationToken,
+        on_event: &(dyn Fn(BuildEvent) + Sync),
+    ) -> IdeResult<Built> {
+        let Some(m) = &self.model.maven else { return Ok(Built::Unsupported("not a Maven project".into())) };
+        let rel = |path: &Path| path.strip_prefix(self.root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+        // The module a path belongs to: the deepest project folder holding it.
+        let owner = |path: &Path| {
+            m.projects
+                .iter()
+                .map(|p| subdir(self.root, &p.dir))
+                .filter(|dir| path.starts_with(dir))
+                .max_by_key(|dir| dir.components().count())
         };
-        let dir = model::reactor_dir(self.cache, &top.dir);
-        let lock = self.service.lock(&dir);
-        let _guard = lock.lock().unwrap();
-        let name = module.file_name().map_or_else(|| rel.clone(), |n| n.to_string_lossy().into_owned());
-        on_event(BuildEvent::Started { system: BuildSystem::Javac, title: format!("Build '{name}'") });
+        let (tops, title) = match target {
+            Target::Project => {
+                let tops: Vec<&maven::MavenProject> = m.projects.iter().filter(|p| !p.aggregated).collect();
+                let name = self.root.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                (tops, format!("Build '{name}'"))
+            }
+            Target::Launch { module, .. } | Target::Module(module) | Target::File(module) => {
+                let Some(dir) = owner(module) else {
+                    return Ok(Built::Unsupported("the file belongs to no Maven module".into()));
+                };
+                let Some(top) = maven_reactor_dir(m, &rel(&dir)) else {
+                    return Ok(Built::Unsupported("the module belongs to no linked Maven reactor".into()));
+                };
+                let name = match target {
+                    Target::File(file) => file.file_name(),
+                    _ => dir.file_name(),
+                }
+                .map_or_else(|| rel(&dir), |n| n.to_string_lossy().into_owned());
+                (vec![top], format!("Build '{name}'"))
+            }
+        };
+        if tops.is_empty() {
+            return Ok(Built::Unsupported("no Maven reactor to build".into()));
+        }
+        on_event(BuildEvent::Started { system: BuildSystem::Javac, title });
         // Nested Maven runs report into the same build.
         let nested = |event: BuildEvent| {
             if !matches!(event, BuildEvent::Started { .. }) {
                 on_event(event);
             }
         };
-        let Some(reactor_model) = self.prepared(m, top, &dir, kind, cancel, &nested)? else {
-            // Maven's own build reports why (a POM error, an older Maven the extension doesn't load in).
-            return Ok(Built::Unsupported("Maven could not prepare the build".into()));
-        };
-        let Some(target) = reactor_model.projects.iter().find(|p| p.dir == module) else {
-            return Ok(Built::Unsupported(format!(
-                "Maven's build of the reactor has no project at {}",
-                module.display()
-            )));
-        };
-        let projects = launch_projects(&reactor_model, target, test);
-        for (project, test) in &projects {
-            if let Some(reason) = project.unsupported(*test) {
-                return Ok(Built::Unsupported(reason));
-            }
-            // A launch of a Java module runs it from the module path, which the language server reports.
-            if project.main.source_roots.iter().any(|r| r.join("module-info.java").is_file()) {
-                return Ok(Built::Unsupported(format!("{} is a Java module", project.artifact_id)));
-            }
-        }
-        if kind == BuildKind::Rebuild {
-            for (project, test) in &projects {
-                self.clean(&dir, project, *test)?;
-            }
-        }
-        if let Some(failure) = self.resources(top, &dir, &projects, cancel, &nested)? {
-            return Ok(Built::Done(failure));
-        }
         let mut messages = Vec::new();
-        let outputs: HashMap<PathBuf, (String, bool)> = reactor_model
-            .projects
-            .iter()
-            .flat_map(|p| [(p.main.output.clone(), (p.key(), false)), (p.test.output.clone(), (p.key(), true))])
-            .collect();
-        let total = projects.len();
-        for (i, (project, tests)) in projects.iter().enumerate() {
-            on_event(BuildEvent::Progress {
-                message: format!("Compiling {}", project.artifact_id),
-                fraction: Some(i as f32 / total.max(1) as f32),
-            });
-            let failed = self.compile_set(top, &dir, project, *tests, &outputs, cancel, on_event, &mut messages)?;
-            if failed {
-                let errors: Vec<String> = messages
+        let mut class_path = Vec::new();
+        for top in tops {
+            let dir = model::reactor_dir(self.cache, &top.dir);
+            let lock = self.service.lock(&dir);
+            let _guard = lock.lock().unwrap();
+            let Some(reactor_model) = self.prepared(m, top, &dir, kind, cancel, &nested)? else {
+                // Maven's own build reports why (a POM error, an older Maven the extension doesn't load in).
+                return Ok(Built::Unsupported("Maven could not prepare the build".into()));
+            };
+            let project_at = |path: &Path| {
+                reactor_model
+                    .projects
                     .iter()
-                    .filter(|m| m.severity == Severity::Error)
-                    .take(5)
-                    .map(|m| message_text(m).trim_end().to_owned())
-                    .collect();
-                let failure = format!("Build failed:\n{}", errors.join("\n"));
-                return Ok(Built::Done(LaunchOutputs {
-                    class_paths: class_paths(target, test),
-                    failure: Some(failure),
-                    messages,
-                }));
+                    .filter(|p| path.starts_with(&p.dir))
+                    .max_by_key(|p| p.dir.components().count())
+            };
+            let mut force = BTreeSet::new();
+            let projects: Vec<(&ProjectModel, bool)> = match target {
+                Target::Launch { module, test } => {
+                    let Some(project) = reactor_model.projects.iter().find(|p| p.dir == module) else {
+                        return Ok(Built::Unsupported(format!(
+                            "Maven's build of the reactor has no project at {}",
+                            module.display()
+                        )));
+                    };
+                    class_path = class_paths(project, test);
+                    launch_projects(&reactor_model, project, test)
+                }
+                Target::Module(path) => {
+                    let Some(project) = project_at(path) else {
+                        return Ok(Built::Unsupported(format!("no Maven project holds {}", path.display())));
+                    };
+                    launch_projects(&reactor_model, project, true)
+                }
+                Target::File(file) => {
+                    let Some(project) = project_at(file) else {
+                        return Ok(Built::Unsupported(format!("no Maven project holds {}", file.display())));
+                    };
+                    let test = project.test.source_roots.iter().any(|r| file.starts_with(r));
+                    force.insert(file.to_path_buf());
+                    launch_projects(&reactor_model, project, test)
+                }
+                Target::Project => {
+                    let mut all: Vec<(&ProjectModel, bool)> = Vec::new();
+                    for project in &reactor_model.projects {
+                        for set in launch_projects(&reactor_model, project, true) {
+                            if !all.iter().any(|(p, t)| p.dir == set.0.dir && *t == set.1) {
+                                all.push(set);
+                            }
+                        }
+                    }
+                    all
+                }
+            };
+            for (project, test) in &projects {
+                if let Some(reason) = project.unsupported(*test) {
+                    return Ok(Built::Unsupported(reason));
+                }
+                // A launch of a Java module runs it from the module path, which the language server reports.
+                if project.main.source_roots.iter().any(|r| r.join("module-info.java").is_file()) {
+                    return Ok(Built::Unsupported(format!("{} is a Java module", project.artifact_id)));
+                }
+            }
+            if kind == BuildKind::Rebuild {
+                for (project, test) in &projects {
+                    self.clean(&dir, project, *test)?;
+                }
+            }
+            if let Some(mut failure) = self.resources(top, &dir, &projects, cancel, &nested)? {
+                failure.class_paths = class_path;
+                return Ok(Built::Done(failure));
+            }
+            let outputs: HashMap<PathBuf, (String, bool)> = reactor_model
+                .projects
+                .iter()
+                .flat_map(|p| [(p.main.output.clone(), (p.key(), false)), (p.test.output.clone(), (p.key(), true))])
+                .collect();
+            let total = projects.len();
+            for (i, (project, tests)) in projects.iter().enumerate() {
+                on_event(BuildEvent::Progress {
+                    message: format!("Compiling {}", project.artifact_id),
+                    fraction: Some(i as f32 / total.max(1) as f32),
+                });
+                let set = SetBuild { top, dir: &dir, project, test: *tests, outputs: &outputs, force: &force };
+                if self.compile_set(&set, cancel, on_event, &mut messages)? {
+                    let errors: Vec<String> = messages
+                        .iter()
+                        .filter(|m| m.severity == Severity::Error)
+                        .take(5)
+                        .map(|m| message_text(m).trim_end().to_owned())
+                        .collect();
+                    let failure = format!("Build failed:\n{}", errors.join("\n"));
+                    return Ok(Built::Done(LaunchOutputs {
+                        class_paths: class_path,
+                        failure: Some(failure),
+                        messages,
+                    }));
+                }
             }
         }
-        Ok(Built::Done(LaunchOutputs { class_paths: class_paths(target, test), failure: None, messages }))
+        Ok(Built::Done(LaunchOutputs { class_paths: class_path, failure: None, messages }))
     }
 
     /// The reactor's model, from the record when it is current, else from a prepare run.
@@ -522,18 +642,14 @@ impl JavaBuild<'_> {
     }
 
     /// Compiles what changed in one source set (see [`incremental`]). Returns whether it failed.
-    #[allow(clippy::too_many_arguments)]
     fn compile_set(
         &self,
-        top: &maven::MavenProject,
-        dir: &Path,
-        project: &ProjectModel,
-        test: bool,
-        outputs: &HashMap<PathBuf, (String, bool)>,
+        build: &SetBuild,
         cancel: &CancellationToken,
         on_event: &(dyn Fn(BuildEvent) + Sync),
         messages: &mut Vec<BuildMessage>,
     ) -> IdeResult<bool> {
+        let SetBuild { top, dir, project, test, outputs, force } = *build;
         let set = project.set(test);
         if set.compiler.as_ref().is_some_and(|c| c.skip == Some(true)) || set.compiler.is_none() {
             return Ok(false);
@@ -590,7 +706,9 @@ impl JavaBuild<'_> {
         let previous = previous.unwrap_or_default();
         let changed: BTreeSet<PathBuf> = source_stamps
             .iter()
-            .filter(|(path, stamp)| previous.sources.get(*path) != Some(*stamp) || previous.dirty.contains(*path))
+            .filter(|(path, stamp)| {
+                previous.sources.get(*path) != Some(*stamp) || previous.dirty.contains(*path) || force.contains(*path)
+            })
             .map(|(path, _)| path.clone())
             .collect();
         let removed: BTreeSet<PathBuf> =

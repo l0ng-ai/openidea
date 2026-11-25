@@ -252,6 +252,11 @@ export interface JavaPreparation {
   saveAll?: () => Promise<void>;
   /** Follows the build while it runs (status bar, Build tool window); see `followLaunchBuild`. */
   build?: JavaBuildFollower;
+  /**
+   * A debug launch: a module the Java language server serves is compiled by it, whose classes
+   * java-debug's HotSwap reloads, instead of the IDE's Java build.
+   */
+  debug?: boolean;
 }
 
 /** Receives the events of a launch's build as it runs, then its outcome. */
@@ -267,11 +272,12 @@ export async function resolveJavaLaunch(
   policy: BuildPolicy,
   request: RequestId,
   build?: JavaBuildFollower,
+  debug = false,
 ): Promise<JavaLaunchInfo> {
   const channel = new Channel<BuildEvent>();
   channel.onmessage = (e) => build?.onEvent(e);
   try {
-    const info = await call(commands.javaResolveLaunch(module, test, policy, request, channel));
+    const info = await call(commands.javaResolveLaunch(module, test, debug, policy, request, channel));
     build?.finish(info.build === "failed" ? "failed" : info.build === "cancelled" ? "cancelled" : "success");
     return info;
   } catch (e) {
@@ -305,6 +311,7 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
     policy,
     preparation.request,
     preparation.build,
+    preparation.debug,
   ).catch((error: unknown) => {
     if (error instanceof IpcError && error.data?.type === "javaBuildProblems") {
       const problems = error.data.problems.join("; ");

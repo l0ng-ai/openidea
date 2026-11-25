@@ -74,6 +74,7 @@ async fn maven_launch_compiles_with_the_ides_java_build() {
         "main",
         root.join("app"),
         false,
+        false,
         BuildPolicy::Make,
         RequestId::next(),
         channel,
@@ -97,5 +98,25 @@ async fn maven_launch_compiles_with_the_ides_java_build() {
     assert!(first.join("a/A.class").is_file());
     assert!(info.class_paths.iter().any(|p| Path::new(p).ends_with("out/t.lib/classes")), "{:?}", info.class_paths);
     assert!(!root.join("app/target/classes").exists());
+
+    // Build › Build Project compiles with it too, and reports javac's errors.
+    write(&root, "lib/src/main/java/l/L.java", "package l;\npublic class L { }\n");
+    let built = ops::build::build_run(
+        &host,
+        "main",
+        ide_build::compile::BuildKind::Build,
+        None,
+        None,
+        RequestId::next(),
+        Vec::new(),
+        ops::Channel::new(|_: BuildEvent| {}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(built.system, ide_build::compile::BuildSystem::Javac);
+    assert!(!built.success);
+    assert_eq!(built.errors, 1, "{:?}", built.messages);
+    assert!(built.messages[0].path.as_deref().is_some_and(|p| p.ends_with("a/A.java")), "{:?}", built.messages);
+    assert!(!root.join("lib/target/classes").exists());
     host.shutdown().await;
 }

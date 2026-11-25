@@ -88,10 +88,18 @@ done
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = events.clone();
         let channel = ops::Channel::new(move |event: ide_build::compile::BuildEvent| sink.lock().unwrap().push(event));
-        let info =
-            ops::java::java_resolve_launch(&host, "main", module, test, BuildPolicy::Make, RequestId::next(), channel)
-                .await
-                .unwrap();
+        let info = ops::java::java_resolve_launch(
+            &host,
+            "main",
+            module,
+            test,
+            false,
+            BuildPolicy::Make,
+            RequestId::next(),
+            channel,
+        )
+        .await
+        .unwrap();
         // The build streams its command and progress while it runs.
         use ide_build::compile::BuildEvent;
         let events = events.lock().unwrap();

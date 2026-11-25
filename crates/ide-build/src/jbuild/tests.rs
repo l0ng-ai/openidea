@@ -77,6 +77,10 @@ impl Fixture {
 
     /// Builds the launch of `app` (its tests when `test`).
     fn launch(&self, test: bool) -> LaunchOutputs {
+        self.build(Target::Launch { module: &self.root.join("app"), test })
+    }
+
+    fn build(&self, target: Target) -> LaunchOutputs {
         let jdk = |_: Option<u32>| None;
         let build = JavaBuild {
             root: &self.root,
@@ -89,7 +93,7 @@ impl Fixture {
             jdk: &jdk,
         };
         let on_event = |e: BuildEvent| self.events.lock().unwrap().push(e);
-        match build.build_launch(&self.root.join("app"), test, BuildKind::Build, &CancellationToken::new(), &on_event) {
+        match build.build(target, BuildKind::Build, &CancellationToken::new(), &on_event) {
             Ok(Built::Done(outputs)) => outputs,
             Ok(Built::Unsupported(reason)) => panic!("unsupported: {reason}"),
             Err(e) => panic!("{e:?}"),
@@ -195,6 +199,17 @@ fn builds_maven_modules_with_javac_and_only_what_changed() {
     assert_eq!(tests.failure, None, "{:?}", tests.messages);
     assert_eq!(tests.class_paths[..2], [f.out("t.app/test-classes"), f.out("t.app/classes")]);
     assert!(f.out("t.app/test-classes/a/ATest.class").is_file());
+
+    // Recompile compiles the file even unchanged.
+    f.steps();
+    let file = f.root.join("app/src/main/java/a/A.java");
+    assert_eq!(f.build(Target::File(&file)).failure, None);
+    assert_eq!(f.steps(), ["javac app (main, 1 files)"]);
+    // Build Project builds every module's main and test classes.
+    f.write("lib/src/test/java/l/LTest.java", "package l;\nclass LTest { String s = L.name(); }\n");
+    assert_eq!(f.build(Target::Project).failure, None);
+    assert_eq!(f.steps(), ["javac lib (tests, 1 files)"]);
+    assert!(f.out("t.lib/test-classes/l/LTest.class").is_file());
 }
 
 #[test]
