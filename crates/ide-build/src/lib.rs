@@ -16,6 +16,7 @@ mod process;
 #[cfg(test)]
 mod process_numbers;
 pub mod sbt;
+pub mod surefire;
 mod sync;
 pub mod web;
 mod xml;

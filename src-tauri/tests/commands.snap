@@ -93,6 +93,7 @@ clipboard_has_image                          always             desktop      bin
 clipboard_image                              always             desktop      bindings async
 clipboard_set_file_list                      always             desktop      bindings async
 clipboard_text                               trusted            desktop      bindings async
+clipboard_write_image                        always             desktop      bindings async
 clipboard_write_text                         always             desktop      bindings async
 close_project                                always             project_host bindings spawn
 coverage_collect                             trusted            project_host bindings async
@@ -337,6 +338,7 @@ inspect_code                                 trusted            project_host bin
 java_build_workspace                         trusted            project_host bindings async
 java_debug_adapter                           trusted            project_host bindings sync
 java_debug_server                            trusted            project_host bindings async
+java_junit_runner                            trusted            project_host bindings async
 java_resolve_launch                          trusted            project_host bindings async
 jdk_download                                 always             project_host bindings async
 jdk_download_location                        always             project_host bindings sync
