@@ -4252,16 +4252,20 @@ name = "ide-core"
 version = "0.1.51"
 dependencies = [
  "base64 0.22.1",
+ "dirs 6.0.0",
  "dunce",
  "encoding_rs",
  "libc",
+ "portable-pty",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "specta",
  "specta-typescript",
  "tempfile",
  "thiserror 2.0.21",
  "tokio-util",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 

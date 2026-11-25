@@ -213,7 +213,7 @@ impl FlutterDaemon {
         Self(Arc::new(Shared { root, sink, executable, state: Mutex::default() }))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn with_executable(root: PathBuf, sink: SharedSink, executable: Option<PathBuf>) -> Self {
         Self::new(root, sink, Box::new(move || executable.clone()))
     }

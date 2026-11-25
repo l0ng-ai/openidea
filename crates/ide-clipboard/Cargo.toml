@@ -1,6 +1,6 @@
 [package]
 name = "ide-clipboard"
-description = "The OS clipboard's file list (Explorer <-> project view) and pasted images: Windows CF_HDROP / PNG / CF_DIB or macOS NSPasteboard, no window or message loop"
+description = "The OS clipboard's file list (file manager <-> project view) and pasted images: Windows CF_HDROP / PNG / CF_DIB, macOS NSPasteboard, Linux text/uri-list via GTK"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
