@@ -6,22 +6,40 @@ import { useProject } from "./project";
 
 export interface BuildPresentation {
   modules: ReadonlyMap<string, "maven" | "gradle">;
+  /** Module dir key (same key space as `modules`, plus sbt) → display name. */
+  moduleNames?: ReadonlyMap<string, string>;
   spring: boolean;
 }
-const EMPTY: BuildPresentation = { modules: new Map(), spring: false };
+const EMPTY: BuildPresentation = { modules: new Map(), moduleNames: new Map(), spring: false };
 export const useBuildPresentation = create<BuildPresentation>(() => EMPTY);
 
 export function buildPresentation(model: BuildModel): BuildPresentation {
   const modules = new Map<string, "maven" | "gradle">();
-  for (const p of model.maven?.projects ?? []) modules.set(p.dir, "maven");
-  for (const p of (model.gradle ?? []).flatMap((g) => g.projects)) modules.set(p.dir, "gradle");
+  const moduleNames = new Map<string, string>();
+  for (const p of model.maven?.projects ?? []) {
+    modules.set(p.dir, "maven");
+    const name = p.displayName?.trim() || p.artifactId?.trim();
+    if (name) moduleNames.set(p.dir, name);
+  }
+  for (const p of (model.gradle ?? []).flatMap((g) => g.projects)) {
+    modules.set(p.dir, "gradle");
+    const name = p.name?.trim();
+    if (name) moduleNames.set(p.dir, name);
+  }
+  for (const b of model.sbt ?? []) {
+    for (const p of b.projects) {
+      const dir = !b.dir ? p.dir : !p.dir ? b.dir : `${b.dir.replace(/\/+$/, "")}/${p.dir}`;
+      const name = p.id?.trim();
+      if (name && !moduleNames.has(dir)) moduleNames.set(dir, name);
+    }
+  }
   const spring =
     (model.maven?.projects ?? []).some(
       (p) =>
         p.dependencies.some((d) => d.groupId.startsWith("org.springframework")) ||
         p.plugins.some((p) => p.groupId.startsWith("org.springframework")),
     ) || (model.gradle ?? []).some((g) => g.projects.some((p) => p.tasks.some((t) => t.name === "bootRun")));
-  return { modules, spring };
+  return { modules, moduleNames, spring };
 }
 
 /** A Maven / Gradle module folder below the project root: IDEA shows its name in bold. */

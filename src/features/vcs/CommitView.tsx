@@ -74,6 +74,7 @@ import {
 } from "./changes";
 import { amendPreviewNode } from "./amendPreview";
 import { AmendTargetMenu } from "./AmendTargetMenu";
+import { useChangeModules } from "./changeModules";
 import { commitChanges, deleteFiles } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { CommitCheckSummary } from "./CommitCheckSummary";
@@ -105,6 +106,7 @@ import {
   setCommitDiffPreview,
   setDiffPreview,
   setGroupByDir,
+  setGroupByModule,
   setGroupByRepo,
   setGroupByStaging,
   setShowUnversionedSeparately,
@@ -797,6 +799,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
   const ignored = useIgnoredFiles(root, staging && showIgnored);
   const groupByStaging = useCommit((s) => s.groupByStaging) || staging;
   const groupByRepo = useCommit((s) => s.groupByRepo);
+  const groupByModule = useCommit((s) => s.groupByModule);
   const showUnversionedSeparately = useCommit((s) => s.showUnversionedSeparately);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
@@ -815,6 +818,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
   const repos = useVcs((s) => s.roots);
   const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
+  const changeModules = useChangeModules();
   const roots = useMemo(() => {
     const changes = buildChangeTree(
       status,
@@ -827,6 +831,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
       groupByRepo,
       showUnversionedSeparately,
       ignored?.files,
+      changeModules,
+      groupByModule,
     );
     return amended ? [amended, ...changes] : changes;
   }, [
@@ -840,6 +846,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
     groupByRepo,
     showUnversionedSeparately,
     ignored,
+    changeModules,
+    groupByModule,
     amended,
   ]);
   const [byKey, parents] = useMemo(() => {
@@ -993,6 +1001,9 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 // IDEA offers it once the project has several repositories.
                 ...(repos.length > 1
                   ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
+                  : []),
+                ...(changeModules.length > 0
+                  ? [{ label: "Module", checked: groupByModule, run: () => setGroupByModule(!groupByModule) }]
                   : []),
                 ...(staging
                   ? []
@@ -1261,6 +1272,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                       className={clsx(styles.icon, n.warning && styles.committerWarning)}
                     />
                   ))
+                ) : n.module ? (
+                  <Icon name="module" size={16} className={styles.icon} />
                 ) : n.type === "dir" || ignoredDirectory(n) ? (
                   <Icon name={st.expanded ? "folder-open" : "folder"} size={16} className={styles.icon} />
                 ) : iconPath ? (
