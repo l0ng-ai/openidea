@@ -290,3 +290,10 @@ it("renames in the project view although the preset shares Alt+Shift+R with the 
     for (const key of ["projectOpen", "vcsAvailable", "projectViewFocus"]) clearContext(key);
   }
 });
+
+it("keeps Eclipse's Find Word at Caret binding and removals", () => {
+  expect(eclipseWindows["find.wordAtCaret"]).toEqual(["Ctrl+F12"]);
+  expect(eclipseWindows["find.previousWordAtCaret"]).toEqual([]);
+  expect(eclipseMacos["find.wordAtCaret"]).toEqual([]);
+  expect(eclipseMacos["find.previousWordAtCaret"]).toEqual([]);
+});

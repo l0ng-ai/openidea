@@ -1925,6 +1925,8 @@
   "Find Action…": "查找操作…",
   "Find Next Occurrence": "查找下一个匹配项",
   "Find Previous Occurrence": "查找上一个匹配项",
+  "Find Word at Caret": "查找光标处的单词",
+  "Find Previous Word at Caret": "向上查找光标处的单词",
   "Find Usages": "查找用法",
   "Find Usages of File": "查找文件的用法",
   "Find actions": "查找操作",

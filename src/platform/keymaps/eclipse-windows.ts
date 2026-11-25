@@ -70,6 +70,8 @@ export const eclipseWindows: Record<string, string[]> = {
   // The parent's Push binding would shadow Find Previous whenever a repository is open.
   "vcs.push": [],
   "find.previous": ["Ctrl+Shift+K"],
+  "find.wordAtCaret": ["Ctrl+F12"],
+  "find.previousWordAtCaret": [],
   "find.popup.nextResult": ["Ctrl+K"],
   "find.popup.previousResult": ["Shift+Ctrl+K"],
   "code.selectAllOccurrences": ["Alt+Ctrl+Y"],

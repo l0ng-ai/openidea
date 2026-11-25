@@ -33,6 +33,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   Replace: "find.replaceInFile",
   FindInPath: "find.inPath",
   ReplaceInPath: "find.replaceInPath",
+  FindWordAtCaret: "find.wordAtCaret",
+  FindPrevWordAtCaret: "find.previousWordAtCaret",
   FindUsages: "find.usages",
   ShowUsages: "find.showUsages",
   HighlightUsagesInFile: "find.highlightUsages",

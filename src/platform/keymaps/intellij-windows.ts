@@ -70,6 +70,8 @@ export const intellijWindows: Record<string, string[]> = {
   "find.replaceInFile": ["Ctrl+R"],
   "find.next": ["F3", "Ctrl+L"],
   "find.previous": ["Shift+F3", "Ctrl+Shift+L"],
+  "find.wordAtCaret": ["Ctrl+F3"],
+  "find.previousWordAtCaret": ["Ctrl+Shift+F3"],
   "find.inPath": ["Ctrl+Shift+F"],
   "find.replaceInPath": ["Ctrl+Shift+R"],
   "find.usages": ["Alt+F7"],
