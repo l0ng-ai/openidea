@@ -289,4 +289,27 @@ describe("acting on the context before the model was ever loaded (#5635)", () =>
     expect(scan).toHaveBeenCalledTimes(1);
     expect(command).not.toHaveBeenCalled();
   });
+
+  it("retries the workspace load on the next action after a failed scan", async () => {
+    const scan = vi
+      .spyOn(platform, "dotnetWorkspace")
+      .mockRejectedValueOnce(new Error("scan failed"))
+      .mockResolvedValue({ projects: [project], solutions: [] });
+    vi.spyOn(platform, "evaluateProject").mockResolvedValue(project);
+    const command = vi.spyOn(platform, "dotnet").mockResolvedValue("");
+
+    await buildDotnet("build");
+    expect(useDotnet.getState().error).toContain("scan failed");
+    expect(scan).toHaveBeenCalledTimes(1);
+
+    await buildDotnet("build");
+
+    expect(scan).toHaveBeenCalledTimes(2);
+    expect(useDotnet.getState().error).toBe("");
+    expect(command).toHaveBeenCalledWith(
+      ["build", path, "--configuration", "Debug", "--framework", "net9.0"],
+      "/repo/src/App",
+      expect.any(AbortSignal),
+    );
+  });
 });

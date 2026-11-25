@@ -89,8 +89,19 @@ async function contextTarget(arg?: unknown): Promise<string | null> {
   if (target) return target;
   const { model } = useDotnet.getState();
   if (model.projects.length || model.solutions.length || !useProject.getState().project?.root) return null;
-  contextScan ??= Promise.resolve(reloadDotnet());
-  await contextScan;
+  const scan = (contextScan ??= Promise.resolve(reloadDotnet()));
+  try {
+    await scan;
+  } finally {
+    // A failed scan must not disable the context actions for the rest of the
+    // session (#5635): drop it so the next action starts a new one. A scan
+    // that completed finds the model loaded — or, in a workspace without
+    // .NET, no error — and keeps its single-scan no-op.
+    if (contextScan === scan) {
+      const { model, error } = useDotnet.getState();
+      if (error && !model.projects.length && !model.solutions.length) contextScan = undefined;
+    }
+  }
   return resolve();
 }
 
