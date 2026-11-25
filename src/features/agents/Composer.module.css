@@ -29,6 +29,8 @@
 .field {
   position: relative;
   min-width: 0;
+  /* Keep top breathing room outside the scroller so scrolled content never clips against the frame. */
+  padding-top: 7px;
 }
 .field :global(.cm-editor) {
   background: transparent;
@@ -50,8 +52,8 @@
    must land in the editable text, or they focus the bare scroller and no caret appears.
    A host sets --composer-min-height rather than overriding the rule, so stylesheet order can't undo it. */
 .field :global(.cm-content) {
-  min-height: var(--composer-min-height, 38px);
-  padding: 9px 12px 4px;
+  min-height: calc(var(--composer-min-height, 38px) - 7px);
+  padding: 2px 12px 4px;
   caret-color: var(--fg-strong);
   white-space: pre-wrap;
   overflow-wrap: anywhere;

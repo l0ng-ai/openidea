@@ -13,7 +13,9 @@ export function isPageSwipe(stroke: unknown): stroke is PageSwipe {
 export function ownsHorizontalScroll(element: Element | null): boolean {
   for (let el = element; el; el = el.parentElement) {
     // Terminal applications consume wheel events themselves (including alternate-screen apps).
-    if (el.classList.contains("xterm") || el.hasAttribute("data-wheel-scroll")) return true;
+    // Embedded iframes (plugin web views, previews, DevTools) may be opaque or cross-origin, so
+    // the host cannot inspect whether content inside them scrolls horizontally.
+    if (el.tagName === "IFRAME" || el.classList.contains("xterm") || el.hasAttribute("data-wheel-scroll")) return true;
     const overflow = getComputedStyle(el).overflowX;
     if (el.scrollWidth > el.clientWidth && /^(auto|scroll|overlay)$/.test(overflow)) return true;
   }
