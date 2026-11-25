@@ -72,6 +72,12 @@ export function decoratorRanges(tree: Tree, probe?: { visited: number }): Semant
   return out;
 }
 
+const TYPE_KIND_CLASS: Record<string, string> = {
+  interface: "cm-sem-js-interface",
+  type: "cm-sem-js-type-alias",
+  typeParameter: "cm-sem-js-type-parameter",
+};
+
 const javascriptSemantics: LanguageSemantics = {
   syntaxRanges: (tree) => decoratorRanges(tree),
   tokenClasses({ type, modifiers, classes, marksLocals }) {
@@ -79,6 +85,9 @@ const javascriptSemantics: LanguageSemantics = {
     // library's own keep the Predefined style).
     if ((type === "method" || type === "member") && !modifiers.includes("defaultLibrary"))
       classes.push(modifiers.includes("static") ? "cm-sem-js-static-method" : "cm-sem-js-instance-method");
+    // TypeScript's interfaces, type aliases (tsserver's `type`) and type parameters.
+    if (!modifiers.includes("defaultLibrary") && Object.hasOwn(TYPE_KIND_CLASS, type))
+      classes.push(TYPE_KIND_CLASS[type]!);
     if (!marksLocals || modifiers.includes("local") || modifiers.includes("defaultLibrary")) return;
     if (type === "variable" && !classes.includes("cm-sem-constant")) classes.push("cm-sem-global");
     else if (type === "function") classes.push("cm-sem-global-function");

@@ -69,6 +69,8 @@ export const intellijMacos: Record<string, string[]> = {
   "find.replaceInFile": ["Meta+R"],
   "find.next": ["Meta+G"],
   "find.previous": ["Meta+Shift+G"],
+  "find.wordAtCaret": [],
+  "find.previousWordAtCaret": [],
   "find.inPath": ["Meta+Shift+F"],
   "find.replaceInPath": ["Meta+Shift+R"],
   "find.usages": ["Alt+F7"],
@@ -125,6 +127,8 @@ export const intellijMacos: Record<string, string[]> = {
   // Before the HTTP / SQL consoles' ⌘↵ (Run), which wins there.
   "code.splitLine": ["Meta+Enter"],
   "editor.scrollToCenter": ["Ctrl+L"],
+  "editor.scrollUp": [],
+  "editor.scrollDown": [],
   "editor.codeBlockStart": ["Meta+Alt+["],
   "editor.codeBlockEnd": ["Meta+Alt+]"],
   "editor.codeBlockStartWithSelection": ["Meta+Alt+Shift+["],

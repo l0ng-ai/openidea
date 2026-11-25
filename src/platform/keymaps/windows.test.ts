@@ -37,6 +37,11 @@ describe("Windows keymaps", () => {
     expect(vscodeWindows["navigate.gotoFile"]).toEqual(["Ctrl+P"]);
     expect(vscodeWindows["code.quickDocumentation"]).toEqual(["Ctrl+K Ctrl+I"]);
   });
+
+  it("scrolls the editor a line with Ctrl+↑ / Ctrl+↓ in VS Code", () => {
+    expect(vscodeWindows["editor.scrollUp"]).toEqual(["Ctrl+Up"]);
+    expect(vscodeWindows["editor.scrollDown"]).toEqual(["Ctrl+Down"]);
+  });
 });
 
 describe("host modifier helpers", () => {

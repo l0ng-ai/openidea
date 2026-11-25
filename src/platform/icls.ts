@@ -227,9 +227,9 @@ const SCRIPT_KEYS: Record<string, string> = {
   STATIC_MEMBER_FUNCTION: "staticMethod",
   CLASS: "className",
   EXPORTED_CLASS: "className",
-  INTERFACE: "className",
-  "TYPE.ALIAS": "className",
-  TYPE_PARAMETER: "className",
+  INTERFACE: "interface",
+  "TYPE.ALIAS": "typeAlias",
+  TYPE_PARAMETER: "typeParameter",
   DECORATOR: "decorator",
   OPERATION_SIGN: "operator",
 };

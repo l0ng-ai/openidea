@@ -920,6 +920,17 @@ const SAMPLES: Record<string, CodeSample> = {
         ["];", "javascript.operator"],
       ],
       [
+        ["type ", "javascript.keyword"],
+        ["Pair", "javascript.typeAlias"],
+        ["<", "javascript.operator"],
+        ["T", "javascript.typeParameter"],
+        ["> = [", "javascript.operator"],
+        ["T", "javascript.typeParameter"],
+        [", ", "javascript.operator"],
+        ["T", "javascript.typeParameter"],
+        ["];", "javascript.operator"],
+      ],
+      [
         ["@Component", "javascript.decorator"],
         ["({ ", "javascript.operator"],
         ["selector", "javascript.field"],
@@ -930,6 +941,8 @@ const SAMPLES: Record<string, CodeSample> = {
       [
         ["export class ", "javascript.keyword"],
         ["Quiz", "javascript.className"],
+        [" implements ", "javascript.keyword"],
+        ["Named", "javascript.interface"],
         [" {", "javascript.operator"],
       ],
       [

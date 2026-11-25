@@ -37,7 +37,14 @@ import {
   type SimpleRange,
 } from "./model/selectionStack";
 import type { EditorSlot } from "./model/slot";
-import { findAgain, findPanelTarget, openFindBar, openFindBarResults, useFindPreferences } from "./view/FindBar";
+import {
+  findAgain,
+  findPanelTarget,
+  findWordAtCaretInPane,
+  openFindBar,
+  openFindBarResults,
+  useFindPreferences,
+} from "./view/FindBar";
 import {
   collapseAll,
   collapseRecursively,
@@ -61,7 +68,9 @@ import {
   cursorCodeBlockEnd,
   cursorCodeBlockStart,
   cursorMatchBrace,
+  scrollDown,
   scrollToCenter,
+  scrollUp,
   selectCodeBlockEnd,
   selectCodeBlockStart,
   splitLine,
@@ -916,6 +925,8 @@ export function registerEditorActions(): () => void {
     edit("code.startNewLineBefore", "Start New Line Before Current", (v) => startNewLineBefore(v)),
     edit("code.splitLine", "Split Line", (v) => splitLine(v)),
     caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
+    caret("editor.scrollUp", "Scroll Up", (v) => scrollUp(v), { category: "Editor Actions" }),
+    caret("editor.scrollDown", "Scroll Down", (v) => scrollDown(v), { category: "Editor Actions" }),
     caret("editor.codeBlockStart", "Move Caret to Code Block Start", (v) => cursorCodeBlockStart(v), {
       category: "Editor Actions",
     }),
@@ -1163,6 +1174,20 @@ export function registerEditorActions(): () => void {
       icon: "arrow-up",
       when: EDITOR_WHEN,
       run: () => findAgain(useTabs.getState().activePane, false),
+    },
+    {
+      id: "find.wordAtCaret",
+      title: "Find Word at Caret",
+      category: "Find",
+      when: EDITOR_WHEN,
+      run: () => findWordAtCaretInPane(useTabs.getState().activePane, true),
+    },
+    {
+      id: "find.previousWordAtCaret",
+      title: "Find Previous Word at Caret",
+      category: "Find",
+      when: EDITOR_WHEN,
+      run: () => findWordAtCaretInPane(useTabs.getState().activePane, false),
     },
     {
       id: "navigate.gotoLine",

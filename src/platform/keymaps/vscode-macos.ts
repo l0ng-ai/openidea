@@ -120,6 +120,9 @@ export const vscodeMacos: Record<string, string[]> = {
   "find.replaceInFile": ["Meta+Alt+F"],
   "find.next": ["Meta+G"],
   "find.previous": ["Meta+Shift+G"],
+  // Find Next / Previous Selection: the selection, or the word at the caret.
+  "find.wordAtCaret": ["Meta+F3"],
+  "find.previousWordAtCaret": ["Meta+Shift+F3"],
   "find.inPath": ["Meta+Shift+F"],
   "find.replaceInPath": ["Meta+Shift+H"],
   "find.usages": ["Alt+Shift+F12"],
@@ -231,6 +234,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "navigate.searchText": [],
   "code.splitLine": [],
   "editor.scrollToCenter": [],
+  "editor.scrollUp": [],
+  "editor.scrollDown": [],
   "editor.codeBlockStart": [],
   "editor.codeBlockEnd": [],
   "editor.cloneCaretAbove": ["Meta+Alt+Up"],

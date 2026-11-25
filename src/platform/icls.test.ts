@@ -238,7 +238,9 @@ describe(".icls schemes", () => {
     expect(fg("javascript.globalVariable")).toBe("#c678dd");
     expect(fg("javascript.field")).toBe("#ef8a80");
     expect(fg("javascript.constant")).toBe("#c580ea");
-    expect(fg("javascript.className")).toBe("#6fa4e5");
+    // JS.INTERFACE has its own entry; Class name falls back to the shared default.
+    expect(fg("javascript.interface")).toBe("#6fa4e5");
+    expect(fg("javascript.className")).toBeUndefined();
     expect(fg("javascript.docCommentTagValue")).toBe("#e5c07b");
     expect(fg("regexp")).toBe("#56b6c2");
     // Superseded keys and DEFAULT_SEMICOLON are counted as skipped.
@@ -262,6 +264,22 @@ describe(".icls schemes", () => {
     expect(scheme.attributes["javascript.staticMethod"]).toEqual({ foreground: "#cf8e6d", bold: false, italic: true });
     // Other languages keep their own colours.
     expect(scheme.attributes.metadata).toBeUndefined();
+  });
+
+  it("imports WebStorm's interface, type alias and type parameter keys into their own entries (#5619)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+    const { scheme } = parseIcls(
+      `<scheme name="W"><attributes>${opt("TS.CLASS", "6fa4e5")}${opt("TS.INTERFACE", "4ec9b0")}${opt(
+        "TS.TYPE.ALIAS",
+        "b8d7a3",
+      )}${opt("JS.TYPE_PARAMETER", "20999d")}</attributes></scheme>`,
+    );
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(fg("javascript.className")).toBe("#6fa4e5");
+    expect(fg("javascript.interface")).toBe("#4ec9b0");
+    expect(fg("javascript.typeAlias")).toBe("#b8d7a3");
+    expect(fg("javascript.typeParameter")).toBe("#20999d");
     expect(scheme.attributes.globalVariable).toBeUndefined();
   });
 
