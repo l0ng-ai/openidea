@@ -483,7 +483,7 @@ impl WindowsState {
     pub fn abort_all_closing(&self, initiator: Option<&str>) {
         {
             let mut close = self.close.lock();
-            let mut targets: Vec<String> = close.pending.drain(..).collect();
+            let mut targets: Vec<String> = std::mem::take(&mut close.pending);
             for label in close.ready.drain() {
                 if !targets.iter().any(|l| l == &label) {
                     targets.push(label);

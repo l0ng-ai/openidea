@@ -868,7 +868,7 @@ impl Host {
             return Ok(current);
         }
         self.close_project_detached(window);
-        if let Some(dir) = watch_dir.as_deref() {
+        if let Some(dir) = watch_dir {
             self.wait_detached_closes_for(dir);
         }
         let sink: SharedSink = (self.sink_for)(window);
