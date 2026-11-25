@@ -690,6 +690,8 @@ export const commands = {
 	 *  exited is only started again by the next request.
 	 */
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
+	/**  Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`. */
+	flutterEmulatorLaunch: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("flutter_emulator_launch", { id })),
 	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -7208,12 +7210,24 @@ export type FlutterDevice = {
 	emulator: boolean,
 	/**  The adb state keeping it from being used (`unauthorized`, `offline`, …). */
 	unavailable: string | null,
+	/**  The [`FlutterEmulator`] it runs on: an AVD name, or `apple_ios_simulator`. */
+	emulatorId?: string | null,
 };
 
 /**  The project's Flutter devices, best default first. */
 export type FlutterDeviceList = {
 	status: FlutterDaemonStatus,
 	devices: FlutterDevice[],
+	/**  The emulators that no listed device runs on. */
+	emulators?: FlutterEmulator[],
+};
+
+/**  An Android emulator (AVD) or the iOS Simulator that `flutter emulators --launch` can start. */
+export type FlutterEmulator = {
+	id: string,
+	name: string,
+	/**  `android` or `ios`. */
+	platformType: string | null,
 };
 
 export type FocusedEditor = {
