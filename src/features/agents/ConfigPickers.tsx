@@ -1,7 +1,7 @@
 /**
  * Model and settings controls shared by the New Task and session composers.
  */
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type { AgentConfigOption } from "@/bindings";
 import { useTx } from "@/platform/i18n";
@@ -252,9 +252,6 @@ function ConfigPicker({
   );
 }
 
-/** Values a setting shows as a segmented control; a longer list (Codex has six effort levels) is listed. */
-const SEGMENTED_MAX = 5;
-
 function settingName(option: AgentConfigOption) {
   return option.category === "thought_level"
     ? "Effort Level"
@@ -402,9 +399,10 @@ function ModelPicker({
 }
 
 /**
- * The current model's settings (effort, context size, fast mode…), each a click away: an on/off
- * setting as a switch, a short list as a segmented control, a longer one listed. A model with
- * one setting closes on a choice.
+ * The current model's settings (effort, context size, fast mode…), each a click away: on/off
+ * settings as a switch row, and choice settings consistently as a vertical list so every model
+ * shares the same layout, description display, and close behavior. A model with one setting
+ * closes on a choice.
  */
 function ModelSettings({
   settings,
@@ -421,35 +419,31 @@ function ModelSettings({
     <div className={styles.quickSettings}>
       {settings.map((o) => {
         const label = tx(settingName(o));
-        const control = switchValues(o) ? (
-          <ConfigPicker option={o} value={o.current} onChange={onChange} framed />
-        ) : o.values.length <= SEGMENTED_MAX ? (
-          <SegmentedControl
-            ariaLabel={label}
-            options={o.values.map((v) => ({ value: v.value, label: v.name, description: v.description ?? undefined }))}
-            value={settingValue(o)!.value}
-            onChange={(v) => {
-              onChange(o.id, v);
-              if (only) onDone();
-            }}
-          />
-        ) : (
-          <SelectListbox
-            aria-label={label}
-            value={settingValue(o)?.value ?? null}
-            options={o.values.map((v) => ({ value: v.value, label: v.name, detail: v.description ?? undefined }))}
-            onChoose={(v) => {
-              onChange(o.id, v);
-              if (only) onDone();
-            }}
-          />
-        );
+        if (switchValues(o)) {
+          return (
+            <div key={o.id} className={clsx(styles.quickRow, styles.quickToggleRow)}>
+              <span className={styles.quickLabel} title={o.description ?? undefined}>
+                {label}
+              </span>
+              <ConfigPicker option={o} value={o.current} onChange={onChange} framed />
+            </div>
+          );
+        }
+        const currentValue = settingValue(o)?.value ?? null;
         return (
           <div key={o.id} className={styles.quickRow}>
             <span className={styles.quickLabel} title={o.description ?? undefined}>
               {label}
             </span>
-            {control}
+            <SelectListbox
+              aria-label={label}
+              value={currentValue}
+              options={o.values.map((v) => ({ value: v.value, label: v.name, detail: v.description ?? undefined }))}
+              onChoose={(v) => {
+                if (v !== currentValue) onChange(o.id, v);
+                if (only) onDone();
+              }}
+            />
           </div>
         );
       })}
@@ -510,61 +504,6 @@ function CostBadge({ category }: { category: string | null | undefined }) {
     <span className={clsx(styles.costBadge, (category === "high" || category === "very_high") && styles.costBadgeHigh)}>
       {label}
     </span>
-  );
-}
-
-/** Accessible segmented pill selector (`role="radiogroup"`) with Left/Right arrow navigation. */
-export function SegmentedControl({
-  ariaLabel,
-  options,
-  value,
-  onChange,
-}: {
-  ariaLabel: string;
-  options: readonly { value: string; label: string; description?: string }[];
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const groupRef = useRef<HTMLDivElement>(null);
-  const currentIndex = Math.max(
-    0,
-    options.findIndex((o) => o.value === value),
-  );
-
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    e.preventDefault();
-    const delta = e.key === "ArrowRight" ? 1 : -1;
-    const nextIndex = (currentIndex + delta + options.length) % options.length;
-    const next = options[nextIndex];
-    if (!next) return;
-    onChange(next.value);
-    const buttons = groupRef.current?.querySelectorAll<HTMLButtonElement>('button[role="radio"]');
-    buttons?.[nextIndex]?.focus();
-  };
-
-  return (
-    <div ref={groupRef} role="radiogroup" aria-label={ariaLabel} className={styles.segmented} onKeyDown={onKeyDown}>
-      {options.map((opt, idx) => {
-        const active = idx === currentIndex;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            tabIndex={active ? 0 : -1}
-            title={opt.description}
-            className={clsx(styles.segment, active && styles.segmentActive)}
-            onClick={() => {
-              if (opt.value !== value) onChange(opt.value);
-            }}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
-    </div>
   );
 }
 

@@ -533,9 +533,9 @@ it("discovers an uncached model's own settings before its first task and restore
   const settings = screen.getByRole("button", { name: /^Model settings:/ });
   expect(settings).toHaveTextContent("medium");
   fireEvent.click(settings);
-  fireEvent.click(screen.getByRole("radio", { name: "max" }));
-  expect(screen.getByRole("radio", { name: "long_context" })).toBeVisible();
-  fireEvent.click(screen.getByRole("radio", { name: "long_context" }));
+  fireEvent.click(screen.getByRole("option", { name: "max" }));
+  expect(screen.getByRole("option", { name: "long_context" })).toBeVisible();
+  fireEvent.click(screen.getByRole("option", { name: "long_context" }));
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByTitle("big"));
   expect(settings).toHaveTextContent("high");

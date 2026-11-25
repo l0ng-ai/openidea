@@ -813,7 +813,7 @@ describe("the agent list", () => {
     closeSettings();
     dispose();
   });
-  const open = async (commands: FakeCommands, backend = new FakeBackend()) => {
+  const open = async (commands: FakeCommands, backend = new FakeBackend(), regionName = "Claude Code") => {
     dispose = registerSettingsPage({
       id: REGISTRY_PAGE,
       title: "Agents",
@@ -825,7 +825,7 @@ describe("the agent list", () => {
         <MessagesHost />
       </>,
     );
-    await screen.findByRole("region", { name: "Claude Code" });
+    await screen.findByRole("region", { name: regionName });
     return backend;
   };
   const model = {
@@ -904,6 +904,129 @@ describe("the agent list", () => {
     fireEvent.click(select);
     fireEvent.click(await screen.findByRole("option", { name: "Opus" }));
     expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Opus");
+  });
+
+  it("shows Cursor per-model defaults, prunes stale choices on model switch, and fetches unknown models", async () => {
+    const commands = new FakeCommands();
+    const refreshModels = vi.fn().mockResolvedValue({
+      provider: "cursor",
+      config: [],
+      thoughtLevels: {
+        "gemini-4-neon": [
+          {
+            id: "context",
+            name: "Context",
+            description: null,
+            category: "model_config",
+            current: "300k",
+            defaultValue: "300k",
+            via: "option",
+            values: [
+              { value: "300k", name: "300K", description: null },
+              { value: "1m", name: "1M", description: null },
+            ],
+          },
+        ],
+      },
+      refreshing: false,
+      refreshedAtMs: Date.now(),
+      retryAtMs: null,
+      error: null,
+    });
+    Object.assign(commands, { refreshModels });
+    commands.list = [
+      {
+        ...claudeProvider("cursor"),
+        id: "cursor",
+        name: "Cursor",
+        config: [
+          {
+            id: "model",
+            name: "Model",
+            description: null,
+            category: "model",
+            current: "grok-4.7",
+            defaultValue: "grok-4.7",
+            via: "option",
+            values: [
+              { value: "grok-4.7", name: "Grok 4.7", description: null },
+              { value: "gemini-4-neon", name: "Gemini 4 Neon", description: null },
+            ],
+          },
+          {
+            id: "openidea.cursor.approval",
+            name: "Approvals",
+            description: null,
+            category: "approval",
+            current: "bypass",
+            defaultValue: "ask",
+            via: "option",
+            values: [
+              { value: "ask", name: "Ask for approval", description: null },
+              { value: "bypass", name: "Bypass approvals", description: null },
+            ],
+          },
+        ],
+        thoughtLevels: {
+          "grok-4.7": [
+            {
+              id: "context",
+              name: "Context",
+              description: null,
+              category: "model_config",
+              current: "256k",
+              defaultValue: "256k",
+              via: "option",
+              values: [
+                { value: "256k", name: "256K", description: null },
+                { value: "500k", name: "500K", description: null },
+              ],
+            },
+            {
+              id: "fast",
+              name: "Fast",
+              description: null,
+              category: "model_config",
+              current: "true",
+              defaultValue: "true",
+              via: "option",
+              values: [
+                { value: "false", name: "Off", description: null },
+                { value: "true", name: "Fast", description: null },
+              ],
+            },
+          ],
+        },
+      },
+    ];
+    await open(commands, new FakeBackend(), "Cursor");
+    // Policy-overridden defaults say "Default (...)" rather than claiming to be the agent's own default.
+    expect(screen.getByRole("button", { name: "Approvals" })).toHaveTextContent("Default (Bypass approvals)");
+    expect(screen.getByRole("button", { name: "Fast" })).toHaveTextContent("Default (Off)");
+    expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("Agent's default (256K)");
+
+    // Pick a Grok-only context value and Fast=On, then switch to Gemini 4 Neon.
+    fireEvent.click(screen.getByRole("button", { name: "Context" }));
+    fireEvent.click(await screen.findByRole("option", { name: "500K" }));
+    expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("500K");
+
+    // Switch to a model whose per-model options aren't cached yet: Settings fetches them lazily.
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Gemini 4 Neon" }));
+    await waitFor(() => expect(refreshModels).toHaveBeenCalledWith("cursor", "gemini-4-neon"));
+    // The stale Grok-only choice (`500k`) is surfaced clearly as unavailable until reset or changed.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("500k (unavailable)"),
+    );
+    expect(screen.queryByRole("button", { name: "Fast" })).toBeNull();
+
+    // Switching back to a known model (Grok 4.7) after picking a Gemini-only value (`1m`) prunes the stale choice.
+    fireEvent.click(screen.getByRole("button", { name: "Context" }));
+    fireEvent.click(await screen.findByRole("option", { name: "1M" }));
+    expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("1M");
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Grok 4.7" }));
+    expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("Agent's default (256K)");
   });
 
   it("says when an agent's settings aren't known yet", async () => {

@@ -101,9 +101,9 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const catalog = useAgents((s) => s.modelCatalogs.get(provider?.id ?? ""));
   const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
   const requestTarget = useAgents((s) => s.modelRequestTargets.get(provider?.id ?? ""));
-  const { defaults, fitWindowWidth } = useAgentSettings();
+  const { defaults, fitWindowWidth, newTaskApprovals } = useAgentSettings();
   const providerDefaults = (provider && defaults[provider.id]) || {};
-  const config = draftConfig(provider, draft, providerDefaults);
+  const config = draftConfig(provider, draft, providerDefaults, newTaskApprovals);
   const model = config.find((o) => o.category === "model");
   const selectedModel = model?.current ?? null;
   const selectedModelRef = useRef(selectedModel);
