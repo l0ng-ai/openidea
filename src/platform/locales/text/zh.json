@@ -10354,5 +10354,11 @@
   "flutter --version did not answer in {root}.": "{root} 中的 flutter --version 没有响应。",
   "Flutter {framework}": "Flutter {framework}",
   "channel {channel}": "渠道 {channel}",
-  "Dart {dart}": "Dart {dart}"
+  "Dart {dart}": "Dart {dart}",
+  "NuGet Packages": "NuGet 包",
+  "Refresh packages": "刷新包列表",
+  "Search NuGet packages": "搜索 NuGet 包",
+  "Install / Update": "安装 / 更新",
+  "Versions": "版本",
+  "Transitive": "间接依赖"
 }

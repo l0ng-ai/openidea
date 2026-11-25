@@ -10102,5 +10102,11 @@
   "Roll Back to Here": "Откатить до этого места",
   "Couldn't roll back": "Не удалось откатить",
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Это сообщение и все последующие будут удалены, а файлы, изменённые агентом с тех пор, вернутся к состоянию до его отправки. Сообщение вернётся в поле ввода.",
-  "Resets in {resetIn}": "Сброс через {resetIn}"
+  "Resets in {resetIn}": "Сброс через {resetIn}",
+  "NuGet Packages": "Пакеты NuGet",
+  "Refresh packages": "Обновить пакеты",
+  "Search NuGet packages": "Поиск пакетов NuGet",
+  "Install / Update": "Установить / Обновить",
+  "Versions": "Версии",
+  "Transitive": "Транзитивные"
 }

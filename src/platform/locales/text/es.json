@@ -6111,5 +6111,11 @@
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Este mensaje y los posteriores se eliminan, y los archivos que el agente modificó desde entonces vuelven a como estaban antes de enviarlo. El mensaje vuelve al cuadro de texto.",
   "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Esto borra toda la conversación, devuelve los archivos que el agente modificó a como estaban al empezar la tarea e inicia una nueva sesión del agente con este mensaje.",
   "Resets in {resetIn}": "Se restablece en {resetIn}",
-  "Cannot paste {name}": "No se puede pegar {name}"
+  "Cannot paste {name}": "No se puede pegar {name}",
+  "NuGet Packages": "Paquetes NuGet",
+  "Refresh packages": "Actualizar paquetes",
+  "Search NuGet packages": "Buscar paquetes NuGet",
+  "Install / Update": "Instalar / actualizar",
+  "Versions": "Versiones",
+  "Transitive": "Transitivo"
 }

@@ -1,5 +1,7 @@
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { lazyComponent } from "@/ui";
+import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
 import {
   buildDotnet,
   cancelDotnet,
@@ -14,90 +16,106 @@ import {
   selectDotnet,
 } from "./store";
 
+const NUGET = "nuget";
+
 export function activate() {
-  const offActions = registerActions([
-    {
-      id: "dotnet.reload",
-      title: "Reload .NET Workspace",
-      category: "Build",
-      when: "projectOpen",
-      run: () => reloadDotnet(),
-    },
-    { id: "dotnet.cancel", title: "Cancel .NET Operation", category: "Build", run: () => cancelDotnet() },
-    {
-      id: "dotnet.select",
-      title: "Select .NET Project",
-      category: "Build",
-      hidden: true,
-      run: ({ arg }) => {
-        const a = arg as { path: string; configuration?: string; framework?: string };
-        return selectDotnet(a.path, a.configuration, a.framework);
+  const disposers = [
+    registerToolWindow({
+      id: NUGET,
+      title: "NuGet Packages",
+      icon: "library",
+      anchor: "bottom",
+      // Listed under the stripe's "…" until first opened: most projects are not .NET ones.
+      stripe: "onUse",
+      order: 29,
+      component: lazyComponent(() => import("./NugetView").then((m) => m.NugetView)),
+    }),
+    registerActions([
+      {
+        id: "dotnet.reload",
+        title: "Reload .NET Workspace",
+        category: "Build",
+        when: "projectOpen",
+        run: () => reloadDotnet(),
       },
-    },
-    ...(["build", "restore", "clean"] as const).map((op) => ({
-      id: `dotnet.${op}`,
-      title: op === "build" ? "Build .NET Project" : op === "restore" ? "Restore .NET Project" : "Clean .NET Project",
-      category: "Build",
-      when: "projectOpen",
-      run: () => buildDotnet(op),
-    })),
-    {
-      id: "dotnet.packages",
-      title: "Refresh NuGet Packages",
-      category: "Build",
-      when: "projectOpen",
-      run: () => listPackages(),
-    },
-    {
-      id: "dotnet.search",
-      title: "Search NuGet Packages",
-      category: "Build",
-      hidden: true,
-      run: ({ arg }) => {
-        const a = arg as { query: string; exact?: boolean };
-        return searchPackages(a.query, a.exact);
+      { id: "dotnet.cancel", title: "Cancel .NET Operation", category: "Build", run: () => cancelDotnet() },
+      {
+        id: "dotnet.select",
+        title: "Select .NET Project",
+        category: "Build",
+        hidden: true,
+        run: ({ arg }) => {
+          const a = arg as { path: string; configuration?: string; framework?: string };
+          return selectDotnet(a.path, a.configuration, a.framework);
+        },
       },
-    },
-    {
-      id: "dotnet.packageChange",
-      title: "Change NuGet Package",
-      category: "Build",
-      hidden: true,
-      run: ({ arg }) => {
-        const a = arg as { id: string; version: string | null };
-        return changePackage(a.id, a.version);
+      ...(["build", "restore", "clean"] as const).map((op) => ({
+        id: `dotnet.${op}`,
+        title: op === "build" ? "Build .NET Project" : op === "restore" ? "Restore .NET Project" : "Clean .NET Project",
+        category: "Build",
+        when: "projectOpen",
+        run: () => buildDotnet(op),
+      })),
+      {
+        id: "dotnet.packages",
+        title: "Refresh NuGet Packages",
+        category: "Build",
+        when: "projectOpen",
+        run: () => {
+          toolWindowService().show(NUGET, true);
+          return listPackages();
+        },
       },
-    },
-    {
-      id: "dotnet.discover",
-      title: "Discover .NET Tests",
-      category: "Run",
-      when: "projectOpen",
-      run: () => discoverTests(),
-    },
-    {
-      id: "dotnet.test",
-      title: "Run .NET Tests",
-      category: "Run",
-      when: "projectOpen",
-      run: async ({ arg }) => {
-        await runTests(typeof arg === "string" ? arg : undefined);
+      {
+        id: "dotnet.search",
+        title: "Search NuGet Packages",
+        category: "Build",
+        hidden: true,
+        run: ({ arg }) => {
+          const a = arg as { query: string; exact?: boolean };
+          return searchPackages(a.query, a.exact);
+        },
       },
-    },
-    {
-      id: "dotnet.installTrx",
-      title: "Install TRX reporting",
-      category: "Build",
-      when: "projectOpen",
-      run: () => installTrx(),
-    },
-  ]);
-  const offProject = useProject.subscribe((s, old) => {
-    if (s.project?.root !== old.project?.root) resetDotnet();
-  });
+      {
+        id: "dotnet.packageChange",
+        title: "Change NuGet Package",
+        category: "Build",
+        hidden: true,
+        run: ({ arg }) => {
+          const a = arg as { id: string; version: string | null };
+          return changePackage(a.id, a.version);
+        },
+      },
+      {
+        id: "dotnet.discover",
+        title: "Discover .NET Tests",
+        category: "Run",
+        when: "projectOpen",
+        run: () => discoverTests(),
+      },
+      {
+        id: "dotnet.test",
+        title: "Run .NET Tests",
+        category: "Run",
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          await runTests(typeof arg === "string" ? arg : undefined);
+        },
+      },
+      {
+        id: "dotnet.installTrx",
+        title: "Install TRX reporting",
+        category: "Build",
+        when: "projectOpen",
+        run: () => installTrx(),
+      },
+    ]),
+    useProject.subscribe((s, old) => {
+      if (s.project?.root !== old.project?.root) resetDotnet();
+    }),
+  ];
   return () => {
     resetDotnet();
-    offProject();
-    offActions();
+    disposers.reverse().forEach((d) => d());
   };
 }

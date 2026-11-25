@@ -4050,5 +4050,14 @@
   "flutter --version did not answer in {root}.": "flutter --version did not answer in {root}.",
   "Flutter {framework}": "Flutter {framework}",
   "channel {channel}": "channel {channel}",
-  "Dart {dart}": "Dart {dart}"
+  "Dart {dart}": "Dart {dart}",
+  "NuGet Packages": "NuGet Packages",
+  "Refresh packages": "Refresh packages",
+  "Search NuGet packages": "Search NuGet packages",
+  "Install / Update": "Install / Update",
+  "Versions": "Versions",
+  "Transitive": "Transitive",
+  "Version": "Version",
+  "Search": "Search",
+  ".NET project": ".NET project"
 }

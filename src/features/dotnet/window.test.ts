@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAction } from "@/platform/actions";
-import { useContributions } from "@/workbench/contributions";
+import { provideToolWindowService, useContributions, type ToolWindowService } from "@/workbench/contributions";
 import { PROJECT_TYPES } from "@/ui/projectType";
 import { activate } from "./index";
+import * as store from "./store";
 
 let dispose: () => void;
 
@@ -30,12 +31,30 @@ describe("standalone .NET tool window removal", () => {
       "dotnet.restore",
       "dotnet.clean",
       "dotnet.packages",
+      "dotnet.search",
+      "dotnet.packageChange",
       "dotnet.discover",
       "dotnet.test",
       "dotnet.installTrx",
     ]) {
       expect(getAction(id), id).toBeDefined();
     }
+  });
+
+  it("registers the NuGet tool window on the bottom stripe, listed only on use", () => {
+    const nuget = useContributions.getState().toolWindows.get("nuget");
+    expect(nuget, "nuget").toBeDefined();
+    expect(nuget!.anchor).toBe("bottom");
+    expect(nuget!.stripe).toBe("onUse");
+  });
+
+  it("dotnet.packages opens the NuGet window", async () => {
+    const show = vi.fn();
+    provideToolWindowService({ show } as unknown as ToolWindowService);
+    const list = vi.spyOn(store, "listPackages").mockReturnValue(undefined);
+    await getAction("dotnet.packages")!.run({ ctx: {} });
+    expect(show).toHaveBeenCalledWith("nuget", true);
+    expect(list).toHaveBeenCalled();
   });
 
   it("keeps .NET solutions and projects visible in the Project tool window's file tree", () => {

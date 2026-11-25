@@ -8759,5 +8759,11 @@
   "Roll Back to Here": "Buraya Geri Al",
   "Couldn't roll back": "Geri alınamadı",
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Bu mesaj ve sonrakiler kaldırılır; ajanın o zamandan beri değiştirdiği dosyalar mesaj gönderilmeden önceki hâline döner. Mesaj yazma alanına geri konur.",
-  "Resets in {resetIn}": "{resetIn} sonra sıfırlanır"
+  "Resets in {resetIn}": "{resetIn} sonra sıfırlanır",
+  "NuGet Packages": "NuGet Paketleri",
+  "Refresh packages": "Paketleri yenile",
+  "Search NuGet packages": "NuGet paketlerinde ara",
+  "Install / Update": "Yükle / Güncelle",
+  "Versions": "Sürümler",
+  "Transitive": "Geçişli"
 }
