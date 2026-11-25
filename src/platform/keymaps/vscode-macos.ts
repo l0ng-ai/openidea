@@ -158,6 +158,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.deleteToLineStart": [],
   "code.deleteToLineEnd": [],
   "code.cutLineEnd": [],
+  "code.hungryBackspace": [],
   "code.moveLineUp": ["Alt+Up"],
   "code.moveLineDown": ["Alt+Down"],
   "code.moveStatementUp": [],

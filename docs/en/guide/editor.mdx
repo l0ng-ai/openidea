@@ -63,6 +63,8 @@ Choose **Inspect Element**, then click an element in the page. Review its select
 
 **Cut up to Line End** cuts from each caret to the end of its line, together with the line break when only whitespace is left (or the caret is already at the line end), so pressing it again on the same caret cuts the next line too; those repeated cuts collect into one clipboard entry. **Delete to Line Start** and **Delete to Line End** delete the same way without copying (to the line start, or the line break before the caret at the line start), or delete the selection. They have no default shortcut except in the Eclipse keymaps (`⇧⌘⌦` / `Ctrl+Shift+Delete` for Delete to Line End).
 
+**Hungry Backspace** deletes all the spaces, tabs and line breaks before each caret in one go, up to the previous non-whitespace character; after anything else, or with a selection, it works like `⌫` / `Backspace`. It has no default shortcut.
+
 **Duplicate Entire Lines** copies every line touched by a caret or selection below itself, even when only part of a line is selected, and keeps the selection on the copy. It has no default shortcut; run it from **Find Action** or assign one in **Settings › Keymap**.
 
 **Fill Paragraph** re-wraps the paragraph at the caret to the hard wrap column (**Settings › Editor › Code Style**): a run of line comments, the `*` lines of a documentation comment up to the next blank line or `@` tag, or the lines between blank lines of a plain text file. In code it does nothing. It has no default shortcut.

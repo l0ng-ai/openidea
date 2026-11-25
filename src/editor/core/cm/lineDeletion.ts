@@ -1,8 +1,10 @@
 /**
- * IDEA's Delete to Line Start / Delete to Line End and Cut up to Line End (⌃K on macOS).
- * They work on document lines, not on soft-wrapped rows.
+ * IDEA's Delete to Line Start / Delete to Line End, Cut up to Line End (⌃K on macOS) and
+ * Hungry Backspace. They work on document lines, not on soft-wrapped rows.
  */
-import { EditorSelection, type EditorState, type Text } from "@codemirror/state";
+import { deleteBracketPair } from "@codemirror/autocomplete";
+import { deleteCharBackward } from "@codemirror/commands";
+import { EditorSelection, findClusterBreak, type EditorState, type Text } from "@codemirror/state";
 import type { Command, EditorView } from "@codemirror/view";
 import { writeClipboardText } from "@/platform/clipboard";
 import { clipboardHistory, recordClipboard, removeClipboardEntries } from "../clipboardHistory";
@@ -84,5 +86,32 @@ export const cutToLineEnd: Command = (view) => {
   lastCut = single ? { doc: view.state.doc, pos, text } : null;
   recordClipboard(text);
   void writeClipboardText(text).catch(() => {});
+  return true;
+};
+
+/** Spaces, tabs and line breaks, the whitespace Hungry Backspace removes (IDEA's `StringUtil.isWhiteSpace`). */
+const HUNGRY = /[ \t\n]/;
+
+/** The run of whitespace before the caret, across lines; otherwise the character before it. */
+function toWhitespaceStart(state: EditorState, pos: number): Span {
+  let from = pos;
+  while (from > 0 && HUNGRY.test(state.sliceDoc(from - 1, from))) from--;
+  if (from < pos || pos === 0) return { from, to: pos };
+  const line = state.doc.lineAt(pos);
+  return { from: line.from + findClusterBreak(line.text, pos - line.from, false), to: pos };
+}
+
+/**
+ * Deletes all whitespace (line breaks too) before each caret, as IDEA's Hungry Backspace; a
+ * selection, or a caret after anything else, gets a plain Backspace (an empty bracket pair goes as one).
+ */
+export const hungryBackspace: Command = (view) => {
+  const { state } = view;
+  if (state.readOnly) return false;
+  const hungry = state.selection.ranges.some(
+    (r) => r.empty && r.head > 0 && HUNGRY.test(state.sliceDoc(r.head - 1, r.head)),
+  );
+  if (!hungry) return deleteBracketPair(view) || deleteCharBackward(view);
+  remove(view, spans(state, toWhitespaceStart, true), "delete.backward");
   return true;
 };

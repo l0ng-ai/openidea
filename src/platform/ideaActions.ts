@@ -57,6 +57,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   EditorDeleteToLineStart: "code.deleteToLineStart",
   EditorDeleteToLineEnd: "code.deleteToLineEnd",
   EditorCutLineEnd: "code.cutLineEnd",
+  EditorHungryBackSpace: "code.hungryBackspace",
   CopyAsPlainText: "code.copyAsPlainText",
   CopyAsRichText: "code.copyAsRichText",
   FillParagraph: "code.fillParagraph",
