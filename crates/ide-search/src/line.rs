@@ -46,7 +46,10 @@ fn from_str(line_no: u32, s: &str, ranges: &[(usize, usize)], out: &mut Vec<Line
             utf16_len(&s.as_bytes()[..bounds.0])
         };
         (prev_start, prev_offset) = (bounds.0, text_offset);
-        let (m, used) = in_window(line_no, s, rest, bounds, text_offset);
+        // Only the ranges starting in the window: `in_window` reserves room for all it is given,
+        // and the rest of a long line can hold every match on it.
+        let starting = rest.partition_point(|&(a, _)| a <= bounds.1);
+        let (m, used) = in_window(line_no, s, &rest[..starting], bounds, text_offset);
         out.push(m);
         rest = &rest[used.max(1)..];
         if rest.is_empty() {
@@ -263,6 +266,17 @@ mod tests {
         line_matches(0, s.as_bytes(), &ranges, &mut out);
         assert_eq!(out.len(), 7_000);
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn each_window_holds_room_for_its_own_matches_only() {
+        // 7,000 windows of one match each on a 4 MB line.
+        let s = format!("{}function", "x".repeat(592)).repeat(7_000);
+        let ranges: Vec<_> = s.match_indices("function").map(|(a, m)| (a, a + m.len())).collect();
+        let mut out = Vec::new();
+        line_matches(0, s.as_bytes(), &ranges, &mut out);
+        let reserved: usize = out.iter().map(|m| m.ranges.capacity()).sum();
+        assert!(reserved <= 4 * out.len(), "{reserved} ranges reserved for {} windows", out.len());
     }
 
     /// `main`'s windowing, which counts each window's offset from the line start.
