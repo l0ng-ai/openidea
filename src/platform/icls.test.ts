@@ -283,6 +283,20 @@ describe(".icls schemes", () => {
     expect(scheme.attributes.globalVariable).toBeUndefined();
   });
 
+  it("colours TypeScript interfaces with the language default Interface name when no JS./TS. key does (#5619)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+    const parse = (...options: string[]) =>
+      parseIcls(`<scheme name="S"><attributes>${options.join("")}</attributes></scheme>`).scheme.attributes;
+    // A Space Day–style scheme: DEFAULT_INTERFACE_NAME and JS.CLASS, no TS.* keys.
+    const spaceDay = parse(opt("DEFAULT_INTERFACE_NAME", "ebcb8b"), opt("JS.CLASS", "8fa1b3"));
+    expect(spaceDay["javascript.interface"]?.foreground).toBe("#ebcb8b");
+    expect(spaceDay["javascript.className"]?.foreground).toBe("#8fa1b3");
+    // An explicit interface key still wins over the default.
+    const explicit = parse(opt("DEFAULT_INTERFACE_NAME", "ebcb8b"), opt("TS.INTERFACE", "4ec9b0"));
+    expect(explicit["javascript.interface"]?.foreground).toBe("#4ec9b0");
+  });
+
   it("maps punctuation only from keys that do not spread one colour to other punctuation", () => {
     const opt = (name: string, c: string) =>
       `<option name="${name}"><value><option name="FOREGROUND" value="${c}"/></value></option>`;
