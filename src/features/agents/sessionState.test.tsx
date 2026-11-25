@@ -10,7 +10,8 @@ import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings
 import { AgentsView } from "./AgentsView";
 import { SessionEditor } from "./SessionEditor";
 import { conversationRows } from "./session/conversationRows";
-import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
+import { CHANGES_KIND, changesKey, entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
+import { ChangesTab } from "./session/ChangesTab";
 import {
   acceptChanges,
   disconnect,
@@ -108,6 +109,8 @@ vi.mock("@/platform/ipc", async (original) => ({
       backend.changesCalls += 1;
       return { status: "ok", data: backend.changes };
     },
+    agentBaseText: async () => ({ status: "ok", data: "" }),
+    vcsOpenExternalLog: async () => ({ status: "ok", data: null }),
     agentGroupedChanges: async () => {
       backend.groupedCalls += 1;
       return { status: "ok", data: backend.grouped };
@@ -172,9 +175,10 @@ vi.mock("@/workbench/messages", async (original) => ({
     await backend.errorWait;
   },
 }));
+const editors = vi.hoisted(() => ({ closeInput: vi.fn(), openInput: vi.fn() }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
-  editorService: () => ({ closeInput: vi.fn(), openInput: vi.fn() }),
+  editorService: () => editors,
   toolWindowService: () => ({ show: vi.fn() }),
 }));
 
@@ -217,6 +221,10 @@ const input = (id: string) => ({
   key: sessionKey(id),
   data: { task: id },
 });
+const renderChanges = (id: string) =>
+  render(<ChangesTab input={{ kind: CHANGES_KIND, key: changesKey(id), data: { task: id } }} />);
+/** The Changes tab's file tree (the diff beside it names the files too). */
+const changedFiles = () => screen.findByRole("tree", { name: "Changed files" });
 const stream = () => document.querySelector<HTMLDivElement>(`.${styles.stream}`)!;
 const tool = (id: string, overrides: Partial<Extract<AgentEntry, { type: "tool" }>> = {}): AgentEntry => ({
   type: "tool",
@@ -2031,7 +2039,7 @@ describe("session state across tasks and hosts", () => {
     }
   });
 
-  it("keeps docked changes opt-in, preserves the draft, and returns to the same conversation", async () => {
+  it("opens a docked task's changes in the editor, keeping the conversation and its draft", async () => {
     backend.changes = [
       {
         path: "/project/very-long-file-name.ts",
@@ -2043,33 +2051,20 @@ describe("session state across tasks and hosts", () => {
         repo: null,
       },
     ];
-    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
     useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
     render(<AgentsView />);
     await screen.findByText("Answer A");
-    await screen.findByRole("button", { name: /1 changed file/ });
-    expect(screen.queryByRole("complementary", { name: "Changes" })).toBeNull();
-    const markVisible = vi.spyOn(await import("./store"), "markVisible");
-    vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const message = screen.getByRole("textbox", { name: "Message" });
     typeIn(message, "Draft to keep");
-    const conversation = stream();
-    fireEvent.click(screen.getByRole("button", { name: /1 changed file/ }));
-    expect(screen.getByRole("complementary", { name: "Changes" })).toBeVisible();
-    expect(screen.getByText("Answer A")).not.toBeVisible();
-    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
-    act(() => useAgents.setState({ unread: new Set(["A"]) }));
-    fireEvent(window, new Event("focus"));
-    expect(useAgents.getState().unread.has("A")).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
+    editors.openInput.mockClear();
+    fireEvent.click(await screen.findByRole("button", { name: /1 changed file/ }));
+    expect(editors.openInput).toHaveBeenCalledWith(
+      { kind: CHANGES_KIND, key: changesKey("A"), data: { task: "A" } },
+      { focus: true },
+    );
     expect(screen.getByText("Answer A")).toBeVisible();
-    expect(stream()).toBe(conversation);
-    expect(markVisible).toHaveBeenCalledWith("A");
-    expect(useAgents.getState().unread.has("A")).toBe(false);
     expect(screen.getByRole("textbox", { name: "Message" })).toBe(message);
     expect(textOf(message)).toBe("Draft to keep");
-    expect(useAgents.getState().composers.get("A")?.text).toBe("Draft to keep");
-    expect(JSON.parse(localStorage.getItem("openidea.agents.changesOpen.v1")!).A).toBe(true);
   });
 
   it.each([false, true])("retains scrolling and follow-output (%s) when moving in both directions", async (stick) => {
@@ -2201,7 +2196,6 @@ describe("session state across tasks and hosts", () => {
         repo: null,
       },
     ];
-    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
     useAgents.setState((s) => ({
       tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status: "archived" }),
     }));
@@ -2210,8 +2204,8 @@ describe("session state across tasks and hosts", () => {
     backend.fetched = [];
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("Answer A")).toBeInTheDocument();
-    const panel = await screen.findByRole("complementary", { name: "Changes" });
-    expect(await within(panel).findByText("kept-change.ts")).toBeInTheDocument();
+    renderChanges("A");
+    expect(await within(await changedFiles()).findByText("kept-change.ts")).toBeInTheDocument();
     expect(backend.fetched).toEqual(["A"]);
   });
 });
@@ -3066,7 +3060,6 @@ describe("accept changes", () => {
         repo: null,
       },
     ];
-    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
     useAgents.setState({
       tasks: new Map([[task("A").id, { ...task("A"), isolation: "worktree", status: "ready" }]]),
     });
@@ -3074,8 +3067,8 @@ describe("accept changes", () => {
 
   it("copies a worktree task's changes into the checkout after confirming", async () => {
     worktreeChanges();
-    render(<SessionEditor input={input("A")} />);
-    await screen.findByRole("complementary", { name: "Changes" });
+    renderChanges("A");
+    await changedFiles();
     fireEvent.click(screen.getByRole("button", { name: "Accept All Changes…" }));
     expect(backend.confirmed).toEqual(["Accept Changes"]);
     await waitFor(() => expect(backend.accepted).toEqual([["A", null]]));
@@ -3084,8 +3077,8 @@ describe("accept changes", () => {
   it("does nothing when the confirm dialog is dismissed", async () => {
     worktreeChanges();
     backend.confirmAnswer = false;
-    render(<SessionEditor input={input("A")} />);
-    await screen.findByRole("complementary", { name: "Changes" });
+    renderChanges("A");
+    await changedFiles();
     fireEvent.click(screen.getByRole("button", { name: "Accept All Changes…" }));
     await waitFor(() => expect(backend.confirmed).toEqual(["Accept Changes"]));
     expect(backend.accepted).toEqual([]);
@@ -3103,9 +3096,8 @@ describe("accept changes", () => {
         repo: null,
       },
     ];
-    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
-    render(<SessionEditor input={input("A")} />);
-    await screen.findByRole("complementary", { name: "Changes" });
+    renderChanges("A");
+    await changedFiles();
     expect(screen.queryByRole("button", { name: /Accept .* Changes…/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Rollback All Changes…" })).toBeInTheDocument();
   });
@@ -3125,27 +3117,30 @@ describe("last turn changes", () => {
   it("lists and rolls back only what the last turn changed, the session still counting the whole task", async () => {
     backend.changes = [change("a.ts"), change("b.ts")];
     backend.turnChanges = [change("b.ts")];
-    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
     useAgents.setState({ tasks: new Map([["A", { ...task("A"), status: "ready" }]]) });
     render(<SessionEditor input={input("A")} />);
-    const pane = await screen.findByRole("complementary", { name: "Changes" });
+    renderChanges("A");
+    const pane = await changedFiles();
     expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
 
-    fireEvent.click(within(pane).getByRole("tab", { name: "Last Turn" }));
-    await waitFor(() => expect(within(pane).queryByText("a.ts")).toBeNull());
-    expect(within(pane).getByText("b.ts")).toBeInTheDocument();
-    expect(within(pane).getByText("Since the last turn started")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Last Turn" }));
+    // Each view has a tree of its own.
+    await waitFor(() =>
+      expect(within(screen.getByRole("tree", { name: "Changed files" })).queryByText("a.ts")).toBeNull(),
+    );
+    expect(within(await changedFiles()).getByText("b.ts")).toBeInTheDocument();
+    expect(screen.getByText("Since the last turn started")).toBeInTheDocument();
     expect(useChangesOptions.getState().scope).toBe("turn");
     expect(screen.getByRole("button", { name: /2 changed files/ })).toBeInTheDocument();
 
-    fireEvent.click(within(pane).getByRole("button", { name: "Rollback All Changes…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rollback All Changes…" }));
     await waitFor(() => expect(backend.rolledBack).toEqual([["A", null, "lastTurn"]]));
 
     backend.turnChanges = [];
-    fireEvent.click(within(pane).getByRole("button", { name: "Refresh" }));
-    expect(await within(pane).findByText("The last turn changed no files")).toBeInTheDocument();
-    fireEvent.click(within(pane).getByRole("tab", { name: "Whole Task" }));
-    expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect((await screen.findAllByText("The last turn changed no files")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("tab", { name: "Whole Task" }));
+    expect(await within(await changedFiles()).findByText("a.ts")).toBeInTheDocument();
   });
 });
 
@@ -3174,7 +3169,6 @@ describe("grouped changes", () => {
     useAgents.setState({
       tasks: new Map([["A", { ...task("A"), isolation: "worktree" }]]),
     });
-    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
   };
 
   it("puts committed files under their commit and rolls back only the uncommitted ones", async () => {
@@ -3183,26 +3177,54 @@ describe("grouped changes", () => {
       commits: [commit({ files: [change("b.ts")] })],
     };
     worktreeTask();
-    render(<SessionEditor input={input("A")} />);
+    renderChanges("A");
+    const tree = await changedFiles();
 
-    expect(await screen.findByText("Uncommitted")).toBeInTheDocument();
-    expect(screen.getByText("Committed")).toBeInTheDocument();
-    expect(screen.getByText("aaaaaaa")).toBeInTheDocument();
-    expect(screen.getByText("change a")).toBeInTheDocument();
+    expect(await within(tree).findByText("Uncommitted")).toBeInTheDocument();
+    expect(within(tree).getByText("Committed")).toBeInTheDocument();
+    expect(within(tree).getByText("aaaaaaa")).toBeInTheDocument();
+    expect(within(tree).getByText("change a")).toBeInTheDocument();
 
     // The commit's files show once it is expanded; selecting one is not a rollback selection.
-    const commitRow = screen.getByText("change a").closest("[data-row]")!;
+    const commitRow = within(tree).getByText("change a").closest("[data-row]")!;
     fireEvent.mouseDown(commitRow.querySelector("[data-tree-toggle]")!);
-    expect(await screen.findByText("b.ts")).toBeInTheDocument();
-    fireEvent.mouseDown(screen.getByText("b.ts"));
+    expect(await within(tree).findByText("b.ts")).toBeInTheDocument();
+    fireEvent.mouseDown(within(tree).getByText("b.ts"));
     expect(screen.getByRole("button", { name: "Rollback All Changes…" })).toBeInTheDocument();
 
-    fireEvent.mouseDown(screen.getByText("a.ts"));
+    fireEvent.mouseDown(within(tree).getByText("a.ts"));
     expect(screen.getByRole("button", { name: "Rollback Selected Changes…" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Rollback Selected Changes…" }));
     await waitFor(() => expect(backend.confirmed).toEqual(["Rollback Changes"]));
     expect(backend.rolledBack).toEqual([["A", ["a.ts"], "group"]]);
+  });
+
+  it("shows every file's diff beside the tree, the same file once per commit, and follows the tree", async () => {
+    backend.grouped = {
+      uncommitted: [change("a.ts")],
+      commits: [commit({ files: [change("a.ts"), change("b.ts")] })],
+    };
+    worktreeTask();
+    // Room to scroll, so a reveal isn't clamped to the top.
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(5000);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+    renderChanges("A");
+    const tree = await changedFiles();
+    const blocks = () => [...document.querySelectorAll<HTMLElement>("[data-combined-block]")];
+    await waitFor(() =>
+      expect(blocks().map((b) => b.dataset.combinedBlock)).toEqual(["/project/a.ts", "/project/a.ts", "/project/b.ts"]),
+    );
+    // A commit's file names its commit.
+    expect(blocks()[0]!.textContent).not.toContain("aaaaaaa");
+    expect(blocks()[1]!.textContent).toContain("aaaaaaa");
+    const scroller = document.querySelector<HTMLElement>("[data-combined-scroll]")!;
+    const scrollTo = vi.spyOn(scroller, "scrollTo");
+    const second = Number.parseFloat(scroller.querySelector<HTMLElement>('[data-index="1"]')!.style.top);
+    fireEvent.mouseDown(within(tree).getByText("change a"));
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ top: second }));
   });
 
   it("counts only uncommitted files in the header and the tray", async () => {
@@ -3212,9 +3234,8 @@ describe("grouped changes", () => {
     };
     worktreeTask();
     render(<SessionEditor input={input("A")} />);
-    await screen.findByRole("complementary", { name: "Changes" });
+    expect(await screen.findByRole("button", { name: /1 commit/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /1 changed file/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /1 commit/ })).toBeInTheDocument();
   });
 
   it("puts the files of a task across nested repositories under a row per repository", async () => {
@@ -3225,9 +3246,8 @@ describe("grouped changes", () => {
     });
     backend.changes = [inRepo("api", "api/src/a.ts"), inRepo("api", "api/b.ts"), inRepo("web", "web/c.ts")];
     useAgents.setState({ tasks: new Map([["A", task("A")]]) });
-    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
-    render(<SessionEditor input={input("A")} />);
-    const pane = await screen.findByRole("complementary", { name: "Changes" });
+    renderChanges("A");
+    const pane = await changedFiles();
 
     await within(pane).findByText("a.ts");
     // Open from the start, each repository leads its files, which show their folder as the agent names it.
@@ -3236,7 +3256,7 @@ describe("grouped changes", () => {
     expect(within(pane).getByTitle("/api")).toBeInTheDocument();
 
     fireEvent.mouseDown(within(pane).getByText("c.ts"));
-    fireEvent.click(within(pane).getByRole("button", { name: "Rollback Selected Changes…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rollback Selected Changes…" }));
     await waitFor(() => expect(backend.rolledBack).toEqual([["A", ["web/c.ts"], "sinceStart"]]));
   });
 
@@ -3246,9 +3266,8 @@ describe("grouped changes", () => {
       { ...change("b.ts"), repo: "/project" },
     ];
     useAgents.setState({ tasks: new Map([["A", task("A")]]) });
-    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
-    render(<SessionEditor input={input("A")} />);
-    const pane = await screen.findByRole("complementary", { name: "Changes" });
+    renderChanges("A");
+    const pane = await changedFiles();
     expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
     expect(within(pane).queryByText("project")).toBeNull();
     // A file at the top of the project names no folder.
@@ -3265,8 +3284,8 @@ describe("grouped changes", () => {
     useAgents.setState({
       tasks: new Map([["A", { ...task("A"), isolation: "worktree", status: "ready" }]]),
     });
-    render(<SessionEditor input={input("A")} />);
-    await screen.findByText("Committed");
+    renderChanges("A");
+    await within(await changedFiles()).findByText("Committed");
 
     const accept = screen.getByRole("button", { name: "Accept All Changes…" });
     expect(accept).toBeEnabled();

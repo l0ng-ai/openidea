@@ -151,4 +151,25 @@ describe("Select In (⌥F1)", () => {
     await executeAction("navigate.selectIn", { path: "/p/src/a.ts" });
     expect(useContextMenuStore.getState().menu).toBeNull();
   });
+
+  it("expands an in-project folder when expand is true and reveals out-of-project folders in the file manager", async () => {
+    const { useProjectTree } = await import("./store");
+    const prev = useProjectTree.getState();
+    disposers.push(
+      registerProjectActions(),
+      () => setContext("projectOpen", false),
+      () => useProjectTree.setState(prev),
+    );
+    setContext("projectOpen", true);
+    useProjectTree.setState({ root: "/p", expanded: new Set(["/p"]) });
+
+    await executeAction("navigate.selectIn", { path: "/p/src/features", expand: true, revealOutside: true });
+    expect(useProjectTree.getState().expanded.has("/p/src")).toBe(true);
+    expect(useProjectTree.getState().expanded.has("/p/src/features")).toBe(true);
+    expect(useProjectTree.getState().revealRequest).toMatchObject({ path: "/p/src/features", focus: true });
+    expect(revealItemInDir).not.toHaveBeenCalled();
+
+    await executeAction("navigate.selectIn", { path: "/tmp/outside-dir", expand: true, revealOutside: true });
+    expect(revealItemInDir).toHaveBeenCalledExactlyOnceWith("/tmp/outside-dir");
+  });
 });

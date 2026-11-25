@@ -1550,6 +1550,40 @@ async fn flutter_outline_follows_the_document_and_the_server_instance() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn closing_labels_join_the_inlay_hints_until_the_next_edit() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Center(\n  child: Text('x'))\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.respond("textDocument/inlayHint", json!([]));
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::InlayHints, .. }))
+            .count()
+    };
+    let at = |l0: u32, c0: u32, c1: u32| json!({"start":{"line":l0,"character":c0},"end":{"line":1,"character":c1}});
+    let labels = json!({ "uri": uri_of(&path), "labels": [
+        { "range": at(1, 9, 18), "label": "Text" },
+        { "range": at(0, 0, 19), "label": "Center" },
+    ]});
+    s.peer().notify("dart/textDocument/publishClosingLabels", labels).unwrap();
+    eventually(|| refreshes() == 1).await;
+    let whole = Range::new(Pos::new(0, 0), Pos::new(2, 0));
+    let hints = h.mgr.inlay_hints(doc, whole).await.unwrap();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].label, "// Text // Center");
+    assert_eq!(hints[0].position, Pos::new(1, 19));
+    assert_eq!(hints[0].kind, InlayKind::ClosingLabel);
+    assert!(h.mgr.inlay_hints(doc, Range::new(Pos::new(0, 0), Pos::new(0, 7))).await.unwrap().is_empty());
+
+    // Edited text: the labels wait for the next analysis.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 0), " ")], &|| unreachable!());
+    assert!(h.mgr.inlay_hints(doc, whole).await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn diagnostics_become_events_and_feed_code_actions() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "let unused = 1;\nlet y = 2;\n");

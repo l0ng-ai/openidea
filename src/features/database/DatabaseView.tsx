@@ -459,6 +459,19 @@ export function DatabaseView() {
     };
   });
 
+  /** The shown nodes with keys in `keys`, in tree order. */
+  const shownNodes = (keys: ReadonlySet<string>): Node[] => {
+    const out: Node[] = [];
+    const walk = (nodes: readonly Node[]) => {
+      for (const n of nodes) {
+        if (keys.has(n.key)) out.push(n);
+        if (st.treeExpanded.has(n.key)) walk(children(n) ?? []);
+      }
+    };
+    walk(roots);
+    return out;
+  };
+
   const label = (n: Node): string => {
     switch (n.kind) {
       case "source":
@@ -656,8 +669,13 @@ export function DatabaseView() {
               </span>
             );
           }}
-          onSelectionChange={(_, lead) =>
-            useDatabase.setState({ selectedSource: lead ? nodeTarget(lead) : null, selectedNode: lead })
+          onSelectionChange={(selected, lead) =>
+            useDatabase.setState({
+              selectedSource: lead ? nodeTarget(lead) : null,
+              selectedNode: lead,
+              // Not just the lead: a ⌘-click that deselects a row still makes it the lead.
+              selectedNodes: shownNodes(selected),
+            })
           }
           onActivate={(n) => {
             if (n.kind === "table") openTableData(n.id, n.schema, n.table.name);

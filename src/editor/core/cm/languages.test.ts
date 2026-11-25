@@ -566,6 +566,50 @@ describe("language modes", () => {
     expect(keywords(support!.language, "switch x {\ncase 1:\ndefault:\n}")).toEqual(["switch", "case", "default"]);
   });
 
+  it("distinguishes Go packages, methods, fields and builtins without gopls", async () => {
+    const support = await loadSupport(findLanguageDescription("Go", "/p/main.go")!);
+    const source = [
+      "package main",
+      'import clock "time"',
+      "const Size = 1",
+      "func (c Config) Demo(d clock.Duration) {",
+      "  clock.Sleep(d)",
+      "  c.Show(c.Name)",
+      "  _ = make([]int, Size)",
+      "  _ = new([]int)",
+      "}",
+    ].join("\n");
+    const highlighter = tagHighlighter([
+      { tag: t.namespace, class: "namespace" },
+      { tag: t.typeName, class: "type" },
+      { tag: t.function(t.propertyName), class: "call" },
+      { tag: t.function(t.definition(t.variableName)), class: "declaration" },
+      { tag: t.propertyName, class: "field" },
+      { tag: t.constant(t.variableName), class: "constant" },
+      { tag: t.standard(t.function(t.variableName)), class: "builtin" },
+    ]);
+    const found: Array<[string, string]> = [];
+    highlightTree(support!.language.parser.parse(source), highlighter, (from, to, classes) => {
+      found.push([source.slice(from, to), classes]);
+    });
+    expect(found).toEqual([
+      ["main", "namespace"],
+      ["clock", "namespace"],
+      ["Size", "constant"],
+      ["Config", "type"],
+      ["Demo", "declaration"],
+      ["clock", "namespace"],
+      ["Duration", "type"],
+      ["Sleep", "call"],
+      ["Show", "call"],
+      ["Name", "field"],
+      ["make", "builtin"],
+      ["int", "type"],
+      ["new", "builtin"],
+      ["int", "type"],
+    ]);
+  });
+
   it("colours TOML keys as keywords in files, lock files and ```toml code blocks", async () => {
     await Promise.all(
       ["/p/Cargo.toml", "/p/uv.lock"].map(async (path) => {

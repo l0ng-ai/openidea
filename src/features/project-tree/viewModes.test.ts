@@ -262,7 +262,9 @@ describe("project view modes", () => {
 
   it("shows library folders inside the project in both places, read-only", async () => {
     const site = "/p/.venv/lib/site-packages";
-    for (const dir of ["/p", "/p/.venv", "/p/.venv/lib", site, `${site}/req`]) await loadDir(dir);
+    for (const dir of ["/p", "/p/.venv", "/p/.venv/lib", site, `${site}/req`])
+      // oxlint-disable-next-line no-await-in-loop -- nested folders are listed in order before the model is asserted
+      await loadDir(dir);
     const m = currentModel();
     // Under the project: path keys, read-only from the library root down.
     const venvKids = m.children.get("/p/.venv")!;

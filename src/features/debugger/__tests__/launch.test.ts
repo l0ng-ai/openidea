@@ -100,6 +100,24 @@ describe("Flutter device", () => {
     expect(attach({ device: "chrome" }).toolArgs).toEqual(["-d", "chrome"]);
   });
 
+  it("debugs the build mode and flavor of the command line", () => {
+    const launch = launchConfigFor(
+      flutter({ args: ["run", "-t", "lib/main.dart", "--profile", "--flavor=dev"] }),
+      "/p",
+    );
+    expect(extra(launch).toolArgs).toEqual(["--profile", "--flavor=dev"]);
+  });
+
+  it("attaches a Flutter configuration with its entry point and attach args", () => {
+    const config = flutter({
+      args: ["run", "-t", "lib/dev.dart", "--flavor=dev"],
+      params: { entry: "lib/dev.dart", flavor: "dev", attachArgs: "--debug-port 9000", request: "attach" },
+    });
+    const launch = launchConfigFor(config, "/p");
+    expect(launch).toMatchObject({ request: "attach", program: "/p/lib/dev.dart" });
+    expect(extra(launch)).toEqual({ __flutter: true, toolArgs: ["-d", "macos", "--debug-port", "9000"] });
+  });
+
   it("leaves the choice to flutter without a device list", () => {
     useFlutterDevices.setState({ list: null });
     expect(launchConfigFor(flutter(), "/p")?.extraJson).toBeNull();

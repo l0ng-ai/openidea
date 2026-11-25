@@ -21,6 +21,7 @@ import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
+import { installModifierPathLinks, type ModifierPathLinksController } from "./pathLinks";
 import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { installImeAnchor } from "./imeAnchor";
@@ -254,6 +255,7 @@ export class TerminalSession {
   private searchSelection = false;
   private readonly selectionHighlights: SelectionHighlightController;
   private readonly linkHighlights: LinkHighlightController;
+  private readonly pathLinks: ModifierPathLinksController;
   private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
@@ -472,7 +474,11 @@ export class TerminalSession {
       isSearchSelection: () => this.searchSelection,
     });
     this.linkHighlights = installLinkHighlights(this.term, readLinkColor);
-    this.disposables.push(this.selectionHighlights, this.linkHighlights);
+    this.pathLinks = installModifierPathLinks(this.term, this.host, {
+      cwd: () => this.snapshot.cwd,
+      color: readLinkColor,
+    });
+    this.disposables.push(this.selectionHighlights, this.linkHighlights, this.pathLinks);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text), this.clipboardTarget) },
@@ -544,6 +550,7 @@ export class TerminalSession {
     o.macOptionIsMeta = t.optionAsMeta;
     this.selectionHighlights.refresh();
     this.linkHighlights.refresh();
+    this.pathLinks.refresh();
     this.scheduleFit();
   }
 
@@ -1077,6 +1084,7 @@ export class TerminalSession {
     this.term.options.theme = readTerminalTheme();
     this.searchDecorations = null;
     this.linkHighlights.refresh();
+    this.pathLinks.refresh();
   }
 
   /** Finds `query` (highlighting every match); `incremental` keeps the current match while typing. */

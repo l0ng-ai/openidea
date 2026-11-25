@@ -506,8 +506,8 @@ export class DocModel {
   }
 
   /**
-   * Detects the indents again after Reformat Code rewrote them: tabs written by
-   * the formatter then render at the Code Style tab size and new lines indent
+   * Detects the indents again after Reformat Code or Convert Indents rewrote them:
+   * tabs written by them then render at the Code Style tab size and new lines indent
    * like them, instead of following the indents detected at open time.
    */
   redetectIndent() {

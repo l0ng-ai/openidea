@@ -1,5 +1,6 @@
 /** Picks the test output parser for a run configuration. */
 import type { RunConfig } from "@/platform/ipc";
+import { isJunitRunner } from "../application";
 import { cargoParser } from "./cargo";
 import { goParser } from "./go";
 import { jsParser } from "./js";
@@ -66,6 +67,7 @@ export function frameworkFor(config: FrameworkConfig): Framework {
   if (config.testRunner === "node-test" || /(^|[\s/\\])(node|tsx)(\.exe)?(\s+-\S*)*\s+--test(\s|$)/.test(cmd))
     return "node-test";
   if (config.testRunner === "mocha" || /(^|[\s/\\])_?mocha(\.cmd|\.js)?(\s|$)/.test(cmd)) return "mocha";
+  if (isJunitRunner(config)) return "jvm";
   switch (config.kind) {
     case "dotnet-test":
       return "dotnet";

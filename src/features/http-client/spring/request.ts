@@ -208,10 +208,13 @@ export function configCandidates(sourcePath: string, projectRoot: string | null,
 
 export async function findHost(sourcePath: string, projectRoot: string | null, fs: SourceReader): Promise<string> {
   const read = async (paths: string[]) => {
+    // Independent reads: collect them together, then parse in candidate order so the first file with a value still wins.
+    const texts = await Promise.all(paths.map((path) => fs.read(path).catch(() => null)));
     const configs: Map<string, string>[] = [];
-    for (const path of paths) {
-      const text = await fs.read(path).catch(() => null);
-      if (text !== null) configs.push(path.endsWith(".properties") ? parseProperties(text) : parseYaml(text));
+    for (const [i, text] of texts.entries()) {
+      if (text === null) continue;
+      const path = paths[i]!;
+      configs.push(path.endsWith(".properties") ? parseProperties(text) : parseYaml(text));
     }
     return configs;
   };
@@ -276,6 +279,7 @@ export async function bodyLookup(
     const dirs = new Set([...packages.map((p) => (p ? `${root}/${p.replace(/\./g, "/")}` : root)), dirname(from.path)]);
     for (const d of dirs)
       for (const x of ext) {
+        // oxlint-disable-next-line no-await-in-loop -- stop at the first candidate that exists; readAt feeds the shared class map
         const loaded = await readAt(`${d}/${name}${x}`);
         if (loaded) return loaded;
       }
@@ -283,8 +287,10 @@ export async function bodyLookup(
     if (!fs.filesNamed) return null;
     const suffixes = packages.map((p) => `/${p ? `${p.replace(/\./g, "/")}/` : ""}${name}`);
     for (const x of ext) {
+      // oxlint-disable-next-line no-await-in-loop -- .java/.kt candidates are tried in order; a hit skips the remaining extensions
       const paths = (await fs.filesNamed(`${name}${x}`).catch(() => [])).map((p) => p.replace(/\\/g, "/"));
       const path = paths.find((p) => suffixes.some((s) => p.endsWith(`${s}${x}`)));
+      // oxlint-disable-next-line no-await-in-loop -- stop at the first matching file in an imported package
       const loaded = path ? await readAt(path) : null;
       if (loaded) return loaded;
     }
@@ -297,17 +303,21 @@ export async function bodyLookup(
     let [current, at]: [string | undefined, Origin | null] = [name, from];
     while (current && at && !seen.has(current) && seen.size < MAX_SUPERCLASSES) {
       seen.add(current);
+      // oxlint-disable-next-line no-await-in-loop -- each superclass comes from the class resolved in the previous iteration
       const loaded = await load(current, at);
       const c = known.get(current);
       if (!c || !loaded) break;
       if (depth > 0)
         for (const p of [...c.ctorParams, ...c.fields.filter((f) => !f.isStatic)])
+          // oxlint-disable-next-line no-await-in-loop -- property types share the known/origins maps and the depth budget
           await loadWithProperties(typeName(p.type), loaded, depth - 1);
       [current, at] = [c.superclass && typeName(c.superclass), loaded];
     }
   };
   const names = new Set(endpoints.flatMap((e) => (e.bodyType ? [typeName(e.bodyType)] : [])));
-  for (const n of names) await loadWithProperties(n, origin, 1);
+  for (const n of names)
+    // oxlint-disable-next-line no-await-in-loop -- body types share the known/origins maps
+    await loadWithProperties(n, origin, 1);
   return (name) => known.get(name) ?? null;
 }
 
