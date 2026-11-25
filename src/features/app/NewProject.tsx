@@ -36,7 +36,14 @@ import {
   T,
   hasIcon,
 } from "@/ui";
-import { effectiveValues, fieldError, isVisible, versionAtLeast, type Values } from "./newProjectTemplate";
+import {
+  effectiveValues,
+  fieldError,
+  isVisible,
+  projectFolder,
+  versionAtLeast,
+  type Values,
+} from "./newProjectTemplate";
 import { defaultProjectDirectory, openProjectInWindow } from "./windows";
 import styles from "./newProject.module.css";
 
@@ -243,7 +250,8 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     setEdited((all) => ({ ...all, [selected]: { ...(all[selected] ?? {}), [id]: value } }));
 
   const syntaxError = projectNameError(name);
-  const path = location.trim() && !syntaxError ? joinPath(location.trim(), name) : "";
+  const folder = projectFolder(generator?.directory, fields, name, ownValues);
+  const path = location.trim() && !syntaxError ? joinPath(location.trim(), folder) : "";
   const nameError =
     syntaxError ?? (path && takenPath === path ? "A folder with this name already exists and is not empty" : null);
 
@@ -267,7 +275,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     let live = true;
     const dir = location.trim();
     const timer = setTimeout(() => {
-      call(commands.scaffoldTargetTaken(dir, name.trim()))
+      call(commands.scaffoldTargetTaken(dir, folder))
         .then((taken) => live && setTakenPath(taken ? path : null))
         .catch(() => {});
     }, 150);
