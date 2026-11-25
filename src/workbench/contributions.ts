@@ -567,6 +567,7 @@ export async function resolveFileEditor(path: string): Promise<FileEditorResolut
         );
     };
     try {
+      // oxlint-disable-next-line no-await-in-loop -- providers are asked in order; the first to resolve wins and acquires resources
       const input = await p.resolve(path, {
         onAdmission: (commit, release) => acquisitions.push({ commit, rollback: release }),
       });
@@ -583,6 +584,7 @@ export async function resolveFileEditor(path: string): Promise<FileEditorResolut
     } catch (e) {
       console.warn(`file editor provider ${p.id} failed`, e);
     }
+    // oxlint-disable-next-line no-await-in-loop -- a failed provider's acquisitions must be rolled back before the next one runs
     await rollback();
   }
   return null;
@@ -642,6 +644,7 @@ export async function openFileExternally(path: string): Promise<boolean> {
   );
   for (const handler of handlers) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- handlers are asked in order; the first one to take the file wins
       if (handler.matches(path) && (await handler.open(path))) return true;
     } catch (e) {
       console.warn(`external file opener ${handler.id} failed`, e);

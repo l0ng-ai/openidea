@@ -74,6 +74,7 @@ export function createDeploymentComparison(server: DeploymentServerValid, root: 
       // Read once for empty files too, to detect files changed since the listing.
       for (let offset = 0; offset === 0 || offset < entry.local.size; offset += BLOCK_SIZE) {
         signal.throwIfAborted();
+        // oxlint-disable-next-line no-await-in-loop -- bounded reads are ordered: abort is rechecked per block and a size change must stop before reading further blocks.
         const [a, b] = await Promise.all(
           [localPath(entry), remote].map((path) => call(commands.fsReadRange(path, offset, BLOCK_SIZE))),
         );

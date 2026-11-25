@@ -192,6 +192,7 @@ export class MemoryToolsBackend implements ToolsBackend {
       });
     onEvent({ type: "line", text: `Installing ${t.displayName} via ${t.installMethod}…` });
     for (const fraction of [0.25, 0.5, 0.75, 1]) {
+      // oxlint-disable-next-line no-await-in-loop -- progress steps and the cancellation check between them are ordered
       await this.wait();
       if (this.cancelled.delete(request)) throw new IpcError({ kind: "cancelled", message: "cancelled" });
       onEvent({ type: "progress", fraction, message: `Downloaded ${(fraction * 8).toFixed(1)} of 8.0 MB` });

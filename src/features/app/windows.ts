@@ -84,6 +84,7 @@ type Positions = ReadonlyArray<{ path: string; line: number; column: number }>;
 async function openInEditor(files: readonly string[], positions: Positions = []): Promise<void> {
   for (const [i, path] of files.entries()) {
     const at = positions.find((p) => p.path === path);
+    // oxlint-disable-next-line no-await-in-loop -- tabs open in argument order so the last file is focused
     await editorService()
       .openFile(path, {
         focus: i === files.length - 1,
