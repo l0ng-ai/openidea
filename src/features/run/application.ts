@@ -84,12 +84,12 @@ export function jvmTestConfig(fileConfig: RunConfig, className: string, method: 
   return null;
 }
 
-/** A test file of JUnit Jupiter (JUnit 5): OpenIDEA's runner handles JUnit Platform engines only. */
-const JUPITER_IMPORT = /^\s*import\s+(?:static\s+)?org\.junit\.jupiter\./m;
+/** A JUnit test file (JUnit 5 Jupiter, JUnit 4 or JUnit 3): OpenIDEA's runner handles all of them, TestNG goes to Maven. */
+const JUNIT_IMPORT = /^\s*import\s+(?:static\s+)?(?:org\.junit\.|junit\.framework\.)/m;
 
 /** Settings › Build Tools › Maven › Run tests using: OpenIDEA (the default), not Surefire. */
 export function runsJunitInIde(fileConfig: RunConfig, content: string | undefined): boolean {
-  if (fileConfig.kind !== "maven" || !content || !JUPITER_IMPORT.test(content)) return false;
+  if (fileConfig.kind !== "maven" || !content || !JUNIT_IMPORT.test(content)) return false;
   return useProject.getState().settings?.languages?.java?.maven?.runTestsUsing !== "maven";
 }
 

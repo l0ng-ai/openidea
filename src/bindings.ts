@@ -847,7 +847,8 @@ export const commands = {
 	/**
 	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
 	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
-	 *  classpath has one; from the engine's repository, else downloaded once from Maven Central), and,
+	 *  classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
+	 *  Maven Central), and,
 	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
 	 */
 	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
