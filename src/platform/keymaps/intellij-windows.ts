@@ -463,6 +463,7 @@ export const intellijWindows: Record<string, string[]> = {
   "db.runSqlScript": [],
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
+  "db.showDiagram": ["Ctrl+Alt+Shift+U"],
   "db.selectOpened": [],
   "db.expandAll": [],
   "db.collapseAll": [],
