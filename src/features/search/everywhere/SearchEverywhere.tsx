@@ -70,6 +70,7 @@ import {
 } from "./store";
 import styles from "./SearchEverywhere.module.css";
 import { isImeKey } from "@/platform/ime";
+import { nativePath } from "@/platform/paths";
 
 type SeScope = "allPlaces" | ProjectFileSet;
 
@@ -416,7 +417,7 @@ function SearchEverywhereDialog() {
             { label: "Open", run: () => activate(row) },
             { label: "Open to the Side", shortcut: formatBinding("Shift+Enter"), run: () => activate(row, true) },
             { kind: "separator" },
-            { label: "Copy Path", run: () => copy(row.path) },
+            { label: "Copy Path", run: () => copy(nativePath(row.path)) },
             { label: "Copy Path from Project Root", run: () => copy(row.rel) },
             ...(row.kind === "symbol" ? [{ label: "Copy Name", run: () => copy(row.name) }] : []),
             ...(row.kind === "file" || row.kind === "text"

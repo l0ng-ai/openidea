@@ -5585,6 +5585,8 @@
   "Resolve Using Yours": "Resolver usando os seus",
   "Resolve Using Theirs": "Resolver usando os deles",
   "All changes processed": "Todas as alterações foram processadas",
+  "All changes have been processed.": "Todas as alterações foram processadas.",
+  "Save changes and finish merging": "Salvar alterações e concluir a mesclagem",
   "{pending} change left": "{pending} alteração restante",
   "{pending} changes left": "{pending} alterações restantes",
   "Compare Contents": "Comparar conteúdos",

@@ -36,6 +36,15 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 const SNAPSHOT_DELAY: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const SNAPSHOT_DELAY: Duration = Duration::from_millis(50);
+/// The shortest gap between two snapshot refreshes. Any index write drops the snapshot (see
+/// `Store::apply`), so a later refresh only makes the next startup faster; a project whose files
+/// keep changing (a log written inside it) would otherwise rewrite it every couple of seconds.
+#[cfg(not(test))]
+const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const SNAPSHOT_EVERY: Duration = Duration::ZERO;
+/// A subtree scan with fewer files to parse runs without showing "Indexing" (see `scan`).
+const QUIET_SCAN_FILES: usize = 200;
 pub(crate) const MAX_RECENT: usize = 50;
 
 pub(crate) enum Job {
@@ -75,6 +84,8 @@ pub(crate) struct Shared {
     idle: Condvar,
     /// Coalesced post-update snapshot refresh.
     snapshot_due: Mutex<Option<Instant>>,
+    /// When the snapshot was last refreshed (see [`SNAPSHOT_EVERY`]).
+    snapshot_saved: Mutex<Option<Instant>>,
     /// Directories whose watcher events still need reconciliation before a
     /// refreshed snapshot can be trusted.
     pending_dirs: Mutex<HashSet<PathBuf>>,
@@ -103,6 +114,7 @@ impl Shared {
             wake: Condvar::new(),
             idle: Condvar::new(),
             snapshot_due: Mutex::default(),
+            snapshot_saved: Mutex::default(),
             pending_dirs: Mutex::default(),
         }
     }
@@ -444,7 +456,8 @@ impl Shared {
     }
 
     /// A cancelled scan (project closed) still ends its progress task and the indexing state.
-    fn end_scan(&self, task: TaskId) {
+    fn end_scan(&self, task: Option<TaskId>) {
+        let Some(task) = task else { return };
         self.indexing.store(false, Ordering::SeqCst);
         self.sink.emit(IdeEvent::Task {
             id: task,
@@ -471,13 +484,13 @@ impl Shared {
     }
 
     fn full_scan(&self, found: Option<Vec<Found>>, guard: SystemTime) {
-        self.scan(None, found, guard);
+        self.scan(None, &[], found, guard);
         // Parsing every file churns through far more memory than the index keeps.
         ide_core::memory::release_free_pages();
     }
 
-    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) -> Option<ScanCounts> {
-        let started = Instant::now();
+    /// Shows "Indexing" (the status flag and a background task) for a scan.
+    fn start_scan(&self) -> TaskId {
         self.indexing.store(true, Ordering::SeqCst);
         self.emit_state();
         let task = TaskId::next();
@@ -489,6 +502,25 @@ impl Shared {
             done: false,
             cancellable: false,
         });
+        task
+    }
+
+    /// A full scan shows "Indexing" from the start. A subtree scan (folders the watcher reported,
+    /// reconciled after each burst of changes) shows it only once it has
+    /// [`QUIET_SCAN_FILES`] or more files to parse: a program writing its log inside the project
+    /// would otherwise keep "Indexing" in the status bar for as long as it runs.
+    ///
+    /// Indexed files the walk didn't see are dropped when they are below one of `dirs` (all of
+    /// them for a full scan) or directly in one of `shallow`.
+    fn scan(
+        &self,
+        dirs: Option<&[PathBuf]>,
+        shallow: &[PathBuf],
+        prewalked: Option<Vec<Found>>,
+        guard: SystemTime,
+    ) -> Option<ScanCounts> {
+        let started = Instant::now();
+        let mut task = dirs.is_none().then(|| self.start_scan());
 
         let filter = self.filter();
         let walk_started = Instant::now();
@@ -507,7 +539,10 @@ impl Shared {
                 found.iter().filter_map(|f| prev_hash_if_stale(&d, f).map(|h| (f, h))).collect();
             let stale: Vec<PathBuf> = d
                 .paths()
-                .filter(|p| dirs.is_none_or(|dirs| dirs.iter().any(|dir| p.starts_with(dir))))
+                .filter(|p| {
+                    dirs.is_none_or(|dirs| dirs.iter().any(|dir| p.starts_with(dir)))
+                        || p.parent().is_some_and(|parent| shallow.iter().any(|dir| dir == parent))
+                })
                 .filter(|p| !seen.contains(p.as_path()))
                 .cloned()
                 .collect();
@@ -524,6 +559,9 @@ impl Shared {
         self.persist(&[], &stale, false);
 
         let total = todo.len();
+        if task.is_none() && total >= QUIET_SCAN_FILES {
+            task = Some(self.start_scan());
+        }
         let update_started = Instant::now();
         let mut laps = ChunkLaps::default();
         {
@@ -564,7 +602,9 @@ impl Shared {
                     }
                     done += batch.len();
                     laps.add(self.publish(batch.drain(..)));
-                    if last_progress.elapsed() >= PROGRESS_EVERY {
+                    if let Some(task) = task
+                        && last_progress.elapsed() >= PROGRESS_EVERY
+                    {
                         last_progress = Instant::now();
                         self.sink.emit(IdeEvent::Task {
                             id: task,
@@ -606,15 +646,19 @@ impl Shared {
         }
         let snapshot_elapsed = snapshot_started.elapsed();
         *self.snapshot_due.lock() = None;
-        self.indexing.store(false, Ordering::SeqCst);
-        self.sink.emit(IdeEvent::Task {
-            id: task,
-            title: "Indexing".into(),
-            message: None,
-            fraction: Some(1.0),
-            done: true,
-            cancellable: false,
-        });
+        *self.snapshot_saved.lock() = Some(Instant::now());
+        if let Some(task) = task {
+            self.indexing.store(false, Ordering::SeqCst);
+            self.sink.emit(IdeEvent::Task {
+                id: task,
+                title: "Indexing".into(),
+                message: None,
+                fraction: Some(1.0),
+                done: true,
+                cancellable: false,
+            });
+        }
+        // The counts may have changed either way.
         self.emit_state();
         if self.is_cancelled() {
             return None;
@@ -757,8 +801,58 @@ impl Shared {
         }
         let mut due = self.snapshot_due.lock();
         if due.is_none() {
-            *due = Some(Instant::now() + SNAPSHOT_DELAY);
+            let soonest = self.snapshot_saved.lock().map(|saved| saved + SNAPSHOT_EVERY);
+            *due = Some((Instant::now() + SNAPSHOT_DELAY).max(soonest.unwrap_or(Instant::now())));
         }
+    }
+
+    /// Reconciles the folders the watcher reported since the last snapshot, then refreshes it.
+    /// A folder the index already has files below is listed one level deep: its own files, plus
+    /// any subfolder that appeared (walked whole) or is gone (its files dropped). A folder it
+    /// knows nothing below is walked whole. Walking known folders whole would re-read the entire
+    /// project after every change to a file at its root.
+    fn reconcile(&self, dirs: &[PathBuf]) {
+        let filter = self.filter();
+        // The subfolders each reported folder has indexed files in; absent when it has none.
+        let mut known: HashMap<&Path, HashSet<PathBuf>> = HashMap::new();
+        {
+            let d = self.data.read();
+            for path in d.paths() {
+                for dir in dirs {
+                    let Ok(rest) = path.strip_prefix(dir) else { continue };
+                    let subdirs = known.entry(dir.as_path()).or_default();
+                    let mut parts = rest.components();
+                    if let (Some(first), Some(_)) = (parts.next(), parts.next()) {
+                        subdirs.insert(dir.join(first));
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        let mut trees = Vec::new();
+        let mut shallow = Vec::new();
+        for dir in dirs {
+            let Some(indexed) = known.get(dir.as_path()) else {
+                found.extend(filter.walk(dir, &self.cancelled));
+                trees.push(dir.clone());
+                continue;
+            };
+            found.extend(filter.list_dir(dir));
+            shallow.push(dir.clone());
+            for sub in filter.child_dirs(dir) {
+                if !indexed.contains(&sub) {
+                    found.extend(filter.walk(&sub, &self.cancelled));
+                    trees.push(sub);
+                }
+            }
+            // Gone from disk; a subfolder only hidden from the listing (an extra content root
+            // or a newly excluded folder) is handled by its own root or the rule-change rescan.
+            trees.extend(indexed.iter().filter(|sub| std::fs::symlink_metadata(sub).is_err()).cloned());
+        }
+        // Reported folders may nest; parse each file once.
+        let mut unique = HashSet::new();
+        found.retain(|f| unique.insert(f.path.clone()));
+        self.scan(Some(&trees), &shallow, Some(found), SystemTime::now());
     }
 
     fn save_snapshot_now(&self) {
@@ -767,7 +861,7 @@ impl Shared {
             // Reconcile the directories touched since the last scan before
             // recording their mtimes; otherwise a missed watcher event could be
             // blessed into the manifest.
-            self.scan(Some(&dirs), None, SystemTime::now());
+            self.reconcile(&dirs);
             return;
         }
         if let Some(store) = &self.store {
@@ -779,6 +873,7 @@ impl Shared {
             }
         }
         *self.snapshot_due.lock() = None;
+        *self.snapshot_saved.lock() = Some(Instant::now());
     }
 
     fn persist(&self, puts: &[(String, FileRecord)], deletes: &[String], durable: bool) {
@@ -884,7 +979,7 @@ impl Shared {
                 }
             }
             if !rescan {
-                self.scan(Some(&roots), None, SystemTime::now());
+                self.scan(Some(&roots), &[], None, SystemTime::now());
                 changed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
                 removed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
             }
@@ -1174,7 +1269,7 @@ mod metric_tests {
             batch.extend([sub.join(format!("f{i}.txt")), sub, root.join("gone")]);
         }
         std::fs::write(root.join("keep.txt"), "x").unwrap();
-        shared.scan(None, None, SystemTime::now()).unwrap();
+        shared.scan(None, &[], None, SystemTime::now()).unwrap();
         assert_eq!(shared.data.read().file_count, 41);
 
         std::fs::remove_dir_all(root.join("gone")).unwrap();
@@ -1198,7 +1293,7 @@ mod metric_tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, "x").unwrap();
         }
-        shared.scan(None, None, SystemTime::now()).unwrap();
+        shared.scan(None, &[], None, SystemTime::now()).unwrap();
         assert_eq!(shared.data.read().file_count, 7);
 
         std::fs::remove_dir_all(root.join("gone")).unwrap();
@@ -1233,11 +1328,11 @@ mod metric_tests {
         for i in 0..count {
             std::fs::write(root.join(format!("file_{i}.unknown")), "plain").unwrap();
         }
-        let cold = shared.scan(None, None, SystemTime::now()).unwrap();
+        let cold = shared.scan(None, &[], None, SystemTime::now()).unwrap();
         assert_eq!((cold.discovered, cold.metadata_reused, cold.scheduled), (count, 0, count));
         assert_eq!(cold.outcomes, ExtractionCounts { unsupported: count, ..Default::default() });
         assert_eq!(shared.data.read().file_count as usize, count);
-        let hot = shared.scan(None, None, SystemTime::now()).unwrap();
+        let hot = shared.scan(None, &[], None, SystemTime::now()).unwrap();
         assert_eq!((hot.discovered, hot.metadata_reused, hot.scheduled), (count, count, 0));
         assert_eq!(hot.outcomes.total(), 0);
     }
@@ -1249,7 +1344,7 @@ mod metric_tests {
         let shared = shared(&root);
         let path = root.join("main.rs");
         std::fs::write(&path, "fn main() {}").unwrap();
-        shared.scan(None, None, SystemTime::now()).unwrap();
+        shared.scan(None, &[], None, SystemTime::now()).unwrap();
         let (found, hash) = {
             let data = shared.data.read();
             let e = data.get(&path).unwrap();
@@ -1269,10 +1364,10 @@ mod metric_tests {
         let path = root.join("main.rs");
         std::fs::write(&path, "fn main() {}\n").unwrap();
         let shared = shared(&root);
-        let cold = shared.scan(None, None, SystemTime::now()).unwrap();
+        let cold = shared.scan(None, &[], None, SystemTime::now()).unwrap();
         assert_eq!((cold.discovered, cold.metadata_reused, cold.scheduled), (1, 0, 1));
         assert_eq!(cold.outcomes, ExtractionCounts { symbol_extractions: 1, ..Default::default() });
-        let hot = shared.scan(None, None, SystemTime::now()).unwrap();
+        let hot = shared.scan(None, &[], None, SystemTime::now()).unwrap();
         assert_eq!((hot.discovered, hot.metadata_reused, hot.scheduled), (1, 1, 0));
         assert_eq!(hot.outcomes, ExtractionCounts::default());
         // Force a metadata mismatch without a timestamp-resolution-dependent sleep.
@@ -1283,7 +1378,7 @@ mod metric_tests {
         rec.mtime = rec.mtime.wrapping_add(1);
         let (entry, symbols) = FileEntry::new(path.clone(), "main.rs".into(), rec);
         shared.data.write().insert(entry, symbols);
-        let touched = shared.scan(None, None, SystemTime::now()).unwrap();
+        let touched = shared.scan(None, &[], None, SystemTime::now()).unwrap();
         assert_eq!((touched.discovered, touched.metadata_reused, touched.scheduled), (1, 0, 1));
         assert_eq!(touched.outcomes, ExtractionCounts { hash_reused: 1, ..Default::default() });
         assert_eq!(shared.data.read().symbol_count, 1);
@@ -1339,13 +1434,13 @@ mod metric_tests {
         {
             let mut index = shared(&root);
             index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
-            assert_eq!(index.scan(None, None, SystemTime::now()).unwrap().outcomes.symbol_extractions, 1);
+            assert_eq!(index.scan(None, &[], None, SystemTime::now()).unwrap().outcomes.symbol_extractions, 1);
         }
         let mut index = shared(&root);
         index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
         let found = index.walk_roots(None);
         index.load_persisted(&found);
-        let counts = index.scan(None, Some(found), SystemTime::now()).unwrap();
+        let counts = index.scan(None, &[], Some(found), SystemTime::now()).unwrap();
         assert_eq!((counts.discovered, counts.metadata_reused, counts.scheduled), (1, 1, 0));
         assert_eq!(counts.outcomes, ExtractionCounts::default());
         assert_eq!(index.data.read().symbol_count, 1);
@@ -1362,7 +1457,7 @@ mod metric_tests {
         {
             let mut index = shared(&root);
             index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
-            assert_eq!(index.scan(None, None, SystemTime::now()).unwrap().outcomes.symbol_extractions, 1);
+            assert_eq!(index.scan(None, &[], None, SystemTime::now()).unwrap().outcomes.symbol_extractions, 1);
         }
         let mut index = shared(&root);
         index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
@@ -1411,7 +1506,7 @@ mod metric_tests {
         {
             let mut index = shared(&root);
             index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
-            index.scan(None, None, SystemTime::now()).unwrap();
+            index.scan(None, &[], None, SystemTime::now()).unwrap();
         }
         let mut index = shared(&root);
         index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
@@ -1462,7 +1557,7 @@ mod metric_tests {
             });
             index
         });
-        assert!(index.scan(None, None, SystemTime::now()).is_none());
+        assert!(index.scan(None, &[], None, SystemTime::now()).is_none());
         assert!(index.is_cancelled());
         assert!(!index.indexing.load(Ordering::Relaxed));
         assert_eq!(index.data.read().file_count, 1);
@@ -1473,7 +1568,7 @@ mod metric_tests {
         let dir = tempfile::tempdir().unwrap();
         let shared = shared(dir.path());
         shared.cancel();
-        assert!(shared.scan(None, None, SystemTime::now()).is_none());
+        assert!(shared.scan(None, &[], None, SystemTime::now()).is_none());
         assert!(!shared.indexing.load(Ordering::Relaxed));
     }
 }

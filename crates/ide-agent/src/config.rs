@@ -65,7 +65,7 @@ fn bypass_value(category: &str) -> Option<fn(&str) -> bool> {
 }
 
 /// Moves options that approve everything without asking to a value that asks: the agent's
-/// default or ask mode, else its first one that asks.
+/// own default (when it asks), else `default` or `ask`, else its first one that asks.
 pub(crate) fn ask_for_approvals(config: &mut [AgentConfigOption]) {
     for option in config {
         let Some(bypass) = option.category.as_deref().and_then(bypass_value) else { continue };
@@ -73,9 +73,15 @@ pub(crate) fn ask_for_approvals(config: &mut [AgentConfigOption]) {
             continue;
         }
         let asks = |v: &&AgentConfigValue| !bypass(&v.value);
-        let value = ["default", "ask"]
-            .iter()
-            .find_map(|preferred| option.values.iter().filter(asks).find(|v| v.value == *preferred))
+        let value = option
+            .default_value
+            .as_deref()
+            .and_then(|def| option.values.iter().filter(asks).find(|v| v.value == def))
+            .or_else(|| {
+                ["default", "ask"]
+                    .iter()
+                    .find_map(|preferred| option.values.iter().filter(asks).find(|v| v.value == *preferred))
+            })
             .or_else(|| option.values.iter().find(asks));
         if let Some(value) = value {
             option.current = Some(value.value.clone());
@@ -83,11 +89,26 @@ pub(crate) fn ask_for_approvals(config: &mut [AgentConfigOption]) {
     }
 }
 
-/// The mode that approves everything without asking (`bypassPermissions`, `yolo`, `full-access`…), if the agent has one.
-pub(crate) fn bypass_mode(options: &[AgentConfigOption]) -> Option<(&AgentConfigOption, &AgentConfigValue)> {
-    let option = options.iter().find(|o| o.category.as_deref() == Some("mode"))?;
-    let value = option.values.iter().find(|v| is_bypass_mode(&v.value))?;
-    Some((option, value))
+/// Moves approval-bearing options (`mode`, `permissions`, `approval`) to their approving value.
+pub(crate) fn apply_bypass_approvals(config: &mut [AgentConfigOption]) {
+    for option in config {
+        let Some(bypass) = option.category.as_deref().and_then(bypass_value) else { continue };
+        if let Some(value) = option.values.iter().find(|v| bypass(&v.value)) {
+            option.current = Some(value.value.clone());
+        }
+    }
+}
+
+/// Applies provider-specific defaults to per-model options for new tasks without altering `default_value`.
+pub(crate) fn apply_model_defaults(provider: &str, options: &mut [AgentConfigOption]) {
+    if provider != "cursor" {
+        return;
+    }
+    if let Some(fast) = options.iter_mut().find(|o| is_fast_option(&o.id))
+        && fast.values.iter().any(|v| v.value == "false")
+    {
+        fast.current = Some("false".into());
+    }
 }
 
 fn is_bypass_mode(mode: &str) -> bool {
@@ -126,14 +147,20 @@ pub(crate) fn options_of(result: &Value) -> Vec<AgentConfigOption> {
 }
 
 pub(crate) fn is_context_option(id: &str) -> bool {
-    matches!(id, "context_tier" | "contextTier")
+    matches!(id, "context" | "context_tier" | "contextTier")
+}
+
+pub(crate) fn is_fast_option(id: &str) -> bool {
+    id == "fast"
 }
 
 /// Whether an option's available values and default belong to the selected model
-/// (`thought_level` and model context-tier options) rather than the provider as a whole.
+/// (`thought_level`, `context_tier`, and `model_config` options like `context` and `fast`)
+/// rather than the provider as a whole.
 pub(crate) fn is_per_model_option(o: &AgentConfigOption) -> bool {
-    matches!(o.category.as_deref(), Some("thought_level" | "context_tier"))
+    matches!(o.category.as_deref(), Some("thought_level" | "context_tier" | "model_config"))
         || matches!(o.id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
+        || is_fast_option(&o.id)
         || is_context_option(&o.id)
 }
 
@@ -164,7 +191,7 @@ pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
                             matches!(id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
                                 .then(|| "thought_level".into())
                         })
-                        .or_else(|| (id == "fast" || is_context_option(&id)).then(|| "model_config".into()))
+                        .or_else(|| (is_fast_option(&id) || is_context_option(&id)).then(|| "model_config".into()))
                 }),
                 current,
                 default_value,
@@ -337,6 +364,11 @@ fn legacy(
     }
 }
 
+fn clean_label(s: String, fallback: &str) -> String {
+    let trimmed = s.trim_matches(|c: char| c.is_whitespace() || matches!(c, '\u{200B}'..='\u{200D}' | '\u{FEFF}'));
+    if trimmed.is_empty() { fallback.to_owned() } else { trimmed.to_owned() }
+}
+
 fn value_of(v: &Value) -> Option<AgentConfigValue> {
     let value = v.get("value")?.as_str()?.to_owned();
     let meta = v.get("_meta");
@@ -352,7 +384,7 @@ fn value_of(v: &Value) -> Option<AgentConfigValue> {
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
     Some(AgentConfigValue {
-        name: str_of(v, "name").unwrap_or_else(|| value.clone()),
+        name: str_of(v, "name").map(|n| clean_label(n, &value)).unwrap_or_else(|| value.clone()),
         description: str_of(v, "description"),
         cost_category,
         usage_multiplier,
@@ -434,19 +466,16 @@ mod tests {
             ]}
         }));
         assert!(bypass_approvals(&full_access));
-        assert_eq!(bypass_mode(&full_access).map(|(_, v)| v.value.as_str()), Some("full-access"));
 
-        let asking = options_of(&json!({
+        let mut asking = options_of(&json!({
             "modes": {"currentModeId": "ask", "availableModes": [
                 {"id": "ask", "name": "Ask"}, {"id": "full-access", "name": "Full Access"}
             ]}
         }));
         assert!(!bypass_approvals(&asking));
-        assert_eq!(
-            bypass_mode(&asking).map(|(_, v)| v.value.as_str()),
-            Some("full-access"),
-            "the offered bypass mode stays available"
-        );
+        apply_bypass_approvals(&mut asking);
+        assert_eq!(asking[0].current.as_deref(), Some("full-access"));
+        assert!(bypass_approvals(&asking));
 
         let permissions = |current: &str| {
             options_of(&json!({"configOptions": [{
@@ -503,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn effort_and_fast_categories_are_inferred_from_ids() {
+    fn effort_context_and_fast_are_per_model_options() {
         let mut c = options_of(&json!({
             "configOptions": [
                 {"id": "model", "type": "select", "currentValue": "gemini-4-carbon",
@@ -512,19 +541,39 @@ mod tests {
                               "_meta": {"copilotPriceCategory": "Medium", "copilotUsage": "1x"}}]},
                 {"id": "effort", "type": "select", "currentValue": "medium",
                  "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]},
+                {"id": "context", "type": "select", "currentValue": "256k",
+                 "options": [{"value": "256k", "name": "256K"}, {"value": "500k", "name": "500K"}]},
                 {"id": "contextTier", "type": "select", "currentValue": "default",
                  "options": [{"value": "default", "name": "200K"}, {"value": "long_context", "name": "1M"}]},
-                {"id": "fast", "type": "select", "currentValue": "false",
-                 "options": [{"value": "false", "name": "Off"}, {"value": "true", "name": "On"}]}
+                {"id": "fast", "type": "select", "currentValue": "true",
+                 "options": [{"value": "false", "name": "Off"}, {"value": "true", "name": "Fast\u{200b}\u{200b}"}]}
             ]
         }));
-        assert_eq!(c.len(), 4);
+        assert_eq!(c.len(), 5);
         assert_eq!(c[0].values[0].cost_category.as_deref(), Some("medium"));
         assert_eq!(c[0].values[0].usage_multiplier.as_deref(), Some("1x"));
         assert_eq!(c[1].category.as_deref(), Some("thought_level"));
         assert_eq!(c[1].default_value.as_deref(), Some("medium"));
         assert_eq!(c[2].category.as_deref(), Some("model_config"));
-        assert!(is_per_model_option(&c[1]) && is_per_model_option(&c[2]) && !is_per_model_option(&c[3]));
+        assert_eq!(c[3].category.as_deref(), Some("model_config"));
+        assert_eq!(c[4].category.as_deref(), Some("model_config"));
+        assert_eq!(c[4].values[1].name, "Fast");
+        assert!(
+            is_per_model_option(&c[1])
+                && is_per_model_option(&c[2])
+                && is_per_model_option(&c[3])
+                && is_per_model_option(&c[4])
+        );
+        assert!(!is_per_model_option(&c[0]));
+
+        // Cursor defaults fast off for new tasks while preserving the agent's own default_value.
+        let mut cursor_opts = c.clone();
+        apply_model_defaults("cursor", &mut cursor_opts);
+        let fast = cursor_opts.iter().find(|o| o.id == "fast").unwrap();
+        assert_eq!((fast.current.as_deref(), fast.default_value.as_deref()), (Some("false"), Some("true")));
+        let mut other_opts = c.clone();
+        apply_model_defaults("claude", &mut other_opts);
+        assert_eq!(other_opts.iter().find(|o| o.id == "fast").unwrap().current.as_deref(), Some("true"));
 
         // Editing effort on the same model preserves its initial `default_value` for Reset.
         merge_update(
@@ -546,11 +595,34 @@ mod tests {
                 {"id": "model", "type": "select", "currentValue": "gpt-6-sol",
                  "options": [{"value": "gemini-4-carbon"}, {"value": "gpt-6-sol"}]},
                 {"id": "effort", "type": "select", "currentValue": "low",
-                 "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]}
+                 "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]},
+                {"id": "context", "type": "select", "currentValue": "1m",
+                 "options": [{"value": "300k", "name": "300K"}, {"value": "1m", "name": "1M"}]}
             ]),
         );
         let effort = c.iter().find(|o| o.id == "effort").unwrap();
         assert_eq!((effort.current.as_deref(), effort.default_value.as_deref()), (Some("low"), Some("low")));
+        let context = c.iter().find(|o| o.id == "context").unwrap();
+        assert_eq!((context.current.as_deref(), context.default_value.as_deref()), (Some("1m"), Some("1m")));
+    }
+
+    #[test]
+    fn apply_bypass_approvals_covers_mode_permissions_and_approval() {
+        let mut c = options_of(&json!({"configOptions": [
+            {"id": "mode", "category": "mode", "type": "select", "currentValue": "ask",
+             "options": [{"value": "ask"}, {"value": "full-access"}]},
+            {"id": "allow_all", "category": "permissions", "type": "select", "currentValue": "off",
+             "options": [{"value": "off"}, {"value": "on"}]},
+            {"id": "approval", "category": "approval", "type": "select", "currentValue": "ask",
+             "options": [{"value": "ask"}, {"value": "bypass"}]}
+        ]}));
+        apply_bypass_approvals(&mut c);
+        assert_eq!(ids(&c), [("mode", Some("full-access")), ("allow_all", Some("on")), ("approval", Some("bypass"))]);
+        // Original agent default_values stay intact.
+        assert_eq!(
+            c.iter().map(|o| o.default_value.as_deref()).collect::<Vec<_>>(),
+            [Some("ask"), Some("off"), Some("ask")]
+        );
     }
 
     #[test]

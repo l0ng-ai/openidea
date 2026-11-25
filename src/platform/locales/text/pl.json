@@ -5570,6 +5570,8 @@
   "Resolve Using Yours": "Rozwiąż używając Twoich zmian",
   "Resolve Using Theirs": "Rozwiąż używając Ich zmian",
   "All changes processed": "Wszystkie zmiany zostały przetworzone",
+  "All changes have been processed.": "Wszystkie zmiany zostały przetworzone.",
+  "Save changes and finish merging": "Zapisz zmiany i zakończ scalanie",
   "{pending} change left": "Pozostała {pending} zmiana",
   "{pending} changes left": "Pozostało zmian: {pending}",
   "Compare Contents": "Porównaj zawartość",

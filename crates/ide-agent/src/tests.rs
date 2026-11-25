@@ -3942,14 +3942,10 @@ async fn composer_commands_discover_cursor_effort_and_fast() {
     assert!(calls.iter().any(|m| m.as_str() == "session/new"));
     assert_eq!(calls.iter().filter(|m| m.as_str() == "initialize").count(), 1);
     let cursor = mgr.providers().into_iter().find(|p| p.id == "cursor").unwrap();
-    assert_eq!(cursor.config.iter().find(|o| o.id == "fast").unwrap().current.as_deref(), Some("false"));
-    assert!(
-        cursor
-            .thought_levels
-            .values()
-            .next()
-            .is_some_and(|levels| { levels.iter().any(|o| o.category.as_deref() == Some("thought_level")) })
-    );
+    assert!(!cursor.config.iter().any(|o| o.id == "fast"));
+    let levels = cursor.thought_levels.values().next().expect("discovered model options");
+    assert_eq!(levels.iter().find(|o| o.id == "fast").unwrap().current.as_deref(), Some("false"));
+    assert!(levels.iter().any(|o| o.category.as_deref() == Some("thought_level")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
