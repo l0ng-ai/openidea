@@ -74,6 +74,9 @@ describe("IDEA keymap parity", () => {
     ["code.cutLineEnd", ["Ctrl+K"], []],
     ["code.deleteToLineStart", [], []],
     ["code.deleteToLineEnd", [], []],
+    // CopyAsPlainText / CopyAsRichText have no shortcut.
+    ["code.copyAsPlainText", [], []],
+    ["code.copyAsRichText", [], []],
     ["navigate.nextOccurrence", ["Meta+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["navigate.prevOccurrence", ["Meta+Alt+Up"], ["Ctrl+Alt+Up"]],
     // Rerun in the Find / Find Usages tool windows uses the Rerun shortcut.

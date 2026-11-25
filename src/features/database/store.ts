@@ -28,6 +28,7 @@ import {
   type DbTableInfo,
   type DbTableKind,
   type DbVisibilityChange,
+  type DbTableGrant,
   type RequestId,
   type SqlStatement,
 } from "@/platform/ipc";
@@ -928,6 +929,11 @@ export async function loadDetails(id: string, schema: string, table: string): Pr
     if (!current()) return;
     useDatabase.setState((s) => ({ details: { ...s.details, [key]: { status: "error", message: message(e) } } }));
   }
+}
+
+/** The privileges granted on a table (PostgreSQL and MySQL; see `grantsSupported`). */
+export function loadGrants(id: string, schema: string, table: string): Promise<DbTableGrant[]> {
+  return withConnection(id, () => call(commands.dbTableGrants(id, schema, table)));
 }
 
 /**

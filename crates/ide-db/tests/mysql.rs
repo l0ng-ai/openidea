@@ -322,3 +322,39 @@ async fn later_pages_continue_the_result_where_the_previous_page_stopped() -> Id
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn table_grants_list_table_privileges() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp, "").await else { return Ok(()) };
+    let c = CancellationToken::new();
+    for stmt in [
+        "DROP DATABASE IF EXISTS oi_grants",
+        "DROP USER IF EXISTS 'oi_grant_reader'@'%', 'oi_grant_writer'@'%'",
+        "CREATE USER 'oi_grant_reader'@'%', 'oi_grant_writer'@'%'",
+        "CREATE DATABASE oi_grants",
+        "CREATE TABLE oi_grants.shared (id INT)",
+        "CREATE TABLE oi_grants.private (id INT)",
+        "GRANT SELECT ON oi_grants.shared TO 'oi_grant_reader'@'%'",
+        "GRANT INSERT, UPDATE ON oi_grants.shared TO 'oi_grant_writer'@'%' WITH GRANT OPTION",
+    ] {
+        db.execute("m", stmt, 10, &c).await?;
+    }
+    let grants = db.table_grants("m", "oi_grants", "shared").await?;
+    let mut rows: Vec<_> =
+        grants.iter().map(|g| (g.grantee.as_str(), g.privilege.as_str(), g.grantable, g.grantor.clone())).collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            ("'oi_grant_reader'@'%'", "SELECT", false, None),
+            ("'oi_grant_writer'@'%'", "INSERT", true, None),
+            ("'oi_grant_writer'@'%'", "UPDATE", true, None),
+        ]
+    );
+    assert!(db.table_grants("m", "oi_grants", "private").await?.is_empty());
+    for stmt in ["DROP DATABASE oi_grants", "DROP USER 'oi_grant_reader'@'%', 'oi_grant_writer'@'%'"] {
+        db.execute("m", stmt, 10, &c).await?;
+    }
+    Ok(())
+}

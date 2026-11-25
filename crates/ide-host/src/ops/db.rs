@@ -9,7 +9,7 @@ use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
 use ide_db::{
     CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, DbVisibilityChange, HistoryEntry, PlanNode,
-    QueryResult, SchemaObjects, SortKey, TableDetails, TableInfo, TablePage,
+    QueryResult, SchemaObjects, SortKey, TableDetails, TableGrant, TableInfo, TablePage,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -291,6 +291,19 @@ pub async fn db_table_details(
     // Columns, keys and indexes of `table`.
     let db = host.project(window)?.db.clone();
     db.table_details(&id, &schema, &table).await
+}
+
+#[command(trust = trusted)]
+pub async fn db_table_grants(
+    host: &Host,
+    window: &str,
+    id: String,
+    schema: String,
+    table: String,
+) -> IdeResult<Vec<TableGrant>> {
+    // Who may read or change `table` (PostgreSQL and MySQL; empty elsewhere).
+    let db = host.project(window)?.db.clone();
+    db.table_grants(&id, &schema, &table).await
 }
 
 #[command(trust = trusted)]
@@ -691,6 +704,7 @@ ide_command::domain!(
     db_sources,
     db_statements,
     db_table_details,
+    db_table_grants,
     db_table_page,
     db_tables,
     db_test,

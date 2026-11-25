@@ -19,6 +19,7 @@ pub mod java_runtime;
 pub mod jsonc;
 pub mod memory;
 pub mod output_encoding;
+pub mod output_rate;
 pub mod platform;
 pub mod process;
 pub mod project_dir;

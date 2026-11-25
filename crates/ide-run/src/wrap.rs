@@ -177,7 +177,46 @@ pub fn python_command(config: &RunConfig) -> Option<PythonCommand> {
             return Some(PythonCommand { interpreter, target, manager });
         }
     }
-    None
+    manager_run_script(&tokens, manager)
+}
+
+/// `uv run [options] script.py …` / `uv run [options] -m module …` (#5874): the runner starts
+/// Python without naming it, so the interpreter part is the runner's command plus `python`.
+fn manager_run_script(tokens: &[String], manager: Option<String>) -> Option<PythonCommand> {
+    if manager.is_none() || tokens.get(1).map(String::as_str) != Some("run") {
+        return None;
+    }
+    let k = (2..tokens.len()).find(|&k| {
+        let t = tokens[k].as_str();
+        let value = tokens[k - 1].starts_with("--") && !tokens[k - 1].contains('=') && takes_value(&tokens[k - 1]);
+        !value && (t == "-m" || t == "--module" || (!t.starts_with('-') && t.ends_with(".py")))
+    })?;
+    let mut target = tokens[k..].to_vec();
+    if target[0] == "--module" {
+        target[0] = "-m".into();
+    }
+    let interpreter = tokens[..k].iter().cloned().chain(std::iter::once("python".to_owned())).collect();
+    Some(PythonCommand { interpreter, target, manager })
+}
+
+/// `uv run` / `poetry run` / `pdm run` options that take a separate value.
+fn takes_value(option: &str) -> bool {
+    matches!(
+        option,
+        "--with"
+            | "--with-editable"
+            | "--with-requirements"
+            | "--project"
+            | "--directory"
+            | "--python"
+            | "--package"
+            | "--extra"
+            | "--group"
+            | "--env-file"
+            | "--index"
+            | "--index-url"
+            | "--extra-index-url"
+    )
 }
 
 /// The interpreter next to a virtualenv's `bin/pytest`.
@@ -294,6 +333,18 @@ mod tests {
         assert_eq!(p.interpreter, ["uv", "run", "python"]);
         assert_eq!(p.target, ["-m", "pytest", "-k", "x"]);
         assert_eq!(p.manager.as_deref(), Some("uv"));
+
+        // uv options stay with the runner; debugpy goes after the `python` it implies (#5874).
+        let p = python_command(&cfg("uv", &["run", "--with", "rich", "--no-sync", "main.py", "a"])).unwrap();
+        assert_eq!(p.interpreter, ["uv", "run", "--with", "rich", "--no-sync", "python"]);
+        assert_eq!(p.target, ["main.py", "a"]);
+        let p = python_command(&cfg("uv", &["run", "--project", "member", "--module", "app"])).unwrap();
+        assert_eq!(p.interpreter, ["uv", "run", "--project", "member", "python"]);
+        assert_eq!(p.target, ["-m", "app"]);
+        let p = python_command(&cfg("uv", &["run", "--env-file", "x.py", "app.py"])).unwrap();
+        assert_eq!(p.target, ["app.py"], "an option's value is not the script");
+        assert_eq!(python_command(&cfg("uv", &["run", "ruff", "check"])), None);
+        assert_eq!(python_command(&cfg("cargo", &["run", "main.py"])), None);
 
         let p = python_command(&cfg("python3", &["main.py", "a"])).unwrap();
         assert_eq!(p.target, ["main.py", "a"]);

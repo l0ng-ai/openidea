@@ -29,6 +29,7 @@ pub async fn term_spawn(
     mut options: TerminalOptions,
     on_output: Channel<String>,
 ) -> IdeResult<TerminalInfo> {
+    apply_output_rate(host, window);
     if !host.project(window).is_ok_and(|p| p.is_trusted()) {
         // Project terminal settings can otherwise start a command as soon as a tab restores.
         let global = host.global_settings.effective().terminal;
@@ -59,6 +60,17 @@ pub async fn term_spawn(
         let _ = host.terminals.write(info.id, &format!(" {line}\r"));
     }
     Ok(info)
+}
+
+/// Settings › Tools › Terminal › Max FPS also paces the terminal and Run console output
+/// pumps (#5897): applied from the window's effective settings when a session starts and
+/// when the setting changes. The rate is process-wide; the last window to apply it wins.
+pub(crate) fn apply_output_rate(host: &Host, window: &str) {
+    let terminal = match host.project(window) {
+        Ok(project) => project.settings.effective().terminal,
+        Err(_) => host.global_settings.effective().terminal,
+    };
+    ide_core::output_rate::set_max_fps(&terminal.max_fps);
 }
 
 /// Tools › Start SSH Session: a login shell on SSH configuration `id`, opened by the

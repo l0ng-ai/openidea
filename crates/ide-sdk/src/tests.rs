@@ -563,6 +563,7 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("shell", "python3", &["x.py"]),
         run("django-test", "uv", &["run", "python", "manage.py", "test"]),
         run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
+        run("python", "uv", &["run", "--with", "rich", "--no-sync", "main.py"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].command, python);
@@ -577,6 +578,9 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[5].args, ["manage.py", "test"]);
     assert_eq!(configs[6].command, python);
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
+    // uv's own options stay with uv (#5874).
+    assert_eq!(configs[7].command, "uv");
+    assert_eq!(configs[7].args, ["run", "--with", "rich", "--no-sync", "main.py"]);
 }
 
 #[test]

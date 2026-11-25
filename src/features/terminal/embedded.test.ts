@@ -4,12 +4,14 @@ import { installTerminalKeys } from "./keys";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { registerAction } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
 import type { ITerminalOptions } from "@xterm/xterm";
 
 const terminal = vi.hoisted(() => ({
   selection: "selected run output",
   handler: (_e: KeyboardEvent): boolean => true,
   input: vi.fn(),
+  written: [] as string[],
   options: {} as ITerminalOptions,
 }));
 vi.mock("@xterm/xterm", () => ({
@@ -34,6 +36,10 @@ vi.mock("@xterm/xterm", () => ({
     input(data: string) {
       terminal.input(data);
     }
+    write(data: string) {
+      terminal.written.push(data);
+    }
+    reset() {}
     open(host: HTMLElement) {
       this.textarea = document.createElement("textarea");
       host.append(this.textarea);
@@ -91,6 +97,33 @@ it.each([
     expect(terminal.options.reflowCursorLine).toBe(reflowCursorLine);
   } finally {
     term.dispose();
+  }
+});
+
+it("paces Run console output by Max FPS (#5897)", () => {
+  vi.useFakeTimers();
+  const term = createEmbeddedTerminal(document.createElement("div"), { onData() {}, onResize() {} });
+  try {
+    terminal.written = [];
+    term.write("a");
+    expect(terminal.written).toEqual(["a"]);
+    useProject.setState({ settings: { terminal: { maxFps: "10" } } as never });
+    term.write("b");
+    term.write("c");
+    term.write("d");
+    // One frame after the last paint, the three chunks arrive as one write.
+    expect(terminal.written).toEqual(["a"]);
+    vi.advanceTimersByTime(100);
+    expect(terminal.written).toEqual(["a", "bcd"]);
+    term.write("e");
+    term.clear();
+    vi.advanceTimersByTime(200);
+    // Clearing drops what was still waiting for a frame.
+    expect(terminal.written.join("")).toBe("abcd");
+  } finally {
+    term.dispose();
+    useProject.setState({ settings: {} as never });
+    vi.useRealTimers();
   }
 });
 
