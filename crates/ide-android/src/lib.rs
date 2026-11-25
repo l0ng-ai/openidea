@@ -12,11 +12,12 @@ mod process;
 
 pub use model::*;
 
+use ide_core::process::{own_group, prepare};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// `adb devices` is quick unless it starts the daemon, which can take a moment.
 const DEVICES: Duration = Duration::from_secs(20);
@@ -28,6 +29,8 @@ const TAIL_LINES: u32 = 200;
 /// while `IDLE` makes sure a quiet stream still shows its last line promptly.
 const BATCH_IDLE: Duration = Duration::from_millis(60);
 const BATCH_MAX: usize = 300;
+/// How long a started emulator gets to fail: a locked or broken AVD exits within it.
+const EMULATOR_STARTUP: Duration = Duration::from_secs(3);
 
 fn exe(name: &str) -> String {
     if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() }
@@ -89,6 +92,51 @@ fn executable() -> IdeResult<PathBuf> {
             "adb was not found: install the Android SDK platform-tools, or set ANDROID_HOME (or OPENIDEA_ADB)",
         )
     })
+}
+
+/// The SDK's `emulator` executable, which starts AVDs.
+pub fn emulator_executable() -> Option<PathBuf> {
+    let name = exe("emulator");
+    sdk_roots().into_iter().map(|root| root.join("emulator").join(&name)).find(|p| p.is_file())
+}
+
+/// Starts AVD `avd` in its own process group, so it
+/// outlives whoever asked: a restarted `flutter daemon`, a closed project, the IDE. Fails when
+/// the emulator exits within its first seconds, with what it printed.
+pub fn launch_emulator(avd: &str) -> IdeResult<()> {
+    let emulator = emulator_executable().ok_or_else(|| {
+        IdeError::unavailable(
+            "the Android emulator was not found: install it with the Android SDK Manager, or set ANDROID_HOME",
+        )
+    })?;
+    start_emulator(&emulator, avd)
+}
+
+fn start_emulator(emulator: &Path, avd: &str) -> IdeResult<()> {
+    let name: String = avd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let log_path = std::env::temp_dir().join(format!("openidea-emulator-{name}.log"));
+    let log = std::fs::File::create(&log_path)?;
+    let mut cmd = Command::new(emulator);
+    cmd.arg("-avd").arg(avd);
+    cmd.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+    let mut child = prepare(own_group(&mut cmd)).spawn()?;
+    let deadline = Instant::now() + EMULATOR_STARTUP;
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            let output = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let tail: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
+            let tail = tail[tail.len().saturating_sub(8)..].join("\n");
+            return Err(IdeError::unavailable(if tail.is_empty() {
+                format!("the emulator exited ({status})")
+            } else {
+                tail
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Reaps it whenever it ends.
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 /// Connected devices, online ones first; starting the adb daemon when needed.
@@ -204,6 +252,30 @@ mod tests {
         for root in sdk_roots() {
             assert!(root.is_absolute(), "{root:?}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_emulator_that_fails_at_once_says_why_and_one_that_runs_is_left_running() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let broken = script("broken", "echo \"PANIC: Missing emulator engine for $2\" >&2\nexit 1\n");
+        let e = start_emulator(&broken, "Pixel_9").unwrap_err();
+        assert_eq!(e.message, "PANIC: Missing emulator engine for Pixel_9");
+
+        let args = dir.path().join("args");
+        let running =
+            script("running", &format!("echo $$ > '{0}.pid'\necho \"$@\" > '{0}'\nexec sleep 30\n", args.display()));
+        start_emulator(&running, "Pixel_9").unwrap();
+        assert_eq!(std::fs::read_to_string(&args).unwrap().trim(), "-avd Pixel_9");
+        let pid = std::fs::read_to_string(dir.path().join("args.pid")).unwrap();
+        assert!(Command::new("kill").arg(pid.trim()).status().unwrap().success(), "still running");
     }
 
     #[test]

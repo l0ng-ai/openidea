@@ -118,6 +118,10 @@ describe("languages settings", () => {
   it("keeps the Zig toolchain through settings normalization and defaults to Auto", () => {
     expect(validateSettings({}).languages.zig.zig).toBe("");
     expect(validateLanguages({ zig: { zig: 42 } }).zig.zig).toBe("");
+    expect(validateLanguages({ flutter: { sdk: 42 } }).flutter.sdk).toBe("");
+    expect(validateLanguages({ flutter: { sdk: " ~/fvm/versions/3.44.9 " } }).flutter.sdk).toBe(
+      "~/fvm/versions/3.44.9",
+    );
     const settings = validateSettings({ languages: { zig: { zig: " /opt/zig " } } });
     expect(settings.languages.zig.zig).toBe("/opt/zig");
     expect(validateSettings(settings).languages.zig.zig).toBe("/opt/zig");
@@ -375,6 +379,7 @@ describe("language pages", () => {
     expect(tree.map((n) => n.title)).toEqual(["Languages & Frameworks"]);
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     expect(langs.children.map((n) => n.title)).toEqual([
+      "Flutter",
       "Go",
       "Java",
       "JavaScript Runtime",

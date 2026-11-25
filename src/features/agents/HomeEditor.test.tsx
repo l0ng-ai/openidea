@@ -102,9 +102,8 @@ async function chooseModel(model: string) {
 
 async function chooseEffort(effort: string) {
   fireEvent.click(settingsButton());
-  const group = screen.getByRole("radiogroup", { name: "Effort Level" });
-  fireEvent.click(within(group).getByRole("radio", { name: effort }));
-  fireEvent.keyDown(document, { key: "Escape" });
+  const list = screen.getByRole("listbox", { name: "Effort Level" });
+  fireEvent.click(within(list).getByRole("option", { name: effort }));
 }
 
 it("switches model-specific levels and restores each draft effort before starting", async () => {
@@ -190,21 +189,79 @@ it("ignores old provider-wide effort choices and refreshes unsupported per-model
 });
 
 it.each([
-  [undefined, "full-access"],
-  ["ask", undefined],
-] as const)("with new-task approvals %s, sends mode %s", async (newTaskApprovals, mode) => {
-  const provider = { ...backend.providers[0]!, config: [option("mode", "mode", ["ask", "full-access"], "ask")] };
-  useAgents.setState({ providers: [provider] });
-  const settings = useProject.getState().settings;
-  useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, newTaskApprovals } } as never });
-  try {
-    render(<HomeEditor />);
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
-    await waitFor(() => expect(backend.create).toHaveBeenCalled());
-    expect(backend.create.mock.calls[0]![0].config.find((c: { id: string }) => c.id === "mode")?.value).toBe(mode);
-  } finally {
-    useProject.setState({ settings });
-  }
+  [undefined, "ask", "full-access"],
+  ["ask", "ask", "ask"],
+  ["ask", "full-access", "ask"],
+] as const)(
+  "with new-task approvals %s and agent default %s, sends mode %s",
+  async (newTaskApprovals, agentDefault, mode) => {
+    const provider = {
+      ...backend.providers[0]!,
+      config: [option("mode", "mode", ["ask", "full-access"], agentDefault)],
+    };
+    useAgents.setState({ providers: [provider] });
+    const settings = useProject.getState().settings;
+    useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, newTaskApprovals } } as never });
+    try {
+      render(<HomeEditor />);
+      fireEvent.click(screen.getByRole("button", { name: "Start" }));
+      await waitFor(() => expect(backend.create).toHaveBeenCalled());
+      expect(backend.create.mock.calls[0]![0].config.find((c: { id: string }) => c.id === "mode")?.value).toBe(mode);
+    } finally {
+      useProject.setState({ settings });
+    }
+  },
+);
+
+it("switches Cursor per-model context and fast options cleanly without sending stale model params", async () => {
+  const cursor: AgentProvider = {
+    ...backend.providers[0]!,
+    id: "cursor",
+    name: "Cursor",
+    config: [
+      option("mode", "mode", ["agent", "plan", "ask"], "agent"),
+      option("model", "model", ["grok-4.7", "gemini-4-neon"], "grok-4.7"),
+      option("openidea.cursor.approval", "approval", ["ask", "bypass"], "ask"),
+    ],
+    thoughtLevels: {
+      "grok-4.7": [
+        option("reasoning_effort", "thought_level", ["low", "high"], "high"),
+        option("context", "model_config", ["256k", "500k"], "256k"),
+        {
+          id: "fast",
+          category: "model_config",
+          name: "Fast",
+          description: null,
+          current: "true",
+          defaultValue: "true",
+          via: "option",
+          values: [
+            { value: "false", name: "Off", description: null },
+            { value: "true", name: "Fast", description: null },
+          ],
+        },
+      ],
+      "gemini-4-neon": [
+        option("reasoning_effort", "thought_level", ["low", "high"], "high"),
+        option("context", "model_config", ["300k", "1m"], "300k"),
+      ],
+    },
+  };
+  useAgents.setState({ providers: [cursor], draft: savedDraft({ provider: "cursor", config: {} }) });
+  render(<HomeEditor />);
+  // Cursor defaults fast off even though the agent reported true, and omits off switches from multi-setting summaries.
+  expect(settingsButton()).toHaveTextContent("high · 256k");
+  await chooseModel("gemini-4-neon");
+  expect(settingsButton()).toHaveTextContent("high · 300k");
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(backend.create).toHaveBeenCalled());
+  expect(backend.create.mock.calls[0]![0].config).toEqual([
+    { id: "mode", value: "agent" },
+    { id: "model", value: "gemini-4-neon" },
+    { id: "openidea.cursor.approval", value: "bypass" },
+    { id: "reasoning_effort", value: "high" },
+    { id: "context", value: "300k" },
+  ]);
 });
 
 it("applies fitWidth on the New Task page only when fitWindowWidth is enabled", () => {

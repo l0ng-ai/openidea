@@ -358,6 +358,7 @@ pub enum FoldKind {
     Region,
     Comment,
     Imports,
+    Compact,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -413,6 +413,31 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
     }
 }
 
+/// The Flutter Property Editor's arguments of the call at `pos`.
+#[command(trust = trusted)]
+pub async fn lsp_editable_arguments(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<EditableArguments>> {
+    host.project(window)?.lsp.editable_arguments(doc, pos).await
+}
+
+/// Sets an argument of the call at `pos`; the edit reaches the document as the server's
+/// `workspace/applyEdit`, undoable like any other.
+#[command(trust = trusted)]
+pub async fn lsp_edit_argument(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+    name: String,
+    value: Option<ArgumentValue>,
+) -> IdeResult<()> {
+    host.project(window)?.lsp.edit_argument(doc, pos, name, value).await
+}
+
 #[command(trust = trusted)]
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
     let target = position_document(host, window, doc, pos).await?;
@@ -3200,6 +3225,8 @@ ide_command::domain!(
     lsp_completion,
     lsp_document_colors,
     lsp_document_highlights,
+    lsp_edit_argument,
+    lsp_editable_arguments,
     lsp_document_links,
     lsp_exception_class_at,
     lsp_execute_code_action,

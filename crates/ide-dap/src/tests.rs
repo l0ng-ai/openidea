@@ -3096,7 +3096,7 @@ async fn a_run_dump_goes_through_the_session_attached_to_the_run() {
     let pid = jvm.id();
     assert_eq!(h.manager.jvm_session_of(RunId(7), pid).map(|s| s.id), Some(id));
     assert!(h.manager.jvm_session_of(RunId(8), pid).is_none());
-    let dump = h.manager.debugged_jvm_thread_dump(RunId(7), pid).await.unwrap().unwrap();
+    let dump = h.manager.debugged_jvm_thread_dump(RunId(7), pid, None).await.unwrap().unwrap();
     let alive = jvm.try_wait().unwrap().is_none();
     let _ = jvm.kill();
     let _ = jvm.wait();
@@ -3120,7 +3120,7 @@ async fn a_run_jvm_is_found_by_the_session_attached_to_it() {
     let id = h.start(cfg).await.unwrap();
     assert_eq!(h.manager.jvm_session_of(RunId(1), 4242).map(|s| s.id), Some(id));
     assert!(h.manager.jvm_session_of(RunId(1), 4243).is_none());
-    assert!(h.manager.debugged_jvm_thread_dump(RunId(1), 4243).await.is_none());
+    assert!(h.manager.debugged_jvm_thread_dump(RunId(1), 4243, None).await.is_none());
 }
 
 #[cfg(unix)]

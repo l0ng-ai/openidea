@@ -413,8 +413,7 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(selected).not.toMatch(/AM|PM|5s|Reasoning|Requesting task context/);
   await page.keyboard.press("ControlOrMeta+c");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
-  // The finished turn's reasoning is folded with its work.
-  await stream.locator("[class*='_turnFold_'] > summary").click();
+  // The latest turn stays open: its reasoning shows as its own collapsed row.
   await stream.locator("[class*='_thought_'] > summary").click();
   await expect(stream.locator("[class*='_thoughtPreview_']")).toHaveText("Requesting task context");
   await expect(stream.locator("[class*='_thoughtBody_'] strong")).toHaveText("Requesting task context");
@@ -795,8 +794,7 @@ test("Find in Conversation skips user-select:none summaries and closed <details>
   }, TASK);
 
   const stream = page.locator("[class*='_stream_']:visible");
-  const runSummary = stream.locator("details[class*='_processRun_'] > summary");
-  await runSummary.click();
+  // A command is its own row, outside the reasoning's run.
   await expect(stream.getByText("stop_bash")).toBeVisible();
 
   await stream.focus();
@@ -894,13 +892,14 @@ test("indents process-run thoughts and tool calls clearly and aligns output-less
       entries: new Map([
         [
           task.id,
+          // Reasoning and read-only calls group into one run; commands and edits would be rows of their own.
           [
             { type: "thought", text: "**Checking CI Status**\n\nInspecting workflow runs." },
             {
               type: "tool",
               id: "t1",
               title: "gh pr checks 3631 --repo l0ng-ai/openidea",
-              kind: "execute",
+              kind: "fetch",
               status: "completed",
               locations: [],
               output: "All checks pending",
@@ -911,7 +910,7 @@ test("indents process-run thoughts and tool calls clearly and aligns output-less
               type: "tool",
               id: "t2",
               title: "read_bash",
-              kind: "other",
+              kind: "read",
               status: "completed",
               locations: [],
               output: "E2E pass",
@@ -921,7 +920,7 @@ test("indents process-run thoughts and tool calls clearly and aligns output-less
               type: "tool",
               id: "t3",
               title: "read_bash",
-              kind: "other",
+              kind: "read",
               status: "running",
               locations: [],
               output: "",

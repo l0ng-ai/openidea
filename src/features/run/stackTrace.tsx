@@ -20,7 +20,7 @@ import styles from "./StackTrace.module.css";
 import { tx } from "@/platform/i18n";
 import { readClipboardPlainText } from "@/platform/clipboard";
 import { isThreadDump, parseThreadDump, type ThreadDump } from "./threadDump/parse";
-import { threadDumpTab, type ThreadDumpSource, type ThreadDumpTab } from "./threadDump/store";
+import { threadDumpTab, type ThreadDumpSource, type ThreadDumpTab, type VirtualSource } from "./threadDump/store";
 
 export interface TraceTab {
   kind: "trace";
@@ -86,8 +86,14 @@ function addTrace(text: string, title: string): string {
   return openTab({ kind: "trace", id: `trace-${++seq}`, title, model });
 }
 
-function addThreads(text: string, title: string, source: ThreadDumpSource | null, dump: ThreadDump): string {
-  return openTab(threadDumpTab(`trace-${++seq}`, title, text, source, dump));
+function addThreads(
+  text: string,
+  title: string,
+  source: ThreadDumpSource | null,
+  dump: ThreadDump,
+  virtual: VirtualSource | null,
+): string {
+  return openTab(threadDumpTab(`trace-${++seq}`, title, text, source, dump, virtual));
 }
 
 /** Opens a pasted trace, or a pasted thread dump in the thread viewer. */
@@ -95,14 +101,17 @@ export function addStackTrace(raw: string): string | null {
   const text = normalizeTrace(raw);
   if (!text) return null;
   const dump = isThreadDump(text) ? parseThreadDump(text) : null;
-  return dump ? addThreads(text, tx("Thread dump"), null, dump) : addTrace(text, traceTitle(text));
+  return dump ? addThreads(text, tx("Thread dump"), null, dump, null) : addTrace(text, traceTitle(text));
 }
 
 /** Opens a dump in the thread viewer; text that holds no thread opens as a plain trace. */
-export function addThreadDump(raw: string, meta: { title: string; source: ThreadDumpSource | null }): string {
+export function addThreadDump(
+  raw: string,
+  meta: { title: string; source: ThreadDumpSource | null; virtual?: VirtualSource },
+): string {
   const text = normalizeTrace(raw);
   const dump = parseThreadDump(text);
-  return dump ? addThreads(text, meta.title, meta.source, dump) : addTrace(text, meta.title);
+  return dump ? addThreads(text, meta.title, meta.source, dump, meta.virtual ?? null) : addTrace(text, meta.title);
 }
 
 /** Replaces a thread dump tab, e.g. with its next dump or the user's selection. */

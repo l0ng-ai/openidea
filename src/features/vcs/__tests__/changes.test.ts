@@ -565,3 +565,88 @@ describe("changeFileNodes", () => {
     expect(nodes.map((n) => n.group)).toEqual(["staged", "unstaged"]);
   });
 });
+
+describe("Group By › Module in buildChangeTree", () => {
+  const at = (path: string, unstaged: FileStatus["unstaged"] = "modified"): FileStatus => ({
+    path,
+    relPath: path.replace(/^\/w\//, ""),
+    staged: null,
+    unstaged,
+    renamedFrom: null,
+  });
+
+  const modules = [
+    { path: "/w/base", name: "base", tool: "maven" as const },
+    { path: "/w/basemdm", name: "BASEMDM", tool: "maven" as const },
+    { path: "/w/basemdm/sub", name: "sub-mod", tool: "maven" as const },
+  ];
+
+  it("groups files by module alone (flat and by directory)", () => {
+    const files = [
+      at("/w/base/src/Main.java"),
+      at("/w/basemdm/src/Mdm.java"),
+      at("/w/basemdm/sub/src/Sub.java"),
+      at("/w/README.md"),
+    ];
+    const flat = buildChangeTree(files, "/w", false, undefined, [], false, {}, false, true, [], modules, true);
+    expect(shape(flat)).toEqual([
+      "Changes",
+      "  base",
+      "    Main.java",
+      "  BASEMDM",
+      "    Mdm.java",
+      "  sub-mod",
+      "    Sub.java",
+      "  README.md",
+    ]);
+    const dirs = buildChangeTree(files, "/w", true, undefined, [], false, {}, false, true, [], modules, true);
+    expect(shape(dirs)).toEqual([
+      "Changes",
+      "  base",
+      "    src",
+      "      Main.java",
+      "  BASEMDM",
+      "    src",
+      "      Mdm.java",
+      "  sub-mod",
+      "    src",
+      "      Sub.java",
+      "  README.md",
+    ]);
+  });
+
+  it("nests modules under repositories and computes relative path details", () => {
+    const repos = ["/w/base", "/w/basemdm"];
+    const heads = {
+      "/w/base": { head: "main", headCommit: "11111111" },
+      "/w/basemdm": { head: "master", headCommit: "22222222" },
+    };
+    const files = [at("/w/base/src/Main.java"), at("/w/basemdm/src/Mdm.java")];
+    const tree = buildChangeTree(files, "/w", true, undefined, repos, false, heads, true, true, [], modules, true);
+    expect(shape(tree)).toEqual([
+      "Changes",
+      "  base",
+      "    base",
+      "      src",
+      "        Main.java",
+      "  basemdm",
+      "    BASEMDM",
+      "      src",
+      "        Mdm.java",
+    ]);
+    const [baseRepo, mdmRepo] = tree[0]!.children!;
+    expect(baseRepo).toMatchObject({ repository: "/w/base", detail: "main", detailIcon: "branch" });
+    expect(mdmRepo).toMatchObject({ repository: "/w/basemdm", detail: "master", detailIcon: "branch" });
+    expect(baseRepo!.children![0]).toMatchObject({ module: "/w/base", label: "base" });
+    expect(baseRepo!.children![0]!.detail).toBeUndefined();
+    expect(mdmRepo!.children![0]).toMatchObject({ module: "/w/basemdm", label: "BASEMDM", detail: "basemdm" });
+  });
+
+  it("does not ignore the whole module directory from ignoreTargets", () => {
+    const files = [at("/w/basemdm/a.tmp", "untracked"), at("/w/basemdm/extra/b.tmp", "untracked")];
+    const tree = buildChangeTree(files, "/w", true, undefined, ["/w"], false, {}, true, true, [], modules, true);
+    const mdmMod = tree[0]!.children![0]!;
+    expect(mdmMod.module).toBe("/w/basemdm");
+    expect(ignoreTargets([mdmMod], ["/w"]).sort()).toEqual(["/w/basemdm/a.tmp", "/w/basemdm/extra"]);
+  });
+});

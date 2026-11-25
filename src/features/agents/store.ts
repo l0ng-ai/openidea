@@ -36,7 +36,7 @@ import { editorService, notifications, notifyTabTitlesChanged, toolWindowService
 import { tx } from "@/platform/i18n";
 import { confirm, showError } from "@/workbench/messages";
 import {
-  bypassDefaults,
+  approvalDefaults,
   canSend,
   shellCommand,
   cursorModelDefaults,
@@ -63,6 +63,7 @@ import {
   type TaskOrganize,
 } from "./organize";
 import {
+  CHANGES_KIND,
   HOME_KEY,
   HOME_KIND,
   SESSION_KIND,
@@ -261,6 +262,7 @@ export function draftConfig(
   provider: AgentProvider | undefined,
   draft: Draft,
   defaults: Record<string, string> = providerDefaults(provider?.id),
+  newTaskApprovals: "bypass" | "ask" = useProject.getState().settings?.agents?.newTaskApprovals ?? "bypass",
 ): AgentConfigOption[] {
   const catalog = provider && useAgents.getState().modelCatalogs.get(provider.id);
   const offered = catalog?.config ?? provider?.config ?? [];
@@ -269,27 +271,31 @@ export function draftConfig(
     priorModel && draft.config[priorModel.id] !== undefined && !offered.some((o) => o.category === "model")
       ? [...offered, { ...priorModel, values: [] }]
       : offered;
-  const config = source
-    .filter((o) => !isPerModelOption(o))
-    .map((o) => {
-      const explicit = draft.config[o.id];
-      const choice = explicit ?? defaults[o.id];
-      return {
-        ...o,
-        defaultValue: o.defaultValue ?? o.current,
-        current:
-          o.category === "model" && explicit !== undefined
-            ? explicit
-            : choice !== undefined && o.values.some((v) => v.value === choice)
-              ? choice
-              : o.current,
-      };
-    });
+  const base = source.filter((o) => !isPerModelOption(o));
+  const approvals = approvalDefaults(base, newTaskApprovals);
+  const config = base.map((o) => {
+    const explicit = draft.config[o.id];
+    const choice = explicit ?? defaults[o.id] ?? approvals[o.id];
+    return {
+      ...o,
+      defaultValue: o.defaultValue ?? o.current,
+      current:
+        o.category === "model" && explicit !== undefined
+          ? explicit
+          : choice !== undefined && o.values.some((v) => v.value === choice)
+            ? choice
+            : o.current,
+    };
+  });
   const model = config.find((o) => o.category === "model")?.current;
   if (model) {
     config.push(
-      ...(draftModelSettings((catalog ?? provider)?.thoughtLevels?.[model], draft.thoughtLevels?.[model], defaults) ??
-        []),
+      ...(draftModelSettings(
+        (catalog ?? provider)?.thoughtLevels?.[model],
+        draft.thoughtLevels?.[model],
+        defaults,
+        provider?.id,
+      ) ?? []),
     );
   }
   return config;
@@ -299,9 +305,12 @@ export function draftModelSettings(
   options: AgentConfigOption[] | undefined,
   choices: Record<string, string> | undefined,
   defaults: Record<string, string>,
+  providerId?: string,
 ) {
-  return options?.map((o) => {
-    const choice = choices?.[o.id] ?? defaults[o.id];
+  if (!options) return undefined;
+  const modelDefaults = cursorModelDefaults(providerId, options);
+  return options.map((o) => {
+    const choice = choices?.[o.id] ?? defaults[o.id] ?? modelDefaults[o.id];
     return {
       ...o,
       defaultValue: o.defaultValue ?? o.current,
@@ -580,7 +589,11 @@ export async function connect(): Promise<void> {
   const editors = editorService();
   for (const t of editors.openTabs?.() ?? []) {
     const task = (t.input.data as { task?: string } | undefined)?.task;
-    if (t.input.kind === SESSION_KIND && task && !useAgents.getState().tasks.has(task))
+    if (
+      (t.input.kind === SESSION_KIND || t.input.kind === CHANGES_KIND) &&
+      task &&
+      !useAgents.getState().tasks.has(task)
+    )
       await editors.closeInput?.(t.input.key);
   }
 }
@@ -693,7 +706,9 @@ function dropTaskCache(taskId: string) {
 function isTaskOpenInUi(taskId: string): boolean {
   if (useAgents.getState().docked === taskId) return true;
   return (editorService().openTabs?.() ?? []).some(
-    (t) => t.input.kind === SESSION_KIND && (t.input.data as { task?: string } | undefined)?.task === taskId,
+    (t) =>
+      (t.input.kind === SESSION_KIND || t.input.kind === CHANGES_KIND) &&
+      (t.input.data as { task?: string } | undefined)?.task === taskId,
   );
 }
 
@@ -1279,17 +1294,9 @@ export async function startTask(
     )
   )
     return;
-  const askForApprovals = useProject.getState().settings?.agents?.newTaskApprovals === "ask";
-  const defaults = {
-    ...cursorModelDefaults(draft.provider, options),
-    ...(askForApprovals ? {} : bypassDefaults(options)),
-    ...providerDefaults(draft.provider),
-  };
-  const config = options.flatMap((o) => {
-    const value =
-      o.category === "model" || isPerModelOption(o) ? o.current : (draft.config[o.id] ?? defaults[o.id] ?? null);
-    return value !== null && o.values.some((v) => v.value === value) ? [{ id: o.id, value }] : [];
-  });
+  const config = options.flatMap((o) =>
+    o.current !== null && o.values.some((v) => v.value === o.current) ? [{ id: o.id, value: o.current }] : [],
+  );
   try {
     const task = await call(
       commands.agentCreate({

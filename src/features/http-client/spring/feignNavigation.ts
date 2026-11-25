@@ -116,6 +116,7 @@ async function* currentMappings<T extends MappedMethod>(
     paths.add(path);
   for (const path of [...paths].sort()) {
     if (scope.stale()) return;
+    // oxlint-disable-next-line no-await-in-loop -- yields one parsed file at a time; staleness is checked before and after the read
     const text = await read(path).catch(() => null);
     if (scope.stale()) return;
     if (text === null || text.length > MAX_NAVIGATION_SOURCE) continue;

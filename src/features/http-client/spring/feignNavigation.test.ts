@@ -105,6 +105,7 @@ describe("core service-aware Feign navigation", () => {
     await resolve();
     for (let version = 2; version < 6; version++) {
       _emitEditorEvent({ type: "docChanged", doc: 9, path: users, baseVersion: version - 1, version, changes: [] });
+      // oxlint-disable-next-line no-await-in-loop -- each emitted edit must be revalidated before the next edit
       await resolve();
     }
     expect(commands.springRouteSources).toHaveBeenCalledTimes(1);

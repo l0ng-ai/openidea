@@ -18,7 +18,14 @@ import { pluginsBackend } from "./backend";
 import { trackIconTheme } from "./iconThemes";
 import { defineBuiltinUiPoints } from "./points";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
-import { grantPlugin, runPluginCommand, refreshPlugins, updateAllPlugins, usePlugins } from "./store";
+import {
+  grantPlugin,
+  runPluginCommand,
+  refreshPlugins,
+  setActivePluginTheme,
+  updateAllPlugins,
+  usePlugins,
+} from "./store";
 import { followThemeSetting, syncPluginProjection, trackPluginTheme } from "./themeRuntime";
 
 export { pluginActionId } from "./points";
@@ -94,7 +101,7 @@ export function handlePluginEvent(e: PluginEvent) {
       break;
     }
     case "themeChanged":
-      usePlugins.setState({ activeTheme: e.theme });
+      setActivePluginTheme(e.theme);
       break;
     case "consentRequested":
       void refreshPlugins().then(() => grantPlugin(e.pluginId, e.capabilities));

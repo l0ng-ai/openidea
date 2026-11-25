@@ -145,7 +145,7 @@ impl Default for AgentSettings {
             show_work_time: true,
             show_usage_limits: true,
             show_cost: false,
-            fold_turns: true,
+            fold_turns: false,
             smooth_text: true,
             fit_window_width: false,
             thinking: ThinkingDisplay::Auto,
@@ -1218,6 +1218,7 @@ pub struct LanguagesSettings {
     pub markdown: MarkdownSettings,
     pub arduino: ArduinoSettings,
     pub zig: ZigSettings,
+    pub flutter: FlutterSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -1249,6 +1250,7 @@ impl Default for LanguagesSettings {
             markdown: MarkdownSettings::default(),
             arduino: ArduinoSettings::default(),
             zig: ZigSettings::default(),
+            flutter: FlutterSettings::default(),
         }
     }
 }
@@ -1513,6 +1515,15 @@ impl Default for RustSettings {
 pub struct ZigSettings {
     /// Directory holding the `zig` executable; empty = the one on `PATH`.
     pub zig: String,
+}
+
+/// The Flutter plugin's "Flutter SDK path".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FlutterSettings {
+    /// Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+    /// `PATH`. Empty = `PATH`.
+    pub sdk: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -2113,8 +2124,10 @@ mod tests {
         assert!(old.agents.show_cost);
         assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
         assert!(!old.agents.fit_window_width);
+        assert!(!old.agents.fold_turns);
         assert!(!Settings::default().agents.show_cost);
         assert!(!Settings::default().agents.fit_window_width);
+        assert!(!Settings::default().agents.fold_turns);
         let mut settings = Settings::default();
         settings.agents.show_usage_limits = false;
         settings.agents.fit_window_width = true;

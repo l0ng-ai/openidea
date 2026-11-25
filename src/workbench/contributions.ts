@@ -94,6 +94,11 @@ export interface ToolWindowContribution {
    * so it isn't reopened with the project.
    */
   sessionContent?: boolean;
+  /** Accepts pointer drags dropped onto this window's stripe button (even while hidden). */
+  onStripeDrop?: {
+    accepts(type: string, data: DragData): boolean;
+    drop(data: DragData): void;
+  };
 }
 
 export type StatusAlign = "left" | "right";

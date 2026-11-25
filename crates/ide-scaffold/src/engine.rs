@@ -57,6 +57,16 @@ fn with_defaults(def: &Def, name: &str, values: &Values) -> Values {
     out
 }
 
+/// The project folder's name: the generator's `directory` template (the solution name of a
+/// .NET project with a solution), or the project name.
+fn project_folder(def: &Def, name: &str, values: &Values) -> String {
+    def.directory
+        .as_deref()
+        .map(|t| render(t, values).trim().to_owned())
+        .filter(|folder| !folder.is_empty())
+        .unwrap_or_else(|| name.to_owned())
+}
+
 /// The fields a project service adds to the form (its metadata); empty for other generators.
 pub fn options(id: &str, values: &Values, cancel: &CancellationToken) -> IdeResult<Vec<Field>> {
     let def = def(id).ok_or_else(|| unknown(id))?;
@@ -398,15 +408,19 @@ pub(crate) fn create_with(
     if let Some(e) = name_error(name) {
         return Err(IdeError::invalid(e));
     }
+    let values = with_defaults(def, name, &req.values);
+    let folder = project_folder(def, name, &values);
+    if let Some(e) = name_error(&folder) {
+        return Err(IdeError::invalid(e));
+    }
     let location = req.location.to_path_buf();
     if !location.is_dir() {
         std::fs::create_dir_all(&location)?;
     }
-    let target = location.join(name);
+    let target = location.join(&folder);
     if target_taken(&target) {
         return Err(IdeError::invalid(format!("{} already exists and is not empty", target.display())));
     }
-    let values = with_defaults(def, name, &req.values);
 
     let search = search_path();
     let mut missing = def
@@ -420,10 +434,10 @@ pub(crate) fn create_with(
         return Err(IdeError::unavailable(format!("`{}`{need} is required to create this project", r.program)));
     }
 
-    let staging = Staging(location.join(format!(".{name}.openidea-new-{}", std::process::id())));
+    let staging = Staging(location.join(format!(".{folder}.openidea-new-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&staging.0);
     std::fs::create_dir_all(&staging.0)?;
-    let project = staging.0.join(name);
+    let project = staging.0.join(&folder);
 
     download_service(def, &values, &staging.0, &project, cancel, emit)?;
     let creates_dir = def.steps.iter().any(|s| s.cwd == Cwd::Parent && s.applies(&values));

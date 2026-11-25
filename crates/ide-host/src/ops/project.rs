@@ -407,6 +407,13 @@ pub fn set_settings(
     if key == "vcs" || key == "vcs.git" || key == "vcs.git.executable" {
         host.apply_git_executable();
     }
+    // `flutter daemon` and DevTools run on the Flutter SDK; the next request starts DevTools again.
+    if ["languages", "languages.flutter", "languages.flutter.sdk"].contains(&key) {
+        for project in affected() {
+            project.flutter.sdk_changed();
+            project.devtools.stop();
+        }
+    }
     if is_proxy {
         host.apply_proxy();
     }

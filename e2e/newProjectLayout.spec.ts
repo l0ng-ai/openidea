@@ -9,6 +9,7 @@ const java: GeneratorInfo = {
   order: 1,
   description: "A plain Java application built with Maven or Gradle.",
   git: true,
+  directory: null,
   dynamic: false,
   fields: [
     {

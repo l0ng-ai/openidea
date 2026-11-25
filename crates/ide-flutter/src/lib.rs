@@ -3,31 +3,38 @@
 //! The daemon speaks JSON-RPC over stdio, one bracketed message per line. After
 //! `daemon.connected` it is asked for `device.enable`, which makes it report `device.added` /
 //! `device.removed`, and once for `device.getDevices`, whose answer ends the "discovering" state.
+//! `emulator.getEmulators` lists what can be started, then and whenever the chooser opens.
 //!
 //! The daemon keeps running after its stdin closes, so closing the pipe does not end it: on Unix
 //! a watcher in its process group ends the group once the IDE is gone, even after a crash. A
 //! daemon that fails stays failed until the user restarts it.
 
 mod devtools;
+mod server;
+mod widget_preview;
 
-pub use devtools::DevToolsServer;
+pub use server::ToolServer;
 
 use ide_android::AndroidDevice;
-use ide_core::event::{FlutterDaemonStatus, FlutterDevice, FlutterDeviceList};
+use ide_core::event::{FlutterDaemonStatus, FlutterDevice, FlutterDeviceList, FlutterEmulator};
 use ide_core::process::{kill_tree, own_group, prepare, terminate_tree};
 use ide_core::tool_path::{find_command, search_path_in};
 use ide_core::{IdeEvent, SharedSink};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 
 const ENABLE: u64 = 1;
 const GET_DEVICES: u64 = 2;
+const GET_EMULATORS: u64 = 3;
+/// `emulator.launch` waits for `xcrun simctl` or similar; past this the daemon is stuck.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the daemon gets to exit on `SIGTERM`.
 const KILL_GRACE: Duration = Duration::from_millis(200);
 /// Lines of unrecognised output kept to explain a failure.
@@ -39,6 +46,9 @@ enum Message {
     Added(FlutterDevice),
     Removed(String),
     Devices(Vec<FlutterDevice>),
+    Emulators(Vec<FlutterEmulator>),
+    /// The answer to a request of ours other than the ones above.
+    Response(u64, Result<(), String>),
     Other,
 }
 
@@ -51,7 +61,13 @@ fn device(value: &Value) -> Option<FlutterDevice> {
         category: text("category"),
         emulator: value.get("emulator").and_then(Value::as_bool).unwrap_or(false),
         unavailable: None,
+        emulator_id: text("emulatorId"),
     })
+}
+
+fn emulator(value: &Value) -> Option<FlutterEmulator> {
+    let text = |key| value.get(key).and_then(Value::as_str).map(str::to_owned);
+    Some(FlutterEmulator { id: text("id")?, name: text("name")?, platform_type: text("platformType") })
 }
 
 /// The messages of one stdout line; `None` for anything outside the protocol (the tool's own
@@ -74,16 +90,34 @@ fn parse_message(message: &Value) -> Message {
             params.get("id").and_then(Value::as_str).map_or(Message::Other, |id| Message::Removed(id.to_owned()))
         }
         Some(_) => Message::Other,
-        None if message.get("id").and_then(Value::as_u64) == Some(GET_DEVICES) => {
-            let result = message.get("result").and_then(Value::as_array);
-            Message::Devices(result.into_iter().flatten().filter_map(device).collect())
+        None => {
+            let result = message.get("result").and_then(Value::as_array).into_iter().flatten();
+            match message.get("id").and_then(Value::as_u64) {
+                Some(ENABLE) | None => Message::Other,
+                Some(GET_DEVICES) => Message::Devices(result.filter_map(device).collect()),
+                // A failure (no Android SDK, no Xcode) lists none.
+                Some(GET_EMULATORS) => Message::Emulators(result.filter_map(emulator).collect()),
+                Some(id) => Message::Response(
+                    id,
+                    match message.get("error") {
+                        None | Some(Value::Null) => Ok(()),
+                        Some(Value::String(error)) => Err(error.clone()),
+                        Some(error) => Err(error.to_string()),
+                    },
+                ),
+            }
         }
-        None => Message::Other,
     }
 }
 
 fn request(id: u64, method: &str) -> String {
     format!("{}\n", json!([{ "id": id, "method": method }]))
+}
+
+/// The emulators no device runs on.
+fn idle_emulators(emulators: &[FlutterEmulator], devices: &BTreeMap<String, FlutterDevice>) -> Vec<FlutterEmulator> {
+    let running = |e: &FlutterEmulator| devices.values().any(|d| d.emulator_id.as_ref() == Some(&e.id));
+    emulators.iter().filter(|e| !running(e)).cloned().collect()
 }
 
 /// The daemon's devices, plus the Android devices adb sees that Flutter leaves out until they
@@ -97,6 +131,7 @@ fn merged(daemon: &BTreeMap<String, FlutterDevice>, adb: &[AndroidDevice]) -> Ve
         category: Some("mobile".into()),
         emulator: d.serial.starts_with("emulator-"),
         unavailable: Some(d.state.clone()),
+        emulator_id: None,
     }));
     let rank = |d: &FlutterDevice| match d.category.as_deref() {
         Some("mobile") => 0,
@@ -121,15 +156,30 @@ struct State {
     status: FlutterDaemonStatus,
     devices: BTreeMap<String, FlutterDevice>,
     adb: Vec<AndroidDevice>,
+    emulators: Vec<FlutterEmulator>,
+    /// Requests awaiting their answer; dropped with the daemon, which fails them.
+    pending: HashMap<u64, mpsc::Sender<Result<(), String>>>,
+    next_id: u64,
 }
 
 impl State {
     fn list(&self) -> FlutterDeviceList {
-        FlutterDeviceList { status: self.status.clone(), devices: merged(&self.devices, &self.adb) }
+        FlutterDeviceList {
+            status: self.status.clone(),
+            devices: merged(&self.devices, &self.adb),
+            emulators: idle_emulators(&self.emulators, &self.devices),
+        }
+    }
+
+    /// Writes `requests` to the daemon; false without one.
+    fn send(&mut self, requests: &str) -> bool {
+        let Some(stdin) = self.running.as_mut().and_then(|r| r.stdin.as_mut()) else { return false };
+        stdin.write_all(requests.as_bytes()).and_then(|()| stdin.flush()).is_ok()
     }
 
     fn shut_down(&mut self) {
         self.generation += 1;
+        self.pending.clear();
         if let Some(Running { mut child, stdin }) = self.running.take() {
             drop(stdin);
             // Off the caller's thread: closing a window must not wait for the grace period.
@@ -141,8 +191,7 @@ impl State {
 struct Shared {
     root: PathBuf,
     sink: SharedSink,
-    /// Replaces the lookup on the search path (tests).
-    executable: Option<PathBuf>,
+    executable: Configured,
     state: Mutex<State>,
 }
 
@@ -152,16 +201,21 @@ impl Shared {
     }
 }
 
+/// The configured `flutter` / `dart` (the Flutter SDK setting), asked at each start; `None`
+/// looks it up on the search path.
+pub type Configured = Box<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+
 /// One project window's `flutter daemon`, started on first use.
 pub struct FlutterDaemon(Arc<Shared>);
 
 impl FlutterDaemon {
-    pub fn new(root: PathBuf, sink: SharedSink) -> Self {
-        Self::with_executable(root, sink, None)
+    pub fn new(root: PathBuf, sink: SharedSink, executable: Configured) -> Self {
+        Self(Arc::new(Shared { root, sink, executable, state: Mutex::default() }))
     }
 
+    #[cfg(all(test, unix))]
     fn with_executable(root: PathBuf, sink: SharedSink, executable: Option<PathBuf>) -> Self {
-        Self(Arc::new(Shared { root, sink, executable, state: Mutex::default() }))
+        Self::new(root, sink, Box::new(move || executable.clone()))
     }
 
     /// The current list; starts the daemon unless it already ran. Never blocks on the process.
@@ -181,10 +235,55 @@ impl FlutterDaemon {
         state.list()
     }
 
-    /// Reads adb again: a device awaiting authorization changes no daemon event.
+    /// Reads adb again (a device awaiting authorization changes no daemon event) and asks the
+    /// daemon for its emulators again (one may have been created since).
     pub fn refresh(&self) {
-        let generation = self.0.state.lock().generation;
+        let mut state = self.0.state.lock();
+        if state.status == FlutterDaemonStatus::Ready {
+            state.send(&request(GET_EMULATORS, "emulator.getEmulators"));
+        }
+        let generation = state.generation;
+        drop(state);
         refresh_adb(&self.0, generation);
+    }
+
+    /// Starts an emulator the list offers; it shows up as a device once booted. Blocks until the
+    /// launch is under way. An AVD is started by `ide-android` rather than the daemon, which
+    /// would make it a child of its process group and end it with the daemon.
+    pub fn launch_emulator(&self, id: &str) -> Result<(), String> {
+        let mut state = self.0.state.lock();
+        let android = state.emulators.iter().any(|e| e.id == id && e.platform_type.as_deref() == Some("android"));
+        if android {
+            drop(state);
+            return ide_android::launch_emulator(id).map_err(|e| e.message);
+        }
+        state.next_id = state.next_id.max(GET_EMULATORS) + 1;
+        let request_id = state.next_id;
+        let (tx, rx) = mpsc::channel();
+        state.pending.insert(request_id, tx);
+        let params = json!({ "emulatorId": id });
+        let line = format!("{}\n", json!([{ "id": request_id, "method": "emulator.launch", "params": params }]));
+        if !state.send(&line) {
+            state.pending.remove(&request_id);
+            return Err("the Flutter daemon is not running".into());
+        }
+        drop(state);
+        let answer = rx.recv_timeout(LAUNCH_TIMEOUT);
+        self.0.state.lock().pending.remove(&request_id);
+        match answer {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err("the Flutter daemon did not answer".into()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err("the Flutter daemon exited".into()),
+        }
+    }
+
+    /// Starts a running daemon again, with the SDK the settings now choose.
+    pub fn sdk_changed(&self) {
+        let mut state = self.0.state.lock();
+        if state.status != FlutterDaemonStatus::Stopped {
+            state.shut_down();
+            start(&self.0, &mut state);
+        }
     }
 
     /// Ends the daemon (project closed, or no longer trusted).
@@ -194,6 +293,7 @@ impl FlutterDaemon {
         state.status = FlutterDaemonStatus::Stopped;
         state.devices.clear();
         state.adb.clear();
+        state.emulators.clear();
     }
 
     /// Ends the daemon before returning, for a process about to exit.
@@ -211,6 +311,7 @@ fn start(shared: &Arc<Shared>, state: &mut State) {
     state.status = FlutterDaemonStatus::Starting;
     state.devices.clear();
     state.adb.clear();
+    state.emulators.clear();
     let (shared, generation) = (shared.clone(), state.generation);
     std::thread::spawn(move || run(&shared, generation));
 }
@@ -265,6 +366,7 @@ fn finish(shared: &Shared, generation: u64, status: FlutterDaemonStatus) {
         return;
     }
     let running = state.running.take();
+    state.pending.clear();
     state.status = status;
     let list = state.list();
     drop(state);
@@ -298,10 +400,14 @@ fn read_lines(pipe: impl Read, mut on_line: impl FnMut(&str) -> bool) {
     }
 }
 
+/// The `flutter` that commands run in `root` use.
+fn flutter_executable(root: &Path) -> Option<PathBuf> {
+    find_command("flutter", &search_path_in(root), root)
+}
+
 /// One daemon's whole life, on its own thread.
 fn run(shared: &Arc<Shared>, generation: u64) {
-    let executable =
-        shared.executable.clone().or_else(|| find_command("flutter", &search_path_in(&shared.root), &shared.root));
+    let executable = (shared.executable)().or_else(|| flutter_executable(&shared.root));
     let Some(executable) = executable else {
         return finish(shared, generation, FlutterDaemonStatus::NotInstalled);
     };
@@ -358,11 +464,24 @@ fn handle(shared: &Arc<Shared>, generation: u64, message: Message) -> bool {
     match message {
         Message::Other => return true,
         Message::Connected => {
-            if let Some(stdin) = state.running.as_mut().and_then(|r| r.stdin.as_mut()) {
-                let requests = request(ENABLE, "device.enable") + &request(GET_DEVICES, "device.getDevices");
-                let _ = stdin.write_all(requests.as_bytes()).and_then(|()| stdin.flush());
+            state.send(
+                &(request(ENABLE, "device.enable")
+                    + &request(GET_DEVICES, "device.getDevices")
+                    + &request(GET_EMULATORS, "emulator.getEmulators")),
+            );
+            return true;
+        }
+        Message::Response(id, result) => {
+            if let Some(tx) = state.pending.remove(&id) {
+                let _ = tx.send(result);
             }
             return true;
+        }
+        Message::Emulators(emulators) => {
+            if state.emulators == emulators {
+                return true;
+            }
+            state.emulators = emulators;
         }
         Message::Added(device) => {
             state.devices.insert(device.id.clone(), device);
@@ -395,6 +514,7 @@ mod tests {
             category: Some(category.into()),
             emulator,
             unavailable: None,
+            emulator_id: None,
         }
     }
 
@@ -433,6 +553,33 @@ mod tests {
         let Some([Message::Devices(devices)]) = answer.as_deref() else { panic!("{answer:?}") };
         assert_eq!((devices[0].id.as_str(), devices[0].category.as_deref()), ("chrome", None));
         assert_eq!(parse_line(r#"[{"id":1,"result":null}]"#), Some(vec![Message::Other]));
+        let emulators = parse_line(
+            r#"[{"id":3,"result":[{"id":"apple_ios_simulator","name":"iOS Simulator","category":"mobile","platformType":"ios"}]}]"#,
+        );
+        let Some([Message::Emulators(emulators)]) = emulators.as_deref() else { panic!("{emulators:?}") };
+        assert_eq!(
+            (emulators[0].id.as_str(), emulators[0].platform_type.as_deref()),
+            ("apple_ios_simulator", Some("ios"))
+        );
+        assert_eq!(
+            parse_line(r#"[{"id":3,"error":"Unable to find Android SDK","trace":""}]"#),
+            Some(vec![Message::Emulators(vec![])])
+        );
+        assert_eq!(parse_line(r#"[{"id":7,"result":null}]"#), Some(vec![Message::Response(7, Ok(()))]));
+        assert_eq!(
+            parse_line(r#"[{"id":7,"error":"emulator 'x' not found","trace":"..."}]"#),
+            Some(vec![Message::Response(7, Err("emulator 'x' not found".into()))])
+        );
+    }
+
+    #[test]
+    fn offers_only_the_emulators_no_device_runs_on() {
+        let emulator = |id: &str| FlutterEmulator { id: id.into(), name: id.into(), platform_type: None };
+        let mut pixel = dev("emulator-5554", "Pixel", "mobile", true);
+        pixel.emulator_id = Some("Pixel_9".into());
+        let devices: BTreeMap<_, _> = [(pixel.id.clone(), pixel)].into_iter().collect();
+        let idle = idle_emulators(&[emulator("Pixel_9"), emulator("apple_ios_simulator")], &devices);
+        assert_eq!(idle, [emulator("apple_ios_simulator")]);
     }
 
     #[test]
@@ -498,8 +645,9 @@ mod tests {
 echo $$ > pid
 echo 'Waiting for another flutter command to release the startup lock...'
 echo '[{"event":"daemon.connected","params":{"version":"0.6.1","pid":1}}]'
-read enable; read get; echo "$enable$get" > requests
+read enable; read get; read emulators; echo "$enable$get$emulators" > requests
 echo '[{"id":1,"result":null}]'
+echo '[{"id":3,"result":[{"id":"apple_ios_simulator","name":"iOS Simulator","category":"mobile","platformType":"ios"}]}]'
 echo '[{"id":2,"result":[{"id":"macos","name":"macOS","category":"desktop","emulator":false}]}]'
 echo '[{"event":"device.added","params":{"id":"chrome","name":"Chrome","category":"web","emulator":false}}]'
 echo '[{"event":"device.removed","params":{"id":"macos","name":"macOS"}}]'
@@ -518,6 +666,8 @@ cat > /dev/null
             });
             let requests = std::fs::read_to_string(dir.path().join("requests")).unwrap();
             assert!(requests.contains("device.enable") && requests.contains("device.getDevices"), "{requests}");
+            assert!(requests.contains("emulator.getEmulators"), "{requests}");
+            assert_eq!(daemon.devices().emulators[0].name, "iOS Simulator");
             assert!(lists.0.lock().iter().any(|l| l.devices.iter().any(|d| d.id == "macos")));
 
             let pid = std::fs::read_to_string(dir.path().join("pid")).unwrap();
@@ -527,6 +677,36 @@ cat > /dev/null
             daemon.stop();
             wait_for("the process to end", || !alive());
             assert_eq!(daemon.0.state.lock().status, FlutterDaemonStatus::Stopped);
+        }
+
+        #[test]
+        fn launches_an_emulator_through_the_daemon_and_reports_its_error() {
+            let dir = tempfile::tempdir().unwrap();
+            let script = r#"
+echo '[{"event":"daemon.connected","params":{"version":"0.6.1","pid":1}}]'
+read enable; read get; read emulators
+echo '[{"id":2,"result":[]}]'
+echo '[{"id":3,"result":[{"id":"apple_ios_simulator","name":"iOS Simulator","platformType":"ios"}]}]'
+read launch; echo "$launch" > launch
+echo '[{"id":4,"result":null}]'
+read launch
+echo '[{"id":5,"error":"Unable to run Simulator: xcrun not found","trace":""}]'
+cat > /dev/null
+"#;
+            let (daemon, _lists) = daemon(dir.path(), script);
+            daemon.devices();
+            wait_for("the emulators", || !daemon.devices().emulators.is_empty());
+            assert_eq!(daemon.launch_emulator("apple_ios_simulator"), Ok(()));
+            let launch = std::fs::read_to_string(dir.path().join("launch")).unwrap();
+            let launch: Value = serde_json::from_str(&launch).unwrap();
+            assert_eq!(launch[0]["method"], "emulator.launch");
+            assert_eq!(launch[0]["params"], json!({ "emulatorId": "apple_ios_simulator" }));
+            assert_eq!(
+                daemon.launch_emulator("apple_ios_simulator"),
+                Err("Unable to run Simulator: xcrun not found".into())
+            );
+            daemon.stop();
+            assert_eq!(daemon.launch_emulator("apple_ios_simulator"), Err("the Flutter daemon is not running".into()));
         }
 
         #[test]

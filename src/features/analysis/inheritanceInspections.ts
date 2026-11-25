@@ -140,6 +140,7 @@ class ProjectView {
       const decl = this.declarationOf(facts);
       if (!decl) continue;
       const item = classItem(this.deps.outline, facts);
+      // oxlint-disable-next-line no-await-in-loop -- classes stay in declaration order while ancestryOf fills the shared memo cache
       const { firstUnresolvedDepth } = await this.ancestryOf(decl);
       out.push({ decl, facts, members: memberNames(item), firstUnresolvedDepth });
     }
@@ -177,6 +178,7 @@ class ProjectView {
         const key = declarationKey(sub);
         if (seen.has(key)) continue;
         seen.add(key);
+        // oxlint-disable-next-line no-await-in-loop -- BFS with a shared `seen` set; the first subclass declaring the name ends the search
         if ((await this.membersOf(sub)).has(name) || (await this.methodsOf(sub)).some((m) => m.name === name))
           return true;
         queue.push(sub);
@@ -263,13 +265,18 @@ export async function inheritanceDiagnostics(deps: InheritanceInspectionDeps): P
     // A class whose header changed since the graph was indexed is skipped: every rule
     // below would reason about a parent the source no longer names.
     if (!sameNames(cls.facts.bases, cls.decl.bases)) continue;
+    // oxlint-disable-next-line no-await-in-loop -- ordered analysis pass; diagnostics append in producer order
     if (runs(PYTHON_CIRCULAR_BASES_PRODUCER)) out.push(...(await circularInheritance(view, cls)));
     // A method may live on any ancestor: only a fully known chain can say it does not.
+    // oxlint-disable-next-line no-await-in-loop -- ordered analysis pass; diagnostics append in producer order
     if (runs(PYTHON_OVERRIDE_PRODUCER) && view.complete(cls)) out.push(...(await unusedOverride(view, cls)));
+    // oxlint-disable-next-line no-await-in-loop -- ordered analysis pass; diagnostics append in producer order
     if (runs(PYTHON_REDUNDANT_OVERRIDE_PRODUCER)) out.push(...(await redundantOverride(view, cls)));
+    // oxlint-disable-next-line no-await-in-loop -- ordered analysis pass; diagnostics append in producer order
     if (runs(PYTHON_ABSTRACT_METHOD_PRODUCER)) out.push(...(await missingAbstractMethods(view, cls)));
     // A method may override one a foreign base declares: only a fully known chain can say it does not.
     if (runs(PYTHON_METHOD_MAY_BE_STATIC_PRODUCER) && view.complete(cls))
+      // oxlint-disable-next-line no-await-in-loop -- ordered analysis pass; diagnostics append in producer order
       out.push(...(await mayBeStatic(view, cls, deps.path)));
   }
   return out;
@@ -294,6 +301,7 @@ async function unusedOverride(view: ProjectView, cls: ClassView): Promise<Diagno
   const out: Diagnostic[] = [];
   for (const method of cls.facts.methods) {
     if (!method.overrideDecorated || isDunder(method.name)) continue;
+    // oxlint-disable-next-line no-await-in-loop -- one method at a time so diagnostics keep declaration order; the memoised view is concurrency-safe
     if (await declaredInAncestry(view, cls, method.name)) continue;
     out.push(
       problem(
@@ -320,6 +328,7 @@ async function mayBeStatic(view: ProjectView, cls: ClassView, path: string): Pro
   const out: Diagnostic[] = [];
   for (const method of cls.facts.methods) {
     if (!method.unusedReceiver || method.name.startsWith("test")) continue;
+    // oxlint-disable-next-line no-await-in-loop -- ancestry checks share the memoised view; the first hit skips this method
     if ((await declaredInAncestry(view, cls, method.name)) || (await view.overriddenBelow(cls, method.name))) continue;
     out.push(
       problem(
@@ -344,9 +353,11 @@ async function missingAbstractMethods(view: ProjectView, cls: ClassView): Promis
   for (const ancestor of await view.ancestors(cls)) {
     // A foreign base above the declarer cannot override it: Python's MRO puts it later.
     if (!view.knownTo(cls, ancestor.depth - 1)) continue;
+    // oxlint-disable-next-line no-await-in-loop -- ancestor methods are read in MRO order into the shared `reported` set
     for (const method of await view.methodsOf(ancestor.decl)) {
       const name = method.name;
       if (!method.abstractMethod || reported.has(name) || cls.members.has(name)) continue;
+      // oxlint-disable-next-line no-await-in-loop -- the nearest concrete implementation wins; later ancestors are still in MRO order
       if (await implementedAbove(view, cls, ancestor.depth, name)) continue;
       reported.add(name);
       out.push(
@@ -372,8 +383,10 @@ async function implementedAbove(
   for (const ancestor of await view.ancestors(cls)) {
     if (ancestor.depth >= declarerDepth) return false;
     if (!view.knownTo(cls, ancestor.depth - 1)) return true;
+    // oxlint-disable-next-line no-await-in-loop -- nearest ancestor first; a method found here returns before reading further
     const method = (await view.methodsOf(ancestor.decl)).find((m) => m.name === name);
     if (method) return !method.abstractMethod;
+    // oxlint-disable-next-line no-await-in-loop -- an attribute on a nearer ancestor resolves the search immediately
     if ((await view.membersOf(ancestor.decl)).has(name)) return true;
   }
   return false;
@@ -383,6 +396,7 @@ async function implementedAbove(
 async function redundantOverride(view: ProjectView, cls: ClassView): Promise<Diagnostic[]> {
   const out: Diagnostic[] = [];
   for (const method of cls.facts.methods) {
+    // oxlint-disable-next-line no-await-in-loop -- one method at a time so diagnostics keep declaration order; the memoised view is concurrency-safe
     const inherited = await inheritedMethod(view, cls, method.name);
     // A foreign base below the declarer cannot change which method runs: MRO puts it later.
     if (!inherited || !view.knownTo(cls, inherited.depth)) continue;
@@ -422,6 +436,7 @@ async function inheritedMethod(
   name: string,
 ): Promise<{ method: PythonMethodFacts; depth: number } | null> {
   for (const ancestor of await view.ancestors(cls)) {
+    // oxlint-disable-next-line no-await-in-loop -- nearest ancestor wins; stop at the first declaration found
     const found = (await view.methodsOf(ancestor.decl)).find((m) => m.name === name);
     if (found) return { method: found, depth: ancestor.depth };
   }
@@ -431,7 +446,9 @@ async function inheritedMethod(
 /** Whether any ancestor declares `name`, as a member or a method. */
 async function declaredInAncestry(view: ProjectView, cls: ClassView, name: string): Promise<boolean> {
   for (const ancestor of await view.ancestors(cls)) {
+    // oxlint-disable-next-line no-await-in-loop -- nearest ancestor first; the first declaration ends the search
     if ((await view.membersOf(ancestor.decl)).has(name)) return true;
+    // oxlint-disable-next-line no-await-in-loop -- only reached when the nearer ancestor had no such member
     if ((await view.methodsOf(ancestor.decl)).some((m) => m.name === name)) return true;
   }
   return false;

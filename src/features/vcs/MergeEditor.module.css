@@ -38,6 +38,36 @@
 .statusDone {
   color: var(--fg-muted);
 }
+/* All changes have been processed: a notice under the toolbar with the way to finish. */
+.processed {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  padding: var(--space-1-5) var(--space-3);
+  background: var(--bg-feedback-success);
+  border-bottom: 1px solid var(--border-feedback-success);
+  font-size: var(--fs-ui);
+  color: var(--fg-strong);
+}
+.processedText {
+  min-width: 0;
+}
+.processedLink {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.processedLink:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
 .paneTitle,
 .resultTitle {
   flex: none;

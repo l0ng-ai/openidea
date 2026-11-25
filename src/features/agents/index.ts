@@ -1,11 +1,12 @@
 /**
  * Coding agents (Claude Code, Codex, Gemini CLI over ACP, run by `ide-agent`): the
  * Agents tool window lists tasks by what they need from the user, a task opens as an
- * editor tab (conversation + changed files), and New Task is an editor page.
+ * editor tab (its changed files in a Changes tab beside it), and New Task is an editor page.
  */
 import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { tx } from "@/platform/i18n";
 import { clearContext, setContext } from "@/platform/context";
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { executeAction } from "@/platform/actions";
@@ -27,7 +28,16 @@ import {
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
 import { activateSettingsPages } from "./settingsPages";
-import { HOME_KIND, MCP_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
+import {
+  CHANGES_KIND,
+  HOME_KIND,
+  MCP_PAGE,
+  REGISTRY_PAGE,
+  SESSION_KIND,
+  TASK_DRAG,
+  TOOL_WINDOW,
+  providerIcon,
+} from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { copyAgentReferenceActions, registerCopyAgentReference } from "./copyReference";
 import { diagnoseTestFailure, isTestFailure } from "./testFailure";
@@ -170,6 +180,17 @@ export function activate(): () => void {
         : { openInWindow: (input) => moveTaskToWindow((input.data as { task: string }).task) }),
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
+    }),
+    registerEditorKind({
+      kind: CHANGES_KIND,
+      component: lazyComponent(() => import("./session/ChangesTab").then((m) => m.ChangesTab)),
+      title: (input) => {
+        const title = useAgents.getState().tasks.get((input.data as { task: string }).task)?.title;
+        return title ? tx("Changes: {task}").replace("{task}", title) : tx("Changes");
+      },
+      icon: () => "diff",
+      restorable: true,
+      onClose: (input) => releaseClosedTaskCache((input.data as { task: string }).task),
     }),
     registerEditorKind({
       kind: HOME_KIND,

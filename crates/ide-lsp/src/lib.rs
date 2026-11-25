@@ -87,6 +87,7 @@ use std::time::Duration;
 use text::{DocText, Encoding};
 use types::*;
 
+const DART_SERVER: &str = "dart";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 const LONG_TIMEOUT: Duration = Duration::from_secs(30);
@@ -2446,6 +2447,34 @@ impl LspManager {
             .iter()
             .any(|a| a.server.id == outline.server && a.server.is_live(outline.generation))
             .then(|| outline.items.clone())
+    }
+
+    /// The arguments of the call at `pos` the Flutter Property Editor shows; `None` outside a
+    /// call, or when no Dart server serves the document.
+    pub async fn editable_arguments(&self, doc: DocId, pos: Pos) -> IdeResult<Option<EditableArguments>> {
+        let (snap, targets) = self.doc_targets(doc, "the property editor", |_| true).await?;
+        let Some(t) = targets.iter().find(|t| t.server.name == DART_SERVER) else { return Ok(None) };
+        self.call(t, "dart/textDocument/editableArguments", snap.pos_params(t, pos), None, DEFAULT_TIMEOUT).await
+    }
+
+    /// Sets the argument `name` of the call at `pos` to `value` (`None` passes null). The server
+    /// sends the edit back as `workspace/applyEdit`, which the apply-edit hook applies.
+    pub async fn edit_argument(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        name: String,
+        value: Option<ArgumentValue>,
+    ) -> IdeResult<()> {
+        let (snap, targets) = self.doc_targets(doc, "the property editor", |_| true).await?;
+        let t = targets
+            .iter()
+            .find(|t| t.server.name == DART_SERVER)
+            .ok_or_else(|| IdeError::unavailable("no Dart language server serves this document"))?;
+        let mut params = snap.pos_params(t, pos);
+        params["edit"] = json!({ "name": name, "newValue": value });
+        let _: Value = self.call(t, "dart/textDocument/editArgument", params, None, DEFAULT_TIMEOUT).await?;
+        Ok(())
     }
 
     /// Records a published outline; whether what the open documents of `path` show changed.

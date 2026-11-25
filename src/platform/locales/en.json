@@ -416,6 +416,7 @@
   "menu.build.compileFile": "{compileFile, select, yes {Recompile '{compileFileName}'} other {Recompile}}",
   "menu.build.rebuildProject": "Rebuild Project",
   "menu.build.buildArtifacts": "Build Artifacts",
+  "menu.build.flutter": "Flutter",
   "menu.toolwindow.build": "Build",
   "menu.find.structural": "Search Structurally…",
   "menu.find.replaceStructural": "Replace Structurally…",
