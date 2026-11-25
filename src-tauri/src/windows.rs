@@ -851,7 +851,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
+        .and_then(|b| dev_font_preferences(webview_profile(app, b)).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -1689,7 +1689,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     // display's Space, so macOS keeps it too.
     #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
-    let window = builder.and_then(|b| dev_font_preferences(b).build()).map_err(|e| {
+    let window = builder.and_then(|b| dev_font_preferences(webview_profile(app, b)).build()).map_err(|e| {
         windows.forget(&label);
         IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
     })?;
@@ -2194,6 +2194,23 @@ fn open_popup_in_browser<R: tauri::Runtime>(
         tracing::warn!("cannot open {url}: {e}");
     }
     tauri::webview::NewWindowResponse::Deny
+}
+
+/// On Windows every window keeps WebView2's profile (localStorage, IndexedDB) in the local
+/// data directory, so a custom location from Settings › System Settings › Caches holds it too;
+/// Tauri would always use the default one. All windows share it: one WebView2 browser process
+/// serves a single profile folder.
+fn webview_profile<'a>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    #[cfg(windows)]
+    if let Some(state) = app.try_state::<AppState>() {
+        return builder.data_directory(state.host.local_data_dir.clone());
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    builder
 }
 
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
