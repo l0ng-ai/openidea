@@ -357,7 +357,7 @@ const GRADLE_TOOLING_FAILURES: [&str; 4] = [
 fn launch_message(message: &str) -> String {
     let mut lines = message.lines().map(str::trim).filter(|l| !l.is_empty());
     let first = lines.next().unwrap_or_default();
-    match lines.last() {
+    match lines.next_back() {
         Some(cause) if GRADLE_TOOLING_FAILURES.iter().any(|m| first.contains(m)) => format!("{first} Cause: {cause}"),
         _ => first.to_owned(),
     }
