@@ -287,6 +287,37 @@ it("filters tree badges by project root but not editor annotations, and drops un
   expect(getFileDecoration("/p/a.txt")?.badge).toBeUndefined();
 });
 
+it("paints a styled item's own colors, with or without a palette style", () => {
+  const styled = set();
+  styled.items = [
+    { ...styled.items[0]!, style: "", hover: "own", colors: { foreground: "#1a1a1a", background: "#ffeb3b80" } },
+    {
+      ...styled.items[0]!,
+      range: { start: { line: 0, col: 4 }, end: { line: 0, col: 6 } },
+      hover: "palette",
+      after: null,
+      colors: { foreground: null, background: "#00e5ff" },
+    },
+  ];
+  setPluginDecorations("test", [styled]);
+  const own = editor.view.dom.querySelector<HTMLElement>('[title="own"]');
+  expect(own?.textContent).toBe("te");
+  expect(own?.style.color).toBe("rgb(26, 26, 26)");
+  expect(own?.style.backgroundColor).toBe("rgba(255, 235, 59, 0.5)");
+  // The line-end label takes the foreground only; the fill belongs to the code.
+  const label = editor.view.dom.querySelector<HTMLElement>(".cm-plugin-after")?.firstElementChild as HTMLElement;
+  expect(label.textContent).toBe("<plain>");
+  expect(label.style.color).toBe("rgb(26, 26, 26)");
+  expect(label.style.backgroundColor).toBe("");
+  const palette = editor.view.dom.querySelector<HTMLElement>('[title="palette"]');
+  expect(palette?.className).not.toBe("");
+  expect(palette?.style.backgroundColor).toBe("rgb(0, 229, 255)");
+  // An empty style without usable colors renders nothing, and colors never reach the style unchecked.
+  styled.items = [{ ...styled.items[0]!, colors: { foreground: "red; display: none", background: null } }];
+  setPluginDecorations("test", [styled]);
+  expect(editor.view.dom.textContent).not.toContain("<plain>");
+});
+
 it("shows a tree note after the name without colouring the file", () => {
   const note = {
     ...set(),

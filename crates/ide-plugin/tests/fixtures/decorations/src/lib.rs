@@ -1,6 +1,10 @@
-//! Minimal plugin API 1.16 example: push a line-end label whose hover is Markdown.
+//! Minimal plugin API 1.17 example: push a line-end label whose hover is Markdown,
+//! and ranges painted in the plugin's own colors.
 
-use openidea_plugin::{Error, Invocation, MarkdownDecoration, Plugin, Position, Range, host, register_plugin};
+use openidea_plugin::{
+    DecorationColors, Error, Invocation, MarkdownDecoration, Plugin, Position, Range, StyledDecoration, host,
+    register_plugin,
+};
 
 #[derive(Default)]
 struct Decorations;
@@ -20,6 +24,29 @@ impl Plugin for Decorations {
                         after: Some(" + model-x".into()),
                         markdown_hover: Some("**model-x** generated this line\n\n- prompt: add a greeting".into()),
                     }],
+                )?;
+                Ok(None)
+            }
+            "styled" => {
+                let path = arg.ok_or_else(|| Error::Invalid("a project file path is required".into()))?;
+                let todo = |range, foreground: Option<&str>, background: &str| StyledDecoration {
+                    range,
+                    style: String::new(),
+                    hover: Some("TODO".into()),
+                    after: None,
+                    markdown_hover: None,
+                    colors: Some(DecorationColors {
+                        foreground: foreground.map(Into::into),
+                        background: Some(background.into()),
+                    }),
+                };
+                host::set_styled_decorations(
+                    path,
+                    "example",
+                    &[
+                        todo(Range::new(Position::new(0, 0), Position::new(0, 1)), Some("#1A1A1A"), "#FFEB3B"),
+                        todo(Range::new(Position::new(0, 1), Position::new(0, 2)), None, "#00e5ff80"),
+                    ],
                 )?;
                 Ok(None)
             }

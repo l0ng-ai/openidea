@@ -467,6 +467,23 @@ mod imp {
             .collect::<Vec<_>>();
         wit::decorations::set_markdown(path, set, &items).map_err(error)
     }
+    pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::StyledDecoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+                markdown_hover: d.markdown_hover.clone(),
+                colors: d.colors.as_ref().map(|c| wit::decorations::DecorationColors {
+                    foreground: c.foreground.clone(),
+                    background: c.background.clone(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set_styled(path, set, &items).map_err(error)
+    }
     pub fn clear_decorations(set: &str) -> Result<(), Error> {
         wit::decorations::clear(set).map_err(error)
     }
@@ -2110,6 +2127,12 @@ pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<()
 /// Requires project.read; the same limits and set ids as [`set_decorations`].
 pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
     imp::set_markdown_decorations(path, set, items)
+}
+/// Replace a file's editor decorations with items that carry their own `#rrggbb` / `#rrggbbaa`
+/// foreground and background (API 1.17); an item may leave `style` empty when it has colors.
+/// Requires project.read; the same limits and set ids as [`set_decorations`].
+pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+    imp::set_styled_decorations(path, set, items)
 }
 /// Clear this plugin's editor decoration set in all projects. Requires project.read.
 pub fn clear_decorations(set: &str) -> Result<(), Error> {
