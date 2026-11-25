@@ -4019,5 +4019,7 @@
   "Couldn't roll back": "Couldn't roll back",
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.",
   "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.",
-  "The files the agent changed since go back to how they were before this message was sent.": "The files the agent changed since go back to how they were before this message was sent."
+  "The files the agent changed since go back to how they were before this message was sent.": "The files the agent changed since go back to how they were before this message was sent.",
+  "Changes: {task}": "Changes: {task}",
+  "Resize changed files": "Resize changed files"
 }

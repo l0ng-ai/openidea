@@ -3,12 +3,23 @@
  * as tall as its content under a sticky header, in one scrolling view. Only the blocks near
  * the viewport are mounted; a header collapses its block or opens the file's own diff tab.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { defaultRangeExtractor, elementScroll, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { tx } from "@/platform/i18n";
 import { relativeDir, useProject } from "@/platform/project";
-import { Icon, IconButton, T, fileIconName } from "@/ui";
+import { Icon, IconButton, SplitGroup, SplitHandle, SplitPanel, T, fileIconName } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { combinedDiffDocumentOwner, setAllInOneDiff, type CombinedDiffData } from "./allInOneDiff";
 import { ResolvedDiffEditor, type DiffViewState } from "./DiffEditor";
@@ -30,8 +41,22 @@ export function blockKind(item: DiffData): Kind {
 /** Height of a block not measured yet: its header and a short diff. */
 const ESTIMATE = 200;
 
-function Block({
-  item,
+/** A file of the view: `key` tells apart the same file shown twice (staged and unstaged, in two commits). */
+export interface CombinedDiffItem {
+  key: string;
+  data: DiffData;
+  /** Shown after the file name instead of its folder under the project. */
+  detail?: string;
+}
+
+/** Scrolls the view to the block of an item. */
+export interface CombinedDiffHandle {
+  reveal(key: string): void;
+}
+
+// Memoized: selecting a file elsewhere (a file list beside the view) mustn't render every diff again.
+const Block = memo(function Block({
+  entry,
   index,
   items,
   collapsed,
@@ -42,11 +67,11 @@ function Block({
   viewStates,
   entriesCache,
 }: {
-  item: DiffData;
+  entry: CombinedDiffItem;
   index: number;
   items: readonly DiffData[];
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle: (key: string) => void;
   mode: "split" | "unified";
   tabKey: string;
   /** Height of each block's loaded diff, by layout and diff, kept while blocks are unmounted. */
@@ -56,6 +81,7 @@ function Block({
   /** Git entries of the blocks, so a block back in view shows without asking Git again. */
   entriesCache: DiffEntriesCache;
 }) {
+  const item = entry.data;
   // A block mounted collapsed creates its diff once expanded.
   const [loaded, setLoaded] = useState(!collapsed);
   if (!collapsed && !loaded) setLoaded(true);
@@ -93,7 +119,7 @@ function Block({
   const kind = blockKind(item);
   const name = baseName(item.path);
   const root = useProject((s) => s.project?.root ?? "");
-  const dir = relativeDir(root, item.path);
+  const dir = entry.detail ?? relativeDir(root, item.path);
   return (
     <section
       className={styles.block}
@@ -107,7 +133,7 @@ function Block({
           title={collapsed ? "Expand File" : "Collapse File"}
           size="small"
           aria-expanded={!collapsed}
-          onClick={onToggle}
+          onClick={() => onToggle(entry.key)}
         />
         <IconButton
           icon="diff"
@@ -151,19 +177,64 @@ function Block({
       )}
     </section>
   );
-}
+});
 
 export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const data = input.data as CombinedDiffData;
-  const items = data.items;
+  // A partially staged file is listed twice (staged and unstaged), so blocks go by diff, not path.
+  const entries = useMemo(() => data.items.map((item) => ({ key: diffInput(item).key, data: item })), [data.items]);
+  const reveal = data.reveal ? entries.find((e) => e.data.path === data.reveal)?.key : undefined;
+  return (
+    <CombinedDiffView
+      items={entries}
+      tabKey={input.key}
+      reveal={reveal}
+      onSeparateTabs={(at) => {
+        // Back to one diff per file, at the file in view.
+        setAllInOneDiff(false);
+        void openDiff(withChain(data.items, at)).then(() => editorService().closeInput?.(input.key));
+      }}
+    />
+  );
+}
+
+/**
+ * Every file of `items` in one scrolling view, with its toolbar. `tabKey` owns the working
+ * documents its diffs edit; `onSeparateTabs` (given the index in view) offers one tab per file.
+ * A view with a list of its files (`files`, beside the diffs) shares the toolbar: its controls
+ * go before (`toolbarStart`) and after (`toolbarEnd`) the diff's.
+ */
+export function CombinedDiffView({
+  items: entries,
+  tabKey,
+  reveal,
+  handle,
+  empty = <T>No changes</T>,
+  onSeparateTabs,
+  toolbarStart,
+  toolbarEnd,
+  files,
+}: {
+  items: readonly CombinedDiffItem[];
+  tabKey: string;
+  /** Key of the item to scroll to when the view opens. */
+  reveal?: string;
+  handle?: Ref<CombinedDiffHandle>;
+  /** Shown instead of the diffs when there are none. */
+  empty?: ReactNode;
+  onSeparateTabs?: (index: number) => void;
+  toolbarStart?: ReactNode;
+  toolbarEnd?: ReactNode;
+  files?: { content: ReactNode; label: string; storageKey: string };
+}) {
+  const items = useMemo(() => entries.map((e) => e.data), [entries]);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const [mode, setMode] = useState(() => loadDiffOptions().mode);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [heights] = useState(() => new Map<string, number>());
   const [viewStates] = useState(() => new Map<string, DiffViewState>());
   const [entriesCache] = useState<DiffEntriesCache>(() => new Map());
-  // A partially staged file is listed twice (staged and unstaged), so blocks go by diff, not path.
-  const keys = useMemo(() => items.map((item) => diffInput(item).key), [items]);
+  const keys = useMemo(() => entries.map((e) => e.key), [entries]);
 
   // Blocks that stay mounted when scrolled away: the one holding the keyboard focus, so typing still
   // reaches it, and with autosave off those with unsaved staged edits, which unmounting would save.
@@ -174,12 +245,12 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
       const slot = scrollRef.current?.contains(active) ? active?.closest<HTMLElement>("[data-index]") : null;
       if (slot) shown.add(Number(slot.dataset.index));
       if (useProject.getState().settings?.files?.autoSave === false)
-        keys.forEach((key, index) => {
-          if (ownedStagedDocument(combinedDiffDocumentOwner(input.key, key))?.dirty) shown.add(index);
+        items.forEach((item, index) => {
+          if (ownedStagedDocument(combinedDiffDocumentOwner(tabKey, diffInput(item).key))?.dirty) shown.add(index);
         });
       return [...shown].sort((a, b) => a - b);
     },
-    [keys, input.key],
+    [items, tabKey],
   );
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -210,11 +281,16 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     if (next >= 0 && next < items.length) virtualizer.scrollToIndex(next, { align: "start" });
   };
 
+  const scrollTo = (key: string) => {
+    const at = keys.indexOf(key);
+    if (at >= 0) virtualizer.scrollToIndex(at, { align: "start" });
+  };
+  useImperativeHandle(handle, () => ({ reveal: scrollTo }));
+
   // Open at the file the diff was asked for.
   useLayoutEffect(() => {
-    const at = data.reveal ? items.findIndex((i) => i.path === data.reveal) : -1;
-    if (at >= 0) virtualizer.scrollToIndex(at, { align: "start" });
-    // Once per tab: later revisits keep their scroll position.
+    if (reveal) scrollTo(reveal);
+    // Once per view: later revisits keep their scroll position.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -222,18 +298,62 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     setMode(next);
     saveDiffOptions({ ...loadDiffOptions(), mode: next });
   };
-  const toggle = (key: string) =>
-    setCollapsed((c) => {
-      const s = new Set(c);
-      if (s.has(key)) s.delete(key);
-      else s.add(key);
-      return s;
-    });
+  const toggle = useCallback(
+    (key: string) =>
+      setCollapsed((c) => {
+        const s = new Set(c);
+        if (s.has(key)) s.delete(key);
+        else s.add(key);
+        return s;
+      }),
+    [],
+  );
   const allCollapsed = items.length > 0 && keys.every((key) => collapsed.has(key));
+
+  const scroller = (
+    <div ref={scrollRef} className={styles.scroll} data-combined-scroll>
+      {items.length ? (
+        <div className={styles.blocks} style={{ height: virtualizer.getTotalSize() }}>
+          {virtualizer.getVirtualItems().map(({ index, key, start }) => (
+            <div
+              // Keyed by diff alone: switching the layout keeps each block's diff and its documents.
+              key={key}
+              ref={virtualizer.measureElement}
+              data-index={index}
+              className={styles.slot}
+              // `top`, not a transform: a sticky header inside a transformed box sticks off by the transform.
+              style={{ top: start }}
+            >
+              <Block
+                entry={entries[index]!}
+                index={index}
+                items={items}
+                collapsed={collapsed.has(keys[index]!)}
+                onToggle={toggle}
+                mode={mode}
+                tabKey={tabKey}
+                heights={heights}
+                viewStates={viewStates}
+                entriesCache={entriesCache}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className={clsx(styles.placeholder, styles.empty)}>{empty}</div>
+      )}
+    </div>
+  );
 
   return (
     <div className={styles.root}>
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Combined Changes Diff")}>
+        {toolbarStart && (
+          <>
+            {toolbarStart}
+            <span className={styles.sep} />
+          </>
+        )}
         <IconButton icon="arrow-up" title="Previous File" size="small" onClick={() => step(-1)} />
         <IconButton icon="arrow-down" title="Next File" size="small" onClick={() => step(1)} />
         <IconButton
@@ -257,54 +377,31 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
           pressed={mode === "unified"}
           onClick={() => setViewer("unified")}
         />
-        <span className={styles.count}>{fileCount(items.length)}</span>
+        {!files && <span className={styles.count}>{fileCount(items.length)}</span>}
         <span className={styles.grow} />
-        <IconButton
-          icon="editor-only"
-          title="Show Files in Separate Diff Tabs"
-          size="small"
-          onClick={() => {
-            // Back to one diff per file, at the file in view.
-            setAllInOneDiff(false);
-            const at = Math.max(0, current());
-            void openDiff(withChain(items, at)).then(() => editorService().closeInput?.(input.key));
-          }}
-        />
-      </div>
-      <div ref={scrollRef} className={styles.scroll} data-combined-scroll>
-        {items.length ? (
-          <div className={styles.blocks} style={{ height: virtualizer.getTotalSize() }}>
-            {virtualizer.getVirtualItems().map(({ index, key, start }) => (
-              <div
-                // Keyed by diff alone: switching the layout keeps each block's diff and its documents.
-                key={key}
-                ref={virtualizer.measureElement}
-                data-index={index}
-                className={styles.slot}
-                // `top`, not a transform: a sticky header inside a transformed box sticks off by the transform.
-                style={{ top: start }}
-              >
-                <Block
-                  item={items[index]!}
-                  index={index}
-                  items={items}
-                  collapsed={collapsed.has(keys[index]!)}
-                  onToggle={() => toggle(keys[index]!)}
-                  mode={mode}
-                  tabKey={input.key}
-                  heights={heights}
-                  viewStates={viewStates}
-                  entriesCache={entriesCache}
-                />
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className={clsx(styles.placeholder, styles.empty)}>
-            <T>No changes</T>
-          </div>
+        {toolbarEnd}
+        {onSeparateTabs && (
+          <IconButton
+            icon="editor-only"
+            title="Show Files in Separate Diff Tabs"
+            size="small"
+            onClick={() => onSeparateTabs(Math.max(0, current()))}
+          />
         )}
       </div>
+      {files ? (
+        <SplitGroup orientation="horizontal" storageKey={files.storageKey} className={styles.split}>
+          <SplitPanel id="combined-files" defaultSize={240} minSize={160} maxSize="50%" className={styles.files}>
+            {files.content}
+          </SplitPanel>
+          <SplitHandle aria-label={files.label} />
+          <SplitPanel id="combined-diffs" minSize={240} className={styles.diffs}>
+            {scroller}
+          </SplitPanel>
+        </SplitGroup>
+      ) : (
+        scroller
+      )}
     </div>
   );
 }

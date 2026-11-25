@@ -2063,8 +2063,6 @@
   "Hide Active Tool Window": "隐藏活动工具窗口",
   "Hide All Tool Windows": "隐藏所有工具窗口",
   "Hide Side Tool Windows": "隐藏侧边工具窗口",
-  "Hide changes": "隐藏更改",
-  "Resize changes": "调整更改面板宽度",
   "Hide Coverage": "隐藏覆盖率",
   "Hide Library Frames": "隐藏库帧",
   "Hide Replace": "隐藏替换",
@@ -7113,7 +7111,6 @@
   "cannot copy through a destination symlink": "无法通过目标目录内的符号链接复制",
   "expected a relative comparison entry path": "需要比较条目的相对路径",
   "Agent sessions": "智能体会话",
-  "Back to conversation": "返回会话",
   "Chat in Tool Window": "在工具窗口中聊天",
   "Chat in Editor": "在编辑器中聊天",
   "Agent settings": "智能体设置",
@@ -10305,5 +10302,7 @@
   "Closing labels": "结束标签",
   "Roll Back to Here": "回滚到这里",
   "Couldn't roll back": "无法回滚",
-  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "这条消息及之后的消息会被移除，Agent 在此之后改动的文件会恢复到这条消息发送前的状态。消息会放回输入框。"
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "这条消息及之后的消息会被移除，Agent 在此之后改动的文件会恢复到这条消息发送前的状态。消息会放回输入框。",
+  "Changes: {task}": "改动：{task}",
+  "Resize changed files": "调整改动文件列表宽度"
 }
