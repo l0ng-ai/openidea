@@ -32,13 +32,16 @@ pub enum BrowserAction {
     Status,
 }
 
-/// Physical pixels measured from the top left of the workbench webview.
+/// CSS pixels measured from the top left of the workbench viewport, along with the viewport size.
 #[derive(Clone, Copy, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserBounds {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    viewport_width: f64,
+    viewport_height: f64,
 }
 
 #[derive(Serialize, Type)]
