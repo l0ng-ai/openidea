@@ -3924,12 +3924,14 @@ export type Browser = {
 
 export type BrowserAction = { type: "navigate"; url: string } | { type: "back" } | { type: "forward" } | { type: "reload" } | { type: "inspect" } | { type: "cancel" } | { type: "layout"; bounds: BrowserBounds | null } | { type: "status" };
 
-/**  Physical pixels measured from the top left of the workbench webview. */
+/**  CSS pixels measured from the top left of the workbench viewport, along with the viewport size. */
 export type BrowserBounds = {
-	x: number,
-	y: number,
-	width: number,
-	height: number,
+	x: number | null,
+	y: number | null,
+	width: number | null,
+	height: number | null,
+	viewportWidth: number | null,
+	viewportHeight: number | null,
 };
 
 export type BrowserStatus = {

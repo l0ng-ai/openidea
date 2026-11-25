@@ -184,3 +184,59 @@ it("shows a tab's cut-off title whole, with the tab's own tooltip beside it", ()
   cleanup();
   vi.useRealTimers();
 });
+
+it("flips above an anchor when the default bottom tooltip would overlap a native surface", async () => {
+  vi.useFakeTimers();
+  render(
+    <>
+      <TooltipHost />
+      <button type="button" {...tooltipAttrs("Close", undefined, true)}>
+        Close
+      </button>
+      <div data-native-surface="" data-testid="surface" />
+    </>,
+  );
+  const button = screen.getByRole("button", { name: "Close" });
+  const surface = screen.getByTestId("surface");
+  const rect = (x: number, y: number, w: number, h: number): DOMRect =>
+    ({
+      x,
+      y,
+      left: x,
+      top: y,
+      right: x + w,
+      bottom: y + h,
+      width: w,
+      height: h,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  const origClientW = Object.getOwnPropertyDescriptor(document.documentElement, "clientWidth");
+  const origClientH = Object.getOwnPropertyDescriptor(document.documentElement, "clientHeight");
+  Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
+  Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
+  const spy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this === button) return rect(300, 60, 24, 24);
+    if (this === surface) return rect(100, 90, 300, 400);
+    if (this.getAttribute("role") === "tooltip") return rect(0, 0, 60, 24);
+    return rect(0, 0, 0, 0);
+  });
+
+  fireEvent.pointerOver(button);
+  await act(async () => {
+    vi.advanceTimersByTime(TOOLTIP_DELAY);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  const tip = screen.getByRole("tooltip");
+
+  // Placed above the button (y = 60 - 6 - 24 = 30), clear of the native surface starting at y = 90.
+  expect(Number.parseFloat(tip.style.top)).toBeLessThanOrEqual(60 - 24);
+  spy.mockRestore();
+  if (origClientW) Object.defineProperty(document.documentElement, "clientWidth", origClientW);
+  else Reflect.deleteProperty(document.documentElement, "clientWidth");
+  if (origClientH) Object.defineProperty(document.documentElement, "clientHeight", origClientH);
+  else Reflect.deleteProperty(document.documentElement, "clientHeight");
+  cleanup();
+  vi.useRealTimers();
+});
