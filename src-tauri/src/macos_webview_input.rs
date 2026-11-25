@@ -5,10 +5,11 @@ use objc2_app_kit::{
 };
 use objc2_web_kit::WKWebView;
 use std::{cell::RefCell, collections::HashMap, ptr::NonNull};
-use tauri::{Listener, WebviewWindow};
+use tauri::{Listener, Manager, WebviewWindow};
 
 struct Gestures {
     monitor: Retained<AnyObject>,
+    view: Retained<WKWebView>,
     listener: tauri::EventId,
     window: WebviewWindow,
     generation: u64,
@@ -38,6 +39,7 @@ pub fn install(window: &WebviewWindow) {
     let target = window.clone();
     let _ = window.with_webview(move |webview| {
         let view = unsafe { Retained::retain(webview.inner().cast::<WKWebView>()).unwrap() };
+        let primary_view = view.clone();
         let native = webview.ns_window() as usize;
         let window = target.clone();
         let block = block2::RcBlock::new(move |event: NonNull<NSEvent>| {
@@ -54,7 +56,13 @@ pub fn install(window: &WebviewWindow) {
                 return pass;
             }
             if key_down {
-                return if workbench_key_equivalent(&view, &owner, event) { std::ptr::null_mut() } else { pass };
+                return if window.state::<crate::menu::MenuState>().routes_key(event)
+                    && workbench_key_equivalent(&view, &owner, event)
+                {
+                    std::ptr::null_mut()
+                } else {
+                    pass
+                };
             }
             if event.r#type() == NSEventType::Swipe {
                 if event.deltaX() != 0.0 && event.deltaY() == 0.0 {
@@ -124,10 +132,95 @@ pub fn install(window: &WebviewWindow) {
         WINDOWS.with_borrow_mut(|windows| {
             windows.insert(
                 target.label().into(),
-                Gestures { monitor, listener, window: target, generation: 0, pending: None, decided: false },
+                Gestures {
+                    monitor,
+                    view: primary_view,
+                    listener,
+                    window: target,
+                    generation: 0,
+                    pending: None,
+                    decided: false,
+                },
             )
         });
     });
+}
+
+/// Printable Command equivalents displayed by the native menu. Named keys such as arrows use AppKit.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct CommandKey {
+    modifiers: NSEventModifierFlags,
+    key: u8,
+}
+
+impl CommandKey {
+    pub(crate) fn from_binding(binding: &str) -> Option<Self> {
+        let (mods, name) = binding.rsplit_once('+')?;
+        let [key] = *name.as_bytes() else { return None };
+        let mut modifiers = NSEventModifierFlags::empty();
+        for modifier in mods.split('+') {
+            modifiers |= match modifier {
+                "Meta" | "Cmd" | "CmdOrCtrl" => NSEventModifierFlags::Command,
+                "Alt" => NSEventModifierFlags::Option,
+                "Ctrl" => NSEventModifierFlags::Control,
+                "Shift" => NSEventModifierFlags::Shift,
+                _ => return None,
+            };
+        }
+        (key.is_ascii_graphic() && modifiers.contains(NSEventModifierFlags::Command))
+            .then_some(Self { modifiers, key: key.to_ascii_uppercase() })
+    }
+
+    pub(crate) fn from_event(event: &NSEvent) -> Option<Self> {
+        let modifiers = event.modifierFlags()
+            & (NSEventModifierFlags::Command
+                | NSEventModifierFlags::Shift
+                | NSEventModifierFlags::Control
+                | NSEventModifierFlags::Option
+                | NSEventModifierFlags::Function
+                | NSEventModifierFlags::NumericPad);
+        // Use the active layout's Command layer, including layouts that switch to QWERTY under Command.
+        let chars = if modifiers == NSEventModifierFlags::Command {
+            event.characters()?
+        } else {
+            event.charactersByApplyingModifiers(NSEventModifierFlags::Command)?
+        };
+        if chars.length() != 1 {
+            return None;
+        }
+        let key = u8::try_from(chars.characterAtIndex(0)).ok()?.to_ascii_uppercase();
+        Some(Self { modifiers, key })
+    }
+}
+
+/// A sheet or guest view can take focus before the renderer has updated the Edit menu.
+pub(crate) fn perform_native_history_if_needed(id: &str) -> bool {
+    let selector = match id {
+        crate::menu::EDITOR_UNDO => objc2::sel!(undo:),
+        crate::menu::EDITOR_REDO => objc2::sel!(redo:),
+        _ => return false,
+    };
+    let Some(mtm) = MainThreadMarker::new() else { return false };
+    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    if app.modalWindow().is_none()
+        && let Some(window) = app.keyWindow()
+        && window.attachedSheet().is_none()
+        && let Some(responder) = window.firstResponder()
+        && WINDOWS.with_borrow(|windows| {
+            windows.values().any(|w| {
+                std::ptr::eq(Retained::as_ptr(&w.view), Retained::as_ptr(&responder).cast())
+                    && !matches!(
+                        crate::windows::auxiliary(w.window.label()),
+                        Some((crate::windows::AuxKind::Settings, _))
+                    )
+            })
+        })
+    {
+        return false;
+    }
+    // SAFETY: these standard NSResponder actions take one object argument. AppKit locates the target.
+    unsafe { app.sendAction_to_from(selector, None, None) };
+    true
 }
 
 fn workbench_key_equivalent(view: &WKWebView, owner: &NSWindow, event: &NSEvent) -> bool {
