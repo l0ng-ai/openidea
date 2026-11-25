@@ -10,8 +10,10 @@
 //! daemon that fails stays failed until the user restarts it.
 
 mod devtools;
+mod server;
+mod widget_preview;
 
-pub use devtools::DevToolsServer;
+pub use server::ToolServer;
 
 use ide_android::AndroidDevice;
 use ide_core::event::{FlutterDaemonStatus, FlutterDevice, FlutterDeviceList, FlutterEmulator};
@@ -398,10 +400,14 @@ fn read_lines(pipe: impl Read, mut on_line: impl FnMut(&str) -> bool) {
     }
 }
 
+/// The `flutter` that commands run in `root` use.
+fn flutter_executable(root: &Path) -> Option<PathBuf> {
+    find_command("flutter", &search_path_in(root), root)
+}
+
 /// One daemon's whole life, on its own thread.
 fn run(shared: &Arc<Shared>, generation: u64) {
-    let executable =
-        (shared.executable)().or_else(|| find_command("flutter", &search_path_in(&shared.root), &shared.root));
+    let executable = (shared.executable)().or_else(|| flutter_executable(&shared.root));
     let Some(executable) = executable else {
         return finish(shared, generation, FlutterDaemonStatus::NotInstalled);
     };

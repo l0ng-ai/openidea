@@ -2,11 +2,20 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const devtoolsUrl = vi.hoisted(() => vi.fn());
+const previewUrl = vi.hoisted(() => vi.fn());
 const readText = vi.hoisted(() => vi.fn());
 const remote = vi.hoisted(() => ({ on: false }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
-  return { ...real, commands: { ...real.commands, flutterDevtoolsUrl: devtoolsUrl, fsReadText: readText } };
+  return {
+    ...real,
+    commands: {
+      ...real.commands,
+      flutterDevtoolsUrl: devtoolsUrl,
+      flutterWidgetPreviewUrl: previewUrl,
+      fsReadText: readText,
+    },
+  };
 });
 vi.mock("@/platform/remote", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/remote")>()),
@@ -19,9 +28,15 @@ import { useProject } from "@/platform/project";
 import { useContributions } from "@/workbench/contributions";
 import { useFlutterDevices } from "@/workbench/flutterDevices";
 import { useFlutterRunApps, type FlutterRunApp } from "@/workbench/flutterRunApps";
-import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools, registerDevToolsWindows } from "../flutter/devTools";
+import {
+  DEVTOOLS_WINDOWS,
+  devToolsUrl,
+  refreshDevTools,
+  registerDevToolsWindows,
+  WIDGET_PREVIEW_WINDOW,
+} from "../flutter/devTools";
 import { useDebug, type DebugSession } from "../state";
-import { FlutterDevToolsTabs, FlutterDevToolsView } from "../ui/FlutterDevTools";
+import { FlutterDevToolsTabs, FlutterDevToolsView, FlutterWidgetPreviewView } from "../ui/FlutterDevTools";
 
 const server = "http://127.0.0.1:9100";
 const look = { theme: "dark" as const, background: "1e1f22" };
@@ -45,6 +60,8 @@ describe("Flutter DevTools windows", () => {
     useFlutterRunApps.setState({}, true);
     devtoolsUrl.mockReset();
     devtoolsUrl.mockResolvedValue({ status: "ok", data: server });
+    previewUrl.mockReset();
+    previewUrl.mockResolvedValue({ status: "ok", data: "http://127.0.0.1:56207" });
     useDebug.setState({ sessions: {}, active: null });
     remote.on = false;
   });
@@ -88,9 +105,13 @@ describe("Flutter DevTools windows", () => {
       "flutter-devtools-extensions": "onUse",
       "flutter-inspector": undefined,
     });
+    // Widget Preview too, starting nothing until it opens.
+    expect(useContributions.getState().toolWindows.get(WIDGET_PREVIEW_WINDOW)?.stripe).toBe("onUse");
+    expect(previewUrl).not.toHaveBeenCalled();
 
     useProject.setState({ project: { root: "/tool" } as never });
     await waitFor(() => expect(ids()).not.toContain("flutter-inspector"));
+    expect(ids()).not.toContain(WIDGET_PREVIEW_WINDOW);
     expect(getContext().flutterDevTools).toBe(false);
 
     // Adding the SDK dependency later brings the windows.
@@ -198,5 +219,28 @@ describe("Flutter DevTools windows", () => {
     await waitFor(() => expect(frames()).toHaveLength(1));
     expect(devtoolsUrl).toHaveBeenCalledTimes(2);
     expect(new URL(frames()[0]!.src).pathname).toBe("/deep-links");
+  });
+
+  it("shows the Widget Preview page in the IDE's theme, and why it is missing until Refresh", async () => {
+    previewUrl.mockResolvedValue({
+      status: "error",
+      error: { kind: "unavailable", message: "Flutter Widget Preview needs Flutter 3.38 or later." },
+    });
+    render(<FlutterWidgetPreviewView />);
+    await screen.findByText(/needs Flutter 3\.38/);
+    expect(frames()).toHaveLength(0);
+    previewUrl.mockResolvedValue({ status: "ok", data: "http://127.0.0.1:56207" });
+    act(() => refreshDevTools(WIDGET_PREVIEW_WINDOW));
+    await waitFor(() => expect(frames()).toHaveLength(1));
+    expect(previewUrl).toHaveBeenCalledTimes(2);
+    expect(frames()[0]!.src).toBe("http://127.0.0.1:56207/?theme=dark");
+    expect(devtoolsUrl).not.toHaveBeenCalled();
+  });
+
+  it("starts no Widget Preview for a remote window", async () => {
+    remote.on = true;
+    render(<FlutterWidgetPreviewView />);
+    await screen.findByText("Flutter Widget Preview isn't available in a remote project yet");
+    expect(previewUrl).not.toHaveBeenCalled();
   });
 });
