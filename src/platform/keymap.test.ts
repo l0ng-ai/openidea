@@ -95,6 +95,53 @@ describe("keymap", () => {
     );
   });
 
+  it("names unshifted punctuation by the character typed, so AZERTY's Cmd+Comma is not Cmd+M", () => {
+    // French AZERTY: the comma is on physical KeyM and the colon on physical Comma.
+    expect(strokeOf({ code: "KeyM", key: ",", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+,",
+    );
+    expect(strokeOf({ code: "Comma", key: ":", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+:",
+    );
+    // QWERTY is unchanged: the physical code and the typed character agree.
+    expect(strokeOf({ code: "Comma", key: ",", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+,",
+    );
+    // Shift-held punctuation keeps the physical key, matching presets written `Meta+Shift+]`.
+    expect(
+      strokeOf({ code: "BracketRight", key: "}", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }),
+    ).toBe("Shift+Meta+]");
+    // Letters and digits keep their names: AZERTY's M sits on physical Semicolon, with or
+    // without Shift, and its unshifted digit row types symbols (`&` on Digit1).
+    expect(
+      strokeOf({ code: "Semicolon", key: "M", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }),
+    ).toBe("Shift+Meta+M");
+    expect(strokeOf({ code: "Digit1", key: "&", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+1",
+    );
+    // Non-Latin layouts keep the physical key: Russian Ctrl+С is still Ctrl+C.
+    expect(strokeOf({ code: "KeyC", key: "с", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false })).toBe(
+      "Ctrl+C",
+    );
+    expect(strokeOf({ code: "Comma", key: "б", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false })).toBe(
+      "Ctrl+,",
+    );
+    // Alt (⌥ on macOS, AltGr) keeps the physical key: it types symbols.
+    expect(strokeOf({ code: "KeyM", key: "µ", metaKey: false, ctrlKey: false, altKey: true, shiftKey: false })).toBe(
+      "Alt+M",
+    );
+    // Space and the keypad keep their names.
+    expect(strokeOf({ code: "Space", key: " ", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+Space",
+    );
+    expect(strokeOf({ code: "Numpad3", key: "3", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBe(
+      "Meta+3",
+    );
+    expect(
+      strokeOf({ code: "NumpadAdd", key: "+", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false }),
+    ).toBe("Meta+NumpadAdd");
+  });
+
   it("uses physical key codes", () => {
     expect(strokeOf({ code: "KeyF", key: "ƒ", metaKey: false, ctrlKey: false, altKey: true, shiftKey: false })).toBe(
       "Alt+F",
@@ -123,6 +170,19 @@ describe("keymap", () => {
       await Promise.resolve();
       expect(single).toHaveBeenCalledOnce();
       expect(chord).toHaveBeenCalledOnce();
+    });
+
+    it("dispatches an unshifted punctuation shortcut by the layout character", async () => {
+      const run = vi.fn();
+      registerAction({ id: "t.punct", title: "punct", run });
+      useKeymap.setState({ overrides: { "t.punct": ["Meta+:"] } });
+      uninstall = installKeyboardDispatcher(window);
+      // AZERTY: the colon sits on physical Comma.
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { code: "Comma", key: ":", metaKey: true, bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+      expect(run).toHaveBeenCalledOnce();
     });
 
     it("runs only safe actions from keys a plugin frame without ide.commands passes on", async () => {
