@@ -75,10 +75,12 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<T |
 async function withRetry<T>(what: string, run: () => Promise<T>, attempts = 3): Promise<T> {
   for (let i = 1; ; i++) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- retries run in order and stop at the first success
       return await run();
     } catch (e) {
       if (i >= attempts) throw e;
       console.warn(`${what}: ${e instanceof Error ? e.message : e}; retrying (${i}/${attempts - 1})`);
+      // oxlint-disable-next-line no-await-in-loop -- the backoff delay must elapse before the next attempt
       await new Promise((r) => setTimeout(r, 5000 * i));
     }
   }
@@ -116,6 +118,7 @@ async function uploadAll(releaseId: string, dir: string, names: string[]) {
       const path = join(dir, name);
       const mb = (statSync(path).size / 1048576).toFixed(1);
       const started = Date.now();
+      // oxlint-disable-next-line no-await-in-loop -- concurrency is already bounded by PARALLEL workers draining the queue
       await withRetry(name, async () => upload(releaseId, name, await openAsBlob(path)));
       console.log(`uploaded ${name} (${mb} MB, ${Math.round((Date.now() - started) / 1000)} s)`);
     }
@@ -126,7 +129,9 @@ async function uploadAll(releaseId: string, dir: string, names: string[]) {
 async function prune(current: string) {
   const releases = (await api<CnbRelease[]>("GET", "/-/releases?page_size=100")) ?? [];
   for (const old of releasesToPrune(releases, current)) {
+    // oxlint-disable-next-line no-await-in-loop -- a failed release deletion must stop the remaining prunes
     await api("DELETE", `/-/releases/${old.id}`);
+    // oxlint-disable-next-line no-await-in-loop -- the tag is removed after its release, on a best-effort basis
     await api("DELETE", `/-/git/tags/${encodeURIComponent(old.tag_name)}`).catch((e) => console.warn(String(e)));
     console.log(`removed ${old.tag_name}`);
   }

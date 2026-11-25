@@ -96,6 +96,7 @@ export async function openInListOrder<T>(
   side = false,
   afterOpen?: () => Promise<void>,
 ): Promise<void> {
+  // oxlint-disable-next-line no-await-in-loop -- tabs must open in list order before the lead's focus and position are restored
   for (const item of items) await open(item, { preview: false, focus: false, side });
   await afterOpen?.();
   const target = lead && items.includes(lead) ? lead : items.at(-1);

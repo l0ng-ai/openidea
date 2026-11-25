@@ -699,6 +699,7 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
               settings.maven.profiles,
             )
           : [];
+      // oxlint-disable-next-line no-await-in-loop -- roots sync in order; cancellation is checked between them and the last model wins
       next = await call(commands.buildSync(tool, request, offline, profiles, dir, channel));
     }
     if (!next) return;
@@ -809,6 +810,7 @@ export async function generateSources(pom?: string | null): Promise<void> {
   const projects = maven.projects.filter((p) => (pom ? p.pom === pom : !p.aggregated));
   let ran = false;
   for (const project of projects) {
+    // oxlint-disable-next-line no-await-in-loop -- goals run one project at a time in the Run tool window and stop on cancellation
     const code = await runToExit(mavenGoalConfig(project, ["generate-sources"], maven, settings.maven));
     if (code === null) return;
     ran ||= code === 0;

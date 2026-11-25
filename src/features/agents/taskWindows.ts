@@ -251,6 +251,7 @@ function activateProjectWindow(): () => void {
         const aux = auxiliaryWindow(label);
         if (aux?.kind === "editor" && aux.parent === self.label) {
           recovering.add(label);
+          // oxlint-disable-next-line no-await-in-loop -- recovery syncs go out in window order and stop on the first IPC failure
           await emitTo(label, TASK_WINDOW, { type: "sync" } satisfies TaskWindowMessage);
         }
       }

@@ -170,9 +170,11 @@ describe("Welcome › Projects", () => {
     const search = screen.getByLabelText("Search projects");
     for (const mod of [{ shiftKey: true }, { ctrlKey: true }]) {
       fireEvent.click(row(), mod);
+      // oxlint-disable-next-line no-await-in-loop -- each modifier's result is asserted before the next one is exercised
       await act(async () => {});
       expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
       fireEvent.keyDown(search, { key: "Enter", ...mod });
+      // oxlint-disable-next-line no-await-in-loop -- the Enter result is asserted before the next modifier is exercised
       await act(async () => {});
       expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
     }
