@@ -73,10 +73,14 @@ it.each([undefined, true, false])(
         const show = vi.fn();
         provideToolWindowService({ show } as unknown as ToolWindowService);
         if (prepared) {
+          // oxlint-disable-next-line no-await-in-loop -- prepared and direct starts share tool-window/session state; the show assertion must follow this start
           await startPreparedSession({ id: "java", name: "Java" } as never, async () => config("launch"), {
             show: foreground,
           });
-        } else await startSession(config("launch"), { show: foreground });
+        } else {
+          // oxlint-disable-next-line no-await-in-loop -- prepared and direct starts share tool-window/session state; the show assertion must follow this start
+          await startSession(config("launch"), { show: foreground });
+        }
         if (showOnStart && foreground !== false) expect(show).toHaveBeenCalledWith("debug");
         else expect(show).not.toHaveBeenCalled();
       }

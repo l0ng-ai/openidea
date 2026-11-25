@@ -183,12 +183,14 @@ export async function evaluateWithImports(
   const known = importsOf(sessionId);
   for (let round = 0; ; round++) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- retry loop: the next attempt runs only after this one fails and imports discovered so far are applied
       return await run(qualify(expression, known));
     } catch (e) {
       const names = unresolvedNames(messageOf(e)).filter((name) => !known.has(name));
       if (round >= MAX_ROUNDS || !names.length) throw e;
       let added = false;
       for (const name of names) {
+        // oxlint-disable-next-line no-await-in-loop -- lookups are processed in name order to keep the first ambiguity and the shared imports map deterministic
         const candidates = await find(name).catch(() => []);
         if (candidates.length > 1) throw new AmbiguousClassError(name, candidates, messageOf(e));
         if (candidates.length === 1) {

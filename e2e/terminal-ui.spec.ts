@@ -468,3 +468,158 @@ test("dragging terminal tabs into editor strips and split edges preserves live s
     });
   expect(await page.evaluate(() => (window as unknown as { __killedPtys: number[] }).__killedPtys)).toEqual([]);
 });
+
+test("⌘+hover turns existing terminal files and folders into hyperlinks and routes clicks by target kind and project scope", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const handlers = window.__ipc.handlers;
+    let id = 0;
+    const revealed: string[][] = [];
+    (window as unknown as { __revealedInFinder: string[][] }).__revealedInFinder = revealed;
+    const entries: Record<string, "file" | "dir"> = {
+      "/dev/acme-api/App.tsx": "file",
+      "/dev/acme-api/src": "dir",
+      "/tmp/outside.log": "file",
+      "/tmp/outside-dir": "dir",
+    };
+    handlers.term_default_shell = () => "/bin/zsh";
+    handlers.term_available_shells = () => ["/bin/zsh"];
+    handlers.term_spawn = () => ({ id: ++id, title: "zsh", pid: id });
+    handlers.term_resize = () => null;
+    handlers.term_write = () => null;
+    handlers.term_is_busy = () => false;
+    handlers.term_kill = () => null;
+    handlers.fs_entry_kind = (args) => {
+      const p = String(args.path ?? "");
+      if (p in entries) return entries[p];
+      throw { kind: "notFound", message: `No such entry: ${p}` };
+    };
+    handlers.fs_read_dir = (args) => {
+      if (args.path === "/dev/acme-api/src") {
+        return [{ name: "main.ts", path: "/dev/acme-api/src/main.ts", kind: "file", ignored: false }];
+      }
+      return [];
+    };
+    handlers.find_files = () => [];
+    handlers["plugin:opener|reveal_item_in_dir"] = (args) => {
+      revealed.push(args.paths as string[]);
+      return null;
+    };
+
+    const store = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(store);
+    layout.hideToolWindow("project");
+    layout.setToolWindowSize("bottom", 240);
+    layout.showToolWindow("terminal", true);
+  });
+
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+
+  // Row 0 has all 6 cases: in-project file, non-existent file, in-project dir, non-existent dir,
+  // out-of-project file, out-of-project dir, and non-existent out-of-project dir.
+  const line = "App.tsx  missing.ts  src  no_dir/  /tmp/outside.log  /tmp/outside-dir  /tmp/nope";
+  await page.evaluate(async (text) => {
+    const store = "/src/features/terminal/store.ts";
+    const rt = await import(store);
+    const s = rt.getSession(rt.useTerminals.getState().tabs[0]!.session)!;
+    s.term.reset();
+    await new Promise<void>((done) => s.term.write(`${text}\r\n`, done));
+  }, line);
+
+  const screen = terminal.locator(".xterm-screen");
+  const pointFor = async (token: string) => {
+    const startCol = line.indexOf(token);
+    const box = (await screen.boundingBox())!;
+    const dims = await page.evaluate(async () => {
+      const store = "/src/features/terminal/store.ts";
+      const rt = await import(store);
+      const { term } = rt.getSession(rt.useTerminals.getState().tabs[0]!.session)!;
+      return { cols: term.cols, rows: term.rows };
+    });
+    return {
+      x: box.x + ((startCol + Math.min(2, token.length / 2)) / dims.cols) * box.width,
+      y: box.y + (0.5 / dims.rows) * box.height,
+    };
+  };
+
+  const pathLink = terminal.locator(".openidea-terminal-path-link");
+  const editorTabs = page.getByRole("tablist", { name: "Editor tabs" });
+
+  // 1) Hover & click `App.tsx` WITHOUT ⌘: no link decoration and no editor tab opens.
+  const appPt = await pointFor("App.tsx");
+  await page.mouse.move(appPt.x, appPt.y);
+  await expect(pathLink).toHaveCount(0);
+  await page.mouse.click(appPt.x, appPt.y);
+  await expect(editorTabs).toHaveCount(0);
+
+  // 2) Press ⌘ while already hovering `App.tsx`: becomes a hyperlink; ⌘+click opens `App.tsx` in editor!
+  await page.keyboard.down("Meta");
+  await expect(pathLink).toHaveCount(1);
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await page.screenshot({
+      path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/pr3-hover-file.png`,
+      animations: "disabled",
+    });
+  await page.mouse.click(appPt.x, appPt.y);
+  await page.keyboard.up("Meta");
+  await expect(editorTabs.getByRole("tab", { name: "App.tsx", selected: true })).toBeVisible();
+
+  // 3) Non-existent targets (`missing.ts`, `no_dir/`, `/tmp/nope`) do NOT turn into links on ⌘+hover or ⌘+click.
+  for (const absent of ["missing.ts", "no_dir/", "/tmp/nope"]) {
+    const pt = await pointFor(absent);
+    await page.keyboard.down("Meta");
+    await page.mouse.move(pt.x, pt.y);
+    await expect(pathLink).toHaveCount(0);
+    await page.mouse.click(pt.x, pt.y);
+    await page.keyboard.up("Meta");
+  }
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx"]);
+
+  // 4) Out-of-project existing file (`/tmp/outside.log`) opens in an editor tab of the current window.
+  const outFilePt = await pointFor("/tmp/outside.log");
+  await page.keyboard.down("Meta");
+  await page.mouse.move(outFilePt.x, outFilePt.y);
+  await expect(pathLink).toHaveCount(1);
+  await page.mouse.click(outFilePt.x, outFilePt.y);
+  await page.keyboard.up("Meta");
+  await expect(editorTabs.getByRole("tab", { name: "outside.log", selected: true })).toBeVisible();
+
+  // 5) In-project folder (`src`) opens the Project tool window on the left, expands `src`, and selects it.
+  const projectRegion = page.getByRole("region", { name: "Project", exact: true });
+  await expect(projectRegion).toBeHidden();
+  const srcPt = await pointFor("src");
+  await page.keyboard.down("Meta");
+  await page.mouse.move(srcPt.x, srcPt.y);
+  await expect(pathLink).toHaveCount(1);
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await page.screenshot({
+      path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/pr3-hover-folder.png`,
+      animations: "disabled",
+    });
+  await page.mouse.click(srcPt.x, srcPt.y);
+  await page.keyboard.up("Meta");
+  await expect(projectRegion).toBeVisible();
+  const srcItem = projectRegion.getByRole("treeitem", { name: "src", exact: true });
+  await expect(srcItem).toHaveAttribute("aria-expanded", "true");
+  await expect(srcItem).toHaveAttribute("aria-selected", "true");
+  await expect(projectRegion.getByRole("treeitem", { name: "main.ts", exact: true })).toBeVisible();
+  if (process.env.OPENIDEA_TERMINAL_SHOTS)
+    await page.screenshot({
+      path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/pr3-opened-folder.png`,
+      animations: "disabled",
+    });
+
+  // 6) Out-of-project folder (`/tmp/outside-dir`) reveals in Finder instead of changing Project selection.
+  const outDirPt = await pointFor("/tmp/outside-dir");
+  await page.keyboard.down("Meta");
+  await page.mouse.move(outDirPt.x, outDirPt.y);
+  await expect(pathLink).toHaveCount(1);
+  await page.mouse.click(outDirPt.x, outDirPt.y);
+  await page.keyboard.up("Meta");
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __revealedInFinder: string[][] }).__revealedInFinder))
+    .toEqual([["/tmp/outside-dir"]]);
+});

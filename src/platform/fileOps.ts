@@ -52,6 +52,7 @@ export function pendingFileMoves(root: string | null) {
 export async function notifyFilesMoved(moves: readonly FileMove[]): Promise<void> {
   for (const listener of moveListeners) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- listeners run in registration order before editors reopen; failures stay in sequence
       await listener(moves);
     } catch (e) {
       console.warn("file move listener failed", e);

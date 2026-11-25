@@ -104,6 +104,7 @@ function response(id: string): HttpExchange {
 it("keeps 100 history rows and the four most recently used exchanges", async () => {
   for (let n = 0; n < 101; n++) {
     backend.httpExecute.mockResolvedValueOnce(ok(response(String(n))));
+    // oxlint-disable-next-line no-await-in-loop -- each request mutates the shared history/exchanges store in order
     await runRequest(null, text, 0);
   }
   const state = useHttpClient.getState();

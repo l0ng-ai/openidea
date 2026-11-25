@@ -753,11 +753,9 @@ export function dropOutlines(paths: readonly string[]) {
 
 let revealSeq = 0;
 
-/** Expands the ancestors of `path` and selects it once visible. */
-export function revealPath(requested: string, focus = false, explain = false) {
-  const { expanded } = get();
+function resolveRevealTarget(requested: string): { path: string; root: string } | null {
   const project = get().root;
-  if (!project) return false;
+  if (!project) return null;
   // Registered archive roots by their `/`-separated form, which candidate paths use.
   const archiveRoots = new Map(
     extraFolders(projectViewRoots(useProjectViewRoots.getState().roots)).flatMap((r) =>
@@ -772,12 +770,26 @@ export function revealPath(requested: string, focus = false, explain = false) {
   };
   // Library documents (`jdt://`, `jar:` URIs) are shown as entries of their archive under External Libraries.
   const path = [requested, ...libraryEntryPaths(requested, archives)].find((p) => rootOf(p) !== null);
-  if (!path) return false;
-  const root = rootOf(path)!;
+  return path ? { path, root: rootOf(path)! } : null;
+}
+
+/** Whether `requested` lies inside any root the Project tree can show. */
+export function canRevealInProjectTree(requested: string): boolean {
+  return resolveRevealTarget(requested) !== null;
+}
+
+/** Expands the ancestors of `path` (and `path` itself when `expand` is true) and selects it once visible. */
+export function revealPath(requested: string, focus = false, explain = false, expand = false) {
+  const resolved = resolveRevealTarget(requested);
+  if (!resolved) return false;
+  const { path, root } = resolved;
+  const { expanded } = get();
+  const project = get().root!;
   // Library folders sit below group nodes (External Libraries › SDK), keyed in their own namespace.
   const model = currentModel();
   const rootKey = root === project ? root : (model.keyOfPath.get(root) ?? root);
-  const folders = ancestorsWithin(root, path);
+  const baseFolders = ancestorsWithin(root, path);
+  const folders = expand && !baseFolders.includes(path) ? [...baseFolders, path] : baseFolders;
   const ancestors = [...groupAncestors(model, rootKey), ...folders.map((a) => keyLike(rootKey, a))];
   const next = new Set(expanded);
   let changed = false;
@@ -923,6 +935,7 @@ export async function expandAll(from?: string, limit = 400) {
       continue;
     }
     const path = pathOfKey(dir);
+    // oxlint-disable-next-line no-await-in-loop -- breadth-first walk loads one folder at a time; generation is checked before enqueuing children
     await loadDir(path);
     if (gen !== generation) return;
     const s = get();

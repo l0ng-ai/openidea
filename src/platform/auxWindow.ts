@@ -71,15 +71,22 @@ export async function closeDocumentWindows(): Promise<boolean> {
     const result = new Promise<boolean>((resolve) => {
       finish = resolve;
     });
+    // oxlint-disable-next-line no-await-in-loop -- subscribe to this child's close result before touching its window
     const offResult = await parent.listen<AuxCloseResult>(AUX_CLOSED, ({ payload }) => {
       if (payload.label === child.label && !payload.closed) finish(false);
     });
+    // oxlint-disable-next-line no-await-in-loop -- register the destroyed listener before showing the window
     const offDestroyed = await child.once(TauriEvent.WINDOW_DESTROYED, () => finish(true));
     try {
+      // oxlint-disable-next-line no-await-in-loop -- window lifecycle: unminimize, then show, then focus, then close
       await child.unminimize();
+      // oxlint-disable-next-line no-await-in-loop -- window lifecycle: unminimize, then show, then focus, then close
       await child.show();
+      // oxlint-disable-next-line no-await-in-loop -- window lifecycle: unminimize, then show, then focus, then close
       await child.setFocus();
+      // oxlint-disable-next-line no-await-in-loop -- window lifecycle: unminimize, then show, then focus, then close
       await child.close();
+      // oxlint-disable-next-line no-await-in-loop -- one window at a time; a cancelled close stops the whole loop
       if (!(await result)) return false;
     } finally {
       offResult();

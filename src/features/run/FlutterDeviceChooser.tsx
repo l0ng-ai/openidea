@@ -5,7 +5,9 @@ import { useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import {
   currentFlutterDevice,
+  flutterEmulatorLabel,
   isFlutterConfig,
+  launchFlutterEmulator,
   matchFlutterDevice,
   pinnedFlutterDevice,
   useFlutterDevices,
@@ -29,7 +31,7 @@ function Chooser({ root }: { root: string }) {
   const selected = useRun((s) => s.configs.find((c) => c.id === s.selectedId));
   useEffect(() => watchFlutterDevices(root), [root]);
 
-  const { list, chooserOpen } = state;
+  const { list, chooserOpen, launching } = state;
   const status = list?.status;
   const usable = usableFlutterDevices(list);
   const current = currentFlutterDevice(state);
@@ -46,7 +48,9 @@ function Chooser({ root }: { root: string }) {
       ? tx("Flutter SDK not found")
       : status?.kind === "failed"
         ? tx("Flutter devices unavailable")
-        : (current?.name ?? (status?.kind === "ready" ? tx("No devices") : tx("Finding devices…")));
+        : launching
+          ? tx`Starting ${launching.name}…`
+          : (current?.name ?? (status?.kind === "ready" ? tx("No devices") : tx("Finding devices…")));
 
   const items: MenuItem[] = [
     ...(pinned ? [{ kind: "header", label: tx`Pinned by “${selected?.name ?? ""}”` } as const] : []),
@@ -65,6 +69,13 @@ function Chooser({ root }: { root: string }) {
       ? [{ label: tx("Install Flutter or add it to PATH, then restart the daemon"), disabled: true }]
       : []),
     ...(status?.kind === "failed" ? [{ label: status.message, verbatim: true, disabled: true }] : []),
+    ...(list?.emulators?.length ? [{ kind: "separator" } as const] : []),
+    ...(list?.emulators ?? []).map((e): MenuItem => ({
+      id: `emulator:${e.id}`,
+      label: launching?.id === e.id ? tx`Starting ${e.name}…` : flutterEmulatorLabel(e),
+      disabled: !!launching,
+      run: () => void launchFlutterEmulator(e),
+    })),
     { kind: "separator" },
     { kind: "action", action: "run.flutterRestartDaemon" },
   ];

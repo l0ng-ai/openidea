@@ -247,6 +247,8 @@ pub enum InlayKind {
     Type,
     Parameter,
     Other,
+    /// What a closing bracket ends, at the end of its line (the Dart server's closing labels).
+    ClosingLabel,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
