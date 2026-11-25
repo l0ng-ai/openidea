@@ -121,6 +121,8 @@ export const eclipseWindows: Record<string, string[]> = {
   "navigate.prevOccurrence": [],
   "editor.prevTab": ["Shift+Ctrl+F6", "Ctrl+Alt+Right", "Ctrl+PageUp"],
   "db.previousResultTab": ["Shift+Ctrl+F6", "Ctrl+Alt+Right", "Ctrl+PageUp"],
+  "editor.moveToPageTop": [],
+  "editor.moveToPageBottom": [],
   "code.quickDocumentation": ["Shift+Ctrl+Space", "F2"],
   "db.quickDoc": ["Shift+Ctrl+Space", "F2"],
   "localHistory.recentChanges": [],

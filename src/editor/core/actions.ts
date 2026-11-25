@@ -69,11 +69,15 @@ import {
   cursorCodeBlockEnd,
   cursorCodeBlockStart,
   cursorMatchBrace,
+  cursorPageBottom,
+  cursorPageTop,
   scrollDown,
   scrollToCenter,
   scrollUp,
   selectCodeBlockEnd,
   selectCodeBlockStart,
+  selectPageBottom,
+  selectPageTop,
   splitLine,
 } from "./cm/caretCommands";
 import { isOverwrite, toggleOverwrite } from "./cm/overwrite";
@@ -954,6 +958,19 @@ export function registerEditorActions(): () => void {
     caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
     caret("editor.scrollUp", "Scroll Up", (v) => scrollUp(v), { category: "Editor Actions" }),
     caret("editor.scrollDown", "Scroll Down", (v) => scrollDown(v), { category: "Editor Actions" }),
+    caret("editor.moveToPageTop", "Move Caret to Page Top", (v) => cursorPageTop(v), { category: "Editor Actions" }),
+    caret("editor.moveToPageBottom", "Move Caret to Page Bottom", (v) => cursorPageBottom(v), {
+      category: "Editor Actions",
+    }),
+    caret("editor.moveToPageTopWithSelection", "Move Caret to Page Top with Selection", (v) => selectPageTop(v), {
+      category: "Editor Actions",
+    }),
+    caret(
+      "editor.moveToPageBottomWithSelection",
+      "Move Caret to Page Bottom with Selection",
+      (v) => selectPageBottom(v),
+      { category: "Editor Actions" },
+    ),
     caret("editor.codeBlockStart", "Move Caret to Code Block Start", (v) => cursorCodeBlockStart(v), {
       category: "Editor Actions",
     }),
