@@ -16,6 +16,7 @@ mod conversation;
 mod elicitation;
 mod external;
 pub mod hermes;
+mod images;
 pub mod mcp;
 mod model;
 mod native;
@@ -3821,12 +3822,8 @@ impl Task {
     /// A user message of the adopted history: live turns show the user's own, so only a replay's count.
     fn adopt_user_chunk(self: &Arc<Self>, update: &Value) {
         let content = update.get("content");
-        let image = content.filter(|c| c.get("type").and_then(Value::as_str) == Some("image")).map(|c| AgentImage {
-            mime_type: c.get("mimeType").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            data: c.get("data").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            name: None,
-        });
-        let text = timeline::content_text(content).unwrap_or_default();
+        let image = content.and_then(images::from_content);
+        let text = if image.is_some() { String::new() } else { timeline::content_text(content).unwrap_or_default() };
         if text.is_empty() && image.is_none() {
             return;
         }
