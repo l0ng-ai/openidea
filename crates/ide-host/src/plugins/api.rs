@@ -136,6 +136,10 @@ pub trait PluginWorkspace: Send + Sync {
     fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError>;
     /// Code from the project may run (git hooks and config on fetch).
     fn trusted(&self, root: &Path) -> bool;
+    /// Git roots with the same directory mappings as the VCS tool window.
+    fn repositories(&self, _root: &Path) -> Result<ide_vcs::Repos, HostError> {
+        Err(HostError::NotFound("no open project repositories".into()))
+    }
     /// The git executable of the project at `root` (see [`crate::Project::git_executable`]).
     fn git_executable(&self, _root: &Path) -> Option<PathBuf> {
         None
@@ -2394,8 +2398,40 @@ impl HostApi for PluginApi {
 
     fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
         let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(Vec::new()) };
-        let remotes = repo.remotes().map_err(failed)?;
-        Ok(remotes.into_iter().map(|r| (r.name, without_credentials(&r.url))).collect())
+        plugin_remotes(&repo)
+    }
+
+    fn vcs_roots(&self, root: &Path) -> Result<Vec<String>, HostError> {
+        let workspace = self.shared.workspace().ok_or(HostError::Cancelled)?;
+        Ok(workspace
+            .repositories(root)?
+            .roots()
+            .iter()
+            .filter(|r| r.starts_with(root) || root.starts_with(r))
+            .map(|r| to_ipc(r))
+            .collect())
+    }
+
+    fn vcs_repository_at(&self, root: &Path, path: &str) -> Result<Option<ide_plugin::RepositoryInfo>, HostError> {
+        let workspace = self.shared.workspace().ok_or(HostError::Cancelled)?;
+        if !workspace.trusted(root) {
+            return Err(HostError::Failed("the project is in Restricted Mode: git does not run there".into()));
+        }
+        let path = ide_plugin::resolve_in_root(root, path).map_err(HostError::Invalid)?;
+        let repos = workspace.repositories(root)?;
+        // A link to a nested worktree directory denotes that worktree, not its entry in the parent.
+        let Some(repo) = repos.at_root(&path).or_else(|| repos.for_path(&path)) else { return Ok(None) };
+        let relative = path.strip_prefix(repo.root()).map_err(failed)?;
+        let info = repo.branch_info().map_err(failed)?;
+        Ok(Some(ide_plugin::RepositoryInfo {
+            root: to_ipc(repo.root()),
+            relative_path: to_ipc(relative),
+            branch: info.head,
+            commit: info.head_commit,
+            upstream: info.upstream,
+            ahead: info.ahead,
+            remotes: plugin_remotes(repo)?,
+        }))
     }
 
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError> {
@@ -3730,6 +3766,13 @@ impl PluginWorkspace for HostWorkspace {
         HostWorkspace::project_covering(self, root).is_some_and(|p| p.is_trusted())
     }
 
+    fn repositories(&self, root: &Path) -> Result<ide_vcs::Repos, HostError> {
+        Ok(self
+            .project_covering(root)
+            .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?
+            .repos())
+    }
+
     fn git_executable(&self, root: &Path) -> Option<PathBuf> {
         HostWorkspace::project_covering(self, root)?.git_executable()
     }
@@ -4692,6 +4735,10 @@ mod tests {
 /// follow what the user did, never background work (which would reach every window).
 fn from_window<'a>(client: Option<&'a str>, what: &str) -> Result<&'a str, HostError> {
     client.ok_or_else(|| HostError::Invalid(format!("can only {what} from a command the user invoked")))
+}
+
+fn plugin_remotes(repo: &ide_vcs::Repo) -> Result<Vec<(String, String)>, HostError> {
+    Ok(repo.remotes().map_err(failed)?.into_iter().map(|r| (r.name, without_credentials(&r.url))).collect())
 }
 
 /// `url` without the `user:password@` a remote may carry (`https://user:token@host/…`):

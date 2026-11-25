@@ -432,6 +432,12 @@ are always available. Calling a gated function without its capability returns
 API 1.16.0 is in development on `main`. Use `engines.openidea = "^1.16"` and the
 matching SDK. Plugins for 1.15 and earlier keep working. New in 1.16:
 
+- `Project::vcs_repository_at(path)` returns the mapped worktree owning an existing project file
+  or directory, its repository-relative path, branch, commit, upstream, ahead count and sanitized
+  remotes, or `None` outside Git. The innermost root wins, including for the worktree directory
+  itself. It requires `vcs.read` and trust. `Project::vcs_roots()` lists the possible roots
+  without choosing one on the user's behalf.
+
 - `host::pick_file(title, &dialog)` lets an interactive command or view event choose an existing file
   or a save destination. The path belongs to the host running the project, including in remote windows.
   See [File selection](#file-selection-api-116).

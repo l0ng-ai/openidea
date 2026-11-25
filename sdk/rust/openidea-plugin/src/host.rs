@@ -555,6 +555,26 @@ mod imp {
         wit::vcs::remotes(p).map_err(error)
     }
 
+    pub fn vcs_roots(p: &ProjectRes) -> Result<Vec<String>, Error> {
+        wit::vcs::roots(p).map_err(error)
+    }
+
+    pub fn vcs_repository_at(p: &ProjectRes, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        wit::vcs::repository_at(p, path)
+            .map(|r| {
+                r.map(|r| RepositoryInfo {
+                    root: r.root,
+                    relative_path: r.relative_path,
+                    branch: r.branch,
+                    commit: r.commit,
+                    upstream: r.upstream,
+                    ahead: r.ahead,
+                    remotes: r.remotes,
+                })
+            })
+            .map_err(error)
+    }
+
     pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
         wit::commit::pending_commit().map(|d| d.map(__draft_in)).map_err(error)
     }
@@ -1308,6 +1328,17 @@ impl Project {
     /// Configured remotes (`(name, fetch_url)`), in order. Needs `vcs.read`.
     pub fn vcs_remotes(&self) -> Result<Vec<(String, String)>, Error> {
         imp::vcs_remotes(&self.inner)
+    }
+
+    /// Mapped Git worktrees within or enclosing this project (API 1.16). Needs `vcs.read`.
+    pub fn vcs_roots(&self) -> Result<Vec<String>, Error> {
+        imp::vcs_roots(&self.inner)
+    }
+
+    /// The innermost mapped worktree for an existing file or directory in this project,
+    /// or `None` outside Git (API 1.16). Needs `vcs.read` and a trusted project.
+    pub fn vcs_repository_at(&self, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        imp::vcs_repository_at(&self.inner, path)
     }
 
     /// Fetches all remotes. Needs `vcs.write`; long-running, so call it in a [`Task`].
