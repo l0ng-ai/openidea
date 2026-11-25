@@ -40,13 +40,17 @@ const entries: AgentEntry[] = Array.from({ length: 80 }, (_, turn): AgentEntry[]
   },
 ]).flat();
 
-async function openHistory(page: Page) {
+/** Opens the 80-turn chat; `foldTurns` folds each earlier turn's work into one row. */
+async function openHistory(page: Page, foldTurns = false) {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();
   await page.evaluate(
-    async ({ task, entries }) => {
+    async ({ task, entries, foldTurns }) => {
       const path = "/src/features/agents/store.ts";
+      const projectPath = "/src/platform/project.ts";
       const store = await import(path);
+      const { useProject } = await import(projectPath);
+      useProject.setState({ settings: { agents: { foldTurns } } });
       store.useAgents.setState({
         loaded: true,
         error: null,
@@ -58,10 +62,12 @@ async function openHistory(page: Page) {
       });
       store.openTaskInEditorLocation(task.id);
     },
-    { task, entries },
+    { task, entries, foldTurns },
   );
   const stream = page.locator("[class*='_stream_']:visible");
-  await expect(stream.locator(":scope > *")).toHaveCount(80 * 3);
+  // A turn shows its request, the read and the reasoning runs, the command, the edit and the reply;
+  // folded, its work is one row. The latest turn stays open.
+  await expect(stream.locator(":scope > *")).toHaveCount(foldTurns ? 79 * 3 + 6 : 80 * 6);
   await page.evaluate(() => document.fonts.ready);
   return stream;
 }
@@ -85,7 +91,7 @@ for (const placement of ["editor", "toolWindow"] as const) {
     );
     // The working indicator ends the conversation, after its rows; the turn ends with a reply.
     await expect(stream.getByRole("status").getByText("Writing…", { exact: true })).toBeVisible();
-    await expect(stream.locator(":scope > *")).toHaveCount(80 * 3 + 1);
+    await expect(stream.locator(":scope > *")).toHaveCount(80 * 6 + 1);
     await expect.poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
     const timer = await page.evaluate(async (id) => {
       const path = "/src/features/agents/store.ts";
@@ -186,7 +192,7 @@ for (const selected of [false, true]) {
 }
 
 test("opens a folded turn with the keyboard and jumps back to the latest reply", async ({ page }) => {
-  const stream = await openHistory(page);
+  const stream = await openHistory(page, true);
   await stream.evaluate((el) => {
     el.scrollTop = 0;
   });
@@ -197,9 +203,8 @@ test("opens a folded turn with the keyboard and jumps back to the latest reply",
   await summary.focus();
   await page.keyboard.press("Enter");
   await expect(fold).toHaveAttribute("open", "");
-  const run = fold.locator("[class*='_processRun_']").first();
-  await expect(run).toBeVisible();
-  await run.locator(":scope > summary").click();
+  // A folded turn lists its work without nesting runs.
+  await expect(fold.locator("[class*='_processRun_']")).toHaveCount(0);
   await expect(fold.getByText("read src/module-0.ts", { exact: true })).toBeVisible();
   await summary.focus();
   await page.keyboard.press("Space");
