@@ -650,6 +650,7 @@ spring_route_sources                         trusted            desktop      bin
 ssh_askpass_answer                           always             desktop      bindings sync
 ssh_connected                                always             project_host bindings sync
 ssh_disconnect                               always             project_host bindings sync
+ssh_legacy_passwords                         always             project_host bindings async
 ssh_needs_secret                             always             project_host bindings sync
 ssh_open_terminal                            always             desktop      bindings async
 ssh_password_saved                           always             project_host bindings sync

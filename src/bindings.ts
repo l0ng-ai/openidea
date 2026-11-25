@@ -1878,6 +1878,8 @@ export const commands = {
 	/**  Ids of the configurations with an open connection. */
 	sshConnected: () => __TAURI_INVOKE<string[]>("ssh_connected"),
 	sshDisconnect: (id: string) => __TAURI_INVOKE<void>("ssh_disconnect", { id }),
+	/**  `Some` means legacy credentials remain in plaintext on this host. */
+	sshLegacyPasswords: (action: LegacyPasswordAction) => typedError<string | null, IdeError>(__TAURI_INVOKE("ssh_legacy_passwords", { action })),
 	/**  Whether connecting with configuration `id` needs a password first. */
 	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
 	/**
@@ -9282,6 +9284,8 @@ export type Launch_Serialize = {
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
 };
+
+export type LegacyPasswordAction = "check" | "retry" | "removePlaintext";
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
 export type LibraryGroup = {
