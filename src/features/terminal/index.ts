@@ -30,6 +30,7 @@ import {
   cliEditorPayload,
   moveEditorToTerminal,
   moveTerminalToEditor,
+  openNewTerminalInEditor,
   splitCliTab,
 } from "./cli";
 import { installTerminalKeys } from "./keys";
@@ -216,6 +217,18 @@ export function activate(): () => void {
         // ⌘T is VCS Update elsewhere; in the terminal it opens a tab, as in IDEA.
         keyWhen: "terminalFocus",
         run: () => openNewTab(),
+      },
+      {
+        id: "terminal.newInEditor",
+        title: "New Terminal Tab in Editor",
+        description: "Opens a new terminal session as a tab in the editor area.",
+        category: "Terminal",
+        icon: "plus",
+        when: "projectOpen",
+        keywords: ["shell", "console", "editor", "cli"],
+        // Shortcuts run anywhere outside the Terminal tool window (and popups), so a key like ⌘T can be shared with New Terminal Tab.
+        keyWhen: "!terminalFocus && activeToolWindow != 'terminal' && !popupOpen",
+        run: ({ arg }) => openNewTerminalInEditor(typeof arg === "string" && arg ? arg : undefined),
       },
       {
         id: "terminal.newPredefinedSession",

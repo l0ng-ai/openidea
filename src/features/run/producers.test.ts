@@ -858,6 +858,25 @@ describe("project producers", () => {
     expect(p.config!.args).toEqual(["run", "test", "--", "src/a.test.ts"]);
   });
 
+  it("runs a .NET project file with dotnet run --project (#5635)", () => {
+    const p = produceContext({ path: `${ROOT}/src/App/App.csproj`, root: ROOT, configs: [] }, OPTIMISTIC)!;
+    expect(p).toMatchObject({ name: "App", scope: "file" });
+    expect(p.config).toMatchObject({
+      id: "context:dotnet:src/App/App.csproj",
+      kind: "dotnet",
+      command: "dotnet",
+      args: ["run", "--project", "src/App/App.csproj", "--no-launch-profile"],
+      debugAdapter: "netcoredbg",
+      params: { project: "src/App/App.csproj" },
+    });
+    // A `.csproj.user` is not a project, and a source file has no entry-point production.
+    expect(produceContext({ path: `${ROOT}/src/App/App.csproj.user`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    expect(produceContext({ path: `${ROOT}/src/App/Program.cs`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    // Neither is a solution or a shared props file.
+    expect(produceContext({ path: `${ROOT}/src/App/App.sln`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    expect(produceContext({ path: `${ROOT}/Directory.Build.props`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+  });
+
   it("⌃⇧R picks the innermost context: test > describe > file", () => {
     const src = [
       "describe('math', () => {",

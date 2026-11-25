@@ -8789,5 +8789,6 @@
   "Granted": "Verildi",
   "Granted with grant option": "Yetki verme hakkıyla verildi",
   "No privileges are granted on this table.": "Bu tabloda verilmiş yetki yok.",
-  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION: yetki verilen bu yetkiyi başkalarına verebilir."
+  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION: yetki verilen bu yetkiyi başkalarına verebilir.",
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "Birden fazla öneki virgülle ayırın: sırayla denenir, ardından resmi kaynak kullanılır."
 }

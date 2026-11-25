@@ -101,3 +101,38 @@ test("the Center group is centred in the main toolbar", async ({ workbench: page
   }
   await page.screenshot({ path: "test-results/toolbar-center.png", animations: "disabled" });
 });
+
+test("the project colour gradient follows the Project widget", async ({ workbench: page }) => {
+  const frame = page.locator("[data-project-frame]");
+  const icon = page.locator("header [data-project-widget-icon]").first();
+  const anchor = () => frame.evaluate((el) => el.style.getPropertyValue("--project-gradient-x"));
+  const iconCenter = async () => {
+    const [frameBox, iconBox] = await Promise.all([frame.boundingBox(), icon.boundingBox()]);
+    return Math.round(iconBox!.x + iconBox!.width / 2 - frameBox!.x);
+  };
+  await expect(icon).toBeVisible();
+  await expect.poll(anchor).toBe(`${await iconCenter()}px`);
+
+  const layout = async (mainToolbar: object) =>
+    page.evaluate(async (mainToolbar) => {
+      const path = "/src/platform/project.ts";
+      const { useProject } = await import(/* @vite-ignore */ path);
+      const settings = useProject.getState().settings;
+      useProject.setState({ settings: { ...settings, appearance: { ...settings?.appearance, mainToolbar } } });
+    }, mainToolbar);
+  await layout({ left: [], center: ["project"], right: ["action:navigate.searchEverywhere"], hidden: [] });
+  for (const width of [1400, 900]) {
+    await page.setViewportSize({ width, height: 700 });
+    await expect(async () => {
+      const x = await iconCenter();
+      expect(Math.abs(x - width / 2)).toBeLessThan(150);
+      expect(await anchor()).toBe(`${x}px`);
+    }).toPass({ timeout: 3000 });
+  }
+  await page.screenshot({ path: "test-results/project-gradient-center.png", animations: "disabled" });
+
+  // Without the widget the gradient goes back to the frame's corner.
+  await layout({ left: [], center: [], right: ["action:navigate.searchEverywhere"], hidden: ["project"] });
+  await expect(icon).toHaveCount(0);
+  await expect.poll(anchor).toBe("");
+});

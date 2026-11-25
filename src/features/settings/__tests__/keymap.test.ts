@@ -216,6 +216,28 @@ describe("conflicts", () => {
     expect(overrides["vcs.showDiff"]).toBeUndefined();
   });
 
+  it("respects keyWhen focus scopes when reporting conflicts", () => {
+    const scoped = [
+      {
+        id: "terminal.new",
+        title: "New Terminal Tab",
+        category: "Terminal",
+        when: "projectOpen",
+        keyWhen: "terminalFocus",
+      },
+      {
+        id: "terminal.newInEditor",
+        title: "New Terminal Tab in Editor",
+        category: "Terminal",
+        when: "projectOpen",
+        keyWhen: "!terminalFocus && activeToolWindow != 'terminal' && !popupOpen",
+      },
+      { id: "vcs.update", title: "Update Project…", category: "Git", when: "vcsAvailable" },
+    ];
+    const c = findConflicts({ preset: "intellij-macos", overrides: {} }, "Meta+T", "terminal.newInEditor", scoped);
+    expect(c.map((x) => x.actionId)).toEqual(["vcs.update"]);
+  });
+
   it("evaluates when-clause overlap", () => {
     expect(whensOverlap(undefined, "editorFocus")).toBe(true);
     expect(whensOverlap("editorFocus", "editorFocus")).toBe(true);

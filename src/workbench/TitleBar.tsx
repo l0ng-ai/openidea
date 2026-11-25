@@ -34,6 +34,7 @@ import { useNativeTitlebar } from "./nativeTitlebar";
 import { useDocumentTitle } from "./documentTitle";
 import { windowDragRegion } from "./window-drag";
 import { useToolbarCenter } from "./toolbarCenter";
+import { useProjectGradientAnchor } from "./projectGradient";
 import { useToolbarLabelWidth } from "./toolbarLabelWidth";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
@@ -86,7 +87,7 @@ function ProjectButton() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={styles.avatar} aria-hidden="true">
+        <span className={styles.avatar} aria-hidden="true" data-project-widget-icon="">
           <ProjectAvatar name={label} root={root} />
         </span>
         <span className={styles.widgetText} data-toolbar-label="">
@@ -335,6 +336,7 @@ export function TitleBar({
   useToolbarLabelWidth(toolbar ? bar : null);
   const centered = toolbar && !menuExpanded && !minimal && shown.center.length > 0;
   useToolbarCenter(bar, centered);
+  useProjectGradientAnchor(bar, toolbar);
   const className = clsx(
     styles.bar,
     overlay && styles.overlay,
