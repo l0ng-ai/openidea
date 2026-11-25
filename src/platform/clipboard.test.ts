@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands } from "./ipc";
-import { pasteClipboardFiles, readClipboardPng, readClipboardText, writeClipboardText } from "./clipboard";
+import {
+  pasteClipboardFiles,
+  readClipboardPng,
+  readClipboardText,
+  writeClipboardPng,
+  writeClipboardText,
+} from "./clipboard";
 
 beforeEach(() => vi.stubGlobal("__TAURI_INTERNALS__", {}));
 afterEach(() => {
@@ -102,6 +108,39 @@ describe("clipboard writes", () => {
 });
 
 describe("clipboard image", () => {
+  it("writes PNG bytes through the native command and reports native errors", async () => {
+    const native = vi.spyOn(commands, "clipboardWriteImage").mockResolvedValue({ status: "ok", data: null });
+    const blob = { arrayBuffer: async () => new Uint8Array([137, 80, 78, 71]).buffer } as Blob;
+    await writeClipboardPng(Promise.resolve(blob));
+    expect(native).toHaveBeenCalledExactlyOnceWith("iVBORw==");
+    native.mockResolvedValueOnce({ status: "error", error: { kind: "internal", message: "busy", data: null } });
+    await expect(writeClipboardPng(Promise.resolve(blob))).rejects.toThrow("busy");
+  });
+
+  it("starts a browser image write synchronously with a PNG promise, preserving user activation", async () => {
+    vi.unstubAllGlobals();
+    const native = vi.spyOn(commands, "clipboardWriteImage");
+    let finish!: (blob: Blob) => void;
+    const blob = new Blob(["png"], { type: "image/png" });
+    const pending = new Promise<Blob>((resolve) => {
+      finish = resolve;
+    });
+    const item = vi.fn(function (this: { data: unknown }, data: unknown) {
+      this.data = data;
+    });
+    vi.stubGlobal("ClipboardItem", item);
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write } });
+    const result = writeClipboardPng(pending);
+    expect(item).toHaveBeenCalledWith({ "image/png": pending });
+    expect(write).toHaveBeenCalledOnce();
+    finish(blob);
+    await result;
+    expect(native).not.toHaveBeenCalled();
+    write.mockRejectedValueOnce(new Error("denied"));
+    await expect(writeClipboardPng(Promise.resolve(blob))).rejects.toThrow("denied");
+  });
+
   it("is the PNG's base64, without the data URL prefix", async () => {
     const image = vi.spyOn(commands, "clipboardImage");
     image.mockResolvedValue({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" });

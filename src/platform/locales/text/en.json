@@ -3963,5 +3963,7 @@
   "Resize hover card from the right": "Resize hover card from the right",
   "Resize hover card from the bottom": "Resize hover card from the bottom",
   "Resize hover card from the left": "Resize hover card from the left",
-  "Resize hover card from the corner": "Resize hover card from the corner"
+  "Resize hover card from the corner": "Resize hover card from the corner",
+  "Copy Image": "Copy Image",
+  "Couldn't copy the image": "Couldn't copy the image"
 }

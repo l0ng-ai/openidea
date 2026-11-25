@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import type { Page } from "@playwright/test";
 import type { AgentEntry, AgentTask } from "../src/bindings";
 import { expect, test } from "./fixtures";
 
@@ -62,32 +63,36 @@ const entries: AgentEntry[] = [
   { type: "agent", text: "The preview is ready: front, side and back." },
 ];
 
+async function showImages(page: Page, foldTurns = true) {
+  await page.evaluate(
+    async ({ task, entries, foldTurns }) => {
+      const storePath = "/src/features/agents/store.ts";
+      const projectPath = "/src/platform/project.ts";
+      const ipcPath = "/src/platform/ipc.ts";
+      const store = await import(storePath);
+      const { useProject } = await import(projectPath);
+      const { commands } = await import(ipcPath);
+      commands.agentEntries = async () => ({ status: "ok", data: entries });
+      useProject.setState({ settings: { agents: { foldTurns, toolCalls: "grouped" } } });
+      store.useAgents.setState({
+        loaded: true,
+        error: null,
+        tasks: new Map([[task.id, task]]),
+        entries: new Map([[task.id, entries]]),
+        unread: new Set(),
+      });
+      store.openTaskInEditorLocation(task.id);
+    },
+    { task, entries, foldTurns },
+  );
+}
+
 for (const foldTurns of [true, false]) {
   test(`tool images remain visible and open a full preview with turn folding=${foldTurns}`, async ({
     workbench: page,
   }) => {
     if (!foldTurns) await page.setViewportSize({ width: 700, height: 750 });
-    await page.evaluate(
-      async ({ task, entries, foldTurns }) => {
-        const storePath = "/src/features/agents/store.ts";
-        const projectPath = "/src/platform/project.ts";
-        const ipcPath = "/src/platform/ipc.ts";
-        const store = await import(storePath);
-        const { useProject } = await import(projectPath);
-        const { commands } = await import(ipcPath);
-        commands.agentEntries = async () => ({ status: "ok", data: entries });
-        useProject.setState({ settings: { agents: { foldTurns, toolCalls: "grouped" } } });
-        store.useAgents.setState({
-          loaded: true,
-          error: null,
-          tasks: new Map([[task.id, task]]),
-          entries: new Map([[task.id, entries]]),
-          unread: new Set(),
-        });
-        store.openTaskInEditorLocation(task.id);
-      },
-      { task, entries, foldTurns },
-    );
+    await showImages(page, foldTurns);
     await expect(page.getByText("The preview is ready: front, side and back.", { exact: true })).toBeVisible();
     const preview = page.getByRole("img", { name: "Image", exact: true });
     await expect(preview).toBeVisible();
@@ -109,3 +114,38 @@ for (const foldTurns of [true, false]) {
     await expect(preview).toBeVisible();
   });
 }
+
+test("copies full-size PNG pixels from the thumbnail menu and the image preview", async ({
+  workbench: page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await showImages(page);
+  const thumbnail = page.getByRole("img", { name: "Image", exact: true });
+  await expect(thumbnail).toBeVisible();
+  const clipboard = () =>
+    page.evaluate(async () => {
+      const items = await navigator.clipboard.read();
+      const png = await items.find((item) => item.types.includes("image/png"))!.getType("image/png");
+      const image = await createImageBitmap(png);
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext("2d")!;
+      context.drawImage(image, 0, 0);
+      const pixel = [...context.getImageData(150, 92, 1, 1).data];
+      image.close();
+      return { width: canvas.width, height: canvas.height, type: png.type, pixel };
+    });
+  await thumbnail.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Copy Image", exact: true }).click();
+  const expected = { width: 900, height: 220, type: "image/png", pixel: [15, 118, 110, 255] };
+  await expect.poll(clipboard).toEqual(expected);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await thumbnail.click();
+  const dialog = page.getByRole("dialog", { name: "Image", exact: true });
+  await dialog.getByRole("button", { name: "Copy Image", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
+  expect(await clipboard()).toEqual(expected);
+  await expect(dialog).toBeVisible();
+});
