@@ -5,6 +5,8 @@
 //! active. Click focuses the window that raised the toast — balloon actions stay
 //! in the IDE.
 
+use crate::windows::WorkbenchWindows;
+
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -121,7 +123,7 @@ fn activate(app: &AppHandle, id: i32) {
     let Some(window_label) = STATE.take_target(id) else { return };
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
-        let Some(window) = app.get_webview_window(&window_label) else { return };
+        let Some(window) = app.workbench_window(&window_label) else { return };
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();

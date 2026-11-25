@@ -36,7 +36,7 @@ import {
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { findOutputLinks, type OutputLink } from "@/features/run/links";
-import { debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
+import { consoleLinkMenu, debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
@@ -401,6 +401,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     e.preventDefault();
     const selection = selectedOutput();
     showContextMenu(e, [
+      ...consoleLinkMenu(e.target),
       {
         label: "Copy",
         icon: "copy",

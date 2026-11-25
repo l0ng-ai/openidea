@@ -156,6 +156,7 @@ const SHELL_OWN: &[&str] = &["PWD", "OLDPWD", "SHLVL", "_"];
 pub(crate) fn read_login_env(shell: &str, timeout: std::time::Duration) -> Option<Vec<(OsString, OsString)>> {
     use std::io::Read;
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
@@ -182,6 +183,11 @@ pub(crate) fn read_login_env(shell: &str, timeout: std::time::Duration) -> Optio
         cmd.env_remove(k);
     }
     ide_core::process::prepare(&mut cmd);
+    // An interactive shell takes job control from its inherited terminal. A new session leaves it
+    // without a controlling terminal, so it cannot stop its parent's process group with SIGTTIN.
+    unsafe {
+        cmd.pre_exec(|| rustix::process::setsid().map(|_| ()).map_err(Into::into));
+    }
     let mut child = cmd
         .args(["-ilc", &format!("printf '{MARK}'; /usr/bin/env -0; printf '{MARK}'")])
         .stdin(Stdio::null())
@@ -269,6 +275,36 @@ mod tests {
         let third = read_login_env(&shell, Duration::from_secs(10)).unwrap();
         assert_eq!(get(&third, "OPENIDEA_TEST_RC"), None);
         assert_eq!(get(&third, "OPENIDEA_TEST_SEEN").as_deref(), Some("unset"));
+    }
+
+    #[test]
+    fn login_shell_gets_a_new_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (shell, rc) = fake_shell(tmp.path());
+        // macOS `ps` has no session id column; a session leader also leads its own process group.
+        let column = if cfg!(target_os = "linux") { "sid" } else { "pgid" };
+        std::fs::write(
+            &rc,
+            format!("export OPENIDEA_TEST_PID=$$\nexport OPENIDEA_TEST_SID=$(ps -o {column}= -p $$)\n"),
+        )
+        .unwrap();
+        let env = read_login_env(&shell, Duration::from_secs(10)).unwrap();
+        let get = |k: &str| {
+            env.iter()
+                .find(|(name, _)| name == k)
+                .map(|(_, value)| value.to_string_lossy().trim().parse::<i32>().unwrap())
+                .unwrap()
+        };
+        let shell_pid = get("OPENIDEA_TEST_PID");
+        let shell_sid = get("OPENIDEA_TEST_SID");
+        let test_sid = if cfg!(target_os = "linux") {
+            rustix::process::getsid(None).unwrap().as_raw_nonzero().get()
+        } else {
+            rustix::process::getpgrp().as_raw_nonzero().get()
+        };
+
+        assert_eq!(shell_sid, shell_pid);
+        assert_ne!(shell_sid, test_sid);
     }
 
     #[test]

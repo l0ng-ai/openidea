@@ -1,4 +1,7 @@
 //! Debounced application activation, shared by every project window.
+#[cfg(not(any(target_os = "macos", windows)))]
+use crate::windows::WorkbenchWindows;
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{Emitter, Manager};
 
@@ -87,7 +90,7 @@ pub(crate) fn application_active(app: &tauri::AppHandle) -> bool {
         process == std::process::id()
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    app.webview_windows().values().any(|w| w.is_focused().unwrap_or(true))
+    app.workbench_windows().values().any(|w| w.is_focused().unwrap_or(true))
 }
 
 #[cfg(test)]

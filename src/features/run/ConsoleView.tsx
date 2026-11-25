@@ -22,7 +22,7 @@ import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMat
 import { useConsoleRules } from "@/workbench/contributions";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
-import { debugConsoleUrl, openTarget, openUrl } from "./navigate";
+import { consoleLinkMenu, debugConsoleUrl, openTarget, openUrl } from "./navigate";
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
@@ -450,6 +450,7 @@ export function ConsoleView({
     const selection = selectedOutput();
     const foldText = foldLineText(selection, lineAt(e.target));
     showContextMenu(e, [
+      ...consoleLinkMenu(e.target),
       {
         label: "Copy",
         icon: "copy",

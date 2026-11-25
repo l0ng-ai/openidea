@@ -114,7 +114,6 @@ export const CLIENT_SETTINGS_KEYS = [
   "agents.showWorkTime",
   "agents.showUsageLimits",
   "agents.showCost",
-  "agents.foldTurns",
   "agents.smoothText",
   "agents.fitWindowWidth",
   "agents.thinking",

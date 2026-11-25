@@ -95,8 +95,6 @@ pub struct AgentSettings {
     pub show_usage_limits: bool,
     /// What the session has cost so far, as the agent reports it.
     pub show_cost: bool,
-    /// A finished turn's work folds into one line under its message, leaving the reply.
-    pub fold_turns: bool,
     /// Streaming text is revealed at a steady pace rather than chunk by chunk.
     pub smooth_text: bool,
     /// Conversations and the composer expand to the full width of the pane instead of staying in a centred column.
@@ -145,7 +143,6 @@ impl Default for AgentSettings {
             show_work_time: true,
             show_usage_limits: true,
             show_cost: false,
-            fold_turns: false,
             smooth_text: true,
             fit_window_width: false,
             thinking: ThinkingDisplay::Auto,
@@ -2120,14 +2117,12 @@ mod tests {
 
     #[test]
     fn agent_meters_default_and_round_trip() {
-        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
+        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true,"foldTurns":true}}"#).unwrap();
         assert!(old.agents.show_cost);
         assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
         assert!(!old.agents.fit_window_width);
-        assert!(!old.agents.fold_turns);
         assert!(!Settings::default().agents.show_cost);
         assert!(!Settings::default().agents.fit_window_width);
-        assert!(!Settings::default().agents.fold_turns);
         let mut settings = Settings::default();
         settings.agents.show_usage_limits = false;
         settings.agents.fit_window_width = true;

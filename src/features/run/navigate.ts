@@ -8,6 +8,7 @@ import { streamSearch } from "@/platform/textSearch";
 import { joinPath, type FileTarget } from "./links";
 import { findRubyTest } from "./rubyTests";
 import { tx } from "@/platform/i18n";
+import type { MenuItem } from "@/ui";
 
 async function exists(path: string): Promise<boolean> {
   const slash = path.lastIndexOf("/");
@@ -174,6 +175,42 @@ export function debugConsoleUrl(e: { metaKey: boolean; ctrlKey: boolean; shiftKe
   if (!e.shiftKey || !(e.metaKey || e.ctrlKey) || !getAction("debug.debugInBrowser")) return false;
   void executeAction("debug.debugInBrowser", url);
   return true;
+}
+
+/** Whether `url` can open in the Browser tool window: loopback HTTP(S) without credentials, trusted local project. */
+export function opensInLocalBrowser(url: string): boolean {
+  if (
+    !isTauri() ||
+    !useProject.getState().project?.trusted ||
+    useRemote.getState().session ||
+    !getAction("web.openLocalBrowser") ||
+    !URL.canParse(url)
+  )
+    return false;
+  const { protocol, hostname, username, password } = new URL(url);
+  return (
+    (protocol === "http:" || protocol === "https:") &&
+    !username &&
+    !password &&
+    (hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d+){3}$/.test(hostname))
+  );
+}
+
+/**
+ * Context-menu entries for the console link under `target`: a loopback URL can open in the
+ * Browser tool window. A plain click keeps opening the external browser.
+ */
+export function consoleLinkMenu(target: EventTarget): MenuItem[] {
+  const url = (target as Element).closest?.("a[href]")?.getAttribute("href");
+  if (!url || !opensInLocalBrowser(url)) return [];
+  return [
+    {
+      label: "Open in Browser Tool Window",
+      icon: "toolwindow-web",
+      run: () => void executeAction("web.openLocalBrowser", url),
+    },
+    { kind: "separator" },
+  ];
 }
 
 export async function openUrl(url: string): Promise<void> {

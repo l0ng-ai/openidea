@@ -34,3 +34,103 @@
   color: var(--fg-muted);
   font-family: var(--font-ui);
 }
+.inspector {
+  flex: 1;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-ui);
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.address {
+  flex: 1;
+  min-width: 0;
+}
+.hint {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.viewport {
+  flex: 1 1 100px;
+  min-height: 80px;
+  background: var(--bg-editor);
+}
+.details {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--bg-editor);
+}
+.detailsHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  height: 28px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-strong);
+}
+.detailsTitle {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+.detailsDismiss {
+  margin-left: auto;
+}
+.detailsBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  max-height: 180px;
+  padding: 8px 10px;
+  overflow: auto;
+}
+.selector {
+  color: var(--fg-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.code {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--fg-editor, var(--fg));
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.detailsActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1-5);
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+}
