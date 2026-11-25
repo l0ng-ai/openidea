@@ -10331,5 +10331,17 @@
   "Already in the project": "已在项目中",
   "{name} is inside the opened project, so its sources are already part of it.": "{name} 位于已打开的项目内，其源码已属于该项目。",
   "{name} has no pom.xml or Gradle build file. Attach it to this project as another root? Its source folders are detected automatically.": "{name} 没有 pom.xml 或 Gradle 构建文件。要将其作为另一个根附加到此项目吗？其中的源码目录会自动识别。",
-  "Resets in {resetIn}": "{resetIn} 后重置"
+  "Resets in {resetIn}": "{resetIn} 后重置",
+  "Flutter": "Flutter",
+  "Flutter SDK path": "Flutter SDK 路径",
+  "flutter on PATH": "PATH 中的 flutter",
+  "Select Flutter SDK Directory": "选择 Flutter SDK 目录",
+  "The Flutter SDK used by the Dart language server, debugger, run configurations, pub commands, the device list and Build. Empty uses flutter and dart on PATH.": "Dart 语言服务器、调试器、运行配置、pub 命令、设备列表和构建所用的 Flutter SDK。留空则使用 PATH 中的 flutter 和 dart。",
+  "Checking the Flutter SDK…": "正在检查 Flutter SDK…",
+  "Not a Flutter SDK: this folder has no bin/flutter.": "不是 Flutter SDK：此文件夹中没有 bin/flutter。",
+  "flutter was not found on PATH.": "在 PATH 中找不到 flutter。",
+  "flutter --version did not answer in {root}.": "{root} 中的 flutter --version 没有响应。",
+  "Flutter {framework}": "Flutter {framework}",
+  "channel {channel}": "渠道 {channel}",
+  "Dart {dart}": "Dart {dart}"
 }
