@@ -46,6 +46,7 @@ import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { openImport } from "./importConfigs";
 import { registerComposerInstall } from "./composerInstall";
+import { registerPubspecCommands } from "./pubspec";
 import { registerGoActions } from "./goActions";
 import { registerRunTabActions } from "./runTabs";
 import { invalidateGoModules } from "./goModules";
@@ -451,6 +452,7 @@ export function activate(): () => void {
     registerGoActions(),
     registerRunTabActions(),
     registerComposerInstall(),
+    registerPubspecCommands(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({
       id: "run.editConfigs",
