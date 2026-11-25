@@ -23,7 +23,16 @@ const KIND_LABEL: Record<InlayHint["kind"], string> = {
   type: "Type hints",
   parameter: "Parameter name hints",
   other: "Other hints",
+  closingLabel: "Closing labels",
 };
+
+/** The `editor.inlay.*` switch for each kind. */
+const KIND_SETTING = {
+  type: "types",
+  parameter: "parameters",
+  other: "other",
+  closingLabel: "closingLabels",
+} as const satisfies Record<InlayHint["kind"], string>;
 
 async function setEditorSetting(key: string, value: unknown) {
   if (!isTauri()) return;
@@ -42,7 +51,10 @@ function typeHintOffset(view: EditorView, at: number): number | null {
 /** Right-click on a hint: turn its kind off (IDEA's "Disable '…' hints"), or open the settings. */
 export function inlayMenuItems(kind: InlayHint["kind"]): MenuItem[] {
   return [
-    { label: tx`Disable ${txPart(KIND_LABEL[kind])}`, run: () => void setEditorSetting(`inlay.${kind}`, false) },
+    {
+      label: tx`Disable ${txPart(KIND_LABEL[kind])}`,
+      run: () => void setEditorSetting(`inlay.${KIND_SETTING[kind]}`, false),
+    },
     { kind: "separator" },
     { label: "Inlay Hints Settings…", run: () => void executeAction("file.settings", "editor.inlayHints") },
   ];
@@ -147,11 +159,8 @@ const enabled = (language: string) =>
   useProject.getState().settings?.editor?.inlayHints !== false &&
   !editorPrefs().inlay.disabledLanguages.includes(language);
 
-/** Inlay Hints settings: per kind (types / parameters / other). */
-function shownKind(kind: InlayHint["kind"]): boolean {
-  const p = editorPrefs().inlay;
-  return kind === "type" ? p.types : kind === "parameter" ? p.parameters : p.other;
-}
+/** Inlay Hints settings: per kind (types / parameters / other / closing labels). */
+const shownKind = (kind: InlayHint["kind"]): boolean => editorPrefs().inlay[KIND_SETTING[kind]];
 
 const inlayPlugin = ViewPlugin.fromClass(
   class {

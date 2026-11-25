@@ -13,6 +13,9 @@ import { formatArgs, parseArgs } from "./configs";
 const DEFAULT_ENTRY = "lib/main.dart";
 const MODES = new Set(["--debug", "--profile", "--release"]);
 
+/** The executable of Flutter / Dart commands: the one place that picks it. */
+export const dartTool = (flutter: boolean) => (flutter ? "flutter" : "dart");
+
 export const flutterType: RunConfigTypeContribution = {
   id: "flutter",
   label: "Flutter",
@@ -55,7 +58,7 @@ export const flutterType: RunConfigTypeContribution = {
     },
   ],
   commandLine: (p) => ({
-    command: p.executable || "flutter",
+    command: p.executable || dartTool(true),
     args: [
       "run",
       "-t",

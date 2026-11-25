@@ -1,8 +1,10 @@
 import { useState } from "react";
 import type { AgentImage } from "@/bindings";
 import { useTx } from "@/platform/i18n";
-import { IconButton } from "@/ui";
-import { ImagePreview, imageSrc } from "./ImagePreview";
+import { isMacHost } from "@/platform/keymap";
+import { IconButton, showContextMenu } from "@/ui";
+import { ImagePreview } from "./ImagePreview";
+import { copyImageAction, imageSrc } from "./imageActions";
 import styles from "./Session.module.css";
 
 /** Image thumbnails; a click opens the full image, `onRemove` adds a remove button to each. */
@@ -22,7 +24,14 @@ export function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemov
             type="button"
             className={styles.imageButton}
             title={img.name ?? undefined}
-            onClick={() => setOpen(img)}
+            onClick={(event) => {
+              if (event.ctrlKey && isMacHost()) return;
+              setOpen(img);
+            }}
+            onContextMenu={(event) => {
+              event.stopPropagation();
+              showContextMenu(event, [{ kind: "action", action: copyImageAction.id, arg: { image: img } }]);
+            }}
           >
             <img className={styles.image} src={imageSrc(img)} alt={img.name ?? tx("Image")} />
           </button>

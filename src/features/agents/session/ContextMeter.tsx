@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AgentContextUsage, AgentTask, AgentUsage } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { useTx } from "@/platform/i18n";
-import { Popup, T, tooltipAttrs } from "@/ui";
+import { Button, Popup, T, tooltipAttrs } from "@/ui";
 import { usageLabel } from "../composerModel";
 import { isBusy } from "../model";
 import { resendMessage } from "../store";
@@ -166,14 +166,14 @@ function ContextDetails({ task, onClose, closing }: { task: AgentTask; onClose: 
             </span>
           )}
           {task.commands.some((c) => c.name === "compact") && (
-            <button
-              type="button"
+            <Button
+              size="small"
               className={styles.contextCompact}
               disabled={sending || isBusy(task.status)}
               onClick={() => void compact()}
             >
               <T>Compact session</T>
-            </button>
+            </Button>
           )}
         </>
       )}

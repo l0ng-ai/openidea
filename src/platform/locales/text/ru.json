@@ -6382,7 +6382,8 @@
   "{provider} didn't start: {error}": "Не удалось запустить {provider}: {error}",
   "resets {resetsMs}": "сброс {resetsMs}",
   "Run Again From Here": "Запустить снова с этого места",
-  "The messages after this one are replaced. Files the agent changed stay as they are.": "Сообщения после этого будут заменены. Файлы, изменённые агентом, останутся без изменений.",
+  "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "Сообщения после этого будут заменены, а файлы, изменённые агентом с тех пор, вернутся к состоянию до отправки этого сообщения.",
+  "The files the agent changed since go back to how they were before this message was sent.": "Файлы, изменённые агентом с тех пор, вернутся к состоянию до отправки этого сообщения.",
   "Cancelling…": "Отмена…",
   "Code insight needs the index; it can't be stopped": "Для анализа кода требуется индекс; его нельзя остановить",
   "Waiting for other tasks": "Ожидание других задач",
@@ -7932,7 +7933,7 @@
   "Couldn't rename the task": "Не удалось переименовать задачу",
   "Start a Fresh Agent Session": "Начать новую сессию агента",
   "Start Fresh": "Начать заново",
-  "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "Это очистит всю беседу и начнёт новую сессию агента с этого сообщения. Изменённые агентом файлы останутся без изменений.",
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Весь разговор будет очищен, файлы, изменённые агентом, вернутся к состоянию на начало задачи, и с этим сообщением начнётся новый сеанс агента.",
   "Path From Source Root": "Путь от корня исходного кода",
   "Path From Repository Root": "Путь от корня репозитория",
   "Agent Reference": "Ссылка для агента",
@@ -7959,9 +7960,6 @@
   "Insert imports on paste": "Добавлять импорты при вставке",
   "You": "Вы",
   "Jump to Latest": "Перейти к последнему",
-  "Retract Message": "Отозвать сообщение",
-  "Retract": "Отозвать",
-  "Couldn't retract the message": "Не удалось отозвать сообщение",
   "The agent is still stopping. Try again once it has stopped.": "Агент всё ещё останавливается. Повторите попытку после его остановки.",
   "Uninstall incomplete; retry Uninstall to finish cleanup.": "Удаление не завершено; повторите удаление, чтобы завершить очистку.",
   "refusing symlink in plugin cleanup path": "отклонена символическая ссылка в пути очистки плагина",
@@ -10112,5 +10110,8 @@
   "Mark as Unread": "Отметить как непрочитанное",
   "Archive All Below": "Архивировать всё ниже",
   "Mark Agent Tasks as Unread": "Отметить задачи агента как непрочитанные",
-  "Mark Agent Tasks as Read": "Отметить задачи агента как прочитанные"
+  "Mark Agent Tasks as Read": "Отметить задачи агента как прочитанные",
+  "Roll Back to Here": "Откатить до этого места",
+  "Couldn't roll back": "Не удалось откатить",
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Это сообщение и все последующие будут удалены, а файлы, изменённые агентом с тех пор, вернутся к состоянию до его отправки. Сообщение вернётся в поле ввода."
 }
