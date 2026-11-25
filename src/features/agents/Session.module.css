@@ -8,7 +8,7 @@
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   background: var(--bg-app);
   color: var(--fg);
   font-size: var(--fs-ui);
@@ -20,23 +20,9 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border);
-}
-
-.conversation[hidden] {
-  display: none;
 }
 .docked {
-  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
-}
-.docked .conversation {
-  border-right: 0;
-}
-/* The pane takes its width while the conversation keeps 240px (half of a narrower session);
-   keep that minimum in step with ChangesResizer. */
-.withChanges {
-  grid-template-columns: minmax(min(240px, 50%), 1fr) minmax(0, var(--agent-changes-width, 280px));
 }
 .fitWidth .stream > * {
   width: 100%;
@@ -54,7 +40,7 @@
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
-  height: 24px;
+  height: var(--h-row);
   padding: 0 6px;
   overflow: hidden;
   color: var(--fg-subtle);
@@ -143,8 +129,7 @@
   white-space: nowrap;
   cursor: pointer;
 }
-.statusChip:hover,
-.statusChip[aria-expanded="true"] {
+.statusChip:hover {
   background: var(--bg-toolbar-hover);
   color: var(--fg-strong);
 }
@@ -243,7 +228,7 @@
    universal adjacent-sibling rule makes Chromium restyle whole sibling subtrees on every
    DOM insertion anywhere in the window, which costs every editor scroll frame. */
 .stream > :where(:not(:first-child)) {
-  margin-top: var(--space-4);
+  margin-top: var(--space-3);
 }
 .stream > [data-process] + [data-process] {
   margin-top: var(--space-2);
@@ -410,18 +395,9 @@
   -webkit-user-select: none;
   user-select: none;
 }
-.messageFooter > .messageTime,
-.messageHead > .messageTime {
-  opacity: 0;
-}
 /* A turn's final reply keeps its time and actions in view; your messages show theirs on hover. */
-.conversationRow:nth-last-child(1 of [data-message]) .agentMessage .messageTime,
 .conversationRow:nth-last-child(1 of [data-message]) .agentMessage .messageActions,
 .conversationRow:nth-last-child(1 of [data-message]) .reply .messageActions,
-.message:hover .messageTime,
-.agentMessage:hover .messageFooter > .messageTime,
-.message:focus-within .messageTime,
-.agentMessage:focus-within .messageFooter > .messageTime,
 .message:hover .messageActions,
 .reply:hover .messageActions,
 .agentMessage:hover .messageActions,
@@ -445,7 +421,7 @@
   left: 0;
   box-sizing: border-box;
   display: flex;
-  min-height: 24px;
+  min-height: var(--h-control);
   padding-top: 2px;
   -webkit-user-select: none;
   user-select: none;
@@ -496,7 +472,7 @@
   border-radius: var(--radius-tab);
   background: var(--bg-hover);
   color: var(--fg);
-  line-height: 1.5;
+  line-height: 1.4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -529,7 +505,7 @@
 }
 
 .markdown {
-  line-height: 1.5;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 .markdown :global(p) {
@@ -552,7 +528,7 @@
 .markdown :global(code) {
   font-family: var(--font-mono);
   font-size: var(--agent-fs-small, var(--fs-small));
-  border-radius: 3px;
+  border-radius: var(--radius-small);
   background: var(--md-code-bg);
   /* Side insets as shadows, not padding: a selection leaves inline padding unpainted. */
   box-shadow:
@@ -611,7 +587,7 @@
   right: 56px;
 }
 .codeCopy:hover {
-  background: var(--bg-hover);
+  background: var(--bg-toolbar-hover);
 }
 /* Mermaid diagrams: the source stays until the diagram is drawn (and next to an
    error), and the Copy button lives on the block — the drawn diagram hides the
@@ -739,13 +715,12 @@
   margin: 12px 0 6px;
   color: var(--fg-strong);
   font-size: 1em;
+  font-weight: 600;
   line-height: 1.3;
 }
+/* On the UI scale: one step up for a title, every other level at body size and weight 600. */
 .markdown :global(h1) {
-  font-size: 1.15em;
-}
-.markdown :global(h2) {
-  font-size: 1.08em;
+  font-size: calc(var(--fs-input-large) + var(--agent-font-zoom, 0px));
 }
 .markdown :global(blockquote) {
   margin: 0 0 8px;
@@ -775,7 +750,7 @@
   cursor: pointer;
 }
 .loadImage:hover {
-  background: var(--bg-hover);
+  background: var(--bg-toolbar-hover);
 }
 .markdown :global(li:has(> input[type="checkbox"])) {
   margin-left: calc(-1 * var(--md-list-indent));
@@ -817,7 +792,7 @@
   user-select: none;
 }
 .thought summary:hover {
-  background: var(--bg-hover);
+  background: var(--bg-tree-hover);
   color: var(--fg);
 }
 .thoughtChevron {
@@ -840,8 +815,6 @@
 }
 .thoughtText {
   margin-top: 4px;
-  padding-left: 10px;
-  border-left: 2px solid var(--border-strong);
   color: var(--fg-secondary);
   white-space: pre-wrap;
 }
@@ -860,7 +833,7 @@
   max-width: 100%;
 }
 .toolDetails > summary.tool:hover {
-  background: var(--bg-hover);
+  background: var(--bg-tree-hover);
   color: var(--fg);
 }
 .tool > svg {
@@ -894,7 +867,7 @@
   white-space: nowrap;
 }
 .toolDiff:hover {
-  background: var(--bg-hover);
+  background: var(--bg-toolbar-hover);
 }
 
 /* Reasoning and tool calls between messages, folded as one block per turn. */
@@ -921,12 +894,12 @@
   user-select: none;
 }
 .processSummary:hover {
-  background: var(--bg-hover);
+  background: var(--bg-tree-hover);
   color: var(--fg);
 }
 .processChevron {
   flex: none;
-  transition: transform 120ms ease;
+  transition: transform var(--dur-fast) var(--ease);
 }
 .processRun[open] .processChevron {
   transform: rotate(90deg);
@@ -1025,7 +998,7 @@
 }
 .permissionTitle {
   color: var(--fg-strong);
-  font-weight: 400;
+  font-weight: 600;
 }
 .permissionCommand {
   min-width: 0;
@@ -1137,7 +1110,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  min-height: 24px;
+  min-height: var(--h-row);
   padding: 0 4px 0 8px;
   border-radius: var(--radius-row);
   background: var(--bg-elev);
@@ -1162,7 +1135,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  min-height: 28px;
+  min-height: var(--h-field);
   padding: 0 4px 0 8px;
   border-radius: var(--radius-row);
   background: var(--bg-elev);
@@ -1281,79 +1254,26 @@
   gap: var(--space-1);
 }
 
+/* The Changes tab: the file tree beside the diff of every file, under one toolbar. */
 .changes {
-  position: relative;
-  display: flex;
-  flex-direction: column;
+  flex: 1;
+  height: 100%;
   min-height: 0;
   min-width: 0;
-}
-/* On the conversation's border; the hit area reaches 3px either side of it. */
-.changesResizer {
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  bottom: 0;
-  left: -1px;
-  width: 0;
-  outline: none;
-}
-.changesResizer::after {
-  content: "";
-  position: absolute;
-  inset: 0 -3px;
-  cursor: col-resize;
-}
-.changesResizer:focus-visible::after {
-  background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
-}
-.changesHeader {
-  min-width: 0;
   display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  height: 32px;
-  flex: none;
-  padding: 0 6px 0 10px;
-  border-bottom: 1px solid var(--border);
-}
-.changesTitle {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: var(--fg-strong);
-}
-.changesHeader > .muted {
-  flex: none;
-  white-space: nowrap;
-}
-.changesScope {
-  flex: none;
-  padding: 0 4px;
+  flex-direction: column;
+  background: var(--bg-app);
+  color: var(--fg);
+  font-size: var(--fs-ui);
 }
 .changesSummary {
-  flex: none;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 4px 10px;
+  padding-inline: var(--space-1-5);
+  font-size: var(--fs-small);
   color: var(--fg-subtle);
   white-space: pre;
-}
-.changesList {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.changesList > * {
-  flex: 1;
-  min-height: 0;
-}
-.changesEmpty {
-  padding: 8px 10px;
-  color: var(--fg-muted);
 }
 .change {
   flex: 1;
@@ -1590,23 +1510,24 @@
   flex-wrap: wrap;
   gap: var(--space-1);
 }
+/* Flat like the toolbar chips: no frame at rest, the toolbar hover when the pointer is on it. */
 .subagentChip {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
   max-width: 240px;
   height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--bg-elev);
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-toolbar-button);
+  background: transparent;
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
   cursor: pointer;
 }
 .subagentChip:hover {
-  background: var(--bg-hover);
+  background: var(--bg-toolbar-hover);
   color: var(--fg);
 }
 .subagentChipTitle {
@@ -1905,7 +1826,7 @@
 }
 .trayChip:hover,
 .trayChip[aria-expanded="true"] {
-  background: var(--bg-hover);
+  background: var(--bg-toolbar-hover);
   color: var(--fg);
 }
 .trayPlan {
@@ -1936,7 +1857,7 @@
     background-position: 0 0;
   }
 }
-@media (prefers-reduced-motion: reduce) {
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
   .shimmer {
     animation: none;
     background: none;
@@ -1944,32 +1865,11 @@
   }
 }
 
-/* Tool calls: an accent by what the call does, a pulse while it runs, its end and time on the right. */
-.toolEntry {
-  --tool-accent: var(--fg-subtle);
-  animation: entryIn 180ms ease-out;
-}
-.kind-read,
-.kind-search {
-  --tool-accent: var(--info);
-}
-.kind-edit,
-.kind-delete,
-.kind-move {
-  --tool-accent: var(--warning);
-}
-.kind-execute {
-  --tool-accent: var(--success);
-}
-.kind-fetch {
-  --tool-accent: var(--accent);
-}
+/* Tool calls: a muted icon by what the call does, its end and time on the right. Colour is kept for
+   failures; a running call shows one spinner and nothing else moves. */
 .toolKindIcon {
   flex: none;
-  color: var(--tool-accent);
-}
-.toolLive .toolKindIcon {
-  animation: toolPulse 1.2s ease-in-out infinite;
+  color: var(--fg-muted);
 }
 .toolPath {
   flex: none;
@@ -2001,25 +1901,18 @@
   color: var(--success);
 }
 .toolSpinner {
-  color: var(--tool-accent);
+  color: var(--fg-muted);
 }
+/* Only a failed command shows its exit code. */
 .exitCode {
   flex: none;
-  padding: 0 5px;
-  border-radius: var(--radius-small);
-  background: color-mix(in srgb, var(--success) 18%, transparent);
-  color: var(--success);
+  color: var(--danger);
   font-family: var(--font-mono);
   font-size: var(--agent-fs-small, var(--fs-small));
-}
-.exitFailed {
-  background: color-mix(in srgb, var(--danger) 18%, transparent);
-  color: var(--danger);
 }
 .terminalBlock {
   margin: 4px 0 4px 22px;
   border: 1px solid var(--border);
-  border-left: 2px solid var(--tool-accent);
   border-radius: var(--radius-small);
   background: var(--bg-elev);
   overflow: hidden;
@@ -2040,36 +1933,14 @@
   color: var(--fg-muted);
 }
 .prompt {
-  color: var(--tool-accent);
+  color: var(--fg-subtle);
   user-select: none;
-}
-.thoughtEntry {
-  animation: entryIn 180ms ease-out;
 }
 .thoughtTook {
   flex: none;
   margin-left: 6px;
   color: var(--fg-subtle);
 }
-@keyframes entryIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-}
-@keyframes toolPulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .toolEntry,
-  .thoughtEntry,
-  .toolLive .toolKindIcon {
-    animation: none;
-  }
-}
-
 .meterButton {
   composes: meter;
   cursor: pointer;
@@ -2085,7 +1956,7 @@
 .contextPopover[data-positioned],
 .contextClosing[data-positioned] {
   animation: none;
-  transition: opacity 100ms ease;
+  transition: opacity var(--dur-fast) var(--ease);
 }
 .contextClosing {
   composes: contextPopover;
@@ -2156,10 +2027,4 @@
 }
 .contextCompact {
   justify-self: end;
-  cursor: pointer;
-  color: var(--fg);
-  background: var(--bg-button);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: var(--space-1) var(--space-2);
 }

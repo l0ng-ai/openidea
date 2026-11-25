@@ -19,6 +19,9 @@ export const SKILLS_PAGE = "agents.skills";
 export const POLICY_PAGE = "agents.policy";
 
 export const sessionKey = (task: string) => `agent:${task}`;
+/** A task's Changes editor tab: its changed files and their diffs. */
+export const CHANGES_KIND = "agent-changes";
+export const changesKey = (task: string) => `agent-changes:${task}`;
 
 /** Key of a conversation in the entries store: the task's own, or its subagent `subagent`'s. */
 export const entriesKey = (task: string, subagent: string | null) => (subagent ? `${task}/${subagent}` : task);

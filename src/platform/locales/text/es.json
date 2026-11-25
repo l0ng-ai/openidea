@@ -979,7 +979,7 @@
   "Hide": "Ocultar",
   "Hide Active Tool Window": "Ocultar ventana de herramientas activa",
   "Hide All Tool Windows": "Ocultar todas las ventanas de herramientas",
-  "Hide changes": "Ocultar cambios",
+  "Hide Side Tool Windows": "Ocultar ventanas de herramientas laterales",
   "Hide Coverage": "Ocultar cobertura",
   "Hide Library Frames": "Ocultar marcos de bibliotecas",
   "Hide Replace": "Ocultar reemplazar",
@@ -4859,7 +4859,8 @@
   "{provider} didn't start: {error}": "{provider} no se inició: {error}",
   "resets {resetsMs}": "se restablece en {resetsMs}",
   "Run Again From Here": "Volver a ejecutar desde aquí",
-  "The messages after this one are replaced. Files the agent changed stay as they are.": "Los mensajes posteriores a este se reemplazan. Los archivos que el agente modificó permanecen tal como están.",
+  "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "Los mensajes posteriores a este se reemplazan, y los archivos que el agente modificó desde entonces vuelven a como estaban antes de enviar este mensaje.",
+  "The files the agent changed since go back to how they were before this message was sent.": "Los archivos que el agente modificó desde entonces vuelven a como estaban antes de enviar este mensaje.",
   "Cancelling…": "Cancelando…",
   "Code insight needs the index; it can't be stopped": "El análisis de código necesita el índice; no se puede detener",
   "Waiting for other tasks": "Esperando otras tareas",
@@ -5511,7 +5512,6 @@
   "cannot copy through a destination symlink": "no se puede copiar a través de un enlace simbólico de destino",
   "expected a relative comparison entry path": "se esperaba una ruta relativa de entrada de comparación",
   "Agent sessions": "Sesiones del agente",
-  "Back to conversation": "Volver a la conversación",
   "Chat in Tool Window": "Chat en ventana de herramientas",
   "Chat in Editor": "Chat en el editor",
   "Agent settings": "Configuración del agente",
@@ -6103,5 +6103,9 @@
   "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "Esta versión está firmada con una clave diferente a la instalada y la clave anterior del editor no la avala. Continúe solo si sabe que el editor cambió de clave.",
   "Select files in the Project view, Commit tool window, or open a file in the editor": "Seleccione archivos en la vista Proyecto, la ventana de Confirmación, o abra un archivo en el editor",
   "Agent Reference": "Referencia del agente",
-  "Copy Agent Reference": "Copiar referencia del agente"
+  "Copy Agent Reference": "Copiar referencia del agente",
+  "Roll Back to Here": "Revertir hasta aquí",
+  "Couldn't roll back": "No se pudo revertir",
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Este mensaje y los posteriores se eliminan, y los archivos que el agente modificó desde entonces vuelven a como estaban antes de enviarlo. El mensaje vuelve al cuadro de texto.",
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Esto borra toda la conversación, devuelve los archivos que el agente modificó a como estaban al empezar la tarea e inicia una nueva sesión del agente con este mensaje."
 }

@@ -292,6 +292,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "toolwindow.maximize": [],
   "toolwindow.jumpToLast": [],
   "toolwindow.hideActive": ["Meta+J"],
+  "toolwindow.hideSide": [],
   "toolwindow.focusEditor": ["Escape"],
 
   // Build (Terminal › Run Build Task)
@@ -314,6 +315,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "coverage.manageReports": [],
   "web.openInBrowser": [],
   "debug.toggleBreakpoint": ["F9"],
+  "debug.toggleBreakpointEnabled": [],
   "debug.viewBreakpoints": [],
   "debug.removeAllBreakpoints": [],
   "debug.removeAllBreakpointsInFile": [],
@@ -364,6 +366,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.unshelveSilently": [],
   "vcs.changelist.edit": [],
   "vcs.log.copyRevision": [],
+  "vcs.log.copyCommitSubject": [],
   "vcs.log.goToRef": [],
   "vcs.log.editMessage": [],
   "vcs.log.newBranch": [],
@@ -448,6 +451,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.runSqlScript": [],
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
+  "db.showDiagram": [],
   "db.selectOpened": [],
   "db.expandAll": [],
   "db.collapseAll": [],

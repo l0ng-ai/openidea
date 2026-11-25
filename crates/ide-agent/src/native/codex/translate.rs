@@ -348,34 +348,16 @@ pub(super) fn user_input(prompt: &Value) -> Vec<Value> {
             }
             "resource" => {
                 let r = b.get("resource")?;
-                let path = uri_path(r.get("uri").and_then(Value::as_str).unwrap_or_default());
+                let path = crate::images::uri_path(r.get("uri").and_then(Value::as_str).unwrap_or_default());
                 let text = r.get("text").and_then(Value::as_str)?;
                 Some(json!({ "type": "text", "text": format!("<file path=\"{path}\">\n{text}\n</file>") }))
             }
-            "resource_link" => Some(json!({ "type": "text", "text": uri_path(b.get("uri")?.as_str()?) })),
+            "resource_link" => {
+                Some(json!({ "type": "text", "text": crate::images::uri_path(b.get("uri")?.as_str()?) }))
+            }
             _ => None,
         })
         .collect()
-}
-
-/// The path of a `file://` URI (percent-decoded); other URIs as they are.
-fn uri_path(uri: &str) -> String {
-    let Some(rest) = uri.strip_prefix("file://") else { return uri.to_owned() };
-    let bytes = rest.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(b) = rest.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(b);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A `session/update` notification's `update` for content.
@@ -467,6 +449,9 @@ pub(super) fn tool_call(item: &Value, done: bool, cwd: Option<&str>, output: Opt
         "imageView" => {
             let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
             call.insert("locations".into(), json!([{ "path": path }]));
+            if done && let Some(image) = crate::images::from_file(std::path::Path::new(path)) {
+                call.insert("content".into(), json!([image_content(&image)]));
+            }
             (format!("View {}", display_path(path, cwd)), "read")
         }
         "collabAgentToolCall" => {
@@ -482,7 +467,12 @@ pub(super) fn tool_call(item: &Value, done: bool, cwd: Option<&str>, output: Opt
         }
         "contextCompaction" => ("Compact the conversation".to_owned(), "other"),
         "sleep" => ("Wait".to_owned(), "other"),
-        "imageGeneration" => ("Generate an image".to_owned(), "other"),
+        "imageGeneration" => {
+            if done && let Some(image) = generated_image(item) {
+                call.insert("content".into(), json!([image_content(&image)]));
+            }
+            ("Generate an image".to_owned(), "other")
+        }
         _ => return None,
     };
     call.insert("sessionUpdate".into(), json!(if done { "tool_call_update" } else { "tool_call" }));
@@ -491,6 +481,19 @@ pub(super) fn tool_call(item: &Value, done: bool, cwd: Option<&str>, output: Opt
     call.insert("kind".into(), json!(kind));
     call.insert("status".into(), json!(tool_status(item, done)));
     Some(Value::Object(call))
+}
+
+fn image_content(image: &crate::model::AgentImage) -> Value {
+    json!({ "type": "content", "content": crate::images::content(image) })
+}
+
+/// A generated image: inline (base64 PNG) or, when codex saved it, the file.
+fn generated_image(item: &Value) -> Option<crate::model::AgentImage> {
+    if let Some(data) = item.get("result").and_then(Value::as_str).filter(|d| !d.is_empty()) {
+        let image = crate::model::AgentImage { mime_type: "image/png".into(), data: data.into(), name: None };
+        return Some(crate::model::AgentImage { mime_type: image.media_type().into(), ..image });
+    }
+    crate::images::from_file(std::path::Path::new(item.get("savedPath")?.as_str()?))
 }
 
 /// The output of a running command, as a `tool_call_update`.
@@ -856,9 +859,23 @@ pub(super) fn history(thread: &Value, cwd: Option<&str>) -> Vec<Value> {
                                 "user_message_chunk",
                                 c.get("text").and_then(Value::as_str).unwrap_or_default(),
                             )),
-                            Some("image") => out.push(json!({ "sessionUpdate": "user_message_chunk",
-                                "content": { "type": "resource_link", "uri": c.get("url"), "name": "image" } })),
-                            Some("localImage" | "mention" | "skill") => {
+                            Some("image") => {
+                                let url = c.get("url").and_then(Value::as_str).unwrap_or_default();
+                                let content = crate::images::from_uri(url).map_or_else(
+                                    || json!({ "type": "resource_link", "uri": url, "name": "image" }),
+                                    |image| crate::images::content(&image),
+                                );
+                                out.push(json!({ "sessionUpdate": "user_message_chunk", "content": content }));
+                            }
+                            Some("localImage") => {
+                                let path = c.get("path").and_then(Value::as_str).unwrap_or_default();
+                                out.push(match crate::images::from_file(std::path::Path::new(path)) {
+                                    Some(image) => json!({ "sessionUpdate": "user_message_chunk",
+                                        "content": crate::images::content(&image) }),
+                                    None => chunk("user_message_chunk", path),
+                                });
+                            }
+                            Some("mention" | "skill") => {
                                 let path = c.get("path").and_then(Value::as_str).unwrap_or_default();
                                 out.push(chunk("user_message_chunk", path));
                             }

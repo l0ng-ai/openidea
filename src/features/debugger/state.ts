@@ -1251,6 +1251,7 @@ async function logSuspendingHit(id: DebugSessionId, frame: StackFrame) {
   const bp = breakpointsOf(frame.path!).find((b) => b.line === frame.line && b.enabled);
   if (!bp || !suspends(bp)) return;
   for (const part of logParts(bp, frame.path!)) {
+    // oxlint-disable-next-line no-await-in-loop -- console lines must be appended in log-part order
     const text = await interpolateLog(part, async (expr) => {
       const v = await call(commands.debugEvaluateIn(id, frame.id, expr, "repl"));
       return v.value;

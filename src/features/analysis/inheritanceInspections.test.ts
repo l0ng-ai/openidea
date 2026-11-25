@@ -452,6 +452,7 @@ it("leaves test code alone", async () => {
   expect(await testMethod.run()).toEqual([]);
   for (const path of ["/p/tests/test_a.py", "/p/a_test.py", "/p/conftest.py"]) {
     const testFile = new Fixture(path).add(path, [{ name: "Helpers", line: 0, bases: [], methods: [helper] }]);
+    // oxlint-disable-next-line no-await-in-loop -- assertions stay in path order so a failure names the exact test file
     expect(await testFile.run()).toEqual([]);
   }
 });

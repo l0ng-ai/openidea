@@ -146,6 +146,7 @@ export async function reloadChangedClasses(build = true, configId?: string, allo
         });
         let status: "cancelled" | "failed" | "succeeded" | "withErrors" | null = null;
         try {
+          // oxlint-disable-next-line no-await-in-loop -- builds run one module at a time against the shared activeBuild/cancel state and UI context; cancellation aborts the whole reload
           status = await call(commands.javaBuildWorkspace(module, request));
         } catch (e) {
           status = isCancelled(e) ? "cancelled" : null;
@@ -199,6 +200,7 @@ export async function reloadChangedClasses(build = true, configId?: string, allo
     const obsolete: DebugSessionId[] = [];
     for (const s of sessions) {
       try {
+        // oxlint-disable-next-line no-await-in-loop -- redefines run in session order; errors and obsolete-session results are aggregated in that order for the notification
         const r = await call(commands.debugRedefineClasses(s.id));
         r.changedClasses.forEach((c) => changed.add(c));
         if (r.errorMessage) {
