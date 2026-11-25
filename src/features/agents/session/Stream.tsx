@@ -42,18 +42,12 @@ import {
 import { selectionIn } from "../selection";
 import styles from "../Session.module.css";
 import { useAgents } from "../store";
-import { foldedTurns, thoughtDurations } from "../timeline";
-import {
-  conversationRows,
-  foldTurnRows,
-  isProcessEntry,
-  type ConversationRow,
-  type EntryRow,
-} from "./conversationRows";
+import { thoughtDurations } from "../timeline";
+import { conversationRows, isProcessEntry, rowEntries, type ConversationRow, type EntryRow } from "./conversationRows";
 import { FindBar } from "./FindBar";
 import { KeepFoldHeader, OpenFolds } from "./Folds";
 import { Entry } from "./messages";
-import { ProcessRun, RowRenderer, TurnFold } from "./ProcessRows";
+import { ProcessRun } from "./ProcessRows";
 import { type QuestionAnswer } from "./QuestionForm";
 import { providerName } from "./shared";
 import { WorkingRow } from "./WorkingRow";
@@ -163,9 +157,7 @@ function useOffscreenRows(
 
 /** Images remain visible beside the work's folded summary, without duplicating them when it opens. */
 function toolImages(row: ConversationRow): AgentImage[] {
-  if (row.kind === "turn") return row.rows.flatMap(toolImages);
-  const entries = row.kind === "process" ? row.entries.map(({ entry }) => entry) : [row.entry];
-  return entries.flatMap((entry) => (entry.type === "tool" ? (entry.images ?? []) : []));
+  return rowEntries(row).flatMap((entry) => (entry.type === "tool" ? (entry.images ?? []) : []));
 }
 
 interface StreamProps {
@@ -351,7 +343,7 @@ export function Stream({
     }, HIDDEN_TRIM_MS);
     return () => window.clearTimeout(timer);
   }, [visible]);
-  const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
+  const { toolCalls, fitWindowWidth } = useAgentSettings();
   useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
   /**
    * Blank space after the conversation that lets a section folded near the end keep its header
@@ -514,9 +506,8 @@ export function Stream({
   // Keep the row stable when earlier history is prepended; its author can move with the work.
   const rows = useMemo(() => {
     if (!entries) return [];
-    const rows = conversationRows(entries, start, toolCalls === "grouped");
-    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start)) : rows;
-  }, [entries, start, foldTurns, toolCalls, finding]);
+    return conversationRows(entries, start, toolCalls === "grouped");
+  }, [entries, start, toolCalls]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
     const byAgent = (row: ConversationRow) =>
@@ -551,9 +542,7 @@ export function Stream({
   );
   const renderConversationRow = useCallback(
     (row: ConversationRow): ReactNode =>
-      row.kind === "turn" ? (
-        <TurnFold row={row} />
-      ) : row.kind === "process" ? (
+      row.kind === "process" ? (
         <ProcessRun
           row={row}
           task={task}
@@ -712,7 +701,7 @@ export function Stream({
             ) : entries.length === 0 && !busy && !loadError ? (
               <EmptyState title="No conversation history" />
             ) : (
-              <RowRenderer.Provider value={renderConversationRow}>{renderedRows}</RowRenderer.Provider>
+              renderedRows
             )}
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>

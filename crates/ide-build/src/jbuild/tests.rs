@@ -84,6 +84,8 @@ impl Fixture {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap();
         let build = [
+            // A persistent Gradle daemon can keep the fixture's output pipes open on Windows.
+            ("gradle.properties", "org.gradle.daemon=false\n"),
             ("settings.gradle", "rootProject.name = 'root'\ninclude 'lib', 'app'\n"),
             (
                 "build.gradle",

@@ -144,6 +144,7 @@ describe("Add Python Interpreter", () => {
         expect.anything(),
         expect.anything(),
       );
+      // oxlint-disable-next-line no-await-in-loop -- the dialog must settle from the previous tool before the next tool is clicked
       await act(async () => finish(ok(VENV)));
     }
     fireEvent.change(screen.getByLabelText("Name:"), { target: { value: " ds " } });
@@ -186,6 +187,7 @@ describe("Add Python Interpreter", () => {
         expect.anything(),
         expect.anything(),
       );
+      // oxlint-disable-next-line no-await-in-loop -- the checkbox is toggled between iterations, so each confirmation must settle first
       await act(async () => finish(ok(VENV)));
       fireEvent.click(screen.getByRole("checkbox", { name: "Install packages from Pipfile" }));
     }

@@ -80,6 +80,7 @@ import {
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
 import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
+import { copyBranchNameActions } from "./copyBranchName";
 import { copyRepositoryPathActions, registerCopyRepositoryPath } from "./copyRepositoryPath";
 import { activateSettingsPages } from "./settingsPages";
 import { registerStagedEditor } from "./StagedEditor";
@@ -270,6 +271,7 @@ export function activate(): () => void {
     registerActions(openOnRemoteActions),
     registerOpenOnRemote(),
     registerActions(copyRepositoryPathActions),
+    registerActions(copyBranchNameActions),
     registerCopyRepositoryPath(),
     registerHistoryActions(),
     registerLogPaneActions(),

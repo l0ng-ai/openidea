@@ -58,6 +58,10 @@ pub(super) struct Translator {
     pub used: Option<u64>,
     pub model: Option<String>,
     windows: HashMap<String, u64>,
+    /// The window Claude Code itself counts against (`get_context_usage` `maxTokens`) and the
+    /// model it was read for. It can be smaller than the model's `contextWindow` in a `result`
+    /// (its compaction threshold follows this one), so it wins while the model is the same.
+    context_max: Option<(Option<String>, u64)>,
     /// The session's cost so far in USD, as the last `result` reported it.
     cost_usd: Option<f64>,
 }
@@ -77,6 +81,7 @@ impl Translator {
             used: None,
             model: None,
             windows: HashMap::new(),
+            context_max: None,
             cost_usd: None,
         }
     }
@@ -571,6 +576,7 @@ impl Translator {
     /// The context usage Claude Code reports (`get_context_usage`), as a usage update.
     pub fn on_context_usage(&mut self, used: u64, size: u64) -> Update {
         self.used = Some(used);
+        self.context_max = Some((self.model.clone(), size));
         let mut update = json!({ "sessionUpdate": "usage_update", "used": used, "size": size });
         if let Some(amount) = self.cost_usd {
             update["cost"] = json!({ "amount": amount, "currency": "USD" });
@@ -580,13 +586,14 @@ impl Translator {
 
     fn usage_update(&self) -> Option<Update> {
         let used = self.used?;
-        let size = self
-            .model
-            .as_ref()
-            .and_then(|m| {
-                self.windows
-                    .get(m)
-                    .or_else(|| self.windows.iter().find(|(k, _)| k.starts_with(m.as_str())).map(|(_, v)| v))
+        let own = self.context_max.as_ref().filter(|(model, _)| *model == self.model).map(|(_, size)| size);
+        let size = own
+            .or_else(|| {
+                self.model.as_ref().and_then(|m| {
+                    self.windows
+                        .get(m)
+                        .or_else(|| self.windows.iter().find(|(k, _)| k.starts_with(m.as_str())).map(|(_, v)| v))
+                })
             })
             .or_else(|| (self.windows.len() == 1).then(|| self.windows.values().next()).flatten())?;
         let mut update = json!({ "sessionUpdate": "usage_update", "used": used, "size": size });

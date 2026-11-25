@@ -42,6 +42,7 @@ import {
   cursorModelDefaults,
   emptyDraft,
   hasMention,
+  fenced,
   isMentioned,
   isPerModelOption,
   mentionOf,
@@ -593,6 +594,7 @@ export async function connect(): Promise<void> {
       task &&
       !useAgents.getState().tasks.has(task)
     )
+      // oxlint-disable-next-line no-await-in-loop -- closeInput takes a tabs-state snapshot and may await guarded/busy closes; parallel closes could stack prompts/evictions
       await editors.closeInput?.(t.input.key);
   }
 }
@@ -1407,6 +1409,7 @@ export async function importExternalSessions(
       break;
     }
     try {
+      // oxlint-disable-next-line no-await-in-loop -- imports are documented sequential: abort, generation and progress are checked between sessions
       await importOne(s.provider, s.sessionId, batch.length === 1);
     } catch (e) {
       failures.push(`${s.title}: ${e instanceof Error ? e.message : String(e)}`);
@@ -1692,6 +1695,19 @@ export async function setTaskSkillOverrides(task: string, overrides: Record<stri
   useAgents.setState((s) => ({
     tasks: new Map(s.tasks).set(task, updated),
   }));
+}
+
+/** Attach a reviewed block without submitting, changing providers, or replacing draft attachments. */
+export function appendContextBlock({ text, info }: { text: string; info: string }) {
+  const selected = activeComposerKey();
+  const task = useAgents.getState().tasks.get(selected);
+  const key = task && task.status !== "archived" ? task.id : HOME;
+  const existing = composerDraft(key).text.trimEnd();
+  // End with a trailing newline so the composer caret lands after the fence and folds it into a card.
+  const block = `${fenced(text, info)}\n`;
+  updateComposer(key, { text: existing ? `${existing}\n\n${block}` : block });
+  if (key === HOME) openHome();
+  else openTask(key);
 }
 
 /** The composer the user is looking at: the Agents surface on show, else the one typed in last. */

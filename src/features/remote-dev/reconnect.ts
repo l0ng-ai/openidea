@@ -67,11 +67,13 @@ async function retry(host: string, run: number, wait: (ms: number) => Promise<vo
   if (unsaved() > 0) return notifyLost(host);
   let last: unknown;
   for (const ms of RETRY_DELAYS_MS) {
+    // oxlint-disable-next-line no-await-in-loop -- each delay precedes its attempt; generation and unsaved state are rechecked only after the wait.
     await wait(ms);
     if (run !== generation || useRemote.getState().lost !== host) return;
     // Edited while waiting: the same applies.
     if (unsaved() > 0) return notifyLost(host, last);
     try {
+      // oxlint-disable-next-line no-await-in-loop -- an attempt must finish and fail before the next delayed retry; success returns immediately.
       await reconnectRemote();
       return;
     } catch (e) {

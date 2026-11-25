@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Stream {
@@ -28,6 +28,8 @@ pub(crate) const MAX_TEXT_BYTES: usize = 32 * 1024 * 1024;
 /// `on_line` takes its lines waits on its full pipe, as it would on a terminal, instead of
 /// the lines piling up in memory (a line is at most [`MAX_LINE_BYTES`] in [`run_bounded`]).
 const LINE_QUEUE: usize = 64;
+/// How long output may keep arriving after the child exits before the run stops reading it.
+const OUTPUT_AFTER_EXIT: Duration = Duration::from_secs(1);
 /// What [`pump_bounded`] reads from a pipe at a time.
 const PUMP_CHUNK: usize = 64 * 1024;
 
@@ -236,6 +238,10 @@ fn run_with_env_capture(
     let mut tail_bytes = 0usize;
     let mut total = 0usize;
     let mut truncated = false;
+    // When the child exited. A process it left running (a Gradle daemon on Windows) can inherit
+    // the pipes and keep them open long after; the run ends once they have been quiet this long.
+    let mut exited: Option<Instant> = None;
+    let mut pipes_held = false;
     loop {
         if cancel.is_cancelled() {
             kill_tree(&mut child);
@@ -244,6 +250,9 @@ fn run_with_env_capture(
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok((_, line)) if encoding.notice.as_ref() == Some(&line) => {}
             Ok((stream, line)) => {
+                if exited.is_some() {
+                    exited = Some(Instant::now());
+                }
                 on_line(stream, &line);
                 if !bounded {
                     // The caller parses a complete model from `text`, so keep every line.
@@ -274,12 +283,26 @@ fn run_with_env_capture(
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => match exited {
+                Some(at) if at.elapsed() >= OUTPUT_AFTER_EXIT => {
+                    pipes_held = true;
+                    break;
+                }
+                Some(_) => {}
+                None => {
+                    if child.try_wait()?.is_some() {
+                        exited = Some(Instant::now());
+                    }
+                }
+            },
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    for r in readers.into_iter().flatten() {
-        let _ = r.join();
+    // Readers still blocked on a pipe that a leftover process holds end with it, on their own.
+    if !pipes_held {
+        for r in readers.into_iter().flatten() {
+            let _ = r.join();
+        }
     }
     let status = child.wait()?;
     let mut text = head;
@@ -390,6 +413,31 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    }
+
+    #[test]
+    fn a_process_left_holding_the_pipes_does_not_hold_the_run() {
+        if cfg!(windows) {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        // The background child inherits stdout and stderr, as a Gradle daemon can on Windows.
+        let script = "echo built; (sleep 30) & echo done >&2";
+        let started = Instant::now();
+        let mut lines = Vec::new();
+        let out = run(
+            "sh",
+            &["-c".into(), script.into()],
+            tmp.path(),
+            &BTreeMap::new(),
+            &CancellationToken::new(),
+            |_, l| lines.push(l.to_owned()),
+        )
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+        assert!(out.success);
+        lines.sort();
+        assert_eq!(lines, ["built", "done"]);
     }
 
     #[test]

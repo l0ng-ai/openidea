@@ -425,6 +425,8 @@
   "menu.code.moveElementLeft": "Déplacer l'élément vers la gauche",
   "menu.code.moveElementRight": "Déplacer l'élément vers la droite",
   "menu.code.collapseBlock": "Plier le bloc de code",
+  "menu.code.expandDocComments": "Développer les commentaires de documentation",
+  "menu.code.collapseDocComments": "Réduire les commentaires de documentation",
   "menu.analyze.inspectFile": "Inspecter le fichier actuel",
   "menu.project.copyElement": "Copier…",
   "menu.run.chooseDebugConfig": "Déboguer…",

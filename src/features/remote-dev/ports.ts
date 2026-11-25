@@ -97,6 +97,7 @@ export async function restorePorts(): Promise<void> {
   const saved = savedPorts();
   for (const port of saved) {
     if (useRemote.getState().session !== session) return;
+    // oxlint-disable-next-line no-await-in-loop -- the session is rechecked before each forward; a disconnect during one forward must stop the rest.
     await call(commands.remoteForwardPort(port)).catch(() => null);
   }
   const ports = await commands.remoteForwardedPorts().catch(() => []);

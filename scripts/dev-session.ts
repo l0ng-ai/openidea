@@ -59,6 +59,7 @@ export async function claimSession(
       socket.end(JSON.stringify(session));
     });
     try {
+      // oxlint-disable-next-line no-await-in-loop -- ports are probed in order; the next one is tried only if this is busy
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);
         server.listen(port, "127.0.0.1", () => {
@@ -70,6 +71,7 @@ export async function claimSession(
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EADDRINUSE" && code !== "EACCES") throw error;
+      // oxlint-disable-next-line no-await-in-loop -- read the occupant before deciding whether to try the next port
       const existing = await readSession(port);
       if (existing?.worktree === session.worktree && existing.identifier === session.identifier) {
         return { existing };

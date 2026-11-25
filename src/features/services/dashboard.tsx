@@ -871,6 +871,7 @@ async function fetchContainerStatsMap(
     while (next < ids.length) {
       const id = ids[next++]!;
       try {
+        // oxlint-disable-next-line no-await-in-loop -- each worker claims the next id from a shared cursor; fan-out is already bounded by STATS_CONCURRENCY workers
         out[id] = await call(commands.dockerContainerStats(endpoint, id));
       } catch {
         // Container may have stopped before stats were sampled.

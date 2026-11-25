@@ -6,6 +6,7 @@ import {
   fileItem,
   matchActions,
   mergeSymbols,
+  splitSymbolQuery,
   parseCommand,
   sectionsFor,
   stableIndex,
@@ -33,10 +34,16 @@ const sym = (
   score: 0,
   indices: [0],
 });
-const ws = (name: string, kind: WorkspaceSymbol["kind"], path: string, line: number): WorkspaceSymbol => ({
+const ws = (
+  name: string,
+  kind: WorkspaceSymbol["kind"],
+  path: string,
+  line: number,
+  container: string | null = null,
+): WorkspaceSymbol => ({
   name,
   kind,
-  container: null,
+  container,
   location: { path, range: range(line) },
 });
 const opts = { root: "/p", includeNonProject: false, typesOnly: false, excludeTypes: false, limit: 10 };
@@ -50,6 +57,38 @@ describe("mergeSymbols", () => {
     expect(r.items[2]!.lsp).toBe(true);
     expect(r.items[2]!.indices).toEqual([0, 1, 2]);
     expect(r.items[2]!.rel).toBe("C.kt");
+  });
+
+  it("matches qualified queries against the LSP symbol's container", () => {
+    const lsp = [
+      ws("getTypeList", "method", "/p/Category.php", 3, "App\\Models\\Category"),
+      ws("getTypeList", "method", "/p/Product.php", 8, "App\\Models\\Product"),
+      ws("getTypes", "function", "/p/helpers.php", 1),
+    ];
+    for (const query of ["Category::getTypeList", "Category.getTypeList", "Category#getTypeList", "Cat::getType"]) {
+      expect(
+        mergeSymbols([], lsp, query, opts).items.map((i) => i.path),
+        query,
+      ).toEqual(["/p/Category.php"]);
+    }
+    // The exact name still ranks as exact once the qualifier is taken off.
+    const exact = mergeSymbols(
+      [],
+      [...lsp, ws("getTypeListFor", "method", "/p/Category.php", 9, "Category")],
+      "Category::getTypeList",
+      opts,
+    );
+    expect(exact.items.map((i) => i.line)).toEqual([3, 9]);
+    expect(mergeSymbols([], lsp, "getTypeList", opts).items).toHaveLength(2);
+  });
+
+  it("splits a qualified symbol query like the symbol index", () => {
+    expect(splitSymbolQuery("Category::getTypeList")).toEqual({ container: "Category", name: "getTypeList" });
+    expect(splitSymbolQuery("app.Category.getTypeList")).toEqual({ container: "Category", name: "getTypeList" });
+    expect(splitSymbolQuery("Foo#bar")).toEqual({ container: "Foo", name: "bar" });
+    expect(splitSymbolQuery("Category::")).toEqual({ container: "Category", name: "" });
+    expect(splitSymbolQuery("order")).toEqual({ container: null, name: "order" });
+    expect(splitSymbolQuery(".env")).toEqual({ container: null, name: ".env" });
   });
 
   it("puts exact LSP hits before fuzzy index hits", () => {

@@ -481,6 +481,7 @@ async fn execute_statements(
     let db = host.project(window)?.db.clone();
     let cancel = host.begin_request(request);
     let result = async {
+        db.validate_script(id, &statements).await?;
         for (index, statement) in statements.into_iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
