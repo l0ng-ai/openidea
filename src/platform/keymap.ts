@@ -5,8 +5,10 @@
  * `Meta+Shift+O`, `Alt+F7`, `F8`. Space separates chord strokes
  * (`Meta+K Meta+C`). A modifier pressed twice is `Shift Shift` (IDEA's double
  * Shift, `Ctrl Ctrl`…); pressed twice and held, then a key, `Alt Alt+Up`.
- * Keys are matched by physical position (`KeyboardEvent.code`), so ⌥-letter
- * combos work on macOS where `event.key` would be a symbol. Mouse shortcuts
+ * Keys match by the typed character for letters and unshifted punctuation (so
+ * AZERTY's ⌘, records `Meta+,`, not `Meta+M`), and by physical position
+ * (`KeyboardEvent.code`) when Shift or Alt are held, so ⌥-letter combos work on
+ * macOS where `event.key` would be a symbol. Mouse shortcuts
  * name the button 1-based (`Button1` = left, `Button4` = back side button, `Button5` = forward),
  * or the wheel direction (`WheelUp`, `WheelDown`), optionally with modifiers.
  */
@@ -380,15 +382,22 @@ export function strokeOf(
   e: Pick<KeyboardEvent, "code" | "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
   let key: string | undefined;
-  const letter = letterOf(e);
-  if (letter) key = letter;
-  else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
+  if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
   else if (/^Numpad\d$/.test(e.code)) key = e.code.slice(6);
   else if (/^F\d{1,2}$/.test(e.code)) key = e.code;
+  else if (/^Numpad/.test(e.code)) key = CODE_NAMES[e.code];
+  // Unshifted characters follow the layout, not the QWERTY position (AZERTY's
+  // comma sits on KeyM, so ⌘, must record `Meta+,` not `Meta+M`). Shift-held
+  // events keep the physical key — presets are written `Meta+Shift+]` — and
+  // so do Alt-held ones, since ⌥ on macOS and AltGr type symbols.
+  else if (!e.altKey && !e.shiftKey && e.key.length === 1 && e.key !== " ")
+    key = /^[a-zA-Z]$/.test(e.key) ? e.key.toUpperCase() : e.key;
   else key = CODE_NAMES[e.code];
   if (!key) {
-    if (["Shift", "Meta", "Control", "Alt"].includes(e.key)) return null;
-    key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    const letter = letterOf(e);
+    if (letter) key = letter;
+    else if (["Shift", "Meta", "Control", "Alt"].includes(e.key)) return null;
+    else key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
   }
   return modifiedStroke(e, key);
 }
