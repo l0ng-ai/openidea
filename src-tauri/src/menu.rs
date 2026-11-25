@@ -617,6 +617,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         vec![
             act("build.buildProject", "Build Project"),
             act("build.buildModule", "Build Module"),
+            act("build.compileFile", "Recompile"),
             act("build.rebuildProject", "Rebuild Project"),
             SEP,
             act("build.buildArtifacts", "Build Artifacts"),
@@ -824,6 +825,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             "Active Tool Window",
             vec![
                 act("toolwindow.hideActive", "Hide Active Tool Window"),
+                act("toolwindow.hideSide", "Hide Side Tool Windows"),
                 act("toolwindow.maximize", "Maximize Tool Window"),
                 act("toolwindow.closeContent", "Close Active Tab"),
                 sub(
@@ -2391,6 +2393,7 @@ mod tests {
                     && *id != "toolwindow.hideAll"
                     && ![
                         "toolwindow.hideActive",
+                        "toolwindow.hideSide",
                         "toolwindow.maximize",
                         "toolwindow.closeContent",
                         "toolwindow.jumpToLast",
@@ -2532,9 +2535,40 @@ mod tests {
                 "toolwindow.hideActive",
                 "editor.closeOtherTabs",
                 "toolbar.customize",
+                "build.compileFile",
             ] {
                 assert!(ids.contains(&required), "{required} missing on {os:?}");
             }
         }
+    }
+
+    #[test]
+    fn build_menu_lists_recompile_and_patches_its_label() {
+        for os in ALL_OS {
+            let entries = spec(os);
+            let Entry::Submenu { children, .. } =
+                entries.iter().find(|e| matches!(e, Entry::Submenu { id: "build", .. })).unwrap()
+            else {
+                panic!("Build menu missing")
+            };
+            assert_eq!(
+                action_ids(children),
+                [
+                    "build.buildProject",
+                    "build.buildModule",
+                    "build.compileFile",
+                    "build.rebuildProject",
+                    "build.buildArtifacts",
+                ],
+                "{os:?}"
+            );
+            assert!(!fires_natively(&entries, "build.compileFile"));
+        }
+        let entries = spec(Os::Mac);
+        let mut base = MenuConfig::default();
+        base.labels.insert("menu.build.compileFile".into(), "Recompile".into());
+        let mut active = base.clone();
+        active.labels.insert("menu.build.compileFile".into(), "Recompile 'Main.java'".into());
+        assert_eq!(changed_menus(&render_bar(&entries, &base, &[]), &render_bar(&entries, &active, &[])), ["build"]);
     }
 }

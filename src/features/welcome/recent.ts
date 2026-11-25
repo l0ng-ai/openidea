@@ -26,7 +26,7 @@ import { tx } from "@/platform/i18n";
 import { fuzzyMatch } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
-import { openRemoteProject } from "@/workbench/projectWindow";
+import { openRemoteProject, type ProjectWindowOverride } from "@/workbench/projectWindow";
 
 interface RecentState {
   projects: RecentProject[];
@@ -124,19 +124,28 @@ function failure(e: unknown): { kind?: unknown; message: string } {
   return { message: e instanceof Error ? e.message : String(e) };
 }
 
-/** Opens a project from the recent list; offers to remove entries whose folder is gone. */
 const openingRecent = new Map<string, Promise<boolean>>();
 
-/** A second click (or double click) while the same project is still opening joins that attempt instead of connecting again. */
-export function openRecent(project: Pick<RecentProject, "path" | "name">): Promise<boolean> {
+/**
+ * Opens a project from the recent list; offers to remove entries whose folder is gone.
+ * `override` is the window a modifier key picked ({@link projectWindowOverride}), else "Open project in" decides.
+ * A second click (or double click) while the same project is still opening joins that attempt instead of connecting again.
+ */
+export function openRecent(
+  project: Pick<RecentProject, "path" | "name">,
+  override?: ProjectWindowOverride | null,
+): Promise<boolean> {
   const pending = openingRecent.get(project.path);
   if (pending) return pending;
-  const attempt = openRecentNow(project).finally(() => openingRecent.delete(project.path));
+  const attempt = openRecentNow(project, override).finally(() => openingRecent.delete(project.path));
   openingRecent.set(project.path, attempt);
   return attempt;
 }
 
-async function openRecentNow(project: Pick<RecentProject, "path" | "name">): Promise<boolean> {
+async function openRecentNow(
+  project: Pick<RecentProject, "path" | "name">,
+  override?: ProjectWindowOverride | null,
+): Promise<boolean> {
   if (!isTauri()) {
     notifications().notify({
       level: "warning",
@@ -146,12 +155,13 @@ async function openRecentNow(project: Pick<RecentProject, "path" | "name">): Pro
     return false;
   }
   const remote = await resolveRemoteLocation(project.path);
-  if (remote) return openRemote(project, remote);
+  if (remote) return openRemote(project, remote, override);
   const current = useProject.getState().project;
   if (current?.root === project.path) return true;
-  // With a project open, the app feature applies "Open project in" (new / this window / ask).
-  if (current && getAction("file.openRecentProject")) {
-    await executeAction("file.openRecentProject", project.path);
+  // With a project open, the app feature applies "Open project in" (new / this window / ask). A modifier key
+  // picks the window of this open instead, with or without a project open.
+  if ((current || override) && getAction("file.openRecentProject")) {
+    await executeAction("file.openRecentProject", override ? { path: project.path, window: override } : project.path);
     return true;
   }
   useRecent.setState({ opening: project.path });
@@ -188,12 +198,16 @@ async function openRecentNow(project: Pick<RecentProject, "path" | "name">): Pro
 async function openRemote(
   project: Pick<RecentProject, "path" | "name">,
   remote: { target: RemoteTarget; path: string },
+  override?: ProjectWindowOverride | null,
 ): Promise<boolean> {
+  const here = async () => {
+    useRecent.setState({ opening: project.path });
+    await connectRemote(remote.target, remote.path);
+  };
   try {
-    return await openRemoteProject(remote.target, remote.path, async () => {
-      useRecent.setState({ opening: project.path });
-      await connectRemote(remote.target, remote.path);
-    });
+    return override
+      ? await openRemoteProject(remote.target, remote.path, here, override)
+      : await openRemoteProject(remote.target, remote.path, here);
   } catch (e) {
     if (isCancelled(e)) return false;
     notifications().notify({

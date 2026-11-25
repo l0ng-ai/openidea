@@ -46,6 +46,7 @@ import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { openImport } from "./importConfigs";
 import { registerComposerInstall } from "./composerInstall";
+import { registerPubspecCommands } from "./pubspec";
 import { registerGoActions } from "./goActions";
 import { registerRunTabActions } from "./runTabs";
 import { invalidateGoModules } from "./goModules";
@@ -70,7 +71,12 @@ import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { isZigBuildStep, zigDebugTarget } from "./zigDebug";
 import { junitType } from "./junitType";
-import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import {
+  installBuildTomcatSync,
+  listenForApplicationDeactivation,
+  showApplicationUpdate,
+  updatableSessions,
+} from "./applicationUpdate";
 import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
 import { launchSettingsGutter } from "./launchSettingsGutter";
@@ -78,6 +84,7 @@ import { runGutter } from "./runGutter";
 import { markdownCommandGutter } from "./markdownCommands";
 import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
+import { activateThreadDumps } from "./threadDump/actions";
 import { clearRuntimeCache } from "./runtimes";
 import {
   adoptTemporary,
@@ -288,6 +295,22 @@ async function runCurrentFile(debug: boolean) {
   selectConfig(CURRENT_FILE);
 }
 
+/** Flutter Attach: `flutter attach` with the selected Flutter configuration, to an app started elsewhere. */
+async function flutterAttachSelected() {
+  await ensureConfigs();
+  const config = selectedConfig();
+  if (config?.kind !== "flutter") {
+    notifications().notify({
+      group: "run",
+      level: "info",
+      title: "Select a Flutter run configuration to attach with",
+      key: "run-flutter-attach",
+    });
+    return;
+  }
+  await executeAction("debug.startConfig", { ...config, params: { ...config.params, request: "attach" } });
+}
+
 function nothingToRun() {
   notifications().notify({
     group: "run",
@@ -445,6 +468,7 @@ export function activate(): () => void {
     registerGoActions(),
     registerRunTabActions(),
     registerComposerInstall(),
+    registerPubspecCommands(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({
       id: "run.editConfigs",
@@ -480,7 +504,9 @@ export function activate(): () => void {
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
+    activateThreadDumps(),
     listenForApplicationDeactivation(),
+    installBuildTomcatSync(),
     trackRecentConfigurations(),
     trackFailedTestSelection(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
@@ -618,6 +644,15 @@ export function activate(): () => void {
         category: "Run",
         when: "flutterProject",
         run: () => restartFlutterDaemon(),
+      },
+      {
+        id: "run.flutterAttach",
+        title: "Flutter Attach",
+        category: "Run",
+        icon: "debug",
+        description: "Attach the debugger to the app of the selected Flutter configuration, started elsewhere",
+        when: "flutterProject",
+        run: () => flutterAttachSelected(),
       },
       {
         id: "run.flutterHotReload",

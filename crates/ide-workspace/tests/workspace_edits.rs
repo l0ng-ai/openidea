@@ -679,3 +679,25 @@ fn replacing_a_directory_symlink_does_not_resolve_later_child_paths_through_its_
         assert_eq!(std::fs::read_to_string(link.join("file.txt")).unwrap(), "new file\n");
     }
 }
+
+#[test]
+fn an_overwritten_open_file_keeps_the_editorconfig_charset() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = tmp.path().join("A.java");
+    std::fs::write(&path, "class A {}\n").unwrap();
+    let docs = documents();
+    let mut defaults = docs.file_defaults();
+    defaults.project_fallback = "iso-8859-15".into();
+    docs.set_file_defaults(defaults);
+    let doc = docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+
+    docs.apply_workspace_edit(&WorkspaceEdit {
+        files: vec![FileEdit::Create { path: path.clone().into(), overwrite: true }],
+        ..Default::default()
+    })
+    .unwrap();
+
+    assert_eq!(docs.snapshot(doc.id).unwrap().encoding, "utf-8");
+}

@@ -25,6 +25,16 @@ pub fn flutter_daemon_restart(host: &Host, window: &str) -> IdeResult<FlutterDev
     Ok(host.project(window)?.flutter.restart())
 }
 
+/// Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`.
+#[command(trust = trusted)]
+pub async fn flutter_emulator_launch(host: &Host, window: &str, id: String) -> IdeResult<()> {
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || project.flutter.launch_emulator(&id))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map_err(IdeError::unavailable)
+}
+
 /// The address of the project's DevTools server, started on first use. A server that failed or
 /// exited is only started again by the next request.
 #[command(trust = trusted)]
@@ -36,4 +46,5 @@ pub async fn flutter_devtools_url(host: &Host, window: &str) -> IdeResult<String
         .map_err(IdeError::unavailable)
 }
 
-ide_command::domain!(flutter: flutter_devices, flutter_devices_refresh, flutter_daemon_restart, flutter_devtools_url);
+ide_command::domain!(flutter: flutter_devices, flutter_devices_refresh, flutter_daemon_restart, flutter_emulator_launch,
+    flutter_devtools_url);

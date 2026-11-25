@@ -28,6 +28,10 @@ pub enum AttachError {
     Unsupported,
     #[error("the JVM has no attach listener")]
     NoListener,
+    #[error("the process is not a HotSpot JVM")]
+    NotAJvm,
+    #[error("the JVM did not open its attach listener; it may run with -XX:+DisableAttachMechanism")]
+    ListenerDidNotStart,
     #[error("the attach socket is not private to the current user")]
     ForeignListener,
     #[error("the attach listener refused the connection")]
@@ -98,14 +102,14 @@ pub fn jcmd(pid: u32, command_line: &str, timeout: Duration) -> Result<String, A
 }
 
 #[cfg(unix)]
-fn socket_path(pid: u32) -> PathBuf {
+pub(crate) fn socket_path(pid: u32) -> PathBuf {
     temp_dir().join(format!(".java_pid{pid}"))
 }
 
 /// Same trust rule as the JDK's `VirtualMachineImpl`: only talk to a socket we own and
 /// nobody else can reach, otherwise another user could answer in the JVM's place.
 #[cfg(unix)]
-fn check_socket(path: &Path) -> Result<(), AttachError> {
+pub(crate) fn check_socket(path: &Path) -> Result<(), AttachError> {
     // No symlink following: in a sticky, world-writable /tmp anyone can plant a symlink to a
     // socket we own, pass this check, then re-point it before connect.
     let meta = match std::fs::symlink_metadata(path) {
@@ -397,6 +401,7 @@ mod tests {
 
     #[test]
     fn sends_v1_jcmd_request_and_returns_body() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let (path, listener) = bind_private(dir.path());
         let server = serve_once(listener, b"0\nhello\n");
@@ -407,6 +412,7 @@ mod tests {
 
     #[test]
     fn sends_v1_agent_properties_request_and_parses_body() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let (path, listener) = bind_private(dir.path());
         let server = serve_once(listener, b"0\n#Mon\nsun.jdwp.listenerAddress=dt_socket\\:64390\n");
@@ -417,6 +423,7 @@ mod tests {
 
     #[test]
     fn nonzero_code_is_command_error() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let (path, listener) = bind_private(dir.path());
         let _server = serve_once(listener, b"-1\njava.lang.IllegalArgumentException: Unknown diagnostic command");
@@ -431,6 +438,7 @@ mod tests {
 
     #[test]
     fn jcmd_times_out_when_listener_never_answers() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let (path, listener) = bind_private(dir.path());
         let (release, hold) = mpsc::channel::<()>();
@@ -448,6 +456,7 @@ mod tests {
 
     #[test]
     fn stale_socket_maps_to_refused() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let (path, listener) = bind_private(dir.path());
         drop(listener);
@@ -458,6 +467,7 @@ mod tests {
 
     #[test]
     fn rejects_socket_with_group_or_other_permissions() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let (path, _listener) = bind_private(dir.path());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
@@ -468,6 +478,7 @@ mod tests {
 
     #[test]
     fn output_over_limit_is_too_large() {
+        let _serial = crate::test_serial::hold();
         let (mut reader, mut writer) = UnixStream::pair().unwrap();
         writer.write_all(b"0\n").unwrap();
         writer.write_all(&[b'x'; 100]).unwrap();
@@ -479,6 +490,7 @@ mod tests {
 
     #[test]
     fn symlink_to_our_own_private_socket_is_rejected() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let (target, _listener) = bind_private(dir.path());
         let link = dir.path().join(".java_pid2");
@@ -491,6 +503,7 @@ mod tests {
 
     #[test]
     fn peer_uid_check_passes_for_our_own_listener() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let (path, listener) = bind_private(dir.path());
         let stream = connect_before(&path, Instant::now() + Duration::from_secs(1)).unwrap();
@@ -500,6 +513,7 @@ mod tests {
 
     #[test]
     fn connect_before_maps_missing_socket_to_no_listener() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
         let missing = connect_before(&dir.path().join("nope"), deadline);
@@ -510,6 +524,7 @@ mod tests {
     /// connect must give up within its deadline instead of hanging.
     #[test]
     fn connect_before_gives_up_on_a_full_backlog() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let (path, _listener) = bind_private(dir.path());
         let mut held = Vec::new();

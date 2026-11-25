@@ -7,6 +7,7 @@ export {
   detachTab,
   newTab,
   newTabRunning,
+  nextTabName,
   pluginSession,
   rememberTerminals,
   syncTerminalProject,

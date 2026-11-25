@@ -1,4 +1,4 @@
-use super::doc::blocking;
+use super::blocking;
 use crate::Host;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use ide_command::command;
@@ -593,6 +593,25 @@ pub async fn plugin_line_markers(
             target: m.target.map(|l| Location { path: l.path.into(), range: l.range, uri: None }),
         })
         .collect())
+}
+
+/// Where other files import the document's file (Find Usages on a file, a Vue component's
+/// usages). Cancel with `cancel_request(request)`.
+#[command(trust = trusted)]
+pub async fn lsp_file_references(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+) -> IdeResult<Vec<Location>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let cancel = host.begin_request(request);
+    let result = tokio::select! {
+        result = lsp.file_references(doc, cancel.clone()) => result,
+        _ = cancel.cancelled() => Err(ide_core::IdeError::cancelled()),
+    };
+    host.end_request(request);
+    result
 }
 
 /// Implementations of the symbols at `positions`, one list per position (the
@@ -3197,6 +3216,7 @@ ide_command::domain!(
     lsp_hierarchy_refactor,
     lsp_hover,
     lsp_implementation_locations,
+    lsp_file_references,
     lsp_implementations,
     lsp_inlay_hints,
     lsp_inline_completion,

@@ -3,7 +3,9 @@
 // compile classpath names, so Java code sees the classes it compiles against.
 allprojects {
     plugins.withId('java') {
-        apply plugin: 'eclipse'
+        // `project.`: a bare `apply` in this closure is the init script's own (Gradle 7 fails to create the
+        // plugin then: no IdeArtifactRegistry service).
+        project.apply plugin: 'eclipse'
         eclipse.classpath.file.whenMerged { classpath ->
             def projectOf = { dep ->
                 def path

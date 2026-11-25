@@ -63,9 +63,46 @@ pub(crate) fn edit(result: &Value) -> WorkspaceEdit {
     }
 }
 
+#[derive(Deserialize)]
+struct FileReference {
+    file: PathBuf,
+    start: Location,
+    end: Location,
+}
+
+#[derive(Deserialize)]
+struct FileReferences {
+    refs: Vec<FileReference>,
+}
+
+/// tsserver's `fileReferences` answer (the command's `body`; 1-based lines and UTF-16 offsets): the imports of a file.
+pub(crate) fn file_references(result: &Value) -> Vec<ide_core::Location> {
+    let body = result.get("body").unwrap_or(result);
+    let Ok(found) = serde_json::from_value::<FileReferences>(body.clone()) else { return Vec::new() };
+    let pos = |l: &Location| Pos::new(l.line.saturating_sub(1), l.offset.saturating_sub(1));
+    found
+        .refs
+        .into_iter()
+        .map(|r| ide_core::Location { path: r.file.into(), range: Range::new(pos(&r.start), pos(&r.end)), uri: None })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn converts_tsserver_file_references() {
+        let result = json!({ "success": true, "body": { "symbolName": "\"./Hello.vue\"", "refs": [
+            { "file": "/p/src/App.vue", "start": { "line": 2, "offset": 19 }, "end": { "line": 2, "offset": 41 },
+              "lineText": "import Hello from './components/Hello.vue'", "isWriteAccess": false }
+        ] } });
+        let refs = file_references(&result);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].path, ide_core::IpcPath::from(PathBuf::from("/p/src/App.vue")));
+        assert_eq!(refs[0].range, Range::new(Pos::new(1, 18), Pos::new(1, 40)));
+        assert!(file_references(&json!({ "success": false })).is_empty());
+    }
 
     #[test]
     fn converts_tsserver_file_code_edits() {

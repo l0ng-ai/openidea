@@ -5,7 +5,9 @@ import { applicationConfig } from "./application";
 import {
   DELEGATED_ATTACH_LISTENER,
   DELEGATED_DEBUG,
+  DELEGATED_TOKEN,
   delegatedGradleConfig,
+  runJvmToken,
   gradleDelegation,
   gradleBootLaunch,
   gradleTestLaunch,
@@ -85,6 +87,7 @@ describe("Build and run using: Gradle", () => {
       '-Dopenidea.run.args=["--port","8081 x"]',
       '-Dopenidea.run.jvmArgs=["-Xmx1g"]',
       `-Dopenidea.run.workingDir=${CORE}`,
+      `${DELEGATED_TOKEN}${runJvmToken(app, ROOT)}`,
       ":billing:core:openideaRun",
     ]);
   });
@@ -95,6 +98,36 @@ describe("Build and run using: Gradle", () => {
     expect(run.args).toContain("-Dopenidea.run.sourceSet=test");
     expect(run.args).toContain("-Dopenidea.run.workingDir=/w/shop/app");
     expect(run.args.slice(-2)).toEqual(["--offline", ":app:openideaRun"]);
+  });
+
+  it("delegated run passes a stable token", () => {
+    const app = applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []);
+    const token = (c: RunConfig) => c.args.filter((a) => a.startsWith(DELEGATED_TOKEN));
+    const first = token(delegatedGradleConfig(app, "app", ctx)!);
+    // A per-launch value would miss Gradle's configuration cache on every launch.
+    expect(first).toEqual([`${DELEGATED_TOKEN}${runJvmToken(app, ROOT)}`]);
+    expect(token(delegatedGradleConfig(app, "app", { ...ctx, configurationCache: true })!)).toEqual(first);
+  });
+
+  it("token escapes unsafe characters", () => {
+    expect(runJvmToken({ id: "app:Main Class/x\\y" }, ROOT)).toMatch(/^app_Main_Class_x_y-[A-Za-z0-9]+$/);
+    expect(runJvmToken({ id: "a.b-c_9" }, ROOT)).toMatch(/^a\.b-c_9-[A-Za-z0-9]+$/);
+  });
+
+  it("token names the project as well as the configuration", () => {
+    const app = { id: "application:app:com.example.DemoApplication" };
+    expect(runJvmToken(app, ROOT)).toBe(runJvmToken({ ...app }, ROOT));
+    // Two worktrees of one project, or two projects with the same main class.
+    expect(runJvmToken(app, "/w/shop-feature")).not.toBe(runJvmToken(app, ROOT));
+    expect(runJvmToken(app, "/w/other")).not.toBe(runJvmToken(app, ROOT));
+  });
+
+  it("init scripts hand the token to the forked JVM in Run and Debug alike", () => {
+    for (const script of [RUN_SCRIPT, BOOT_SCRIPT]) {
+      const token = script.indexOf("jvmArgs('-Dopenidea.run.token=' + token)");
+      expect(token).toBeGreaterThan(-1);
+      expect(token).toBeLessThan(script.indexOf("openidea.run.debug"));
+    }
   });
 
   it("reuses Gradle's configuration cache on Gradle 8.1+ wrappers", () => {
@@ -241,6 +274,13 @@ describe("Build and run using: Gradle", () => {
     expect(RUN_SCRIPT).toContain("else p.tasks.create('openideaRun', JavaExec, configure)");
     expect(RUN_SCRIPT).toContain("import org.gradle.util.GradleVersion");
   });
+
+  // A toolchain newer than Gradle's JVM: on it, a class compiled for that toolchain fails to load (#5594).
+  it("launches on the project's Java toolchain, as the application plugin's `run` does (#5594)", () => {
+    // `javaLauncher` is Gradle 6.7+: guarded on its line, like `mainClass`.
+    expect(RUN_SCRIPT).toContain("if (t.hasProperty('javaLauncher'))");
+    expect(RUN_SCRIPT).toContain("JavaToolchainService).launcherFor(");
+  });
 });
 
 describe("Gradle test runs", () => {
@@ -266,6 +306,7 @@ describe("Gradle test runs", () => {
 
 describe("Gradle launch routing", () => {
   const boot = {
+    id: "boot",
     kind: "gradle",
     command: "./gradlew",
     args: [":module:bootRun"],
@@ -295,6 +336,21 @@ describe("Gradle launch routing", () => {
     }
     expect(boot.args).toEqual([":module:bootRun"]);
     expect(test.args).toEqual([":module:test"]);
+  });
+
+  it("marks the forked BootRun JVM with a stable per-configuration token", async () => {
+    useProject.setState({ project: { root: ROOT } as ProjectInfo, settings: null });
+    const named = { ...boot, id: "boot app/1" } as RunConfig;
+    const first = await gradleBootLaunch(named);
+    expect(first.args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toEqual([
+      `${DELEGATED_TOKEN}${runJvmToken(named, ROOT)}`,
+    ]);
+    expect((await gradleBootLaunch(named)).args).toEqual(first.args);
+    // Debug adds its flag after the token; the token stays and is not repeated.
+    const debug = jdwpLaunch(first)!;
+    expect(debug.args).toContain(DELEGATED_DEBUG);
+    expect(debug.args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toHaveLength(1);
+    expect((await gradleBootLaunch(first)).args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toHaveLength(1);
   });
 });
 

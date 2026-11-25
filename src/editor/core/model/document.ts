@@ -506,8 +506,8 @@ export class DocModel {
   }
 
   /**
-   * Detects the indents again after Reformat Code rewrote them: tabs written by
-   * the formatter then render at the Code Style tab size and new lines indent
+   * Detects the indents again after Reformat Code or Convert Indents rewrote them:
+   * tabs written by them then render at the Code Style tab size and new lines indent
    * like them, instead of following the indents detected at open time.
    */
   redetectIndent() {
@@ -556,7 +556,7 @@ export class DocModel {
     const effects = [
       compartments.indent.reconfigure(indentExtension(indent, this.formatIndent())),
       compartments.wrap.reconfigure(wrapExtension(editor, this.path, this.softWrapOverride)),
-      compartments.sticky.reconfigure(stickyExtension(editor)),
+      compartments.sticky.reconfigure(stickyExtension(editor, this.meta.language)),
       compartments.font.reconfigure(fontExtension(editor)),
       compartments.comments.reconfigure(commentTokens(this.info, this.meta.language)),
       compartments.lineNumbers.reconfigure(lineNumbersExtension(editor)),
@@ -706,6 +706,7 @@ export class DocModel {
       if (reason === "explicit") {
         for (const p of _saveParticipants()) {
           try {
+            // oxlint-disable-next-line no-await-in-loop -- participants run in priority order and may edit the document; each must see earlier edits
             await p.beforeSave(this.ctx(), slot?.handle ?? null, "explicit");
           } catch (e) {
             console.warn(`save participant ${p.id} failed`, e);

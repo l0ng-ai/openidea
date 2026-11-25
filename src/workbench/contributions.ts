@@ -18,6 +18,7 @@ import {
   type RefObject,
 } from "react";
 import type {
+  BuildKind,
   CommitSelection,
   ConsoleRule,
   FileMatches,
@@ -152,6 +153,14 @@ export interface EditorKindContribution {
    * tab keeps running; `useEditorShown` tells it whether it is the one shown.
    */
   keepAlive?: boolean;
+  /**
+   * Its input owns one live view (e.g. a terminal session's DOM + PTY) and cannot appear in
+   * two panes at once: splitting or "Open in Opposite Group" opens a fresh input from
+   * `splitInput`, or moves the tab instead.
+   */
+  singleton?: boolean;
+  /** Fresh input opened when splitting a `singleton` tab (e.g. a new shell in the same cwd). */
+  splitInput?(input: EditorInput): EditorInput | Promise<EditorInput | null> | null;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
   /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
@@ -643,6 +652,7 @@ export async function openFileExternally(path: string): Promise<boolean> {
  * view stays alive.
  */
 export interface TextEditorWrapperContribution {
+  keepAlive?: boolean;
   id: string;
   matches(path: string): boolean;
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
@@ -714,6 +724,15 @@ export const OWNS_FILE_DROP = { "data-owns-file-drop": "" } as const;
 // Services implemented by one feature and consumed by others. The provider
 // calls `provide*` during activation; consumers call through the accessor.
 
+export type EditorDropEdge = "left" | "right" | "top" | "bottom";
+
+export interface EditorDropTarget {
+  paneId: string;
+  zone: EditorDropEdge | "center";
+  index?: number;
+  pinned?: boolean;
+}
+
 export interface OpenOptions {
   /** Select / reveal this range (0-based line, UTF-16 col). */
   selection?: { line: number; col: number; endLine?: number; endCol?: number };
@@ -721,8 +740,14 @@ export interface OpenOptions {
   preview?: boolean;
   /** Open to the side (split right). */
   side?: boolean;
+  /** Split `pane` (or the active pane) at this edge and open in the new group. */
+  edge?: EditorDropEdge;
   /** Open in this editor pane, in a tab of its own even when another pane shows the file. */
   pane?: string;
+  /** 0-based insertion index in the target pane's tab strip. */
+  index?: number;
+  /** Open as a pinned tab (e.g. dropped onto the pinned tabs row). */
+  pinned?: boolean;
   focus?: boolean;
   /** Open in the text editor even when a file editor provider claims the file (SVG as text). */
   asText?: boolean;
@@ -1048,13 +1073,15 @@ export function registerCommitCheckProvider(p: CommitCheckProvider): () => void 
 }
 
 /**
- * Handles a pointer drag dropped on the editor content: features register handlers for
- * their own drag types (e.g. an agent task dragged from the tool window) without the
- * editor depending on them. The editor shows its center drop-zone for accepted types.
+ * Handles a pointer drag dropped on the editor area (a tab strip, a pane, or an edge split):
+ * features register handlers for their own drag types (e.g. an agent task or a terminal tab
+ * dragged from a tool window) without the editor depending on them.
  */
 export interface EditorDropHandler {
-  accepts(type: string): boolean;
-  drop(data: DragData): void;
+  accepts(type: string, data?: DragData): boolean;
+  /** Whether dropping near an editor pane's edge splits off a new group on that side. */
+  allowSplit?: boolean;
+  drop(data: DragData, target?: EditorDropTarget): void;
 }
 
 const editorDropHandlers: EditorDropHandler[] = [];
@@ -1068,16 +1095,21 @@ export function registerEditorDropHandler(handler: EditorDropHandler): () => voi
   };
 }
 
-/** Whether any registered handler takes this drag type. */
-export function acceptsEditorDrop(type: string): boolean {
-  return editorDropHandlers.some((h) => h.accepts(type));
+/** Whether any registered handler takes this drag. */
+export function acceptsEditorDrop(type: string, data?: DragData): boolean {
+  return editorDropHandlers.some((h) => h.accepts(type, data));
 }
 
-/** Hands a drag dropped on editor content to its registered handler, if any. */
-export function dropOnEditor(data: DragData): boolean {
-  const handler = editorDropHandlers.find((h) => h.accepts(data.type));
+/** Whether the handler taking this drag supports edge-split drop zones. */
+export function editorDropAllowsSplit(type: string, data?: DragData): boolean {
+  return !!editorDropHandlers.find((h) => h.accepts(type, data))?.allowSplit;
+}
+
+/** Hands a drag dropped on the editor to its registered handler, if any. */
+export function dropOnEditor(data: DragData, target?: EditorDropTarget): boolean {
+  const handler = editorDropHandlers.find((h) => h.accepts(data.type, data));
   if (!handler) return false;
-  handler.drop(data);
+  handler.drop(data, target);
   return true;
 }
 
@@ -1540,6 +1572,7 @@ export interface GitMenuContext {
   file?: boolean;
   /** Show Add to .gitignore: the selection excludes the project root (which cannot be ignored). */
   ignore?: boolean;
+  editorSelection?: boolean;
 }
 
 /**
@@ -1547,7 +1580,7 @@ export interface GitMenuContext {
  * per-menu groups in sync). Items are plain action rows, so unregistered actions
  * disappear and `vcsAvailable` gates enablement on its own.
  */
-export function gitMenuItems({ paths, dirs, file, ignore }: GitMenuContext): MenuItem[] {
+export function gitMenuItems({ paths, dirs, file, ignore, editorSelection }: GitMenuContext): MenuItem[] {
   const arg = paths.length === 1 ? paths[0]! : paths;
   const some = paths.length > 0;
   const single = paths.length === 1 ? paths[0]! : null;
@@ -1577,6 +1610,7 @@ export function gitMenuItems({ paths, dirs, file, ignore }: GitMenuContext): Men
     ...(file ? ([act("vcs.compareWithRevision", "Compare with Revision…")] as (MenuItem | null)[]) : []),
     ...(some ? ([act("vcs.showHistory", "Show History")] as (MenuItem | null)[]) : []),
     ...(file ? ([act("vcs.showCurrentRevision", "Show Current Revision")] as (MenuItem | null)[]) : []),
+    ...(editorSelection ? [action("vcs.showHistoryForSelection", "Show History for Selection")] : []),
     act("vcs.rollback", "Rollback…"),
     { kind: "separator" },
     action("vcs.push", "Push…"),
@@ -2383,4 +2417,26 @@ export function registerSearchCategory(category: SearchCategory): () => void {
     searchCategoryProviders.delete(category.id);
     searchCategoriesChanged();
   };
+}
+
+export interface BuildCompletedEvent {
+  kind: "compileFile" | BuildKind;
+  file: string | null;
+  system: string;
+  userInitiated: boolean;
+}
+
+const buildCompletedListeners = new Set<(event: BuildCompletedEvent) => void>();
+
+/** Subscribes to successful Build / Rebuild / Recompile completions across workbench features. */
+export function onBuildCompleted(listener: (event: BuildCompletedEvent) => void): () => void {
+  buildCompletedListeners.add(listener);
+  return () => {
+    buildCompletedListeners.delete(listener);
+  };
+}
+
+/** Publishes a successful build completion to listeners (debugger HotSwap, server deployment sync…). */
+export function notifyBuildCompleted(event: BuildCompletedEvent): void {
+  notifyEach(buildCompletedListeners, (listener) => listener(event), "build completed");
 }

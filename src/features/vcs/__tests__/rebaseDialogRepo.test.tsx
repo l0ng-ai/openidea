@@ -180,3 +180,22 @@ it("validates typed commit expressions and hides update-refs on older Git", asyn
   fireEvent.click(rebase());
   await waitFor(() => expect(mocks.rebases[0]).toMatchObject({ upstream: "HEAD~1", options: { updateRefs: false } }));
 });
+
+it("shows the branch to rebase as written in Chinese", async () => {
+  const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+  await setLocale("zh");
+  try {
+    // Precondition: the zh catalog translates the word, so a translated label would differ.
+    expect(tx("dev")).not.toBe("dev");
+    render(<VcsDialogHost />);
+    await act(() => showRebaseDialog());
+    await pick(tx("Repository"), "b");
+    fireEvent.click(await screen.findByRole("button", { name: tx("Modify options") }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: tx("Switch to branch") }));
+    const branch = await screen.findByRole("button", { name: tx("Branch to rebase") });
+    await waitFor(() => expect(branch).toHaveTextContent(/^dev$/));
+  } finally {
+    for (const button of screen.queryAllByRole("button", { name: tx("Cancel") })) fireEvent.click(button);
+    _resetI18nForTests();
+  }
+});

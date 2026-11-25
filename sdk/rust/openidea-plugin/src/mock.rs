@@ -135,6 +135,7 @@ struct State {
     path_subscriptions: BTreeMap<String, Vec<String>>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
+    repositories: Vec<RepositoryInfo>,
     remotes: Vec<(String, String)>,
     commit: Option<CommitDraft>,
     fetches: u32,
@@ -160,6 +161,7 @@ struct State {
     patch: Option<String>,
     restricted: bool,
     decorations: BTreeMap<(String, String), Vec<Decoration>>,
+    markdown_decorations: BTreeMap<(String, String), Vec<MarkdownDecoration>>,
     file_decorations: BTreeMap<(String, String), FileDecoration>,
     file_notes: BTreeMap<(String, String), (String, Option<String>)>,
     file_icons: BTreeMap<(String, String), (String, Option<String>)>,
@@ -321,6 +323,10 @@ impl MockHost {
     /// Editor decoration snapshots keyed by (set id, absolute path).
     pub fn decorations(&self) -> BTreeMap<(String, String), Vec<Decoration>> {
         self.state.borrow().decorations.clone()
+    }
+    /// Markdown decoration snapshots keyed by (set id, absolute path).
+    pub fn markdown_decorations(&self) -> BTreeMap<(String, String), Vec<MarkdownDecoration>> {
+        self.state.borrow().markdown_decorations.clone()
     }
     /// Tree decoration snapshots keyed by (set id, absolute path).
     pub fn file_decorations(&self) -> BTreeMap<(String, String), FileDecoration> {
@@ -503,6 +509,11 @@ impl MockHost {
     /// Remotes `vcs-remotes` returns for every project.
     pub fn set_vcs_remotes(&self, remotes: &[(&str, &str)]) {
         self.state.borrow_mut().remotes = remotes.iter().map(|&(n, u)| (n.to_owned(), u.to_owned())).collect();
+    }
+
+    /// Mapped worktrees for `vcs_roots` and `vcs_repository_at`.
+    pub fn set_vcs_repositories(&self, repositories: Vec<RepositoryInfo>) {
+        self.state.borrow_mut().repositories = repositories;
     }
 
     /// Last text copied with [`crate::host::copy_to_clipboard`].
@@ -1191,6 +1202,14 @@ pub mod current {
         })
     }
 
+    pub fn pick_file(_title: &str, _dialog: &crate::FileDialog) -> Result<Option<String>, Error> {
+        let path = with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next());
+        if let Some(path) = &path {
+            ui_path(path)?;
+        }
+        Ok(path)
+    }
+
     pub fn pick_directory(_title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
         if let Some(path) = initial {
             ui_path(path)?;
@@ -1772,12 +1791,49 @@ pub mod current {
             let path = decoration_path(s, path)?;
             let mut next = s.decorations.clone();
             next.insert((set.into(), path.clone()), items.iter().filter(|d| style(&d.style)).cloned().collect());
-            let names: BTreeSet<_> = next.keys().map(|(set, _)| set).collect();
-            let count: usize = next.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum();
-            if set.is_empty() || set.len() > 128 || names.len() > 50 || count > 10_000 {
+            // Plain and Markdown sets share the set-id namespace: the last call wins.
+            let mut markdown = s.markdown_decorations.clone();
+            markdown.remove(&(set.into(), path.clone()));
+            let names: BTreeSet<_> = next.keys().chain(markdown.keys()).map(|(set, _)| set).collect();
+            let counts = |map: &BTreeMap<(String, String), Vec<Decoration>>| -> usize {
+                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
+            };
+            let markdown_counts = |map: &BTreeMap<(String, String), Vec<MarkdownDecoration>>| -> usize {
+                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
+            };
+            if set.is_empty()
+                || set.len() > 128
+                || names.len() > 50
+                || counts(&next) + markdown_counts(&markdown) > 10_000
+            {
                 return Err(Error::Invalid("decoration limit".into()));
             }
             s.decorations = next;
+            s.markdown_decorations = markdown;
+            Ok(())
+        })
+    }
+    pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let mut next = s.markdown_decorations.clone();
+            next.insert((set.into(), path.clone()), items.iter().filter(|d| style(&d.style)).cloned().collect());
+            // Plain and Markdown sets share the set-id namespace: the last call wins.
+            let mut plain = s.decorations.clone();
+            plain.remove(&(set.into(), path.clone()));
+            let names: BTreeSet<_> = next.keys().chain(plain.keys()).map(|(set, _)| set).collect();
+            let counts = |map: &BTreeMap<(String, String), Vec<MarkdownDecoration>>| -> usize {
+                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
+            };
+            let plain_counts = |map: &BTreeMap<(String, String), Vec<Decoration>>| -> usize {
+                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
+            };
+            if set.is_empty() || set.len() > 128 || names.len() > 50 || counts(&next) + plain_counts(&plain) > 10_000 {
+                return Err(Error::Invalid("decoration limit".into()));
+            }
+            s.decorations = plain;
+            s.markdown_decorations = next;
             Ok(())
         })
     }
@@ -1785,6 +1841,7 @@ pub mod current {
         with(|s| {
             require(s, "project.read")?;
             s.decorations.retain(|(id, _), _| id != set);
+            s.markdown_decorations.retain(|(id, _), _| id != set);
             Ok(())
         })
     }
@@ -1972,6 +2029,48 @@ pub mod current {
         with(|s| {
             require(s, "vcs.read")?;
             Ok(s.remotes.clone())
+        })
+    }
+
+    pub fn vcs_roots(p: &ProjectRes) -> Result<Vec<String>, Error> {
+        with(|s| {
+            require(s, "vcs.read")?;
+            let project = std::path::Path::new(&p.root);
+            let mut roots: Vec<_> = s
+                .repositories
+                .iter()
+                .map(|r| &r.root)
+                .filter(|r| project.starts_with(r) || std::path::Path::new(r).starts_with(project))
+                .cloned()
+                .collect();
+            roots.sort();
+            Ok(roots)
+        })
+    }
+
+    pub fn vcs_repository_at(p: &ProjectRes, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        with(|s| {
+            vcs_read(s)?;
+            let project = std::path::Path::new(&p.root);
+            let absolute = project.join(path);
+            let rel = absolute.strip_prefix(project).map_err(|_| Error::Invalid("outside the project root".into()))?;
+            if rel.components().any(|c| c == std::path::Component::ParentDir) {
+                return Err(Error::Invalid("outside the project root".into()));
+            }
+            if !rel.as_os_str().is_empty()
+                && !path_known(s, p, path, &rel.to_string_lossy())
+                && !s.repositories.iter().any(|r| absolute == std::path::Path::new(&r.root))
+            {
+                return Err(Error::Invalid(format!("{path}: no such file")));
+            }
+            Ok(s.repositories
+                .iter()
+                .filter_map(|r| Some((r, absolute.strip_prefix(&r.root).ok()?)))
+                .min_by_key(|(_, rel)| rel.components().count())
+                .map(|(r, rel)| RepositoryInfo {
+                    relative_path: rel.to_string_lossy().replace('\\', "/"),
+                    ..r.clone()
+                }))
         })
     }
 

@@ -167,6 +167,14 @@ export function hoverYields(): boolean {
   return navigationModifierHeld() || !!pointerTarget()?.closest?.(".cm-lsp-inlay, .cm-foldPlaceholder");
 }
 
+/** The editor's standard hover card: selectable content in a themed popup. */
+export function hoverCard(children: HTMLElement[]): HTMLElement {
+  const dom = document.createElement("div");
+  dom.className = `cm-lsp-hover ${selectableText}`;
+  for (const child of children) dom.appendChild(child);
+  return dom;
+}
+
 /** Problems always; quick documentation per Settings › Editor › Code Editing. */
 export async function hoverSource(view: EditorView, pos: number) {
   if (hoverYields()) return null;

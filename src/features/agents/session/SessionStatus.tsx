@@ -2,6 +2,7 @@ import type { AgentChange, AgentCommit, AgentEntry, AgentLimit, AgentTask } from
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
+import clsx from "clsx";
 import { Icon, IconButton, showContextMenu, T } from "@/ui";
 import styles from "../Session.module.css";
 import { costLabel, limitLabel, turnTokensLabel, workTime } from "../composerModel";
@@ -26,7 +27,12 @@ function StatusActions({ task }: { task: AgentTask }) {
   );
 }
 
-/** The task's agent, model, checkout and state, just above the composer. */
+/**
+ * The task's agent, model, checkout and state, just above the composer. In a narrow session it fits
+ * the width as the agent panels of Zed and Cursor do: the provider shows its icon alone and the
+ * changes their count, then what the IDE shows elsewhere (the project's branch, the task's state)
+ * gives way, keeping the changes and the meters; tooltips keep the full text.
+ */
 export function SessionStatus({
   task,
   entries,
@@ -53,6 +59,13 @@ export function SessionStatus({
   const pickedModel = task.status !== "archived" && task.config.some((o) => o.category === "model");
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
+  const filesLabel = changes?.length
+    ? tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace("{count}", String(changes.length))
+    : "";
+  const commitsLabel = tx(commits.length === 1 ? "1 commit" : "{count} commits").replace(
+    "{count}",
+    String(commits.length),
+  );
   return (
     <div
       className={styles.statusBar}
@@ -66,7 +79,7 @@ export function SessionStatus({
         {/* Which agent runs the task: with several tasks side by side, this tells their answers apart. */}
         <span className={styles.fact} title={providerName(task.provider)}>
           <Icon name={providerIcon(task.provider)} size={13} />
-          <span className={styles.factText}>{providerName(task.provider)}</span>
+          <span className={clsx(styles.factText, styles.providerName)}>{providerName(task.provider)}</span>
         </span>
         {project?.workspace && projectName && (
           <span className={styles.fact}>
@@ -75,7 +88,8 @@ export function SessionStatus({
           </span>
         )}
         {branch && (
-          <span className={styles.fact}>
+          // A local task's branch is the project's, which the branch widget shows.
+          <span className={clsx(styles.fact, local && styles.shownElsewhere)} title={branch}>
             <Icon name="branch" size={13} />
             <span className={styles.factText}>{branch}</span>
           </span>
@@ -94,7 +108,8 @@ export function SessionStatus({
       </span>
       {/* Ready is the usual state: only the others are worth a word. */}
       {task.status !== "ready" && (
-        <span className={styles.state}>
+        // The composer shows a running or waiting task; a usage limit says when it resets, nowhere else.
+        <span className={clsx(styles.state, task.status !== "limited" && styles.shownElsewhere)}>
           <T>{statusLabel(task.status)}</T>
           {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
         </span>
@@ -107,24 +122,23 @@ export function SessionStatus({
         {(!!changes?.length || !!commits.length) && (
           <span className={styles.statusChips}>
             {!!changes?.length && (
-              <button type="button" className={styles.statusChip} onClick={onOpenChanges}>
+              <button type="button" className={styles.statusChip} title={filesLabel} onClick={onOpenChanges}>
                 <Icon name="edit" size={12} />
                 {/* The counts are the chip's own items, so its gap spaces them and the label can still truncate. */}
-                <span className={styles.statusChipLabel}>
-                  {tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace(
-                    "{count}",
-                    String(changes.length),
-                  )}
+                <span className={styles.statusChipLabel}>{filesLabel}</span>
+                <span className={styles.statusChipCount} aria-hidden>
+                  {changes.length}
                 </span>
                 {added > 0 && <span className={styles.added}>+{added}</span>}
                 {removed > 0 && <span className={styles.removed}>−{removed}</span>}
               </button>
             )}
             {!!commits.length && (
-              <button type="button" className={styles.statusChip} onClick={onOpenChanges}>
+              <button type="button" className={styles.statusChip} title={commitsLabel} onClick={onOpenChanges}>
                 <Icon name="commit" size={12} />
-                <span className={styles.statusChipLabel}>
-                  {tx(commits.length === 1 ? "1 commit" : "{count} commits").replace("{count}", String(commits.length))}
+                <span className={styles.statusChipLabel}>{commitsLabel}</span>
+                <span className={styles.statusChipCount} aria-hidden>
+                  {commits.length}
                 </span>
               </button>
             )}

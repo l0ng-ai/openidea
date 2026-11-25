@@ -941,6 +941,8 @@ pub struct FileIconThemeOptions {
 #[serde(default, rename_all = "camelCase")]
 pub struct MainToolbarSettings {
     pub left: Vec<String>,
+    /// Centred in the toolbar (between the other two groups when they leave too little room).
+    pub center: Vec<String>,
     pub right: Vec<String>,
     /// Widgets the user removed.
     pub hidden: Vec<String>,
@@ -1655,6 +1657,20 @@ pub struct MavenSettings {
     /// Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
     /// dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
     pub update_snapshots: bool,
+    /// Who runs the JUnit 5 tests of the gutter's Run / Debug.
+    pub run_tests_using: MavenRunTestsUsing,
+}
+
+/// Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+/// and run actions are delegated to Maven.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MavenRunTestsUsing {
+    /// OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`).
+    #[default]
+    Ide,
+    /// Surefire (`mvn test -Dtest=…`).
+    Maven,
 }
 
 impl MavenSettings {
@@ -2316,6 +2332,7 @@ mod maven_linkage_tests {
         let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
         assert!(old.runner_jre.is_empty());
         assert!(!old.delegate_build);
+        assert_eq!(old.run_tests_using, MavenRunTestsUsing::Ide);
         assert!(MavenSettings::default().runner_jre.is_empty());
         let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), delegate_build: true, ..old };
         let encoded = serde_json::to_string(&settings).unwrap();

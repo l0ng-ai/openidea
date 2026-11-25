@@ -10,6 +10,7 @@ mod angular;
 mod arduino;
 mod caps;
 mod clang_tidy;
+mod closing_labels;
 mod compose;
 mod convert;
 mod external_project;
@@ -150,6 +151,14 @@ struct DocState {
     /// When the servers last got new text (open or change): diagnostics published before are stale.
     changed: std::time::Instant,
     flutter_outline: Option<FlutterOutline>,
+    /// The Dart server's closing labels for the current text; dropped on the next change.
+    closing_labels: Option<ClosingLabels>,
+}
+
+struct ClosingLabels {
+    server: ide_core::ServerId,
+    generation: u64,
+    hints: Vec<InlayHint>,
 }
 
 /// The widget tree last published for a document, valid while that server instance runs.
@@ -1218,6 +1227,11 @@ impl LspManager {
         self.shown_messages.lock().insert((server.to_owned(), text.to_owned()))
     }
 
+    /// Whether `server` has shown a message containing `needle` in this project.
+    pub(crate) fn shown_message_containing(&self, server: &str, needle: &str) -> bool {
+        self.shown_messages.lock().iter().any(|(s, text)| s == server && text.contains(needle))
+    }
+
     pub(crate) fn apply_edit_hook(&self) -> Option<ApplyEditHook> {
         self.apply_edit_hook.read().clone()
     }
@@ -1298,6 +1312,7 @@ impl LspManager {
             notebook: None,
             changed: std::time::Instant::now(),
             flutter_outline: None,
+            closing_labels: None,
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1346,6 +1361,7 @@ impl LspManager {
         let Some(d) = docs.get_mut(&doc) else { return };
         d.version = version as i32;
         d.changed = std::time::Instant::now();
+        d.closing_labels = None;
 
         // Servers that have this document open on their current instance.
         let targets: Vec<(Arc<Server>, Running, SyncKind, Encoding)> = d
@@ -2448,6 +2464,37 @@ impl LspManager {
         changed
     }
 
+    /// Records published closing labels; whether what the open documents of `path` show changed.
+    fn set_closing_labels(
+        &self,
+        path: &Path,
+        server: &Server,
+        generation: u64,
+        enc: Encoding,
+        labels: Vec<closing_labels::Label>,
+    ) -> bool {
+        let mut changed = false;
+        for d in self.docs.lock().values_mut().filter(|d| d.path == path && d.notebook.is_none()) {
+            // Not `self.conv`: it would lock `docs` again for a UTF-8 server's text.
+            let text = d.text.clone();
+            let conv = Conv::new(enc, move |_: &Path| Some(text.clone()));
+            let hints = closing_labels::hints(&conv, path, &d.text, labels.clone());
+            changed |= !hints.is_empty() || d.closing_labels.as_ref().is_some_and(|c| !c.hints.is_empty());
+            d.closing_labels = Some(ClosingLabels { server: server.id, generation, hints });
+        }
+        changed
+    }
+
+    fn closing_label_hints(&self, doc: DocId, range: Range) -> Vec<InlayHint> {
+        let docs = self.docs.lock();
+        let Some(d) = docs.get(&doc) else { return Vec::new() };
+        let Some(c) = d.closing_labels.as_ref() else { return Vec::new() };
+        if !d.servers.iter().any(|a| a.server.id == c.server && a.server.is_live(c.generation)) {
+            return Vec::new();
+        }
+        c.hints.iter().filter(|h| range.start <= h.position && h.position <= range.end).cloned().collect()
+    }
+
     pub async fn workspace_symbols(&self, query: &str, cancel: CancellationToken) -> IdeResult<Vec<WorkspaceSymbol>> {
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         let targets = self.ready_targets(&servers, |c| c.has("workspaceSymbolProvider")).await;
@@ -2628,6 +2675,26 @@ impl LspManager {
         let params = json!({ "command": command.command, "arguments": command.arguments });
         let _: Value = self.call(t, "workspace/executeCommand", params, None, LONG_TIMEOUT).await?;
         Ok(())
+    }
+
+    /// Where other files import `doc`'s file (VS Code's Find File References): tsserver's
+    /// `fileReferences` through vtsls' `typescript.tsserverRequest`, which also answers for a
+    /// `.vue` component with the Vue TypeScript plugin (vtsls' own command refuses non-TS
+    /// documents). Unavailable when no TypeScript server serves the document.
+    pub async fn file_references(&self, doc: DocId, cancel: CancellationToken) -> IdeResult<Vec<Location>> {
+        let snap = self.snapshot(doc)?;
+        let targets =
+            self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == ts_file_moves::COMMAND)).await;
+        let t = targets
+            .iter()
+            .find(|t| t.server.config.tsserver_project)
+            .ok_or_else(|| IdeError::unavailable("No language server finds file references"))?;
+        let params = json!({
+            "command": ts_file_moves::COMMAND,
+            "arguments": ["fileReferences", { "file": snap.path }],
+        });
+        let result: Value = self.call(t, "workspace/executeCommand", params, Some(&cancel), LONG_TIMEOUT).await?;
+        Ok(ts_file_moves::file_references(&result))
     }
 
     /// Whether a server of `doc` (`server`, when given) provides the command `name`. Code actions
@@ -3290,6 +3357,7 @@ impl LspManager {
             }
         }
         let mut v = out.finish(Vec::new())?;
+        v.extend(self.closing_label_hints(doc, range));
         v.sort_by_key(|h| h.position);
         Ok(v)
     }

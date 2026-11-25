@@ -13,12 +13,13 @@ import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import {
   provideEmbeddedTerminal,
   registerAgentContextSource,
+  registerEditorDropHandler,
   registerEditorKind,
   registerToolWindow,
   toolWindowService,
 } from "@/workbench/contributions";
 import { lazyComponent } from "@/ui";
-import { CLI_KIND, CliDoneMark, cliData, moveTerminalToEditor } from "./cli";
+import { CLI_KIND, CliDoneMark, TERMINAL_TAB_MIME, cliData, moveTerminalToEditor, splitCliTab } from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
@@ -144,8 +145,15 @@ export function activate(): () => void {
       // A reopened tab shows Start: nothing runs on its own.
       restorable: true,
       keepAlive: true,
+      singleton: true,
+      splitInput: splitCliTab,
       onClose: (input) => terminalRuntime()?.disposeCli(input.key),
       isBusy: (input) => terminalRuntime()?.cliBusy(input.key) ?? false,
+    }),
+    registerEditorDropHandler({
+      accepts: (type) => type === TERMINAL_TAB_MIME,
+      allowSplit: true,
+      drop: ({ payload }, target) => void moveTerminalToEditor(payload, target),
     }),
     registerActions([
       {

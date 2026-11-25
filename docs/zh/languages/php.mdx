@@ -7,14 +7,17 @@ OpenIDEA 开箱即可高亮 PHP 文件（`.php`、`.phtml`、`.phpt` 以及老�
 
 ## 语言服务器
 
-| 服务器         | 启用条件                                                                                                                     |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `intelephense` | 默认。工作区根：`composer.json`、`.phpactor.json` 或 `index.php`。                                                           |
-| `phpactor`     | 备选：仅在未安装 Intelephense 时使用。                                                                                       |
-| `phoxite`      | 备选，自带 Laravel 和 Blade 支持：仅在以上两个服务器都未安装时使用，或在 **设置 › 语言和框架 › 语言服务器** 中选中它时使用。 |
-| `laravel-lsp`  | 仅限 Laravel 项目（`artisan` 文件所在目录之下）：在 `config('…')`、`route('…')`、`view('…')` 中提供悬停、跳转和补全。        |
+| 服务器            | 启用条件                                                                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intelephense`    | 默认。工作区根：`composer.json`、`.phpactor.json` 或 `index.php`。                                                                             |
+| `phpactor`        | 备选：仅在未安装 Intelephense 时使用。                                                                                                         |
+| `phoxite`         | 备选，自带 Laravel 和 Blade 支持：仅在以上两个服务器都未安装时使用，或在 **设置 › 语言和框架 › 语言服务器** 中选中它时使用。                   |
+| `devsense-php-ls` | 备选，引擎为各平台原生构建，服务器本身无需 Node 或 PHP：仅在以上服务器都未安装时使用，或在 **设置 › 语言和框架 › 语言服务器** 中选中它时使用。 |
+| `laravel-lsp`     | 仅限 Laravel 项目（`artisan` 文件所在目录之下）：在 `config('…')`、`route('…')`、`view('…')` 中提供悬停、跳转和补全。                          |
 
-Phoxite 为项目提供服务时不会启动 `laravel-lsp`：Laravel 相关的字符串由 Phoxite 自己处理。
+Phoxite 或 DEVSENSE 为项目提供服务时不会启动 `laravel-lsp`：Laravel 相关的字符串由它们自己处理。
+
+DEVSENSE 无需许可证即可用于日常代码智能（补全、悬停、跳转、查找引用、诊断，以及 Laravel 和 Blade 支持）；其重构以及调用/类型层次结构需要 DEVSENSE 许可证。
 
 Intelephense 会按项目的 PHP 版本检查代码（见下文“语言级别”），并索引你配置的 stub 和包含路径。
 
@@ -29,6 +32,7 @@ Intelephense 会按项目的 PHP 版本检查代码（见下文“语言级别�
 | Intelephense       | npm（`intelephense`）                              |
 | Laravel LSP        | GitHub release（`laravel/lsp`）                    |
 | Phoxite            | GitHub release（`samehelhawary/phoxite`）          |
+| DEVSENSE           | npm（`devsense-php-ls`），启动时需要 Node.js       |
 | PHP Debug (Xdebug) | Open VSX（`xdebug.php-debug`），运行时需要 Node.js |
 | phpactor           | IDE 不负责安装，请自行安装并放到 `PATH` 上         |
 

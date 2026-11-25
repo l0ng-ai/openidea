@@ -1558,24 +1558,44 @@ async function stopForEdit(task: string) {
 
 /**
  * Runs the conversation again from turn `turn` with `text` as its message: the agent is
- * stopped if it works, that turn and the later ones are dropped, then `text` is sent.
+ * stopped if it works, that turn and the later ones are dropped and the files they changed
+ * put back, then `text` is sent.
  * Whatever fails, the message is kept in the composer so it can be sent again.
  */
-export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<boolean> {
-  if (
-    turn === 0 &&
+export async function rerunFrom(
+  task: string,
+  turn: number,
+  text: string,
+  images: AgentImage[] = [],
+  confirmRewind?: { title: string; later?: boolean },
+): Promise<boolean> {
+  if (turn === 0) {
+    if (
+      !(await confirm({
+        title: "Start a Fresh Agent Session",
+        message:
+          "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.",
+        ok: "Start Fresh",
+        icon: "warning",
+      }))
+    )
+      return false;
+  } else if (
+    confirmRewind &&
     !(await confirm({
-      title: "Start a Fresh Agent Session",
-      message:
-        "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.",
-      ok: "Start Fresh",
+      title: confirmRewind.title,
+      message: confirmRewind.later
+        ? "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent."
+        : "The files the agent changed since go back to how they were before this message was sent.",
+      ok: "Roll Back",
       icon: "warning",
     }))
-  )
+  ) {
     return false;
+  }
   try {
     await stopForEdit(task);
-    await call(commands.agentRollback(task, turn));
+    await call(commands.agentRollback(task, turn, true));
     await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
     restoreComposer(task, text, images);
@@ -1584,11 +1604,14 @@ export async function rerunFrom(task: string, turn: number, text: string, images
   return true;
 }
 
-/** Drops `turn` and the later turns, and puts the message back in the composer to edit. */
-export async function retractFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
+/**
+ * Rolls back to before `turn`: drops it and the later turns, puts back the files they changed,
+ * and puts the message back in the composer to edit.
+ */
+export async function rollBackTo(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
   try {
     await stopForEdit(task);
-    const prompt = await call(commands.agentRollback(task, turn));
+    const prompt = await call(commands.agentRollback(task, turn, true));
     // The agent only hands back the text; the images come from the message itself.
     restoreComposer(task, prompt?.text ?? text, images);
   } catch (e) {

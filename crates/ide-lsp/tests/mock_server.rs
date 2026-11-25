@@ -1550,6 +1550,40 @@ async fn flutter_outline_follows_the_document_and_the_server_instance() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn closing_labels_join_the_inlay_hints_until_the_next_edit() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Center(\n  child: Text('x'))\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.respond("textDocument/inlayHint", json!([]));
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::InlayHints, .. }))
+            .count()
+    };
+    let at = |l0: u32, c0: u32, c1: u32| json!({"start":{"line":l0,"character":c0},"end":{"line":1,"character":c1}});
+    let labels = json!({ "uri": uri_of(&path), "labels": [
+        { "range": at(1, 9, 18), "label": "Text" },
+        { "range": at(0, 0, 19), "label": "Center" },
+    ]});
+    s.peer().notify("dart/textDocument/publishClosingLabels", labels).unwrap();
+    eventually(|| refreshes() == 1).await;
+    let whole = Range::new(Pos::new(0, 0), Pos::new(2, 0));
+    let hints = h.mgr.inlay_hints(doc, whole).await.unwrap();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].label, "// Text // Center");
+    assert_eq!(hints[0].position, Pos::new(1, 19));
+    assert_eq!(hints[0].kind, InlayKind::ClosingLabel);
+    assert!(h.mgr.inlay_hints(doc, Range::new(Pos::new(0, 0), Pos::new(0, 7))).await.unwrap().is_empty());
+
+    // Edited text: the labels wait for the next analysis.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 0), " ")], &|| unreachable!());
+    assert!(h.mgr.inlay_hints(doc, whole).await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn diagnostics_become_events_and_feed_code_actions() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "let unused = 1;\nlet y = 2;\n");
@@ -7650,6 +7684,58 @@ async fn gradle_incompatible_jdk_log_is_surfaced_once_across_message_channels() 
         })
         .collect();
     assert_eq!(messages, vec![failure, "after"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_gradle_sync_is_surfaced_once_unless_an_incompatible_jdk_explains_it() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let sync = |project: &str, cause: &str| {
+        format!(
+            "Nov 25, 2026, 2:00:14 PM Synchronize project {project} failed due to an error connecting to the Gradle build.\n\
+             org.gradle.tooling.BuildActionFailureException: The supplied phased action failed with an exception.\n\
+             \tat org.gradle.tooling.internal.consumer.DefaultPhasedBuildActionExecuter.run(DefaultPhasedBuildActionExecuter.java:68)\n\
+             Caused by: java.lang.IllegalArgumentException: {cause}\n\
+             \tat org.gradle.groovy.scripts.DefaultScript.apply(DefaultScript.java:133)"
+        )
+    };
+    // jdtls logs it below error level, and again on every sync.
+    for _ in 0..2 {
+        let message = sync("repro", "Unable to determine constructor argument #2");
+        s.peer().notify("window/logMessage", json!({ "type": 3, "message": message })).unwrap();
+    }
+    // An incompatible JDK fails the sync too, and jdtls then says so with its own fix.
+    s.peer()
+        .notify(
+            "window/logMessage",
+            json!({ "type": 3, "message": sync("old", "Unsupported class file major version 71") }),
+        )
+        .unwrap();
+    let jdk = "Can't use Java 27.0.1 and Gradle 7.5.1 to import Gradle project old.";
+    s.peer()
+        .notify("window/logMessage", json!({ "type": 1, "message": format!("{jdk}\njava.lang.Exception: details") }))
+        .unwrap();
+    let notes = || -> Vec<(String, String)> {
+        h.events
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::Notify { title, body: Some(b), .. } => Some((title.clone(), b.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    eventually(|| notes().iter().any(|(t, _)| t == "Gradle project sync failed")).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let notes = notes();
+    let synced: Vec<_> =
+        notes.iter().filter(|(t, _)| t == "Gradle project sync failed").map(|(_, b)| b.as_str()).collect();
+    assert_eq!(synced.len(), 1, "{notes:?}");
+    assert!(synced[0].starts_with("Gradle could not sync repro. "), "{notes:?}");
+    assert!(synced[0].ends_with(" Cause: Unable to determine constructor argument #2"), "{notes:?}");
+    assert!(notes.iter().any(|(_, b)| b == jdk), "{notes:?}");
 }
 
 /// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.

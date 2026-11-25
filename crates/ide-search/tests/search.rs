@@ -31,6 +31,7 @@ fn query(pattern: &str) -> SearchQuery {
         max_matches: 0,
         context: Default::default(),
         include_excluded: false,
+        skip_large_files: false,
     }
 }
 
@@ -944,4 +945,16 @@ fn ignore_whitelists_do_not_override_explicit_subtree_masks() {
     assert_eq!(paths(&views), ["generated/keep/keep.go", "src/main.go"]);
     let (views, _) = run(p.path(), &SearchQuery { exclude: vec!["generated/**".into()], ..query("needle") });
     assert_eq!(paths(&views), ["src/main.go"]);
+}
+
+#[test]
+fn background_scans_skip_files_over_the_code_insight_limit() {
+    let limit = ide_search::MAX_CODE_INSIGHT_FILE_BYTES as usize;
+    let at_limit = format!("// TODO keep\n{}", "x".repeat(limit - 13));
+    let over = format!("-- TODO dump\n{}", "x".repeat(limit));
+    let p = project(&[("src/a.rs", at_limit.as_bytes()), ("dump.sql", over.as_bytes())]);
+    let (views, _) = run(p.path(), &query("TODO"));
+    assert_eq!(paths(&views), vec!["dump.sql", "src/a.rs"]);
+    let (views, _) = run(p.path(), &SearchQuery { skip_large_files: true, ..query("TODO") });
+    assert_eq!(paths(&views), vec!["src/a.rs"]);
 }

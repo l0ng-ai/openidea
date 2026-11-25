@@ -568,6 +568,80 @@ test("Markdown preview keeps following find and edits after scrolling the source
   await expect(preview.locator("strong [data-math-svg] > svg")).toHaveAttribute("aria-label", "v_0");
 });
 
+test("drags the Markdown preview scrollbar through a document after it grows", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("Short");
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await expect(preview).toHaveText("Short");
+  await content.press("Meta+a");
+  await page.keyboard.insertText(Array.from({ length: 180 }, (_, i) => `Paragraph ${i}`).join("\n\n"));
+  await expect(preview).toContainText("Paragraph 179");
+  const thumb = preview.locator("..").locator(":scope > [aria-hidden=true] > div");
+  await expect(thumb).toBeVisible();
+  const thumbBox = (await thumb.boundingBox())!;
+  const box = (await preview.boundingBox())!;
+  const x = thumbBox.x + thumbBox.width / 2;
+  await page.mouse.move(x, thumbBox.y + thumbBox.height / 2);
+  await page.mouse.down();
+  try {
+    for (const end of [true, false, true]) {
+      await page.mouse.move(x, box.y + (end ? box.height - 1 : 0), { steps: 3 });
+      expect(await preview.evaluate((el) => Math.round(el.scrollTop))).toBe(
+        end ? await preview.evaluate((el) => el.scrollHeight - el.clientHeight) : 0,
+      );
+    }
+  } finally {
+    await page.mouse.up();
+  }
+});
+
+test("keeps diagrams and their math labels when editing or switching Markdown tabs", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const source = [
+    "An equation $x^2$ and [a link](#title).",
+    '```mermaid\nflowchart LR\n  A["$$x^2$$"] --> B\n```',
+    "Text to edit",
+  ].join("\n\n");
+  await page.keyboard.insertText(source);
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const diagram = preview.locator(".mermaid-output .pan-zoom-content > svg");
+  await expect(diagram.locator("foreignObject math")).toHaveCount(1);
+  const original = await diagram.elementHandle();
+  const formula = preview.locator("[data-math-svg] > svg").first();
+  const equation = await formula.elementHandle();
+  await content.press("Control+End");
+  await page.keyboard.insertText(" here");
+  await expect(preview).toContainText("Text to edit here");
+  expect(await diagram.evaluate((svg, old) => svg === old, original)).toBe(true);
+  expect(await formula.evaluate((svg, old) => svg === old, equation)).toBe(true);
+
+  await content.press("Meta+a");
+  await page.keyboard.insertText(source.replace("$$x^2$$", () => "$$z^3$$"));
+  await expect(diagram.locator("foreignObject math mi")).toHaveText("z");
+  const edited = await diagram.elementHandle();
+  expect(await diagram.evaluate((svg, old) => svg === old, original)).toBe(false);
+  expect(await formula.evaluate((svg, old) => svg === old, equation)).toBe(true);
+
+  const other = await openFromTree(page, "settings.gradle.kts");
+  await expect(other.locator(".cm-content")).toBeVisible();
+  await expect(preview).toHaveCount(0);
+  expect(await edited!.evaluate((svg) => svg.isConnected)).toBe(true);
+  const hiddenLink = page.locator('a[href="#title"]');
+  await expect(hiddenLink).toBeHidden();
+  await hiddenLink.evaluate((el) => el.focus());
+  await expect(hiddenLink).not.toBeFocused();
+  await page.getByRole("tab", { name: /README/ }).click();
+  await expect(preview).toBeVisible();
+  expect(await diagram.evaluate((svg, old) => svg === old, edited)).toBe(true);
+  await expect(diagram.locator("foreignObject math")).toHaveCount(1);
+});
+
 test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");

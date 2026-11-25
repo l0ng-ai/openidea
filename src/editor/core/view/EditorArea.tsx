@@ -27,6 +27,7 @@ import {
   EDITOR_TAB_MIME,
   acceptsEditorDrop,
   dropOnEditor,
+  editorDropAllowsSplit,
   getFileDecoration,
   prepareMenuGroups,
   textEditorWrapperFor,
@@ -40,6 +41,7 @@ import {
   useTextEditorWrappers,
   type EditorInput,
   type EditorKindContribution,
+  useEditorShown,
   type TextEditorWrapperContribution,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
@@ -106,7 +108,7 @@ function EmptyEditorArea() {
     const el = ref.current;
     if (!el) return;
     return registerDropTarget(el, {
-      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
+      accepts: (type, data) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type, data),
       over: (data) => setOver(data.type !== FILES_DRAG || droppedFiles(data.payload).length > 0),
       leave: () => setOver(false),
       drop: (data) => {
@@ -118,7 +120,7 @@ function EmptyEditorArea() {
           return;
         }
         if (data.type !== EDITOR_TAB_MIME) {
-          dropOnEditor(data);
+          dropOnEditor(data, { paneId, zone: "center", index: 0 });
           return;
         }
         const p = parseTabPayload(data.payload);
@@ -186,6 +188,7 @@ function PaneView({ paneId }: { paneId: string }) {
   const isActivePane = useTabs((s) => s.activePane === paneId);
   const multiPane = useTabs((s) => s.layout.kind === "split");
   const kinds = useContributions((s) => s.editorKinds);
+  const wrappers = useTextEditorWrappers((s) => s.wrappers);
   const titleRevision = useEditorTabTitles((s) => s.revision);
   const tabs = useMemo(() => pane?.tabs ?? [], [pane]);
   const paths = tabs.map((t) => t.input.path ?? "");
@@ -299,9 +302,13 @@ function PaneView({ paneId }: { paneId: string }) {
     const strip = (offset: number, pin?: boolean): TabsDnd => ({
       type: EDITOR_TAB_MIME,
       payload: (tabId) => JSON.stringify({ paneId, tabId }),
+      accepts: (data) => acceptsEditorDrop(data.type, data),
       onDrop: (raw, index) => {
         const p = parseTabPayload(raw);
         if (p) ctrl.moveTab(p.paneId, p.tabId, paneId, index + offset, pin);
+      },
+      onExternalDrop: (data, index) => {
+        dropOnEditor(data, { paneId, zone: "center", index: index + offset, pinned: pin });
       },
       onDropOutside: dropOutside,
     });
@@ -316,10 +323,13 @@ function PaneView({ paneId }: { paneId: string }) {
     if (!el) return;
     const zoneAt = (x: number, y: number) => dropZoneAt(x, y, el.getBoundingClientRect());
     return registerDropTarget(el, {
-      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
+      accepts: (type, data) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type, data),
       over: (data, x, y) => {
         if (data.type === FILES_DRAG) setDropZone(droppedFiles(data.payload).length ? zoneAt(x, y) : null);
-        else setDropZone(data.type === EDITOR_TAB_MIME ? zoneAt(x, y) : "center");
+        else
+          setDropZone(
+            data.type === EDITOR_TAB_MIME || editorDropAllowsSplit(data.type, data) ? zoneAt(x, y) : "center",
+          );
       },
       leave: () => setDropZone(null),
       drop: (data, x, y) => {
@@ -330,7 +340,8 @@ function PaneView({ paneId }: { paneId: string }) {
           return;
         }
         if (data.type !== EDITOR_TAB_MIME) {
-          dropOnEditor(data);
+          const target = useTabs.getState().panes[paneId];
+          dropOnEditor(data, { paneId, zone, ...(zone === "center" ? { index: target?.tabs.length ?? 0 } : {}) });
           return;
         }
         const p = parseTabPayload(data.payload);
@@ -344,7 +355,7 @@ function PaneView({ paneId }: { paneId: string }) {
 
   if (!pane) return null;
   const active = pane.tabs.find((t) => t.id === pane.active) ?? null;
-  const kept = keptTabs(pane.tabs, pane.mru, kinds);
+  const kept = keptTabs(pane.tabs, pane.mru, kinds, wrappers);
 
   const onFocus = () => {
     setContext("editorFocus", true);
@@ -431,7 +442,13 @@ function PaneView({ paneId }: { paneId: string }) {
           ref={contentRef}
         >
           {kept.map((tab) => (
-            <KindEditor key={tab.id} tab={tab} shown={tab === active} kept />
+            <EditorSurface key={tab.id} tab={tab} shown={tab === active} kept>
+              {isTextInput(tab.input) ? (
+                <PaneContent paneId={paneId} tab={tab} tabsVisible={!hidden} />
+              ) : (
+                <KindEditor tab={tab} />
+              )}
+            </EditorSurface>
           ))}
           {!active ? (
             <EmptyEditor />
@@ -492,20 +509,22 @@ function PaneBreadcrumbs({
 }
 
 function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; tabsVisible: boolean }) {
-  const crumbs = !useDistractionFree((s) => s.active);
+  const shown = useEditorShown();
+  const crumbs = !useDistractionFree((s) => s.active) && shown;
   const wrappers = useTextEditorWrappers((s) => s.wrappers);
   if (isTextInput(tab.input)) {
     const virtual = tab.input.kind === "virtual" ? virtualData(tab.input) : undefined;
     const wrapper = tab.input.kind === "file" ? textEditorWrapperFor(wrappers, tab.input.path) : undefined;
-    const host = <TextEditorHost key={tab.id} tabId={tab.id} />;
+    const host = shown && <TextEditorHost key={tab.id} tabId={tab.id} />;
     return (
       <>
-        {virtual ? (
-          <VirtualBanner path={tab.input.path!} decompiled={virtual.decompiled} description={virtual.description} />
-        ) : (
-          <EditorBanners path={tab.input.path} />
-        )}
-        <FindBar paneId={paneId} />
+        {shown &&
+          (virtual ? (
+            <VirtualBanner path={tab.input.path!} decompiled={virtual.decompiled} description={virtual.description} />
+          ) : (
+            <EditorBanners path={tab.input.path} />
+          ))}
+        {shown && <FindBar paneId={paneId} />}
         {crumbs && (
           <PaneBreadcrumbs
             key={`top:${wrapper?.id}`}
@@ -539,16 +558,32 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
       </>
     );
   }
-  return <KindEditor key={tab.id} tab={tab} shown />;
+  return (
+    <EditorSurface key={tab.id} tab={tab} shown>
+      <KindEditor tab={tab} />
+    </EditorSurface>
+  );
 }
 
 /** Tabs of a pane kept mounted while hidden: the most recently used ones of `keepAlive` kinds. */
 const KEPT_TABS = 5;
 
-function keptTabs(tabs: Tab[], mru: string[], kinds: Map<string, EditorKindContribution>): Tab[] {
+function keptTabs(
+  tabs: Tab[],
+  mru: string[],
+  kinds: Map<string, EditorKindContribution>,
+  wrappers: ReadonlyMap<string, TextEditorWrapperContribution>,
+): Tab[] {
   const recent = mru
     .map((id) => tabs.find((t) => t.id === id))
-    .filter((t): t is Tab => !!t && !!kinds.get(t.input.kind)?.keepAlive)
+    .filter(
+      (t): t is Tab =>
+        !!t &&
+        (!!kinds.get(t.input.kind)?.keepAlive ||
+          (t.input.kind === "file" &&
+            t.input.path !== undefined &&
+            !!textEditorWrapperFor(wrappers, t.input.path)?.keepAlive)),
+    )
     .slice(0, KEPT_TABS);
   // In tab order, so switching tabs doesn't move their DOM (which would lose scroll offsets).
   return tabs.filter((t) => recent.includes(t));
@@ -559,7 +594,17 @@ function keptTabs(tabs: Tab[], mru: string[], kinds: Map<string, EditorKindContr
  * keeps its layout (content-visibility), so showing it again needn't lay it out from scratch;
  * its content can't be focused or hit while skipped.
  */
-function KindEditor({ tab, shown, kept = false }: { tab: Tab; shown: boolean; kept?: boolean }) {
+function EditorSurface({
+  tab,
+  shown,
+  kept = false,
+  children,
+}: {
+  tab: Tab;
+  shown: boolean;
+  kept?: boolean;
+  children: ReactNode;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionVisibility(ref, kept);
   useLayoutEffect(() => {
@@ -571,25 +616,32 @@ function KindEditor({ tab, shown, kept = false }: { tab: Tab; shown: boolean; ke
       sel.removeAllRanges();
     }
   }, [kept, shown]);
-  const kinds = useContributions((s) => s.editorKinds);
-  const kind = kinds.get(tab.input.kind);
-  if (!kind) return <EmptyState icon="file" title={tx`No editor for “${tab.input.kind}”`} />;
-  const Component = kind.component;
   return (
     <div
       ref={ref}
-      className={clsx(styles.kind, kept && styles.kept, !shown && styles.keptHidden)}
-      data-editor-focus={shown ? "" : undefined}
+      className={clsx(
+        styles.kind,
+        kept && styles.kept,
+        kept && isTextInput(tab.input) && styles.keptText,
+        !shown && styles.keptHidden,
+      )}
+      data-editor-focus={shown && !isTextInput(tab.input) ? "" : undefined}
       tabIndex={-1}
       aria-hidden={shown ? undefined : true}
     >
       <EditorTabIdProvider value={tab.id}>
-        <EditorShownProvider value={shown}>
-          <Component input={tab.input} />
-        </EditorShownProvider>
+        <EditorShownProvider value={shown}>{children}</EditorShownProvider>
       </EditorTabIdProvider>
     </div>
   );
+}
+
+function KindEditor({ tab }: { tab: Tab }) {
+  const kinds = useContributions((s) => s.editorKinds);
+  const kind = kinds.get(tab.input.kind);
+  if (!kind) return <EmptyState icon="file" title={tx`No editor for “${tab.input.kind}”`} />;
+  const Component = kind.component;
+  return <Component input={tab.input} />;
 }
 
 /** Actions at the right end of the tab row (IDEA: split, tab actions ⋮). */

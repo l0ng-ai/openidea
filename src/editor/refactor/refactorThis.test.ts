@@ -332,6 +332,7 @@ describe("Refactor menu actions", () => {
     });
     try {
       const py = editor("total = price * 2", "python");
+      // oxlint-disable-next-line no-await-in-loop -- the test asserts the order of the install prompts
       for (const id of ["extractMethod", "inline", "extractParameter"] as const) await runRefactoring(py, id);
       expect(prompt.mock.calls.map((c) => c[0])).toEqual([
         { name: "pylsp", refactoring: "Extract Method" },

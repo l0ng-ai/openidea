@@ -42,11 +42,13 @@ import {
   showContextMenu,
   startPointerDrag,
   tooltipAttrs,
+  useFileIconRevision,
   type MenuItem,
   type TabItem,
   type TreeHandle,
   T,
 } from "@/ui";
+import { useFilePresentation } from "@/ui/filePresentation";
 import {
   editorService,
   maybeEditorService,
@@ -353,6 +355,18 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
 /** The selected files that still exist in the working tree (Delete… removes them from disk). */
 /** Whether the change leaves the file in the working tree. */
 const onDisk = existsOnDisk;
+
+/** The working-tree path to resolve a Project-tree presentation icon from, or null when absent on disk. */
+function presentationPath(node: ChangeNode): string | null {
+  if (node.type !== "file" || ignoredDirectory(node) || !node.path || node.kind === "deleted") return null;
+  if (node.files[0] && !onDisk(node.files[0])) return null;
+  return node.path;
+}
+
+function ChangeFileIcon({ path }: { path: string }) {
+  const { icon } = useFilePresentation(path);
+  return <Icon name={icon} size={16} className={styles.icon} />;
+}
 
 export function deletableFiles(nodes: ChangeNode[]): string[] {
   const files = filesOf(nodes);
@@ -771,6 +785,7 @@ export function LocalChangesView() {
  * interface (no checkboxes, a Commit… button); `dialog`: the Commit dialog's.
  */
 export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dialog"; amended?: ChangeNode | null }) {
+  useFileIconRevision();
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
@@ -1130,6 +1145,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
             if (n.type === "group") {
               const files = n.files.filter((f) => onDisk(f) && !f.path.endsWith("/"));
               for (const [i, file] of files.entries()) {
+                // oxlint-disable-next-line no-await-in-loop -- tabs open in group order and only the last file may take focus
                 await editorService().openFile(file.path, { focus: i === files.length - 1 });
               }
               return;
@@ -1208,6 +1224,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                   },
                 }),
             };
+            const iconPath = presentationPath(n);
             return (
               <span
                 className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
@@ -1244,18 +1261,12 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                       className={clsx(styles.icon, n.warning && styles.committerWarning)}
                     />
                   ))
+                ) : n.type === "dir" || ignoredDirectory(n) ? (
+                  <Icon name={st.expanded ? "folder-open" : "folder"} size={16} className={styles.icon} />
+                ) : iconPath ? (
+                  <ChangeFileIcon path={iconPath} />
                 ) : (
-                  <Icon
-                    name={
-                      n.type === "dir" || ignoredDirectory(n)
-                        ? st.expanded
-                          ? "folder-open"
-                          : "folder"
-                        : fileIconName(n.label)
-                    }
-                    size={16}
-                    className={styles.icon}
-                  />
+                  <Icon name={fileIconName(n.label, n.path ?? null)} size={16} className={styles.icon} />
                 )}
                 {label}
                 {n.type !== "file" && (n.group !== "amend" || n.historicalFileCount !== undefined) && (

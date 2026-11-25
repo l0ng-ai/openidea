@@ -104,6 +104,7 @@
   "Clone Caret Below": "Klonuj kursor poniżej",
   "Join Lines": "Połącz wiersze",
   "Toggle Case": "Przełącz wielkość liter",
+  "Cycle Identifier Case": "Przełączaj wielkość liter identyfikatora",
   "Add Carets to Ends of Selected Lines": "Dodaj kursory na końcach zaznaczonych wierszy",
   "Unselect Occurrence": "Odznacz wystąpienie",
   "Paste from History…": "Wklej z historii…",
@@ -970,6 +971,7 @@
   "Hide": "Ukryj",
   "Hide Active Tool Window": "Ukryj aktywne okno narzędziowe",
   "Hide All Tool Windows": "Ukryj wszystkie okna narzędziowe",
+  "Hide Side Tool Windows": "Ukryj boczne okna narzędziowe",
   "Hide Coverage": "Ukryj pokrycie kodu",
   "Hide Library Frames": "Ukryj ramki biblioteczne",
   "Hide Replace": "Ukryj zastępowanie",
@@ -4808,7 +4810,8 @@
   "{provider} didn't start: {error}": "Dostawca {provider} nie uruchomił się: {error}",
   "resets {resetsMs}": "resetuje się za {resetsMs}",
   "Run Again From Here": "Uruchom ponownie od tego miejsca",
-  "The messages after this one are replaced. Files the agent changed stay as they are.": "Wiadomości po tej zostaną zastąpione. Pliki zmienione przez agenta pozostają bez zmian.",
+  "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "Wiadomości po tej zostaną zastąpione, a pliki zmienione od tego czasu przez agenta wrócą do stanu sprzed wysłania tej wiadomości.",
+  "The files the agent changed since go back to how they were before this message was sent.": "Pliki zmienione od tego czasu przez agenta wrócą do stanu sprzed wysłania tej wiadomości.",
   "Cancelling…": "Anulowanie…",
   "Code insight needs the index; it can't be stopped": "Analiza kodu wymaga indeksu; proces ten nie może zostać zatrzymany",
   "Waiting for other tasks": "Oczekiwanie na inne zadania",
@@ -5908,5 +5911,9 @@
   "Find by main class": "Znajdź według klasy głównej",
   "Select files in the Project view, Commit tool window, or open a file in the editor": "Wybierz pliki w widoku Projektu, oknie Commit lub otwórz plik w edytorze",
   "Agent Reference": "Odwołanie do agenta",
-  "Copy Agent Reference": "Kopiuj odwołanie do agenta"
+  "Copy Agent Reference": "Kopiuj odwołanie do agenta",
+  "Roll Back to Here": "Wycofaj do tego miejsca",
+  "Couldn't roll back": "Nie udało się wycofać",
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Ta wiadomość i kolejne zostaną usunięte, a pliki zmienione od tego czasu przez agenta wrócą do stanu sprzed jej wysłania. Wiadomość wróci do pola tekstowego.",
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "To wyczyści całą rozmowę, przywróci pliki zmienione przez agenta do stanu z początku zadania i rozpocznie nową sesję agenta z tą wiadomością."
 }

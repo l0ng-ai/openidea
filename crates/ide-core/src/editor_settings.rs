@@ -336,6 +336,7 @@ pub struct CodeEditingSettings {
     /// Next / previous error goes to errors only (skips warnings).
     pub next_error_errors_only: bool,
     pub sticky_lines_max: u32,
+    pub sticky_lines_disabled_languages: Vec<String>,
 }
 
 impl Default for CodeEditingSettings {
@@ -348,6 +349,7 @@ impl Default for CodeEditingSettings {
             quick_doc_delay: 500,
             next_error_errors_only: true,
             sticky_lines_max: 5,
+            sticky_lines_disabled_languages: Vec::new(),
         }
     }
 }
@@ -360,6 +362,8 @@ pub struct InlayHintsSettings {
     pub parameters: bool,
     /// Hints of other kinds (chaining, closing labels…).
     pub other: bool,
+    /// The Dart server's closing labels (`// Column` after a widget's closing bracket).
+    pub closing_labels: bool,
     pub disabled_languages: Vec<String>,
     /// Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on.
     pub code_vision: bool,
@@ -392,6 +396,7 @@ impl Default for InlayHintsSettings {
             types: true,
             parameters: true,
             other: true,
+            closing_labels: true,
             disabled_languages: Vec::new(),
             code_vision: true,
             code_vision_usages: true,
@@ -473,6 +478,12 @@ pub struct LanguageCodeStyle {
     /// PHP: align `=` of consecutive assignment statements after formatting.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align_consecutive_assignments: Option<bool>,
+    /// SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyword_case: Option<String>,
+    /// SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifier_case: Option<String>,
 }
 
 /// Editor › Code Style (General tab + per-language overrides).
@@ -583,5 +594,22 @@ mod folding_tests {
             let settings: FoldingSettings = serde_json::from_value(json).unwrap();
             assert_eq!(serde_json::to_value(settings).unwrap()["outlineVisibility"], mode);
         }
+    }
+}
+
+#[cfg(test)]
+mod sticky_lines_tests {
+    use super::CodeEditingSettings;
+
+    #[test]
+    fn sticky_lines_language_exclusions_round_trip_and_default_to_empty() {
+        let old: CodeEditingSettings = serde_json::from_value(serde_json::json!({"stickyLinesMax": 3})).unwrap();
+        assert_eq!(old.sticky_lines_max, 3);
+        assert!(old.sticky_lines_disabled_languages.is_empty());
+        let json = serde_json::json!(["markdown", "rust"]);
+        let saved: CodeEditingSettings =
+            serde_json::from_value(serde_json::json!({"stickyLinesDisabledLanguages": json})).unwrap();
+        assert_eq!(saved.sticky_lines_disabled_languages, ["markdown", "rust"]);
+        assert_eq!(serde_json::to_value(saved).unwrap()["stickyLinesDisabledLanguages"], json);
     }
 }

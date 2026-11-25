@@ -93,6 +93,7 @@ clipboard_has_image                          always             desktop      bin
 clipboard_image                              always             desktop      bindings async
 clipboard_set_file_list                      always             desktop      bindings async
 clipboard_text                               trusted            desktop      bindings async
+clipboard_write_image                        always             desktop      bindings async
 clipboard_write_text                         always             desktop      bindings async
 close_project                                always             project_host bindings spawn
 coverage_collect                             trusted            project_host bindings async
@@ -100,6 +101,7 @@ coverage_import                              always             project_host bin
 coverage_prepare                             trusted            project_host bindings async
 cucumber_sources                             trusted            desktop      bindings async
 db_apply_edits                               trusted            project_host bindings async
+db_approve_external_tunnel                   trusted            desktop      bindings async
 db_approve_jdbc_source                       trusted            project_host bindings sync
 db_completion                                trusted            project_host bindings async
 db_connect                                   trusted            project_host bindings async
@@ -145,6 +147,7 @@ db_table_details                             trusted            project_host bin
 db_table_page                                trusted            project_host bindings async
 db_tables                                    trusted            project_host bindings async
 db_test                                      trusted            project_host bindings async
+db_test_external_tunnel                      trusted            desktop      bindings async
 db_test_tunnel                               trusted            project_host bindings async
 db_tool_installs                             trusted            desktop      bindings async
 db_tool_options                              trusted            desktop      bindings async
@@ -180,6 +183,7 @@ debug_jvm_memory_classes                     trusted            project_host bin
 debug_jvm_memory_fields                      trusted            project_host bindings async
 debug_jvm_memory_instances                   trusted            project_host bindings async
 debug_jvm_memory_referrers                   trusted            project_host bindings async
+debug_jvm_thread_dump                        trusted            project_host bindings async
 debug_listen_for_jvm                         trusted            project_host bindings async
 debug_pause                                  trusted            project_host bindings async
 debug_redefine_classes                       trusted            project_host bindings async
@@ -273,6 +277,7 @@ flutter_daemon_restart                       trusted            project_host bin
 flutter_devices                              trusted            project_host bindings sync
 flutter_devices_refresh                      trusted            project_host bindings sync
 flutter_devtools_url                         trusted            project_host bindings async
+flutter_emulator_launch                      trusted            project_host bindings async
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async
@@ -333,6 +338,7 @@ inspect_code                                 trusted            project_host bin
 java_build_workspace                         trusted            project_host bindings async
 java_debug_adapter                           trusted            project_host bindings sync
 java_debug_server                            trusted            project_host bindings async
+java_junit_runner                            trusted            project_host bindings async
 java_resolve_launch                          trusted            project_host bindings async
 jdk_download                                 always             project_host bindings async
 jdk_download_location                        always             project_host bindings sync
@@ -361,6 +367,7 @@ lsp_execute_code_action                      trusted            project_host bin
 lsp_execute_command                          trusted            project_host bindings async
 lsp_extract_interface                        trusted            project_host bindings async
 lsp_extract_interface_info                   trusted            project_host bindings async
+lsp_file_references                          trusted            project_host bindings async
 lsp_format                                   trusted            project_host bindings async
 lsp_format_text                              trusted            project_host bindings async
 lsp_goto                                     trusted            project_host bindings async
@@ -526,6 +533,7 @@ project_workspace_member_set                 always             project_host bin
 project_workspace_members                    always             project_host bindings spawn
 proxy_check_connection                       always             desktop      bindings async
 pypi_package                                 outside_restricted project_host bindings async
+pypi_search                                  outside_restricted project_host bindings async
 python_requirements                          trusted            project_host bindings async
 recent_files                                 always             project_host bindings sync
 recent_project_groups                        always             desktop      bindings sync
@@ -557,6 +565,7 @@ remote_stop_backend                          always             desktop      bin
 remote_stop_forwarding                       trusted            desktop      bindings async
 remote_trust_set                             always             desktop      bindings sync
 remote_trust_status                          always             desktop      bindings sync
+remote_upload_into                           trusted            project_host bindings async
 remove_recent                                always             project_host bindings sync
 remove_recent_project                        always             desktop      bindings sync
 replace_in_files                             trusted            project_host bindings async
@@ -573,6 +582,7 @@ run_gradle_init_script                       trusted            project_host bin
 run_gradle_jvm_args_script                   always             project_host bindings async
 run_import_configs                           trusted            project_host bindings async
 run_import_sources                           trusted            project_host bindings async
+run_jvm_thread_dump                          trusted            project_host bindings async
 run_list                                     always             project_host bindings sync
 run_resize                                   trusted            project_host bindings sync
 run_save_configs                             trusted            project_host bindings async

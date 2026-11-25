@@ -475,6 +475,7 @@
   "menu.layout.delete": "Düzeni Sil…",
   "menu.activeToolWindow": "Etkin Araç Penceresi",
   "menu.toolwindow.hideActive": "Etkin Araç Penceresini Gizle",
+  "menu.toolwindow.hideSide": "Yan Araç Pencerelerini Gizle",
   "menu.toolwindow.maximize": "Araç Penceresini Ekranı Kaplayacak Şekilde Büyüt",
   "menu.toolwindow.closeContent": "Etkin Sekmeyi Kapat",
   "menu.toolwindow.jumpToLast": "Son Araç Penceresine Git",

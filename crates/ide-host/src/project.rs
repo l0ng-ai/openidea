@@ -753,7 +753,8 @@ impl Host {
                 self.data_dir.join("db-history.json"),
                 self.ssh.clone(),
             )
-            .with_global_sources(self.data_dir.clone()),
+            .with_global_sources(self.data_dir.clone())
+            .with_local_external_tunnels(self.local_database_tunnels),
         );
         let http_history = Arc::new(ide_http::History::new(self.data_dir.join("http-history").join(project_key)));
         let agents = Arc::new(ide_agent::AgentManager::new(
@@ -1498,17 +1499,15 @@ impl Project {
             return encoding_rs::Encoding::for_label(info.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown document encoding"));
         }
-        let defaults = self.documents.file_defaults();
-        let fallback = defaults.fallback_for(path);
         // The working file only when it is a regular file: a path that is a directory there
         // (a committed symlink to a folder, a file replaced by a folder) has only its blob.
         if path.is_file() {
-            let loaded = ide_vfs::load_text_with_fallback(path, fallback)?;
+            let loaded = self.documents.load_file(path)?;
             return encoding_rs::Encoding::for_label(loaded.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown file encoding"));
         }
         let bytes = self.with_log_repo_of(path, |r| r.file_bytes_at(path, rev))?.unwrap_or_default();
-        Ok(ide_vfs::detect_encoding(&bytes, fallback))
+        Ok(self.documents.detect_encoding(path, &bytes))
     }
 
     /// Current text of `path`: the open buffer when available, else the file on disk.
@@ -2362,8 +2361,11 @@ fn git_metadata_watch(root: &Path, sink: &SharedSink) -> Option<Arc<ide_vcs::Met
     .ok()
 }
 
+/// Whether a VCS metadata path changed for a reason other than our own status run
+/// refreshing an index: the main repository's `.git/index` or a linked worktree's
+/// `.git/worktrees/<id>/index`.
 fn vcs_path_changed(path: &Path) -> bool {
-    !path.ends_with(".git/index") || !ide_vcs::is_own_index_write(path)
+    path.file_name().is_none_or(|n| n != "index") || !ide_vcs::is_own_index_write(path)
 }
 
 #[cfg(test)]
@@ -2446,6 +2448,40 @@ mod index_event_tests {
         assert!(vcs_path_changed(&index));
         std::fs::remove_file(&index).unwrap();
         assert!(vcs_path_changed(&index));
+    }
+
+    #[test]
+    fn status_write_in_a_linked_worktree_is_suppressed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        std::fs::create_dir(&main).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        };
+        git(&main, &["init", "-q"]);
+        std::fs::write(main.join("file.txt"), "original\n").unwrap();
+        git(&main, &["add", "file.txt"]);
+        git(&main, &["commit", "-qm", "init"]);
+        let linked = tmp.path().join("linked");
+        git(&main, &["worktree", "add", "-q", linked.to_str().unwrap()]);
+        std::fs::File::options()
+            .write(true)
+            .open(linked.join("file.txt"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        let index = main.join(".git/worktrees/linked/index");
+        let before = std::fs::read(&index).unwrap();
+        ide_vcs::Repo::discover(&linked).unwrap().unwrap().status().unwrap();
+        assert_ne!(before, std::fs::read(&index).unwrap(), "status must actually write the index");
+        assert!(!vcs_path_changed(&index));
+        assert!(vcs_path_changed(&main.join(".git/worktrees/linked/HEAD")));
     }
 }
 

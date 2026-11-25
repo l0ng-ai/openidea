@@ -231,19 +231,22 @@ describe(".icls schemes", () => {
     // Language Defaults keep the DEFAULT_* keys.
     expect(fg("keyword")).toBe("#cc7832");
     expect(fg("string")).toBe("#8bb770");
-    // Global functions have their own entry; the member function key colours declarations and calls.
+    // Global functions and instance methods have their own entries (a method's calls use its key).
     expect(fg("javascript.globalFunction")).toBe("#6dacff");
-    expect(fg("javascript.functionDeclaration")).toBe("#e06c75");
-    expect(fg("javascript.functionCall")).toBe("#e06c75");
+    expect(fg("javascript.instanceMethod")).toBe("#e06c75");
+    expect(fg("javascript.functionDeclaration")).toBeUndefined();
     expect(fg("javascript.globalVariable")).toBe("#c678dd");
     expect(fg("javascript.field")).toBe("#ef8a80");
     expect(fg("javascript.constant")).toBe("#c580ea");
-    expect(fg("javascript.className")).toBe("#6fa4e5");
+    // JS.INTERFACE has its own entry; Class name falls back to the shared default.
+    expect(fg("javascript.interface")).toBe("#6fa4e5");
+    expect(fg("javascript.className")).toBeUndefined();
     expect(fg("javascript.docCommentTagValue")).toBe("#e5c07b");
     expect(fg("regexp")).toBe("#56b6c2");
     // Superseded keys and DEFAULT_SEMICOLON are counted as skipped.
     expect(scheme.attributes.operator).toEqual(DARCULA_ATTRIBUTES.operator);
-    expect([applied, skipped]).toEqual([12, 4]);
+    // The member function key no longer also sets the generic function call.
+    expect([applied, skipped]).toEqual([11, 4]);
   });
 
   it("imports WebStorm's decorator and global keys into the JavaScript and TypeScript page (#4059)", () => {
@@ -253,13 +256,30 @@ describe(".icls schemes", () => {
       `<scheme name="W"><attributes>${opt("TS.DECORATOR", "b3ae60")}${opt("JS.DECORATOR", "111111")}${opt(
         "TS.GLOBAL_VARIABLE",
         "c77dba",
-      )}${opt("TS.GLOBAL_FUNCTION", "56a8f5")}</attributes></scheme>`,
+      )}${opt("TS.GLOBAL_FUNCTION", "56a8f5")}${opt("TS.STATIC_MEMBER_FUNCTION", "cf8e6d")}</attributes></scheme>`,
     );
     expect(scheme.attributes["javascript.decorator"]).toEqual({ foreground: "#b3ae60", bold: false, italic: true });
     expect(scheme.attributes["javascript.globalVariable"]?.foreground).toBe("#c77dba");
     expect(scheme.attributes["javascript.globalFunction"]?.foreground).toBe("#56a8f5");
+    expect(scheme.attributes["javascript.staticMethod"]).toEqual({ foreground: "#cf8e6d", bold: false, italic: true });
     // Other languages keep their own colours.
     expect(scheme.attributes.metadata).toBeUndefined();
+  });
+
+  it("imports WebStorm's interface, type alias and type parameter keys into their own entries (#5619)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+    const { scheme } = parseIcls(
+      `<scheme name="W"><attributes>${opt("TS.CLASS", "6fa4e5")}${opt("TS.INTERFACE", "4ec9b0")}${opt(
+        "TS.TYPE.ALIAS",
+        "b8d7a3",
+      )}${opt("JS.TYPE_PARAMETER", "20999d")}</attributes></scheme>`,
+    );
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(fg("javascript.className")).toBe("#6fa4e5");
+    expect(fg("javascript.interface")).toBe("#4ec9b0");
+    expect(fg("javascript.typeAlias")).toBe("#b8d7a3");
+    expect(fg("javascript.typeParameter")).toBe("#20999d");
     expect(scheme.attributes.globalVariable).toBeUndefined();
   });
 

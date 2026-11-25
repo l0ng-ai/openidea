@@ -9,6 +9,10 @@
 //! With IBus behind it, a dead key waiting for its second key makes WebKit collapse every
 //! new selection in the window to its caret (Select All, mouse drags, text fields) until a
 //! composition completes. GTK's own IBus module does not, so IBus sessions use that.
+//! Fcitx's GTK module is the other way round on GNOME: Wayland gives it only coordinates
+//! inside the window, so with several monitors its candidate window opens on the wrong
+//! one. Through the compositor (Mutter hands text-input to Fcitx's IBus frontend) it
+//! follows the caret, so GNOME Wayland sessions drop `GTK_IM_MODULE=fcitx`.
 
 const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 const DISABLE_EXPLICIT_SYNC: &str = "__NV_DISABLE_EXPLICIT_SYNC";
@@ -26,6 +30,17 @@ pub fn configure() {
         tracing::info!("Wayland with IBus: {IM_MODULE}=ibus");
         unsafe { std::env::set_var(IM_MODULE, "ibus") };
     }
+    if drop_fcitx_module(|k| std::env::var(k).ok()) {
+        tracing::info!("GNOME Wayland with Fcitx: input method through the compositor");
+        unsafe { std::env::remove_var(IM_MODULE) };
+    }
+}
+
+/// GNOME on Wayland with Fcitx's GTK module selected (the session default `im-config` and
+/// Fcitx's setup write).
+fn drop_fcitx_module(var: impl Fn(&str) -> Option<String>) -> bool {
+    let gnome = var("XDG_CURRENT_DESKTOP").is_some_and(|d| d.split(':').any(|d| d.eq_ignore_ascii_case("gnome")));
+    gnome && var(IM_MODULE).is_some_and(|m| matches!(m.trim(), "fcitx" | "fcitx5")) && gdk_wayland(&var)
 }
 
 /// GTK 3's IBus input method module (`ibus-gtk3`), wherever the distribution keeps it.
@@ -130,6 +145,22 @@ mod tests {
         assert!(!decide_im(&[("WAYLAND_DISPLAY", "wayland-0")], true));
         assert!(!decide_im(&[("DISPLAY", ":0"), ("XMODIFIERS", "@im=ibus")], true));
         assert!(!decide_im(&[gnome[0], gnome[1], ("GDK_BACKEND", "x11")], true));
+    }
+
+    fn env(vars: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        let vars = vars.to_vec();
+        move |k| vars.iter().find(|(name, _)| *name == k).map(|(_, v)| v.to_string())
+    }
+
+    #[test]
+    fn gnome_wayland_drops_the_fcitx_module() {
+        let gnome = [("XDG_CURRENT_DESKTOP", "ubuntu:GNOME"), ("WAYLAND_DISPLAY", "wayland-0"), (IM_MODULE, "fcitx")];
+        assert!(drop_fcitx_module(env(&gnome)));
+        assert!(drop_fcitx_module(env(&[gnome[0], gnome[1], (IM_MODULE, "fcitx5")])));
+        assert!(!drop_fcitx_module(env(&[("XDG_CURRENT_DESKTOP", "KDE"), gnome[1], gnome[2]])));
+        assert!(!drop_fcitx_module(env(&[gnome[0], gnome[2], ("DISPLAY", ":0")])), "X11 session");
+        assert!(!drop_fcitx_module(env(&[gnome[0], gnome[1], gnome[2], ("GDK_BACKEND", "x11")])));
+        assert!(!drop_fcitx_module(env(&[gnome[0], gnome[1], (IM_MODULE, "ibus")])));
     }
 
     #[test]

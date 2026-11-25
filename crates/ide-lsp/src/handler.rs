@@ -414,6 +414,23 @@ impl ClientHandler {
         }
     }
 
+    fn publish_closing_labels(&self, mgr: &LspManager, params: Value) {
+        let params: crate::closing_labels::Params = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("{}: bad publishClosingLabels: {e}", self.server.name);
+                return;
+            }
+        };
+        let Some(path) = uri_to_path(&params.uri) else { return };
+        if !self.server.is_live(self.generation) {
+            return;
+        }
+        if mgr.set_closing_labels(&path, &self.server, self.generation, self.encoding(), params.labels) {
+            mgr.sink().emit(IdeEvent::LspRefresh { server: self.server.id, kind: LspRefreshKind::InlayHints });
+        }
+    }
+
     /// Once per unresolved plugin, whether m2e marked a `pom.xml` or only logged it.
     fn build_plan_failure(&self, mgr: &LspManager, (plugin, body): (String, String)) {
         if mgr.first_message(&self.server.name, &format!("build plan: {plugin}")) {
@@ -622,6 +639,7 @@ impl Handler for ClientHandler {
             }
             "textDocument/publishDiagnostics" => self.publish_diagnostics(&mgr, params),
             "dart/textDocument/publishFlutterOutline" => self.publish_flutter_outline(&mgr, params),
+            "dart/textDocument/publishClosingLabels" => self.publish_closing_labels(&mgr, params),
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
@@ -644,6 +662,11 @@ impl Handler for ClientHandler {
                     && text.contains(" to import Gradle project ")
                 {
                     self.show_message(&mgr, &json!({ "type": 1, "message": text.lines().next().unwrap_or(text) }));
+                }
+                if self.server.name == "jdtls"
+                    && let Some(failure) = crate::jdtls::gradle_sync_failure(text)
+                {
+                    mgr.report_gradle_sync_failure(failure);
                 }
                 if self.server.name == "jdtls"
                     && params.get("type").and_then(Value::as_u64) == Some(1)

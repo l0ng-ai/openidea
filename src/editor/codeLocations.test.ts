@@ -34,10 +34,12 @@ describe("openCodeLocation", () => {
   });
 
   it("leaves project files and virtual documents editable", async () => {
-    for (const path of ["/work/app/src/Main.java", "jdt://contents/rt.jar/java.util/ArrayList.class"]) {
-      await openCodeLocation(path, { line: 0, col: 0 });
-      expect(isLibraryPath(path)).toBe(false);
-    }
+    await Promise.all(
+      ["/work/app/src/Main.java", "jdt://contents/rt.jar/java.util/ArrayList.class"].map(async (path) => {
+        await openCodeLocation(path, { line: 0, col: 0 });
+        expect(isLibraryPath(path)).toBe(false);
+      }),
+    );
   });
 
   it("does not mark files without an open project", async () => {

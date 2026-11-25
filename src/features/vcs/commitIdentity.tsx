@@ -62,6 +62,7 @@ export async function ensureCommitIdentity(roots: readonly (string | null)[], am
     if (identity.global) await call(commands.vcsSetUserIdentity(missing[0]!.root, identity.name, identity.email, true));
     else
       for (const { root } of missing)
+        // oxlint-disable-next-line no-await-in-loop -- git config writes are sequential under one shared error handler; a failure stops the remaining repositories
         await call(commands.vcsSetUserIdentity(root, identity.name, identity.email, false));
     return true;
   } catch (e) {

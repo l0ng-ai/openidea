@@ -928,7 +928,7 @@ function ApplyPatchDialog({
                 value={choice ?? (base ? PROJECT_PATCH_TARGET : repo)}
                 options={[
                   { value: PROJECT_PATCH_TARGET, label: t("Project paths"), detail: base ?? root ?? undefined },
-                  ...roots.map((value) => ({ value, label: baseName(value), detail: value })),
+                  ...roots.map((value) => ({ value, label: baseName(value), detail: value, verbatim: true })),
                 ]}
                 onChange={(value) => {
                   if (choice === value) return;

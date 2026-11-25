@@ -11,6 +11,7 @@ import {
   foldChipWidth,
   foldSelectionEffects,
   foldsFromRanges,
+  markdownImageFolds,
   foldingExtension,
   foldToExpand,
   setBackendFolds,
@@ -458,4 +459,25 @@ describe("foldChipWidth", () => {
     expect(foldChipWidth(anchor)).toBe(0);
     view.destroy();
   });
+});
+
+it("folds long embedded image payloads without changing the Markdown source", () => {
+  const data = "abcd".repeat(100);
+  const url = "data:image/png;base64," + data;
+  const first = `![a](<${url}>)`;
+  const second = `<img alt="b" src="${url}">`;
+  const source = [first, second, "```md", first, "```", "![small](data:image/png;base64,YQ==)"].join("\n");
+  const state = EditorState.create({ doc: source, extensions: codeFolding() });
+  const folded = state.update({ effects: markdownImageFolds(state) }).state;
+  const ranges: number[][] = [];
+  foldedRanges(folded).between(0, source.length, (from, to) => {
+    ranges.push([from, to]);
+  });
+  const a = first.indexOf(data),
+    b = first.length + 1 + second.indexOf(data);
+  expect(ranges).toEqual([
+    [a, a + data.length],
+    [b, b + data.length],
+  ]);
+  expect(folded.doc.toString()).toBe(source);
 });

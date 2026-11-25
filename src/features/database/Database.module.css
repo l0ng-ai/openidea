@@ -70,6 +70,10 @@
   cursor: col-resize;
 }
 .rowNumber {
+  /* Frozen at the left edge: only vertical scrolling moves the numbers. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -79,6 +83,9 @@
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   user-select: none;
+}
+.rowNumberSelected {
+  color: var(--fg-line-number-current);
 }
 .cell {
   display: flex;
@@ -503,6 +510,52 @@
   margin: 0;
   padding-left: var(--space-4);
 }
+.tunnelReview {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: var(--space-2);
+}
+.tunnelReview p {
+  margin: 0;
+}
+.tunnelPreview {
+  display: grid;
+  grid-template-columns: fit-content(35%) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+.tunnelPreview dt {
+  color: var(--fg-secondary);
+}
+.tunnelPreview dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.tunnelPreview ol {
+  margin: 0;
+  padding-inline-start: 2em;
+}
+.tunnelPreview code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  white-space: pre-wrap;
+  direction: ltr;
+  unicode-bidi: isolate;
+  user-select: text;
+}
+.tunnelArgumentsLabel {
+  align-self: start;
+  padding-top: var(--space-1);
+}
+.tunnelArguments {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.tunnelArguments > button {
+  align-self: flex-start;
+}
 .formFull {
   grid-column: 1 / -1;
 }
@@ -744,6 +797,13 @@
 /* Console run feedback: timing after a statement, gutter check / error, error banner. */
 :global(.cm-openidea-db-executing) {
   background: var(--accent-soft);
+}
+/* The range the console's next run would submit (DataGrip's current-statement border). */
+:global(.cm-openidea-db-preview) {
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
 }
 :global(.cm-openidea-db-elapsed) {
   font-variant-numeric: tabular-nums;

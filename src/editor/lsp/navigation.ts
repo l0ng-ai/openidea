@@ -323,9 +323,11 @@ async function gotoAfterEdits(
   superseded: () => boolean,
 ) {
   for (let attempt = 0; ; attempt++) {
+    // oxlint-disable-next-line no-await-in-loop -- a retry re-asks only after the previous answer was empty and still fresh
     const locs = await request();
     if (locs.length || attempt >= 3 || superseded() || performance.now() - (editedAt.get(view) ?? -Infinity) > 1500)
       return locs;
+    // oxlint-disable-next-line no-await-in-loop -- waits before the next retry; `superseded()` is checked again after the delay
     await new Promise((r) => setTimeout(r, 250));
     if (superseded()) return [];
   }

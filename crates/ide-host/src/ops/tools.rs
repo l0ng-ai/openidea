@@ -1,4 +1,5 @@
 //! Language server / debug adapter installer and JDK downloads (`ide-tools`).
+use super::{blocking, blocking_value};
 use crate::Host;
 use crate::ops::Channel;
 use ide_command::command;
@@ -51,10 +52,6 @@ fn languages(host: &Host, window: &str) -> Vec<ide_language::LanguageConfig> {
     langs
 }
 
-fn join_err(e: impl std::fmt::Display) -> IdeError {
-    IdeError::internal(e.to_string())
-}
-
 fn reconfigure_servers(host: &Host) {
     for project in host.projects() {
         let lsp = project.lsp.clone();
@@ -67,7 +64,7 @@ fn reconfigure_servers(host: &Host) {
 pub async fn tools_list(host: &Host, window: &str) -> IdeResult<Vec<ToolInfo>> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);
-    tokio::task::spawn_blocking(move || tools.list(&langs)).await.map_err(join_err)
+    blocking_value(move || tools.list(&langs)).await
 }
 
 /// Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
@@ -83,15 +80,14 @@ pub async fn tools_install(
     let tools = tools(host, window)?;
     let langs = languages(host, window);
     let cancel = host.begin_request(request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         tools.install(&name, &langs, &cancel, &|e| {
             let _ = on_event.send(e);
         })
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    let info = result??;
+    let info = result?;
     // Language servers whose launch depends on installed tools (jdtls loads the
     // java-debug bundle) pick the change up.
     reconfigure_servers(host);
@@ -104,9 +100,9 @@ pub async fn tools_install(
 pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> IdeResult<Vec<ToolUpdate>> {
     let tools = tools(host, window)?;
     let cancel = host.begin_request(request);
-    let result = tokio::task::spawn_blocking(move || tools.updates(&cancel)).await.map_err(join_err);
+    let result = blocking(move || tools.updates(&cancel)).await;
     host.end_request(request);
-    result?
+    result
 }
 
 /// Removes a tool the IDE installed.
@@ -114,7 +110,7 @@ pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> Ide
 pub async fn tools_uninstall(host: &Host, window: &str, name: String) -> IdeResult<ToolInfo> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);
-    let info = tokio::task::spawn_blocking(move || tools.uninstall(&name, &langs)).await.map_err(join_err)??;
+    let info = blocking(move || tools.uninstall(&name, &langs)).await?;
     reconfigure_servers(host);
     Ok(info)
 }
@@ -130,9 +126,9 @@ pub fn jdk_download_vendors() -> Vec<JdkVendor> {
 pub async fn jdk_download_releases(host: &Host, vendor: String, request: RequestId) -> IdeResult<JdkReleases> {
     let tools = Tools::new(&host.local_data_dir);
     let cancel = host.begin_request(request);
-    let result = tokio::task::spawn_blocking(move || tools.jdk_releases(&vendor, &cancel)).await.map_err(join_err);
+    let result = blocking(move || tools.jdk_releases(&vendor, &cancel)).await;
     host.end_request(request);
-    result?
+    result
 }
 
 /// Where Download JDK puts JDKs unless told otherwise.
@@ -157,7 +153,7 @@ pub async fn jdk_download(
     let tools = Tools::new(&host.local_data_dir);
     let location = location.filter(|p| !p.as_os_str().is_empty());
     let cancel = host.begin_request(request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let jdk = tools.download_jdk(&vendor, version, location.as_deref(), &cancel, &|e| {
             let _ = on_event.send(e);
         })?;
@@ -171,10 +167,9 @@ pub async fn jdk_download(
             .ok_or_else(|| IdeError::internal(format!("{} is not a JDK home", home.display())))?;
         IdeResult::Ok(ide_sdk::jdk_sdk(&jdk))
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    let sdk = result??;
+    let sdk = result?;
     reconfigure_servers(host);
     Ok(sdk)
 }
@@ -193,7 +188,7 @@ pub async fn jdtls_required_java(host: &Host, window: &str) -> IdeResult<Option<
     };
     ide_sdk::apply::server_launch_overrides(&mut cfg, &settings);
     ide_sdk::apply::server_protocol_overrides(&mut cfg, &settings);
-    tokio::task::spawn_blocking(move || ide_sdk::java::jdtls_required_java(&cfg)).await.map_err(join_err)
+    blocking_value(move || ide_sdk::java::jdtls_required_java(&cfg)).await
 }
 
 ide_command::domain!(

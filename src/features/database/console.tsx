@@ -19,6 +19,7 @@ import {
 } from "@codemirror/autocomplete";
 import {
   Compartment,
+  EditorSelection,
   EditorState,
   Facet,
   Prec,
@@ -32,9 +33,11 @@ import {
   Decoration,
   EditorView,
   GutterMarker,
+  RectangleMarker,
   ViewPlugin,
   WidgetType,
   gutter,
+  layer,
   showPanel,
   showTooltip,
   type Panel,
@@ -78,6 +81,7 @@ import {
 import { WHOLE_FILE, sqlSupport, type SqlText } from "./sqlSupport";
 import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
+  allowsPassiveConsoleMetadata,
   bindConsole,
   cancelConsole,
   closeInlineResults,
@@ -375,6 +379,138 @@ export async function explainInView(view: EditorView, path: string) {
 
 const consolePath = Facet.define<string, string>({ combine: (v) => v[0] ?? "" });
 
+const setPreview = StateEffect.define<readonly { from: number; to: number }[]>();
+
+/**
+ * The range the console's next Execute would submit, bordered on the text (DataGrip's current
+ * statement border): the caret's statement, or the selection's — the statements `db_statements`
+ * splits that range into, the very call the run itself makes.
+ */
+const previewField = StateField.define<readonly { from: number; to: number }[]>({
+  create: () => [],
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setPreview)) return e.value;
+    if (!tr.docChanged) return value;
+    // The preview is of the text it was computed for; edits only move where that is.
+    const next: { from: number; to: number }[] = [];
+    for (const r of value) {
+      const from = tr.changes.mapPos(r.from, 1);
+      const to = tr.changes.mapPos(r.to, -1);
+      if (from < to) next.push({ from, to });
+    }
+    return next;
+  },
+});
+
+/** The bordered ranges: a run in progress keeps its submitted range, whatever the caret does. */
+export function previewRanges(state: EditorState): readonly { from: number; to: number }[] {
+  const ex = state.field(runField, false)?.executing;
+  const ranges = ex?.spans.length
+    ? [{ from: ex.spans[0]!.from, to: ex.spans[ex.spans.length - 1]!.to }]
+    : (state.field(previewField, false) ?? []);
+  return ranges.filter((r) => r.from < r.to);
+}
+
+const PREVIEW_CLASS = "cm-openidea-db-preview";
+
+/**
+ * One box around each statement's text: the union of its lines' text (indentation and trailing
+ * blanks left out), as tall as the statement even where it runs out of view.
+ */
+function previewBoxes(view: EditorView): RectangleMarker[] {
+  const { doc } = view.state;
+  const boxes: RectangleMarker[] = [];
+  for (const r of previewRanges(view.state)) {
+    let left = Infinity;
+    let right = -Infinity;
+    let offset: number | null = null;
+    for (const visible of view.visibleRanges) {
+      const from = Math.max(r.from, visible.from);
+      const to = Math.min(r.to, visible.to);
+      if (from >= to) continue;
+      for (let pos = from; pos <= to;) {
+        const line = doc.lineAt(pos);
+        const text = line.text;
+        let start = Math.max(from, line.from) - line.from;
+        let end = Math.min(to, line.to) - line.from;
+        while (start < end && /\s/.test(text[start]!)) start++;
+        while (end > start && /\s/.test(text[end - 1]!)) end--;
+        if (start < end)
+          for (const m of RectangleMarker.forRange(
+            view,
+            PREVIEW_CLASS,
+            EditorSelection.range(line.from + start, line.from + end),
+          )) {
+            left = Math.min(left, m.left);
+            right = Math.max(right, m.left + (m.width ?? 0));
+            offset ??= m.top - view.lineBlockAt(line.from).top;
+          }
+        pos = line.to + 1;
+      }
+    }
+    if (offset == null || right <= left) continue;
+    const top = view.lineBlockAt(r.from).top + offset;
+    const bottom = view.lineBlockAt(r.to).bottom + offset;
+    boxes.push(new RectangleMarker(PREVIEW_CLASS, left - 2, top, right - left + 4, bottom - top));
+  }
+  return boxes;
+}
+
+const previewLayer = layer({
+  above: false,
+  markers: previewBoxes,
+  update: (u) =>
+    u.docChanged ||
+    u.viewportChanged ||
+    u.geometryChanged ||
+    u.startState.field(previewField, false) !== u.state.field(previewField, false) ||
+    u.startState.field(runField, false)?.executing !== u.state.field(runField, false)?.executing,
+});
+
+/** How long typing pauses before the preview is split again (until then it follows the edit). */
+const PREVIEW_TYPING_DELAY_MS = 150;
+
+/** Re-splits the caret's (or the selection's) range for the preview, as `executeConsole` does. */
+const previewSync = ViewPlugin.define((view) => {
+  const path = view.state.facet(consolePath);
+  let run = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const preview = () => {
+    clearTimeout(timer);
+    timer = undefined;
+    const id = consoleSource(path);
+    if (!id) return;
+    const sent = view.state.doc;
+    const sel = view.state.selection.main;
+    const token = ++run;
+    void call(commands.dbStatements(id, sent.toString(), sel.from, sel.to))
+      .then((statements) => {
+        // A newer move, an edit or a run started since: what came back no longer applies.
+        if (token !== run || view.state.doc !== sent || view.state.field(runField, false)?.executing) return;
+        view.dispatch({ effects: setPreview.of(statements.map((st) => ({ from: st.from, to: st.to }))) });
+      })
+      .catch(() => {});
+  };
+  preview();
+  return {
+    update(u) {
+      const executing = (s: EditorState) => !!s.field(runField, false)?.executing;
+      if (executing(u.startState) && !executing(u.state)) preview();
+      // While a run is in progress its submitted range stays; the caret is not followed.
+      else if (executing(u.state)) return;
+      // Typing sends the whole text each time: wait for a pause, the mapped preview meanwhile.
+      else if (u.docChanged) {
+        clearTimeout(timer);
+        timer = setTimeout(preview, PREVIEW_TYPING_DELAY_MS);
+      } else if (u.selectionSet) preview();
+    },
+    destroy() {
+      clearTimeout(timer);
+      run++;
+    },
+  };
+});
+
 /** An in-editor result and the statement it shows under (mapped through edits). */
 interface InlineAnchor {
   id: number;
@@ -602,16 +738,24 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const pickedSchema = useDatabase((s) => s.consoleSchemas[path]);
   const defaultSchema = useDatabase((s) => (bound ? s.completion[bound]?.defaultSchema : undefined));
   const schemaList = useDatabase((s) => (bound ? s.schemas[bound] : undefined));
+  const preloadMetadata = useDatabase((s) => !!bound && allowsPassiveConsoleMetadata(bound, s.pausedConsoleMetadata));
   const schema = activeSchema(pickedSchema, defaultSchema);
   useEffect(() => {
-    if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId])
+    if (
+      preloadMetadata &&
+      boundId &&
+      allowsPassiveConsoleMetadata(boundId) &&
+      listsDatabases(sourceById(boundId)) &&
+      !useDatabase.getState().databases[boundId]
+    )
       void loadDatabases(boundId);
-  }, [boundId]);
+  }, [boundId, preloadMetadata]);
   // Loads the list again after a refresh drops it.
   const schemasMissing = !schemaList;
   useEffect(() => {
-    if (bound && switchable && schemasMissing) void loadSchemas(bound);
-  }, [bound, switchable, schemasMissing]);
+    if (preloadMetadata && bound && allowsPassiveConsoleMetadata(bound) && switchable && schemasMissing)
+      void loadSchemas(bound);
+  }, [bound, preloadMetadata, switchable, schemasMissing]);
   const schemaOptions = useMemo(() => {
     if (!switchable) return [];
     const names = schemaList?.status === "ok" ? schemaList.value : [];
@@ -637,8 +781,8 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
     if (!loaded) void loadSources();
   }, [loaded]);
   useEffect(() => {
-    if (bound) void loadCompletion(bound);
-  }, [bound]);
+    if (preloadMetadata && bound && allowsPassiveConsoleMetadata(bound)) void loadCompletion(bound);
+  }, [bound, preloadMetadata]);
   return (
     <Toolbar className={styles.consoleBar} aria-label="Query Console">
       <IconButton
@@ -737,6 +881,9 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
             placeholder="<schema>"
             options={schemaOptions}
             searchable
+            onOpen={() => {
+              if (bound && !useDatabase.getState().schemas[bound]) void loadSchemas(bound);
+            }}
             onChange={(v) => setConsoleSchema(path, v)}
             disabled={!bound}
           />
@@ -770,6 +917,7 @@ function DatabaseSchemaSwitcher({
   const listed = useDatabase((s) => s.databases[sourceId]);
   const schemas = useDatabase((s) => s.schemas);
   const read = useDatabase((s) => s.catalogs[sourceId]?.databases);
+  const paused = useDatabase((s) => s.pausedConsoleMetadata);
   const current = listed?.status === "ok" ? listed.value.current : null;
   const database = splitTarget(bound).database ?? current;
   // The console's database starts expanded, again whenever the console moves to another one.
@@ -781,11 +929,14 @@ function DatabaseSchemaSwitcher({
   const targetFor = (name: string) => (name === database ? bound : targetOf(sourceId, name, current));
   // Schemas of expanded databases that are not read yet, or were dropped by a refresh.
   const missing = [...expanded]
-    .filter((name) => !read?.[name] && !schemas[targetFor(name)])
+    .filter((name) => !read?.[name])
     .map(targetFor)
+    .filter((target) => !schemas[target] && allowsPassiveConsoleMetadata(target, paused))
     .join("\n");
   useEffect(() => {
-    for (const target of missing ? missing.split("\n") : []) void loadSchemas(target);
+    for (const target of missing ? missing.split("\n") : []) {
+      if (allowsPassiveConsoleMetadata(target) && !useDatabase.getState().schemas[target]) void loadSchemas(target);
+    }
   }, [missing]);
   const rows = useMemo(() => {
     const names = listed?.status === "ok" ? [...listed.value.names] : [];
@@ -809,6 +960,11 @@ function DatabaseSchemaSwitcher({
       options={rows}
       searchable
       renderValue={() => (database ? (schema ? `${database}.${schema}` : database) : tx("<schema>"))}
+      onOpen={() => {
+        const st = useDatabase.getState();
+        if (!st.databases[sourceId]) void loadDatabases(sourceId);
+        if (!st.schemas[bound]) void loadSchemas(bound);
+      }}
       keepOpen={(v) => parseSchemaTreeValue(v).schema === null}
       onChange={(v) => {
         const pick = parseSchemaTreeValue(v);
@@ -818,7 +974,8 @@ function DatabaseSchemaSwitcher({
             next.add(pick.database);
             // Expanding again retries a database whose schemas could not be read.
             const target = targetFor(pick.database);
-            if (useDatabase.getState().schemas[target]?.status === "error") void loadSchemas(target);
+            const status = useDatabase.getState().schemas[target]?.status;
+            if (status === "error" || (!status && !read?.[pick.database])) void loadSchemas(target);
           }
           setOpened({ at: database, open: next });
           return;
@@ -1031,6 +1188,7 @@ function catalogOf(id: string): SqlCatalog | undefined {
 
 /** Loads what `database.` / `database.schema.` at the caret needs before it is completed. */
 async function loadQualified(id: string, qualifier: readonly string[]): Promise<void> {
+  if (!allowsPassiveConsoleMetadata(id)) return;
   const current = databaseRequest(id);
   const sourceId = splitTarget(id).id;
   // Introspection has it: nothing to load (and no reason to connect for it).
@@ -1046,8 +1204,9 @@ async function loadQualified(id: string, qualifier: readonly string[]): Promise<
   if (!database) return;
   if (useDatabase.getState().catalogs[sourceId]?.databases[database]) return;
   const target = targetOf(sourceId, database, dbs.value.current);
+  if (!allowsPassiveConsoleMetadata(target)) return;
   if (!useDatabase.getState().schemas[target]) await loadSchemas(target);
-  if (!current()) return;
+  if (!current() || !allowsPassiveConsoleMetadata(target)) return;
   if (qualifier.length < 2) return;
   const list = useDatabase.getState().schemas[target];
   const schema = list?.status === "ok" ? list.value.find((s) => same(s, qualifier[1]!)) : undefined;
@@ -1066,7 +1225,7 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
     // identifiers; its URL does (`jdbc:oracle:thin:@…`). Quoting follows that dialect.
     const dialect = driver === "jdbc" ? jdbcDialect(source?.url) : null;
     const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
-    if (id && !model) void loadCompletion(id);
+    if (id && !model && allowsPassiveConsoleMetadata(id)) void loadCompletion(id);
     // Unqualified names resolve in the console's active schema (IDEA's schema dropdown).
     const schema = consoleSchema(path);
     const scoped = model && schema ? { ...model, defaultSchema: schema } : model;
@@ -1207,6 +1366,9 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     consolePath.of(ctx.path),
     runField,
     runGutter,
+    previewField,
+    previewLayer,
+    previewSync,
     inlineField,
     syncInline,
     showPanel.of(consolePanel(ctx.path)),

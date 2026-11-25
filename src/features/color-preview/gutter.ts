@@ -7,7 +7,15 @@ import { Decoration, EditorView, GutterMarker, WidgetType, gutter } from "@codem
 import { isolateHistory } from "@codemirror/commands";
 import { syntaxTree } from "@codemirror/language";
 import type { EditorDocContext } from "@/editor/api";
-import { findColors, formatColor, isMarkupLanguage, parseComputed, type ColorMatch, type Rgba } from "./colors";
+import {
+  cssColor,
+  findColors,
+  formatColor,
+  isMarkupLanguage,
+  parseComputed,
+  type ColorMatch,
+  type Rgba,
+} from "./colors";
 import { openColorPicker } from "./ColorPicker";
 import styles from "./ColorPreview.module.css";
 
@@ -57,7 +65,7 @@ class Swatch extends GutterMarker {
     el.className = this.editable ? `${styles.swatch} ${styles.editable}` : `${styles.swatch}`;
     el.title = this.color.text;
     const fill = document.createElement("span");
-    fill.style.background = this.color.text;
+    fill.style.background = cssColor(this.color);
     el.append(fill);
     return el;
   }
@@ -121,7 +129,7 @@ const colorEdit = StateField.define<ColorEdit | null>({
 
 /** Shows a local preview. The document and undo history change only when the choice is committed. */
 function pickColor(view: EditorView, from: number, color: ColorMatch, at: { x: number; y: number }) {
-  const rgba = rgbaOf(color.text);
+  const rgba = rgbaOf(cssColor(color));
   if (!rgba) return;
   const id = Symbol();
   const target = () => {

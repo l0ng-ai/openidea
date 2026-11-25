@@ -8,6 +8,7 @@ import { _resetLanguages } from "../cm/languages";
 import { DocumentManager, ModifiedRanges, saveCleanupChanges, useDocMeta } from "./document";
 import { EditorSlot, type SlotHost } from "./slot";
 import { formatOptionsOf } from "@/editor/lsp/format";
+import { convertIndentsToSpacesSpec, convertIndentsToTabsSpec } from "../cm/lines";
 
 const host: SlotHost = {
   onFocus: () => {},
@@ -27,6 +28,7 @@ const testTooltip: Tooltip = {
 };
 
 async function settle() {
+  // oxlint-disable-next-line no-await-in-loop -- each tick flushes work scheduled during the previous tick
   for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
@@ -171,6 +173,37 @@ describe("DocumentManager + slots", () => {
       expect(slot.currentState().facet(indentUnit)).toBe("\t");
     }
     expect(useDocMeta.getState()["/p/A.java"]?.indent).toEqual({ tabSize: 1, insertSpaces: false });
+  });
+
+  it("converts indents to tabs with the Code Style tab size, not the detected indent (#5702)", async () => {
+    const settings = { editor: { codeStyle: { languages: {}, detectIndents: true, editorconfig: false } } };
+    const { manager } = setup({ "/p/A.java": "class A {\n  void f() {\n    g();\n  }\n}\n" }, settings);
+    const model = await manager.acquire("/p/A.java");
+    const slot = new EditorSlot(model, "t1", host);
+    // Editing follows the 2-space indent detected in the file; tabs are still 4 columns wide in Java's Code Style.
+    expect(slot.currentState().facet(indentUnit)).toBe("  ");
+    slot.dispatchLocal(convertIndentsToTabsSpec(slot.currentState())!);
+    expect(slot.currentState().doc.toString()).toBe("class A {\n  void f() {\n\tg();\n  }\n}\n");
+  });
+
+  it("detects the indents again after Convert Indents rewrote them (#5702)", async () => {
+    const settings = { editor: { codeStyle: { languages: {}, detectIndents: true, editorconfig: false } } };
+    const { manager } = setup(
+      { "/p/A.java": "class A {\n    int x;\n}\n", "/p/B.java": "class B {\n\tint x;\n}\n" },
+      settings,
+    );
+    const a = new EditorSlot(await manager.acquire("/p/A.java"), "t1", host);
+    a.dispatchLocal(convertIndentsToTabsSpec(a.currentState())!);
+    expect(a.currentState().doc.toString()).toBe("class A {\n\tint x;\n}\n");
+    // The next Enter indents with a tab, like the rest of the file now.
+    expect(a.currentState().facet(indentUnit)).toBe("\t");
+    expect(useDocMeta.getState()["/p/A.java"]?.indent).toEqual({ tabSize: 4, insertSpaces: false });
+
+    const b = new EditorSlot(await manager.acquire("/p/B.java"), "t2", host);
+    expect(b.currentState().facet(indentUnit)).toBe("\t");
+    b.dispatchLocal(convertIndentsToSpacesSpec(b.currentState())!);
+    expect(b.currentState().doc.toString()).toBe("class B {\n    int x;\n}\n");
+    expect(b.currentState().facet(indentUnit)).toBe("    ");
   });
 
   it("shares one document between split slots and syncs edits to the backend", async () => {
@@ -403,8 +436,9 @@ describe("DocumentManager + slots", () => {
       const unregister = registerSaveParticipant({ id: "test.save", beforeSave: participant });
       const save = vi.spyOn(backend, "save");
       try {
-        const slots = [];
-        for (const path of Object.keys(files)) slots.push(new EditorSlot(await manager.acquire(path), path, host));
+        const slots = await Promise.all(
+          Object.keys(files).map(async (path) => new EditorSlot(await manager.acquire(path), path, host)),
+        );
         const edited = slots.at(-1)!;
         edited.dispatchLocal({ changes: { from: 0, insert: "// edited\n" } });
         await manager.saveAll(reason);

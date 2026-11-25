@@ -252,6 +252,9 @@ fn settings_set_now(
     if key == "mcpServer" || key.starts_with("mcpServer.") {
         state.host.mcp.apply(&state.host);
     }
+    if key == "toolDownloads" || key.starts_with("toolDownloads.") {
+        state.plugins.set_downloads(state.host.global_settings.effective().tool_downloads);
+    }
     if !applied.project_scope {
         state.updates.wake.notify_one();
     }

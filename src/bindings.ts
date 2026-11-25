@@ -120,12 +120,15 @@ export const commands = {
 	agentRename: (task: string, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rename", { task, title })),
 	/**  Answers a permission request; `option: null` cancels it. */
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
-	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
-	agentRollback: (task: string, turns: number) => typedError<{
+	/**
+	 *  Drops the task's turns after its first `turns`; returns the message of the first dropped one.
+	 *  With `files`, the files those turns changed go back as they were before them.
+	 */
+	agentRollback: (task: string, turns: number, files: boolean) => typedError<{
 	text: string,
 	files: IpcPath[],
 	images: AgentImage[],
-} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns })),
+} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns, files })),
 	/**  Rollback: the task's changed files among `paths` (all without) back as `view` compares them. */
 	agentRollbackChanges: (task: string, paths: string[] | null, view: 
 /**  Everything since the commit the task started from. */
@@ -234,11 +237,10 @@ export const commands = {
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	/**
-	 *  Build › Compile File: compiles one Java source of a linked Maven module with
-	 *  `javac`, streaming the console and messages on `on_event`; cancellable with
-	 *  `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
-	 *  build) are cleared first; the new messages are published as `build`
-	 *  diagnostics.
+	 *  Build › Recompile: compiles one Java source file with `javac`, streaming the
+	 *  console and messages on `on_event`; cancellable with `cancel_request(request)`.
+	 *  Diagnostics of `clear` (the files of the previous build) are cleared first;
+	 *  the new messages are published as `build` diagnostics.
 	 */
 	buildCompileFile: (file: string, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_compile_file", { file, request, clear, onEvent })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */
@@ -306,6 +308,8 @@ export const commands = {
 	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
+	/**  Copies image pixels to this computer's clipboard, including from remote project windows. */
+	clipboardWriteImage: (png: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_image", { png })),
 	/**  Writes text locally, without WebView user-activation requirements. */
 	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
@@ -324,6 +328,8 @@ export const commands = {
 	/**  Cucumber feature files and step definition files, for step navigation. */
 	cucumberSources: () => typedError<StepSource[], IdeError>(__TAURI_INVOKE("cucumber_sources")),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
+	/**  Records the exact helper and destination reviewed in the local data-source dialog. */
+	dbApproveExternalTunnel: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_external_tunnel", { source })),
 	dbApproveJdbcSource: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_jdbc_source", { source })),
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
@@ -335,7 +341,7 @@ export const commands = {
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
-	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
+	dbDisconnect: (id: string, wholeSource: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id, wholeSource })),
 	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
@@ -388,6 +394,8 @@ export const commands = {
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	/**  Tests the reviewed helper once, without persisting approval for subsequent connections. */
+	dbTestExternalTunnel: (request: RequestId, source: DataSource_Deserialize, password: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_external_tunnel", { request, source, password })),
 	/**  Data Source › SSH/SSL › Test SSH Tunnel. */
 	dbTestTunnel: (source: DataSource_Deserialize, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_tunnel", { source, sshSecret })),
 	/**  Installed copies of `tool`, newest first. */
@@ -456,6 +464,8 @@ export const commands = {
 	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
 	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
 	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
+	/**  A `Thread.print -l` of the debuggee JVM, or why it cannot be taken. */
+	debugJvmThreadDump: (session: DebugSessionId) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("debug_jvm_thread_dump", { session })),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -685,6 +695,8 @@ export const commands = {
 	 *  exited is only started again by the next request.
 	 */
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
+	/**  Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`. */
+	flutterEmulatorLaunch: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("flutter_emulator_launch", { id })),
 	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -824,6 +836,13 @@ export const commands = {
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**
+	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
+	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
+	 *  classpath has one; from the engine's repository, else downloaded once from Maven Central), and,
+	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
+	 */
+	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
+	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
@@ -891,6 +910,11 @@ export const commands = {
 	lspExecuteCommand: (doc: DocId, command: Command) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_execute_command", { doc, command })),
 	lspExtractInterface: (request: RequestId, doc: DocId, pos: Pos, members: string[], name: string, destination: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_extract_interface", { request, doc, pos, members, name, destination, confirmation })),
 	lspExtractInterfaceInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<ExtractInterfaceInfo, IdeError>(__TAURI_INVOKE("lsp_extract_interface_info", { request, doc, pos })),
+	/**
+	 *  Where other files import the document's file (Find Usages on a file, a Vue component's
+	 *  usages). Cancel with `cancel_request(request)`.
+	 */
+	lspFileReferences: (request: RequestId, doc: DocId) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_file_references", { request, doc })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -1419,6 +1443,11 @@ export const commands = {
 	versions: string[],
 } | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
+	 *  PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
+	 *  PyPI's name list, which the first search downloads and a search a day later refreshes.
+	 */
+	pypiSearch: (query: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("pypi_search", { query, request })),
+	/**
 	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
 	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
 	 */
@@ -1513,6 +1542,7 @@ export const commands = {
 	remoteTrustSet: (trusted: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("remote_trust_set", { trusted })),
 	/**  This machine's trust decision for the window's remote project (see [`Connection::authorize`]). */
 	remoteTrustStatus: () => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("remote_trust_status")),
+	remoteUploadInto: (connection: FsConnection, paths: IpcPath[], target: string, replace: boolean, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_upload_into", { connection, paths, target, replace, request })),
 	removeRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent", { path })),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	/**
@@ -1554,6 +1584,11 @@ export const commands = {
 	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  Project files run configurations can be imported from (`.vscode/launch.json`). */
 	runImportSources: () => typedError<RunImportSource[], IdeError>(__TAURI_INVOKE("run_import_sources")),
+	/**
+	 *  A `Thread.print -l` of the JVM a run started: the deepest HotSpot JVM of the run's process
+	 *  tree, else the one carrying `token` (the run's marker property).
+	 */
+	runJvmThreadDump: (id: RunId, token: string | null) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("run_jvm_thread_dump", { id, token })),
 	runList: () => __TAURI_INVOKE<RunInfo[]>("run_list"),
 	/**  Terminal size of a run started with "Emulate terminal in output console". */
 	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
@@ -4212,6 +4247,7 @@ export type CodeEditingSettings = {
 	/**  Next / previous error goes to errors only (skips warnings). */
 	nextErrorErrorsOnly?: boolean,
 	stickyLinesMax?: number,
+	stickyLinesDisabledLanguages?: string[],
 };
 
 export type CodeLens = {
@@ -4940,6 +4976,7 @@ export type DataSource_Deserialize = {
 	readOnly?: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh?: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor?: string,
 	color?: DbColor | null,
@@ -4986,6 +5023,7 @@ export type DataSource_Serialize = {
 	readOnly: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor: string,
 	color: DbColor | null,
@@ -5134,6 +5172,12 @@ export type DbDumpKind =
 "mysqlSql" | "unknown";
 
 export type DbDumpStatements = "copy" | "inserts" | "columnInserts";
+
+/**  A foreground program that forwards an IDE-assigned loopback port to the database. */
+export type DbExternalTunnel = {
+	executable: string,
+	arguments: string[],
+};
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -5666,6 +5710,8 @@ export type DebuggerSettings = {
 	debugServerPage?: boolean,
 	/**  Flutter: saving a Dart file of a running debug session hot reloads the app. */
 	flutterHotReloadOnSave?: boolean,
+	/**  Java: whether to reload changed classes into running debug sessions after compilation. */
+	hotSwapAfterCompile?: HotSwapPolicy,
 	python?: PythonDebuggerSettings,
 };
 
@@ -5675,6 +5721,11 @@ export type Decoration = {
 	style: string,
 	hover: string | null,
 	after: string | null,
+	/**
+	 *  Markdown rendered in the editor's hover card (API 1.16); `hover` is the
+	 *  plain-text fallback shown when this is absent.
+	 */
+	markdownHover: string | null,
 };
 
 /**  A plugin-owned editor or project-tree decoration set for one file. */
@@ -7171,12 +7222,24 @@ export type FlutterDevice = {
 	emulator: boolean,
 	/**  The adb state keeping it from being used (`unauthorized`, `offline`, …). */
 	unavailable: string | null,
+	/**  The [`FlutterEmulator`] it runs on: an AVD name, or `apple_ios_simulator`. */
+	emulatorId?: string | null,
 };
 
 /**  The project's Flutter devices, best default first. */
 export type FlutterDeviceList = {
 	status: FlutterDaemonStatus,
 	devices: FlutterDevice[],
+	/**  The emulators that no listed device runs on. */
+	emulators?: FlutterEmulator[],
+};
+
+/**  An Android emulator (AVD) or the iOS Simulator that `flutter emulators --launch` can start. */
+export type FlutterEmulator = {
+	id: string,
+	name: string,
+	/**  `android` or `ios`. */
+	platformType: string | null,
 };
 
 export type FocusedEditor = {
@@ -7917,6 +7980,9 @@ export type HistoryTip = {
 /**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
 export type HotReloadReason = "manual" | "save";
 
+/**  Whether compiled classes are reloaded into running Java debug sessions after compilation. */
+export type HotSwapPolicy = "ask" | "always" | "never";
+
 /**  Result of [`DebugManager::redefine_classes`]. */
 export type HotSwapResult = {
 	/**  Fully qualified names of the classes reloaded (empty: nothing had changed). */
@@ -8272,6 +8338,8 @@ export type InlayHintsSettings = {
 	parameters?: boolean,
 	/**  Hints of other kinds (chaining, closing labels…). */
 	other?: boolean,
+	/**  The Dart server's closing labels (`// Column` after a widget's closing bracket). */
+	closingLabels?: boolean,
 	disabledLanguages?: string[],
 	/**  Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on. */
 	codeVision?: boolean,
@@ -8287,7 +8355,9 @@ export type InlayHintsSettings = {
 	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
-export type InlayKind = "type" | "parameter" | "other";
+export type InlayKind = "type" | "parameter" | "other" | 
+/**  What a closing bracket ends, at the end of its line (the Dart server's closing labels). */
+"closingLabel";
 
 /**  One part of an inlay hint label, e.g. a type name that navigates to its declaration. */
 export type InlayLabelPart = {
@@ -8675,6 +8745,17 @@ export type JsResponseRule = {
 	body: string,
 };
 
+/**  The test JVM of OpenIDEA's JUnit runner. */
+export type JunitLaunch = {
+	classPaths: string[],
+	/**  Surefire's `argLine`, then its system properties as `-Dkey=value`. */
+	vmArgs: string[],
+	env: { [key in string]: string },
+	workingDirectory: string | null,
+	/**  The Surefire settings that were applied (`argLine`, `systemPropertyVariables`…), for the console. */
+	surefire: string[],
+};
+
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
 export type JvmBackendState = { kind: "ready" } | 
 /**  Turned off for the rest of the session: the debug adapter lacks what it needs. */
@@ -8787,6 +8868,26 @@ export type JvmReferrer = {
 
 export type JvmReferrersResult = { status: "ready"; referrers: JvmReferrer[]; truncated: boolean } | { status: "unavailable"; reason: JvmInspectUnavailable };
 
+export type JvmThreadDump = {
+	text: string,
+	pid: number,
+	/**  Empty when unknown. */
+	javaVersion: string,
+	takenWhileSuspended: boolean,
+	/**  Wall time of the `Thread.print` request. */
+	elapsedMs: number,
+};
+
+export type JvmThreadsResult = { status: "ready"; dump: JvmThreadDump } | { status: "unavailable"; reason: JvmThreadsUnavailable };
+
+export type JvmThreadsUnavailable = 
+/**  The reason a class table could not be read applies to the dump too. */
+{ kind: "jvm"; reason: JvmMemoryUnavailable } | 
+/**  The JVM ignored the request to open its attach listener (`-XX:+DisableAttachMechanism`). */
+{ kind: "listenerDidNotStart" } | 
+/**  A run on a remote host, whose JVM this machine cannot attach to. */
+{ kind: "remoteRun" } | { kind: "failed"; message: string };
+
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
 export type JvmValue = { kind: "null" } | { kind: "primitive"; typeName: string; text: string } | 
@@ -8814,6 +8915,10 @@ export type LanguageCodeStyle_Deserialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -8834,6 +8939,10 @@ export type LanguageCodeStyle_Serialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -9347,6 +9456,8 @@ export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" |
 
 export type MainToolbarSettings = {
 	left?: string[],
+	/**  Centred in the toolbar (between the other two groups when they leave too little room). */
+	center?: string[],
 	right?: string[],
 	/**  Widgets the user removed. */
 	hidden?: string[],
@@ -9483,6 +9594,16 @@ export type MavenProject = {
 	env: { [key in string]: string },
 };
 
+/**
+ *  Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+ *  and run actions are delegated to Maven.
+ */
+export type MavenRunTestsUsing = 
+/**  OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`). */
+"ide" | 
+/**  Surefire (`mvn test -Dtest=…`). */
+"maven";
+
 /**  Build Tools › Maven. */
 export type MavenSettings = {
 	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
@@ -9533,6 +9654,8 @@ export type MavenSettings = {
 	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
 	 */
 	updateSnapshots?: boolean,
+	/**  Who runs the JUnit 5 tests of the gutter's Run / Debug. */
+	runTestsUsing?: MavenRunTestsUsing,
 };
 
 /**  What keeps an idle background project loaded. */
@@ -10680,6 +10803,12 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
  */
 ({ type: "clipboardRequested"; pluginId: string; requestId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
 
+/**  A group of file extensions in a plugin's native chooser. */
+export type PluginFileFilter = {
+	name: string,
+	extensions: string[],
+};
+
 /**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
 export type PluginIcon = {
 	light: string,
@@ -11308,7 +11437,7 @@ export type ProjectUpdateTarget = {
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | 
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | { kind: "pickFile"; title: string; save: boolean; name: string | null; filters: PluginFileFilter[] } | 
 /**
  *  The host's own question under `net:ask` (never plugin-initiated): the
  *  plugin reached an HTTPS host its manifest does not list.
@@ -11499,6 +11628,13 @@ export type PythonMethodFacts = {
 	/**  Decorated with `override` from `typing` / `typing_extensions`. */
 	overrideDecorated: boolean,
 	body: MethodBody,
+	/**
+	 *  For 'Method may be static': the receiver parameter up to the next parameter (what
+	 *  Make method static deletes), when the method is undecorated and not a dunder, and its
+	 *  body does more than `pass`, `...`, a docstring or one `raise` without ever naming the
+	 *  receiver, `super` or `__class__`.
+	 */
+	unusedReceiver: Range | null,
 };
 
 export type PythonPackage = {
@@ -12475,6 +12611,11 @@ export type SearchQuery = {
 	 *  adds none of the project's exclusions either).
 	 */
 	includeExcluded?: boolean,
+	/**
+	 *  Leave out files over [`MAX_CODE_INSIGHT_FILE_BYTES`], as IDEA's TODO and word indexes do:
+	 *  a background scan never reads a log or a database dump.
+	 */
+	skipLargeFiles?: boolean,
 };
 
 export type SearchScope = { kind: "project" } | { kind: "directory"; path: IpcPath } | { kind: "files"; paths: IpcPath[] } | 
