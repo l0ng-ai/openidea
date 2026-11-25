@@ -72,7 +72,6 @@
   color: var(--link);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 
 .resetBtn:hover {
