@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAction } from "@/platform/actions";
-import { provideToolWindowService, useContributions, type ToolWindowService } from "@/workbench/contributions";
+import {
+  provideToolWindowService,
+  useContributions,
+  menuGroupItems,
+  type ToolWindowService,
+} from "@/workbench/contributions";
 import { PROJECT_TYPES } from "@/ui/projectType";
 import { activate } from "./index";
 import * as store from "./store";
@@ -55,6 +60,26 @@ describe("standalone .NET tool window removal", () => {
     await getAction("dotnet.packages")!.run({ ctx: {} });
     expect(show).toHaveBeenCalledWith("nuget", true);
     expect(list).toHaveBeenCalled();
+  });
+
+  it("offers Build / Restore / Clean for a solution or project file in the Project view context menu", () => {
+    const actions = (path: string) =>
+      menuGroupItems("projectView", { paths: [path], dirs: [false] }).map((i) =>
+        i.kind === "action" ? `${i.action} ${String(i.arg)}` : i.kind,
+      );
+    expect(actions("/repo/src/App/App.csproj")).toEqual([
+      "dotnet.build /repo/src/App/App.csproj",
+      "dotnet.restore /repo/src/App/App.csproj",
+      "dotnet.clean /repo/src/App/App.csproj",
+      "separator",
+    ]);
+    expect(actions("/repo/Demo.sln")).toEqual([
+      "dotnet.build /repo/Demo.sln",
+      "dotnet.restore /repo/Demo.sln",
+      "dotnet.clean /repo/Demo.sln",
+      "separator",
+    ]);
+    expect(actions("/repo/src/App/Program.cs")).toEqual([]);
   });
 
   it("keeps .NET solutions and projects visible in the Project tool window's file tree", () => {

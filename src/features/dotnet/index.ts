@@ -1,7 +1,7 @@
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { lazyComponent } from "@/ui";
-import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
+import { registerMenuGroup, registerToolWindow, toolWindowService } from "@/workbench/contributions";
 import {
   buildDotnet,
   cancelDotnet,
@@ -54,7 +54,7 @@ export function activate() {
         title: op === "build" ? "Build .NET Project" : op === "restore" ? "Restore .NET Project" : "Clean .NET Project",
         category: "Build",
         when: "projectOpen",
-        run: () => buildDotnet(op),
+        run: ({ arg }: { arg?: unknown }) => buildDotnet(op, arg),
       })),
       {
         id: "dotnet.packages",
@@ -112,6 +112,21 @@ export function activate() {
     ]),
     useProject.subscribe((s, old) => {
       if (s.project?.root !== old.project?.root) resetDotnet();
+    }),
+    // #5635: build / restore / clean act on the right-clicked solution or project.
+    registerMenuGroup({
+      id: "dotnet.project",
+      menus: ["projectView"],
+      order: 45,
+      items: (_menu, { paths, dirs }) => {
+        const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
+        if (!path || !/\.(?:cs|fs)proj$|\.slnx?$/i.test(path)) return [];
+        return [
+          { kind: "action", action: "dotnet.build", arg: path },
+          { kind: "action", action: "dotnet.restore", arg: path },
+          { kind: "action", action: "dotnet.clean", arg: path },
+        ];
+      },
     }),
   ];
   return () => {
