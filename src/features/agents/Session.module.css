@@ -1088,12 +1088,12 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1-5);
+  gap: var(--space-1);
   align-self: center;
   width: 100%;
   max-width: calc(var(--session-content-width) + var(--space-3) * 2);
   box-sizing: border-box;
-  padding: var(--space-2) var(--space-3) var(--space-4);
+  padding: var(--space-1-5) var(--space-3) var(--space-3);
 }
 
 .background {
@@ -1154,32 +1154,86 @@
   flex-wrap: wrap;
   align-items: center;
   align-content: flex-start;
-  gap: 0 10px;
+  gap: 0 6px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+.meterSegment {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 22px;
+  gap: 6px;
+}
+.meterGroup {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 22px;
+  gap: 6px;
+}
+.meterDivider {
+  flex: none;
+  width: 1px;
+  height: 11px;
+  background: var(--border-strong);
+  opacity: 0.5;
 }
 .meter {
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
   min-width: 0;
-  height: 22px;
+  height: 20px;
   gap: 5px;
   overflow: hidden;
 }
-.usageBar {
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border);
-  overflow: hidden;
+.meterValue {
+  line-height: 1;
 }
-.usageBar > span {
+.usageRing {
+  flex: none;
+  width: 13px;
+  height: 13px;
   display: block;
-  height: 100%;
-  background: var(--fg-muted);
+}
+.usageRingTrack {
+  fill: none;
+  stroke: color-mix(in srgb, currentColor 22%, transparent);
+  stroke-width: 1.75;
+}
+.usageRingArc {
+  fill: none;
+  stroke: var(--fg-muted);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  transition:
+    stroke-dashoffset 200ms var(--ease),
+    stroke var(--dur-fast) var(--ease);
+}
+.limitsButton {
+  gap: 0;
+}
+.limitItem {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+}
+.limitWindow {
+  color: var(--fg-faint);
+}
+.limitPercent {
+  color: inherit;
+}
+.meterDot {
+  flex: none;
+  margin: 0 5px;
+  color: var(--fg-faint);
+  opacity: 0.65;
 }
 
 .images {
@@ -1937,8 +1991,110 @@
   color: inherit;
   font: inherit;
   border: 0;
+  border-radius: var(--radius-control);
   background: transparent;
-  padding: 0 var(--space-1);
+  padding: 0 5px;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.meterButton:hover,
+.meterButton[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg);
+}
+.meterButton:hover .usageRingArc,
+.meterButton[aria-expanded="true"] .usageRingArc {
+  stroke: currentColor;
+}
+.limitsButton:hover .limitWindow,
+.limitsButton[aria-expanded="true"] .limitWindow {
+  color: var(--fg-subtle);
+}
+.meterButton:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+.meterWarning,
+.meterWarning:hover,
+.meterWarning[aria-expanded="true"] {
+  color: var(--warning);
+}
+.meterDanger,
+.meterDanger:hover,
+.meterDanger[aria-expanded="true"] {
+  color: var(--danger);
+}
+.meterWarning .usageRingArc,
+.meterDanger .usageRingArc {
+  stroke: currentColor;
+}
+.meterWarning .meterValue,
+.meterDanger .meterValue,
+.meterWarning .limitPercent,
+.meterDanger .limitPercent {
+  font-weight: 500;
+}
+.limitsDetails {
+  display: grid;
+  gap: var(--space-2);
+  width: min(272px, 80vw);
+  padding: var(--space-3);
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  font-variant-numeric: tabular-nums;
+}
+.limitsList {
+  display: grid;
+  gap: var(--space-3);
+}
+.limitsRow {
+  display: grid;
+  gap: 5px;
+}
+.limitsRowHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.limitsRowName {
+  color: var(--fg);
+  font-size: var(--fs-small);
+}
+.limitsRowPercent {
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.meterWarning .limitsRowPercent {
+  color: var(--warning);
+  font-weight: 500;
+}
+.meterDanger .limitsRowPercent {
+  color: var(--danger);
+  font-weight: 500;
+}
+.limitsTrack {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.limitsFill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--fg-muted);
+}
+.meterWarning .limitsFill {
+  background: var(--warning);
+}
+.meterDanger .limitsFill {
+  background: var(--danger);
+}
+.limitsReset {
+  color: var(--fg-subtle);
+  font-size: var(--fs-tiny, var(--fs-small));
 }
 .contextPopover {
   max-width: calc(100vw - 24px);

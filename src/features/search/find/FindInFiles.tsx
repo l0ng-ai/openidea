@@ -778,6 +778,7 @@ function FindInFilesDialog() {
             }))}
             activeId={s.scopeTab}
             onSelect={(id) => selectScope(id as ScopeTab)}
+            keepFocusOnClick
           />
           <div className={styles.scopeDetail}>
             {s.scopeTab === "directory" && (

@@ -517,7 +517,7 @@ function ModelPicker({
         onClick={() => toggle("models")}
       >
         <span className={styles.chipValue}>{modelName}</span>
-        <Icon name="chevron-down" size={14} className={styles.chipChevron} />
+        <Icon name="chevron-down" size={12} className={styles.chipChevron} />
       </button>
       {!unavailable && modelRefresh?.loadingSettings ? (
         <LoadingSettingsChip />
@@ -538,7 +538,7 @@ function ModelPicker({
             onClick={() => toggle("settings")}
           >
             <span className={styles.chipValue}>{summary}</span>
-            <Icon name="chevron-down" size={14} className={styles.chipChevron} />
+            <Icon name="chevron-down" size={12} className={styles.chipChevron} />
           </button>
         )
       )}
@@ -753,14 +753,14 @@ function ModePicker({
         title={summary}
         onClick={() => setOpen((v) => !v)}
       >
-        <Icon name={on ? "unlock" : modeIcon(current?.value ?? "")} size={14} />
+        <Icon name={on ? "unlock" : modeIcon(current?.value ?? "")} size={13} />
         <span className={styles.chipValue}>{current?.name ?? tx("Default")}</span>
         {on && (
           <span className={clsx(styles.chipDetail, compactDetail && styles.compactDetail)} data-chip-detail="">
             {tx(toggle.chipLabel)}
           </span>
         )}
-        <Icon name="chevron-down" size={14} className={styles.chipChevron} />
+        <Icon name="chevron-down" size={12} className={styles.chipChevron} />
       </button>
       <Popup
         open={open}

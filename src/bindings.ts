@@ -700,6 +700,12 @@ export const commands = {
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
 	/**  Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`. */
 	flutterEmulatorLaunch: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("flutter_emulator_launch", { id })),
+	/**
+	 *  The address of the project's Widget Preview page, its server started on first use with the
+	 *  project's DevTools for its inspector. A server that failed or exited is only started again by
+	 *  the next request.
+	 */
+	flutterWidgetPreviewUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_widget_preview_url")),
 	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -1707,6 +1713,17 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("sdk_container_python_refresh")),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	/**
+	 *  `flutter --version --machine` of the Flutter SDK at `path`, or of the `flutter` on the
+	 *  search path when `path` is empty; `None` when there is no Flutter SDK.
+	 */
+	sdkFlutterAt: (path: string) => typedError<{
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
+} | null, IdeError>(__TAURI_INVOKE("sdk_flutter_at", { path })),
 	/**  The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home. */
 	sdkJdkAt: (path: string) => typedError<{
 	/**
@@ -7292,6 +7309,24 @@ export type FlutterEmulator = {
 	platformType: string | null,
 };
 
+/**  The Flutter plugin's "Flutter SDK path". */
+export type FlutterSettings = {
+	/**
+	 *  Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+	 *  `PATH`. Empty = `PATH`.
+	 */
+	sdk?: string,
+};
+
+/**  What `flutter --version --machine` reports of an SDK. */
+export type FlutterVersion = {
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
+};
+
 export type FocusedEditor = {
 	path: IpcPath,
 	/**  Zero-based lines and UTF-16 columns, end exclusive. */
@@ -9154,6 +9189,7 @@ export type LanguagesSettings = {
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
 	zig?: ZigSettings,
+	flutter?: FlutterSettings,
 };
 
 export type LargeCommitFile = {
@@ -12640,7 +12676,9 @@ export type SdkKind = "python" | "node" |
 /**  Zig toolchain directories. */
 "zig" | 
 /**  .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins. */
-"dotnet";
+"dotnet" | 
+/**  Flutter SDK roots. */
+"flutter";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and

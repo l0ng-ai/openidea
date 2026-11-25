@@ -257,7 +257,6 @@
   background: none;
   color: var(--link);
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .codeMore:hover {
   background: var(--bg-hover);

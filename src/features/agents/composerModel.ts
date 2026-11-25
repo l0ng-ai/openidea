@@ -599,23 +599,51 @@ const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
   seven_day_sonnet: { short: "7d Sonnet", name: "Weekly Sonnet limit" },
 };
 
+/** Visual severity for a usage percentage meter: quiet until nearing the cap. */
+export type MeterTone = "warning" | "danger";
+
+export function meterTone(percent: number): MeterTone | undefined {
+  if (percent >= 95) return "danger";
+  if (percent >= 80) return "warning";
+  return undefined;
+}
+
+/** Structured fields for a usage-limit window, shared by inline badges and the detail popover. */
+export function limitParts(
+  l: AgentLimit,
+  now: number,
+): {
+  windowShort: string;
+  name: string;
+  percent: number;
+  resetIn: string | null;
+  detail: string;
+} {
+  const known = LIMIT_WINDOWS[l.window];
+  const windowShort = known?.short ?? l.window;
+  const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
+  const name = known ? tx(known.name) : l.window;
+  const used = tx`${known ? txPart(known.name) : l.window}: ${percent}% used`;
+  if (l.resetsMs == null) {
+    return { windowShort, name, percent, resetIn: null, detail: used };
+  }
+  const resetIn = untilReset(Math.max(0, l.resetsMs - now));
+  return {
+    windowShort,
+    name,
+    percent,
+    resetIn,
+    detail: tx`${used}, resets in ${resetIn}`,
+  };
+}
+
 /** "5h 19%" for a usage-limit window, and a tooltip saying when it resets. */
 export function limitLabel(l: AgentLimit, now: number): { short: string; percent: number; detail: string } {
-  const known = LIMIT_WINDOWS[l.window];
-  const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
-  const name = known ? txPart(known.name) : l.window;
-  const used = tx`${name}: ${percent}% used`;
-  if (l.resetsMs == null)
-    return {
-      short: `${known?.short ?? l.window} ${percent}%`,
-      percent,
-      detail: used,
-    };
-  const reset = untilReset(Math.max(0, l.resetsMs - now));
+  const { windowShort, percent, detail } = limitParts(l, now);
   return {
-    short: `${known?.short ?? l.window} ${percent}%`,
+    short: `${windowShort} ${percent}%`,
     percent,
-    detail: tx`${used}, resets in ${reset}`,
+    detail,
   };
 }
 

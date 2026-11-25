@@ -803,6 +803,7 @@
   "Exit": "Salir",
   "Expand": "Expandir",
   "Expand All": "Expandir todo",
+  "Expand Selected": "Expandir selección",
   "Expand abbreviations with Tab": "Expandir abreviaturas con Tab",
   "Expand folded lines": "Expandir líneas plegadas",
   "Expand templates with Tab": "Expandir plantillas con Tab",
@@ -4432,7 +4433,6 @@
   "Find in Conversation": "Buscar en la conversación",
   "Find in conversation": "Buscar en la conversación",
   "0 results": "0 resultados",
-  "Time the agent spent on this task": "Tiempo que dedicó el agente a esta tarea",
   "Send Again": "Enviar de nuevo",
   "Customize IDE appearance and behavior: change themes and font size, configure system settings and notifications.": "Personalice la apariencia y el comportamiento del IDE: cambie temas y tamaño de fuente, configure ajustes del sistema y notificaciones.",
   "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.": "Configure la edición de código: autocompletado, plegado, pestañas, fuentes, colores, estilo de código e inspecciones.",
@@ -5677,7 +5677,6 @@
   "Chat": "Chat",
   "Shown in the Task Header": "Se muestra en el encabezado de la tarea",
   "Context window usage": "Uso de la ventana de contexto",
-  "Time spent on the task": "Tiempo dedicado a la tarea",
   "Usage limits": "Límites de uso",
   "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)": "Los límites de 5 horas y semanales de la cuenta, cuando el agente los informa (Claude Code)",
   "Session cost": "Costo de la sesión",
@@ -6110,5 +6109,7 @@
   "Roll Back to Here": "Revertir hasta aquí",
   "Couldn't roll back": "No se pudo revertir",
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Este mensaje y los posteriores se eliminan, y los archivos que el agente modificó desde entonces vuelven a como estaban antes de enviarlo. El mensaje vuelve al cuadro de texto.",
-  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Esto borra toda la conversación, devuelve los archivos que el agente modificó a como estaban al empezar la tarea e inicia una nueva sesión del agente con este mensaje."
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Esto borra toda la conversación, devuelve los archivos que el agente modificó a como estaban al empezar la tarea e inicia una nueva sesión del agente con este mensaje.",
+  "Resets in {resetIn}": "Se restablece en {resetIn}",
+  "Cannot paste {name}": "No se puede pegar {name}"
 }

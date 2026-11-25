@@ -22,9 +22,21 @@ import { initProjectTree, loadDir, setClipboard, setSelection, useProjectTree } 
 import { setOsClipboardForTests } from "./clipboard";
 
 const askMock = vi.hoisted(() => vi.fn());
+const confirmMock = vi.hoisted(() => vi.fn());
 vi.mock("@/workbench/messages", async (original) => ({
   ...(await original<typeof import("@/workbench/messages")>()),
   ask: askMock,
+  confirm: confirmMock,
+}));
+const clipboardText = vi.hoisted(() => vi.fn(async () => ""));
+vi.mock("@/platform/clipboard", async (original) => ({
+  ...(await original<typeof import("@/platform/clipboard")>()),
+  readClipboardPlainText: clipboardText,
+}));
+const roots = vi.hoisted(() => vi.fn((): unknown[] => []));
+vi.mock("@/platform/projectRoots", async (original) => ({
+  ...(await original<typeof import("@/platform/projectRoots")>()),
+  currentRoots: roots,
 }));
 
 let fs: MemoryFs;
@@ -246,6 +258,47 @@ describe("OS file imports", () => {
     expect(fs.nodes.has("/p/target/img_1.png")).toBe(true);
     expect(useProjectTree.getState().revealRequest?.path).toBe("/p/target/img_1.png");
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("turns pasted Java code into <Class>.java declaring the folder's package, asking before replacing", async () => {
+    roots.mockReturnValue([{ path: "target", kind: "source", detectedFrom: "pom.xml" }]);
+    fs = new MemoryFs({ "/p/target/com/acme": null }, "/p");
+    setProjectFsForTests(fs, "/p");
+    initProjectTree("/p", "p");
+    await loadDir("/p");
+    setOsClipboardForTests({});
+    const written: string[] = [];
+    const create = fs.createFileBytes.bind(fs);
+    vi.spyOn(fs, "createFileBytes").mockImplementation(async (path, data) => {
+      written.push(`${path}: ${new TextDecoder().decode(data)}`);
+      await create(path, data);
+    });
+    clipboardText.mockResolvedValue("package old;\r\n\r\npublic class Greeter {}\r\n");
+    await paste("/p/target/com/acme");
+    expect(written).toEqual(["/p/target/com/acme/Greeter.java: package com.acme;\n\npublic class Greeter {}\n"]);
+    expect(useProjectTree.getState().revealRequest?.path).toBe("/p/target/com/acme/Greeter.java");
+
+    // The file exists: kept when the user declines, replaced when they agree.
+    confirmMock.mockResolvedValueOnce(false);
+    await paste("/p/target/com/acme");
+    expect(written).toHaveLength(1);
+    confirmMock.mockResolvedValueOnce(true);
+    await paste("/p/target/com/acme");
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "File 'Greeter.java' already exists. Do you want to overwrite it?" }),
+    );
+    expect(written).toHaveLength(2);
+
+    // Outside a source root the code keeps its own package; text without a type is not pasted.
+    clipboardText.mockResolvedValue("package demo;\nclass Note {}");
+    await paste("/p");
+    expect(written.at(-1)).toBe("/p/Note.java: package demo;\nclass Note {}");
+    clipboardText.mockResolvedValue("System.out.println(1);");
+    await paste("/p");
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "No files on the clipboard" }));
+    expect(written).toHaveLength(3);
+    clipboardText.mockResolvedValue("");
+    roots.mockReturnValue([]);
   });
 
   it("says the clipboard is empty when it holds neither files nor an image", async () => {

@@ -278,6 +278,7 @@ flutter_devices                              trusted            project_host bin
 flutter_devices_refresh                      trusted            project_host bindings sync
 flutter_devtools_url                         trusted            project_host bindings async
 flutter_emulator_launch                      trusted            project_host bindings async
+flutter_widget_preview_url                   trusted            project_host bindings async
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async
@@ -612,6 +613,7 @@ scope_files                                  always             project_host bin
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
 sdk_detect                                   outside_restricted project_host bindings async
+sdk_flutter_at                               trusted            project_host bindings async
 sdk_jdk_at                                   trusted            project_host bindings async
 sdk_locate_tools                             trusted            project_host bindings async
 sdk_php_composer_install                     trusted            project_host bindings async

@@ -320,7 +320,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(json, "{\"threadDump\":{}}");
-        let prefix = format!("Thread.dump_to_file -format=json \"{}/threads-42-", dir.display());
+        let prefix = format!("Thread.dump_to_file -format=json \"{}", dir.join("threads-42-").display());
         assert!(sent.starts_with(&prefix) && sent.ends_with(".json\""), "{sent}");
         assert!(is_empty(&dir));
     }

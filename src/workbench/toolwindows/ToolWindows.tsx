@@ -815,6 +815,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
   const frame = useMemo(() => ({ tw, setOwnHeader }), [tw]);
   const tabRegistry = useMemo(() => contentTabRegistry(tw.id), [tw.id]);
   const Content = tw.component;
+  const content = useMemo(() => <Content id={tw.id} />, [Content, tw.id]);
   const Tabs = tw.headerContent;
 
   useEffect(() => {
@@ -889,9 +890,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       )}
       <div className={styles.body} data-toolwindow-body="">
         <ToolWindowFrame.Provider value={frame}>
-          <ToolWindowShownProvider value={!hidden}>
-            <Content id={tw.id} />
-          </ToolWindowShownProvider>
+          <ToolWindowShownProvider value={!hidden}>{content}</ToolWindowShownProvider>
         </ToolWindowFrame.Provider>
       </div>
     </section>
