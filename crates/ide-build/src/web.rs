@@ -137,19 +137,16 @@ pub fn build(root: &Path, model: &BuildModel, id: &str, cache: &Path) -> IdeResu
         // POM's effective identity first; profiles and -D options can change its GAV.
         let output = cache.join("artifact-project.txt");
         let mut probe = top.options.clone();
+        let evaluate =
+            crate::maven::plugin_goal("help:evaluate", crate::maven::local_repository_for(&top.options).as_deref());
         probe.extend([
             "-f".into(),
             root.join(&p.pom).to_string_lossy().into_owned(),
-            "help:evaluate".into(),
+            evaluate.clone(),
             "-Dexpression=project.id".into(),
             format!("-Doutput={}", output.display()),
         ]);
-        args.extend([
-            "-DskipTests".into(),
-            "package".into(),
-            "help:evaluate".into(),
-            format!("-Doutput={}", manifest.display()),
-        ]);
+        args.extend(["-DskipTests".into(), "package".into(), evaluate, format!("-Doutput={}", manifest.display())]);
         return Ok(WebBuild {
             command: top.command.clone(),
             args,
