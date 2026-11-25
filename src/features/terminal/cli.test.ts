@@ -3,31 +3,48 @@
  * Start flow of a restored tab through the terminal runtime.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CLI_KIND, cliData, cliInput, moveTerminalToEditor, splitCliTab, startTab } from "./cli";
+import type { EditorInput } from "@/workbench/contributions";
+import {
+  CLI_KIND,
+  cliData,
+  cliEditorPayload,
+  cliInput,
+  moveEditorToTerminal,
+  moveTerminalToEditor,
+  splitCliTab,
+  startTab,
+} from "./cli";
 
 const tabs = vi.hoisted(() => ({
   state: {
-    tabs: [] as { id: string; name?: string; session: string }[],
+    tabs: [] as { id: string; name?: string; customName?: string | null; shell?: string | null; session: string }[],
     activeTab: null as string | null,
     sessions: {} as Record<string, unknown>,
   },
 }));
 const runtime = vi.hoisted(() => ({
   loaded: false,
-  startCli: vi.fn(),
+  activeSession: vi.fn(),
   adoptCli: vi.fn(),
+  adoptTab: vi.fn(),
   cliSession: vi.fn(),
+  createDetachedSession: vi.fn(),
+  detachCli: vi.fn(),
   detachTab: vi.fn(),
   nextTabName: vi.fn((existing: readonly string[], base = "Local") => (existing.includes(base) ? `${base} (2)` : base)),
+  startCli: vi.fn(),
   startDirectory: vi.fn((root: string) => root),
   tabTitle: vi.fn((_tab: unknown, _sessions: unknown) => "Local (2)"),
   useTerminals: { getState: () => tabs.state },
 }));
 const editor = vi.hoisted(() => ({
+  activeInput: vi.fn<() => EditorInput | null>(() => null),
+  closeInput: vi.fn(async (_key?: string) => true),
   openInput: vi.fn(async (_input?: unknown, _options?: unknown) => undefined),
-  openTabs: vi.fn(() => [] as { input: { kind: string; key: string; data?: unknown }; title: string }[]),
+  openTabs: vi.fn<() => { input: EditorInput; title: string }[]>(() => []),
+  tabInput: vi.fn<(paneId: string, tabId: string) => EditorInput | null>(() => null),
 }));
-const toolWindows = vi.hoisted(() => ({ hide: vi.fn() }));
+const toolWindows = vi.hoisted(() => ({ hide: vi.fn(), show: vi.fn() }));
 
 vi.mock("./loader", () => ({
   loadTerminalRuntime: async () => runtime,
@@ -36,6 +53,7 @@ vi.mock("./loader", () => ({
 vi.mock("@/workbench/contributions", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   editorService: () => editor,
+  maybeEditorService: () => editor,
   toolWindowService: () => toolWindows,
 }));
 
@@ -166,5 +184,52 @@ describe("restored tabs", () => {
     useProject.setState({ project: null });
     await startTab(cliInput("A", ""));
     expect(runtime.startCli).not.toHaveBeenCalled();
+  });
+});
+
+describe("Move to Terminal", () => {
+  const session = { state: { cwd: "/repo/app" }, input: vi.fn() };
+
+  it("resolves only cli editor tab payloads", () => {
+    const cli = cliInput("Local", "");
+    editor.tabInput.mockImplementation((paneId, tabId) =>
+      paneId === "p1" && tabId === "t1" ? cli : { kind: "file", key: "file:/a.ts", path: "/a.ts" },
+    );
+    expect(cliEditorPayload(JSON.stringify({ paneId: "p1", tabId: "t1" }))).toBe(cli);
+    expect(cliEditorPayload(JSON.stringify({ paneId: "p1", tabId: "t2" }))).toBeNull();
+    expect(cliEditorPayload("not-json")).toBeNull();
+  });
+
+  it("moves a live editor terminal back to Terminal and preserves custom rename and shell", async () => {
+    tabs.state.tabs = [{ id: "t1", name: "Local", customName: "Tests", shell: "/bin/fish", session: "s1" }];
+    runtime.tabTitle.mockReturnValueOnce("Tests");
+    runtime.detachTab.mockImplementationOnce(() => session);
+    await moveTerminalToEditor("t1");
+    const moved = editor.openInput.mock.calls[0]?.[0] as EditorInput;
+
+    editor.openTabs.mockReturnValueOnce([{ input: moved, title: "Tests" }]);
+    runtime.detachCli.mockReturnValueOnce(session);
+    await moveEditorToTerminal(moved.key, { group: "g2", index: 0 });
+
+    expect(runtime.detachCli).toHaveBeenCalledWith(moved.key);
+    expect(editor.closeInput).toHaveBeenCalledWith(moved.key);
+    expect(runtime.adoptTab).toHaveBeenCalledWith(
+      session,
+      { name: "Local", customName: "Tests", shell: "/bin/fish" },
+      { group: "g2", index: 0 },
+    );
+    expect(toolWindows.show).toHaveBeenCalledWith("terminal", true);
+  });
+
+  it("re-adopts the session in the editor if closing the tab is cancelled", async () => {
+    const input = cliInput("Local", "", "/repo");
+    editor.activeInput.mockReturnValueOnce(input);
+    runtime.detachCli.mockReturnValueOnce(session);
+    editor.closeInput.mockResolvedValueOnce(false);
+
+    await moveEditorToTerminal();
+    expect(runtime.adoptCli).toHaveBeenCalledWith(input.key, session);
+    expect(runtime.adoptTab).not.toHaveBeenCalled();
+    expect(toolWindows.show).not.toHaveBeenCalled();
   });
 });

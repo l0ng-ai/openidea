@@ -451,6 +451,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.runSqlScript": [],
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
+  "db.showDiagram": [],
   "db.selectOpened": [],
   "db.expandAll": [],
   "db.collapseAll": [],

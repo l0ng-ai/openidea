@@ -49,6 +49,7 @@ export async function walkFiles(
   while (queue.length && out.length < limit) {
     let entries: FileEntry[];
     try {
+      // oxlint-disable-next-line no-await-in-loop -- BFS stops at the file limit; each read supplies the next queue entries
       entries = await readDir(queue.shift()!);
     } catch {
       continue;
@@ -143,10 +144,13 @@ async function runOverFiles(
         done: false,
         cancel: () => (run.cancelled = true),
       });
+      // oxlint-disable-next-line no-await-in-loop -- cleanup runs one file at a time so cancel, progress and open/close state stay ordered
       const result = await cleanupFile(path, options);
       if (result?.applied) summary.formatted++;
       if (result?.noFormatter) summary.noFormatter.push(path);
+      // oxlint-disable-next-line no-await-in-loop -- save the file just cleaned before its tab is closed
       await saveCleaned(path);
+      // oxlint-disable-next-line no-await-in-loop -- a refused close cancels the run; editors must settle before the next file
       if (!wasOpen.has(path) && (await editors?.closePath?.(path)) === false) {
         run.cancelled = true;
         break;
@@ -266,13 +270,17 @@ export async function reformatTargets(
   const mask = maskMatcher(options.mask);
   const accept = (p: string) => sources.isText(p) && mask(nameOf(p));
   const found = new Set<string>();
-  for (const t of targets) {
-    if (!t.dir) {
-      if (mask(nameOf(t.path))) found.add(t.path);
-      continue;
-    }
-    for (const p of await walkFiles(t.path, sources.readDir, accept, { recursive: options.recursive })) found.add(p);
+  for (const t of targets) if (!t.dir && mask(nameOf(t.path))) found.add(t.path);
+  const dirs = targets.filter((t) => t.dir);
+  const walked: string[][] = [];
+  for (let i = 0; i < dirs.length; i += 8) {
+    // oxlint-disable-next-line no-await-in-loop -- bound concurrent walks; results are merged in target order
+    const batch = await Promise.all(
+      dirs.slice(i, i + 8).map((t) => walkFiles(t.path, sources.readDir, accept, { recursive: options.recursive })),
+    );
+    walked.push(...batch);
   }
+  for (const paths of walked) for (const p of paths) found.add(p);
   if (options.changedTextOnly) {
     const changed = new Set(await sources.changedFiles());
     for (const p of found) if (!changed.has(p)) found.delete(p);

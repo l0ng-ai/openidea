@@ -308,6 +308,8 @@ export const commands = {
 	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
+	/**  Copies image pixels to this computer's clipboard, including from remote project windows. */
+	clipboardWriteImage: (png: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_image", { png })),
 	/**  Writes text locally, without WebView user-activation requirements. */
 	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
@@ -693,6 +695,8 @@ export const commands = {
 	 *  exited is only started again by the next request.
 	 */
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
+	/**  Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`. */
+	flutterEmulatorLaunch: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("flutter_emulator_launch", { id })),
 	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -843,8 +847,10 @@ export const commands = {
 	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+	 *  The build streams its console, messages and progress on `on_event` while it runs; a launch
+	 *  whose build another launch's build joins receives that build's events.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request })),
+	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request, onEvent })),
 	/**
 	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
@@ -7218,12 +7224,24 @@ export type FlutterDevice = {
 	emulator: boolean,
 	/**  The adb state keeping it from being used (`unauthorized`, `offline`, …). */
 	unavailable: string | null,
+	/**  The [`FlutterEmulator`] it runs on: an AVD name, or `apple_ios_simulator`. */
+	emulatorId?: string | null,
 };
 
 /**  The project's Flutter devices, best default first. */
 export type FlutterDeviceList = {
 	status: FlutterDaemonStatus,
 	devices: FlutterDevice[],
+	/**  The emulators that no listed device runs on. */
+	emulators?: FlutterEmulator[],
+};
+
+/**  An Android emulator (AVD) or the iOS Simulator that `flutter emulators --launch` can start. */
+export type FlutterEmulator = {
+	id: string,
+	name: string,
+	/**  `android` or `ios`. */
+	platformType: string | null,
 };
 
 export type FocusedEditor = {
@@ -8323,6 +8341,8 @@ export type InlayHintsSettings = {
 	parameters?: boolean,
 	/**  Hints of other kinds (chaining, closing labels…). */
 	other?: boolean,
+	/**  The Dart server's closing labels (`// Column` after a widget's closing bracket). */
+	closingLabels?: boolean,
 	disabledLanguages?: string[],
 	/**  Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on. */
 	codeVision?: boolean,
@@ -8338,7 +8358,9 @@ export type InlayHintsSettings = {
 	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
-export type InlayKind = "type" | "parameter" | "other";
+export type InlayKind = "type" | "parameter" | "other" | 
+/**  What a closing bracket ends, at the end of its line (the Dart server's closing labels). */
+"closingLabel";
 
 /**  One part of an inlay hint label, e.g. a type name that navigates to its declaration. */
 export type InlayLabelPart = {

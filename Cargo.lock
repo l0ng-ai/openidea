@@ -4189,6 +4189,7 @@ dependencies = [
  "ide-core",
  "serde",
  "specta",
+ "tempfile",
  "which",
 ]
 

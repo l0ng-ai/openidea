@@ -166,7 +166,9 @@ export function selectedFiles(): ProjectNode[] {
 
 /** Open in Right Split (⇧Enter): the selected files in the pane right of the current editor. */
 export async function openSelectionInRightSplit(nodes = selectedFiles()) {
-  for (const [i, n] of nodes.entries()) await openFile(n.path, { side: true, focus: i === nodes.length - 1 });
+  for (const [i, n] of nodes.entries())
+    // oxlint-disable-next-line no-await-in-loop -- files open into the same split in order; the last one takes focus
+    await openFile(n.path, { side: true, focus: i === nodes.length - 1 });
 }
 
 // ---------------------------------------------------------------------------
@@ -304,10 +306,13 @@ export async function commitEditing(name: string): Promise<boolean> {
       if (editing.nodeKind === "file") await fs.createFile(path);
       else await fs.createDir(path);
       // Every folder of a Python package gets an `__init__.py`, as in PyCharm.
-      if (editing.pkg === "python")
+      if (editing.pkg === "python") {
+        const dirs: string[] = [];
         for (let dir = path; isInside(dir, editing.parent) && dir !== editing.parent; dir = parentOf(dir))
-          // An existing intermediate package keeps its own `__init__.py`.
-          await fs.createFile(joinPath(dir, "__init__.py")).catch(() => {});
+          dirs.push(dir);
+        // Each folder is a distinct path and existing files are left alone, so the writes can run together.
+        await Promise.all(dirs.map((dir) => fs.createFile(joinPath(dir, "__init__.py")).catch(() => {})));
+      }
     } catch (e) {
       fail(editing.nodeKind === "file" ? tx("Cannot create file") : tx("Cannot create folder"), e);
       return true;
@@ -331,6 +336,7 @@ export async function commitEditing(name: string): Promise<boolean> {
 async function refreshAfterCreate(parent: string, path: string) {
   const dirs = [parent];
   for (let p = parentOf(path); isInside(p, parent); p = parentOf(p)) dirs.push(p);
+  // oxlint-disable-next-line no-await-in-loop -- reloads mutate shared listings/selection; each folder must settle before the next
   for (const d of dirs) await loadDir(d, true);
 }
 
@@ -496,6 +502,7 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
   const deleted: NonNullable<typeof lastDelete>["items"] = [];
   for (const p of paths) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- deletes run in order; snapshots and errors keep path order for Undo
       const restore = await fs.delete(p);
       parents.add(parentOf(p));
       deleted.push({ path: p, restore });
@@ -537,6 +544,7 @@ export async function undoDelete(): Promise<boolean> {
   for (const { path, restore } of op.items) {
     if (get().root !== op.root) break;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- restores run in order and stop as soon as the project changes
       const skipped = await restore();
       for (const skippedPath of skipped) failed.add(skippedPath);
       if (!restored && !skipped.includes(path)) restored = path;
@@ -666,6 +674,7 @@ async function pasteImage(target: string): Promise<boolean> {
     if (taken.has(name)) continue;
     const path = joinPath(target, name);
     try {
+      // oxlint-disable-next-line no-await-in-loop -- names are tried one at a time; alreadyExists selects the next name
       await projectFs(get().root ?? target).createFileBytes(path, png);
     } catch (e) {
       // Created since the listing was read: take the next name.
@@ -673,6 +682,7 @@ async function pasteImage(target: string): Promise<boolean> {
       fail(tx`Cannot paste the image into ${name}`, e);
       return true;
     }
+    // oxlint-disable-next-line no-await-in-loop -- the listing is refreshed before revealing the successfully saved image
     await loadDir(target, true);
     revealPath(path, true);
     return true;
@@ -759,11 +769,15 @@ export async function transfer(
       const to = joinPath(target, finalName);
       try {
         if (source === "local") {
+          // oxlint-disable-next-line no-await-in-loop -- cancellation is checked per source; each import feeds the taken-name set
           const skipped = await fs.importLocal(src, to, upload);
           errors.push(...skipped);
         } else {
+          // oxlint-disable-next-line no-await-in-loop -- copies pick conflict-free names from the shared taken set
           await fs.copy(src, to);
-          if (!srcIsDir) await renameCopiedJavaType(src, to).catch(() => undefined);
+          if (!srcIsDir)
+            // oxlint-disable-next-line no-await-in-loop -- the Java type rename follows this copy, before the next source
+            await renameCopiedJavaType(src, to).catch(() => undefined);
         }
         taken.add(caseInsensitive ? finalName.toLowerCase() : finalName);
         first ??= to;
@@ -895,6 +909,7 @@ export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
 /** Opens each selected file with the application the OS associates with it. */
 export async function openWithAssociatedApp(nodes: ProjectNode[] = selectedNodes()) {
   for (const file of nodes.filter((n) => !n.dir && !n.placeholder)) {
+    // oxlint-disable-next-line no-await-in-loop -- stop at the first file the OS cannot open
     if (!(await openWithSystemApp(file.path))) {
       notifications().notify({ level: "error", title: tx`Cannot open ${nameOf(file.path)} with its application` });
       return;

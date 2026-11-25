@@ -510,8 +510,14 @@ export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   Label: t.variableName,
 };
 
-// @lezer/go leaves `default` uncoloured, unlike `case` and `switch`.
-const GO_TAGS: Parameters<typeof styleTags>[0] = { default: t.controlKeyword };
+const GO_TAGS: Parameters<typeof styleTags>[0] = {
+  default: t.controlKeyword,
+  "PackageClause/DefName ImportSpec/DefName QualifiedType/VariableName": t.namespace,
+  "MethodDecl/FieldName MethodElem/FieldName": t.function(t.definition(t.variableName)),
+  "CallExpr/SelectorExpr/FieldName": t.function(t.propertyName),
+  "ConstSpec/DefName": t.constant(t.variableName),
+  "make new": t.standard(t.function(t.variableName)),
+};
 
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {

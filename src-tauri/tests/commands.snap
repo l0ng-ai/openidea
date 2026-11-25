@@ -93,6 +93,7 @@ clipboard_has_image                          always             desktop      bin
 clipboard_image                              always             desktop      bindings async
 clipboard_set_file_list                      always             desktop      bindings async
 clipboard_text                               trusted            desktop      bindings async
+clipboard_write_image                        always             desktop      bindings async
 clipboard_write_text                         always             desktop      bindings async
 close_project                                always             project_host bindings spawn
 coverage_collect                             trusted            project_host bindings async
@@ -276,6 +277,7 @@ flutter_daemon_restart                       trusted            project_host bin
 flutter_devices                              trusted            project_host bindings sync
 flutter_devices_refresh                      trusted            project_host bindings sync
 flutter_devtools_url                         trusted            project_host bindings async
+flutter_emulator_launch                      trusted            project_host bindings async
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async

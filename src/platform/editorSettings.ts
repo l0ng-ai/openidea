@@ -224,6 +224,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     types: true,
     parameters: true,
     other: true,
+    closingLabels: true,
     disabledLanguages: [] as string[],
     codeVision: true,
     codeVisionUsages: true,

@@ -62,6 +62,7 @@ import {
   type TaskOrganize,
 } from "./organize";
 import {
+  CHANGES_KIND,
   HOME_KEY,
   HOME_KIND,
   SESSION_KIND,
@@ -579,7 +580,11 @@ export async function connect(): Promise<void> {
   const editors = editorService();
   for (const t of editors.openTabs?.() ?? []) {
     const task = (t.input.data as { task?: string } | undefined)?.task;
-    if (t.input.kind === SESSION_KIND && task && !useAgents.getState().tasks.has(task))
+    if (
+      (t.input.kind === SESSION_KIND || t.input.kind === CHANGES_KIND) &&
+      task &&
+      !useAgents.getState().tasks.has(task)
+    )
       await editors.closeInput?.(t.input.key);
   }
 }
@@ -692,7 +697,9 @@ function dropTaskCache(taskId: string) {
 function isTaskOpenInUi(taskId: string): boolean {
   if (useAgents.getState().docked === taskId) return true;
   return (editorService().openTabs?.() ?? []).some(
-    (t) => t.input.kind === SESSION_KIND && (t.input.data as { task?: string } | undefined)?.task === taskId,
+    (t) =>
+      (t.input.kind === SESSION_KIND || t.input.kind === CHANGES_KIND) &&
+      (t.input.data as { task?: string } | undefined)?.task === taskId,
   );
 }
 

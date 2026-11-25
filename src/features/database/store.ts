@@ -236,6 +236,8 @@ interface DatabaseState {
   selectedSource: string | null;
   /** The tree's lead node: what the tree actions act on. */
   selectedNode: DbNode | null;
+  /** Every selected node of the tree, the lead's included (Show Diagram). */
+  selectedNodes: DbNode[];
   /** The toolbar's New popup is open. */
   newMenuOpen: boolean;
   /** Expanded nodes of the Database tree. */
@@ -302,6 +304,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   dialog: null,
   selectedSource: null,
   selectedNode: null,
+  selectedNodes: [],
   newMenuOpen: false,
   treeExpanded: new Set(),
   treeReveal: null,

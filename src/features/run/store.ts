@@ -70,6 +70,7 @@ import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx, txPart } from "@/platform/i18n";
+import { followLaunchBuild } from "@/features/build/store";
 import { UNITY_CONFIG_KIND } from "./unity";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
@@ -1231,6 +1232,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       request: request.id,
       signal: request.controller.signal,
       report: say,
+      build: followLaunchBuild(request.id, tx`Build before launch: ${config.name}`, say),
       saveAll: async () => {
         await maybeEditorService()?.saveAll();
       },

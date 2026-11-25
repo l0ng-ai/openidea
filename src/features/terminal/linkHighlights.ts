@@ -16,7 +16,10 @@ import { findTerminalLinks, type TerminalLink } from "./links";
 export const LINK_DECORATION_CLASS = "openidea-terminal-link";
 
 /** 0-based cell columns `[start, end)` of `link` (string offsets) in `line`; wide CJK glyphs take two cells. */
-export function linkCells(line: IBufferLine, link: TerminalLink): { start: number; end: number } {
+export function linkCells(
+  line: IBufferLine,
+  link: Pick<TerminalLink, "start" | "end">,
+): { start: number; end: number } {
   return { start: stringOffsetToCol(line, link.start), end: stringOffsetToCol(line, link.end) };
 }
 
