@@ -4046,8 +4046,8 @@
   "Checking the Flutter SDK…": "Checking the Flutter SDK…",
   "Not a Flutter SDK: this folder has no bin/flutter.": "Not a Flutter SDK: this folder has no bin/flutter.",
   "flutter was not found on PATH.": "flutter was not found on PATH.",
-  "flutter --version did not answer in {0}.": "flutter --version did not answer in {0}.",
-  "Flutter {0}": "Flutter {0}",
-  "channel {0}": "channel {0}",
-  "Dart {0}": "Dart {0}"
+  "flutter --version did not answer in {root}.": "flutter --version did not answer in {root}.",
+  "Flutter {framework}": "Flutter {framework}",
+  "channel {channel}": "channel {channel}",
+  "Dart {dart}": "Dart {dart}"
 }

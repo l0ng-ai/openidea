@@ -822,6 +822,7 @@ function FlutterSdkStatus({ sdk }: { sdk: string }) {
   }, [sdk]);
   if (state?.sdk !== sdk) return <div>{tx("Checking the Flutter SDK…")}</div>;
   const { version } = state;
+  const root = tildify(version?.root ?? "");
   if (!version)
     return (
       <div className={styles.error} role="alert">
@@ -831,15 +832,11 @@ function FlutterSdkStatus({ sdk }: { sdk: string }) {
   if (!version.frameworkVersion)
     return (
       <div className={styles.error} role="alert">
-        {tx`flutter --version did not answer in ${tildify(version.root ?? "")}.`}
+        {tx`flutter --version did not answer in ${root}.`}
       </div>
     );
-  const parts = [
-    tx`Flutter ${version.frameworkVersion}`,
-    version.channel && tx`channel ${version.channel}`,
-    version.dartSdkVersion && tx`Dart ${version.dartSdkVersion}`,
-    tildify(version.root ?? ""),
-  ];
+  const { frameworkVersion: framework, channel, dartSdkVersion: dart } = version;
+  const parts = [tx`Flutter ${framework}`, channel && tx`channel ${channel}`, dart && tx`Dart ${dart}`, root];
   return <div>{parts.filter(Boolean).join(" · ")}</div>;
 }
 

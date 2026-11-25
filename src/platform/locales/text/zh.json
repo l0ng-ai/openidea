@@ -10340,8 +10340,8 @@
   "Checking the Flutter SDK…": "正在检查 Flutter SDK…",
   "Not a Flutter SDK: this folder has no bin/flutter.": "不是 Flutter SDK：此文件夹中没有 bin/flutter。",
   "flutter was not found on PATH.": "在 PATH 中找不到 flutter。",
-  "flutter --version did not answer in {0}.": "{0} 中的 flutter --version 没有响应。",
-  "Flutter {0}": "Flutter {0}",
-  "channel {0}": "渠道 {0}",
-  "Dart {0}": "Dart {0}"
+  "flutter --version did not answer in {root}.": "{root} 中的 flutter --version 没有响应。",
+  "Flutter {framework}": "Flutter {framework}",
+  "channel {channel}": "渠道 {channel}",
+  "Dart {dart}": "Dart {dart}"
 }

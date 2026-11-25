@@ -1032,14 +1032,14 @@ fn light_watcher(
     )
 }
 
-/// Looks for repositories nested below the project (and the one containing it);
-/// emits `VcsChanged` when the set of roots changed.
 /// `flutter` / `dart` as Settings › Flutter chooses them, read each time the daemon or DevTools starts.
 fn flutter_tool(root: &Path, settings: &Arc<SettingsStore>, command: &'static str) -> ide_flutter::Configured {
     let (root, settings) = (root.to_path_buf(), settings.clone());
     Box::new(move || ide_sdk::apply::tool_command(&root, &settings.effective(), command))
 }
 
+/// Looks for repositories nested below the project (and the one containing it);
+/// emits `VcsChanged` when the set of roots changed.
 fn scan_repositories(
     root: &Path,
     repos: &RwLock<Repos>,
