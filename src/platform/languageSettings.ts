@@ -178,6 +178,8 @@ export interface LanguagesValid {
   };
   ruby: { interpreter: string };
   zig: { zig: string };
+  /** Flutter SDK root; empty = `flutter` / `dart` on PATH. */
+  flutter: { sdk: string };
   node: {
     runTarget: string;
     interpreter: string;
@@ -312,6 +314,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   },
   ruby: { interpreter: "" },
   zig: { zig: "" },
+  flutter: { sdk: "" },
   node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
@@ -435,6 +438,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const py = obj(l.python);
   const ruby = obj(l.ruby);
   const zig = obj(l.zig);
+  const flutter = obj(l.flutter);
   const node = obj(l.node);
   const php = obj(l.php);
   const rust = obj(l.rust);
@@ -465,6 +469,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     zig: { zig: text(zig.zig, d.zig.zig) },
+    flutter: { sdk: text(flutter.sdk, d.flutter.sdk) },
     node: {
       runTarget: text(node.runTarget, ""),
       interpreter: text(node.interpreter, d.node.interpreter),

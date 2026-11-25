@@ -470,6 +470,27 @@ pub async fn sdk_jdk_at(path: String) -> IdeResult<Option<Sdk>> {
     blocking_value(move || ide_sdk::java::jdk_at(std::path::Path::new(&path)).map(|j| ide_sdk::jdk_sdk(&j))).await
 }
 
+/// `flutter --version --machine` of the Flutter SDK at `path`, or of the `flutter` on the
+/// search path when `path` is empty; `None` when there is no Flutter SDK.
+#[command(trust = trusted)]
+pub async fn sdk_flutter_at(
+    host: &Host,
+    window: &str,
+    path: String,
+) -> IdeResult<Option<ide_sdk::flutter::FlutterVersion>> {
+    let root = host.project(window).ok().map(|p| p.root.clone());
+    blocking_value(move || {
+        let root = root.unwrap_or_default();
+        let sdk = match ide_sdk::apply::setting_path(&root, &path) {
+            Some(sdk) => Some(sdk),
+            None => ide_core::tool_path::find_command("flutter", &ide_core::tool_path::search_path_in(&root), &root)
+                .and_then(|f| ide_sdk::flutter::sdk_of(&f)),
+        };
+        sdk.and_then(|sdk| ide_sdk::flutter::version(&sdk))
+    })
+    .await
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -628,6 +649,7 @@ mod tests {
 ide_command::domain!(
     sdk:
     sdk_detect,
+    sdk_flutter_at,
     sdk_jdk_at,
     sdk_locate_tools,
     sdk_php_composer_install,

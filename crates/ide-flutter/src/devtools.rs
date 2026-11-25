@@ -67,8 +67,7 @@ impl State {
 
 struct Shared {
     root: PathBuf,
-    /// Replaces the lookup on the search path (tests).
-    executable: Option<PathBuf>,
+    executable: crate::Configured,
     timeout: Duration,
     state: Mutex<State>,
     changed: Condvar,
@@ -90,11 +89,12 @@ impl Shared {
 pub struct DevToolsServer(Arc<Shared>);
 
 impl DevToolsServer {
-    pub fn new(root: PathBuf) -> Self {
-        Self::with_executable(root, None, START_TIMEOUT)
+    /// `dart` is the configured one, else the one of the `flutter` on the search path.
+    pub fn new(root: PathBuf, dart: crate::Configured) -> Self {
+        Self::with_executable(root, dart, START_TIMEOUT)
     }
 
-    fn with_executable(root: PathBuf, executable: Option<PathBuf>, timeout: Duration) -> Self {
+    fn with_executable(root: PathBuf, executable: crate::Configured, timeout: Duration) -> Self {
         Self(Arc::new(Shared { root, executable, timeout, state: Mutex::default(), changed: Condvar::new() }))
     }
 
@@ -151,7 +151,7 @@ fn run(shared: &Arc<Shared>, generation: u64) {
     let fail = |message: String| {
         shared.set(generation, Status::Failed(message));
     };
-    let Some(executable) = shared.executable.clone().or_else(|| dart_executable(&shared.root)) else {
+    let Some(executable) = (shared.executable)().or_else(|| dart_executable(&shared.root)) else {
         return fail("Dart SDK not found: install Flutter or add it to PATH".into());
     };
     let mut child = match spawn_watched(&executable, &ARGS, &shared.root) {
@@ -232,7 +232,7 @@ mod tests {
             let path = dir.join("dart");
             std::fs::write(&path, format!("#!/bin/sh\necho run >> runs\n{script}")).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            DevToolsServer::with_executable(dir.to_owned(), Some(path), timeout)
+            DevToolsServer::with_executable(dir.to_owned(), Box::new(move || Some(path.clone())), timeout)
         }
 
         fn runs(dir: &Path) -> usize {

@@ -7,7 +7,7 @@ import { useProject } from "@/platform/project";
 import { useRunTargets } from "@/platform/pluginRunTargets";
 import { tx } from "@/platform/i18n";
 import { useEffect, useId, useMemo, useState } from "react";
-import { call, commands, type Sdk } from "@/platform/ipc";
+import { call, commands, type FlutterVersion, type Sdk } from "@/platform/ipc";
 import { IconButton, Input, type SelectOption, T } from "@/ui";
 import { JAVA_LANGUAGE_LEVELS, PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
 import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
@@ -795,6 +795,74 @@ export function TypeScriptPage() {
             options={memoryOptions}
             onChange={(v) => setMemory(Number(v))}
             aria-label="tsserver memory limit"
+          />
+        </Row>
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Flutter
+
+const FLUTTER_SDK_HINT =
+  "The Flutter SDK used by the Dart language server, debugger, run configurations, pub commands, the device list and Build. Empty uses flutter and dart on PATH.";
+
+/** `flutter --version --machine` of the chosen SDK (or the one on PATH), or why there is none. */
+function FlutterSdkStatus({ sdk }: { sdk: string }) {
+  const [state, setState] = useState<{ sdk: string; version: FlutterVersion | null } | null>(null);
+  useEffect(() => {
+    let live = true;
+    call(commands.sdkFlutterAt(sdk))
+      .then((version) => live && setState({ sdk, version }))
+      .catch(() => live && setState({ sdk, version: null }));
+    return () => {
+      live = false;
+    };
+  }, [sdk]);
+  if (state?.sdk !== sdk) return <div>{tx("Checking the Flutter SDK…")}</div>;
+  const { version } = state;
+  const root = tildify(version?.root ?? "");
+  if (!version)
+    return (
+      <div className={styles.error} role="alert">
+        {sdk ? tx("Not a Flutter SDK: this folder has no bin/flutter.") : tx("flutter was not found on PATH.")}
+      </div>
+    );
+  if (!version.frameworkVersion)
+    return (
+      <div className={styles.error} role="alert">
+        {tx`flutter --version did not answer in ${root}.`}
+      </div>
+    );
+  const { frameworkVersion: framework, channel, dartSdkVersion: dart } = version;
+  const parts = [tx`Flutter ${framework}`, channel && tx`channel ${channel}`, dart && tx`Dart ${dart}`, root];
+  return <div>{parts.filter(Boolean).join(" · ")}</div>;
+}
+
+export function FlutterPage() {
+  const [sdk, setSdk] = useSetting<string>("languages.flutter.sdk");
+  return (
+    <div className={styles.page}>
+      <Section>
+        <Row
+          label="Flutter SDK path"
+          hint={
+            <>
+              <FlutterSdkStatus sdk={sdk ?? ""} />
+              <T>{FLUTTER_SDK_HINT}</T>
+            </>
+          }
+        >
+          <SdkField
+            kind="flutter"
+            value={sdk ?? ""}
+            onChange={setSdk}
+            emptyLabel="Auto"
+            emptyDetail="flutter on PATH"
+            directory
+            browseTitle="Select Flutter SDK Directory"
+            aria-label="Flutter SDK path"
           />
         </Row>
       </Section>
