@@ -94,6 +94,8 @@ export const flutterType: RunConfigTypeContribution = {
   async prepareLaunch(config) {
     warnPinnedFlutterDevice(config);
     const device = pinnedFlutterDevice(config) ? null : flutterDeviceFor(config);
-    return device ? { ...config, args: [...config.args, "-d", device] } : config;
+    // As the Flutter plugin runs apps: hot reload and DevTools go through the JSON protocol.
+    const machine = config.args[0] === "run" && !config.args.includes("--machine") ? ["--machine"] : [];
+    return { ...config, args: [...config.args, ...(device ? ["-d", device] : []), ...machine] };
   },
 };

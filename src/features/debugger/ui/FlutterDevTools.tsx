@@ -2,11 +2,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import { useTx } from "@/platform/i18n";
-import { call, commands, type DebugSessionId } from "@/platform/ipc";
+import { call, commands } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { IconButton, Tabs, type TabItem } from "@/ui";
 import { useFlutterDevices } from "@/workbench/flutterDevices";
+import { useFlutterRunApps } from "@/workbench/flutterRunApps";
 import {
   currentDevToolsLook,
   DEVTOOLS_WINDOWS,
@@ -14,23 +15,68 @@ import {
   useDevToolsRefresh,
   type DevToolsWindow,
 } from "../flutter/devTools";
-import { isLive, useDebug, type DebugSession } from "../state";
+import { isLive, useDebug } from "../state";
 import styles from "./FlutterDevTools.module.css";
 
 const SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads";
 
 /** The Inspector tab chosen by hand; a new or remaining app is shown otherwise. */
-const useInspectorTab = create<{ session: DebugSessionId | null }>(() => ({ session: null }));
+const useInspectorTab = create<{ app: string | null }>(() => ({ app: null }));
 
-const hasApp = (s: DebugSession) => !!s.vmServiceUri;
-
-function useRunningApps(): DebugSession[] {
-  const sessions = useDebug((s) => s.sessions);
-  return useMemo(() => Object.values(sessions).filter((s) => hasApp(s) && isLive(s)), [sessions]);
+/** A Flutter app with a VM Service: of a Debug session, or of a Run tab (`flutter run --machine`). */
+interface FlutterApp {
+  key: string;
+  name: string;
+  device?: string | null;
+  uri: string;
+  live: boolean;
+  startedAt: number;
 }
 
-function shownApp(apps: DebugSession[], chosen: DebugSessionId | null) {
-  return apps.find((s) => s.id === chosen) ?? apps.at(-1);
+/** Every app with a VM Service, ended ones too, oldest first. */
+function useFlutterApps(): FlutterApp[] {
+  const sessions = useDebug((s) => s.sessions);
+  const runApps = useFlutterRunApps();
+  return useMemo(() => {
+    const debug = Object.values(sessions).flatMap((s) =>
+      s.vmServiceUri
+        ? [
+            {
+              key: `debug:${s.id}`,
+              name: s.name,
+              device: s.flutterDevice,
+              uri: s.vmServiceUri,
+              live: isLive(s),
+              startedAt: s.startedAt ?? 0,
+            },
+          ]
+        : [],
+    );
+    const run = Object.values(runApps).flatMap((a) =>
+      a.vmServiceUri
+        ? [
+            {
+              key: `run:${a.session}`,
+              name: a.name,
+              device: a.device,
+              uri: a.vmServiceUri,
+              live: a.live,
+              startedAt: a.startedAt,
+            },
+          ]
+        : [],
+    );
+    return [...debug, ...run].sort((a, b) => a.startedAt - b.startedAt);
+  }, [sessions, runApps]);
+}
+
+function useRunningApps(): FlutterApp[] {
+  const apps = useFlutterApps();
+  return useMemo(() => apps.filter((a) => a.live), [apps]);
+}
+
+function shownApp(apps: FlutterApp[], chosen: string | null) {
+  return apps.find((a) => a.key === chosen) ?? apps.at(-1);
 }
 
 type Server = { url: string } | { error: string };
@@ -80,18 +126,18 @@ function Frame({
 function Inspector({ server, window }: { server: string; window: DevToolsWindow }) {
   const tx = useTx();
   const apps = useRunningApps();
-  const chosen = useInspectorTab((s) => s.session);
+  const chosen = useInspectorTab((s) => s.app);
   const shown = shownApp(apps, chosen);
   if (!shown) return <div className={styles.message}>{tx("No running applications")}</div>;
   // One page per app, kept while another is shown: each holds its own selection.
   return apps.map((app) => (
-    <Frame key={app.id} server={server} window={window} uri={app.vmServiceUri} hidden={app !== shown} />
+    <Frame key={app.key} server={server} window={window} uri={app.uri} hidden={app !== shown} />
   ));
 }
 
 function LatestApp({ server, window }: { server: string; window: DevToolsWindow }) {
-  // Ended sessions count: the page stays on the last app until another one starts.
-  const uri = useDebug((s) => Object.values(s.sessions).findLast(hasApp)?.vmServiceUri);
+  // Ended apps count: the page stays on the last app until another one starts.
+  const uri = useFlutterApps().at(-1)?.uri;
   return <Frame server={server} window={window} uri={uri} />;
 }
 
@@ -127,20 +173,20 @@ function LocalView({ id }: { id: string }) {
 export function FlutterDevToolsTabs() {
   const tx = useTx();
   const apps = useRunningApps();
-  const chosen = useInspectorTab((s) => s.session);
+  const chosen = useInspectorTab((s) => s.app);
   const devices = useFlutterDevices((s) => s.list?.devices);
   if (!apps.length) return null;
   const items: TabItem[] = apps.map((app) => {
-    const device = devices?.find((d) => d.id === app.flutterDevice)?.name ?? app.flutterDevice ?? app.name;
-    return { id: String(app.id), label: device, text: device };
+    const device = devices?.find((d) => d.id === app.device)?.name ?? app.device ?? app.name;
+    return { id: app.key, label: device, text: device };
   });
   return (
     <Tabs
       variant="compact"
       aria-label={tx("Running applications")}
       items={items}
-      activeId={String(shownApp(apps, chosen)?.id)}
-      onSelect={(id) => useInspectorTab.setState({ session: +id as DebugSessionId })}
+      activeId={shownApp(apps, chosen)?.key ?? null}
+      onSelect={(app) => useInspectorTab.setState({ app })}
     />
   );
 }
