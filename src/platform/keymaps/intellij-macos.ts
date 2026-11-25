@@ -395,6 +395,8 @@ export const intellijMacos: Record<string, string[]> = {
   "code.cyclicExpandWordBackward": ["Alt+Shift+/"],
   "editor.copyReference": ["Meta+Alt+Shift+C"],
   "code.pasteAsPlainText": ["Meta+Alt+Shift+V"],
+  "code.copyAsPlainText": [],
+  "code.copyAsRichText": [],
   "code.expressionTypeInfo": ["Ctrl+Shift+P"],
   "code.implementMethods": ["Ctrl+I"],
   "code.overrideMethods": ["Ctrl+O"],

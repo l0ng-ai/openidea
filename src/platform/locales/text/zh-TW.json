@@ -686,6 +686,8 @@
   "Cyclic Expand Word": "迴圈自動完成單字",
   "Cyclic Expand Word (Backward)": "迴圈自動完成單字（反向）",
   "Paste as Plain Text": "貼上為純文字",
+  "Copy as Plain Text": "複製為純文字",
+  "Copy as Rich Text": "複製為富文字",
   "Add Selection for Next Occurrence": "新增下一個相符項目到選取範圍",
   "Select All Occurrences": "選擇所有相符項目",
   "Complete Current Statement": "自動完成目前陳述式",

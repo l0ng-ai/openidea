@@ -1013,6 +1013,8 @@
   "Cyclic Expand Word": "循环补全单词",
   "Cyclic Expand Word (Backward)": "循环补全单词（反向）",
   "Paste as Plain Text": "粘贴为纯文本",
+  "Copy as Plain Text": "复制为纯文本",
+  "Copy as Rich Text": "复制为富文本",
   "Add Selection for Next Occurrence": "添加下一个匹配项到选区",
   "Select All Occurrences": "选择所有匹配项",
   "Complete Current Statement": "补全当前语句",

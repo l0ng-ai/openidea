@@ -92,7 +92,12 @@ import { selectedLineContext, selectedLines } from "./selectedLines";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { docCommentFolds, useDocMeta, useOutline } from "./model/document";
-import { resetAllEditorsFontZoom, resetConfiguredEditorsFontZoom, stepConfiguredEditorsFontZoom } from "./cm/prefs";
+import {
+  copyAs,
+  resetAllEditorsFontZoom,
+  resetConfiguredEditorsFontZoom,
+  stepConfiguredEditorsFontZoom,
+} from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -945,6 +950,17 @@ export function registerEditorActions(): () => void {
     edit("code.pasteAsPlainText", "Paste as Plain Text", (v) => pasteAsPlainText(v), {
       category: "Edit",
       icon: "paste",
+    }),
+    // Copy once in the format Settings › Editor › General › Rich-Text Copy doesn't give.
+    text("code.copyAsPlainText", "Copy as Plain Text", (v) => copyAs(v, "plain"), {
+      category: "Edit",
+      icon: "copy",
+      keywords: ["without formatting", "rich text"],
+    }),
+    text("code.copyAsRichText", "Copy as Rich Text", (v) => copyAs(v, "rich"), {
+      category: "Edit",
+      icon: "copy",
+      keywords: ["html", "syntax colors", "formatting"],
     }),
     {
       id: "editor.toggleSoftWrap",
