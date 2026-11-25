@@ -158,6 +158,11 @@ export interface TabsProps {
   closePosition?: "right" | "left";
   /** `vertical`: a column of tabs (editor tabs placed left / right); always scrolls, `layout` is ignored. */
   orientation?: "horizontal" | "vertical";
+  /**
+   * Clicking a tab leaves keyboard focus where it was (a scope strip under a search field, like the
+   * Find in Files scopes); keyboard navigation of a focused strip is unchanged.
+   */
+  keepFocusOnClick?: boolean;
 }
 
 export function Tabs({
@@ -180,6 +185,7 @@ export function Tabs({
   hiddenTabsOnly = false,
   closePosition = "right",
   orientation = "horizontal",
+  keepFocusOnClick = false,
   ...aria
 }: TabsProps) {
   const vertical = orientation === "vertical";
@@ -496,6 +502,7 @@ export function Tabs({
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
                 className={clsx(styles.tabButton, item.dimmed && styles.dimmed)}
                 style={item.color ? { color: item.color } : undefined}
+                onMouseDown={keepFocusOnClick ? (e) => e.preventDefault() : undefined}
                 onClick={(e) => {
                   // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.
                   if (closeOnShiftClick && e.shiftKey && e.detail > 0 && closable) {

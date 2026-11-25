@@ -169,6 +169,18 @@ describe("Tabs interactions", () => {
     expect(onClose).toHaveBeenCalledWith("b");
   });
 
+  it("leaves focus where it was on click only when the strip asks to", () => {
+    const { rerender } = render(<Tabs items={items} activeId="b" onSelect={() => {}} keepFocusOnClick />);
+    const down = () => {
+      const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      screen.getByRole("tab", { name: "C" }).dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(down()).toBe(true);
+    rerender(<Tabs items={items} activeId="b" onSelect={() => {}} />);
+    expect(down()).toBe(false);
+  });
+
   it("keeps Shift+click selection where the strip does not opt in", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
