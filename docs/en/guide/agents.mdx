@@ -79,7 +79,7 @@ The task tab shows the conversation: your messages, the agent's replies, its rea
 - **Stop** ends the current turn.
 - `⌘F` / `Ctrl+F` finds text in the conversation.
 
-On your own messages you can **Edit** (the messages after it are replaced; files already changed stay as they are) or **Retract Message**. On replies you can **Copy Markdown**, **Quote Reply**, **Regenerate Response** and **Branch Conversation from Here**, which starts a new task from that point.
+On your own messages you can **Edit** (the messages after it are replaced, and the files the agent changed since go back to how they were before it was sent) or **Roll Back to Here**, which removes the message and the ones after it, puts the files the agent changed since back as they were before it was sent, and returns the message to the composer. On replies you can **Copy Markdown**, **Quote Reply**, **Regenerate Response** and **Branch Conversation from Here**, which starts a new task from that point.
 
 In an existing chat, open **Model › Refresh models** to discover newly available models without sending a message or changing the selection. If the agent can't switch in place, the choice stays pending. You can choose an effort level as soon as the provider reports the new model's options. On your next message, OpenIDEA reopens the same session and applies the model and any effort you selected before sending. If the session can't be reopened or rejects either choice, OpenIDEA restores the previous selection and reports the error without sending the message.
 

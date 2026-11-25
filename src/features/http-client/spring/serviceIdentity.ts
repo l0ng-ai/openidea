@@ -88,6 +88,7 @@ export async function loadServiceName(module: string, reader: ServiceReader): Pr
     if (entry.kind !== "dir" || entry.ignored || entry.excluded || ipcPath(entry.path) !== directory) return null;
     let entries: FileEntry[];
     try {
+      // oxlint-disable-next-line no-await-in-loop -- resources then config: each inventory comes from the previous directory's entries
       entries = await reader.directory(directory);
     } catch (error) {
       if (isErrorKind(error, "notFound")) continue;
@@ -109,6 +110,7 @@ export async function loadServiceName(module: string, reader: ServiceReader): Pr
         return null;
       let text: string;
       try {
+        // oxlint-disable-next-line no-await-in-loop -- per-file caps and read failures short-circuit; rejected entries must not be read
         text = await reader.read(file.path);
       } catch {
         return null;

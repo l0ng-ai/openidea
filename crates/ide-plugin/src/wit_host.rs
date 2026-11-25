@@ -1446,6 +1446,34 @@ impl vcs::Host for StoreData {
         let root = self.table.get(&project)?.root.clone();
         Ok(self.host.vcs_remotes(&root).map_err(to_wit))
     }
+
+    fn roots(&mut self, project: Resource<ProjectRes>) -> Fallible<Vec<String>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        Ok(self.host.vcs_roots(&self.table.get(&project)?.root).map_err(to_wit))
+    }
+
+    fn repository_at(&mut self, project: Resource<ProjectRes>, path: String) -> Fallible<Option<vcs::RepositoryInfo>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        Ok(self
+            .host
+            .vcs_repository_at(&self.table.get(&project)?.root, &path)
+            .map(|r| {
+                r.map(|r| vcs::RepositoryInfo {
+                    root: r.root,
+                    relative_path: r.relative_path,
+                    branch: r.branch,
+                    commit: r.commit,
+                    upstream: r.upstream,
+                    ahead: r.ahead,
+                    remotes: r.remotes,
+                })
+            })
+            .map_err(to_wit))
+    }
 }
 
 impl build::Host for StoreData {

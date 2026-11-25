@@ -400,6 +400,7 @@
   "menu.layout.delete": "Eliminar diseño…",
   "menu.activeToolWindow": "Ventana de herramientas activa",
   "menu.toolwindow.hideActive": "Ocultar ventana de herramientas activa",
+  "menu.toolwindow.hideSide": "Ocultar ventanas de herramientas laterales",
   "menu.toolwindow.maximize": "Maximizar ventana de herramientas",
   "menu.toolwindow.closeContent": "Cerrar pestaña activa",
   "menu.toolwindow.jumpToLast": "Ir a la última ventana de herramientas",

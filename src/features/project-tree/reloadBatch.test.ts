@@ -215,6 +215,7 @@ describe("applyFsChange reload of many folders", () => {
       applyFsChange({ created: [], modified: changed.map(filePath), removed: [] }).then(() => void fs),
     );
     const single = await run(async () => {
+      // oxlint-disable-next-line no-await-in-loop -- this is the sequential baseline the batched reload is compared against
       for (const k of changed) await loadDir(dirPath(k), true);
     });
 

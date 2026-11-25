@@ -135,6 +135,7 @@ struct State {
     path_subscriptions: BTreeMap<String, Vec<String>>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
+    repositories: Vec<RepositoryInfo>,
     remotes: Vec<(String, String)>,
     commit: Option<CommitDraft>,
     fetches: u32,
@@ -508,6 +509,11 @@ impl MockHost {
     /// Remotes `vcs-remotes` returns for every project.
     pub fn set_vcs_remotes(&self, remotes: &[(&str, &str)]) {
         self.state.borrow_mut().remotes = remotes.iter().map(|&(n, u)| (n.to_owned(), u.to_owned())).collect();
+    }
+
+    /// Mapped worktrees for `vcs_roots` and `vcs_repository_at`.
+    pub fn set_vcs_repositories(&self, repositories: Vec<RepositoryInfo>) {
+        self.state.borrow_mut().repositories = repositories;
     }
 
     /// Last text copied with [`crate::host::copy_to_clipboard`].
@@ -2023,6 +2029,48 @@ pub mod current {
         with(|s| {
             require(s, "vcs.read")?;
             Ok(s.remotes.clone())
+        })
+    }
+
+    pub fn vcs_roots(p: &ProjectRes) -> Result<Vec<String>, Error> {
+        with(|s| {
+            require(s, "vcs.read")?;
+            let project = std::path::Path::new(&p.root);
+            let mut roots: Vec<_> = s
+                .repositories
+                .iter()
+                .map(|r| &r.root)
+                .filter(|r| project.starts_with(r) || std::path::Path::new(r).starts_with(project))
+                .cloned()
+                .collect();
+            roots.sort();
+            Ok(roots)
+        })
+    }
+
+    pub fn vcs_repository_at(p: &ProjectRes, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        with(|s| {
+            vcs_read(s)?;
+            let project = std::path::Path::new(&p.root);
+            let absolute = project.join(path);
+            let rel = absolute.strip_prefix(project).map_err(|_| Error::Invalid("outside the project root".into()))?;
+            if rel.components().any(|c| c == std::path::Component::ParentDir) {
+                return Err(Error::Invalid("outside the project root".into()));
+            }
+            if !rel.as_os_str().is_empty()
+                && !path_known(s, p, path, &rel.to_string_lossy())
+                && !s.repositories.iter().any(|r| absolute == std::path::Path::new(&r.root))
+            {
+                return Err(Error::Invalid(format!("{path}: no such file")));
+            }
+            Ok(s.repositories
+                .iter()
+                .filter_map(|r| Some((r, absolute.strip_prefix(&r.root).ok()?)))
+                .min_by_key(|(_, rel)| rel.components().count())
+                .map(|(r, rel)| RepositoryInfo {
+                    relative_path: rel.to_string_lossy().replace('\\', "/"),
+                    ..r.clone()
+                }))
         })
     }
 

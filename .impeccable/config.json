@@ -1,0 +1,15 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "gradient-text",
+        "value": "*",
+        "files": ["src/features/agents/Session.module.css"],
+        "createdAt": "2026-11-24T14:58:12.514Z",
+        "reason": "agent: .shimmer is an animated in-progress sweep on running-step labels (commit 18b286e7e, comment documents intent), not decorative gradient text"
+      }
+    ]
+  }
+}

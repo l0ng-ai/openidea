@@ -164,8 +164,8 @@ describe("OS file imports", () => {
       });
       const imported = vi.spyOn(fs, "importLocal");
       for (let i = 0; i < 2; i++) {
-        if (entry === "paste") await paste("/p/target");
-        else await importExternal(["/p/local.txt"], "/p/target");
+        // oxlint-disable-next-line no-await-in-loop -- the second attempt must see the conflict state left by the first
+        await (entry === "paste" ? paste("/p/target") : importExternal(["/p/local.txt"], "/p/target"));
       }
       expect(imported.mock.calls).toEqual([
         ["/p/local.txt", "/p/target/local.txt", expect.anything()],

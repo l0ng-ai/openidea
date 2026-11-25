@@ -399,22 +399,26 @@ function flutterLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfi
  * `params.vm-service-uri` pins the VM Service endpoint (`flutter attach
  * --debug-uri`); without it `flutter attach` discovers the running app on the
  * device. `params.device`, else the toolbar's device, becomes `-d <device>`.
+ * A Flutter run configuration (Flutter Attach) adds its entry point as
+ * `--target` and its `params.attachArgs`.
  */
 function flutterAttach(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
   const p = rc.params ?? {};
   const uri = p["vm-service-uri"] || p.vmServiceUri;
   const device = flutterDeviceFor(rc);
+  const entry = rc.kind === "flutter" ? (parseFlutterRun(rc.args).entry ?? "lib/main.dart") : null;
+  const toolArgs = [...(device ? ["-d", device] : []), ...parseArgs(p.attachArgs ?? "")];
   // `__flutter` tells the adapter launcher to use `flutter debug_adapter`
   // whatever the working directory holds (an add-to-app module lives below a
   // workspace root that has no Flutter dependency of its own). It is removed
   // before the request reaches the adapter.
   const extra: Record<string, unknown> = { __flutter: true };
   if (uri) extra.vmServiceUri = uri;
-  if (device) extra.toolArgs = ["-d", device];
+  if (toolArgs.length) extra.toolArgs = toolArgs;
   return {
     ...base(rc, adapter, cwd),
     request: "attach",
-    program: null,
+    program: entry && join(cwd, entry),
     extraJson: JSON.stringify(extra),
   };
 }

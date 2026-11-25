@@ -397,6 +397,7 @@
   "menu.layout.delete": "Excluir layout…",
   "menu.activeToolWindow": "Janela de ferramentas ativa",
   "menu.toolwindow.hideActive": "Ocultar janela de ferramentas ativa",
+  "menu.toolwindow.hideSide": "Ocultar janelas de ferramentas laterais",
   "menu.toolwindow.maximize": "Maximizar janela de ferramentas",
   "menu.toolwindow.closeContent": "Fechar aba ativa",
   "menu.toolwindow.jumpToLast": "Ir para a última janela de ferramentas",

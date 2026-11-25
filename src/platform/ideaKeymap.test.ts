@@ -83,6 +83,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Move Caret to Page Top / Bottom", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="W" parent="$default"><action id="EditorMoveToPageTop"><keyboard-shortcut first-keystroke="alt PAGE_UP"/></action><action id="EditorMoveToPageBottomWithSelection"><keyboard-shortcut first-keystroke="alt shift PAGE_DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.moveToPageTop"]).toEqual([normalizeBinding("Alt+PageUp")]);
+    expect(k.overrides["editor.moveToPageBottomWithSelection"]).toEqual([normalizeBinding("Alt+Shift+PageDown")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Convert Indents to Spaces / to Tabs", () => {
     const k = parseIdeaKeymap(
       `<keymap name="M" parent="Mac OS X 10.5+"><action id="ConvertIndentsToSpaces"><keyboard-shortcut first-keystroke="shift meta 8"/></action><action id="ConvertIndentsToTabs"><keyboard-shortcut first-keystroke="shift meta 9"/></action></keymap>`,
@@ -98,6 +107,31 @@ describe("IntelliJ IDEA keymap import", () => {
     );
     expect(k.overrides["find.wordAtCaret"]).toEqual([normalizeBinding("Alt+Meta+F3")]);
     expect(k.overrides["find.previousWordAtCaret"]).toEqual([normalizeBinding("Shift+Alt+Meta+F3")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Toggle Breakpoint Enabled, which has no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="ToggleBreakpointEnabled"><keyboard-shortcut first-keystroke="alt meta F8"/></action></keymap>`,
+    );
+    expect(k.overrides["debug.toggleBreakpointEnabled"]).toEqual([normalizeBinding("Alt+Meta+F8")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps the Active Tool Window actions", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="$default"><action id="HideSideWindows"><keyboard-shortcut first-keystroke="control alt shift F12"/></action><action id="HideActiveWindow"><keyboard-shortcut first-keystroke="alt ESCAPE"/></action><action id="MaximizeToolWindow"><keyboard-shortcut first-keystroke="control alt M"/></action><action id="JumpToLastWindow"><keyboard-shortcut first-keystroke="alt F12"/></action><action id="ResizeToolWindowLeft"><keyboard-shortcut first-keystroke="control alt LEFT"/></action><action id="ResizeToolWindowRight"><keyboard-shortcut first-keystroke="control alt RIGHT"/></action><action id="ResizeToolWindowUp"><keyboard-shortcut first-keystroke="control alt UP"/></action><action id="ResizeToolWindowDown"><keyboard-shortcut first-keystroke="control alt DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides).toMatchObject({
+      "toolwindow.hideSide": [normalizeBinding("Ctrl+Alt+Shift+F12")],
+      "toolwindow.hideActive": [normalizeBinding("Alt+Escape")],
+      "toolwindow.maximize": [normalizeBinding("Ctrl+Alt+M")],
+      "toolwindow.jumpToLast": [normalizeBinding("Alt+F12")],
+      "toolwindow.resizeLeft": [normalizeBinding("Ctrl+Alt+Left")],
+      "toolwindow.resizeRight": [normalizeBinding("Ctrl+Alt+Right")],
+      "toolwindow.resizeUp": [normalizeBinding("Ctrl+Alt+Up")],
+      "toolwindow.resizeDown": [normalizeBinding("Ctrl+Alt+Down")],
+    });
     expect(k.unknownActions).toEqual([]);
   });
 

@@ -39,18 +39,16 @@ export function SessionStatus({
   head,
   changes,
   commits,
-  changesOpen,
   effortAnnouncement,
-  onToggleChanges,
+  onOpenChanges,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
-  changesOpen: boolean;
   effortAnnouncement: string | null;
-  onToggleChanges: () => void;
+  onOpenChanges: () => void;
 }) {
   const tx = useTx();
   const project = useProject((s) => s.project);
@@ -124,13 +122,7 @@ export function SessionStatus({
         {(!!changes?.length || !!commits.length) && (
           <span className={styles.statusChips}>
             {!!changes?.length && (
-              <button
-                type="button"
-                className={styles.statusChip}
-                aria-expanded={changesOpen}
-                title={filesLabel}
-                onClick={onToggleChanges}
-              >
+              <button type="button" className={styles.statusChip} title={filesLabel} onClick={onOpenChanges}>
                 <Icon name="edit" size={12} />
                 {/* The counts are the chip's own items, so its gap spaces them and the label can still truncate. */}
                 <span className={styles.statusChipLabel}>{filesLabel}</span>
@@ -142,13 +134,7 @@ export function SessionStatus({
               </button>
             )}
             {!!commits.length && (
-              <button
-                type="button"
-                className={styles.statusChip}
-                aria-expanded={changesOpen}
-                title={commitsLabel}
-                onClick={onToggleChanges}
-              >
+              <button type="button" className={styles.statusChip} title={commitsLabel} onClick={onOpenChanges}>
                 <Icon name="commit" size={12} />
                 <span className={styles.statusChipLabel}>{commitsLabel}</span>
                 <span className={styles.statusChipCount} aria-hidden>
