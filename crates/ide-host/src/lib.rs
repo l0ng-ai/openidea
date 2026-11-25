@@ -5,6 +5,8 @@
 
 pub mod agent_secrets;
 pub mod catalogue;
+#[cfg(unix)]
+pub mod daemon;
 pub mod data_dirs;
 pub mod diagnostics_store;
 mod direnv;
@@ -25,7 +27,7 @@ pub mod rpc;
 pub mod shell_env;
 pub mod trust;
 
-pub use project::{Project, apply_git_executable, history_retention};
+pub use project::{Project, history_retention};
 
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
@@ -34,7 +36,7 @@ use ide_terminal::TerminalManager;
 use ide_workspace::SettingsStore;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 /// Event sink for one window (by label).
@@ -58,6 +60,27 @@ pub struct HostConfig {
     pub project_environment: bool,
 }
 
+#[cfg(test)]
+impl HostConfig {
+    /// A host under `base` for unit tests: `config`, `data` and `data` again for the machine-local
+    /// directory, built-in languages, no grammars, a sink that drops events, the window as its own
+    /// owner, the current tokio runtime and no project environment. Override fields with
+    /// `HostConfig { sink_for: .., ..HostConfig::for_test(base) }`. Call it inside a runtime.
+    pub(crate) fn for_test(base: &Path) -> Self {
+        Self {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("data"),
+            languages: Arc::new(LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        }
+    }
+}
+
 pub struct Host {
     pub(crate) mcp_executable: Arc<RwLock<Option<PathBuf>>>,
     pub mcp: mcp::McpService,
@@ -72,7 +95,7 @@ pub struct Host {
     /// Projects the MCP server serves without a window.
     pub mcp_background: mcp::BackgroundProjects,
     pub(crate) agent_catalogs: Arc<ide_agent::AgentCatalogs>,
-    pub trust: trust::TrustStore,
+    pub trust: std::sync::Arc<trust::TrustStore>,
     pub(crate) mcp_approvals: Arc<trust::McpServerApprovals>,
     pub config_dir: PathBuf,
     /// Persistent user state, including credentials and recovery history.
@@ -83,6 +106,7 @@ pub struct Host {
     syntax: Arc<OnceLock<Arc<Syntax>>>,
     pub global_settings: SettingsStore,
     pub dependency_versions: Arc<ide_workspace::dependencies::VersionCache>,
+    pub pypi_names: Arc<ide_workspace::dependencies::pypi::NameCache>,
     pub terminals: TerminalManager,
     pub processes: ProcessManager,
     /// Debug sessions (adapters run on this machine, next to the project).
@@ -92,6 +116,7 @@ pub struct Host {
     /// The window that owns each open heap snapshot; its project's close closes them.
     pub(crate) heap_windows: Mutex<HashMap<ide_heap::HeapSnapshotId, String>>,
     pub(crate) heap_requests: ops::heap::HeapRequests,
+    pub(crate) rebase_editors: Arc<ops::vcs::RebaseEditors>,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
@@ -169,7 +194,7 @@ impl Host {
             mcp_agent_runs: Default::default(),
             mcp_background: Default::default(),
             agent_catalogs: Arc::default(),
-            trust: trust::TrustStore::load(&config_dir, &data_dir),
+            trust: std::sync::Arc::new(trust::TrustStore::load(&config_dir, &data_dir)),
             mcp_approvals: Arc::new(trust::McpServerApprovals::load(&data_dir)),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             proxy_session_password: Mutex::default(),
@@ -183,6 +208,7 @@ impl Host {
             dependency_versions: Arc::new(ide_workspace::dependencies::VersionCache::new(
                 data_dir.join("cache/dependency-versions"),
             )),
+            pypi_names: Arc::new(ide_workspace::dependencies::pypi::NameCache::new(data_dir.join("cache"))),
             // Sessions, runs and terminals report to the window that started them (`window_sink`).
             terminals: TerminalManager::new(),
             processes: ProcessManager::new(),
@@ -190,6 +216,7 @@ impl Host {
             heap: Arc::new(ide_heap::HeapRegistry::new(ide_heap::snapshots_root(&local_data_dir))),
             heap_windows: Mutex::default(),
             heap_requests: Default::default(),
+            rebase_editors: Default::default(),
             languages,
             syntax,
             config_dir,
@@ -207,6 +234,7 @@ impl Host {
         };
         host.apply_proxy();
         host.apply_added_jdks();
+        host.apply_git_executable();
         // Before any project starts jdtls; the deleting itself can take a while.
         let unused =
             ide_sdk::jdtls_workspaces::take_unused(&host.local_data_dir, ide_sdk::jdtls_workspaces::UNUSED_FOR);
@@ -345,7 +373,7 @@ impl Host {
         }
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
-            plugins.set_active_file(window, None);
+            plugins.set_active_file(window, None, None);
         }
         if !project.light {
             self.environment.project_closed();
@@ -502,6 +530,25 @@ impl Host {
         }
     }
 
+    /// Cleans up per-connection client state when a remote window disconnects from a
+    /// persistent daemon, leaving the project, index, language servers, terminals,
+    /// runs and agent sessions running.
+    pub fn client_disconnected(&self) {
+        let windows: Vec<String> = self.projects.read().keys().cloned().collect();
+        for window in &windows {
+            self.mcp_reports.forget_window(window);
+            self.mcp_requests.forget_window(window);
+            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+                self.cancel_request(request);
+            }
+        }
+        self.terminals.detach_output();
+        self.processes.detach_output();
+        for project in self.projects() {
+            project.documents.release_client_refs();
+        }
+    }
+
     /// Stops what this host started: heap snapshots, notebook kernels, language servers, agents,
     /// runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
@@ -509,7 +556,6 @@ impl Host {
         // A capture's dump may hold secrets from the debuggee's memory: delete it before exiting.
         ops::heap::shutdown(self).await;
         self.environment.shutdown();
-        self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
@@ -529,22 +575,33 @@ impl Host {
             project.notebooks.stop_admission();
             project.agents.shutdown();
         }
+        let stop_processes = async {
+            for project in &projects {
+                self.debugger.stop_under(&project.root).await;
+            }
+            self.processes.shutdown().await;
+        };
         // Kernel cleanup owns its interrupt/termination/reaping deadlines. An
         // outer LSP timeout must never abort it before owned children are reaped.
-        for project in &projects {
-            if let Some(bridge) = &project.kotlin_bridge {
-                bridge.shutdown().await;
+        let stop_kernels = async {
+            for project in &projects {
+                if let Some(bridge) = &project.kotlin_bridge {
+                    bridge.shutdown().await;
+                }
+                project.notebooks.shutdown().await;
             }
-            project.notebooks.shutdown().await;
-        }
+        };
         let stop_language_servers = async {
             for project in &projects {
                 project.lsp.shutdown_all().await;
             }
         };
-        if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
-            tracing::warn!("language servers did not shut down in time");
-        }
+        let stop_lsp = async {
+            if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
+                tracing::warn!("language servers did not shut down in time");
+            }
+        };
+        tokio::join!(stop_processes, stop_kernels, stop_lsp);
     }
 
     // ---- cancellable requests: the UI allocates ids, `cancel_request` cancels ----
@@ -598,6 +655,14 @@ impl Host {
         let homes = self.global_settings.effective().languages.java.added_jdks;
         ide_sdk::java::set_added_jdks(homes.into_iter().map(PathBuf::from));
     }
+
+    /// Global Settings › Version Control › Git › Path to Git executable, for git started outside
+    /// a project's repositories (clone, init, agents, gh, plugins). A project's own value stays
+    /// with its repositories ([`Project::repos`]).
+    pub fn apply_git_executable(&self) {
+        let exe = self.global_settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
+        ide_vcs::set_default_git_executable((!exe.is_empty()).then(|| Path::new(&exe)));
+    }
 }
 
 #[cfg(test)]
@@ -611,17 +676,7 @@ mod tests {
         let root = base.join("project");
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = Arc::downgrade(&host.open_project("main", &root).unwrap());
         host.close_project_detached("main");
         assert!(host.project("main").is_err());

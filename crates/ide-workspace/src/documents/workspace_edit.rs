@@ -422,6 +422,8 @@ impl Documents {
         }
         // Validate project rules before path resolution can erase linked components.
         crate::file_ops::validate_workspace_edit_paths(edit)?;
+        // Editors know the paths as the edit named them, before link resolution.
+        let moves = edit.moves();
         let mut edit = normalize_edit(edit)?;
         let captured = !edit.preconditions.is_empty();
         crate::file_ops::expand_workspace_edit(&mut edit)?;
@@ -501,7 +503,7 @@ impl Documents {
                 });
             }
             history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
-            self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected, by_agent });
+            self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected, moves, by_agent });
         }
         Ok(())
     }

@@ -83,6 +83,9 @@ impl AppState {
             tracing::info!("invalidated caches: {removed:?}");
         }
         ide_host::data_dirs::migrate(&data_dir, &local_data_dir);
+        if let Err(error) = ide_workspace::settings::initialize_global_locale(&config_dir, system_ui_language) {
+            tracing::warn!(%error, "cannot initialize the UI language");
+        }
         let runtime = tauri::async_runtime::handle().inner().clone();
         let global_sink = coalescing_sink(Arc::new(TauriSink { app: app.clone(), window: None }), runtime.clone());
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
@@ -191,6 +194,38 @@ impl AppState {
         self.remote_dev.disconnect(window);
         self.host.close_project_detached(window);
     }
+}
+
+/// The OS's preferred UI language as a BCP 47 / POSIX locale tag.
+#[cfg(windows)]
+fn system_ui_language() -> Option<String> {
+    use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
+
+    let mut count = 0;
+    let mut length = 0;
+    if unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, std::ptr::null_mut(), &mut length) } == 0
+        || length == 0
+    {
+        return None;
+    }
+    let mut languages = vec![0; length as usize];
+    if unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, languages.as_mut_ptr(), &mut length) } == 0 {
+        return None;
+    }
+    String::from_utf16(languages.split(|&unit| unit == 0).next()?).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn system_ui_language() -> Option<String> {
+    objc2_foundation::NSLocale::preferredLanguages().firstObject().map(|language| language.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn system_ui_language() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .find(|value| !value.is_empty())
 }
 
 /// Serves askpass prompts to the focused window and routes `git`'s prompts there.

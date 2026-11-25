@@ -156,6 +156,24 @@ describe("changed files model", () => {
     const item = changesMenu([del!]).find((i) => "action" in i && i.action === "vcs.log.changes.compareWithLocal");
     expect(item).toMatchObject({ disabled: true });
   });
+
+  it("offers file history edits only for part of one editable commit", () => {
+    const files = toLogChanges(
+      [
+        { path: "a.ts", kind: "modified", oldPath: null },
+        { path: "b.ts", kind: "modified", oldPath: null },
+      ],
+      commit,
+    );
+    const action = (menu: ReturnType<typeof changesMenu>, id: string) =>
+      menu.find((item) => "action" in item && item.action === id);
+    const source = { commit, total: files.length };
+    for (const id of ["vcs.log.changes.extract", "vcs.log.changes.drop"]) {
+      expect(action(changesMenu([files[0]!], source), id)).toMatchObject({ arg: { commit, changes: [files[0]] } });
+      expect(action(changesMenu(files, source), id)).toMatchObject({ disabled: true });
+      expect(action(changesMenu(files), id)).toBeUndefined();
+    }
+  });
 });
 
 describe("rename label", () => {

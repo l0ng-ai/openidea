@@ -8,8 +8,7 @@ import { noteCopySource } from "@/platform/clipboardSource";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
-import "@xterm/xterm/css/xterm.css";
-import "./xtermInput.css";
+import screenCss from "./sessionScreen.css?inline";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -24,6 +23,7 @@ import { installSelectionHighlights, type SelectionHighlightController } from ".
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
 import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
+import { installImeAnchor } from "./imeAnchor";
 import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { parseShellCommand } from "@/platform/commandLine";
@@ -64,6 +64,8 @@ export type SessionStatus = "idle" | "starting" | "running" | "exited" | "error"
 export interface SessionSnapshot {
   status: SessionStatus;
   exitCode: number | null;
+  /** Live or pending backend PTY id, when one exists. */
+  terminalId?: TerminalId | null;
   /** Shell name reported by the backend (`zsh`). */
   title: string;
   /** Window title set by the running program (OSC 0/2), null when unset or blank. */
@@ -122,6 +124,10 @@ export interface SessionOptions {
    * (deleted since the last run, see `resolveStartCwd`).
    */
   fallbackRoot?: string;
+  /** Existing backend PTY id to reattach to before falling back to spawning a fresh shell. */
+  attachTerminalId?: TerminalId | null;
+  /** Do not spawn a fresh shell if `attachTerminalId` is no longer running (CLI editor tabs). */
+  onlyAttach?: boolean;
 }
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
@@ -254,9 +260,12 @@ export class TerminalSession {
   private opened = false;
   /** `focus()` arrived before the textarea existed (the pane is focused while xterm is still closed). */
   private pendingFocus = false;
+  /** What had focus when `pendingFocus` was set: a later move elsewhere cancels it. */
+  private pendingFocusFrom: Element | null = null;
   /** Bounds retries when the pane has no box yet, or xterm cannot measure a cell. */
   private fitAttempts = 0;
   private disposed = false;
+  private killOnDispose = true;
   private disposables: IDisposable[] = [];
   private resizeObserver: ResizeObserver | null = null;
   private readonly fitter = fitScheduler(() => this.doFit());
@@ -302,6 +311,7 @@ export class TerminalSession {
     this.snapshot = {
       status: "idle",
       exitCode: null,
+      terminalId: opts.attachTerminalId ?? null,
       title: "Local",
       appTitle: null,
       commandRunning: false,
@@ -665,7 +675,14 @@ export class TerminalSession {
     if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) return;
     // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
     // selected text rendered at a visibly different weight than the rest.
-    this.term.open(this.host);
+    // Keep xterm's per-session stylesheets from restyling the editor on tab changes.
+    const root = this.host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = screenCss;
+    const screen = document.createElement("div");
+    screen.style.height = "100%";
+    root.append(style, screen);
+    this.term.open(screen);
     installDomRowCache(this.term);
     this.opened = true;
     remeasureWhenFontsLoad(
@@ -679,7 +696,18 @@ export class TerminalSession {
       this.opts.onFocus(this.key);
     });
     this.watchImeCommit();
-    if (this.pendingFocus) this.focus();
+    this.disposables.push({ dispose: installImeAnchor({ host: screen, term: this.term }) });
+    if (this.pendingFocus) {
+      this.pendingFocus = false;
+      if (this.focusStayedHere()) this.focus();
+    }
+  }
+
+  /** Whether focus is still where the deferred `focus()` left it, or in this terminal's own window. */
+  private focusStayedHere(): boolean {
+    const active = document.activeElement;
+    if (!active || active === document.body || active === this.pendingFocusFrom) return true;
+    return this.host.contains(active) || !!this.host.closest("[data-toolwindow]")?.contains(active);
   }
 
   detach(container: HTMLElement) {
@@ -757,20 +785,20 @@ export class TerminalSession {
   }
 
   private doFit() {
-    if (this.disposed || !this.host.isConnected) return;
+    if (this.disposed || !this.host.isConnected) return false;
     // The grid row is still 0 on the first layout pass (the track is set by a
     // parent layout effect after this one). Keep asking until it has a box;
     // ResizeObserver also resets the budget when the size actually changes.
     if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) {
       if (this.fitAttempts++ < 20) this.scheduleFit();
-      return;
+      return false;
     }
     this.openIfReady();
-    if (!this.opened) return;
+    if (!this.opened) return false;
     const dims = this.fit.proposeDimensions();
     if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) {
       if (this.fitAttempts++ < 20) this.scheduleFit();
-      return;
+      return false;
     }
     this.fitAttempts = 0;
     if (dims.cols !== this.term.cols || dims.rows !== this.term.rows) this.term.resize(dims.cols, dims.rows);
@@ -810,11 +838,45 @@ export class TerminalSession {
     }
     const cols = Math.max(2, this.term.cols);
     const rows = Math.max(1, this.term.rows);
-    this.lastSize = { cols, rows };
+    this.lastSize = this.opened ? { cols, rows } : { cols: 0, rows: 0 };
     const channel = new Channel<string>();
     channel.onmessage = (chunk) => {
       if (generation === this.generation && !this.disposed) this.writePtyOutput(chunk);
     };
+    const attachId = this.opts.attachTerminalId ?? null;
+    if (attachId !== null) {
+      this.opts.attachTerminalId = null;
+      try {
+        const attachCols = this.opened ? cols : 0;
+        const attachRows = this.opened ? rows : 0;
+        const attached = await call(commands.termAttach(attachId, attachCols, attachRows, channel));
+        if (this.disposed || generation !== this.generation) {
+          if (this.disposed && this.killOnDispose && !this.opts.command?.onExit) void commands.termKill(attachId);
+          return;
+        }
+        this.ptyId = attached.session.id;
+        if (attached.buffered) this.writePtyOutput(attached.buffered);
+        this.update({
+          terminalId: attached.session.id,
+          status: "running",
+          title: attached.session.title || "Local",
+          cwd: attached.session.cwd || this.snapshot.cwd,
+          appTitle: attached.session.appTitle ?? this.snapshot.appTitle,
+          commandRunning: attached.session.commandRunning,
+        });
+        if (this.opened && (attachCols === 0 || this.term.cols !== attachCols || this.term.rows !== attachRows)) {
+          this.resizePty(Math.max(2, this.term.cols), Math.max(1, this.term.rows));
+        }
+        this.flushPendingInput();
+        return;
+      } catch {
+        if (this.disposed || generation !== this.generation) return;
+        if (this.opts.onlyAttach) {
+          this.update({ terminalId: null, status: "exited", commandRunning: false, progress: null });
+          return;
+        }
+      }
+    }
     try {
       const t = workflowSettings().terminal;
       const [shellPath, ...shellArgs] = parseShellCommand(t.shellPath, hostOs() === "windows");
@@ -839,23 +901,30 @@ export class TerminalSession {
             ),
           );
       if (this.disposed || generation !== this.generation) {
-        void commands.termKill(info.id);
+        if (!this.disposed || this.killOnDispose) void commands.termKill(info.id);
         return;
       }
       this.ptyId = info.id;
-      this.update({ status: "running", title: info.title || "Local" });
+      this.update({ terminalId: info.id, status: "running", title: info.title || "Local" });
+      // Send the new size if it changed while the program was starting.
+      if (this.term.cols !== cols || this.term.rows !== rows) this.resizePty(this.term.cols, this.term.rows);
       this.flushPendingInput();
     } catch (e) {
       this.pendingInput = "";
       this.term.writeln(`\x1b[31mFailed to start terminal: ${e instanceof Error ? e.message : String(e)}\x1b[0m`);
       if (!custom?.onExit) this.term.writeln(RESTART_HINT);
       // Nothing runs: a non-shell command tab must not keep its running marker.
-      this.update({ status: "error", commandRunning: false, progress: null });
+      this.update({ terminalId: null, status: "error", commandRunning: false, progress: null });
     }
   }
 
   get terminalId(): TerminalId | null {
     return this.ptyId;
+  }
+
+  /** Backend PTY id for session persistence, including tabs waiting to attach. */
+  get persistedTerminalId(): TerminalId | null {
+    return this.ptyId ?? this.opts.attachTerminalId ?? null;
   }
 
   /**
@@ -882,7 +951,7 @@ export class TerminalSession {
     this.pendingInput = "";
     // The process is gone: a non-shell command tab never sees OSC 133's D, so
     // the running marker stops here rather than spinning over the dead tab.
-    this.update({ status: "exited", exitCode: code, commandRunning: false, progress: null });
+    this.update({ terminalId: null, status: "exited", exitCode: code, commandRunning: false, progress: null });
     // Let output still in flight on the channel land first.
     setTimeout(() => {
       if (this.disposed || this.snapshot.status !== "exited") return;
@@ -990,6 +1059,7 @@ export class TerminalSession {
     this.clearUnseenDone();
     if (!this.opened || !this.term.textarea) {
       this.pendingFocus = true;
+      this.pendingFocusFrom = document.activeElement;
       this.scheduleFit();
       return;
     }
@@ -1046,10 +1116,11 @@ export class TerminalSession {
     return () => this.searchListeners.delete(listener);
   }
 
-  dispose() {
+  dispose(kill = true) {
     if (this.disposed) return;
     this.disposed = true;
-    if (this.snapshot.status === "running" || this.snapshot.status === "starting")
+    this.killOnDispose = kill;
+    if (kill && (this.snapshot.status === "running" || this.snapshot.status === "starting"))
       this.opts.command?.onExit?.(null, true);
     this.fitter.cancel();
     this.ptyResize.cancel();
@@ -1060,7 +1131,7 @@ export class TerminalSession {
     this.host.removeEventListener("mousedown", this.onMiddleClick);
     this.host.removeEventListener("wheel", this.onWheelZoom, { capture: true });
     // A session with an owner (`onExit`) is ended by that owner.
-    if (this.ptyId !== null && !this.opts.command?.onExit) void commands.termKill(this.ptyId);
+    if (kill && this.ptyId !== null && !this.opts.command?.onExit) void commands.termKill(this.ptyId);
     this.ptyId = null;
     this.disposables.forEach((d) => d.dispose());
     this.term.dispose();

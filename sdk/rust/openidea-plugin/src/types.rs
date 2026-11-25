@@ -201,6 +201,21 @@ impl ClipboardContent {
     }
 }
 
+/// A named group of extensions in a native file chooser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+/// Options for choosing an existing file or a save destination.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileDialog {
+    pub save: bool,
+    pub name: Option<String>,
+    pub filters: Vec<FileFilter>,
+}
+
 /// An entry of [`crate::host::pick`] and [`crate::host::pick_many`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickItem {
@@ -355,6 +370,10 @@ pub enum EventKind {
     FileSaved,
     FilesChanged,
     EditorFocused,
+    /// The caret moved in the focused editor (`Event::Other`, JSON
+    /// `{path, line, col, settled}` with 0-based UTF-16 positions; `settled`
+    /// marks the final position once the caret rests).
+    CaretMoved,
     /// Needs `events.input`.
     ActionPerformed,
     VcsChanged,
@@ -380,6 +399,7 @@ impl EventKind {
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
+            Self::CaretMoved => "caret-moved",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
             Self::ProblemsChanged => "problems-changed",
@@ -808,6 +828,15 @@ pub struct Decoration {
     pub style: String,
     pub hover: Option<String>,
     pub after: Option<String>,
+}
+/// An editor annotation whose hover is rendered as Markdown (API 1.16).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkdownDecoration {
+    pub range: Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+    pub markdown_hover: Option<String>,
 }
 /// A project-tree annotation. Badge is at most two Unicode characters.
 #[derive(Clone, Debug, PartialEq, Eq)]

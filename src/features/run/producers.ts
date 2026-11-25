@@ -14,7 +14,7 @@ import { ipcPath, isSameOrInside } from "@/platform/paths";
 import { isTestPath } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { applicationConfig, jvmModuleDir } from "./application";
-import { useBuildModel } from "@/platform/buildModel";
+import { inGradleModule } from "./gradleModuleTests";
 import { formatArgs } from "./configs";
 import { goGenerateConfig } from "./goGenerate";
 import { goTestParts } from "./goArguments";
@@ -31,7 +31,16 @@ import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { isWindows } from "./jvmTypes";
 import { inheritedRunTargets } from "./inheritedMain";
-import { detectRunTargets, goFuzzConfig, targetConfig, targetLanguage, zigTargets, type RunTarget } from "./targets";
+import { withMavenTests } from "./mavenTests";
+import {
+  detectRunTargets,
+  goFuzzConfig,
+  targetConfig,
+  targetLanguage,
+  testsInTestDirectory,
+  zigTargets,
+  type RunTarget,
+} from "./targets";
 import { tx } from "@/platform/i18n";
 
 export interface LocatedTool {
@@ -474,6 +483,8 @@ function fileConfig(
     detected: true,
     isTest: false,
     debugAdapter,
+    // A script reads and prompts like it would in a shell: run it in a terminal (a PTY, TERM set).
+    ...(kind === "shell" ? { emulateTerminal: true } : {}),
   };
 }
 
@@ -1136,7 +1147,7 @@ export function fileTargets(
       (t) => t.kind === "main" && (!t.className || /\.(java|kt)$/.test(input.path)),
     );
   }
-  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs));
+  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs), testsInTestDirectory(input.configs));
   return /\.java$/.test(input.path) ? [...targets, ...inheritedRunTargets(input.path, content)] : targets;
 }
 
@@ -1215,7 +1226,7 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
   const rel = relTo(input.path, input.root);
   const cmake = cmakeTargets(input);
   if (cmake.length > 1) return cmake.map((config) => ({ name: config.name, scope: produced.scope, config }));
-  const bases = testBasesFor(rel, [...input.configs]);
+  const bases = testBasesFor(rel, [...input.configs], input.content);
   if (bases.length < 2) return [produced];
   let element: RunTarget | null = null;
   if (produced.scope === "element") {
@@ -1278,27 +1289,6 @@ function rubyDirectory(
   return make(minitest, label, [...args, relToCwd(minitest)]);
 }
 
-/**
- * The Gradle build and project path a module directory belongs to, so a module
- * test run can stay in the build root (where `./gradlew` resolves) and qualify
- * its task (`:services:api:test`). `null` for non-Gradle bases and modules the
- * base configuration already runs. Without a loaded model, the Gradle path is
- * guessed from the directory's segments — right for the standard layout the
- * wrapper itself implies.
- */
-function gradleOwnerFor(module: string, base: RunConfig): { dir: string | null; path: string } | null {
-  if (base.kind !== "gradle" || !module || module === base.cwd) return null;
-  const dir = module.replace(/\\/g, "/");
-  const gradle = useBuildModel
-    .getState()
-    .model?.gradle?.find((g) => g.projects.some((p) => p.dir.replace(/\\/g, "/") === dir));
-  const project = gradle?.projects.find((p) => p.dir.replace(/\\/g, "/") === dir);
-  return {
-    dir: gradle?.dir ?? base.cwd,
-    path: project?.path ?? `:${module.split("/").join(":")}`,
-  };
-}
-
 export function produceDirectory(input: ContextInput): Produced | null {
   input = scopedInput(input);
   const { root } = input;
@@ -1334,25 +1324,13 @@ export function produceDirectory(input: ContextInput): Produced | null {
     const base = closest(["gradle", "maven"]);
     if (base) {
       const module = jvmModuleDir(rel + "/x.java", input.configs);
-      // Gradle in a multi-module project: run from the build root so the
-      // wrapper (`./gradlew`) resolves, qualifying the task with the module's
-      // Gradle path (`services/api` → `:services:api:test`). Other builds run
-      // in the module directory as before.
-      const owner = gradleOwnerFor(module, base);
-      const moduleBase = { ...base, cwd: owner ? owner.dir : module || base.cwd };
-      const moduleArgs = (base: RunConfig): string[] => {
-        if (!owner) return [...base.args];
-        return base.args.map((a) => (a === "test" ? `${owner.path}:test` : a));
-      };
-      if (!jvmPackage) return make(moduleBase, "All Tests", moduleArgs(base));
+      // Maven runs in the module directory.
+      const moduleBase = base.kind === "gradle" ? inGradleModule(base, module) : { ...base, cwd: module || base.cwd };
+      if (!jvmPackage) return make(moduleBase, "All Tests", [...moduleBase.args]);
       const pkg = jvmPackage[2]!.replace(/\//g, ".");
       return base.kind === "gradle"
-        ? make(moduleBase, `Tests in '${pkg}'`, [...moduleArgs(base), "--tests", `${pkg}.*`])
-        : make(moduleBase, `Tests in '${pkg}'`, [
-            ...base.args,
-            `-Dtest=${pkg}.**.*`,
-            "-Dsurefire.failIfNoSpecifiedTests=false",
-          ]);
+        ? make(moduleBase, `Tests in '${pkg}'`, [...moduleBase.args, "--tests", `${pkg}.*`])
+        : make(moduleBase, `Tests in '${pkg}'`, withMavenTests(base.args, `${pkg}.**.*`));
     }
   }
   const js = closest(["npm", "bun", "deno"]);

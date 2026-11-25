@@ -141,6 +141,21 @@ it("copies embedded Run terminal selections before xterm can send Ctrl+C", () =>
   }
 });
 
+it("leaves paste strokes in embedded Run terminals to the native paste", () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const term = createEmbeddedTerminal(host, { onData: vi.fn(), onResize: vi.fn() });
+  try {
+    for (const init of [{ ctrlKey: true }, { ctrlKey: true, shiftKey: true }]) {
+      const paste = new KeyboardEvent("keydown", { key: "v", code: "KeyV", cancelable: true, ...init });
+      expect(terminal.handler(paste)).toBe(false);
+      expect(paste.defaultPrevented).toBe(false);
+    }
+  } finally {
+    term.dispose();
+  }
+});
+
 it("delivers input-method commits to the owner on macOS as the terminal sessions do", () => {
   usePlatform.setState({ os: "macos" });
   const host = document.createElement("div");

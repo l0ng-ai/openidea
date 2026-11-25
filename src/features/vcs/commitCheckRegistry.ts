@@ -5,7 +5,7 @@
  * is shown in the commit panel without stopping it.
  */
 import type { ReactNode } from "react";
-import type { BranchInfo, FileStatus } from "@/bindings";
+import type { CommitSelection, FileStatus } from "@/bindings";
 import type { CommitSettingsValid, GitSettingsValid } from "@/platform/workflowSettings";
 
 export type CommitCheckSeverity = "error" | "warning" | "info";
@@ -13,6 +13,7 @@ export type CommitCheckSeverity = "error" | "warning" | "info";
 /** The result's "Review" / "Show details" link. */
 export interface CommitFix {
   label: string;
+  opensToolWindow?: boolean;
   run(): void | Promise<void>;
 }
 
@@ -20,7 +21,7 @@ export interface CommitCheckResult {
   severity: CommitCheckSeverity;
   /**
    * The problem as the commit panel reads it, usually a string. A check that
-   * needs more (the TODO list, the CRLF hint) returns rich content instead.
+   * needs more (the CRLF hint) returns rich content instead.
    */
   text: ReactNode;
   fix?: CommitFix;
@@ -34,12 +35,13 @@ export interface CommitCheckResult {
 export interface CommitCheckContext {
   /** Absolute paths of the changes that still exist in the working tree. */
   existing: readonly string[];
+  included: readonly FileStatus[];
+  /** The selected index, worktree files and hunks after before-commit modifications. */
+  selection(): Promise<CommitSelection>;
   amend: boolean;
-  /** The selected repository's root, or "" without one. */
+  /** The project root, or "" without one. */
   root: string;
-  repo: string | null;
   status: readonly FileStatus[];
-  branch: BranchInfo | null;
   settings: { commit: CommitSettingsValid; git: GitSettingsValid };
   /** Errors and warnings seen per file (Analyze code). */
   diagnostics(paths: readonly string[]): { errors: number; warnings: number; files: number };

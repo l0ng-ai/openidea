@@ -1,16 +1,14 @@
-// Helm Template editor mode: YAML outside `{{ … }}`, Go `text/template` + Sprig/Helm
-// actions and `{{/* … */}}` comments inside. Each region runs on a sub-stream bounded
-// at the next delimiter so `{{ … }}` never breaks YAML key/value tokenization.
+// Go text/template actions over plain text or Helm YAML. The YAML parser reads up to the
+// next template delimiter so the action never breaks YAML key/value tokenization.
 import { LanguageSupport, StreamLanguage, StringStream, type StreamParser } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 
-type HelmState<Y> = {
+type TemplateState<Y> = {
   yaml: Y;
   inAction: boolean;
   inComment: boolean;
   inRawString: boolean;
   quote: '"' | "'" | null;
-  indentUnit: number;
 };
 
 const OPEN = /\{\{-?/;
@@ -21,56 +19,60 @@ const COMMENT_CLOSE = /\*\/\s*-?\}\}/;
 
 const KEYWORDS = new Set(["if", "else", "end", "range", "with", "define", "template", "block", "break", "continue"]);
 const ATOMS = new Set(["true", "false", "nil"]);
-const FUNCTIONS = new Set([
+const BUILTINS = new Set([
   "and",
+  "call",
+  "eq",
+  "ge",
+  "gt",
+  "html",
+  "index",
+  "js",
+  "le",
+  "len",
+  "lt",
+  "ne",
+  "not",
+  "or",
+  "print",
+  "printf",
+  "println",
+  "slice",
+  "urlquery",
+]);
+const HELM_FUNCTIONS = new Set([
   "b64dec",
   "b64enc",
-  "call",
   "coalesce",
   "contains",
   "default",
   "dict",
   "empty",
-  "eq",
   "fail",
   "first",
   "fromJson",
   "fromYaml",
-  "ge",
   "get",
-  "gt",
   "has",
   "hasKey",
   "hasPrefix",
   "hasSuffix",
-  "html",
   "include",
   "indent",
-  "index",
   "int",
   "int64",
   "join",
-  "js",
   "keys",
   "kindIs",
   "kindOf",
   "last",
-  "le",
-  "len",
   "list",
   "lookup",
   "lower",
-  "lt",
   "merge",
   "mustMerge",
-  "ne",
   "nindent",
-  "not",
-  "or",
   "pluck",
-  "print",
-  "printf",
-  "println",
   "quote",
   "regexMatch",
   "replace",
@@ -78,7 +80,6 @@ const FUNCTIONS = new Set([
   "semverCompare",
   "set",
   "sha256sum",
-  "slice",
   "snakecase",
   "squote",
   "ternary",
@@ -99,11 +100,10 @@ const FUNCTIONS = new Set([
   "typeOf",
   "unset",
   "upper",
-  "urlquery",
   "values",
 ]);
 
-function tokenAction<Y>(stream: StringStream, state: HelmState<Y>): string | null {
+function tokenAction<Y>(stream: StringStream, state: TemplateState<Y>, helm: boolean): string | null {
   if (state.inRawString) {
     const end = stream.string.indexOf("`", stream.pos);
     if (end < 0) {
@@ -122,14 +122,14 @@ function tokenAction<Y>(stream: StringStream, state: HelmState<Y>): string | nul
   if (close?.index === 0) {
     stream.pos += close[0].length;
     state.inAction = false;
-    return "helmDelimiter";
+    return "templateDelimiter";
   }
 
   const ch = stream.peek();
   if (ch === "`") {
     stream.next();
     state.inRawString = true;
-    return tokenAction(stream, state);
+    return tokenAction(stream, state, helm);
   }
   if (ch === '"') {
     stream.match(/^"(?:[^"\\]|\\.)*"?/);
@@ -158,7 +158,7 @@ function tokenAction<Y>(stream: StringStream, state: HelmState<Y>): string | nul
     const word = stream.current();
     if (KEYWORDS.has(word)) return "keyword";
     if (ATOMS.has(word)) return "bool";
-    if (FUNCTIONS.has(word)) return "helmFunc";
+    if (BUILTINS.has(word) || (helm && HELM_FUNCTIONS.has(word))) return "templateFunc";
     return "variableName";
   }
 
@@ -166,7 +166,8 @@ function tokenAction<Y>(stream: StringStream, state: HelmState<Y>): string | nul
   return null;
 }
 
-export function helmParser<Y>(yaml: StreamParser<Y>): StreamParser<HelmState<Y>> {
+function templateParser<Y>(yaml?: StreamParser<Y>): StreamParser<TemplateState<Y | undefined>> {
+  const helm = yaml !== undefined;
   const copy = (base: StreamParser<Y>, state: Y): Y =>
     base.copyState
       ? base.copyState(state)
@@ -174,7 +175,11 @@ export function helmParser<Y>(yaml: StreamParser<Y>): StreamParser<HelmState<Y>>
           Object.entries(state as object).map(([k, v]) => [k, Array.isArray(v) ? v.slice() : v]),
         ) as Y);
 
-  const withinYaml = (stream: StringStream, end: number, state: HelmState<Y>): string | null => {
+  const tokenHost = (stream: StringStream, end: number, state: TemplateState<Y | undefined>): string | null => {
+    if (!yaml || state.yaml === undefined) {
+      stream.pos = end;
+      return null;
+    }
     if (state.quote) {
       const q = state.quote;
       while (stream.pos < end) {
@@ -220,30 +225,30 @@ export function helmParser<Y>(yaml: StreamParser<Y>): StreamParser<HelmState<Y>>
     return style;
   };
 
+  const block = { open: "{{/*", close: "*/}}" };
   return {
-    name: "helm-template",
+    name: helm ? "helm-template" : "gotmpl",
     languageData: {
-      ...yaml.languageData,
-      commentTokens: { line: "#", block: { open: "{{/*", close: "*/}}" } },
+      ...yaml?.languageData,
+      commentTokens: helm ? { line: "#", block } : { block },
     },
     tokenTable: {
-      ...yaml.tokenTable,
+      ...yaml?.tokenTable,
       atom: tags.propertyName,
-      helmDelimiter: tags.special(tags.brace),
-      helmFunc: tags.function(tags.variableName),
+      templateDelimiter: tags.special(tags.brace),
+      templateFunc: tags.function(tags.variableName),
     },
     startState: (indentUnit) => ({
-      yaml: yaml.startState!(indentUnit),
+      yaml: yaml?.startState?.(indentUnit),
       inAction: false,
       inComment: false,
       inRawString: false,
       quote: null,
-      indentUnit,
     }),
-    copyState: (s) => ({ ...s, yaml: copy(yaml, s.yaml) }),
+    copyState: (s) => ({ ...s, yaml: yaml && s.yaml !== undefined ? copy(yaml, s.yaml) : s.yaml }),
     blankLine: (s, unit) => {
       s.quote = null;
-      yaml.blankLine?.(s.yaml, unit);
+      if (yaml && s.yaml !== undefined) yaml.blankLine?.(s.yaml, unit);
     },
     token(stream, state) {
       if (stream.sol()) state.quote = null;
@@ -261,7 +266,7 @@ export function helmParser<Y>(yaml: StreamParser<Y>): StreamParser<HelmState<Y>>
       }
 
       if (state.inAction) {
-        return tokenAction(stream, state);
+        return tokenAction(stream, state, helm);
       }
 
       const rest = stream.string.slice(stream.pos);
@@ -281,16 +286,20 @@ export function helmParser<Y>(yaml: StreamParser<Y>): StreamParser<HelmState<Y>>
         }
         stream.pos += open[0].length;
         state.inAction = true;
-        return "helmDelimiter";
+        return "templateDelimiter";
       }
 
       const end = open ? stream.pos + open.index : stream.string.length;
-      return withinYaml(stream, end, state);
+      return tokenHost(stream, end, state);
     },
   };
 }
 
 export async function helmTemplate(): Promise<LanguageSupport> {
   const { yaml } = await import("@codemirror/legacy-modes/mode/yaml");
-  return new LanguageSupport(StreamLanguage.define(helmParser(yaml)));
+  return new LanguageSupport(StreamLanguage.define(templateParser(yaml)));
+}
+
+export function goTemplate(): LanguageSupport {
+  return new LanguageSupport(StreamLanguage.define(templateParser()));
 }

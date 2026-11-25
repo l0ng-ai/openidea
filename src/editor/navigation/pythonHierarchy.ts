@@ -170,10 +170,11 @@ export async function pythonImplementationTargets(
   const descendants = await pythonDescendants(hierarchy, cls, depth);
   if (!member.method) return descendants.map(classLocation);
   const name = baseName(member.method.name);
+  const subOutlines = await Promise.all(descendants.map((sub) => outlineOf(sub.path)));
   const targets: Location[] = [];
-  for (const sub of descendants) {
-    const method = methodInOutline(await outlineOf(sub.path), sub, name);
+  descendants.forEach((sub, i) => {
+    const method = methodInOutline(subOutlines[i]!, sub, name);
     if (method) targets.push({ path: sub.path, range: method.selection_range });
-  }
+  });
   return targets;
 }

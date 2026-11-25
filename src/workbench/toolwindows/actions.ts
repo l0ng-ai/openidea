@@ -18,6 +18,7 @@ import {
   useToolWindowLayouts,
 } from "./layouts";
 import { closeSelectedContent } from "./content";
+import { toggleMoreToolWindowsSide } from "./stripes";
 import {
   activateToolWindow,
   hideActiveToolWindow,
@@ -114,7 +115,8 @@ function layoutActions(): Action[] {
       category: "Window",
       keywords: ["tool window layout", "store layout"],
       when: "projectOpen && toolWindowLayoutActive",
-      run: () => {
+      run: ({ arg }) => {
+        if (typeof arg === "string" && arg !== useToolWindowLayouts.getState().active) return;
         saveCurrentLayout();
       },
     },
@@ -124,6 +126,7 @@ function layoutActions(): Action[] {
       category: "Window",
       keywords: ["tool window layout", "reset"],
       when: "projectOpen",
+      toggled: () => useToolWindowLayouts.getState().active === null,
       run: () => {
         exitDistractionFree();
         restoreDefaultLayout();
@@ -134,9 +137,9 @@ function layoutActions(): Action[] {
       title: "Rename Tool Window Layout…",
       category: "Window",
       when: "toolWindowLayoutsSaved",
-      run: async () => {
-        const from = await pick("Rename Layout");
-        if (!from) return;
+      run: async ({ arg }) => {
+        const from = typeof arg === "string" ? arg : await pick("Rename Layout");
+        if (!from || !layoutNames().includes(from)) return;
         const to = await promptInput({
           title: "Rename Layout",
           label: "New name:",
@@ -152,10 +155,11 @@ function layoutActions(): Action[] {
       title: "Delete Tool Window Layout…",
       category: "Window",
       when: "toolWindowLayoutsSaved",
-      run: async () => {
-        const name = await pick("Delete Layout");
+      run: async ({ arg }) => {
+        const name = typeof arg === "string" ? arg : await pick("Delete Layout");
         if (
           name &&
+          layoutNames().includes(name) &&
           (await confirm({
             title: "Delete Layout",
             message: tx`Delete the layout '${name}'?`,
@@ -214,6 +218,12 @@ export function installToolWindowActions(): () => void {
   };
 
   const disposeStatic = registerActions([
+    {
+      id: "toolwindow.moveMore",
+      title: "Move More Tool Windows Button",
+      category: "Window",
+      run: toggleMoreToolWindowsSide,
+    },
     {
       id: "toolwindow.hideAll",
       title: "Hide All Tool Windows",

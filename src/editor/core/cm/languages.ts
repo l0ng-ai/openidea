@@ -12,16 +12,20 @@ import {
   LanguageSupport,
   StreamLanguage,
   delimitedIndent,
+  type Language,
   indentNodeProp,
   indentService,
   language as languageFacet,
+  syntaxTree,
   type StreamParser,
 } from "@codemirror/language";
+import { NodeProp, type SyntaxNode } from "@lezer/common";
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import type { BracketSyntax } from "./rainbowBrackets";
 import { _languageMode, editorsFor } from "@/editor/api";
+import { wildcardMatch } from "@/platform/fileTypes";
 import { JS_TAGS } from "./jsTags";
 import { docCommentTags } from "./docCommentTags";
 import type { FencedCodeMode } from "./markdown";
@@ -92,6 +96,45 @@ export function uiModeForPath(path: string): string | null | undefined {
     for (const info of infos.values()) if (info.extensions.includes(rest)) return info.uiMode;
   }
   return undefined;
+}
+
+let namesOf: {
+  infos: Map<string, LanguageInfo>;
+  byExtension: Map<string, LanguageInfo[]>;
+  byName: Map<string, LanguageInfo[]>;
+  patterns: Array<{ pattern: string; info: LanguageInfo }>;
+} | null = null;
+
+/**
+ * The backend languages whose definition claims `path`'s file name (an `extension`, longest first, or
+ * a `filenames` entry); empty when none does, `undefined` while the languages are not loaded. Settings
+ * › File Types and the file's first line are not consulted.
+ */
+export function languagesForPath(path: string): readonly LanguageInfo[] | undefined {
+  if (!infos) return undefined;
+  if (namesOf?.infos !== infos) {
+    namesOf = { infos, byExtension: new Map(), byName: new Map(), patterns: [] };
+    const add = (m: Map<string, LanguageInfo[]>, key: string, info: LanguageInfo) =>
+      m.set(key, [...(m.get(key) ?? []), info]);
+    for (const info of infos.values()) {
+      for (const ext of info.extensions) add(namesOf.byExtension, ext.toLowerCase(), info);
+      for (const name of info.filenames ?? []) {
+        if (/[*?]/.test(name)) namesOf.patterns.push({ pattern: name.toLowerCase(), info });
+        else add(namesOf.byName, name.toLowerCase(), info);
+      }
+    }
+  }
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const found = new Set(namesOf.byName.get(name));
+  for (const { pattern, info } of namesOf.patterns) if (wildcardMatch(pattern, name)) found.add(info);
+  for (let rest = name, dot = rest.indexOf("."); dot >= 0; dot = rest.indexOf(".")) {
+    rest = rest.slice(dot + 1);
+    const claimed = namesOf.byExtension.get(rest);
+    if (!claimed) continue;
+    for (const info of claimed) found.add(info);
+    break;
+  }
+  return [...found];
 }
 
 const supports = new Map<string, Promise<LanguageSupport | null>>();
@@ -167,9 +210,33 @@ const OWN_MODES = [
       },
     }),
   ),
+  // CSS, GraphQL, SQL and HTML in tagged template literals (`styled.div`, `gql`, `sql`, `html`).
+  ...(
+    [
+      ["JavaScript", { jsx: true }],
+      ["TypeScript", { typescript: true }],
+      ["JSX", { jsx: true }],
+      ["TSX", { jsx: true, typescript: true }],
+    ] as const
+  ).map(([name, config]) =>
+    LanguageDescription.of({
+      name,
+      load: () => import("./templateLanguages").then((m) => m.javascriptWithTemplates(config, templateLanguage)),
+    }),
+  ),
+  // JPQL / SQL in `@Query`, SpEL and property placeholders in Spring annotation strings.
+  LanguageDescription.of({
+    name: "Java",
+    load: () => import("./javaInjections").then((m) => m.javaWithInjections()),
+  }),
+  // Only for template literals: `.graphql` files keep the backend's tree-sitter highlighting.
+  LanguageDescription.of({
+    name: "GraphQL",
+    load: async () => new LanguageSupport(StreamLanguage.define((await import("./graphql")).graphqlParser)),
+  }),
   LanguageDescription.of({
     name: "Angular TypeScript",
-    load: () => import("./angular/inline").then((m) => m.angularTypescript()),
+    load: () => import("./angular/inline").then((m) => m.angularTypescript(templateLanguage)),
   }),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
   LanguageDescription.of({ name: "Thymeleaf", load: () => import("./thymeleaf").then((m) => m.thymeleafSupport()) }),
@@ -179,6 +246,12 @@ const OWN_MODES = [
     extensions: ["erb", "rhtml"],
     load: () => import("./erb").then((m) => m.erb()),
   }),
+  LanguageDescription.of({
+    name: "FreeMarker",
+    alias: ["freemarker", "ftl"],
+    extensions: ["ftl", "ftlh", "ftlx"],
+    load: () => import("./freemarker").then((m) => m.freemarker()),
+  }),
   LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
   LanguageDescription.of({
     name: "Django Template",
@@ -187,9 +260,14 @@ const OWN_MODES = [
     load: () => import("./django").then((m) => m.django()),
   }),
   LanguageDescription.of({
+    name: "Go Template",
+    alias: ["gotmpl", "tmpl"],
+    extensions: ["gotmpl", "tmpl"],
+    load: () => import("./helm").then((m) => m.goTemplate()),
+  }),
+  LanguageDescription.of({
     name: "Helm Template",
-    alias: ["helm-template", "gotmpl"],
-    extensions: ["gotmpl"],
+    alias: ["helm-template"],
     load: () => import("./helm").then((m) => m.helmTemplate()),
   }),
   LanguageDescription.of({
@@ -366,7 +444,17 @@ export function fencedCodeMode(info: string): FencedCodeMode | null {
     const uiMode = infos?.has(name) ? infos.get(name)!.uiMode : uiModeForPath(`.${name}`);
     desc = uiMode ? findLanguageDescription(uiMode, "") : null;
   }
-  if (!desc) return null;
+  return desc ? patchedMode(desc) : null;
+}
+
+/** The mode named `name` (`CSS`, `GraphQL`) for a template literal, with the tag patches of a file in it. */
+function templateLanguage(name: string): Language | LanguageDescription | null {
+  const desc = findLanguageDescription(name, "");
+  return desc ? patchedMode(desc).language : null;
+}
+
+/** `desc` with the same tag patches as a file of that language, loaded on first use. */
+function patchedMode(desc: LanguageDescription): FencedCodeMode {
   const ready = patched.get(desc);
   if (ready) return { name: desc.name, language: ready.language };
   // Markdown parses the block once the proxy has loaded the patched support.
@@ -413,11 +501,13 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
-// @lezer/java tags annotations as plain identifiers, and `this` as `self` (Python's `self` colour);
-// IntelliJ colours `this` as a keyword.
+// @lezer/java tags annotations as plain identifiers, `this` as `self` (Python's `self` colour) and
+// primitive types as built-in types; IntelliJ colours `this` and `int`, `boolean`… as keywords.
 export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
-  this: t.keyword,
+  "this PrimitiveType": t.keyword,
+  // IntelliJ has no Java label colour: `outer:` stays plain text, like `break outer`.
+  Label: t.variableName,
 };
 
 // @lezer/go leaves `default` uncoloured, unlike `case` and `switch`.
@@ -450,8 +540,19 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
 
 const bracedIndent = delimitedIndent({ closing: "}" });
 
-/** Grammar props the stock languages lack: indentation that follows the language's usual style. */
+/**
+ * JSX tags pair up as HTML's do: Enter between `<div>` and `</div>` puts the caret on an
+ * indented line of its own with the closing tag below, and the tags match each other.
+ */
+const JSX_TAG_PAIRS = [
+  NodeProp.closedBy.add({ JSXOpenTag: ["JSXCloseTag"] }),
+  NodeProp.openedBy.add({ JSXCloseTag: ["JSXOpenTag"] }),
+];
+
+/** Grammar props the stock languages lack: indentation that follows the language's usual style, JSX tag pairs. */
 const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]>[0]["props"]>> = {
+  JSX: JSX_TAG_PAIRS,
+  TSX: JSX_TAG_PAIRS,
   // clang-format's built-in styles (NamespaceIndentation: None, no extern block indent) keep the
   // contents of `namespace x { … }` and `extern "C" { … }` at the level of the braces' line.
   "C++": [
@@ -465,6 +566,119 @@ const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]
   ],
 };
 
+/** An annotation usage (`@Ann`, `@a.b.Ann(…)`, with an optional trailing comment), not `@interface`. */
+const JAVA_ANNOTATION = /^@(?!interface\b)[\w$.]+(?:\s*\([\s\S]*\))?\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)?$/;
+
+/**
+ * An annotation line ends the declaration it annotates, so Enter after it keeps the line's
+ * indentation. The stock grammar gets this wrong: an annotation, or an unfinished annotation
+ * type declaration, is a `Statement`, which indents one level deeper.
+ */
+const annotationIndent = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null) return undefined;
+  const state = cx.state;
+  const tree = syntaxTree(state);
+  if (tree.length < pos) return undefined;
+  for (let node: SyntaxNode | null = tree.resolveInner(pos, -1); node; node = node.parent) {
+    if (node.name !== "Annotation" && node.name !== "MarkerAnnotation") continue;
+    // The break must follow the whole annotation, with at most whitespace or a comment between.
+    if (node.to > pos || !/^(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*$/.test(state.sliceDoc(node.to, pos))) return undefined;
+    if (!JAVA_ANNOTATION.test(state.sliceDoc(node.from, node.to))) return undefined;
+    const line = state.doc.lineAt(node.from);
+    return cx.countColumn(line.text, line.text.search(/\S|$/));
+  }
+  return undefined;
+});
+
+/**
+ * Python, as PyCharm: Enter after a statement that ends its block (`return`, `pass`, `raise`,
+ * `break`, `continue`) goes one level out, and a bare `except:` is realigned with its `try`.
+ */
+const pythonDedent = [
+  indentService.of((cx, pos) => {
+    if (cx.simulatedBreak == null) return bareExceptIndent(cx.state, pos);
+    if (cx.textAfterPos(pos).trim()) return undefined;
+    const line = cx.state.doc.lineAt(pos);
+    const before = line.text.slice(0, pos - line.from);
+    const code = indentationCode(before, "#");
+    if (!dedentsAfter(code, "python") || unbalanced(code)) return undefined;
+    return Math.max(0, cx.countColumn(before, before.search(/\S|$/)) - cx.unit);
+  }),
+  EditorState.languageData.of(() => [{ indentOnInput: /^\s*except:$/ }]),
+];
+
+/** The indentation of the `try:` (or earlier `except`) a bare `except:` line at `pos` belongs to. */
+function bareExceptIndent(state: EditorState, pos: number): number | undefined {
+  const line = state.doc.lineAt(pos);
+  if (!/^\s*except:/.test(line.text)) return undefined;
+  const own = line.text.search(/\S/);
+  for (let n = line.number - 1; n >= 1; n--) {
+    const text = state.doc.line(n).text;
+    const indent = text.search(/\S/);
+    if (indent < 0 || indent >= own) continue;
+    return /^\s*(try|except\b.*|else):\s*(#.*)?$/.test(text) ? indent : undefined;
+  }
+  return undefined;
+}
+
+/** Whether `code` leaves a bracket open (the statement continues on the next line). */
+function unbalanced(code: string): boolean {
+  let depth = 0;
+  for (const c of code) depth += "([{".includes(c) ? 1 : ")]}".includes(c) ? -1 : 0;
+  return depth > 0;
+}
+
+/** Enter after a `case 1:` / `default:` label with nothing after the caret: the branch body goes one level deeper. */
+const caseBodyIndent = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null || cx.textAfterPos(pos).trim()) return undefined;
+  const line = cx.state.doc.lineAt(pos);
+  const before = line.text.slice(0, pos - line.from);
+  const code = indentationCode(before, "//").trimEnd();
+  if (!/^\s*(case\b[^;{}]*|default\s*):$/.test(code) || /::$/.test(code)) return undefined;
+  return cx.countColumn(before, before.search(/\S|$/)) + cx.unit;
+});
+
+/**
+ * Kotlin: Enter after a `when` branch's `->` or an assignment's `=` with nothing after it
+ * continues one level deeper (the branch body or the assigned expression follows), as IDEA does.
+ */
+const kotlinContinuation = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null || cx.textAfterPos(pos).trim()) return undefined;
+  const line = cx.state.doc.lineAt(pos);
+  const before = line.text.slice(0, pos - line.from);
+  const code = indentationCode(before, "//");
+  if (!/(->|[^=!<>]=)$/.test(code) || unbalanced(code)) return undefined;
+  return cx.countColumn(before, before.search(/\S|$/)) + cx.unit;
+});
+
+const ACCESS_SPECIFIER = /^\s*(public|protected|private)\s*:(?!:)/;
+
+/**
+ * C++: an access specifier (`public:`) lines up with its class, not with the members below it, and
+ * moves there as its `:` is typed.
+ */
+const cppAccessSpecifierIndent = [
+  indentService.of((cx, pos) => {
+    const line = cx.state.doc.lineAt(pos);
+    if (pos !== line.from || !ACCESS_SPECIFIER.test(cx.textAfterPos(pos))) return undefined;
+    const at = line.from + /^\s*/.exec(line.text)![0].length;
+    for (let n: SyntaxNode | null = syntaxTree(cx.state).resolveInner(at, 1); n; n = n.parent)
+      if (n.name === "FieldDeclarationList") return cx.lineIndent(n.from, 1);
+    return undefined;
+  }),
+  EditorState.languageData.of(() => [{ indentOnInput: /^\s*(public|protected|private)\s*:$/ }]),
+];
+
+/** Extensions the stock modes lack, by CodeMirror language name. */
+const EXTRA_SUPPORT: Record<string, Extension[]> = {
+  Java: [annotationIndent],
+  Python: pythonDedent,
+  C: [caseBodyIndent],
+  "C++": [...cppAccessSpecifierIndent, caseBodyIndent],
+  PHP: [caseBodyIndent],
+  Kotlin: [kotlinContinuation],
+};
+
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
   const props = [...(extra ? [styleTags(extra)] : []), ...(EXTRA_PROPS[desc.name] ?? [])];
@@ -472,6 +686,7 @@ function patchSupport(desc: LanguageDescription, support: LanguageSupport): Lang
     props.length && support.language instanceof LRLanguage ? support.language.configure({ props }) : support.language;
   const result = new LanguageSupport(language, [
     support.support,
+    ...(EXTRA_SUPPORT[desc.name] ?? []),
     docCommentTags(desc.name),
     EditorView.editorAttributes.of({ "data-language": desc.name }),
   ]);
@@ -487,7 +702,7 @@ export function loadedSupport(desc: LanguageDescription | null): LanguageSupport
 }
 
 const COLON_INDENT_LANGS = new Set(["gdscript", "python"]);
-const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return)\b/;
+const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return|raise)\b/;
 const KEYWORD_OPEN_LANGS = new Set(["elixir", "ruby", "lua"]);
 const KEYWORD_OPEN =
   /\b(?:do(?:\s*\|[^|]*\|)?|then|->)$|^\s*(?:def|defp|defmodule|class|module|function|local\s+function|if|unless|elsif|elseif|else|while|until|for|case|begin|cond|with|receive|try)\b/;

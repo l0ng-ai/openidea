@@ -7,12 +7,16 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type MutableRefObject,
+  type ReactNode,
 } from "react";
 import { basename, relativePath, useProject } from "@/platform/project";
 import { executeAction, getAction } from "@/platform/actions";
-import { call, commands, type AttachableProcess, type RunConfig, type Variable } from "@/platform/ipc";
+import { editorPrefs } from "@/platform/editorSettings";
+import { monoFontFamily } from "@/platform/fonts";
+import type { AttachableProcess, RunConfig, Variable } from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import {
   Button,
@@ -23,7 +27,7 @@ import {
   Input,
   Kbd,
   List,
-  Menu,
+  MenuList,
   Popup,
   SplitGroup,
   SplitHandle,
@@ -31,6 +35,7 @@ import {
   Toggle,
   T,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { isConditional, suspends, type BreakpointEntry } from "../breakpoints/model";
 import {
   removeAllBreakpoints,
@@ -39,7 +44,8 @@ import {
   updateBreakpoint,
   useBreakpoints,
 } from "../breakpoints/store";
-import { activeSession, addWatch, evaluate, isLive, startSession, useDebug, resumeExecution } from "../state";
+import { activeSession, addWatch, evaluate, isLive, startSession, useDebug } from "../state";
+import { cancelSmartStep, chooseStepTarget, smartStepAnchor } from "../editor/smartStep";
 import { AmbiguousClassError, rememberImport } from "../classImports";
 import {
   addMethodBreakpoint,
@@ -52,22 +58,34 @@ import {
 import { attachConfig, attachDetail, attachRows, type AttachRow } from "../attach";
 import { openAttachPopup, installAttachAdapter } from "../attachPopup";
 import {
+  ANY_EXCEPTION_ADAPTER,
+  anyException,
   exceptionGroups,
   filterHint,
   refreshExceptionFilters,
+  setAnyException,
   setExceptionFilter,
   useExceptionBreakpoints,
 } from "../breakpoints/exceptions";
+import {
+  addExceptionClass,
+  removeAllExceptionClasses,
+  updateExceptionClass,
+  useExceptionClasses,
+  type ExceptionClassEntry,
+} from "../breakpoints/exceptionClasses";
+import { AnyExceptionDetail, ExceptionClassDetail } from "./ExceptionClassDetail";
 import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
 import { StreamAbortDialog } from "../streams/StreamAbortDialog";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
+import { TableViewDialog } from "./TableViewDialog";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { pushHistory, readHistory } from "./expressionHistory";
 import styles from "./Overlays.module.css";
 import { isImeKey } from "@/platform/ime";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export function DebuggerOverlays() {
   return (
@@ -80,7 +98,26 @@ export function DebuggerOverlays() {
       <SmartStepChooser />
       <StreamChainChooser />
       <StreamAbortDialog />
+      <TableView />
     </>
+  );
+}
+
+function TableView() {
+  const view = useOverlays((s) => s.tableView);
+  // A finished session (Stop, or Restart, which starts another id) has nothing left to show.
+  const live = useDebug((s) => view != null && isLive(s.sessions[view.session]));
+  useEffect(() => {
+    if (view && !live) useOverlays.setState({ tableView: null });
+  }, [view, live]);
+  if (!view || !live) return null;
+  return (
+    <TableViewDialog
+      key={`${view.session}:${view.expression}`}
+      expression={view.expression}
+      session={view.session}
+      onClose={() => useOverlays.setState({ tableView: null })}
+    />
   );
 }
 
@@ -101,6 +138,62 @@ function BreakpointPopover() {
   return <BreakpointEditor key={popover.id} path={popover.path} bp={bp} at={popover} focusLog={popover.focusLog} />;
 }
 
+function BreakpointPropertiesPopup({
+  at,
+  title,
+  onClose,
+  onRemove,
+  children,
+}: {
+  at: { x: number; y: number };
+  title: ReactNode;
+  onClose: () => void;
+  onRemove: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Popup
+      open
+      onClose={onClose}
+      anchor={at}
+      placement="bottom-start"
+      trapFocus
+      aria-label="Breakpoint properties"
+      className={styles.bpPopover}
+    >
+      <div className={styles.bpPopoverTitle}>{title}</div>
+      <div className={styles.bpPopoverFields}>{children}</div>
+      <div className={styles.bpFooter}>
+        <button
+          type="button"
+          className={styles.bpMore}
+          onClick={() => {
+            onClose();
+            void executeAction("debug.viewBreakpoints");
+          }}
+        >
+          <T>More</T> <Kbd action="debug.viewBreakpoints" />
+        </button>
+        <div className={styles.bpFooterButtons}>
+          <Button
+            size="small"
+            variant="ghost"
+            onClick={() => {
+              onRemove();
+              closeBreakpointPopover();
+            }}
+          >
+            <T>Remove</T>
+          </Button>
+          <Button size="small" variant="primary" onClick={onClose}>
+            <T>Done</T>
+          </Button>
+        </div>
+      </div>
+    </Popup>
+  );
+}
+
 function BreakpointEditor({
   path,
   bp,
@@ -119,49 +212,25 @@ function BreakpointEditor({
   };
 
   return (
-    <Popup open onClose={close} anchor={at} placement="bottom-start" trapFocus aria-label="Breakpoint properties">
-      <div className={styles.bpEditor}>
-        <div className={styles.bpTitle}>
+    <BreakpointPropertiesPopup
+      at={at}
+      onClose={close}
+      onRemove={() => removeBreakpoint(path, bp.id)}
+      title={
+        <>
           <span className={styles.bpDot} data-look={bp.enabled ? "on" : "off"} aria-hidden />
-          <span className={styles.bpFile}>
-            {basename(path)}:{bp.line + 1}
-          </span>
-        </div>
-        <BreakpointFields
-          path={path}
-          bp={bp}
-          focus={focusLog ? "log" : "condition"}
-          onEnter={close}
-          commitRef={commitText}
-        />
-        <div className={styles.bpFooter}>
-          <button
-            type="button"
-            className={styles.link}
-            onClick={() => {
-              close();
-              void executeAction("debug.viewBreakpoints");
-            }}
-          >
-            <T>More</T> <Kbd action="debug.viewBreakpoints" />
-          </button>
-          <div className={styles.spacer} />
-          <Button
-            size="small"
-            variant="ghost"
-            onClick={() => {
-              removeBreakpoint(path, bp.id);
-              closeBreakpointPopover();
-            }}
-          >
-            <T>Remove</T>
-          </Button>
-          <Button size="small" variant="primary" onClick={close}>
-            <T>Done</T>
-          </Button>
-        </div>
-      </div>
-    </Popup>
+          <BreakpointLocation path={path} line={bp.line} />
+        </>
+      }
+    >
+      <BreakpointFields
+        path={path}
+        bp={bp}
+        focus={focusLog ? "log" : "condition"}
+        onEnter={close}
+        commitRef={commitText}
+      />
+    </BreakpointPropertiesPopup>
   );
 }
 
@@ -176,12 +245,14 @@ function BreakpointFields({
   focus,
   onEnter,
   commitRef,
+  showRemoveOnceHit = false,
 }: {
   path: string;
   bp: BreakpointEntry;
   focus?: "condition" | "log";
   onEnter?: () => void;
   commitRef?: MutableRefObject<(() => void) | null>;
+  showRemoveOnceHit?: boolean;
 }) {
   const [condition, setCondition] = useState(bp.condition ?? "");
   const [hitCondition, setHitCondition] = useState(bp.hitCondition ?? "");
@@ -272,32 +343,44 @@ function BreakpointFields({
           aria-label="Hit count condition"
         />
       </label>
-      <Checkbox
-        checked={!!bp.logHit}
-        onChange={(on) => updateBreakpoint(path, bp.id, { logHit: on || undefined })}
-        label={'"Breakpoint hit" message'}
-      />
-      <Checkbox
-        checked={logEval}
-        onChange={(on) => {
-          setLogEval(on);
-          draft.current = { ...draft.current, logEval: on };
-          commitText();
-        }}
-        label="Evaluate and log"
-      />
-      {logEval && (
-        <Input
-          mono
-          value={logMessage}
-          onChange={(e) => setLogMessage(e.target.value)}
-          onBlur={commitText}
-          onKeyDown={onKey}
-          placeholder="Value: {expression}"
-          data-autofocus={focus === "log" ? "" : undefined}
-          aria-label="Evaluate and log"
+      <fieldset className={styles.bpActions}>
+        <legend>
+          <T>Actions</T>
+        </legend>
+        <Checkbox
+          checked={!!bp.logHit}
+          onChange={(on) => updateBreakpoint(path, bp.id, { logHit: on || undefined })}
+          label={'"Breakpoint hit" message'}
         />
-      )}
+        <Checkbox
+          checked={logEval}
+          onChange={(on) => {
+            setLogEval(on);
+            draft.current = { ...draft.current, logEval: on };
+            commitText();
+          }}
+          label="Evaluate and log"
+        />
+        {logEval && (
+          <Input
+            mono
+            value={logMessage}
+            onChange={(e) => setLogMessage(e.target.value)}
+            onBlur={commitText}
+            onKeyDown={onKey}
+            placeholder="Value: {expression}"
+            data-autofocus={focus === "log" ? "" : undefined}
+            aria-label="Evaluate and log"
+          />
+        )}
+        {showRemoveOnceHit && (
+          <Checkbox
+            checked={!!bp.temporary}
+            onChange={(temporary) => updateBreakpoint(path, bp.id, { temporary })}
+            label="Remove once hit"
+          />
+        )}
+      </fieldset>
     </>
   );
 }
@@ -315,66 +398,46 @@ function SpecialEditor({ bp, at }: { bp: SpecialBreakpoint; at: { x: number; y: 
     closeBreakpointPopover();
   };
   return (
-    <Popup open onClose={close} anchor={at} placement="bottom-start" trapFocus aria-label="Breakpoint properties">
-      <div className={styles.bpEditor}>
-        <div className={styles.bpTitle}>
+    <BreakpointPropertiesPopup
+      at={at}
+      onClose={close}
+      onRemove={() => removeSpecial(bp.id)}
+      title={
+        <>
           <Icon name={bp.kind === "method" ? "breakpoint-method" : "breakpoint-field"} size={14} />
-          <span className={styles.bpFile}>{specialTitle(bp)}</span>
-        </div>
-        <Checkbox checked={bp.enabled} onChange={(enabled) => updateSpecial(bp.id, { enabled })} label="Enabled" />
-        <label className={styles.field}>
-          <span className={styles.label}>
-            <T>Condition</T>
+          <span className={styles.bpFile} title={specialTitle(bp)}>
+            {specialTitle(bp)}
           </span>
-          <Input
-            mono
-            value={condition}
-            onChange={(e) => setCondition(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && close()}
-            data-autofocus=""
-            aria-label="Condition"
-          />
-        </label>
-        <label className={styles.field}>
-          <span className={styles.label}>
-            <T>Hit count</T>
-          </span>
-          <Input
-            mono
-            value={hitCondition}
-            onChange={(e) => setHitCondition(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && close()}
-            aria-label="Hit count condition"
-          />
-        </label>
-        <div className={styles.bpFooter}>
-          <button
-            type="button"
-            className={styles.link}
-            onClick={() => {
-              close();
-              void executeAction("debug.viewBreakpoints");
-            }}
-          >
-            <T>More</T> <Kbd action="debug.viewBreakpoints" />
-          </button>
-          <div className={styles.spacer} />
-          <Button
-            size="small"
-            variant="ghost"
-            onClick={() => {
-              removeSpecial(bp.id);
-              closeBreakpointPopover();
-            }}
-          >
-            <T>Remove</T>
-          </Button>
-          <Button size="small" variant="primary" onClick={close}>
-            <T>Done</T>
-          </Button>
-        </div>
-      </div>
-    </Popup>
+        </>
+      }
+    >
+      <Checkbox checked={bp.enabled} onChange={(enabled) => updateSpecial(bp.id, { enabled })} label="Enabled" />
+      <label className={styles.field}>
+        <span className={styles.label}>
+          <T>Condition</T>
+        </span>
+        <Input
+          mono
+          value={condition}
+          onChange={(e) => setCondition(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && close()}
+          data-autofocus=""
+          aria-label="Condition"
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.label}>
+          <T>Hit count</T>
+        </span>
+        <Input
+          mono
+          value={hitCondition}
+          onChange={(e) => setHitCondition(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && close()}
+          aria-label="Hit count condition"
+        />
+      </label>
+    </BreakpointPropertiesPopup>
   );
 }
 
@@ -388,7 +451,11 @@ interface BpRow {
 type DialogRow =
   | { type: "section"; key: string; label: string }
   | ({ type: "line"; key: string } & BpRow)
-  | { type: "special"; key: string; bp: SpecialBreakpoint };
+  | { type: "special"; key: string; bp: SpecialBreakpoint }
+  | { type: "anyException"; key: string }
+  | { type: "exceptionClass"; key: string; bp: ExceptionClassEntry };
+
+const ANY_EXCEPTION_KEY = "any-exception";
 
 function BreakpointLocation({ path, line }: { path: string; line: number }) {
   return (
@@ -407,6 +474,10 @@ function BreakpointsDialog() {
   const methods = useSpecialBreakpoints((s) => s.methods);
   const fields = useSpecialBreakpoints((s) => s.fields);
   const specialStatus = useSpecialBreakpoints((s) => s.status);
+  const exceptionClasses = useExceptionClasses((s) => s.list);
+  const knownFilters = useExceptionBreakpoints((s) => s.known);
+  const filterChoices = useExceptionBreakpoints((s) => s.choices);
+  const any = anyException(knownFilters, filterChoices);
   const root = useProject((s) => s.project?.root ?? "");
   const rows = useMemo<DialogRow[]>(() => {
     const lines: DialogRow[] = Object.keys(byFile)
@@ -425,8 +496,12 @@ function BreakpointsDialog() {
       "Field Watchpoints",
       fields.map((bp) => ({ type: "special" as const, key: bp.id, bp })),
     );
+    section("Java Exception Breakpoints", [
+      { type: "anyException", key: ANY_EXCEPTION_KEY },
+      ...exceptionClasses.map((bp) => ({ type: "exceptionClass" as const, key: bp.id, bp })),
+    ]);
     return out;
-  }, [byFile, methods, fields]);
+  }, [byFile, methods, fields, exceptionClasses]);
   const items = rows.filter((r) => r.type !== "section");
   const [selected, setSelected] = useState<string | null>(null);
   // The shown breakpoint's typed fields, saved before it is closed or another one is shown:
@@ -461,6 +536,7 @@ function BreakpointsDialog() {
   const removeAll = () => {
     removeAllBreakpoints();
     removeAllSpecial();
+    removeAllExceptionClasses();
   };
 
   return (
@@ -493,10 +569,16 @@ function BreakpointsDialog() {
                 onClick={() => setSelected(addMethodBreakpoint("").id)}
               />
               <IconButton
+                icon="breakpoint-exception"
+                title="Add Java Exception Breakpoint"
+                size="small"
+                onClick={() => setSelected(addExceptionClass("").id)}
+              />
+              <IconButton
                 icon="trash"
                 title="Remove All Breakpoints"
                 size="small"
-                disabled={!items.length}
+                disabled={!items.some((r) => r.type !== "anyException")}
                 onClick={removeAll}
               />
             </div>
@@ -505,7 +587,9 @@ function BreakpointsDialog() {
             items={rows}
             getKey={(r) => r.key}
             isSection={(r) => r.type === "section"}
-            renderSection={(r) => <div className={styles.exceptionAdapter}>{r.type === "section" ? r.label : ""}</div>}
+            renderSection={(r) => (
+              <div className={styles.exceptionAdapter}>{r.type === "section" ? tx(r.label) : ""}</div>
+            )}
             activeIndex={current ? rows.indexOf(current) : -1}
             onActiveChange={(i) => {
               commitRef.current?.();
@@ -524,6 +608,40 @@ function BreakpointsDialog() {
             }
             renderItem={(r) => {
               if (r.type === "section") return null;
+              if (r.type === "anyException") {
+                return (
+                  <div className={styles.bpRow}>
+                    <Checkbox
+                      checked={any.caught || any.uncaught}
+                      onChange={(on) => {
+                        setAnyException("caught", on);
+                        setAnyException("uncaught", on);
+                      }}
+                      aria-label={tx("Enable Any exception")}
+                    />
+                    <Icon name="breakpoint-exception" size={14} />
+                    <span className={styles.bpName}>
+                      <T>Any exception</T>
+                    </span>
+                  </div>
+                );
+              }
+              if (r.type === "exceptionClass") {
+                const name = r.bp.className || tx("No class chosen");
+                return (
+                  <div className={styles.bpRow}>
+                    <Checkbox
+                      checked={r.bp.enabled}
+                      onChange={(enabled) => updateExceptionClass(r.bp.id, { enabled })}
+                      aria-label={tx`Enable ${r.bp.className || txPart("No class chosen")}`}
+                    />
+                    <Icon name="breakpoint-exception" size={14} />
+                    <span className={styles.bpName} title={name}>
+                      {name}
+                    </span>
+                  </div>
+                );
+              }
               if (r.type === "special") {
                 const st = specialStatus[r.bp.id];
                 return (
@@ -594,6 +712,10 @@ function BreakpointsDialog() {
               <BreakpointDetail key={current.key} row={current} onGo={() => goTo(current)} commitRef={commitRef} />
             ) : current?.type === "special" ? (
               <SpecialDetail key={current.key} bp={current.bp} onGo={() => goTo(current)} commitRef={commitRef} />
+            ) : current?.type === "exceptionClass" ? (
+              <ExceptionClassDetail key={current.key} bp={current.bp} commitRef={commitRef} />
+            ) : current?.type === "anyException" ? (
+              <AnyExceptionDetail />
             ) : null}
           </div>
         </SplitPanel>
@@ -606,7 +728,11 @@ function BreakpointsDialog() {
 function ExceptionBreakpoints({ open }: { open: boolean }) {
   const known = useExceptionBreakpoints((s) => s.known);
   const choices = useExceptionBreakpoints((s) => s.choices);
-  const groups = useMemo(() => exceptionGroups(known, choices), [known, choices]);
+  // java-debug's filters are "Any exception" in the list above.
+  const groups = useMemo(
+    () => exceptionGroups(known, choices).filter((g) => g.adapter !== ANY_EXCEPTION_ADAPTER),
+    [known, choices],
+  );
   useEffect(() => {
     if (open) void refreshExceptionFilters();
   }, [open]);
@@ -672,12 +798,7 @@ function BreakpointDetail({
         </Button>
       </div>
       {st && <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? "Not verified")}</div>}
-      <BreakpointFields path={path} bp={bp} commitRef={commitRef} />
-      <Checkbox
-        checked={!!bp.temporary}
-        onChange={(temporary) => updateBreakpoint(path, bp.id, { temporary })}
-        label="Remove once hit"
-      />
+      <BreakpointFields path={path} bp={bp} commitRef={commitRef} showRemoveOnceHit />
     </div>
   );
 }
@@ -815,9 +936,17 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
   const [history, setHistory] = useState(() => readHistory("evaluate"));
   const [historyMenu, setHistoryMenu] = useState(false);
   const historyPos = useRef(-1);
-  const historyButton = useRef<HTMLButtonElement>(null);
+  const expressionRow = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
   const expressionId = useId();
+  const resultTitleId = useId();
+  const settings = useProject((s) => s.settings);
+  const editor = settings?.editor;
+  const font = {
+    "--evaluate-font": monoFontFamily(editor?.fontFamily, editorPrefs(settings).fallbackFont, "var(--font-mono)"),
+    "--evaluate-font-size": editor?.fontSize ? `${editor.fontSize}px` : undefined,
+    "--evaluate-line-height": editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
+  } as CSSProperties;
   const session = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const paused = session?.status === "paused";
   const close = () => useOverlays.setState({ evaluate: null });
@@ -903,7 +1032,7 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
           <label className={styles.label} htmlFor={expressionId}>
             <T>Expression</T>
           </label>
-          <div className={styles.evalInputRow}>
+          <div ref={expressionRow} className={styles.evalInputRow} style={font}>
             <textarea
               ref={field}
               id={expressionId}
@@ -918,7 +1047,10 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               }}
               onKeyDown={onKeyDown}
               onBlur={completion.close}
-              onFocus={(e) => e.currentTarget.select()}
+              onFocus={(e) => {
+                setHistoryMenu(false);
+                e.currentTarget.select();
+              }}
               spellCheck={false}
               autoComplete="off"
               data-autofocus=""
@@ -928,30 +1060,39 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
             />
             {completion.popup}
             <IconButton
-              ref={historyButton}
               className={styles.evalHistory}
-              icon="history"
+              icon="chevron-down"
               title="History"
               size="small"
               aria-haspopup="menu"
               aria-expanded={historyMenu}
               disabled={!history.length}
-              onClick={() => setHistoryMenu(true)}
+              onClick={() => setHistoryMenu((open) => !open)}
             />
           </div>
-          <Menu
+          <Popup
             open={historyMenu}
             onClose={() => setHistoryMenu(false)}
-            anchor={historyButton}
-            placement="bottom-end"
-            aria-label="Expression history"
-            items={history
-              .slice(0, 20)
-              .map((h) => ({ label: h.replace(/\s+/g, " "), verbatim: true, run: () => recall(h) }))}
-          />
+            anchor={expressionRow}
+            placement="bottom-start"
+            matchWidth
+            role="presentation"
+            autoFocus={false}
+            className={styles.evalHistoryPopup}
+            style={font}
+          >
+            <MenuList
+              aria-label={tx("Expression history")}
+              iconColumn={false}
+              onDone={() => setHistoryMenu(false)}
+              items={history
+                .slice(0, 20)
+                .map((h) => ({ label: h.replace(/\s+/g, " "), verbatim: true, run: () => recall(h) }))}
+            />
+          </Popup>
         </div>
-        <div className={styles.evalResult}>
-          <span className={styles.label}>
+        <section className={styles.evalResult} aria-labelledby={resultTitleId}>
+          <span id={resultTitleId} className={styles.label}>
             <T>Result</T>
           </span>
           <div className={styles.evalResultContent}>
@@ -981,7 +1122,7 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               </div>
             )}
           </div>
-        </div>
+        </section>
       </div>
     </Dialog>
   );
@@ -1236,34 +1377,44 @@ function AttachPopup() {
 
 function SmartStepChooser() {
   const all = useOverlays((s) => s.smartStep);
-  // Picked in the editor instead.
   const state = all?.inline ? null : all;
-  const close = () => useOverlays.setState({ smartStep: null });
-  const pick = (targetId: number) => {
-    if (!state) return;
-    close();
-    void resumeExecution(state.session, () =>
-      call(commands.debugStepInTarget(state.session, state.thread, targetId)),
-    ).catch((e) =>
-      notifications().notify({ group: "run", level: "error", title: "Smart Step Into failed", body: errorText(e) }),
-    );
-  };
+  const anchor = useMemo(() => (state ? smartStepAnchor() : "center"), [state]);
+  const rowHeight = useRowHeight();
+  if (!state) return null;
+
   return (
-    <Dialog open={!!state} onClose={close} title="Step Into" width={420} position="top" aria-label="Smart Step Into">
-      <List
-        items={state?.targets ?? []}
-        getKey={(t) => String(t.id)}
-        defaultActiveIndex={0}
-        onActivate={(t) => pick(t.id)}
-        aria-label="Calls on the current line"
-        className={styles.chooser}
-        renderItem={(t) => (
-          <div className={styles.chooserRow}>
-            <Icon name="method" size={14} />
-            <span className={styles.bpName}>{t.label}</span>
-          </div>
-        )}
-      />
-    </Dialog>
+    <Popup
+      open
+      anchor={anchor}
+      placement="top-start"
+      onClose={cancelSmartStep}
+      trapFocus
+      className={styles.stepPopup}
+      aria-label={tx("Smart Step Into")}
+    >
+      <div className={styles.stepHeading}>
+        <T>Step Into</T>
+      </div>
+      <div className={styles.stepTargets} style={{ height: Math.min(state.targets.length, 8) * rowHeight }}>
+        <List
+          items={state.targets}
+          getKey={(t) => String(t.id)}
+          rowHeight={rowHeight}
+          autoFocus
+          hoverSelects
+          onActivate={(t) => chooseStepTarget(t.id)}
+          aria-label={tx("Calls on the current line")}
+          className={styles.stepList}
+          renderItem={(t) => (
+            <>
+              <Icon name="method" size={16} />
+              <span className={styles.stepLabel} title={t.label}>
+                {t.label}
+              </span>
+            </>
+          )}
+        />
+      </div>
+    </Popup>
   );
 }

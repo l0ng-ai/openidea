@@ -1,5 +1,5 @@
-/** Welcome › Projects: search, New Project / Open / Clone Repository, and the recent projects list. */
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+/** Welcome › Projects: search, New Project / Open / Clone Repository / Remote Development, and the recent projects list. */
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { executeAction, useActions } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
@@ -23,12 +23,14 @@ import {
 } from "@/ui";
 import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
 import { openRecent, recentRows, setGroupExpanded, useRecent, type RecentMatch, type RecentRow } from "./recent";
+import { projectWindowOverride } from "@/workbench/projectWindow";
 import type { RecentProjectGroup } from "@/platform/ipc";
 import styles from "./Welcome.module.css";
 import { tx } from "@/platform/i18n";
 
 function HeaderButtons() {
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
+  const canRemote = useActions((s) => s.actions.has("remote.connect"));
   const opening = useProject((s) => s.opening);
   const canCreate = useActions((s) => s.actions.has("file.newProject"));
   const openKey = shortcutLabel("file.openProject");
@@ -45,11 +47,11 @@ function HeaderButtons() {
       disabled: opening,
     },
     { id: "vcs.clone", label: "Clone Repository", icon: "branch", available: canClone },
+    { id: "remote.connect", label: "Remote Development", icon: "remote", available: canRemote, disabled: opening },
   ];
   const secondary: MenuItem[] = [
     { kind: "action", action: "file.newUntitled", label: "New File", disabled: opening },
     { kind: "action", action: "file.openFile", label: "Open File", disabled: opening },
-    { kind: "action", action: "remote.connect", label: "Remote Development", disabled: opening },
   ];
   return (
     <div className={styles.headerButtons} role="group" aria-label={tx("Project actions")}>
@@ -114,7 +116,7 @@ function Landing() {
       <div className={styles.landingActions}>
         <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.newUntitled")}>
           <span className={styles.landingIcon}>
-            <Icon name="plus" size={20} />
+            <Icon name="file-new" size={20} />
           </span>
           <T>New File</T>
         </button>
@@ -164,7 +166,7 @@ function Landing() {
             onClick={() => void executeAction("remote.connect")}
           >
             <span className={styles.landingIcon}>
-              <Icon name="terminal" size={20} />
+              <Icon name="remote" size={20} />
             </span>
             <T>Remote Development</T>
           </button>
@@ -252,7 +254,8 @@ function ProjectRow({
   /** Listed under a group. */
   nested?: boolean;
   onSelect: () => void;
-  onOpen: () => void;
+  /** Its modifier keys pick the window ({@link projectWindowOverride}). */
+  onOpen: (e: MouseEvent<HTMLDivElement>) => void;
 }) {
   const opening = useRecent((s) => s.opening === m.project.path);
   // Opening a remote project: which stage of connecting it is at.
@@ -273,9 +276,9 @@ function ProjectRow({
       title={unavailableTitle(m.project) ?? m.project.path}
       className={clsx(styles.project, nested && styles.projectNested, selected && styles.projectSelected)}
       onMouseDown={(e) => e.preventDefault()}
-      onClick={() => {
+      onClick={(e) => {
         onSelect();
-        onOpen();
+        onOpen(e);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -399,7 +402,7 @@ export function ProjectsPage() {
       }
       return;
     }
-    if (r.kind === "open") void openRecent(match.m.project);
+    if (r.kind === "open") void openRecent(match.m.project, projectWindowOverride(e));
     else if (r.kind === "remove") void askRemoveRecent(match.m.project);
     else {
       const el = document.getElementById(optionId(current))?.getBoundingClientRect();
@@ -455,7 +458,7 @@ export function ProjectsPage() {
               selected={i === current}
               nested={row.group !== null}
               onSelect={() => setActive(i)}
-              onOpen={() => void openRecent(row.m.project)}
+              onOpen={(e) => void openRecent(row.m.project, projectWindowOverride(e))}
             />
           ),
         )}

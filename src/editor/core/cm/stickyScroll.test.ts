@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { codeFolding, foldEffect, unfoldEffect } from "@codemirror/language";
+import { javascript } from "@codemirror/lang-javascript";
 import { languages } from "@codemirror/language-data";
 import { completedSyntaxState } from "@/test/syntax";
 import { BracketScanner, DEFAULT_RAINBOW_OPTIONS } from "./rainbowBrackets";
-import { renderLineContent, selectedSpans } from "./stickyScroll";
+import { renderLineContent } from "./renderLineContent";
+import { selectedSpans, stickyMaxLines, stickyScroll, stickyScrollMargin, stickyTopMargin } from "./stickyScroll";
 
 describe("selectedSpans", () => {
   // the sticky line `def run():` at 100..110
@@ -81,5 +85,60 @@ describe("sticky line content", () => {
     expect(el.textContent).toBe("  f('(', () => {");
     // The `(` in the string is not a bracket.
     expect(brackets(el)).toEqual(["(2", "(3", ")3", "{3"]);
+  });
+});
+
+describe("sticky rows and scrolling the caret into view", () => {
+  const doc = "class A {\n  m() {\n    if (x) {\n      target();\n    }\n  }\n}\nlast();";
+  const view = (head: number, max = 5) =>
+    new EditorView({
+      state: completedSyntaxState(
+        EditorState.create({
+          doc,
+          selection: EditorSelection.cursor(head),
+          extensions: [javascript(), codeFolding(), stickyScroll, stickyMaxLines.of(max)],
+        }),
+      ),
+    });
+
+  it("keeps room for the headers that would stick above the caret's line", () => {
+    const v = view(doc.indexOf("target"));
+    expect(stickyTopMargin(v)).toBe(3 * v.defaultLineHeight);
+    v.destroy();
+  });
+
+  it("reserves the caret's rows only while the caret is above where they would stick", () => {
+    // The caret at 200 with three rows (60) to stick above it, nothing showing yet.
+    expect(stickyScrollMargin(200, 160, 60, 0)).toBe(60);
+    expect(stickyScrollMargin(200, 300, 60, 0)).toBe(60);
+    // Visible below them: only what sticks now covers the top, so hovers there still show.
+    expect(stickyScrollMargin(200, 0, 60, 0)).toBe(0);
+    expect(stickyScrollMargin(200, 100, 60, 40)).toBe(40);
+    expect(stickyScrollMargin(200, 160, 20, 40)).toBe(40);
+  });
+
+  it("covers nothing at the top of the file while the caret is further down", () => {
+    const v = view(doc.indexOf("target"));
+    expect(v.state.facet(EditorView.scrollMargins).map((f) => f(v))).toContainEqual({ top: 0 });
+    v.destroy();
+  });
+
+  it("reserves space only for visible enclosing scopes when the caret is inside a folded block", () => {
+    const v = view(doc.indexOf("target"));
+    const range = { from: v.state.doc.line(3).to, to: v.state.doc.line(5).to };
+    v.dispatch({ effects: foldEffect.of(range) });
+    expect(stickyTopMargin(v)).toBe(2 * v.defaultLineHeight);
+    v.dispatch({ effects: unfoldEffect.of(range) });
+    expect(stickyTopMargin(v)).toBe(3 * v.defaultLineHeight);
+    v.destroy();
+  });
+
+  it("is limited by the sticky line count and is zero outside any scope", () => {
+    const limited = view(doc.indexOf("target"), 2);
+    expect(stickyTopMargin(limited)).toBe(2 * limited.defaultLineHeight);
+    limited.destroy();
+    const outside = view(doc.indexOf("last"));
+    expect(stickyTopMargin(outside)).toBe(0);
+    outside.destroy();
   });
 });

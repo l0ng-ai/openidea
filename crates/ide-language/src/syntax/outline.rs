@@ -495,6 +495,36 @@ pub fn merge_visibility(target: &mut [OutlineItem], source: &[OutlineItem]) {
     }
 }
 
+/// Takes the syntax tree's kind where a server reported a declared type as a value or a type
+/// parameter: LSP has no kind for type aliases, so servers fall back to one of those
+/// (typescript-language-server: Variable; rust-analyzer, sourcekit-lsp: TypeParameter).
+/// Matched by name and position like [`merge_visibility`].
+pub fn merge_kinds(target: &mut [OutlineItem], source: &[OutlineItem]) {
+    fn index(items: &[OutlineItem], out: &mut HashMap<(ide_core::Pos, String), SymbolKind>) {
+        for i in items {
+            if i.kind.is_type_like() {
+                out.insert((i.selection_range.start, i.name.clone()), i.kind);
+            }
+            index(&i.children, out);
+        }
+    }
+    fn apply(items: &mut [OutlineItem], map: &HashMap<(ide_core::Pos, String), SymbolKind>) {
+        for i in items {
+            if matches!(i.kind, SymbolKind::Variable | SymbolKind::TypeParameter)
+                && let Some(&kind) = map.get(&(i.selection_range.start, i.name.clone()))
+            {
+                i.kind = kind;
+            }
+            apply(&mut i.children, map);
+        }
+    }
+    let mut map = HashMap::new();
+    index(source, &mut map);
+    if !map.is_empty() {
+        apply(target, &map);
+    }
+}
+
 /// End of `node` without trailing whitespace (C macros and others include the newline).
 fn trimmed_end(node: &Node, text: &str) -> usize {
     let (s, e) = (node.start_byte(), node.end_byte());

@@ -1,5 +1,7 @@
-use ide_core::{ChangeSet, NullSink, TextChange};
-use ide_host::{Host, HostConfig, Project, ops::vcs};
+mod common;
+
+use ide_core::{ChangeSet, TextChange};
+use ide_host::{Host, Project, ops::vcs};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -26,17 +28,7 @@ fn repo() -> (tempfile::TempDir, PathBuf, PathBuf) {
 }
 
 async fn open(base: &Path, root: &Path) -> (Host, Arc<Project>) {
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(base));
     host.trust.decide(root, true, false).unwrap();
     let project = host.open_project("main", root).unwrap();
     for _ in 0..500 {
@@ -144,17 +136,7 @@ async fn a_directory_symlink_revision_is_its_target() {
     std::os::unix::fs::symlink("target", root.join("dir-link")).unwrap();
     git(&root, &["add", "."]);
     git(&root, &["commit", "-m", "Add a directory symlink"]);
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
     for _ in 0..500 {

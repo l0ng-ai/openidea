@@ -47,7 +47,7 @@ import {
 } from "./find/windowStore";
 import { cycleSwitcher, hideRecentPopup, showRecentPopup, useRecentPopup } from "./recent/store";
 import { useFileStructurePopup } from "./structure/popupStore";
-import { useOutline, useStructureOptions } from "./structure/store";
+import { useOutline, useStructureHeaderMenu, useStructureOptions } from "./structure/store";
 import { tx } from "@/platform/i18n";
 
 async function removeMissingBookmarks(removed: readonly string[]) {
@@ -168,23 +168,31 @@ export function activate(): void | (() => void) {
 
     registerOverlay({
       id: "search.everywhere",
-      component: lazyWhen(useEverywhereOpen, () =>
-        import("./everywhere/SearchEverywhere").then((m) => m.SearchEverywhereOverlay),
+      component: lazyWhen(
+        useEverywhereOpen,
+        () => import("./everywhere/SearchEverywhere").then((m) => m.SearchEverywhereOverlay),
+        { prefetch: true },
       ),
     }),
     registerOverlay({
       id: "search.recent",
-      component: lazyWhen(useRecentOpen, () => import("./recent/RecentPopups").then((m) => m.RecentPopupsOverlay)),
+      component: lazyWhen(useRecentOpen, () => import("./recent/RecentPopups").then((m) => m.RecentPopupsOverlay), {
+        prefetch: true,
+      }),
     }),
     registerOverlay({
       id: "search.findInFiles",
-      component: lazyWhen(useFindOpen, () => import("./find/FindInFiles").then((m) => m.FindInFilesOverlay)),
+      component: lazyWhen(useFindOpen, () => import("./find/FindInFiles").then((m) => m.FindInFilesOverlay), {
+        prefetch: true,
+      }),
     }),
     registerOverlay({ id: "search.scopes", component: ScopesDialogOverlay }),
     registerOverlay({
       id: "search.fileStructure",
-      component: lazyWhen(useFileStructureOpen, () =>
-        import("./structure/StructureView").then((m) => m.FileStructureOverlay),
+      component: lazyWhen(
+        useFileStructureOpen,
+        () => import("./structure/StructureView").then((m) => m.FileStructureOverlay),
+        { prefetch: true },
       ),
     }),
     registerOverlay({ id: "search.bookmarks", component: BookmarkPopupsOverlay }),
@@ -198,6 +206,9 @@ export function activate(): void | (() => void) {
       secondary: true,
       order: 20,
       component: lazyComponent(() => import("./structure/StructureView").then((m) => m.StructureView)),
+      headerActions: lazyComponent(() => import("./structure/StructureView").then((m) => m.StructureHeaderActions)),
+      headerMenu: useStructureHeaderMenu,
+      plainTitle: true,
     }),
     registerToolWindow({
       id: "bookmarks",
@@ -207,6 +218,7 @@ export function activate(): void | (() => void) {
       anchor: "left",
       secondary: true,
       order: 30,
+      stripe: "onUse",
       component: lazyComponent(() => import("./bookmarks/BookmarksView").then((m) => m.BookmarksView)),
       headerActions: lazyComponent(() => import("./bookmarks/BookmarksView").then((m) => m.BookmarksActions)),
       useBadge: () => null,

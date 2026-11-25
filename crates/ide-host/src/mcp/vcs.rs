@@ -102,9 +102,7 @@ This is useful to detect all repositories in a multi-repository project.
 In OpenIDEA each root also tells its current `branch` (absent when HEAD is detached), `headCommit` and a merge, \
 rebase or cherry-pick in progress (`operationInProgress`).",
         |call| async move {
-            let host = call.host();
-            let window = call.window.clone();
-            let roots = call.host.blocking(move || crate::ops::vcs::vcs_roots(&host, &window)).await?;
+            let roots = crate::ops::vcs::vcs_roots(&call.host(), &call.window).await?;
             let list: Vec<Value> = roots
                 .into_iter()
                 .map(|r| {
@@ -257,10 +255,7 @@ By default all Git repositories are returned.",
             let include_ignored = call.flag("includeIgnored", false)?;
             let page = Page::of(&call, STATUS_DEFAULT_LIMIT)?;
             let host = call.host();
-            let h = host.clone();
-            let w = call.window.clone();
-            let repos: Vec<(PathBuf, Option<String>)> = host
-                .blocking(move || crate::ops::vcs::vcs_roots(&h, &w))
+            let repos: Vec<(PathBuf, Option<String>)> = crate::ops::vcs::vcs_roots(&host, &call.window)
                 .await?
                 .into_iter()
                 .map(|r| (r.root.into_path_buf(), r.head))

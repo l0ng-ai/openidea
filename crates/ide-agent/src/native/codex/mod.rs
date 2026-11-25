@@ -334,6 +334,38 @@ fn str_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, ResponseError>
     params.get(key).and_then(Value::as_str).ok_or_else(|| invalid(format!("missing {key}")))
 }
 
+/// Fills a `thread/start`/`thread/resume`/`thread/fork` request's `config` with the session's
+/// MCP servers and its staged skills: the off ones, by path (`skills.config` entries with
+/// `enabled = false`, which the CLI honors for the copies it discovers natively too).
+fn apply_thread_config(params: &Value, request: &mut Value) {
+    let mut config = translate::mcp_config(params).unwrap_or_else(|| json!({}));
+    let off: Vec<Value> = params
+        .pointer("/_meta/openidea/skills/codexOff")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.get(1)?.as_str()?;
+            Some(json!({ "path": path, "enabled": false }))
+        })
+        .collect();
+    if !off.is_empty()
+        && let Some(map) = config.as_object_mut()
+    {
+        map.insert("skills".into(), json!({ "config": off }));
+    }
+    if !config.as_object().is_some_and(|m| m.is_empty()) {
+        request["config"] = config;
+    }
+    // The workspace's other roots join the thread's own: they are where `workspace-write`
+    // may write and what the model is told the workspace holds.
+    if let Some(extra) = params.get("additionalDirectories").and_then(Value::as_array).filter(|a| !a.is_empty())
+        && let Some(cwd) = params.get("cwd").filter(|c| c.is_string())
+    {
+        request["runtimeWorkspaceRoots"] = std::iter::once(cwd).chain(extra).cloned().collect();
+    }
+}
+
 impl CodexShim {
     fn codex(&self) -> &Peer {
         self.codex.get().expect("attached before any message")
@@ -381,7 +413,7 @@ impl CodexShim {
                 "loadSession": true,
                 "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
                 "mcpCapabilities": { "http": false, "sse": false, "stdio": true },
-                "sessionCapabilities": { "fork": {}, "close": {} },
+                "sessionCapabilities": { "fork": {}, "close": {}, "additionalDirectories": {} },
                 "_meta": { "openidea": { "rollback": true, "steer": true } },
             },
             "agentInfo": { "name": "codex", "title": "Codex", "version": version },
@@ -414,6 +446,31 @@ impl CodexShim {
         }
     }
 
+    /// Hands the session's staged skills to the app-server: the farm's `codex` tree joins
+    /// its discovery roots. Best-effort: a CLI version without `skills/extraRoots/set`
+    /// (the method arrived later than some pinned installs) runs without the farm, as
+    /// before.
+    async fn apply_skill_roots(&self, session: &str, params: &Value) {
+        let roots = params
+            .pointer("/_meta/openidea/skills/codexExtraRoots")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if roots.is_empty() {
+            return;
+        }
+        let set = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.call("skills/extraRoots/set", json!({ "extraRoots": roots })),
+        )
+        .await;
+        match set {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::info!("codex session {session}: could not set the extra skill roots: {}", e.message),
+            Err(e) => tracing::info!("codex session {session}: could not set the extra skill roots: {e}"),
+        }
+    }
+
     /// Registers a thread codex opened for a session of its own; returns its `configOptions`.
     fn open_thread(&self, result: &Value, models: &[ModelInfo], settings: Option<Settings>) -> (String, Value) {
         let thread = result.get("thread").unwrap_or(&Value::Null);
@@ -434,14 +491,13 @@ impl CodexShim {
         let models = self.models().await?;
         self.prepare_project_trust(params).await;
         let mut request = json!({ "cwd": params.get("cwd") });
-        if let Some(config) = translate::mcp_config(params) {
-            request["config"] = config;
-        }
+        apply_thread_config(params, &mut request);
         let result = self.call("thread/start", request).await?;
         let (id, options) = self.open_thread(&result, &models, None);
         if id.is_empty() {
             return Err(error(codes::INTERNAL_ERROR, "codex started no thread"));
         }
+        self.apply_skill_roots(&id, params).await;
         self.publish_skills(&id).await;
         Ok(json!({ "sessionId": id, "configOptions": options }))
     }
@@ -452,9 +508,7 @@ impl CodexShim {
         let models = self.models().await?;
         self.prepare_project_trust(params).await;
         let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
-        if let Some(config) = translate::mcp_config(params) {
-            request["config"] = config;
-        }
+        apply_thread_config(params, &mut request);
         let result = self.call("thread/resume", request).await?;
         let (_, options) = self.open_thread(&result, &models, None);
         let cwd = self.state.lock().threads.get(id).and_then(|t| t.cwd.clone());
@@ -462,6 +516,7 @@ impl CodexShim {
         for update in translate::history(thread, cwd.as_deref()) {
             self.emit(id, update);
         }
+        self.apply_skill_roots(id, params).await;
         self.publish_skills(id).await;
         Ok(json!({ "configOptions": options }))
     }
@@ -472,9 +527,7 @@ impl CodexShim {
         self.prepare_project_trust(params).await;
         let settings = self.state.lock().threads.get(source).and_then(|t| t.settings.clone());
         let mut request = json!({ "threadId": source, "cwd": params.get("cwd") });
-        if let Some(config) = translate::mcp_config(params) {
-            request["config"] = config;
-        }
+        apply_thread_config(params, &mut request);
         if let Some(s) = &settings {
             request["model"] = json!(s.model_slug(&models));
             request["approvalPolicy"] = json!(s.mode.approval_policy());
@@ -482,6 +535,7 @@ impl CodexShim {
         }
         let result = self.call("thread/fork", request).await?;
         let (id, options) = self.open_thread(&result, &models, settings);
+        self.apply_skill_roots(&id, params).await;
         self.publish_skills(&id).await;
         Ok(json!({ "sessionId": id, "configOptions": options }))
     }

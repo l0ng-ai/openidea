@@ -24,6 +24,21 @@ pub(crate) const MAX_LINE_BYTES: usize = 1024 * 1024;
 /// `Output::text` stops growing past this while the pipes keep draining: a chatty build can
 /// print far more than is ever parsed back out of the retained copy.
 pub(crate) const MAX_TEXT_BYTES: usize = 32 * 1024 * 1024;
+/// Lines the pipe readers may queue ahead of the consumer. A build printing faster than
+/// `on_line` takes its lines waits on its full pipe, as it would on a terminal, instead of
+/// the lines piling up in memory (a line is at most [`MAX_LINE_BYTES`] in [`run_bounded`]).
+const LINE_QUEUE: usize = 64;
+/// What [`pump_bounded`] reads from a pipe at a time.
+const PUMP_CHUNK: usize = 64 * 1024;
+
+/// One line of a child's output, with the stream it came from.
+type Line = (Stream, String);
+
+/// The queue from the pipe readers to the consumer: bounded, so the readers wait while the
+/// consumer is behind.
+fn line_queue() -> (mpsc::SyncSender<Line>, mpsc::Receiver<Line>) {
+    mpsc::sync_channel(LINE_QUEUE)
+}
 
 pub(crate) struct Output {
     pub success: bool,
@@ -33,20 +48,20 @@ pub(crate) struct Output {
     pub truncated: bool,
 }
 
-/// Bounded pump for callers that stream every line and only summarize errors: reads fixed
-/// 64 KiB chunks, splits newline-free runs at a UTF-8 char boundary at the line cap, and
-/// never grows one line buffer without bound.
-fn pump_bounded(stream: Box<dyn Read + Send>, kind: Stream, tx: &mpsc::Sender<(Stream, String)>) {
+/// Bounded pump for callers that stream every line and only summarize errors: reads
+/// [`PUMP_CHUNK`] chunks, splits newline-free runs at a UTF-8 char boundary at the line cap,
+/// and never grows one line buffer without bound.
+fn pump_bounded(stream: Box<dyn Read + Send>, kind: Stream, tx: &mpsc::SyncSender<Line>) {
     let mut reader = BufReader::new(stream);
     // `terminated`: the buffer ends in the stream's newline. A segment cut from a
     // newline-free run at the line cap must keep a trailing `\r` — it is data.
-    let send = |buf: &mut Vec<u8>, terminated: bool, tx: &mpsc::Sender<(Stream, String)>| {
+    let send = |buf: &mut Vec<u8>, terminated: bool, tx: &mpsc::SyncSender<Line>| {
         let line = ide_core::output_encoding::decode_tool_output(buf);
         let line = if terminated { line.trim_end_matches(['\n', '\r']).to_owned() } else { line };
         buf.clear();
         tx.send((kind, line)).is_ok()
     };
-    let mut chunk = vec![0u8; 64 * 1024];
+    let mut chunk = vec![0u8; PUMP_CHUNK];
     let mut line: Vec<u8> = Vec::with_capacity(256);
     'read: loop {
         let n = match reader.read(&mut chunk) {
@@ -179,8 +194,8 @@ fn run_with_env_capture(
     }
     let mut child =
         command.spawn().map_err(|e| IdeError::unavailable(format!("cannot start {}: {e}", program.display())))?;
-    let (tx, rx) = mpsc::channel::<(Stream, String)>();
-    let pump = |stream: Box<dyn Read + Send>, kind: Stream, tx: mpsc::Sender<(Stream, String)>| {
+    let (tx, rx) = line_queue();
+    let pump = |stream: Box<dyn Read + Send>, kind: Stream, tx: mpsc::SyncSender<Line>| {
         std::thread::spawn(move || {
             if bounded {
                 pump_bounded(stream, kind, &tx);
@@ -212,7 +227,8 @@ fn run_with_env_capture(
     // Retained copy of the output: the first half of the cap, then — once output overflows —
     // a rolling tail instead of the middle. Error summaries read the end of the output, while
     // listings parsed out of a successful run read from the start. The pipes keep draining
-    // either way: `on_line` still sees every line, so the child never blocks on a full pipe.
+    // either way: `on_line` still sees every line, and the child waits on its pipe only
+    // while `on_line` is behind, never because the retained copy is full.
     let cap = MAX_TEXT_BYTES / 2;
     let mut head = String::new();
     let mut tail: std::collections::VecDeque<Vec<u8>> = Default::default();
@@ -295,6 +311,9 @@ fn run_with_env_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
 
     #[test]
     fn a_model_line_over_one_mebibyte_is_kept_whole_for_the_parsers() {
@@ -499,5 +518,125 @@ mod tests {
         assert!(!out.text.contains("were not retained]"));
         assert!(out.text.starts_with("pad\n"));
         assert!(out.text.ends_with("FATAL: the real error\n"));
+    }
+
+    /// Numbered lines of `LINE_LEN` bytes each, counting the bytes taken: a pipe stand-in that
+    /// reports when it is dropped, which is when the pump owning it ends.
+    const LINE_LEN: usize = 100;
+
+    struct NumberedLines {
+        next: usize,
+        lines: usize,
+        taken: Arc<AtomicUsize>,
+        gone: mpsc::Sender<()>,
+    }
+
+    fn numbered(n: usize) -> String {
+        format!("{n:0width$}", width = LINE_LEN - 1)
+    }
+
+    impl Read for NumberedLines {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let mut n = 0;
+            while self.next < self.lines && n + LINE_LEN <= buf.len() {
+                buf[n..n + LINE_LEN - 1].copy_from_slice(numbered(self.next).as_bytes());
+                buf[n + LINE_LEN - 1] = b'\n';
+                self.next += 1;
+                n += LINE_LEN;
+            }
+            self.taken.fetch_add(n, Ordering::SeqCst);
+            Ok(n)
+        }
+    }
+
+    impl Drop for NumberedLines {
+        fn drop(&mut self) {
+            let _ = self.gone.send(());
+        }
+    }
+
+    #[test]
+    fn a_slow_consumer_holds_the_pump_back_instead_of_queueing_every_line() {
+        const LINES: usize = 50_000;
+        let taken = Arc::new(AtomicUsize::new(0));
+        let (gone, _) = mpsc::channel();
+        let pipe = NumberedLines { next: 0, lines: LINES, taken: taken.clone(), gone };
+        let (tx, rx) = line_queue();
+        let pump = std::thread::spawn(move || pump_bounded(Box::new(pipe), Stream::Stdout, &tx));
+        let (mut count, mut peak) = (0usize, 0usize);
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok((stream, line)) => {
+                    assert_eq!(stream, Stream::Stdout);
+                    assert_eq!(line, numbered(count), "a line arrived out of order or damaged");
+                    // Read from the pipe but not yet handed over: the rest of the chunk the pump
+                    // is cutting into lines, and the queue.
+                    peak = peak.max(taken.load(Ordering::SeqCst) - count * LINE_LEN);
+                    count += 1;
+                    // A consumer that cannot keep up with the process.
+                    if count.is_multiple_of(LINE_QUEUE) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("the pump stalled"),
+            }
+        }
+        pump.join().unwrap();
+        assert_eq!(count, LINES);
+        let bound = PUMP_CHUNK + (LINE_QUEUE + 2) * LINE_LEN;
+        assert!(peak <= bound, "{peak} bytes read ahead of the consumer, more than {bound}");
+    }
+
+    #[test]
+    fn a_pump_blocked_on_a_full_queue_ends_when_the_consumer_is_gone() {
+        let taken = Arc::new(AtomicUsize::new(0));
+        let (gone_tx, gone) = mpsc::channel();
+        // Far more than the queue and a few chunks hold.
+        let pipe = NumberedLines { next: 0, lines: 100_000, taken: taken.clone(), gone: gone_tx };
+        let (tx, rx) = line_queue();
+        let pump = std::thread::spawn(move || pump_bounded(Box::new(pipe), Stream::Stdout, &tx));
+        // A consumer that takes nothing: the queue fills, with the pump inside its first chunk.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while taken.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the pump never read");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Time for a pump that does not wait to run ahead.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(taken.load(Ordering::SeqCst) <= PUMP_CHUNK, "the pump read past a full queue");
+        assert!(gone.try_recv().is_err(), "the pump ended while its consumer was still there");
+        drop(rx);
+        gone.recv_timeout(Duration::from_secs(30)).expect("the pump stayed blocked after the consumer was gone");
+        pump.join().unwrap();
+    }
+
+    #[test]
+    fn a_slow_on_line_still_sees_every_line_in_order_and_the_exit_status() {
+        if cfg!(windows) {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let args = ["-c".into(), "awk 'BEGIN{for(i=1;i<=300000;i++)print i}'; exit 4".into()];
+        for bounded in [false, true] {
+            let mut next = 1usize;
+            let on_line = |stream: Stream, line: &str| {
+                assert_eq!(stream, Stream::Stdout);
+                assert_eq!(line, next.to_string());
+                next += 1;
+                if next.is_multiple_of(1000) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            };
+            let cancel = CancellationToken::new();
+            let out = if bounded {
+                run_bounded("sh", &args, tmp.path(), &BTreeMap::new(), &cancel, on_line)
+            } else {
+                run("sh", &args, tmp.path(), &BTreeMap::new(), &cancel, on_line)
+            }
+            .unwrap();
+            assert!(!out.success);
+            assert_eq!(next, 300_001, "lines were lost");
+        }
     }
 }

@@ -51,6 +51,9 @@
     for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v);
     applied = Object.keys(vars);
     root.dataset.theme = t.dark ? "dark" : "light";
+    // Chromium (WebView2) paints an opaque backdrop behind a frame whose color-scheme differs from the
+    // workbench's, so web view pages (no BASE_STYLE) would turn white under a dark theme.
+    root.style.colorScheme = t.dark ? "dark" : "light";
     theme = Object.freeze({ dark: !!t.dark, vars: Object.freeze(vars) });
     for (const l of themeListeners) safely(l, theme);
   };
@@ -120,6 +123,8 @@
     get: () => call("document.get"),
     /** The bytes of the file the custom editor shows (read-only, so the disk is current). */
     bytes: () => call("document.bytes"),
+    size: () => call("document.size"),
+    readRange: (offset, length) => call("document.readRange", { offset, length }),
     /** Called with `{ version, text }` when the document changes other than through this frame. */
     onChange: (fn) => {
       if (typeof fn === "function") documentListeners.push(fn);

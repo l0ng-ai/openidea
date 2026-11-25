@@ -35,6 +35,7 @@ mod plugin_requests;
 mod pull;
 mod scope;
 mod server;
+mod source_actions;
 mod tcp;
 mod text;
 mod ts_file_moves;
@@ -48,6 +49,7 @@ mod xml_catalog;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
+pub use jdtls::exception_breakpoints::JdtExceptionBreakpoints;
 pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use jdtls::stream_trace::JdtStreamTracer;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
@@ -56,7 +58,7 @@ pub use message_requests::answer as answer_message_request;
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
-pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
+pub use uri::{path_to_uri_string, uri_target, uri_to_path};
 
 use caps::{ServerCaps, SyncKind};
 use convert::{Conv, lsp_range};
@@ -278,7 +280,7 @@ pub struct LspManager {
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
     /// Modification time of the archive behind a cached library class, so a jar
     /// replaced in place (a SNAPSHOT installed again) is read again.
-    virtual_stamps: Mutex<HashMap<String, std::time::SystemTime>>,
+    virtual_stamps: Mutex<HashMap<String, virtual_doc::ArchiveStamp>>,
     injections: injections::State,
     /// Open notebooks by path. Locked before `docs` when both are.
     notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
@@ -1049,12 +1051,14 @@ impl LspManager {
         if let Err(e) = peer.notify("initialized", json!({})) {
             tracing::warn!("{}: {e}", server.name);
         }
-        // Servers that don't ask with `workspace/configuration` only learn settings this way.
-        let cfg = server.effective_config();
-        if cfg.settings.is_some()
-            && let Err(e) =
-                peer.notify("workspace/didChangeConfiguration", json!({ "settings": handler::all_settings(&cfg) }))
-        {
+        // Sent even without settings: servers that don't ask with `workspace/configuration`
+        // only learn settings this way, and Pyright, given workspace folders, waits for it
+        // before asking and loading the workspace.
+        let mut settings = handler::all_settings(&server.effective_config());
+        if settings.is_null() {
+            settings = json!({});
+        }
+        if let Err(e) = peer.notify("workspace/didChangeConfiguration", json!({ "settings": settings })) {
             tracing::debug!("{}: didChangeConfiguration: {e}", server.name);
         }
 
@@ -1214,6 +1218,11 @@ impl LspManager {
         self.shown_messages.lock().insert((server.to_owned(), text.to_owned()))
     }
 
+    /// Whether `server` has shown a message containing `needle` in this project.
+    pub(crate) fn shown_message_containing(&self, server: &str, needle: &str) -> bool {
+        self.shown_messages.lock().iter().any(|(s, text)| s == server && text.contains(needle))
+    }
+
     pub(crate) fn apply_edit_hook(&self) -> Option<ApplyEditHook> {
         self.apply_edit_hook.read().clone()
     }
@@ -1228,7 +1237,7 @@ impl LspManager {
         {
             return Some(text);
         }
-        let key = path.to_str().filter(|s| is_virtual_uri(s))?;
+        let key = path.to_str().filter(|s| ide_core::is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
     }
 
@@ -2069,21 +2078,10 @@ impl LspManager {
     /// References of the symbol at `pos`. With `project_wide`, files outside
     /// the servers' analysis scope that mention the name are opened for the
     /// search (see [`scope`]); without, only what the servers analyse counts
-    /// (cheap, for bulk scans over many symbols).
-    pub async fn references(
-        &self,
-        doc: DocId,
-        pos: Pos,
-        include_declaration: bool,
-        project_wide: bool,
-        cancel: CancellationToken,
-    ) -> IdeResult<References> {
-        self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
-    }
-
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources
-    /// are searched (`libraries_skipped`); with it and `project_wide`, those found
-    /// there arrive on `partial` before the dependencies and the JDK are searched.
+    /// (cheap, for bulk scans over many symbols). Java: without `libraries`,
+    /// only the workspace's sources are searched (`libraries_skipped`); with
+    /// it and `project_wide`, those found there arrive on `partial` before
+    /// the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -2637,6 +2635,26 @@ impl LspManager {
         Ok(())
     }
 
+    /// Where other files import `doc`'s file (VS Code's Find File References): tsserver's
+    /// `fileReferences` through vtsls' `typescript.tsserverRequest`, which also answers for a
+    /// `.vue` component with the Vue TypeScript plugin (vtsls' own command refuses non-TS
+    /// documents). Unavailable when no TypeScript server serves the document.
+    pub async fn file_references(&self, doc: DocId, cancel: CancellationToken) -> IdeResult<Vec<Location>> {
+        let snap = self.snapshot(doc)?;
+        let targets =
+            self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == ts_file_moves::COMMAND)).await;
+        let t = targets
+            .iter()
+            .find(|t| t.server.config.tsserver_project)
+            .ok_or_else(|| IdeError::unavailable("No language server finds file references"))?;
+        let params = json!({
+            "command": ts_file_moves::COMMAND,
+            "arguments": ["fileReferences", { "file": snap.path }],
+        });
+        let result: Value = self.call(t, "workspace/executeCommand", params, Some(&cancel), LONG_TIMEOUT).await?;
+        Ok(ts_file_moves::file_references(&result))
+    }
+
     /// Whether a server of `doc` (`server`, when given) provides the command `name`. Code actions
     /// can carry commands other editors' extensions run themselves after the edit (vtsls'
     /// `_typescript.didOrganizeImports`): no server provides those.
@@ -2792,7 +2810,7 @@ impl LspManager {
         })
     }
 
-    /// Renames across the project: like [`Self::references`], files outside the
+    /// Renames across the project: like [`Self::references_streaming`], files outside the
     /// server's analysis scope that mention the name are opened for the request.
     /// Every server that can rename there does: the Angular server adds the
     /// templates to vtsls's edit, whose own edits win where both change the same text.
@@ -3186,6 +3204,67 @@ impl LspManager {
         Ok(!self.ready_targets(&snap.servers, |c| c.has("documentFormattingProvider")).await.is_empty())
     }
 
+    async fn snapshot_targets(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        feature: &str,
+        supports: impl Fn(&ServerCaps) -> bool,
+    ) -> IdeResult<Vec<Target>> {
+        let supports = |caps: &ServerCaps| caps.open_close && supports(caps);
+        let servers = self.servers_for(language, path);
+        for server in &servers {
+            self.ensure_started(server);
+        }
+        let mut targets = self.ready_targets(&servers, supports).await;
+        if targets.is_empty() {
+            // A primary server can become unavailable while it initializes.
+            let candidates = self.servers_for(language, path);
+            if candidates.iter().any(|server| !servers.iter().any(|old| old.id == server.id)) {
+                for server in &candidates {
+                    self.ensure_started(server);
+                }
+                targets = self.ready_targets(&candidates, supports).await;
+            }
+        }
+        if targets.is_empty() {
+            return Err(unsupported(&servers, feature));
+        }
+        Ok(targets)
+    }
+
+    async fn text_format_targets(&self, path: &Path, language: &LanguageId) -> IdeResult<Vec<Target>> {
+        self.snapshot_targets(path, language, "snapshot formatting", |c| c.has("documentFormattingProvider")).await
+    }
+
+    pub async fn can_format_text(&self, path: &Path, language: &LanguageId) -> bool {
+        self.text_format_targets(path, language).await.is_ok()
+    }
+
+    /// Use a transient URI so requests in the editor still see the working buffer.
+    pub async fn format_text(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+        options: FormatOptions,
+    ) -> IdeResult<Vec<TextEdit>> {
+        let path_to_snapshot = scope::snapshot_path(path, "format")?;
+        let targets = self.text_format_targets(path, language).await?;
+        let target = &targets[0];
+        let mut opened = scope::TransientFiles::empty(self, target);
+        opened.hold(&path_to_snapshot, language, text);
+        let params = json!({
+            "textDocument": { "uri": opened.files[0].1 },
+            "options": { "tabSize": options.tab_size, "insertSpaces": options.insert_spaces },
+        });
+        let edits: Option<Vec<lsp::TextEdit>> =
+            self.call(target, "textDocument/formatting", params, None, DEFAULT_TIMEOUT).await?;
+        let text = Arc::new(DocText::new(text));
+        let converter = Conv::new(target.enc(), |_| Some(text.clone()));
+        Ok(converter.text_edits(&path_to_snapshot, edits.unwrap_or_default()))
+    }
+
     pub async fn format(&self, doc: DocId, range: Option<Range>, options: FormatOptions) -> IdeResult<Vec<TextEdit>> {
         let (method, cap, feature) = match range {
             None => ("textDocument/formatting", "documentFormattingProvider", "formatting"),
@@ -3345,6 +3424,71 @@ impl LspManager {
             }
         }
         out.finish(Vec::new())
+    }
+
+    /// The colors the servers find in the document (`textDocument/documentColor`), each tagged with
+    /// its server for [`Self::color_presentations`]. An answer for an older version is dropped.
+    pub async fn document_colors(&self, doc: DocId) -> IdeResult<Vec<DocumentColor>> {
+        let (snap, targets) = self.doc_targets(doc, "document colors", |c| c.has("colorProvider")).await?;
+        let requests = targets.iter().map(|t| {
+            let params = json!({ "textDocument": snap.ident() });
+            async move {
+                let colors = self
+                    .call_retrying::<_, Option<Vec<lsp::ColorInformation>>>(
+                        t,
+                        "textDocument/documentColor",
+                        params,
+                        DEFAULT_TIMEOUT,
+                    )
+                    .await;
+                (t, colors)
+            }
+        });
+        let mut out = Outcome::new();
+        for (t, r) in join_all(requests).await {
+            match r {
+                Ok(colors) => {
+                    let conv = self.conv(t.enc());
+                    let acc = out.value.get_or_insert_with(Vec::new);
+                    acc.extend(
+                        colors
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|c| convert::document_color(&conv, &snap.path, t.server.id, c)),
+                    );
+                }
+                Err(e) => out.fail(e),
+            }
+        }
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        out.finish(Vec::new())
+    }
+
+    /// How `color.server` would write `color` at its range (`textDocument/colorPresentation`).
+    pub async fn color_presentations(&self, doc: DocId, color: DocumentColor) -> IdeResult<Vec<ColorPresentation>> {
+        let snap = self.snapshot(doc)?;
+        let Some(server) = snap.servers.iter().find(|s| s.id == color.server) else { return Ok(Vec::new()) };
+        let Some(t) = self.ready_targets(std::slice::from_ref(server), |c| c.has("colorProvider")).await.pop() else {
+            return Ok(Vec::new());
+        };
+        let params = json!({
+            "textDocument": snap.ident(),
+            "color": { "red": color.red, "green": color.green, "blue": color.blue, "alpha": color.alpha },
+            "range": snap.range(&t, color.range),
+        });
+        let list: Option<Vec<lsp::ColorPresentation>> =
+            self.call(&t, "textDocument/colorPresentation", params, None, DEFAULT_TIMEOUT).await?;
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        let conv = self.conv(t.enc());
+        Ok(list
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| convert::color_presentation(&conv, &snap.path, color.range, p))
+            .collect())
     }
 
     pub async fn call_hierarchy(
@@ -3564,6 +3708,16 @@ impl LspManager {
         archives.sort();
         archives.dedup();
         archives
+    }
+
+    /// Drop cached text after JDT LS reopens the archives. A request could have
+    /// read the old attachment while the binary already had its new timestamp.
+    pub fn invalidate_library_archives(&self, archives: &std::collections::HashSet<PathBuf>) {
+        if !archives.is_empty() {
+            self.virtual_docs
+                .lock()
+                .retain(|uri, _| !virtual_doc::archive(uri).is_some_and(|archive| archives.contains(&archive)));
+        }
     }
 
     /// Contents of a virtual document, from the server that owns `uri`:

@@ -10,7 +10,7 @@ mod providers;
 mod template;
 
 pub use catalog::catalog;
-pub use engine::{Emit, create, name_error, options, requirements};
+pub use engine::{Emit, create, free_name, name_error, options, requirements, target_taken};
 pub use model::{
     ChoiceOption, CreateRequest, Dependency, DependencyGroup, Field, FieldKind, GeneratorInfo, Requirement,
     ScaffoldEvent, Values,

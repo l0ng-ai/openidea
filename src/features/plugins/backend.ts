@@ -39,6 +39,8 @@ import type {
   Viewport,
   WorkbenchEvent,
 } from "@/bindings";
+import { toBase64 } from "@/platform/base64";
+import { choosePath } from "@/platform/choosePath";
 import { tx } from "@/platform/i18n";
 import { useRemote } from "@/platform/remote";
 import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
@@ -132,7 +134,7 @@ export interface PluginsBackend {
   stagePackage(name: string, files: { path: string; text: string }[]): Promise<string>;
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
-  viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
+  viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null, editor?: PluginEditor): Promise<void>;
   /** The detail tabs of item `key` in a Services or `detail = true` view. */
   serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
   /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
@@ -168,6 +170,7 @@ export interface PluginsBackend {
   openWebFile(filters: FileFilter[] | undefined): Promise<{ name: string; data: Uint8Array } | null>;
   /** The bytes of a file on this machine, at most 64 MiB (a web custom editor's `document.bytes`). */
   readFileBytes(path: string): Promise<Uint8Array>;
+  readFileRange(path: string, offset: number, length: number): Promise<{ total: number; data: Uint8Array }>;
   /** Which of a plugin's declared secrets are stored (values never come back). */
   secrets(pluginId: string): Promise<PluginSecretState[]>;
   /** Stores a secret (`null` removes it). */
@@ -197,12 +200,6 @@ export function webSchemeUrl(path: string, windows = /windows/i.test(navigator.u
   return windows ? `http://openidea-plugin.localhost/${encoded}` : `openidea-plugin://localhost/${encoded}`;
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
-}
-
 function fromBase64(b64: string): Uint8Array {
   const binary = atob(b64);
   const out = new Uint8Array(binary.length);
@@ -227,11 +224,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     return chosen;
   },
   program: (id, program, scope) => call(commands.pluginProgram(id, program, scope)),
-  pickProgram: async () => {
-    const { open } = await import("@/platform/dialog");
-    const picked = await open({ directory: false, multiple: false, title: tx("Choose plugin executable") });
-    return (Array.isArray(picked) ? picked[0] : picked) ?? null;
-  },
+  pickProgram: () => choosePath({ directory: false, title: tx("Choose plugin executable") }),
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
   revokeNetHost: (id, host) => call(commands.pluginRevokeNetHost(id, host)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
@@ -344,8 +337,8 @@ export const tauriPluginsBackend: PluginsBackend = {
   // A tool window's calls (no `doc`) carry the window's active editor.
   renderView: (pluginId, view, viewport, doc) =>
     call(commands.pluginViewRender(pluginId, view, viewport, doc, doc == null ? editorContext() : null)),
-  viewEvent: async (pluginId, view, event, doc) => {
-    await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
+  viewEvent: async (pluginId, view, event, doc, editor) => {
+    await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? (editor ?? editorContext()) : null));
   },
   serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
   runTargets: () => call(commands.pluginRunTargets()),
@@ -382,12 +375,17 @@ export const tauriPluginsBackend: PluginsBackend = {
     return { name: path.split(/[\\/]/).pop() ?? path, data };
   },
   readFileBytes: async (path) => fromBase64(await call(commands.pluginWebReadFile(path))),
+  readFileRange: async (path, offset, length) => {
+    const { total, data } = await call(commands.fsReadRange(path, offset, length));
+    return { total, data: fromBase64(data) };
+  },
   secrets: (pluginId) => call(commands.pluginSecrets(pluginId)),
   setSecret: async (pluginId, name, value) => {
     await call(commands.pluginSetSecret(pluginId, name, value));
   },
   setActiveFile: async (path) => {
-    await commands.pluginSetActiveFile(path);
+    const editor = editorContext();
+    await commands.pluginSetActiveFile(path, editor && editor.path === path ? editor : null);
   },
   setTheme: (pluginId, themeId) => call(commands.pluginSetTheme(pluginId, themeId)),
   setThemeFrame: async (color) => {
@@ -750,6 +748,9 @@ export function createMemoryPluginsBackend(
     saveWebFile: async () => null,
     openWebFile: async () => null,
     readFileBytes: async () => {
+      throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
+    },
+    readFileRange: async () => {
       throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
     },
     secrets: async (pluginId) =>

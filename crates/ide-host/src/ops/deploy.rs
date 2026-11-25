@@ -214,6 +214,25 @@ pub async fn deploy_test_connection(
     host.remote.test_connection_with(&connection, &path, password).await
 }
 
+#[command(trust = trusted)]
+pub async fn remote_upload_into(
+    window: &str,
+    host: &Host,
+    connection: FsConnection,
+    paths: Vec<IpcPath>,
+    target: String,
+    replace: bool,
+    request: RequestId,
+) -> IdeResult<TransferReport> {
+    let project = host.project(window)?;
+    let token = host.begin_request(request);
+    let (mut report, done) = progress(project.sink.clone(), "Uploading", token.clone());
+    let result = host.remote.upload_into(&connection, &local(paths), &target, replace, &token, &mut report).await;
+    done();
+    host.end_request(request);
+    result
+}
+
 ide_command::domain!(
     deploy:
     deploy_compare,
@@ -227,6 +246,7 @@ ide_command::domain!(
     deploy_upload,
     remote_delete,
     remote_download_into,
+    remote_upload_into,
     remote_list,
     remote_mkdir,
     remote_of,

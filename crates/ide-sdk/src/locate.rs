@@ -37,16 +37,11 @@ fn valid_name(name: &str) -> bool {
 /// `node_modules/.bin/<name>` (`<name>.cmd` on Windows) in `near` or an ancestor.
 fn local_bin(near: &Path, name: &str) -> Option<PathBuf> {
     let pathext = std::env::var("PATHEXT").ok();
-    let names = ide_run::which::executable_names(name, cfg!(windows), pathext.as_deref());
+    let names = ide_core::process::executable_names(name, cfg!(windows), pathext.as_deref());
     near.ancestors().take(MAX_ANCESTORS).find_map(|dir| {
         let bin = dir.join("node_modules").join(".bin");
         names.iter().map(|n| bin.join(n)).find(|p| p.is_file())
     })
-}
-
-/// On the search path; on Windows through `PATHEXT` (`kotlinc.bat`, `npx.cmd`).
-fn on_path(name: &str, search: &std::ffi::OsStr) -> Option<PathBuf> {
-    ide_run::which::find_executable(name, search)
 }
 
 /// `v22.6.0` → `22.6.0`; `rustc 1.85.0-nightly (…)` → `1.85.0-nightly`.
@@ -87,7 +82,7 @@ pub fn locate_tools_in(names: &[String], near: Option<&Path>, search: &std::ffi:
             let path = valid_name(name)
                 .then(|| {
                     near.and_then(|n| local_bin(n, name))
-                        .or_else(|| on_path(name, search))
+                        .or_else(|| ide_core::process::find_executable(name, search))
                         .or_else(|| jdk_tool(name, &crate::java::installed_jdks()))
                         .or_else(|| (name == crate::godot::COMMAND).then(|| crate::godot::find(None)).flatten())
                 })

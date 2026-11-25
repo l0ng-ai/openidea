@@ -28,6 +28,7 @@ import {
 import {
   acceptCompletion,
   closeCompletion,
+  completionStatus,
   currentCompletions,
   snippet,
   startCompletion,
@@ -296,6 +297,23 @@ describe("applying completions", () => {
     await vi.waitFor(() => expect(view.state.selection.main.head).toBe(17));
   });
 
+  it("edits repeated LSP placeholders from one selection", () => {
+    const { view, req } = setup("lo|", "", [EditorState.allowMultipleSelections.of(true)]);
+    const completion = makeCompletion(
+      item({ kind: "snippet", insertText: "log(${1:value}, $1, ${2:label})$0", isSnippet: true }),
+      req,
+    );
+    apply(view, completion, 0);
+    expect(view.state.selection.ranges).toHaveLength(1);
+    expect(view.state.doc.toString()).toBe("log(value, value, label)");
+    view.dispatch(view.state.replaceSelection("name"));
+    expect(view.state.doc.toString()).toBe("log(name, name, label)");
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Enter" }), "editor")).toBe(false);
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor")).toBe(true);
+    const { from, to } = view.state.selection.main;
+    expect(view.state.sliceDoc(from, to)).toBe("label");
+  });
+
   it("leaves an item its server inserts to the server, and puts the caret after what it inserted", async () => {
     const executed: string[] = [];
     setInvokeRoute((cmd) => {
@@ -317,6 +335,22 @@ describe("applying completions", () => {
       // Later edits from elsewhere leave the caret alone.
       view.dispatch({ changes: { from: 15, insert: " " }, annotations: remoteChange.of(true) });
       expect(view.state.selection.main.head).toBe(15);
+    } finally {
+      setInvokeRoute(null);
+    }
+  });
+
+  it("puts the caret inside the parentheses of a server-inserted call that takes arguments", async () => {
+    setInvokeRoute(() => Promise.resolve(null));
+    try {
+      const { view, req } = setup("x.rea|\n", "", [completionExtension()]);
+      view.dispatch({ effects: StateEffect.appendConfig.of(lspDoc.of({ doc: 1 } as EditorDocContext)) });
+      const command = { title: "Apply Completion", command: "jetbrains.kotlin.completion.apply", arguments: ["1"] };
+      const kotlin = item({ label: "read", kind: "method", labelDetail: "(name: String)", insertText: "", command });
+      applyLspCompletion(view, makeCompletion(kotlin, req), 5, 5, "insert");
+      view.dispatch({ changes: { from: 5, insert: "d()" }, annotations: remoteChange.of(true) });
+      expect(view.state.doc.toString()).toBe("x.read()\n");
+      expect(view.state.selection.main.head).toBe(7);
     } finally {
       setInvokeRoute(null);
     }
@@ -838,6 +872,38 @@ describe("completion footer", () => {
   afterEach(() => {
     view?.destroy();
     view = null;
+  });
+
+  it("formats partial results while the language server is still answering", async () => {
+    let finishReply = () => {};
+    const reply = new Promise((resolve) => {
+      finishReply = () => resolve({ isIncomplete: false, items: [] });
+    });
+    setInvokeRoute((cmd) => (cmd === "lsp_completion" ? reply : Promise.resolve(null)));
+    const source: CompletionSource = (ctx) => ({ from: ctx.pos, options: [{ label: "localSuggestion" }] });
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "thing.",
+        selection: { anchor: 6 },
+        extensions: [
+          lspDoc.of({ doc: 902, path: "/p/Example.java", language: "java", uiMode: "Java", readOnly: false }),
+          completionExtension(),
+          EditorState.languageData.of(() => [{ openideaCompletion: source }]),
+        ],
+      }),
+      parent: document.body,
+    });
+    try {
+      startCompletion(view);
+      await vi.waitFor(() => {
+        expect(completionStatus(view!.state)).toBe("pending");
+        expect(document.querySelector(".cm-tooltip-autocomplete > .cm-lsp-completion-footer")).not.toBeNull();
+      });
+    } finally {
+      closeCompletion(view);
+      setInvokeRoute(null);
+      finishReply();
+    }
   });
 
   it("stays below the list after CodeMirror rebuilds the options", async () => {

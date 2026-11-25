@@ -453,6 +453,7 @@ describe("closing result tabs", () => {
           hasMore: false,
           elapsedMs: 1,
           executionMs: 1,
+          truncated: [],
         },
       },
     };

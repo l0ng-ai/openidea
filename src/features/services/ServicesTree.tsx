@@ -120,7 +120,8 @@ export function ServicesTreeView() {
   };
   const moveActions = (item: ServiceTreeItem): ServiceItemAction[] => {
     const located = index.get(item.key);
-    const siblings = located?.parent?.children;
+    // A provider's roots (a run type's group) have no parent row; they reorder among themselves.
+    const siblings = located?.parent?.children ?? (located ? rootsByProvider[located.provider] : undefined);
     if (!located || !siblings || !providers.find((p) => p.id === located.provider)?.reorder) return [];
     const at = siblings.findIndex((s) => s.key === item.key);
     return ([-1, 1] as const).map((delta) => {
@@ -257,6 +258,11 @@ export function ServicesTreeView() {
                 onActivate={(n) => {
                   const p = index.get(n.key);
                   providers.find((x) => x.id === p?.provider)?.activate?.(n);
+                }}
+                onJumpToSource={(n) => {
+                  const p = providers.find((x) => x.id === index.get(n.key)?.provider);
+                  if (p?.jumpToSource) p.jumpToSource(n);
+                  else p?.activate?.(n);
                 }}
                 onContextMenu={(n, keys, e) => {
                   e.preventDefault();

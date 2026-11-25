@@ -55,7 +55,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  min-width: min(8ch, 45%);
+  /* Cap the automatic flex minimum at the space needed for a short preview. */
+  width: min(14ch, 50%);
   flex: 1 1 0;
 }
 
@@ -92,21 +93,30 @@
   border-radius: var(--radius-small);
 }
 
-.valuePopupContent {
-  padding: 12px 16px;
+.valuePopup {
+  height: clamp(240px, 50vh, 560px);
+}
+
+.valuePopup > [data-dialog-body] {
+  display: flex;
+  overflow: hidden;
 }
 
 .valuePopupValue {
-  max-height: min(420px, calc(100vh - 120px));
+  flex: 1;
+  min-width: 0;
   margin: 0;
+  padding: var(--space-3) var(--space-4);
   overflow: auto;
   color: var(--fg);
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  font-weight: var(--fw-code);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   user-select: text;
+}
+
+.valuePopupValue:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
 }
 
 .number {
@@ -126,9 +136,8 @@
 }
 
 .type {
-  min-width: 0;
-  max-width: 25%;
-  flex: 0 1 auto;
+  min-width: min(3ch, 10%);
+  flex: 0 4 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
@@ -150,11 +159,17 @@
   font-size: var(--fs-ui);
 }
 
+.editRow,
+.editRow > .valueGroup {
+  height: 100%;
+}
+
 .editInput {
-  flex: 1;
-  min-width: min(80px, 40%);
-  height: 18px;
-  padding: 0 4px;
+  box-sizing: border-box;
+  flex: 1 1 0;
+  min-width: 0;
+  height: calc(100% - var(--space-1));
+  padding: 0 var(--space-1);
   font: inherit;
   font-family: var(--font-mono);
   color: var(--fg-strong);
@@ -165,6 +180,10 @@
 }
 .editInvalid {
   border-color: var(--danger);
+}
+
+.editError {
+  max-width: 33%;
 }
 
 /* Changed since the previous stop. */

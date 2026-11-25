@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import type { Settings, UpdateCheck, UpdateInfo, UpdateProgress } from "@/bindings";
 import type { NotificationService } from "@/workbench/contributions";
 
@@ -297,7 +297,11 @@ describe("Check for Updates", () => {
                 : outcome === "available"
                   ? "OpenIDEA 0.1.22 is available"
                   : "OpenIDEA 0.1.21 is up to date";
-            const answer = screen.getByRole(outcome === "error" ? "alert" : "status");
+            const surface =
+              windowKind === "project" && mode === "logged"
+                ? within(screen.getByRole("list", { name: "Timeline" }))
+                : within(view.container);
+            const answer = surface.getByRole(outcome === "error" ? "alert" : "status");
             expect(answer).toBeVisible();
             expect(answer).toHaveTextContent(title);
           } finally {

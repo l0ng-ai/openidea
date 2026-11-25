@@ -18,6 +18,7 @@ import {
   type Requirement,
   type ScaffoldEvent,
   type Sdk,
+  type SdkKind,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useTx, useTxTemplate } from "@/platform/i18n";
@@ -35,7 +36,7 @@ import {
   T,
   hasIcon,
 } from "@/ui";
-import { effectiveValues, fieldError, isVisible, type Values } from "./newProjectTemplate";
+import { effectiveValues, fieldError, isVisible, versionAtLeast, type Values } from "./newProjectTemplate";
 import { defaultProjectDirectory, openProjectInWindow } from "./windows";
 import styles from "./newProject.module.css";
 
@@ -65,9 +66,28 @@ function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Default Project Directory, else the parent of the open project. */
+const LOCATION_KEY = "openidea.newProject.location";
+const DEFAULT_NAME = "untitled";
+
+function lastLocation(): string {
+  try {
+    return localStorage.getItem(LOCATION_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveLocation(dir: string) {
+  try {
+    localStorage.setItem(LOCATION_KEY, dir);
+  } catch {
+    // Not kept: the next project starts from the default location.
+  }
+}
+
+/** Default Project Directory, else where the last project was created, else the parent of the open project. */
 function initialLocation(): string {
-  const preset = defaultProjectDirectory();
+  const preset = defaultProjectDirectory() || lastLocation();
   if (preset) return preset;
   const root = useProject.getState().project?.root;
   return root ? root.slice(0, Math.max(root.lastIndexOf("/"), 1)) : "";
@@ -119,7 +139,11 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selected, setSelected] = useState("empty");
   const [query, setQuery] = useState("");
-  const [name, setName] = useState("untitled");
+  const [name, setName] = useState(DEFAULT_NAME);
+  /** Until the user types a name, it follows the first free `untitled…` in the location. */
+  const [nameEdited, setNameEdited] = useState(false);
+  /** The project path last found taken (something other than an empty folder is there). */
+  const [takenPath, setTakenPath] = useState<string | null>(null);
   const [location, setLocation] = useState(initialLocation);
   const [git, setGit] = useState(true);
   /** Values the user set, per generator; the rest are rendered defaults. */
@@ -127,7 +151,9 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [dynamic, setDynamic] = useState<{ id: string; key: string; fields: Field[] } | null>(null);
   const [dynamicError, setDynamicError] = useState<string | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
-  const [jdks, setJdks] = useState<Sdk[] | null>(null);
+  /** Installed SDKs by kind, once detected. */
+  const [sdks, setSdks] = useState<Partial<Record<string, Sdk[]>>>({});
+  const detecting = useRef(new Set<string>());
   const [job, setJob] = useState<Job | null>(null);
   const layout = useRef<HTMLDivElement>(null);
   const [stacked, setStacked] = useState(false);
@@ -201,19 +227,57 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     };
   }, [generator, valuesKey]);
 
-  const needsJdk = fields.some((f) => f.kind.type === "sdk" && f.kind.sdk === "jdk");
+  const sdkKinds = [...new Set(fields.flatMap((f) => (f.kind.type === "sdk" ? [f.kind.sdk] : [])))].join(",");
   useEffect(() => {
-    if (!needsJdk || jdks) return;
-    call(commands.sdkDetect("jdk"))
-      .then(setJdks)
-      .catch(() => setJdks([]));
-  }, [needsJdk, jdks]);
+    for (const kind of sdkKinds.split(",")) {
+      if (!kind || sdks[kind] || detecting.current.has(kind)) continue;
+      detecting.current.add(kind);
+      const found = (list: Sdk[]) => setSdks((all) => ({ ...all, [kind]: list }));
+      call(commands.sdkDetect(kind as SdkKind))
+        .then(found)
+        .catch(() => found([]));
+    }
+  }, [sdkKinds, sdks]);
 
   const setValue = (id: string, value: string) =>
     setEdited((all) => ({ ...all, [selected]: { ...(all[selected] ?? {}), [id]: value } }));
 
-  const nameError = projectNameError(name);
-  const path = location.trim() && !nameError ? joinPath(location.trim(), name) : "";
+  const syntaxError = projectNameError(name);
+  const path = location.trim() && !syntaxError ? joinPath(location.trim(), name) : "";
+  const nameError =
+    syntaxError ?? (path && takenPath === path ? "A folder with this name already exists and is not empty" : null);
+
+  useEffect(() => {
+    const dir = location.trim();
+    if (nameEdited || !dir) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      call(commands.scaffoldFreeName(dir, DEFAULT_NAME))
+        .then((free) => live && setName(free))
+        .catch(() => {});
+    }, 200);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [location, nameEdited]);
+
+  useEffect(() => {
+    if (!path) return;
+    let live = true;
+    const dir = location.trim();
+    const timer = setTimeout(() => {
+      call(commands.scaffoldTargetTaken(dir, name.trim()))
+        .then((taken) => live && setTakenPath(taken ? path : null))
+        .catch(() => {});
+    }, 150);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+    // `path` already reflects `location` and `name`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
   const visibleFields = fields.filter((f) => isVisible(f, values));
   const invalidField = visibleFields.find((f) => fieldError(f, values[f.id] ?? ""));
   const missing = requirements.filter((r) => !r.satisfied);
@@ -265,6 +329,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
           channel,
         ),
       );
+      saveLocation(location.trim());
       onClose();
       await openProjectInWindow(dir, useProject.getState().project !== null);
     } catch (e) {
@@ -354,7 +419,10 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                 data-autofocus
                 value={name}
                 invalid={!!nameError}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setNameEdited(true);
+                  setName(e.target.value);
+                }}
               />
               <label className={styles.label} htmlFor="np-location">
                 <T>Location:</T>
@@ -376,7 +444,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                 />
               </div>
               <span />
-              <div className={styles.hint}>
+              <div className={nameError ? `${styles.hint} ${styles.hintError}` : styles.hint}>
                 {nameError ? txTemplate(nameError) : path && txTemplate(`Project will be created in: ${path}`)}
               </div>
               {generator?.git && (
@@ -391,7 +459,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                   field={f}
                   value={values[f.id] ?? ""}
                   onChange={(v) => setValue(f.id, v)}
-                  jdks={jdks}
+                  sdks={f.kind.type === "sdk" ? (sdks[f.kind.sdk] ?? null) : null}
                 />
               ))}
               {loadingDynamic && (
@@ -431,12 +499,12 @@ function FieldRow({
   field,
   value,
   onChange,
-  jdks,
+  sdks,
 }: {
   field: Field;
   value: string;
   onChange: (value: string) => void;
-  jdks: Sdk[] | null;
+  sdks: Sdk[] | null;
 }) {
   const tx = useTx();
   const id = `np-field-${field.id}`;
@@ -482,14 +550,16 @@ function FieldRow({
     );
   else if (kind.type === "sdk") {
     const options: SelectOption[] = [
-      { value: "", label: jdks === null ? "Detecting…" : "Automatic" },
-      ...(jdks ?? []).map((s) => ({
-        value: s.home ?? s.path,
-        label: s.name,
-        detail: s.version ?? undefined,
-        verbatim: true,
-      })),
-    ];
+      { value: "", label: sdks === null ? "Detecting…" : "Automatic" },
+      ...(sdks ?? [])
+        .filter((s) => !kind.min || versionAtLeast(s.version ?? "", kind.min))
+        .map((s) => ({
+          value: kind.version ? (s.version ?? "") : (s.home ?? s.path),
+          label: s.name,
+          detail: s.version ?? undefined,
+          verbatim: true,
+        })),
+    ].filter((o, i) => i === 0 || o.value);
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
     control = (
       <Select
@@ -611,6 +681,7 @@ function ProgressView({ job, onBack, onClose }: { job: Job; onBack: () => void; 
       <div className={styles.progress}>
         <ol className={styles.steps}>
           {job.steps.map((s, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- step labels can repeat; position is the identity
             <li key={i} aria-current={i === job.steps.length - 1 && !failed ? "step" : undefined}>
               {tx(s)}
             </li>

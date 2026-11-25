@@ -91,6 +91,43 @@
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
 }
+/* Pin and Archive appear beside the age while the pointer is on the row. */
+.rowActions {
+  display: none;
+  flex: none;
+  margin-left: auto;
+  margin-right: var(--space-2);
+  gap: var(--space-2);
+}
+.row:hover .rowActions,
+.rowActions:focus-within {
+  display: flex;
+}
+.row:hover .age,
+.row:has(.rowActions:focus-within) .age {
+  margin-left: 0;
+}
+.rowAction {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-subtle);
+  --icon-color: currentColor;
+  cursor: pointer;
+}
+.rowAction:hover {
+  color: var(--fg-strong);
+}
+.rowAction:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  border-radius: var(--radius-small);
+}
 .ready {
   color: var(--success);
 }
@@ -224,11 +261,12 @@
   flex: none;
 }
 
-/* Import Sessions from Other Apps: filter above a fixed-height list, so the dialog doesn't grow. */
+/* Keep the import list height stable while filtering. */
 .chooser {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) 0;
 }
 .chooserList {
   height: 312px;

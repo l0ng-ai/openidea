@@ -30,9 +30,6 @@
 .presetSelect {
   flex: 1;
 }
-.spacer {
-  flex: 1;
-}
 .modifiedNote {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
@@ -195,53 +192,88 @@
 .recordLabel {
   color: var(--fg);
 }
+.shortcutBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
+}
+.actionSummary {
+  display: grid;
+  gap: var(--space-0-5);
+}
+.actionName {
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.shortcutField {
+  flex: 0 0 auto;
+  background: var(--bg-field);
+}
+.shortcutField > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.secondStroke {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.secondStroke > label {
+  max-width: 55%;
+}
+.secondStroke .shortcutField {
+  flex: 1;
+}
 .recordHint {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
-.conflicts {
-  min-height: 72px;
-  padding: 6px 8px;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border);
-}
-.noConflicts {
-  color: var(--fg-subtle);
+.shortcutStatus {
+  display: grid;
+  gap: var(--space-1);
 }
 .conflictTitle {
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
   color: var(--fg-emphasis);
+  font-weight: 600;
 }
 .conflictIcon {
+  flex: none;
   color: var(--warning);
+  --icon-color: currentColor;
 }
 .conflictList {
   list-style: none;
-  margin: 6px 0 0;
-  padding: 0 0 0 20px;
-  max-height: 120px;
-  overflow: auto;
+  margin: 0;
+  padding: 0;
+  max-height: 132px;
+  overflow-y: auto;
 }
 .conflictList li {
-  display: flex;
-  min-width: 0;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) fit-content(42%);
+  align-items: start;
   gap: var(--space-2);
-  height: var(--h-row);
+  padding-block: var(--space-1);
 }
 .conflictAction {
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
-.conflictCategory {
+.actionPath {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
-
-.conflictsLabel {
-  color: var(--fg);
-  padding-top: 4px;
+.conflictBinding {
+  text-align: end;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .nameError {
   color: var(--danger);

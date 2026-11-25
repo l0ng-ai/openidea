@@ -1,4 +1,5 @@
 /** Creates a file from a template and fills it through the editor. */
+import { toBase64 } from "@/platform/base64";
 import { tx } from "@/platform/i18n";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { EditorSelection } from "@codemirror/state";
@@ -45,7 +46,8 @@ async function siblingGoPackage(directory: string): Promise<string | null> {
   }
 }
 
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/;
+// `Gradle` marks the source sets a Gradle sync reported (ide-host `with_gradle_roots`).
+const JVM_BUILD = /^Gradle$|(^|\/)(pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
 
 /** JVM source and test roots (project-relative) that packages are counted from. */
 function packageRoots(): string[] {
@@ -191,7 +193,7 @@ export async function createFromTemplate(
   // A provided editor (a notebook shows cells, not text) reads the file from
   // disk and has no view to insert into, so its body is written on create.
   const provided = await providedEditor(plan.path);
-  if (provided && text) await call(commands.fsCreateFileBytes(plan.path, [...new TextEncoder().encode(text)]));
+  if (provided && text) await call(commands.fsCreateFileBytes(plan.path, toBase64(new TextEncoder().encode(text))));
   else await call(commands.fsCreateFile(plan.path));
   notifyFileOperation({ kind: "created", paths: [plan.path] });
   onCreated?.();

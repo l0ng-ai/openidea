@@ -130,7 +130,19 @@ pub async fn docker_container_stats(
     blocking(move || ide_docker::container_stats(&endpoint, &id)).await
 }
 
-/// Streams a container's log lines until it stops or the request is cancelled.
+/// Disk usage per volume name (`docker system df -v`).
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn docker_volume_sizes(
+    state: State<'_, AppState>,
+    endpoint: DockerEndpoint,
+) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    let endpoint = resolve(&state, endpoint).await?;
+    blocking(move || ide_docker::volume_sizes(&endpoint)).await
+}
+
+/// Streams a container's log lines, in batches, until it stops or the request is cancelled.
 #[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
@@ -143,12 +155,12 @@ pub async fn docker_logs(
     tail: u32,
     follow: bool,
     timestamps: bool,
-    on_line: Channel<DockerLogLine>,
+    on_lines: Channel<Vec<DockerLogLine>>,
 ) -> IdeResult<()> {
     let endpoint = resolve(&state, endpoint).await?;
     cancellable(&state, request, move |cancel| {
-        ide_docker::logs(&endpoint, &id, tail, follow, timestamps, cancel, &|line| {
-            let _ = on_line.send(line);
+        ide_docker::logs(&endpoint, &id, tail, follow, timestamps, cancel, &|lines| {
+            let _ = on_lines.send(lines);
         })
     })
     .await
@@ -308,4 +320,5 @@ ide_command::desktop_domain!(
     docker_set_registry_password,
     docker_settings,
     docker_snapshot,
+    docker_volume_sizes,
 );

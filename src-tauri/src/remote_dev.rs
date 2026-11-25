@@ -8,7 +8,7 @@ use crate::state::AppState;
 use ide_command::desktop_command;
 use ide_core::{EventSink, IdeError, IdeResult};
 use ide_host::catalogue::TrustClass;
-use ide_host::rpc::{ChannelMessage, EventMessage, Invoke, ServerInfo};
+use ide_host::rpc::{ChannelMessage, EventMessage, Invoke, RemoteIdlePolicy, ServerInfo};
 use ide_jsonrpc::{Handler, Peer};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,8 @@ use serde_json::Value;
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Window};
 
@@ -55,12 +57,20 @@ pub(crate) const SERVER_DIR: &str = ".openidea/server";
 /// File name of the server binary on every host.
 pub(crate) const SERVER_BIN: &str = "openidea-server";
 
+/// Canonical window key sent to the per-project `openidea-server` daemon, so
+/// reopening the project in another desktop window (`main` vs `project-1`)
+/// rebinds to the same open project and live terminal sessions on the server.
+const SERVER_WINDOW: &str = "main";
+
 /// Printed before a probe's answer: shell start-up files and `wsl.exe` may print first.
 pub(crate) const PROBE_MARK: &str = "__OPENIDEA_PROBE__";
 
 /// One remote window's connection.
 pub struct Connection {
     peer: Peer,
+    stopping: AtomicBool,
+    taken_over: Arc<AtomicBool>,
+    idle_policy: Option<RemoteIdlePolicy>,
     pub target: RemoteTarget,
     pub root: String,
     pub host: String,
@@ -88,10 +98,13 @@ pub struct Connection {
 /// A forwarded port's host (`None`: the remote host itself) and remote port.
 type ForwardKey = (Option<String>, u16);
 
-/// A forwarded port: through the SSH connection, or `docker exec` in a dev container.
+/// A forwarded port: through the SSH connection, `docker exec` in a dev container, or — for
+/// WSL — nothing, the distribution's `localhost` already being this machine's.
 enum Forward {
     Ssh(ide_ssh::Tunnel),
     Container(ide_remote::container_tunnel::Tunnel),
+    /// The remote port, reachable here on the same port without a tunnel.
+    Wsl(u16),
 }
 
 impl Forward {
@@ -99,6 +112,7 @@ impl Forward {
         match self {
             Self::Ssh(t) => t.port(),
             Self::Container(t) => t.port(),
+            Self::Wsl(port) => *port,
         }
     }
 }
@@ -114,6 +128,18 @@ pub struct Connections {
 }
 
 impl Connection {
+    pub(crate) fn snapshot(&self) -> RemoteSession {
+        RemoteSession {
+            target: self.target.clone(),
+            root: self.root.clone(),
+            host: self.host.clone(),
+            os: self.os.clone(),
+            commands: self.commands.clone(),
+            idle_policy: self.idle_policy,
+            taken_over: self.taken_over.load(Ordering::Acquire),
+        }
+    }
+
     /// Commands of a remote window that run on this machine follow this machine's decision about the
     /// remote project, never the server's: the server only answers for what runs there. A remote
     /// window always has a project, so only `Always` runs before it is trusted.
@@ -332,6 +358,8 @@ pub struct RemoteProject {
     pub host: String,
     pub server_version: String,
     pub os: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<RemoteIdlePolicy>,
     /// Commands routed to the server (the rest run locally).
     pub commands: Vec<String>,
     pub project: ide_host::ops::project::ProjectInfo,
@@ -342,6 +370,7 @@ struct ClientHandler {
     window: String,
     channels: Channels,
     connection: Arc<std::sync::OnceLock<std::sync::Weak<Connection>>>,
+    taken_over: Arc<AtomicBool>,
 }
 
 impl Handler for ClientHandler {
@@ -390,6 +419,10 @@ impl Handler for ClientHandler {
             AUTH_REQUEST, AuthRequest, SECRET_REQUEST, SECRET_WRITE, SecretRequest, SecretWrite,
         };
         match method {
+            ide_host::rpc::SESSION_REPLACED => {
+                self.taken_over.store(true, Ordering::Release);
+                Ok(Value::Null)
+            }
             // A remote plugin's request header needs a secret from this machine's keychain.
             SECRET_REQUEST => {
                 let r: SecretRequest =
@@ -636,11 +669,13 @@ pub async fn remote_connect(
     let attempt = state.remote_dev.begin(&label);
     let channels: Channels = Arc::default();
     let connection_slot: Arc<std::sync::OnceLock<std::sync::Weak<Connection>>> = Arc::default();
+    let taken_over = Arc::new(AtomicBool::new(false));
     let handler = Arc::new(ClientHandler {
         app: window.app_handle().clone(),
         window: label.clone(),
         channels: channels.clone(),
         connection: connection_slot.clone(),
+        taken_over: taken_over.clone(),
     });
     let tail = crate::remote_wsl::Tail::default();
     let mut exec = None;
@@ -650,17 +685,29 @@ pub async fn remote_connect(
             let session = state.ssh.session(id).await?;
             let bin = ensure_server(&state, &session, progress.clone()).await?;
             progress(RemoteStage::Starting, None);
+            let attach_arg = if path.trim().is_empty() { "~" } else { path.trim() };
             let stream = session
-                .exec_stream(&format!("{} --stdio", ide_ssh::shell::tilde_quote(&bin)))
+                .exec_stream(&format!(
+                    "{} --attach {} 2>&1",
+                    ide_ssh::shell::tilde_quote(&bin),
+                    ide_ssh::shell::quote(attach_arg),
+                ))
                 .await
                 .map_err(|e| IdeError::unavailable(format!("cannot start openidea-server: {e}")))?;
             let (reader, writer) = tokio::io::split(stream);
-            (Peer::connect(reader, writer, handler), Some(session), config.label(), config.label())
+            let output = tail.clone();
+            (
+                Peer::connect_with_output(reader, writer, handler, move |line| output.push(line)),
+                Some(session),
+                config.label(),
+                config.label(),
+            )
         }
         RemoteTarget::Wsl { distro } => {
             let bin = crate::remote_wsl::ensure_server(&state, distro, progress.clone()).await?;
             progress(RemoteStage::Starting, None);
-            let peer = crate::remote_wsl::spawn(distro, &bin, handler, &tail)?;
+            let attach_arg = if path.trim().is_empty() { "~" } else { path.trim() };
+            let peer = crate::remote_wsl::spawn(distro, &bin, attach_arg, handler, &tail)?;
             (peer, None, distro.clone(), format!("WSL: {distro}"))
         }
         RemoteTarget::DevContainer { folder, config } => {
@@ -707,7 +754,8 @@ pub async fn remote_connect(
         path.trim().to_owned()
     };
     progress(RemoteStage::Opening, None);
-    let call = Invoke { window: label.clone(), cmd: "open_project".into(), args: serde_json::json!({ "path": root }) };
+    let call =
+        Invoke { window: SERVER_WINDOW.into(), cmd: "open_project".into(), args: serde_json::json!({ "path": root }) };
     let project: ide_host::ops::project::ProjectInfo =
         peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
     // As the server resolved it (symlinks, a trailing `/`): the frontend compares it with the project's.
@@ -718,6 +766,9 @@ pub async fn remote_connect(
     let _ = window.set_title(&format!("{} [{title_tag}]", project.display_name));
     let connection = Arc::new(Connection {
         peer,
+        stopping: AtomicBool::new(false),
+        taken_over: taken_over.clone(),
+        idle_policy: info.idle_policy,
         target: target.clone(),
         root: root.clone(),
         host: host.clone(),
@@ -750,16 +801,22 @@ pub async fn remote_connect(
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         peer.closed().await;
-        auth_plugins.forget_remote_loopbacks(&auth_window);
+        let current = app.state::<AppState>().remote_dev.get(&auth_window);
+        if current.is_none() {
+            auth_plugins.forget_remote_loopbacks(&auth_window);
+        }
         let Some(connection) = weak.upgrade() else { return };
         connection.forwards.lock().clear();
         // Still the window's connection: not a disconnect or a replacement, so the window learns
         // its project is unreachable instead of failing every command with "connection closed".
-        let current = app.state::<AppState>().remote_dev.get(&auth_window);
         if current.is_some_and(|c| Arc::ptr_eq(&c, &connection)) {
-            tracing::warn!("{}: the connection to openidea-server was lost", connection.host);
-            TauriSink { app, window: Some(auth_window) }
-                .emit(ide_core::IdeEvent::RemoteConnectionLost { host: connection.host.clone() });
+            auth_plugins.forget_remote_loopbacks(&auth_window);
+            if !connection.stopping.load(Ordering::Acquire) || taken_over.load(Ordering::Acquire) {
+                let taken_over = taken_over.load(Ordering::Acquire);
+                tracing::info!(host = connection.host, taken_over, "remote backend disconnected");
+                TauriSink { app, window: Some(auth_window) }
+                    .emit(ide_core::IdeEvent::RemoteConnectionLost { host: connection.host.clone(), taken_over });
+            }
         }
     });
     let plugins = state.plugins.clone();
@@ -770,16 +827,25 @@ pub async fn remote_connect(
     if let Err(error) = crate::window_groups::persist(window.app_handle()).await {
         tracing::warn!(%error, "cannot save window session after opening remote project");
     }
-    Ok(RemoteProject { target, root, host, server_version: info.version, os: info.os, commands, project })
+    Ok(RemoteProject {
+        target,
+        root,
+        host,
+        server_version: info.version,
+        os: info.os,
+        idle_policy: info.idle_policy,
+        commands,
+        project,
+    })
 }
 
 /// Sends the desktop's plugin languages, with the programs granted to them, to
 /// the window's server: `Workspace` contributions take effect where the project
 /// is. A server without the command answers an error, which is logged.
-pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &Connection, window: &str) {
+pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &Connection, _window: &str) {
     use ide_host::plugins::remote::{SYNC_COMMAND, SyncReport};
     let call = Invoke {
-        window: window.to_owned(),
+        window: SERVER_WINDOW.to_owned(),
         cmd: SYNC_COMMAND.into(),
         args: serde_json::json!({ "languages": plugins.remote_languages() }),
     };
@@ -799,12 +865,12 @@ pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &
 /// Sends the desktop's live code plugins to the window's server, which runs
 /// them next to the project: digests and grants first,
 /// then the files of the packages the server lacks, one per request.
-pub async fn sync_plugin_packages(plugins: &Arc<ide_host::plugins::PluginHost>, c: &Connection, window: &str) {
+pub async fn sync_plugin_packages(plugins: &Arc<ide_host::plugins::PluginHost>, c: &Connection, _window: &str) {
     use ide_host::plugins::remote_host::{PackageSyncReport, SYNC_PACKAGES};
     let host = plugins.clone();
     let Ok(packages) = tauri::async_runtime::spawn_blocking(move || host.remote_packages()).await else { return };
     let sync = |files: serde_json::Value| Invoke {
-        window: window.to_owned(),
+        window: SERVER_WINDOW.to_owned(),
         cmd: SYNC_PACKAGES.into(),
         args: serde_json::json!({ "packages": packages, "files": files }),
     };
@@ -850,6 +916,10 @@ pub struct RemoteSession {
     /// `linux`, `macos` or `windows`: the OS the project's commands run on.
     pub os: String,
     pub commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<RemoteIdlePolicy>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub taken_over: bool,
 }
 
 /// The remote session of this window (a settings window: its parent's), if any.
@@ -858,13 +928,7 @@ pub struct RemoteSession {
 #[specta::specta]
 pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<RemoteSession> {
     let c = state.remote_dev.get(AppState::owner_window(window.label()))?;
-    Some(RemoteSession {
-        target: c.target.clone(),
-        root: c.root.clone(),
-        host: c.host.clone(),
-        os: c.os.clone(),
-        commands: c.commands.clone(),
-    })
+    Some(c.snapshot())
 }
 
 /// This machine's trust decision for the window's remote project (see [`Connection::authorize`]).
@@ -887,7 +951,16 @@ pub fn remote_trust_status(window: Window, state: State<'_, AppState>) -> IdeRes
 #[specta::specta]
 pub fn remote_trust_set(window: Window, state: State<'_, AppState>, trusted: bool) -> IdeResult<()> {
     let c = connection(&window, &state)?;
-    state.host.trust.decide_remote(&c.location(), trusted)
+    state.host.trust.decide_remote(&c.location(), trusted)?;
+    if trusted {
+        let plugins = state.plugins.clone();
+        let label = AppState::owner_window(window.label()).to_owned();
+        tauri::async_runtime::spawn(async move {
+            sync_plugin_languages(&plugins, &c, &label).await;
+            sync_plugin_packages(&plugins, &c, &label).await;
+        });
+    }
+    Ok(())
 }
 
 /// A port of the remote host reachable on this machine at `localhost:local_port`.
@@ -954,20 +1027,48 @@ pub async fn remote_forward_port(
     Ok(port)
 }
 
+/// How a remote port reaches this machine: through the SSH connection, an exec-based
+/// container tunnel, or — for WSL — nothing, the distribution's `localhost` being this
+/// machine's. `None`: not reachable (another host only from a dev container).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForwardRoute {
+    Ssh,
+    Container,
+    Wsl,
+}
+
+fn forward_route(target: &RemoteTarget, host: Option<&str>) -> Option<ForwardRoute> {
+    match (target, host) {
+        (RemoteTarget::Ssh { .. }, None) => Some(ForwardRoute::Ssh),
+        (RemoteTarget::Ssh { .. }, Some(_)) => None,
+        (RemoteTarget::DevContainer { .. }, _) => Some(ForwardRoute::Container),
+        (RemoteTarget::Wsl { .. }, None) => Some(ForwardRoute::Wsl),
+        (RemoteTarget::Wsl { .. }, Some(_)) => None,
+    }
+}
+
 /// Forwards `remote_port` of `host` (`None`: the remote host itself) to the same local port
-/// when it is free, else to a free one. Another host is reached from a dev container only.
+/// when it is free, else to a free one. A WSL distribution shares this machine's loopback, so
+/// its port is already reachable on the same port here. Another host is reached from a dev
+/// container only.
 async fn open_forward(c: &Connection, host: Option<&str>, remote_port: u16) -> IdeResult<Forward> {
-    if let (Some(session), None) = (c.session.clone(), host) {
-        let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
-        return Ok(Forward::Ssh(tunnel));
+    let unsupported = || IdeError::unavailable("Forwarding ports is not supported here yet");
+    match forward_route(&c.target, host) {
+        Some(ForwardRoute::Ssh) => {
+            let session = c.session.clone().ok_or_else(unsupported)?;
+            let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
+            Ok(Forward::Ssh(tunnel))
+        }
+        Some(ForwardRoute::Container) => {
+            let exec = c.exec.clone().ok_or_else(unsupported)?;
+            let host = host.unwrap_or("localhost");
+            Ok(Forward::Container(
+                ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, host, remote_port).await?,
+            ))
+        }
+        Some(ForwardRoute::Wsl) => Ok(Forward::Wsl(remote_port)),
+        None => Err(unsupported()),
     }
-    if let Some(exec) = c.exec.clone() {
-        let host = host.unwrap_or("localhost");
-        return Ok(Forward::Container(
-            ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, host, remote_port).await?,
-        ));
-    }
-    Err(IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))
 }
 
 /// `web_url` answers with the remote host's built-in web server, on its loopback: the URL's
@@ -1065,6 +1166,40 @@ pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
     state.remote_dev.disconnect(AppState::owner_window(window.label()));
 }
 
+/// Stops the persistent `openidea-server` daemon for this window's remote project,
+/// terminating its terminals, runs, language servers and agent sessions, then disconnects.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_stop_backend(window: Window, state: State<'_, AppState>) -> IdeResult<()> {
+    let label = AppState::owner_window(window.label()).to_owned();
+    let c = connection(&window, &state)?;
+    if c.stopping.swap(true, Ordering::AcqRel) {
+        return Err(IdeError::unavailable("The remote backend is already stopping"));
+    }
+    let result: IdeResult<()> = async {
+        tokio::time::timeout(Duration::from_secs(10), c.peer.request::<_, Value>("shutdown", Value::Null, None))
+            .await
+            .map_err(|_| IdeError::unavailable("The remote backend did not respond to the shutdown request"))?
+            .map_err(ide_host::rpc::error_from_reply)?;
+        tokio::time::timeout(ide_host::rpc::SHUTDOWN_TIMEOUT, c.peer.closed())
+            .await
+            .map_err(|_| IdeError::unavailable("Timed out waiting for the remote backend to stop"))?;
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        c.stopping.store(false, Ordering::Release);
+    }
+    result?;
+    let mut connections = state.remote_dev.windows.lock();
+    if connections.get(&label).is_some_and(|current| Arc::ptr_eq(current, &c)) {
+        connections.remove(&label);
+        state.host.mcp_reports.remove_remote(&label);
+    }
+    Ok(())
+}
+
 /// Runs a command on the window's remote server; `args` and the result are JSON
 /// text. Streaming arguments are `{ "$channel": id }`; their values arrive on
 /// `on_channel` tagged with the id.
@@ -1084,11 +1219,18 @@ pub async fn remote_invoke(
         .remote_dev
         .get(&label)
         .ok_or_else(|| IdeError::unavailable("this window is not connected to a remote host"))?;
+    let batch_execution = cmd == "db_execute_stream";
+    let mut finite_channel = None;
     if let Value::Object(map) = &mut args {
-        for v in map.values_mut() {
+        for (name, v) in map {
             if let Some(id) = v.get("$channel").and_then(Value::as_u64) {
                 let own = c.next_channel.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 c.channels.lock().insert(own, (on_channel.clone(), id));
+                if (batch_execution && name == "onProgress")
+                    || (cmd == "vcs_watch_commit_messages" && name == "onMessages")
+                {
+                    finite_channel = Some(own);
+                }
                 *v = serde_json::json!({ "$channel": own });
             }
         }
@@ -1111,10 +1253,24 @@ pub async fn remote_invoke(
         None
     };
     let web_url = cmd == "web_url";
-    let call = Invoke { window: label, cmd, args };
-    let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30))
-        .await
-        .map_err(|e| lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c))?;
+    let call = Invoke { window: SERVER_WINDOW.into(), cmd, args };
+    let reply = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await;
+    // These commands finish streaming before their reply. Other commands may retain their channels.
+    if let Some(id) = finite_channel {
+        c.channels.lock().remove(&id);
+    }
+    let mut result = reply.map_err(|e| {
+        if batch_execution
+            && !c.peer.is_closed()
+            && e.kind == ide_core::error::ErrorKind::Protocol
+            && e.message == "command db_execute_stream is not available remotely"
+        {
+            // The console can use the old command. This rejection happens before execution.
+            e
+        } else {
+            lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c)
+        }
+    })?;
     if web_url && let Some(url) = result.as_str() {
         result = Value::String(forward_web_url(&c, url).await?);
     }
@@ -1266,6 +1422,19 @@ mod tests {
     }
 
     #[test]
+    fn a_port_is_routed_by_the_target_and_its_host() {
+        let ssh = RemoteTarget::Ssh { config: "box".into() };
+        let wsl = RemoteTarget::Wsl { distro: "Ubuntu".into() };
+        let container = RemoteTarget::DevContainer { folder: "/work/app".into(), config: String::new() };
+        assert_eq!(forward_route(&ssh, None), Some(ForwardRoute::Ssh));
+        assert_eq!(forward_route(&ssh, Some("selenium")), None);
+        assert_eq!(forward_route(&container, None), Some(ForwardRoute::Container));
+        assert_eq!(forward_route(&container, Some("selenium")), Some(ForwardRoute::Container));
+        assert_eq!(forward_route(&wsl, None), Some(ForwardRoute::Wsl));
+        assert_eq!(forward_route(&wsl, Some("selenium")), None);
+    }
+
+    #[test]
     fn a_command_missing_on_a_server_of_another_version_says_which_versions() {
         let missing = || IdeError::unavailable("-32601: command web_url is not available remotely");
         let e = older_server_error(missing(), "0.1.32", "box");
@@ -1340,6 +1509,9 @@ mod tests {
         std::mem::forget(Peer::connect(reader, writer, Arc::new(TrustingServer)));
         Connection {
             peer,
+            stopping: AtomicBool::new(false),
+            taken_over: Arc::default(),
+            idle_policy: None,
             target,
             root: root.into(),
             host: "host".into(),
@@ -1440,6 +1612,7 @@ ide_command::desktop_domain!(
     remote_forwarded_ports,
     remote_import_local,
     remote_invoke,
+    remote_stop_backend,
     remote_stop_forwarding,
     remote_trust_set,
     remote_trust_status,

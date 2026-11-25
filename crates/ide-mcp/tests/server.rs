@@ -61,7 +61,13 @@ fn setup() -> Setup {
     std::fs::create_dir_all(project.join("src")).unwrap();
     let discovery = discovery_path(&tmp.path().join("app-data"));
     let registry = Arc::new(Registry { project: project.clone() });
-    let server = McpServer::start(registry, Some(discovery.clone()), &tokio::runtime::Handle::current()).unwrap();
+    let server = McpServer::start_with(
+        registry,
+        Some(discovery.clone()),
+        &tokio::runtime::Handle::current(),
+        ServerOptions::default(),
+    )
+    .unwrap();
     Setup { _tmp: tmp, project, discovery, server: Some(server) }
 }
 
@@ -154,7 +160,13 @@ async fn initialize_list_and_call_tools() {
     assert_eq!(rpc(&s, "resources/list", json!({})).await["error"]["code"], -32601);
 
     // The project by query, from a folder inside it; a batch.
-    let query = format!("/mcp?project={}", ide_mcp::endpoint_url(1, &s.project.join("src")).split_once('=').unwrap().1);
+    let query = format!(
+        "/mcp?project={}",
+        ide_mcp::endpoint_url_at(std::net::Ipv4Addr::LOCALHOST.into(), 1, &s.project.join("src"))
+            .split_once('=')
+            .unwrap()
+            .1
+    );
     let batch = json!([
         { "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "echo", "arguments": { "text": "a" } } },
         { "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 9 } },
@@ -248,7 +260,10 @@ fn setup_with_background(served: bool) -> (Setup, PathBuf) {
     let inventory = s.project.parent().unwrap().join("inventory");
     std::fs::create_dir_all(inventory.join("src")).unwrap();
     let registry = WithBackground { open: s.project.clone(), background: served.then(|| inventory.clone()) };
-    s.server = Some(McpServer::start(Arc::new(registry), None, &tokio::runtime::Handle::current()).unwrap());
+    s.server = Some(
+        McpServer::start_with(Arc::new(registry), None, &tokio::runtime::Handle::current(), ServerOptions::default())
+            .unwrap(),
+    );
     (s, inventory)
 }
 
@@ -376,10 +391,11 @@ async fn routing_an_argument_overrides_the_header_and_ambiguity_lists_projects()
     let second = s.project.parent().unwrap().join("second");
     std::fs::create_dir_all(second.join("nested")).unwrap();
     s.server = Some(
-        McpServer::start(
+        McpServer::start_with(
             Arc::new(Many(vec![s.project.clone(), second.clone()])),
             None,
             &tokio::runtime::Handle::current(),
+            ServerOptions::default(),
         )
         .unwrap(),
     );
@@ -418,8 +434,15 @@ async fn cancellation_reaches_a_running_tool_without_affecting_another_client() 
     let mut s = setup();
     s.server.take().unwrap().stop();
     let started = Arc::new(tokio::sync::Notify::new());
-    s.server =
-        Some(McpServer::start(Arc::new(Waiting(started.clone())), None, &tokio::runtime::Handle::current()).unwrap());
+    s.server = Some(
+        McpServer::start_with(
+            Arc::new(Waiting(started.clone())),
+            None,
+            &tokio::runtime::Handle::current(),
+            ServerOptions::default(),
+        )
+        .unwrap(),
+    );
     let body = json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"wait"}});
     let auth = bearer(&s);
     let headers = [&*auth, "Mcp-Session-Id: client-one"];
@@ -516,10 +539,20 @@ async fn multiple_servers_sharing_app_data_route_by_project_and_survive_one_clos
     let discovery = discovery_path(&base.join("app-data"));
     let runtime = tokio::runtime::Handle::current();
 
-    let server_a =
-        McpServer::start(Arc::new(Registry { project: proj_a.clone() }), Some(discovery.clone()), &runtime).unwrap();
-    let server_b =
-        McpServer::start(Arc::new(Registry { project: proj_b.clone() }), Some(discovery.clone()), &runtime).unwrap();
+    let server_a = McpServer::start_with(
+        Arc::new(Registry { project: proj_a.clone() }),
+        Some(discovery.clone()),
+        &runtime,
+        ServerOptions::default(),
+    )
+    .unwrap();
+    let server_b = McpServer::start_with(
+        Arc::new(Registry { project: proj_b.clone() }),
+        Some(discovery.clone()),
+        &runtime,
+        ServerOptions::default(),
+    )
+    .unwrap();
 
     let session = |text: &str| {
         [

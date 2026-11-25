@@ -31,7 +31,7 @@ export function unloadBuiltinPages() {
   void loaded?.then((dispose) => dispose());
 }
 
-const Dialog = lazyComponent(() => import("./SettingsDialog").then((m) => m.SettingsDialog));
+const Dialog = lazyComponent(() => import("./SettingsDialog").then((m) => m.SettingsDialog), { prefetch: true });
 const ProjectStructure = lazyComponent(() =>
   import("../languages/ProjectStructurePage").then((m) => m.ProjectStructureDialog),
 );

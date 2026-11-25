@@ -87,6 +87,15 @@ pub fn settings_get_global(host: &Host) -> Settings {
     host.with_proxy_password(host.global_settings.effective())
 }
 
+/// Read the same host-wide value for the close dialog and the idle timer: another project's
+/// daemon may have edited the file since this host loaded its settings.
+#[command(trust = always)]
+pub async fn remote_idle_timeout_minutes(host: &Arc<Host>) -> IdeResult<u16> {
+    let h = host.clone();
+    host.blocking(move || Ok(h.global_settings.layer(SettingsScope::Global).remote_development.idle_timeout_minutes))
+        .await
+}
+
 /// The removed built-in theme id a settings file of this window still names, if any:
 /// `settings_get` reports the built-in that stands in for it, so the notice about
 /// a theme that moved to a plugin can address the installs it concerns.
@@ -126,6 +135,74 @@ pub fn settings_set(
 #[command(trust = always)]
 pub fn project_roots(host: &Host, window: &str) -> IdeResult<ide_workspace::ProjectRoots> {
     Ok(host.project(window)?.roots())
+}
+
+/// A project attached to the window's project, with its own Project Structure.
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMember {
+    pub root: ide_core::IpcPath,
+    /// Its project settings' Project Structure (not merged with the user settings).
+    pub structure: ide_core::settings::ProjectStructureSettings,
+    /// Roots detected from its build files.
+    pub detected: Vec<ide_workspace::SourceFolder>,
+}
+
+/// The workspace projects outside the window's project folder, for Mark Directory as there.
+/// Each member's `for_project().layer(Project)` re-parses both settings layers and validates the
+/// merged tree against `Settings`; that stack-hungry work must not run on the IPC (main) thread,
+/// whose 1 MiB stack overflows on project open (STATUS_STACK_OVERFLOW).
+#[command(trust = always, desktop_body = spawn)]
+pub fn project_workspace_members(host: &Host, window: &str) -> IdeResult<Vec<WorkspaceMember>> {
+    let project = host.project(window)?;
+    Ok(project
+        .attached_roots()
+        .into_iter()
+        .map(|root| WorkspaceMember {
+            structure: project.settings.for_project(&root).layer(SettingsScope::Project).project_structure,
+            detected: ide_workspace::roots::detect(&root),
+            root: root.into(),
+        })
+        .collect())
+}
+
+/// Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
+/// project (Mark Directory as there). Every open window holding that project follows.
+/// Like `project_workspace_members`, its `for_project` settings re-parse runs off the IPC thread.
+#[command(trust = always, desktop_body = spawn)]
+pub fn project_workspace_member_set(
+    host: &Arc<Host>,
+    window: &str,
+    root: PathBuf,
+    key: String,
+    value: String,
+) -> IdeResult<()> {
+    let project = host.project(window)?;
+    if !project.attached_roots().contains(&root) {
+        return Err(ide_core::IdeError::invalid("Not a project attached to this one"));
+    }
+    if !key.starts_with("projectStructure.") {
+        return Err(ide_core::IdeError::invalid(format!("{key} is not a Project Structure setting")));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&value).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
+    project.settings.for_project(&root).set(SettingsScope::Project, &key, value)?;
+    let affected: Vec<_> = host
+        .projects()
+        .into_iter()
+        .filter(|p| p.root == root || p.member_excludes.read().contains_key(&root))
+        .collect();
+    host.runtime.spawn_blocking(move || {
+        for p in affected {
+            if p.root == root {
+                p.settings.reload();
+                p.sink.emit(IdeEvent::SettingsChanged { key: key.clone() });
+            }
+            p.refresh_index_scope();
+            p.sink.emit(IdeEvent::ProjectRootsChanged { root: p.root.clone().into() });
+        }
+    });
+    Ok(())
 }
 
 #[command(trust = always)]
@@ -327,10 +404,19 @@ pub fn set_settings(
     if key == "languages" || key == "languages.java" || key.starts_with("languages.java.addedJdks") {
         host.apply_added_jdks();
     }
+    if key == "vcs" || key == "vcs.git" || key == "vcs.git.executable" {
+        host.apply_git_executable();
+    }
     if is_proxy {
         host.apply_proxy();
     }
     if key == "agents" || key == "agents.mcpServers" || key.starts_with("agents.mcpServers.") {
+        for project in affected() {
+            project.agents.notify_mcp_servers_changed();
+        }
+    }
+    // A skill policy change re-resolves the modes; an idle session restarts to pick them up.
+    if key == "agents" || key == "agents.skills" || key.starts_with("agents.skills.") {
         for project in affected() {
             project.agents.notify_mcp_servers_changed();
         }
@@ -372,7 +458,14 @@ pub fn set_settings(
     // Content roots and excludes (files.exclude, ignored names, excluded folders) reach the
     // index and the watchers without reopening the project (the rescan runs in the background).
     if roots_changed || key == "files" || key.starts_with("files.") {
-        let affected = affected();
+        let mut affected = affected();
+        // A workspace open in another window may hold this project: its excluded folders apply there.
+        if roots_changed
+            && project_scope
+            && let Some(own) = &current
+        {
+            affected.extend(host.projects().into_iter().filter(|p| p.member_excludes.read().contains_key(&own.root)));
+        }
         host.runtime.spawn_blocking(move || {
             for project in affected {
                 project.refresh_index_scope();
@@ -395,6 +488,9 @@ ide_command::domain!(
     project_trust_remove_location,
     project_trust_set,
     project_trust_status,
+    project_workspace_member_set,
+    project_workspace_members,
+    remote_idle_timeout_minutes,
     settings_get,
     settings_get_global,
     settings_removed_theme,

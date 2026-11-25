@@ -22,9 +22,9 @@ export function MirrorPrefixRow() {
         <span className={styles.hint}>
           <Icon name="info" size={14} className={styles.infoIcon} />
           <T>
-            Only downloads from github.com (most language servers and debuggers) are accelerated. Eclipse JDT LS, Open
-            VSX and Maven Central are not affected — reach them through System Settings › HTTP Proxy instead. A public
-            proxy such as https://gh-proxy.com/ works as the prefix.
+            Only downloads from github.com (most language servers, debuggers and plugin packages) are accelerated.
+            Eclipse JDT LS, Open VSX and Maven Central are not affected — reach them through System Settings › HTTP
+            Proxy instead. A public proxy such as https://gh-proxy.com/ works as the prefix.
           </T>
         </span>
       }

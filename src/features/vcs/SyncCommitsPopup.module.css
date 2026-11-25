@@ -19,6 +19,13 @@
   padding: 4px 0;
 }
 
+.destination {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-popup);
+  color: var(--fg-subtle);
+  overflow-wrap: anywhere;
+}
+
 .row {
   flex: 1;
   min-width: 0;
@@ -49,6 +56,7 @@
   flex: none;
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
   padding: 8px 12px;
   border-top: 1px solid var(--border-popup);
 }

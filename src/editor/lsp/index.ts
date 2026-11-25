@@ -6,6 +6,7 @@ import { serverCodeLenses } from "./serverCodeLens";
  * through `editor/api` as CodeMirror extensions plus actions; editor/core is
  * never imported.
  */
+import { historyGroupExtension } from "./historyGroup";
 import type { Extension } from "@codemirror/state";
 import { registerEditorContribution, type EditorDocContext } from "@/editor/api";
 import {
@@ -28,6 +29,7 @@ import { inlineCompletionExtension, registerInlineCompletionActions } from "./in
 import { semanticExtension } from "./semantic";
 import { usagesLensExtension } from "./codeLens";
 import { autoImportExtension } from "./autoImport";
+import { jsxAttrValueExtension } from "./jsxAttrValue";
 import { importsOnPasteExtension, registerImportsOnPasteActions } from "./importsOnPaste";
 import { installConfigurationNavigationEvents } from "./configurationNavigation";
 import { installAvailabilityEvents } from "./availability";
@@ -38,10 +40,11 @@ import { unresolvedReferences } from "./fileReferences";
 import { syntaxErrorsExtension } from "./syntaxErrors";
 import { spellingExtension } from "./spelling";
 import { DocumentationWindow, LspPopups, UsagesStatus } from "./Popups";
+import { MemberChooserDialog } from "./MemberChooserDialog";
 import { DOCUMENTATION_WINDOW } from "./docs";
 import { prefetchMarkdown } from "./markdown";
 import { outsideProjectBanner } from "./outsideProject";
-import { implementationGutter, registerNavigationActions } from "@/editor/navigation";
+import { implementationGutter, pythonStubGutter, registerNavigationActions } from "@/editor/navigation";
 import {
   ChangeSignatureDialog,
   ExtractInterfaceDialog,
@@ -62,6 +65,7 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     signatureExtension(),
     completionExtension(),
     inplaceRenameExtension(),
+    historyGroupExtension,
     navigationExtension(),
     intentionsExtension(),
     inlayExtension(),
@@ -69,6 +73,7 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     semanticExtension(),
     usagesLensExtension(),
     autoImportExtension(),
+    jsxAttrValueExtension(ctx.language),
     importsOnPasteExtension(),
     unresolvedReferences(),
     syntaxErrorsExtension(),
@@ -118,12 +123,14 @@ export function activate(): () => void {
     }),
     // After the run icons (order 55), as their own gutter column.
     registerEditorContribution({ id: "lsp.lineMarkers", order: 56, extensions: implementationGutter }),
+    registerEditorContribution({ id: "lsp.pythonStubs", order: 57, extensions: pythonStubGutter }),
     // After the templates (order 90): live template / postfix expansion keeps ⇥ first.
     registerEditorContribution({ id: "lsp.parameterTab", order: 95, extensions: () => parameterTabKeys }),
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),
     registerOverlay({ id: "editor-lsp.hierarchyDialog", component: HierarchyDialog }),
     registerOverlay({ id: "editor-lsp.changeSignatureDialog", component: ChangeSignatureDialog }),
     registerOverlay({ id: "editor-lsp.extractInterfaceDialog", component: ExtractInterfaceDialog }),
+    registerOverlay({ id: "editor-lsp.memberChooser", component: MemberChooserDialog }),
     registerClientCommand(JAVA_REFACTORING_COMMAND, runJavaRefactoringCommand),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),

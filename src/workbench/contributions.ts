@@ -18,6 +18,7 @@ import {
   type RefObject,
 } from "react";
 import type {
+  BuildKind,
   CommitSelection,
   ConsoleRule,
   FileMatches,
@@ -27,6 +28,8 @@ import type {
   RunId,
   SymbolKind,
 } from "@/bindings";
+import { getContext } from "@/platform/context";
+import { getAction } from "@/platform/actions";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -174,7 +177,7 @@ export interface EditorKindContribution {
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
    * `input.key` (splits) share one document.
    */
-  document?: EditorDocumentLifecycle;
+  document?: EditorDocumentLifecycle | ((input: EditorInput) => EditorDocumentLifecycle | undefined);
 }
 
 /**
@@ -183,6 +186,8 @@ export interface EditorKindContribution {
  * document. Call `notifyEditorDocumentChanged` whenever `isDirty` may change.
  */
 export interface EditorDocumentLifecycle {
+  /** A clean document can use the preview slot. Any edit promotes its tabs. */
+  allowPreview?: boolean;
   /** Unsaved changes, pending edits not committed yet included. */
   isDirty(input: EditorInput): boolean;
   /** Commits pending edits; rejects when they can't be. */
@@ -201,6 +206,7 @@ export interface EditorDocumentLifecycle {
   /** Releases the document (and its kernel…) once no tab shows it any more. Called once per open. */
   close(input: EditorInput): Promise<void>;
   /** Edit › Undo / Redo while the editor has focus. */
+  handlesHistory?(input: EditorInput): boolean;
   undo?(input: EditorInput): Promise<void>;
   redo?(input: EditorInput): Promise<void>;
 }
@@ -288,6 +294,8 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** Jump to Source (F4 / ⌘↓); a provider without it activates the node instead. */
+  jumpToSource?(item: ServiceTreeItem): void;
   /** A node of this provider became the lead selection. */
   select?(item: ServiceTreeItem): void;
   /** A node of this provider was expanded or collapsed. */
@@ -385,6 +393,27 @@ export function registerGitLogChecks(cell: GitLogChecksCell): () => void {
   useGitLogChecks.setState({ cell });
   return () => {
     if (useGitLogChecks.getState().cell === cell) useGitLogChecks.setState({ cell: null });
+  };
+}
+
+export interface WorktreeReview {
+  title: string;
+  open: () => Promise<void>;
+}
+
+export interface WorktreeReviewQuery {
+  root: string;
+  paths: string[];
+  branches: string[];
+}
+
+type WorktreeReviewProvider = (query: WorktreeReviewQuery) => Promise<ReadonlyMap<string, WorktreeReview>>;
+export const useWorktreeReviewProvider = create<{ lookup: WorktreeReviewProvider | null }>(() => ({ lookup: null }));
+
+export function registerWorktreeReviewProvider(lookup: WorktreeReviewProvider): () => void {
+  useWorktreeReviewProvider.setState({ lookup });
+  return () => {
+    if (useWorktreeReviewProvider.getState().lookup === lookup) useWorktreeReviewProvider.setState({ lookup: null });
   };
 }
 
@@ -571,13 +600,30 @@ export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler
   };
 }
 
+/** Default custom editors that should open in the IDE instead of an associated app. */
+const externalOpenSuppressions = new Map<string, (path: string) => boolean>();
+
+/** Skip associated-application open for paths a default custom editor claims. */
+export function registerExternalOpenSuppression(id: string, matches: (path: string) => boolean): () => void {
+  externalOpenSuppressions.set(id, matches);
+  return () => {
+    if (externalOpenSuppressions.get(id) === matches) externalOpenSuppressions.delete(id);
+  };
+}
+
+function externalOpenSuppressed(path: string): boolean {
+  return [...externalOpenSuppressions.values()].some((matches) => matches(path));
+}
+
 /** Whether opening `path` would hand it to another application. */
 export function opensExternally(path: string): boolean {
+  if (externalOpenSuppressed(path)) return false;
   return [...externalFileOpenHandlers.values()].some((h) => h.matches(path));
 }
 
 /** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
 export async function openFileExternally(path: string): Promise<boolean> {
+  if (externalOpenSuppressed(path)) return false;
   const handlers = [...externalFileOpenHandlers.values()].sort(
     (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
   );
@@ -598,11 +644,14 @@ export async function openFileExternally(path: string): Promise<boolean> {
  * view stays alive.
  */
 export interface TextEditorWrapperContribution {
+  keepAlive?: boolean;
   id: string;
   matches(path: string): boolean;
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
   /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
   tabActions?: ComponentType<{ path: string; tabId: string }>;
+  /** Hook: true while the wrapper hides the source editor of `tabId` (a preview-only layout), which drops its code breadcrumbs. */
+  useSourceHidden?: (tabId: string) => boolean;
 }
 
 export const useTextEditorWrappers = create<{ wrappers: Map<string, TextEditorWrapperContribution> }>(() => ({
@@ -718,12 +767,14 @@ export interface EditorService {
   focus?(): void;
   /** Paths of the documents open in editor tabs (all panes, tab order). */
   openPaths?(): string[];
+  /** Observe tab changes, including open or closed background tabs. */
+  onOpenTabsChange?(fn: () => void): () => void;
   /** Every open tab, files or not, most recently active first (Switcher). */
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
   tabInput?(paneId: string, tabId: string): EditorInput | null;
-  /** Input of the active tab (any kind), if any. */
-  activeInput?(): EditorInput | null;
+  /** Input of the active tab, optionally restricted to the replaceable preview tab. */
+  activeInput?(options?: { previewOnly?: boolean }): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
   onActiveInputChange?(fn: (input: EditorInput | null) => void): () => void;
   /**
@@ -747,6 +798,8 @@ export interface EditorService {
   forgetSavedTabs?(): void;
   /** Writes them again when a close is cancelled after {@link forgetSavedTabs}. */
   keepSavedTabs?(): void;
+  /** Flushes the open editor tabs, splits and caret positions to storage immediately. */
+  flushSession?(): void;
   /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
   documentHistory?(command: "undo" | "redo"): boolean;
   /** Go to Declaration's chooser ("Choose Declaration of `name`") over `targets`, below `anchor`. */
@@ -851,12 +904,27 @@ export interface RunOutputService {
   subscribe(process: RunId, listener: (kind: "stdout" | "stderr" | "system", text: string) => void): () => void;
 }
 
+export interface RunConfigurationCheckResult {
+  name: string;
+  status: "notStarted" | "stopped" | "finished";
+  exitCode?: number | null;
+  failedTests?: number;
+  review?: () => void;
+}
+
+export interface RunConfigurationCheckService {
+  configurations(): readonly RunConfig[];
+  subscribe(listener: () => void): () => void;
+  run(id: string, signal: AbortSignal): Promise<RunConfigurationCheckResult[]>;
+}
+
 const services: {
   editor?: EditorService;
   toolWindows?: ToolWindowService;
   notifications?: NotificationService;
   embeddedTerminal?: EmbeddedTerminalFactory;
   runOutput?: RunOutputService;
+  runConfigurationChecks?: RunConfigurationCheckService;
   hasRunConfiguration?: (kind: string, directory: string) => boolean;
 } = {};
 
@@ -870,6 +938,9 @@ export const provideToolWindowService = (s: ToolWindowService) => void (services
 export const provideNotificationService = (s: NotificationService) => void (services.notifications = s);
 export const provideEmbeddedTerminal = (f: EmbeddedTerminalFactory | undefined) => void (services.embeddedTerminal = f);
 export const provideRunOutput = (s: RunOutputService | undefined) => void (services.runOutput = s);
+export const provideRunConfigurationChecks = (s: RunConfigurationCheckService | undefined) =>
+  void (services.runConfigurationChecks = s);
+export const runConfigurationChecks = () => services.runConfigurationChecks;
 export const provideRunConfigurationLookup = (lookup: typeof services.hasRunConfiguration) =>
   void (services.hasRunConfiguration = lookup);
 export const hasRunConfiguration = (kind: string, directory: string): boolean =>
@@ -1462,6 +1533,78 @@ export function menuGroupItems(menu: ContextMenuId, ctx: MenuGroupContext): Menu
   return out;
 }
 
+export interface GitMenuContext {
+  /** The file or directory the menu targets (one path, or the selection). */
+  paths: string[];
+  /** Whether any target is a directory (Git menus of folders scope some actions). */
+  dirs?: boolean[];
+  /** Show file-revision actions (Compare with Revision…, Show Current Revision): one file only. */
+  file?: boolean;
+  /** Show Add to .gitignore: the selection excludes the project root (which cannot be ignored). */
+  ignore?: boolean;
+  editorSelection?: boolean;
+}
+
+/**
+ * Git › shared by the editor, editor tab and project view menus (IDEA keeps the
+ * per-menu groups in sync). Items are plain action rows, so unregistered actions
+ * disappear and `vcsAvailable` gates enablement on its own.
+ */
+export function gitMenuItems({ paths, dirs, file, ignore, editorSelection }: GitMenuContext): MenuItem[] {
+  const arg = paths.length === 1 ? paths[0]! : paths;
+  const some = paths.length > 0;
+  const single = paths.length === 1 ? paths[0]! : null;
+  // Unregistered actions drop out (the project view's submenu() never shows an empty menu).
+  const act = (action: string, label?: string): MenuItem | null =>
+    getAction(action) ? { kind: "action", action, arg, ...(label ? { label } : {}) } : null;
+  const action = (id: string, label?: string): MenuItem | null =>
+    getAction(id) ? { kind: "action", action: id, ...(label ? { label } : {}) } : null;
+  const nonNull = (items: (MenuItem | null)[]): MenuItem[] => items.filter((i): i is MenuItem => i !== null);
+  const ignoreSubmenu = ignore
+    ? nonNull([act("vcs.ignoreShared", ".gitignore"), act("vcs.ignoreLocal", ".git/info/exclude")])
+    : [];
+  const github = nonNull([
+    action("github.pullRequests"),
+    action("github.createPullRequest"),
+    action("github.checkoutPullRequest"),
+    action("github.openInBrowser"),
+  ]);
+  const items: (MenuItem | null)[] = [
+    single && !dirs?.[0] ? act("vcs.commit", "Commit File…") : act("vcs.commit", "Commit…"),
+    act("vcs.addToVcs", "Add"),
+    ...(ignoreSubmenu.length ? [{ label: "Add to .gitignore", submenu: ignoreSubmenu } as MenuItem] : []),
+    { kind: "separator" },
+    ...(file ? ([act("vcs.annotate", "Annotate with Git Blame")] as (MenuItem | null)[]) : []),
+    act("vcs.showDiff", "Show Diff"),
+    ...(some ? ([act("vcs.compareWithBranch", "Compare with Branch…")] as (MenuItem | null)[]) : []),
+    ...(file ? ([act("vcs.compareWithRevision", "Compare with Revision…")] as (MenuItem | null)[]) : []),
+    ...(some ? ([act("vcs.showHistory", "Show History")] as (MenuItem | null)[]) : []),
+    ...(file ? ([act("vcs.showCurrentRevision", "Show Current Revision")] as (MenuItem | null)[]) : []),
+    ...(editorSelection ? [action("vcs.showHistoryForSelection", "Show History for Selection")] : []),
+    act("vcs.rollback", "Rollback…"),
+    { kind: "separator" },
+    action("vcs.push", "Push…"),
+    act("vcs.pull", "Pull…"),
+    action("vcs.fetch", "Fetch"),
+    { kind: "separator" },
+    act("vcs.merge", "Merge…"),
+    act("vcs.rebase", "Rebase…"),
+    { kind: "separator" },
+    action("vcs.branches", "Branches…"),
+    action("vcs.newBranch", "New Branch…"),
+    action("vcs.newTag", "New Tag…"),
+    action("vcs.resetHead", "Reset HEAD…"),
+    { kind: "separator" },
+    action("vcs.stash", "Stash Changes…"),
+    action("vcs.unstash", "Unstash Changes…"),
+    { kind: "separator" },
+    ...(github.length ? [{ label: "GitHub", icon: "github", submenu: github } as MenuItem] : []),
+    action("vcs.manageRemotes", "Manage Remotes…"),
+    action("vcs.clone", "Get from Version Control…"),
+  ];
+  return items.filter((i): i is MenuItem => i !== null);
+}
+
 // Project view selection, for actions run outside the project view (Find Action,
 // main menu) right after it had focus. Provided by features/project-tree.
 let projectSelection: (() => string[]) | undefined;
@@ -1502,6 +1645,11 @@ export interface ProjectViewLead {
  * editor takes over (focus, tab switch). `null` = the editor is the context.
  */
 export const useProjectViewLead = create<{ lead: ProjectViewLead | null }>(() => ({ lead: null }));
+
+/** The Project view lead while the editor does not have focus. */
+export function projectViewContextLead(): ProjectViewLead | null {
+  return getContext().editorFocus ? null : useProjectViewLead.getState().lead;
+}
 
 export function setProjectViewLead(lead: ProjectViewLead | null) {
   const prev = useProjectViewLead.getState().lead;
@@ -2239,4 +2387,26 @@ export function registerSearchCategory(category: SearchCategory): () => void {
     searchCategoryProviders.delete(category.id);
     searchCategoriesChanged();
   };
+}
+
+export interface BuildCompletedEvent {
+  kind: "compileFile" | BuildKind;
+  file: string | null;
+  system: string;
+  userInitiated: boolean;
+}
+
+const buildCompletedListeners = new Set<(event: BuildCompletedEvent) => void>();
+
+/** Subscribes to successful Build / Rebuild / Recompile completions across workbench features. */
+export function onBuildCompleted(listener: (event: BuildCompletedEvent) => void): () => void {
+  buildCompletedListeners.add(listener);
+  return () => {
+    buildCompletedListeners.delete(listener);
+  };
+}
+
+/** Publishes a successful build completion to listeners (debugger HotSwap, server deployment sync…). */
+export function notifyBuildCompleted(event: BuildCompletedEvent): void {
+  notifyEach(buildCompletedListeners, (listener) => listener(event), "build completed");
 }

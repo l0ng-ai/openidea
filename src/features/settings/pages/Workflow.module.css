@@ -138,6 +138,34 @@
 .table tbody tr.selectedRow {
   background: var(--bg-tree-selected);
 }
+.saveActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  font-size: var(--fs-ui);
+}
+.saveActionsTable th {
+  background: var(--bg-control);
+}
+.saveActionsTable td {
+  height: auto;
+  padding-block: var(--space-1);
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.saveActivationColumn {
+  width: 168px;
+}
+@container settings-content (width < 560px) {
+  .saveActivationColumn {
+    width: 120px;
+  }
+}
+.saveActivation {
+  padding-block-start: var(--space-0-5);
+  color: var(--fg-muted);
+}
 .mappingsTable {
   height: 100%;
   min-height: 0;
@@ -152,6 +180,8 @@
   min-height: 0;
   overflow: auto;
   scroll-padding-top: var(--h-list-row);
+  -webkit-user-select: none;
+  user-select: none;
 }
 .mappingRows th {
   position: sticky;
@@ -163,6 +193,14 @@
 }
 .mappingVcsColumn {
   width: 112px;
+}
+.unregisteredMappings {
+  color: var(--fg-subtle);
+  background: var(--bg-control-hover);
+}
+.unregisteredMappings .mappingGroupHeader {
+  color: var(--fg-muted);
+  font-weight: 600;
 }
 .mappingRows .mappingSelect {
   width: 100%;
@@ -247,10 +285,45 @@
   color: var(--fg-subtle);
   margin-left: auto;
 }
-.macroField {
+.toolIdentity {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+  column-gap: var(--space-2);
+  padding-inline-start: 18px;
+}
+.toolIdentity > * {
+  grid-column: span 2;
+  grid-template-columns: subgrid;
+}
+.toolIdentity > .toolDescription {
+  grid-column: 1 / -1;
+}
+.toolDescription > div {
+  grid-column: 2 / -1;
+}
+@container settings-content (max-width: 560px) {
+  .toolIdentity {
+    grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  }
+}
+.toolField {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-1-5);
+  width: 100%;
+}
+.toolField > input {
+  flex: 1 1 104px;
+  min-width: min(104px, 100%);
+}
+.toolOptions > summary {
+  width: fit-content;
+  padding-block: var(--space-1);
+  cursor: pointer;
+}
+.toolOptions > div {
+  padding-top: var(--space-1);
 }
 .macroList {
   display: flex;

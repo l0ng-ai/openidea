@@ -1,5 +1,6 @@
 //! Protocol flow against an in-memory fake adapter.
 
+mod exception_classes;
 mod jvm_inspect;
 mod stream_trace;
 
@@ -156,6 +157,11 @@ struct Script {
     breakpoints_after_continue: usize,
     /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
     step_reason: Option<&'static str>,
+    /// Send `stopped` before answering `next` / `stepIn` / `stepOut` / `continue` (like php-debug
+    /// when Xdebug finishes a step before the DAP reply is handled).
+    stop_before_reply: bool,
+    /// Send `continued` before answering `next` / `continue`.
+    continued_before_reply: bool,
     /// Refuse `next`, then stop at a breakpoint (one the program hit meanwhile).
     refuse_next: bool,
     /// Send `invalidated { areas: ["variables"] }` right after the first `stopped` event.
@@ -212,6 +218,8 @@ impl Default for Script {
             refuse_continue: false,
             breakpoints_after_continue: 0,
             step_reason: None,
+            stop_before_reply: false,
+            continued_before_reply: false,
             refuse_next: false,
             invalidated_after_stop: false,
             stop_during_threads: false,
@@ -413,6 +421,19 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 send!(json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1}}));
             }
+            "next" if script.stop_before_reply => {
+                let reason = script.step_reason.unwrap_or("step");
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": 1}}));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, Value::Null);
+            }
+            "next" if script.continued_before_reply => {
+                send!(
+                    json!({"type": "event", "event": "continued", "body": {"threadId": 1, "allThreadsContinued": false}})
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, Value::Null);
+            }
             "next" => {
                 ok!(msg, Value::Null);
                 let reason = script.step_reason.unwrap_or("step");
@@ -505,13 +526,29 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             "scopes" => {
                 ok!(msg, json!({"scopes": [{"name": "Locals", "variablesReference": 100, "expensive": false}]}))
             }
-            "variables" => ok!(
-                msg,
-                json!({"variables": [
-                    {"name": "x", "value": "1", "type": "int", "variablesReference": 0},
-                    {"name": "req", "value": "{Req}", "type": "Req", "variablesReference": 101, "evaluateName": "req"},
-                ]})
-            ),
+            // 200 holds a lazy value (java-debug's toString(), js-debug's getters): asked for, its
+            // reference answers one nameless child with the value and the reference of its fields.
+            "variables" => match msg["arguments"]["variablesReference"].as_i64() {
+                Some(200) => ok!(
+                    msg,
+                    json!({"variables": [
+                        {"name": "order", "value": "Order@7", "type": "Order", "variablesReference": 201,
+                         "evaluateName": "order", "presentationHint": {"lazy": true}},
+                        {"name": "n", "value": "2", "type": "int", "variablesReference": 0, "presentationHint": {"lazy": false}},
+                    ]})
+                ),
+                Some(201) => ok!(
+                    msg,
+                    json!({"variables": [{"name": "", "value": "Order@7 \"Order(1)\"", "variablesReference": 202, "evaluateName": "order"}]})
+                ),
+                _ => ok!(
+                    msg,
+                    json!({"variables": [
+                        {"name": "x", "value": "1", "type": "int", "variablesReference": 0},
+                        {"name": "req", "value": "{Req}", "type": "Req", "variablesReference": 101, "evaluateName": "req"},
+                    ]})
+                ),
+            },
             "evaluate" => ok!(msg, json!({"result": "42", "type": "int", "variablesReference": 0})),
             "completions" => ok!(
                 msg,
@@ -536,6 +573,20 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             "stepOut" if script.refuse_step_out => send!(
                 json!({"type": "response", "request_seq": msg["seq"], "command": "stepOut", "success": false, "message": "Thread is not suspended"})
             ),
+            "continue" if script.stop_before_reply => {
+                send!(
+                    json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, json!({"allThreadsContinued": true}));
+            }
+            "continue" if script.continued_before_reply => {
+                send!(
+                    json!({"type": "event", "event": "continued", "body": {"threadId": 1, "allThreadsContinued": true}})
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, json!({"allThreadsContinued": true}));
+            }
             "continue" if script.stop_after_continue => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(
@@ -557,6 +608,11 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     let reason = if i + 1 == script.step_out_stops.len() { "step" } else { "breakpoint" };
                     send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": thread}}));
                 }
+            }
+            "stepIn" | "stepOut" if script.stop_before_reply => {
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": "step", "threadId": 1}}));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, Value::Null);
             }
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
             "hotReload" => {
@@ -2020,6 +2076,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
             transport: "tcp".into(),
             connect: Some(format!("127.0.0.1:{port}")),
             install_hint: Some("Open the project in the Godot editor".into()),
+            resolve_lazy_variables: false,
             pinned: None,
         }),
     };
@@ -2763,6 +2820,121 @@ async fn step_of_one_thread_keeps_the_others_suspended() {
     assert_eq!(session.suspended.ticket(), ticket + 1);
     h.manager.step_in_target(id, 7, 1).await.unwrap();
     assert!(!session.suspended.get());
+    // The UI stays on a thread that is still stopped only when told the step ran one thread.
+    for thread in [7, 8] {
+        let continued =
+            h.wait_event(|e| matches!(e, DebugEvent::Continued { thread_id, .. } if *thread_id == thread)).await;
+        assert!(matches!(continued, DebugEvent::Continued { all_threads_continued: false, .. }), "{continued:?}");
+    }
+}
+
+/// When an adapter emits the next `stopped` event before replying to `next` / `stepIn` / `stepOut`
+/// / `continue` (as php-debug / Xdebug can on fast steps), no trailing synthetic `continued` may
+/// overwrite the new stop.
+#[tokio::test]
+async fn stop_before_reply_does_not_emit_trailing_continued() {
+    let h = harness(Script { stop_before_reply: true, ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+
+    let run_events = |from: usize| {
+        h.events
+            .lock()
+            .iter()
+            .skip(from)
+            .filter_map(|e| match e {
+                IdeEvent::Debug { event: DebugEvent::Stopped { reason, .. }, .. } => Some(format!("stopped:{reason}")),
+                IdeEvent::Debug { event: DebugEvent::Continued { .. }, .. } => Some("continued".into()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for (label, expected) in [
+        ("over", "stopped:step"),
+        ("into", "stopped:step"),
+        ("out", "stopped:step"),
+        ("target", "stopped:step"),
+        ("resume", "stopped:breakpoint"),
+    ] {
+        let before = h.events.lock().len();
+        match label {
+            "over" => h.manager.step(id, 1, StepKind::Over).await.unwrap(),
+            "into" => h.manager.step(id, 1, StepKind::Into).await.unwrap(),
+            "out" => h.manager.step(id, 1, StepKind::Out).await.unwrap(),
+            "target" => h.manager.step_in_target(id, 1, 1).await.unwrap(),
+            "resume" => h.manager.resume(id, 1).await.unwrap(),
+            _ => unreachable!(),
+        }
+        assert!(session.suspended.get(), "{label}: session must remain suspended");
+        assert_eq!(run_events(before), [expected], "{label}: must not emit continued after stopped");
+    }
+}
+
+#[tokio::test]
+async fn continued_event_before_reply_does_not_emit_duplicate_continued() {
+    for is_resume in [false, true] {
+        let h = harness(Script { continued_before_reply: true, ..Script::default() });
+        let id = h.start(config()).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+
+        let before = h.events.lock().len();
+        if is_resume {
+            h.manager.resume(id, 1).await.unwrap();
+        } else {
+            h.manager.step(id, 1, StepKind::Over).await.unwrap();
+        }
+        let continued = h
+            .events
+            .lock()
+            .iter()
+            .skip(before)
+            .filter(|e| matches!(e, IdeEvent::Debug { event: DebugEvent::Continued { .. }, .. }))
+            .count();
+        assert_eq!(continued, 1, "is_resume={is_resume}: adapter continued event already reported it");
+    }
+}
+
+#[tokio::test]
+async fn lazy_variables_are_resolved_when_the_adapter_declares_them_safe() {
+    let h = harness(Script::default());
+    let id = h.start(java_config("launch")).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let vars = h.manager.variables(id, 200).await.unwrap();
+    let order = &vars[0];
+    assert_eq!(
+        (order.name.as_str(), order.value.as_str(), order.type_name.as_deref()),
+        ("order", "Order@7 \"Order(1)\"", Some("Order"))
+    );
+    assert_eq!((order.variables_reference, order.lazy), (202, false));
+    assert_eq!(order.evaluate_name.as_deref(), Some("order"));
+    assert_eq!((vars[1].name.as_str(), vars[1].lazy), ("n", false));
+}
+
+#[tokio::test]
+async fn lazy_variables_stay_lazy_for_other_adapters() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let vars = h.manager.variables(id, 200).await.unwrap();
+    assert_eq!((vars[0].value.as_str(), vars[0].variables_reference, vars[0].lazy), ("Order@7", 201, true));
+    assert_eq!(requests(&h, "variables").len(), 1, "nothing is computed until asked for");
+
+    let order = h.manager.resolve_variable(id, vars[0].clone()).await.unwrap();
+    assert_eq!((order.name.as_str(), order.value.as_str()), ("order", "Order@7 \"Order(1)\""));
+    assert_eq!((order.variables_reference, order.lazy), (202, false));
+    let n = h.manager.resolve_variable(id, vars[1].clone()).await.unwrap();
+    assert_eq!((n.value.as_str(), requests(&h, "variables").len()), ("2", 2), "only lazy values are computed");
+}
+
+#[test]
+fn java_debug_declares_its_lazy_variables_safe_to_resolve() {
+    let languages = LanguageRegistry::load(None).unwrap();
+    for registry in [&languages, &LanguageRegistry::from_configs(Vec::new())] {
+        assert!(adapter::find_config(registry, "java-debug").unwrap().resolve_lazy_variables);
+        assert!(!adapter::find_config(registry, "js-debug").unwrap().resolve_lazy_variables);
+    }
 }
 
 #[tokio::test]
@@ -2900,6 +3072,55 @@ async fn local_attach_finds_its_jvm_before_the_debugger_connects() {
     let id = h.start(cfg).await.unwrap();
     let session = h.manager.session(id).unwrap();
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
+}
+
+/// Gradle bootRun Debug: the JVM has no attach listener, so the session never learns its pid. The
+/// run's dump still goes through the session and, the program being stopped, signals nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_dump_goes_through_the_session_attached_to_the_run() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let mut cfg = remote_attach("java-debug", project.path());
+    let mut extra: Value = serde_json::from_str(cfg.extra_json.as_deref().unwrap()).unwrap();
+    extra[RUN_LINK] = json!(7);
+    cfg.extra_json = Some(extra.to_string());
+    let id = h.start(cfg).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(h.request("attach")["arguments"].get(RUN_LINK).is_none(), "IDE-side only");
+    let session = h.manager.session(id).unwrap();
+    assert_eq!((session.run, session.jvm_pid.load(Ordering::Acquire)), (Some(RunId(7)), 0));
+
+    // `sleep` stands in for the JVM: a SIGQUIT would end it.
+    let mut jvm = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = jvm.id();
+    assert_eq!(h.manager.jvm_session_of(RunId(7), pid).map(|s| s.id), Some(id));
+    assert!(h.manager.jvm_session_of(RunId(8), pid).is_none());
+    let dump = h.manager.debugged_jvm_thread_dump(RunId(7), pid).await.unwrap().unwrap();
+    let alive = jvm.try_wait().unwrap().is_none();
+    let _ = jvm.kill();
+    let _ = jvm.wait();
+    assert_eq!(
+        dump,
+        JvmThreadsResult::Unavailable {
+            reason: JvmThreadsUnavailable::Jvm { reason: JvmMemoryUnavailable::ListenerNotRunning }
+        }
+    );
+    assert!(alive, "the stopped JVM was signalled");
+}
+
+/// A run's Dump Threads reaches the session attached to the run's JVM, not the plain run path.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_jvm_is_found_by_the_session_attached_to_it() {
+    let h = harness(Script::default());
+    h.manager.set_jvm_finder(Arc::new(|port, _| (port == 5005).then_some(4242)));
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "127.0.0.1", "port": 5005}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.manager.jvm_session_of(RunId(1), 4242).map(|s| s.id), Some(id));
+    assert!(h.manager.jvm_session_of(RunId(1), 4243).is_none());
+    assert!(h.manager.debugged_jvm_thread_dump(RunId(1), 4243).await.is_none());
 }
 
 #[cfg(unix)]

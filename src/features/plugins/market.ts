@@ -52,11 +52,14 @@ export function groupMarket(
 }
 
 /** 1234 → "1.2K", in the UI's number style. */
-export function formatDownloads(n: number): string {
-  return new Intl.NumberFormat(undefined, {
+export function formatDownloads(n: number, locale?: string): string {
+  return new Intl.NumberFormat(locale, {
     notation: "compact",
     maximumFractionDigits: 1,
-  }).format(n);
+  })
+    .format(n)
+    .replace(/\s+/g, "")
+    .replace(/Mn$/, "M");
 }
 
 /** The paths any entry is suggested for. */

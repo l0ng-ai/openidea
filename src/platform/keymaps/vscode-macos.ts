@@ -120,6 +120,9 @@ export const vscodeMacos: Record<string, string[]> = {
   "find.replaceInFile": ["Meta+Alt+F"],
   "find.next": ["Meta+G"],
   "find.previous": ["Meta+Shift+G"],
+  // Find Next / Previous Selection: the selection, or the word at the caret.
+  "find.wordAtCaret": ["Meta+F3"],
+  "find.previousWordAtCaret": ["Meta+Shift+F3"],
   "find.inPath": ["Meta+Shift+F"],
   "find.replaceInPath": ["Meta+Shift+H"],
   "find.usages": ["Alt+Shift+F12"],
@@ -128,6 +131,7 @@ export const vscodeMacos: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": [],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Meta+Right"],
@@ -141,6 +145,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.applyQuickFix": [],
   "code.generate": [],
   "code.reformat": ["Alt+Shift+F"],
+  "code.rearrange": [],
   "code.reformatDialog": [],
   "code.optimizeImports": ["Alt+Shift+O"],
   "code.commentLine": ["Meta+/"],
@@ -148,6 +153,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.extendSelection": ["Ctrl+Shift+Meta+Right"],
   "code.shrinkSelection": ["Ctrl+Shift+Meta+Left"],
   "code.duplicateLine": ["Alt+Shift+Down"],
+  "code.duplicateEntireLines": [],
   "code.deleteLine": ["Meta+Shift+K"],
   "code.moveLineUp": ["Alt+Up"],
   "code.moveLineDown": ["Alt+Down"],
@@ -170,9 +176,13 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.startNewLineBefore": ["Meta+Shift+Enter"],
   "code.joinLines": ["Ctrl+J"],
   "code.toggleCase": [],
+  "code.cycleCase": [],
   "code.pasteFromHistory": [],
   "code.sortLines": [],
   "code.reverseLines": [],
+  "code.fillParagraph": [],
+  "code.convertIndentsToSpaces": [],
+  "code.convertIndentsToTabs": [],
   "code.unwrap": [],
   "code.foldSelection": [],
   "editor.toggleColumnSelection": [],
@@ -209,6 +219,10 @@ export const vscodeMacos: Record<string, string[]> = {
   "editor.prevTab": ["Meta+Alt+Left", "Meta+Shift+["],
   "editor.splitRight": ["Meta+\\"],
   "editor.toggleZen": ["Meta+K Z"],
+  "editor.toggleLineNumbers": [],
+  "editor.toggleIndentGuides": [],
+  "editor.toggleStickyLines": [],
+  "editor.toggleWhitespaces": [],
   "window.toggleFullScreen": ["Meta+Ctrl+F"],
   // Project window groups are an IntelliJ concept; VS Code has no counterpart.
   "window.nextTab": [],
@@ -220,6 +234,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "navigate.searchText": [],
   "code.splitLine": [],
   "editor.scrollToCenter": [],
+  "editor.scrollUp": [],
+  "editor.scrollDown": [],
   "editor.codeBlockStart": [],
   "editor.codeBlockEnd": [],
   "editor.cloneCaretAbove": ["Meta+Alt+Up"],
@@ -272,6 +288,7 @@ export const vscodeMacos: Record<string, string[]> = {
   // Build (Terminal › Run Build Task)
   "build.buildProject": ["Meta+Shift+B"],
   "build.buildModule": [],
+  "build.compileFile": [],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 
@@ -289,6 +306,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "web.openInBrowser": [],
   "debug.toggleBreakpoint": ["F9"],
   "debug.viewBreakpoints": [],
+  "debug.removeAllBreakpoints": [],
+  "debug.removeAllBreakpointsInFile": [],
   "debug.resume": ["F5"],
   "debug.stepOver": ["F10"],
   "debug.stepInto": ["F11"],
@@ -337,6 +356,12 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.changelist.edit": [],
   "vcs.log.copyRevision": [],
   "vcs.log.goToRef": [],
+  "vcs.log.editMessage": [],
+  "vcs.log.newBranch": [],
+  "vcs.log.goToChild": [],
+  "vcs.log.goToParent": [],
+  "vcs.log.toggleBookmark": [],
+  "vcs.log.toggleBookmarkWithMnemonic": [],
   // View › Appearance (VS Code: workbench.action.zoomIn / zoomOut / zoomReset)
   "view.zoomIn": ["Meta+="],
   "view.zoomOut": ["Meta+-"],
@@ -428,6 +453,10 @@ export const vscodeMacos: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Agents task list (when it has focus)
+  "agents.archiveTasks": ["Meta+Shift+E"],
+  // Python Console: VS Code's Shift+Enter would shadow typing in Python files, so unbound.
+  "python.console.executeSelection": [],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.
   "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Meta+Shift+Enter"],

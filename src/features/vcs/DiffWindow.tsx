@@ -26,6 +26,7 @@ import { TitleBar } from "@/workbench/TitleBar";
 import { WindowResizeHandles } from "@/workbench/WindowResizeHandles";
 import { useApplyTheme, windowBackgroundHex } from "@/workbench/theme";
 import { DIFF_KIND, diffInput, diffTitle, openDiff, type DiffData, type DiffSide } from "./diffInput";
+import { saveStagedDocuments } from "./stagedDocument";
 import { refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 
@@ -35,6 +36,7 @@ const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.Diff
 const OPEN_SOURCE = "openidea://diff/open-source";
 /** Opens a diff in an editor tab of the project window (IDEA's "Show Diff in Editor Tab"). */
 const OPEN_DIFF = "openidea://diff/open-diff";
+const LAUNCH_EVENT = "openidea://launch";
 
 const useDiff = create<{
   data: DiffData | null;
@@ -49,8 +51,12 @@ function toDiffData(launch: DiffLaunch): DiffData {
   return {
     path: launch.path,
     left: launch.left as DiffSide,
+    middle: (launch.middle as DiffSide | null) ?? undefined,
     right: launch.right as DiffSide,
     line: launch.line ?? undefined,
+    lineSide: launch.lineSide ?? undefined,
+    col: launch.col ?? undefined,
+    chain: launch.chain?.map(toDiffData),
   };
 }
 
@@ -78,31 +84,54 @@ function openSource(parent: string, path: string, options?: OpenOptions) {
 export function activateDiffWindow(parent: string): () => void {
   const native = getCurrentWindow();
   const documents = activateEmbeddedDocuments();
+  let disposed = false;
+  let closing = false;
+  let closed = false;
+  let pending = Promise.resolve();
+  let stopClose: (() => void) | undefined;
+  let stopSave: (() => void) | undefined;
+  let stopLaunch: (() => void) | undefined;
+  // A close prompt pauses file switches until the window stays open or closes.
+  const enqueue = (run: () => Promise<void>) => {
+    const next = pending.then(async () => {
+      if (!disposed && !closed) await run();
+    });
+    pending = next.catch(() => {});
+    return next;
+  };
+  const save = async () => {
+    await saveStagedDocuments();
+    await documents.save();
+  };
+  const showDiff = async (data: DiffData) => {
+    try {
+      await saveStagedDocuments();
+    } catch {
+      return; // The staged pane shows the conflict and retains the draft.
+    }
+    if (disposed) return;
+    useDiff.setState({ data, error: null });
+    showCaption(diffCaption(data));
+  };
   provideEditorService({
     openFile: (path, options) => openSource(parent, path, options),
     openInput: (input, options) => {
       // F7 along a diff chain shows the neighbour here; anything else goes to the project window.
       const data = input.kind === DIFF_KIND ? (input.data as DiffData) : null;
-      if (!data) return input.path ? openSource(parent, input.path, options) : Promise.resolve();
-      useDiff.setState({ data });
-      showCaption(diffCaption(data));
-      return Promise.resolve();
+      if (data) return enqueue(() => showDiff(data));
+      return input.path ? openSource(parent, input.path, options) : Promise.resolve();
     },
     activePath: () => null,
     activeCursor: () => null,
-    saveAll: documents.save,
+    saveAll: save,
   });
-  let disposed = false;
-  let closing = false;
-  let stopClose: (() => void) | undefined;
-  let stopSave: (() => void) | undefined;
   const unregisterSave = registerAction({
     id: "file.save",
     title: "Save All",
     category: "File",
     run: async () => {
       try {
-        await documents.save();
+        await save();
       } catch (error) {
         showError(tx("Could not save diff"), error instanceof Error ? error.message : String(error));
       }
@@ -118,7 +147,7 @@ export function activateDiffWindow(parent: string): () => void {
       const data = useDiff.getState().data;
       if (!data) return;
       try {
-        await documents.save();
+        await save();
         await emitTo(parent, OPEN_DIFF, data);
         await native.close();
       } catch (error) {
@@ -126,7 +155,7 @@ export function activateDiffWindow(parent: string): () => void {
       }
     },
   });
-  const savingReady = installDiffWindowSave(parent, documents.save).then((off) => {
+  const savingReady = installDiffWindowSave(parent, save).then((off) => {
     if (disposed) off();
     else stopSave = off;
   });
@@ -139,37 +168,38 @@ export function activateDiffWindow(parent: string): () => void {
       closing = true;
       // 保存和释放文档期间禁止继续输入；取消关闭后恢复编辑。
       flushSync(() => useDiff.setState({ closing: true }));
-      let closed = false;
-      try {
-        if (documents.dirty() && useProject.getState().settings?.files?.autoSave === false) {
-          const answer = await ask({
-            title: tx("Save local changes?"),
-            body: tx("Save the files edited in this diff before closing."),
-            buttons: [{ id: "save", label: tx("Save and Close"), primary: true }],
-          });
-          if (answer.button !== "save") {
-            event.preventDefault();
-            return;
+      await enqueue(async () => {
+        try {
+          if (documents.dirty() && useProject.getState().settings?.files?.autoSave === false) {
+            const answer = await ask({
+              title: tx("Save local changes?"),
+              body: tx("Save the files edited in this diff before closing."),
+              buttons: [{ id: "save", label: tx("Save and Close"), primary: true }],
+            });
+            if (answer.button !== "save") {
+              event.preventDefault();
+              return;
+            }
           }
+          await save();
+          await documents.dispose();
+          closed = true;
+        } catch (error) {
+          event.preventDefault();
+          notifications().notify({
+            level: "error",
+            title: tx("Could not close diff"),
+            body: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          if (!closed) useDiff.setState({ closing: false });
+          const result: AuxCloseResult = { label: native.label, closed, documents: [] };
+          await emitTo(parent, AUX_CLOSED, result).catch((error) =>
+            console.warn("cannot report diff window close", error),
+          );
+          closing = false;
         }
-        await documents.save();
-        await documents.dispose();
-        closed = true;
-      } catch (error) {
-        event.preventDefault();
-        notifications().notify({
-          level: "error",
-          title: tx("Could not close diff"),
-          body: error instanceof Error ? error.message : String(error),
-        });
-      } finally {
-        if (!closed) useDiff.setState({ closing: false });
-        const result: AuxCloseResult = { label: native.label, closed, documents: [] };
-        await emitTo(parent, AUX_CLOSED, result).catch((error) =>
-          console.warn("cannot report diff window close", error),
-        );
-        closing = false;
-      }
+      });
     })
     .then((off) => {
       if (disposed) off();
@@ -192,11 +222,20 @@ export function activateDiffWindow(parent: string): () => void {
   };
   window.addEventListener("keydown", onKey);
   window.addEventListener("keydown", onCloseShortcut, true);
+  const readLaunch = () => {
+    void enqueue(async () => {
+      const launch = (await commands.windowTakeLaunch())?.diffWindow;
+      if (launch) await showDiff(toDiffData(launch));
+      else if (!useDiff.getState().data) throw new Error(tx("Missing diff request"));
+    }).catch((error) => {
+      if (disposed) return;
+      if (useDiff.getState().data) showError(tx("Cannot show diff in a new window"), String(error));
+      else useDiff.setState({ error: String(error) });
+    });
+  };
   void (async () => {
     await savingReady;
     await restoreRemote();
-    const launch = (await commands.windowTakeLaunch())?.diffWindow;
-    if (!launch) throw new Error(tx("Missing diff request"));
     const project = await commands.projectCurrent();
     if (!project) throw new Error(tx("The diff’s project is no longer open"));
     // Settings only: restoring the project's editor session here would overwrite the main window's tabs.
@@ -210,14 +249,21 @@ export function activateDiffWindow(parent: string): () => void {
     setContext("projectOpen", true);
     setContext("vcsAvailable", roots.length > 0);
     await refreshNow();
-    const data = toDiffData(launch);
-    useDiff.setState({ project: project.name, data });
-    showCaption(diffCaption(data));
+    if (disposed) return;
+    useDiff.setState({ project: project.name });
+    const off = await native.listen(LAUNCH_EVENT, readLaunch);
+    if (disposed) {
+      off();
+      return;
+    }
+    stopLaunch = off;
+    readLaunch();
   })().catch((error) => useDiff.setState({ error: String(error) }));
   return () => {
     disposed = true;
     stopClose?.();
     stopSave?.();
+    stopLaunch?.();
     unregisterSave();
     unregisterToEditor();
     window.removeEventListener("keydown", onKey);
@@ -263,15 +309,23 @@ export function showDiffWindow(data: DiffData, fallback: () => void) {
     fallback();
     return;
   }
-  const launch: DiffLaunch = {
-    path: data.path,
-    left: data.left,
-    right: data.right,
-    line: data.line,
-  };
+  const launch = toDiffLaunch(data);
   void call(commands.windowOpenDiff(launch, windowBackgroundHex())).catch((error) =>
     showError(tx("Cannot show diff in a new window"), error instanceof Error ? error.message : String(error)),
   );
+}
+
+function toDiffLaunch(data: DiffData): DiffLaunch {
+  return {
+    path: data.path,
+    left: data.left,
+    middle: data.middle,
+    right: data.right,
+    line: data.line,
+    lineSide: data.lineSide,
+    col: data.col,
+    chain: data.chain?.map(toDiffLaunch),
+  };
 }
 
 export function DiffWindow() {
@@ -294,7 +348,7 @@ export function DiffWindow() {
         </div>
       ) : (
         <div className={styles.comparisonWindowBody} inert={closing}>
-          <DiffEditor input={diffInput(data)} />
+          <DiffEditor key={diffInput(data).key} input={diffInput(data)} />
         </div>
       )}
       <OverlayHost />

@@ -8,3 +8,7 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+.form > :first-child {
+  align-self: stretch;
+  min-width: 0;
+}

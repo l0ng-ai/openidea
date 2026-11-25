@@ -433,6 +433,26 @@ describe("commit inclusion", () => {
     expect(initialCheck(status[5]!)).toBe("none");
   });
 
+  it("commits a new file edited after Add to Git with its working-tree content", () => {
+    // Add to Git staged the file as created (empty); the edits after it are unstaged.
+    const created = fs("src/main/kotlin/New.kt", "added", "modified");
+    expect(initialCheck(created)).toBe("all");
+    expect(planCommit([created], new Map()).stage).toEqual(["/r/src/main/kotlin/New.kt"]);
+  });
+
+  it("starts all files unchecked when default inclusion is disabled", () => {
+    const checks = new Map<string, CheckState>();
+    expect(aggregateCheck(status, checks, false)).toEqual({ checked: false, indeterminate: false, on: 0 });
+    expect(planCommit(status, checks, false)).toEqual({
+      included: [],
+      stage: [],
+      exclude: ["/r/src/main/kotlin/Partial.kt", "/r/src/test/AppTest.kt", "/r/README.md"],
+      partial: [],
+    });
+    checks.set(status[0]!.path, "all");
+    expect(planCommit(status, checks, false).included).toEqual([status[0]]);
+  });
+
   it("plans which changes the commit takes and which staged ones it leaves out", () => {
     const checks = new Map<string, CheckState>([
       ["/r/README.md", "none"],

@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerAction } from "@/platform/actions";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
-import { EditorView, runScopeHandlers } from "@codemirror/view";
-import { cursorCharRight, history, undo } from "@codemirror/commands";
+import { EditorView, keymap, runScopeHandlers } from "@codemirror/view";
+import { cursorCharRight, history, redo, standardKeymap, undo } from "@codemirror/commands";
 import { nextOccurrence, occurrenceSearch } from "@/editor/core/cm/editing";
+import { hasLinkedSnippetField } from "@/editor/core/cm/linkedSnippet";
 import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
 import {
@@ -284,14 +285,55 @@ describe("surround with", () => {
 describe("template fields", () => {
   const selected = (v: EditorView) => v.state.sliceDoc(v.state.selection.main.from, v.state.selection.main.to);
 
+  it("edits the Java fori index from a single caret and lets the initializer be edited separately", async () => {
+    const doc = "class Main {\n  void f() {\n    fori\n  }\n}";
+    const v = await editor("java", doc, doc.indexOf("fori") + 4, [history(), keymap.of(standardKeymap)]);
+    expect(tab(v)).toBe(true);
+    expect(v.state.selection.ranges).toHaveLength(1);
+    expect(selected(v)).toBe("i");
+    expect(v.state.selection.main.from).toBe(v.state.doc.toString().indexOf("int i") + "int ".length);
+
+    const expanded = v.state.doc.toString();
+    v.dispatch(v.state.replaceSelection("index"));
+    const renamed = expanded.replace(/\bi\b/g, "index");
+    expect(v.state.doc.toString()).toBe(renamed);
+    expect(undo(v)).toBe(true);
+    expect(v.state.doc.toString()).toBe(expanded);
+    expect(redo(v)).toBe(true);
+    expect(v.state.doc.toString()).toBe(renamed);
+
+    const afterZero = renamed.indexOf(" = 0") + " = 0".length;
+    while (v.state.selection.main.head < afterZero) expect(press(v, "ArrowRight")).toBe(true);
+    expect(v.state.selection.main.head).toBe(afterZero);
+    expect(v.state.selection.ranges).toHaveLength(1);
+    expect(press(v, "Backspace")).toBe(true);
+    v.dispatch(v.state.replaceSelection("1"));
+    expect(v.state.doc.toString()).toBe(renamed.replace(" = 0", " = 1"));
+  });
+
+  it("keeps one index caret per Java fori expansion", async () => {
+    const doc = "class Main {\n  void f() {\n    fori\n    fori\n  }\n}";
+    const v = await editor("java", doc);
+    carets(v, doc.indexOf("fori") + 4, doc.lastIndexOf("fori") + 4);
+    expect(tab(v)).toBe(true);
+    expect(v.state.selection.ranges).toHaveLength(2);
+    expect(v.state.selection.mainIndex).toBe(1);
+    v.dispatch(v.state.replaceSelection("index"));
+    expect(v.state.doc.toString().match(/\bindex\b/g)).toHaveLength(6);
+    expect(press(v, "Enter")).toBe(true);
+    expect(v.state.selection.ranges.every((range) => range.empty)).toBe(true);
+    expect(runScopeHandlers(v, new KeyboardEvent("keydown", { key: "Tab", shiftKey: true }), "editor")).toBe(true);
+    expect(v.state.selection.ranges.map((r) => v.state.sliceDoc(r.from, r.to))).toEqual(["index", "index"]);
+  });
+
   it("links fields and advances all carets through separately indented expansions", async () => {
     const doc = "function first() {\n  fori\n}\nfunction second() {\n    fori\n}";
     const v = await editor("typescript", doc, undefined, [history()]);
     carets(v, doc.indexOf("fori") + 4, doc.lastIndexOf("fori") + 4);
     const before = v.state.selection;
     expect(tab(v)).toBe(true);
-    expect(v.state.selection.ranges.map((r) => v.state.sliceDoc(r.from, r.to))).toEqual(Array(6).fill("i"));
-    expect(v.state.selection.mainIndex).toBe(3);
+    expect(v.state.selection.ranges.map((r) => v.state.sliceDoc(r.from, r.to))).toEqual(["i", "i"]);
+    expect(v.state.selection.mainIndex).toBe(1);
     expect(v.state.doc.line(3).text).toBe("    ");
     expect(v.state.doc.line(8).text).toBe("      ");
 
@@ -301,7 +343,7 @@ describe("template fields", () => {
     expect(v.state.selection.ranges).toHaveLength(2);
     expect(v.state.selection.ranges.every((r) => v.state.sliceDoc(r.head, r.head + 7) === ".length")).toBe(true);
     expect(runScopeHandlers(v, new KeyboardEvent("keydown", { key: "Tab", shiftKey: true }), "editor")).toBe(true);
-    expect(v.state.selection.ranges).toHaveLength(6);
+    expect(v.state.selection.ranges).toHaveLength(2);
     expect(tab(v)).toBe(true);
     expect(tab(v)).toBe(true);
     expect(v.state.selection.ranges.map((r) => r.head)).toEqual([v.state.doc.line(3).to, v.state.doc.line(8).to]);
@@ -365,15 +407,36 @@ describe("template fields", () => {
     await tick();
     expect(press(v, "Escape")).toBe(true);
     expect(v.state.selection.main.empty).toBe(true);
-    expect(hasNextSnippetField(v.state)).toBe(true);
+    expect(hasLinkedSnippetField(v.state, 1)).toBe(true);
     expect(press(v, "Escape")).toBe(true);
-    expect(hasNextSnippetField(v.state)).toBe(false);
+    expect(hasLinkedSnippetField(v.state, 1)).toBe(false);
     // Outside a template Enter and Esc are left to the editor.
     expect(press(v, "Escape")).toBe(false);
   });
 });
 
 describe("⌘J Insert Live Template", () => {
+  it.each([
+    { label: "sout", insert: "System.out.println();" },
+    { label: "fori", insert: "for (int i = 0; i < ; i++) {" },
+  ])("replaces a backward selection when picking $label", async ({ label, insert }) => {
+    const text = "class Main {\n  void f() {\n    payload\n    leftover\n    return;\n  }\n}";
+    const from = text.indexOf("payload");
+    const to = text.indexOf("leftover") + "leftover".length;
+    const v = await editor("java", text, from, [autocompletion()]);
+    v.dispatch({ selection: { anchor: to, head: from } });
+    insertLiveTemplate(v);
+    const result = await templateCompletionSource(new CompletionContext(v.state, from, true));
+    const option = result?.options.find((candidate) => candidate.label === label);
+    if (typeof option?.apply !== "function") throw new Error("Expected a live template completion");
+    option.apply(v, option, result!.from, from);
+
+    expect(v.state.doc.line(3).text.trim()).toBe(insert);
+    expect(v.state.doc.toString()).not.toMatch(/payload|leftover/);
+    expect(v.state.doc.toString()).toContain("return;");
+    expect(v.state.selection.ranges).toHaveLength(1);
+  });
+
   it("opens a lookup restricted to live templates and ends with it", async () => {
     const v = await editor("typescript", "function f() {\n  ", undefined, [autocompletion()]);
     const exclusive = () =>

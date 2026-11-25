@@ -1,0 +1,199 @@
+.dialog {
+  height: 440px;
+}
+
+.dialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+
+.preview {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  padding: var(--space-2) var(--space-4) 0;
+}
+
+.fields {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--fg);
+}
+
+.field > input {
+  min-width: 0;
+}
+
+.files {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: min(132px, 42vh);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.filesHeader {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--h-field);
+  padding-inline: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.heading {
+  margin: 0;
+  color: var(--fg);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+}
+
+.filesHeading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.tree {
+  flex: 1;
+  min-height: 0;
+}
+
+.filePath {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+
+.fileName {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chooseBase {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chooseBase:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+.stats {
+  flex: none;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fileStatus {
+  display: grid;
+  flex: none;
+  width: var(--space-4);
+  place-items: center;
+}
+
+.warning,
+.error {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.warning {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border-feedback-warning);
+  background: var(--bg-feedback-warning);
+  color: var(--fg-secondary);
+}
+
+.warning > svg {
+  flex: none;
+}
+
+.error {
+  color: var(--danger);
+}
+
+.patchDiff {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.patchDiffNav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--h-field);
+  padding-inline: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.diffEmpty {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  color: var(--fg-secondary);
+}
+
+.rawPatch {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.rawPatch > section {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rawPatch > section + section {
+  border-left: 1px solid var(--border);
+}
+
+.rawPatch h2 {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+}
+
+.rawPatch pre {
+  flex: 1;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-app);
+  font: var(--fw-code, 400) var(--fs-code) / var(--lh-code) var(--font-mono);
+}

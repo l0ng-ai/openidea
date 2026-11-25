@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { Commit } from "@/bindings";
 
 const { files, combined, executeAction } = vi.hoisted(() => ({
@@ -69,8 +69,10 @@ describe("Push dialog changes", () => {
     const one = { ...older, message: "Add order service\n\nIntroduces the service.\n", timeMs: 1_700_000_000_000 };
     render(<PushChanges repo="/r" commits={[one]} />);
     const details = screen.getByRole("region", { name: "Commit details" });
-    expect(details.textContent).toContain("Add order service\n\nIntroduces the service.");
-    expect(details.textContent).toContain("aaaaaaa me <me@example.com> on ");
+    const message = within(details);
+    expect(message.getByText("Add order service", { exact: true })).toBeTruthy();
+    expect(message.getByText("Introduces the service.", { exact: true })).toBeTruthy();
+    expect(message.getByText(/^aaaaaaa me <me@example\.com> on /)).toBeTruthy();
     expect(await screen.findByText("src/orders")).toBeTruthy();
     expect(screen.getAllByRole("treeitem")).toHaveLength(2);
     const grouping = screen.getByRole("button", { name: "Group by Directory" });

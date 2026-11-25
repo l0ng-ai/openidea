@@ -169,6 +169,7 @@ function ReportBody({ report }: { report: TransferReport }) {
       {shown.length > 0 && (
         <ul className={styles.reportErrors}>
           {shown.map((e, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- identical errors can repeat; position is the identity
             <li key={i}>
               <span className={styles.mono}>{root ? relativePath(root, e.path) : e.path}</span>: {txt(e.message)}
             </li>
@@ -466,6 +467,40 @@ const withTargets = (fn: (paths: string[]) => unknown) => (c: { arg?: unknown })
 export function registerDeploymentActions(): () => void {
   const when = "projectOpen";
   return registerActions([
+    {
+      id: "deployment.uploadLocalInto",
+      title: "Upload Local Files Into Remote Folder",
+      category: CATEGORY,
+      hidden: true,
+      run: async ({ arg }) => {
+        const value = arg as { server: string; paths: string[]; target: string } | undefined;
+        const server = value && resolveServer(deployment(), value.server);
+        if (server && value?.target && Array.isArray(value.paths))
+          await (await import("./remoteHost")).uploadLocalInto(server, value.paths, value.target);
+      },
+    },
+    {
+      id: "deployment.uploadFiles",
+      title: "Upload Files…",
+      category: CATEGORY,
+      hidden: true,
+      run: async ({ arg }) => {
+        const value = arg as { server: string; target: string } | undefined;
+        const server = value && resolveServer(deployment(), value.server);
+        if (server && value?.target) await (await import("./remoteHost")).chooseUploadFiles(server, value.target);
+      },
+    },
+    {
+      id: "deployment.uploadFolder",
+      title: "Upload Folder…",
+      category: CATEGORY,
+      hidden: true,
+      run: async ({ arg }) => {
+        const value = arg as { server: string; target: string } | undefined;
+        const server = value && resolveServer(deployment(), value.server);
+        if (server && value?.target) await (await import("./remoteHost")).chooseUploadFolder(server, value.target);
+      },
+    },
     {
       id: "deployment.uploadToDefault",
       title: "Upload to Default Server",

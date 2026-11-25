@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { call, commands, isTauri, type Settings } from "@/platform/ipc";
 import { loadSettings, useProject } from "@/platform/project";
+import { lastSettingsPage, rememberSettingsPage } from "./lastPage";
 import { deepEqual, getAt, putAt, setAt, validateSettings, type ValidSettings } from "./schema";
 
 export type Scope = "global" | "project";
@@ -112,7 +113,9 @@ export function splitPageTarget(target: string): { pageId: string; focus: string
 export function openSettings(pageId?: string, opts: { newProjects?: boolean; globalBase?: ValidSettings } = {}) {
   const s = useSettingsDialog.getState();
   const base = validateSettings(useProject.getState().settings);
-  const target = pageId ? splitPageTarget(pageId) : { pageId: s.pageId, focus: null };
+  const newProjects = opts.newProjects ?? false;
+  // IDEA reopens Settings on the page it was left on; Settings for New Projects has its own pages.
+  const target = splitPageTarget(pageId ?? (newProjects ? s.pageId : (lastSettingsPage() ?? s.pageId)));
   useSettingsDialog.setState({
     open: true,
     projectStructureOpen: false,
@@ -121,7 +124,7 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean; glo
     query: "",
     base,
     globalBase: opts.globalBase ?? base,
-    newProjects: opts.newProjects ?? false,
+    newProjects,
     staged: {},
     stagedSecrets: {},
     stagedExternal: {},
@@ -129,6 +132,7 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean; glo
     saving: false,
     error: null,
   });
+  if (!newProjects) rememberSettingsPage(target.pageId);
   if (!opts.globalBase) void loadGlobalBase();
 }
 
@@ -214,7 +218,9 @@ export function closeSettings() {
 
 /** Shows `pageId` (`page#focus` also selects `focus` on it). */
 export function selectPage(pageId: string) {
-  useSettingsDialog.setState(splitPageTarget(pageId));
+  const target = splitPageTarget(pageId);
+  useSettingsDialog.setState(target);
+  if (!useSettingsDialog.getState().newProjects) rememberSettingsPage(target.pageId);
 }
 
 export function setQuery(query: string) {

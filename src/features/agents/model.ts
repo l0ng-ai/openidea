@@ -7,13 +7,15 @@ export const HOME_KEY = "agent:new";
 export const TOOL_WINDOW = "agents";
 /** MIME of a dragged agent task (a tree row or the docked conversation bar): the payload is the task id. */
 export const TASK_DRAG = "application/x-openidea-agent-task";
-/** Settings › Agents › Coding Agents: the agents this machine runs. */
+/** Settings › Agents › Agent Setup. */
 export const REGISTRY_PAGE = "agents.list";
 /** The Settings folder holding the agent pages. */
 export const AGENTS_GROUP = "Agents";
-/** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
+/** Settings › Agents › MCP Connections. */
 export const MCP_PAGE = "agents.mcpServers";
-/** Settings › Agents › Command Permissions. */
+/** Settings › Agents › Skills: every CLI's SKILL.md folders and their modes. */
+export const SKILLS_PAGE = "agents.skills";
+/** Settings › Agents › Command Rules. */
 export const POLICY_PAGE = "agents.policy";
 
 export const sessionKey = (task: string) => `agent:${task}`;
@@ -134,21 +136,37 @@ export function upsertEntry(entries: AgentEntry[], index: number, entry: AgentEn
   return next;
 }
 
+/** `shown` with `text`, which follows its first `from` units, added; `null` when `shown` is too short to take it. */
+function grown(shown: string, from: number, text: string): string | null {
+  if (shown.length < from) return null;
+  return shown.length >= from + text.length ? shown : shown + text.slice(shown.length - from);
+}
+
 /**
- * `entries` with `text` appended to the message at `index`, which read its first `from`
- * UTF-16 units when the backend last sent it; `null` when the copy here can't take it (a
- * gap, or another kind of entry), so the conversation is loaded again. A copy loaded while
- * the text streamed may already hold some of it.
+ * `entries` with `text` appended to the message at `index` (or to the output of the tool call
+ * there), which read its first `from` UTF-16 units when the backend last sent it; `null` when
+ * the copy here can't take it (a gap, or another kind of entry), so the conversation is
+ * loaded again. A copy loaded while the text streamed may already hold some of it.
  */
 export function appendEntry(entries: AgentEntry[], index: number, from: number, text: string): AgentEntry[] | null {
   const entry = entries[index];
-  if (!entry || (entry.type !== "agent" && entry.type !== "thought")) return null;
-  const have = entry.text.length;
-  if (have < from) return null;
-  if (have >= from + text.length) return entries;
-  const next = entries.slice();
-  next[index] = { ...entry, text: entry.text + text.slice(have - from) };
-  return next;
+  let next: AgentEntry;
+  if (entry?.type === "tool") {
+    const output = grown(entry.output ?? "", from, text);
+    if (output === null) return null;
+    if (output === entry.output) return entries;
+    next = { ...entry, output };
+  } else if (entry?.type === "agent" || entry?.type === "thought") {
+    const added = grown(entry.text, from, text);
+    if (added === null) return null;
+    if (added === entry.text) return entries;
+    next = { ...entry, text: added };
+  } else {
+    return null;
+  }
+  const copy = entries.slice();
+  copy[index] = next;
+  return copy;
 }
 
 /** "agent/fix-lexer" → "fix-lexer". */

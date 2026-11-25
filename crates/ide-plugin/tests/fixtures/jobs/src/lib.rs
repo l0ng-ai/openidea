@@ -105,6 +105,17 @@ impl Plugin for Jobs {
                 host::open_url(arg.unwrap_or_default())?;
                 Ok(None)
             }
+            "pick-file" => {
+                let dialog = openidea_plugin::FileDialog {
+                    save: arg.is_some(),
+                    name: arg.map(str::to_owned),
+                    filters: vec![openidea_plugin::FileFilter {
+                        name: "Parquet".into(),
+                        extensions: vec!["parquet".into()],
+                    }],
+                };
+                Ok(host::pick_file("Data file", &dialog)?)
+            }
             "pick-directory" => Ok(Some(host::pick_directory("Clone target", arg)?.unwrap_or_else(|| "none".into()))),
             "open-project" | "open-project-new" => {
                 host::open_project(arg.unwrap_or_default(), id == "open-project-new")?;

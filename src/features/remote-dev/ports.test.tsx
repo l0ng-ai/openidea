@@ -138,14 +138,53 @@ it("forwards and remembers ports of a dev container, per folder and configuratio
   useRemote.setState({ session: null });
 });
 
-it("doesn't forward ports of a WSL project yet", async () => {
+it("forwards and remembers ports of a WSL distribution, per distro and folder", async () => {
   const { useRemote } = await import("@/platform/remote");
-  ipc.remoteForwardPort.mockClear();
-  useRemote.setState({
-    session: { target: { kind: "wsl", distro: "u" }, root: "/home/u", host: "u", os: "linux", commands: [] },
+  const { forwardPort, savedPorts } = await import("./ports");
+  const wsl = (distro: string, root: string) => ({
+    target: { kind: "wsl" as const, distro },
+    root,
+    host: distro,
+    os: "linux",
+    commands: [],
   });
-  expect(await forwardPort(8080)).toBeNull();
-  expect(ipc.remoteForwardPort).not.toHaveBeenCalled();
+  ipc.remoteForwardPort.mockClear();
+  useRemote.setState({ session: wsl("Ubuntu", "/home/u/app") });
+  expect(await forwardPort(8080)).toEqual({ remotePort: 8080, localPort: 8080, host: null });
+  expect(ipc.remoteForwardPort).toHaveBeenCalledWith(8080);
+  expect(savedPorts()).toEqual([8080]);
+  useRemote.setState({ session: wsl("Ubuntu", "/home/u/other") });
+  expect(savedPorts()).toEqual([]);
+  useRemote.setState({ session: wsl("Debian", "/home/u/app") });
+  expect(savedPorts()).toEqual([]);
+  // An SSH configuration of the same name has its own list.
+  useRemote.setState({
+    session: { target: { kind: "ssh", config: "Ubuntu" }, root: "/home/u/app", host: "h", os: "linux", commands: [] },
+  });
+  expect(savedPorts()).toEqual([]);
+  useRemote.setState({ session: null });
+});
+
+it("forwards the ports saved for a WSL distribution again after reconnecting", async () => {
+  const { useRemote } = await import("@/platform/remote");
+  const { forwardPort, restorePorts, savedPorts } = await import("./ports");
+  useRemote.setState({
+    session: {
+      target: { kind: "wsl", distro: "Ubuntu" },
+      root: "/home/u/app",
+      host: "Ubuntu",
+      os: "linux",
+      commands: [],
+    },
+  });
+  await forwardPort(3000);
+  expect(savedPorts()).toEqual([3000]);
+  // Reconnected: the new connection forwards nothing yet.
+  forwarded.length = 0;
+  ipc.remoteForwardPort.mockClear();
+  await restorePorts();
+  expect(ipc.remoteForwardPort).toHaveBeenCalledWith(3000);
+  expect(usePorts.getState().ports).toEqual([{ remotePort: 3000, localPort: 53000, host: null }]);
   useRemote.setState({ session: null });
 });
 
@@ -199,16 +238,40 @@ it("does not display a previous session's delayed port response", async () => {
   useRemote.setState({ session: null });
 });
 
-it("reloads ports when switching directly between connected sessions", async () => {
+it.each([
+  [
+    "SSH",
+    (folder: string) => ({
+      target: { kind: "ssh" as const, config: folder },
+      root: "/srv/app",
+      host: "h",
+      os: "linux",
+      commands: [],
+    }),
+  ],
+  [
+    "WSL",
+    (folder: string) => ({
+      target: { kind: "wsl" as const, distro: folder },
+      root: "/home/u/app",
+      host: folder,
+      os: "linux",
+      commands: [],
+    }),
+  ],
+  [
+    "dev container",
+    (folder: string) => ({
+      target: { kind: "devContainer" as const, folder, config: "" },
+      root: "/workspaces/app",
+      host: "app",
+      os: "linux",
+      commands: [],
+    }),
+  ],
+])("reloads ports on connect and when switching between connected %s sessions", async (_kind, session) => {
   const { useRemote } = await import("@/platform/remote");
   const { activate } = await import("./index");
-  const session = (folder: string) => ({
-    target: { kind: "devContainer" as const, folder, config: "" },
-    root: "/workspaces/app",
-    host: "app",
-    os: "linux",
-    commands: [],
-  });
   useRemote.setState({ session: session("/first") });
   forwarded.push({ remotePort: 8000, localPort: 8000, host: null });
   const dispose = activate();

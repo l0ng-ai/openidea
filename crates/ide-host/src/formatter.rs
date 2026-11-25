@@ -2,27 +2,161 @@
 
 use crate::Host;
 use ide_core::event::NotifyLevel;
-use ide_core::settings::{ExternalFormatter, LanguagesSettings, Settings};
-use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, LanguageId, Pos, Range, TextEdit};
+use ide_core::settings::{BIOME_LANGUAGES, ExternalFormatter, LanguagesSettings, Settings};
+use ide_core::{
+    CancellationToken, ChangeSet, DocId, IdeError, IdeEvent, IdeResult, IpcPath, LanguageId, Pos, Range, TextEdit,
+};
 use ide_language::{LanguageConfig, PhpAlignment, Syntax};
 use ide_lsp::types::FormatOptions;
 use ide_tools::{Tools, formatter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const OXFMT_CONFIGS: [&str; 4] = [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.config.ts", "oxfmt.config.mts"];
+/// A Biome configuration, or Biome installed as a project dependency (it then uses its defaults).
+const BIOME_MARKERS: [&str; 3] = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome/package.json"];
+
+/// Reformat Code uses Biome below a Biome configuration or installation, unless the nearest
+/// configuration turns its formatter off (Biome lints, another tool formats).
+fn biome_formats(file: &Path) -> bool {
+    let config = ["biome.json", "biome.jsonc"]
+        .iter()
+        .filter_map(|name| formatter::find_up(file, Path::new(name)))
+        .max_by_key(|path| path.components().count());
+    match config {
+        Some(config) => !std::fs::read_to_string(&config)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&ide_core::jsonc::strip(&text)).ok())
+            .is_some_and(|v| v.pointer("/formatter/enabled") == Some(&serde_json::Value::Bool(false))),
+        None => BIOME_MARKERS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some()),
+    }
+}
+
+/// The `pyproject.toml` Black reads for `file`, in the project root Black finds: the nearest folder
+/// with `.git`, `.hg`, or a `pyproject.toml` that has `[tool.black]` (one without it is skipped).
+/// `None` when that root has no `pyproject.toml`: Black then reads the user's configuration.
+fn black_pyproject(file: &Path) -> Option<PathBuf> {
+    let mut dirs = file.parent()?.ancestors();
+    let root = dirs
+        .find(|d| {
+            d.join(".git").exists()
+                || d.join(".hg").is_dir()
+                || ide_sdk::apply::toml_has_table(&d.join("pyproject.toml"), "tool.black")
+        })
+        .or_else(|| file.parent()?.ancestors().last())?;
+    Some(root.join("pyproject.toml")).filter(|p| p.is_file())
+}
+
+/// Black formats files whose project configures it (`[tool.black]`).
+fn black_configured(file: &Path) -> bool {
+    black_pyproject(file).is_some_and(|p| ide_sdk::apply::toml_has_table(&p, "tool.black"))
+}
+
+/// The single user configuration directory the formatter searches.
+fn user_config_dir(tool: &str, cwd: &Path) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return if tool == "black" { dirs::home_dir() } else { dirs::config_dir() };
+    }
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    xdg_user_config_dir(tool, cwd, xdg.as_deref(), dirs::home_dir().as_deref())
+}
+
+fn xdg_user_config_dir(tool: &str, cwd: &Path, xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(dir) = xdg.filter(|dir| tool == "black" || dir.is_absolute()) {
+        if let Ok(relative) = dir.strip_prefix("~") {
+            return home.map(|home| home.join(relative));
+        }
+        return Some(cwd.join(dir));
+    }
+    home.map(|home| home.join(".config"))
+}
+
+fn user_configured(tool: &str, dir: Option<&Path>) -> bool {
+    let Some(dir) = dir else { return false };
+    let names: &[&str] = match tool {
+        "ruff" => &["ruff/.ruff.toml", "ruff/ruff.toml", "ruff/pyproject.toml"],
+        "black" if cfg!(windows) => &[".black"],
+        "black" => &["black"],
+        _ => &[],
+    };
+    names.iter().any(|name| dir.join(name).is_file())
+}
+
+/// Whether Ruff finds a configuration of the project for `file`: `ruff.toml`, `.ruff.toml` or a
+/// `pyproject.toml` with `[tool.ruff]` in its folder or above.
+fn ruff_project_configured(file: &Path) -> bool {
+    file.parent().into_iter().flat_map(Path::ancestors).any(|dir| {
+        dir.join("ruff.toml").is_file()
+            || dir.join(".ruff.toml").is_file()
+            || ide_sdk::apply::toml_has_table(&dir.join("pyproject.toml"), "tool.ruff")
+    })
+}
+
+/// The indentation and line length for `tool`, unless a configuration of the project or the user
+/// decides them (or the Ruff configuration directory is set): the file's `.editorconfig`, then
+/// what was set on the Code Style › Python page, as the editor indents.
+fn python_style_for(
+    tool: &str,
+    file: &Path,
+    configured: bool,
+    settings: &Settings,
+    editorconfig: Option<&ide_workspace::editorconfig::EditorConfigProps>,
+    user_dir: Option<&Path>,
+) -> formatter::PythonStyle {
+    let has_config = configured
+        || match tool {
+            "ruff" => ruff_project_configured(file) || user_configured("ruff", user_dir),
+            // Black reads the user's configuration only when its project root has no pyproject.toml.
+            "black" => match black_pyproject(file) {
+                Some(pyproject) => ide_sdk::apply::toml_has_table(&pyproject, "tool.black"),
+                None => user_configured("black", user_dir),
+            },
+            _ => true,
+        };
+    if has_config {
+        return formatter::PythonStyle::default();
+    }
+    // Only what was set: the global hard wrap (120) is not Ruff's or Black's default (88).
+    let page = settings.editor.code_style.languages.get("python");
+    let ec = editorconfig;
+    formatter::PythonStyle {
+        line_length: ec.and_then(|e| e.max_line_length).or(page.and_then(|s| s.hard_wrap_at)),
+        indent_width: ec.and_then(|e| e.indent_size.or(e.tab_width)).or(page.and_then(|s| s.indent.or(s.tab_size))),
+        use_tabs: ec
+            .and_then(|e| e.indent_style)
+            .map(|style| style == ide_workspace::editorconfig::IndentStyle::Tab)
+            .or(page.and_then(|s| s.use_tab)),
+    }
+}
+
+/// `tool` installed in the environment of the interpreter nearest to `near` (`svc/.venv/bin/ruff` or
+/// `svc/.venv/bin/black`), or in `Scripts` for conda and pixi environments on Windows.
+fn interpreter_tool(root: &Path, near: Option<&Path>, settings: &Settings, tool: &str) -> Option<PathBuf> {
+    let python = ide_sdk::apply::python_interpreter_near(root, near, settings)?;
+    let dir = python.parent()?;
+    let exe = if cfg!(windows) { format!("{tool}.exe") } else { tool.to_owned() };
+    [dir.join(&exe), dir.join("Scripts").join(&exe)].into_iter().find(|p| p.is_file())
+}
+
+/// Formatters print nothing for a file their configuration excludes (Black's `force-exclude`):
+/// that output must not replace the file.
+fn excluded_output(text: &str, formatted: &str) -> bool {
+    formatted.is_empty() && !text.trim().is_empty()
+}
 
 fn supports_external_format(language: &LanguageConfig, tool: ExternalFormatter) -> bool {
     match language.formatter.as_ref().map(|f| f.tool.as_str()) {
+        Some("prettier") if tool == ExternalFormatter::Biome => BIOME_LANGUAGES.contains(&language.id.as_str()),
         Some("prettier") => matches!(tool, ExternalFormatter::Prettier | ExternalFormatter::Oxfmt),
-        Some("ruff") => tool == ExternalFormatter::Ruff,
+        Some("ruff") => matches!(tool, ExternalFormatter::Ruff | ExternalFormatter::Black),
         _ => false,
     }
 }
 
 /// The external formatter of a file, for a language with an external formatter.
-/// `forced` names the tool (Reformat with Prettier, oxfmt, or Ruff). Ruff is
-/// the base formatter for Python; oxfmt can replace Prettier for its languages
-/// when configured or selected. A tool that cannot format the language is
+/// `forced` names the tool (Reformat with Prettier, oxfmt, Biome, Ruff, or Black). Ruff is
+/// the base formatter for Python, replaced by Black when configured or selected; Biome,
+/// then oxfmt, can replace Prettier for their
+/// languages when configured or selected. A tool that cannot format the language is
 /// rejected even when explicitly requested.
 fn external_tool(
     forced: Option<ExternalFormatter>,
@@ -30,7 +164,7 @@ fn external_tool(
     file: &Path,
     settings: &LanguagesSettings,
 ) -> IdeResult<Option<ExternalFormatter>> {
-    use ExternalFormatter::{Oxfmt, Prettier, Ruff};
+    use ExternalFormatter::{Biome, Black, Oxfmt, Prettier, Ruff};
     let Some(language) = language.filter(|l| l.formatter.is_some()) else {
         return match forced {
             Some(tool) => Err(IdeError::invalid(format!(
@@ -54,10 +188,17 @@ fn external_tool(
     }
     let enabled = |tool| settings.formatter(tool).languages.iter().any(|l| l == language.id.as_str());
     if language.formatter.as_ref().is_some_and(|f| f.tool == "ruff") {
-        return Ok(enabled(Ruff).then_some(Ruff));
+        return Ok(if enabled(Black) && (settings.black.prefer || black_configured(file)) {
+            Some(Black)
+        } else {
+            enabled(Ruff).then_some(Ruff)
+        });
     }
-    let oxfmt_config = || OXFMT_CONFIGS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some());
-    Ok(if enabled(Oxfmt) && (settings.oxfmt.prefer || oxfmt_config()) {
+    let found = |names: &[&str]| names.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some());
+    let biome = enabled(Biome) && supports_external_format(language, Biome);
+    Ok(if biome && (settings.biome.prefer || biome_formats(file)) {
+        Some(Biome)
+    } else if enabled(Oxfmt) && (settings.oxfmt.prefer || found(&OXFMT_CONFIGS)) {
         Some(Oxfmt)
     } else {
         enabled(Prettier).then_some(Prettier)
@@ -151,10 +292,58 @@ pub async fn format(
 ) -> IdeResult<Vec<TextEdit>> {
     let project = host.project(window)?;
     let snap = project.documents.snapshot(doc)?;
+    let source = FormatSource {
+        path: snap.path,
+        language: snap.language,
+        text: snap.text,
+        doc: Some(doc),
+        version: snap.version,
+        read_only: snap.read_only,
+    };
+    format_source(host, window, &project, source, range, options).await
+}
+
+/// Format a separate snapshot using the file's language, settings and formatter.
+pub async fn format_text(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+    text: String,
+    options: FormatOptions,
+) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("formatting requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let source = FormatSource { path: path.into(), language, text, doc: None, version: 0, read_only: false };
+    format_source(host, window, &project, source, None, options).await
+}
+
+struct FormatSource {
+    path: IpcPath,
+    language: LanguageId,
+    text: String,
+    doc: Option<DocId>,
+    version: u32,
+    read_only: bool,
+}
+
+async fn format_source(
+    host: &Host,
+    window: &str,
+    project: &crate::Project,
+    snap: FormatSource,
+    range: Option<Range>,
+    options: FormatOptions,
+) -> IdeResult<Vec<TextEdit>> {
     let settings = project.settings.effective();
     let alignment = php_alignment(&settings, &snap.language);
     let original = alignment.any().then(|| (snap.language.clone(), snap.text.clone()));
-    let Some(edits) = provider_edits(host, window, &project, snap, settings, range, options).await? else {
+    let Some(edits) = provider_edits(host, window, project, snap, settings, range, options).await? else {
         return Ok(Vec::new());
     };
     let Some((language, text)) = original else {
@@ -235,12 +424,12 @@ async fn provider_edits(
     host: &Host,
     window: &str,
     project: &crate::Project,
-    snap: ide_workspace::documents::DocumentInfo,
+    snap: FormatSource,
     settings: Settings,
     range: Option<Range>,
     options: FormatOptions,
 ) -> IdeResult<Option<Vec<TextEdit>>> {
-    let doc = snap.id;
+    let doc = snap.doc;
     let language = project.languages.get(&snap.language);
     if options.tool.is_none()
         && let Some(id) = settings.languages.plugin_formatters.get(snap.language.as_str()).filter(|s| !s.is_empty())
@@ -304,10 +493,15 @@ async fn provider_edits(
         return Ok(Some(edits));
     }
     let mut selected = external_tool(options.tool, language.as_ref(), &snap.path, &settings.languages)?;
+    // Black is selected only when configured or preferred: the Ruff server's formatting doesn't replace it.
     if let Some(tool) = selected
         && options.tool.is_none()
+        && tool != ExternalFormatter::Black
         && !settings.languages.formatter(tool).prefer
-        && project.lsp.can_format(doc).await?
+        && match doc {
+            Some(doc) => project.lsp.can_format(doc).await?,
+            None => project.lsp.can_format_text(&snap.path, &snap.language).await,
+        }
     {
         selected = None;
     }
@@ -315,14 +509,20 @@ async fn provider_edits(
         if options.on_save && !settings.editor.format_on_save {
             return Ok(None);
         }
-        let edits = project.lsp.format(doc, range, options).await?;
+        let edits = match doc {
+            Some(doc) => project.lsp.format(doc, range, options).await?,
+            None => project.lsp.format_text(&snap.path, &snap.language, &snap.text, options).await?,
+        };
         let text = snap.text;
         return tokio::task::spawn_blocking(move || Some(minimal_edits(&text, edits)))
             .await
             .map_err(|e| IdeError::internal(e.to_string()));
     };
     let tool_settings = settings.languages.formatter(selected);
-    if options.on_save && !tool_settings.run_on_save {
+    // Black takes over from the language server in its projects, so Format on save runs it too.
+    let runs_on_save =
+        tool_settings.run_on_save || (selected == ExternalFormatter::Black && settings.editor.format_on_save);
+    if options.on_save && !runs_on_save {
         return Ok(None);
     }
     host.require_trust(window)?;
@@ -332,12 +532,21 @@ async fn provider_edits(
     let config = language.and_then(|l| l.formatter).expect("external_tool selects languages with a formatter");
     let tool = selected.name();
     let name = formatter::display_name(tool);
-    let custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
+    let mut custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
+    if custom.is_none() && matches!(selected, ExternalFormatter::Ruff | ExternalFormatter::Black) {
+        let (root, near, settings) =
+            (project.root.clone(), snap.path.parent().map(Path::to_path_buf), settings.clone());
+        custom = tokio::task::spawn_blocking(move || interpreter_tool(&root, near.as_deref(), &settings, tool))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?;
+    }
     let tools = Tools::new(&host.local_data_dir);
-    let whole_selection = range.is_some() && !formatter::supports_range(tool, &config);
+    let unsupported_range = range.is_some() && !formatter::supports_range(tool, &config);
     let project_root = project.root.clone();
     let configuration_directory = settings.languages.ruff.configuration_directory.clone();
-    let edits: IdeResult<Vec<TextEdit>> = tokio::task::spawn_blocking(move || {
+    let style_settings = settings.clone();
+    let documents = project.documents.clone();
+    let result: IdeResult<(Vec<TextEdit>, bool, bool)> = tokio::task::spawn_blocking(move || {
         let text = ide_text::Document::new(&snap.text);
         let range = range.map(|range| format_range(&text, range));
         let config_file = if tool == "ruff" {
@@ -345,47 +554,133 @@ async fn provider_edits(
         } else {
             None
         };
-        let mut command = tools.formatter_command(tool, &snap.path, custom.as_deref())?;
         let dir = snap.path.parent().ok_or_else(|| IdeError::invalid(format!("{name}: file has no directory")))?;
-        command.current_dir(dir);
-        command.args(formatter::arguments(
-            tool,
-            &config,
-            &snap.path,
-            options.tab_size,
-            options.insert_spaces,
-            range,
-            config_file.as_deref(),
-        ));
-        let formatted = formatter::run(tool, command, &snap.text, &Default::default())?;
-        Ok(text
-            .diff(&formatted)
-            .changes
-            .into_iter()
-            .map(|c| TextEdit {
-                range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
-                new_text: c.insert,
-            })
-            .collect())
+        let style = if matches!(selected, ExternalFormatter::Ruff | ExternalFormatter::Black) {
+            let editorconfig = style_settings
+                .editor
+                .code_style
+                .editorconfig
+                .then(|| documents.editorconfig().resolve(&snap.path))
+                .flatten();
+            python_style_for(
+                tool,
+                &snap.path,
+                config_file.is_some(),
+                &style_settings,
+                editorconfig.as_ref(),
+                user_config_dir(tool, dir).as_deref(),
+            )
+        } else {
+            formatter::PythonStyle::default()
+        };
+        let run = |range| {
+            let mut command = tools.formatter_command(tool, &snap.path, custom.as_deref())?;
+            command.current_dir(dir);
+            let args = formatter::arguments(
+                tool,
+                &config,
+                &snap.path,
+                options.tab_size,
+                options.insert_spaces,
+                range,
+                config_file.as_deref(),
+            );
+            command.args(formatter::with_python_style(tool, args, style));
+            formatter::run(tool, command, &snap.text, &Default::default())
+        };
+        let mut old_black = false;
+        let formatted = match run(range) {
+            // Black before 23.11 has no `--line-ranges`: format the whole file instead.
+            Err(e) if tool == "black" && range.is_some() && e.message.contains("--line-ranges") => {
+                old_black = true;
+                run(None)?
+            }
+            result => result?,
+        };
+        if excluded_output(&snap.text, &formatted) {
+            return Ok((Vec::new(), false, true));
+        }
+        let edits = diff_edits(&text, &formatted);
+        Ok((edits, old_black, false))
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?;
-    if edits.is_ok() && whole_selection {
+    let (edits, old_black, excluded) = match result {
+        Ok((edits, old_black, excluded)) => (Ok(edits), old_black, excluded),
+        Err(e) => (Err(e), false, false),
+    };
+    // Notification titles are translated, and the catalog has "Black" as the colour.
+    let title = if selected == ExternalFormatter::Black { "Black formatter" } else { name };
+    if excluded && !options.on_save {
         project.sink.emit(IdeEvent::Notify {
             level: NotifyLevel::Info,
-            title: name.into(),
-            body: Some(format!(
-                "{name} does not support selection formatting for this language; formatted the whole file"
-            )),
+            title: title.into(),
+            body: Some(format!("{name} left the file unchanged: its configuration excludes it")),
         });
     }
+    let whole_selection = if old_black {
+        Some("This Black cannot format a selection (Black 23.11 or later can); formatted the whole file".to_owned())
+    } else {
+        (edits.is_ok() && unsupported_range).then(|| {
+            format!("{name} does not support selection formatting for this language; formatted the whole file")
+        })
+    };
+    if let Some(body) = whole_selection {
+        project.sink.emit(IdeEvent::Notify { level: NotifyLevel::Info, title: title.into(), body: Some(body) });
+    }
     edits.map(Some).map_err(|e| e.with_tool(tool))
+}
+
+/// The edits that turn `text` into `formatted`, one per changed region.
+fn diff_edits(text: &ide_text::Document, formatted: &str) -> Vec<TextEdit> {
+    text.diff(formatted)
+        .changes
+        .into_iter()
+        .map(|c| TextEdit {
+            range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
+            new_text: c.insert,
+        })
+        .collect()
+}
+
+/// Optimize Imports for a Python document no language server organizes (the Ruff server starts
+/// only below a Ruff configuration): Ruff's CLI removes the unused imports and sorts the rest, with
+/// the project's Ruff settings when there are any. `None` for other documents and untrusted projects.
+pub async fn python_import_edits(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    cancel: CancellationToken,
+) -> IdeResult<Option<(ide_core::IpcPath, Vec<TextEdit>)>> {
+    let project = host.project(window)?;
+    let snap = project.documents.snapshot(doc)?;
+    if snap.language.as_str() != "python" || snap.read_only || project.require_trust().is_err() {
+        return Ok(None);
+    }
+    let settings = project.settings.effective();
+    let custom = ide_sdk::apply::setting_path(&project.root, &settings.languages.ruff.path);
+    let configured = settings.languages.ruff.configuration_directory.clone();
+    let root = project.root.clone();
+    let tools = Tools::new(&host.local_data_dir);
+    tokio::task::spawn_blocking(move || {
+        let config_file = ide_sdk::apply::ruff_configuration(&root, &configured)?;
+        let custom = custom.or_else(|| interpreter_tool(&root, snap.path.parent(), &settings, "ruff"));
+        let mut command = tools.formatter_command("ruff", &snap.path, custom.as_deref())?;
+        if let Some(dir) = snap.path.parent() {
+            command.current_dir(dir);
+        }
+        command.args(formatter::ruff_organize_imports_arguments(&snap.path, config_file.as_deref()));
+        let fixed = formatter::run("ruff", command, &snap.text, &cancel)?;
+        Ok(Some((snap.path, diff_edits(&ide_text::Document::new(&snap.text), &fixed))))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ExternalFormatter::{Oxfmt, Prettier, Ruff};
+    use ExternalFormatter::{Biome, Black, Oxfmt, Prettier, Ruff};
     use ide_core::LanguageId;
     use ide_language::LanguageRegistry;
 
@@ -428,6 +723,211 @@ mod tests {
         assert_eq!(prettier.message, "Prettier cannot format Python files");
         let oxfmt = tool(Some(Oxfmt), "python", file, &settings).unwrap_err();
         assert_eq!(oxfmt.message, "oxfmt cannot format Python files");
+        let biome = tool(Some(Biome), "python", file, &settings).unwrap_err();
+        assert_eq!(biome.message, "Biome cannot format Python files");
+        assert_eq!(tool(Some(Black), "python", file, &settings).unwrap(), Some(Black));
+        let black = tool(Some(Black), "typescript", Path::new("/project/app.ts"), &settings).unwrap_err();
+        assert_eq!(black.message, "Black cannot format TypeScript files");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn an_xdg_override_hides_fallback_python_formatter_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path();
+        let home = cwd.join("home");
+        let fallback = home.join(".config");
+        let xdg = cwd.join("config override");
+        for (tool, name) in [("ruff", "ruff/ruff.toml"), ("black", "black")] {
+            let config = fallback.join(name);
+            std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+            std::fs::write(config, "").unwrap();
+            let probe = |xdg| xdg_user_config_dir(tool, cwd, xdg, Some(&home));
+            assert!(user_configured(tool, probe(None).as_deref()), "{tool} should find its default config");
+            assert!(!user_configured(tool, probe(Some(&xdg)).as_deref()), "{tool} should skip its default config");
+
+            let config = xdg.join(name);
+            std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+            std::fs::write(config, "").unwrap();
+            assert!(user_configured(tool, probe(Some(&xdg)).as_deref()), "{tool} should find its XDG config");
+        }
+
+        let relative = Some(Path::new("config override"));
+        assert_eq!(xdg_user_config_dir("ruff", cwd, relative, Some(&home)), Some(fallback));
+        assert_eq!(xdg_user_config_dir("black", cwd, relative, Some(&home)), Some(xdg));
+        assert_eq!(xdg_user_config_dir("black", cwd, Some(Path::new("~/alt")), Some(&home)), Some(home.join("alt")));
+    }
+
+    #[test]
+    fn code_style_reaches_ruff_and_black_only_without_their_configuration() {
+        use ide_workspace::editorconfig::{EditorConfigProps, IndentStyle};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        let user = dir.path().join("user config");
+        std::fs::create_dir_all(root.join("app/src")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(user.join("ruff")).unwrap();
+        let file = root.join("app/src/main.py");
+        let mut settings = Settings::default();
+        let style = |tool, settings: &Settings, editorconfig: Option<&EditorConfigProps>| {
+            python_style_for(tool, &file, false, settings, editorconfig, Some(&user))
+        };
+        let none = formatter::PythonStyle::default();
+        // Nothing set: the tools keep their defaults.
+        assert_eq!(style("ruff", &settings, None), none);
+        let page = ide_core::editor_settings::LanguageCodeStyle {
+            hard_wrap_at: Some(100),
+            tab_size: Some(2),
+            ..Default::default()
+        };
+        settings.editor.code_style.languages.insert("python".into(), page);
+        let set = formatter::PythonStyle { line_length: Some(100), indent_width: Some(2), use_tabs: None };
+        assert_eq!(style("ruff", &settings, None), set);
+        assert_eq!(style("black", &settings, None), set);
+        assert_eq!(python_style_for("ruff", &file, true, &settings, None, Some(&user)), none);
+        // The file's .editorconfig wins over the page, as in the editor.
+        let editorconfig =
+            EditorConfigProps { indent_size: Some(4), indent_style: Some(IndentStyle::Space), ..Default::default() };
+        let indented = formatter::PythonStyle { line_length: Some(100), indent_width: Some(4), use_tabs: Some(false) };
+        assert_eq!(style("ruff", &settings, Some(&editorconfig)), indented);
+
+        // The user's configurations: Ruff's always counts, Black's only when the project root
+        // (here the repository) has no pyproject.toml.
+        let (black_config, ignored_black_config) =
+            if cfg!(windows) { (".black", "black") } else { ("black", ".black") };
+        std::fs::write(user.join(ignored_black_config), "[tool.black]\n").unwrap();
+        assert_eq!(style("black", &settings, None), set);
+        std::fs::write(user.join(black_config), "[tool.black]\n").unwrap();
+        assert_eq!(style("black", &settings, None), none);
+        std::fs::write(root.join("pyproject.toml"), "[project]\nname = \"repo\"\n").unwrap();
+        assert_eq!(style("black", &settings, None), set);
+        std::fs::write(user.join("ruff/ruff.toml"), "").unwrap();
+        assert_eq!(style("ruff", &settings, None), none);
+        std::fs::remove_file(user.join("ruff/ruff.toml")).unwrap();
+
+        // The project's configurations.
+        std::fs::write(root.join("app/pyproject.toml"), "[project]\nname = \"app\"\n").unwrap();
+        assert_eq!(style("ruff", &settings, None), set);
+        std::fs::write(root.join("pyproject.toml"), "[tool.black]\n").unwrap();
+        assert_eq!(style("black", &settings, None), none);
+        assert_eq!(style("ruff", &settings, None), set);
+        std::fs::write(root.join(".ruff.toml"), "").unwrap();
+        assert_eq!(style("ruff", &settings, None), none);
+    }
+
+    #[test]
+    fn empty_output_for_a_file_with_code_is_an_exclusion_not_an_empty_file() {
+        assert!(excluded_output("x = 1\n", ""));
+        assert!(!excluded_output("\n\n", ""));
+        assert!(!excluded_output("x = 1\n", "x = 1\n"));
+    }
+
+    #[test]
+    fn ruff_comes_from_the_environment_of_the_files_own_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let bin = root.join(if cfg!(windows) { "svc/.venv/Scripts" } else { "svc/.venv/bin" });
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = |name: &str| if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+        std::fs::write(bin.join(exe("python")), "").unwrap();
+        std::fs::write(root.join("svc/.venv/pyvenv.cfg"), "").unwrap();
+        let settings = Settings::default();
+        let near = root.join("svc/src");
+        assert_eq!(interpreter_tool(root, Some(&near), &settings, "ruff"), None);
+        std::fs::write(bin.join(exe("ruff")), "").unwrap();
+        assert_eq!(interpreter_tool(root, Some(&near), &settings, "ruff"), Some(bin.join(exe("ruff"))));
+    }
+
+    #[test]
+    fn black_comes_from_the_environment_of_the_files_own_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let bin = root.join(if cfg!(windows) { "svc/.venv/Scripts" } else { "svc/.venv/bin" });
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = |name: &str| if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+        std::fs::write(bin.join(exe("python")), "").unwrap();
+        std::fs::write(root.join("svc/.venv/pyvenv.cfg"), "").unwrap();
+        std::fs::write(root.join("svc/pyproject.toml"), "[tool.black]\n").unwrap();
+        let settings = Settings::default();
+        assert_eq!(interpreter_tool(root, Some(&root.join("svc/src")), &settings, "black"), None);
+        std::fs::write(bin.join(exe("black")), "").unwrap();
+        assert_eq!(
+            interpreter_tool(root, Some(&root.join("svc/src")), &settings, "black"),
+            Some(bin.join(exe("black")))
+        );
+    }
+
+    #[test]
+    fn black_config_or_preference_selects_black_for_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("svc/src")).unwrap();
+        std::fs::create_dir_all(root.join("api")).unwrap();
+        let (svc, api) = (root.join("svc/src/main.py"), root.join("api/main.py"));
+        let mut settings = LanguagesSettings::default();
+        std::fs::write(root.join("svc/pyproject.toml"), "[tool.ruff]\nline-length = 100\n").unwrap();
+        assert_eq!(tool(None, "python", &svc, &settings).unwrap(), Some(Ruff));
+        std::fs::write(root.join("svc/pyproject.toml"), "[tool.black]\nline-length = 100\n").unwrap();
+        assert_eq!(tool(None, "python", &svc, &settings).unwrap(), Some(Black));
+        assert_eq!(tool(None, "python", &api, &settings).unwrap(), Some(Ruff));
+        settings.black.prefer = true;
+        assert_eq!(tool(None, "python", &api, &settings).unwrap(), Some(Black));
+        settings.black.languages.clear();
+        assert_eq!(tool(None, "python", &svc, &settings).unwrap(), Some(Ruff));
+    }
+
+    #[test]
+    fn black_finds_its_configuration_like_black_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("pkg/src")).unwrap();
+        let file = repo.join("pkg/src/m.py");
+        assert_eq!(black_pyproject(&file), None);
+        // A pyproject without [tool.black] is passed over, up to the repository root.
+        std::fs::write(repo.join("pkg/pyproject.toml"), "[project]\nname = \"pkg\"\n").unwrap();
+        std::fs::write(repo.join("pyproject.toml"), "[tool.black]\nline-length = 100\n").unwrap();
+        assert_eq!(black_pyproject(&file), Some(repo.join("pyproject.toml")));
+        assert!(black_configured(&file));
+        // The repository root's pyproject is Black's even without [tool.black]; nothing above counts.
+        std::fs::write(repo.join("pyproject.toml"), "[project]\nname = \"repo\"\n").unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "[tool.black]\n").unwrap();
+        assert_eq!(black_pyproject(&file), Some(repo.join("pyproject.toml")));
+        assert!(!black_configured(&file));
+        std::fs::write(repo.join("pkg/pyproject.toml"), "[tool.black]\n").unwrap();
+        assert_eq!(black_pyproject(&file), Some(repo.join("pkg/pyproject.toml")));
+    }
+
+    #[test]
+    fn biome_config_or_dependency_selects_biome_for_its_languages() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("web/src")).unwrap();
+        let (web, api, readme) = (root.join("web/src/app.ts"), root.join("api/main.ts"), root.join("web/README.md"));
+        let mut settings = LanguagesSettings::default();
+        for marker in BIOME_MARKERS {
+            let path = root.join("web").join(marker);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{}").unwrap();
+            assert_eq!(tool(None, "typescript", &web, &settings).unwrap(), Some(Biome), "{marker}");
+            assert_eq!(tool(None, "typescript", &api, &settings).unwrap(), Some(Prettier), "{marker}");
+            // Biome doesn't format Markdown: Prettier keeps it.
+            assert_eq!(tool(None, "markdown", &readme, &settings).unwrap(), Some(Prettier), "{marker}");
+            std::fs::remove_file(&path).unwrap();
+        }
+        std::fs::write(root.join("web/biome.json"), "{}").unwrap();
+        std::fs::write(root.join("web/.oxfmtrc.json"), "{}").unwrap();
+        assert_eq!(tool(None, "css", &web, &settings).unwrap(), Some(Biome));
+        settings.biome.languages.retain(|l| l != "css");
+        assert_eq!(tool(None, "css", &web, &settings).unwrap(), Some(Oxfmt));
+        // Biome only lints here: Prettier keeps formatting.
+        std::fs::remove_file(root.join("web/.oxfmtrc.json")).unwrap();
+        std::fs::write(root.join("web/biome.json"), r#"{ "formatter": { "enabled": false } }"#).unwrap();
+        assert_eq!(tool(None, "typescript", &web, &settings).unwrap(), Some(Prettier));
+        settings.biome.prefer = true;
+        assert_eq!(tool(None, "typescript", &api, &settings).unwrap(), Some(Biome));
+        let markdown = tool(Some(Biome), "markdown", &readme, &settings).unwrap_err();
+        assert_eq!(markdown.message, "Biome cannot format Markdown files");
     }
 
     #[test]

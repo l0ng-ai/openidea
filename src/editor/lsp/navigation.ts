@@ -51,11 +51,11 @@ import {
   whenSynced,
   type ContributedDefinition,
   type EditorDocContext,
+  openCodeLocation,
 } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { executeAction } from "@/platform/actions";
 import { basename, relativePath, useProject } from "@/platform/project";
-import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
 import { NO_SERVER, debounce, docOf, isUnavailable, lspDoc, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, rangeContains, rangeToOffsets } from "./positions";
@@ -82,6 +82,7 @@ import {
   textReference,
 } from "./links";
 import { featureBackoff } from "./availability";
+import { navigationStarted } from "./foreground";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { enclosingType } from "@/editor/navigation/lineMarkers";
@@ -107,10 +108,7 @@ import {
 const highlightsBackoff = featureBackoff();
 
 export async function navigateTo(loc: Location) {
-  await editorService().openFile(loc.path, {
-    selection: { line: loc.range.start.line, col: loc.range.start.col },
-    focus: true,
-  });
+  await openCodeLocation(loc.path, { line: loc.range.start.line, col: loc.range.start.col });
 }
 
 const NOT_FOUND: Record<GotoKind, string> = {
@@ -209,7 +207,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
   return rows.map(({ l, where, label, container, indexSymbol }, i) => ({
     id: `${i}`,
     label: byContainer ? container! : label,
-    detail: (byContainer ? [where] : [container, where]).filter(Boolean).join(" · "),
+    target: { container: byContainer ? null : container, path: where },
     ...(indexSymbol ? { symbol: l.kind! } : { icon: fileIconName(basename(l.path), l.path) }),
     location: { path: l.path, line: l.range.start.line },
     run: () => navigateTo(l),
@@ -325,9 +323,11 @@ async function gotoAfterEdits(
   superseded: () => boolean,
 ) {
   for (let attempt = 0; ; attempt++) {
+    // oxlint-disable-next-line no-await-in-loop -- a retry re-asks only after the previous answer was empty and still fresh
     const locs = await request();
     if (locs.length || attempt >= 3 || superseded() || performance.now() - (editedAt.get(view) ?? -Infinity) > 1500)
       return locs;
+    // oxlint-disable-next-line no-await-in-loop -- waits before the next retry; `superseded()` is checked again after the delay
     await new Promise((r) => setTimeout(r, 250));
     if (superseded()) return [];
   }
@@ -353,9 +353,11 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   // can take as long as the server's answer.
   const done = showPendingHint(view, tx`Finding navigation target…`);
   pendingGestureHints.set(view, done);
+  const navigated = navigationStarted();
   try {
     await gotoResolved(view, kind, at ?? view.state.selection.main.head, superseded, done);
   } finally {
+    navigated();
     done();
     if (pendingGestureHints.get(view) === done) pendingGestureHints.delete(view);
   }
@@ -582,6 +584,13 @@ async function gotoResolved(
     )
       return;
     if (superseded()) return;
+    // ⌘B on a declaration's own name shows its usages also when the server has no definition
+    // there instead of answering the declaration itself (kotlin-language-server).
+    if (kind === "definition" && !fromSyntax && (await onDeclarationName(view, offset))) {
+      if (superseded()) return;
+      if (!(await executeAction("find.showUsages"))) showHint(view, "No usages found");
+      return;
+    }
     // The server only resolves what it sees: answer from the project index, which also
     // covers attached dependency projects (an unresolved import into them). Never for a
     // module path: a segment is not a symbol name.

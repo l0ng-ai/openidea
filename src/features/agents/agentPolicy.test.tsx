@@ -32,7 +32,7 @@ function FormWrapper({ children }: { children: ReactNode }) {
   return <SettingsFormContext.Provider value={form}>{children}</SettingsFormContext.Provider>;
 }
 
-describe("Command Permissions sub-page", () => {
+describe("Command Rules sub-page", () => {
   it("registers under Agents group in settings", () => {
     const dispose = activateSettingsPages();
     try {
@@ -40,7 +40,7 @@ describe("Command Permissions sub-page", () => {
       const agentsGroup = tree.find((n) => n.title === AGENTS_GROUP);
       expect(agentsGroup).toBeDefined();
       const policyNode = agentsGroup?.children.find((n) => n.key === POLICY_PAGE);
-      expect(policyNode?.title).toBe("Command Permissions");
+      expect(policyNode?.title).toBe("Command Rules");
       // A project's settings file can't decide what agents run without asking.
       expect(policyNode?.page?.projectScope).not.toBe(true);
     } finally {
@@ -56,7 +56,7 @@ describe("Command Permissions sub-page", () => {
       </FormWrapper>,
     );
 
-    const policy = screen.getByRole("region", { name: "Command Permissions" });
+    const policy = screen.getByRole("region", { name: "Command Rules" });
     expect(within(policy).getByText("rm -rf *")).toBeInTheDocument();
 
     fireEvent.change(within(policy).getByRole("textbox", { name: "Allowed command pattern" }), {

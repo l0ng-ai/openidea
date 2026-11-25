@@ -18,7 +18,6 @@ pub mod ruby_reporter;
 pub mod scope;
 pub mod tomcat;
 mod utf8;
-pub mod which;
 pub mod wrap;
 
 pub use detect::cmake::{build_configs as cmake_build_configs, prepare as prepare_cmake};
@@ -182,6 +181,12 @@ pub struct RunExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub target: Option<String>,
+    /// The test framework a test configuration runs when detection recognised one that the
+    /// command line doesn't name (a `package.json` script running `playwright test`): picks the
+    /// test output parser and how a single test is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub test_runner: Option<String>,
 }
 
 impl Default for RunExtras {
@@ -205,6 +210,7 @@ impl Default for RunExtras {
             emulate_terminal: false,
             stop_command: None,
             target: None,
+            test_runner: None,
         }
     }
 }
@@ -234,6 +240,15 @@ pub struct RunInfo {
     pub running: bool,
     /// Runs on a pseudo-terminal: output is raw terminal data, input goes in keystroke by keystroke.
     pub pty: bool,
+}
+
+/// Snapshot and live output binding returned when reattaching to a running process.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAttach {
+    pub info: RunInfo,
+    pub config: RunConfig,
+    pub buffered: Vec<OutputChunk>,
 }
 
 pub use external::{EXTERNAL_PREFIX, ExternalDetection, set_external_detection};

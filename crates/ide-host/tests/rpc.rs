@@ -1,6 +1,8 @@
 //! The remote protocol end to end: a server on one side of an in-memory pipe,
 //! a JSON-RPC client on the other.
 
+mod common;
+
 use ide_host::rpc::{self, ChannelMessage, Dispatcher, EventMessage, Invoke, ServerInfo};
 use ide_host::{Host, HostConfig};
 use ide_jsonrpc::{Handler, Peer};
@@ -54,15 +56,8 @@ async fn serves_projects_files_documents_search_and_runs() {
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let (sr, sw) = tokio::io::split(server_io);
@@ -73,6 +68,13 @@ async fn serves_projects_files_documents_search_and_runs() {
 
     let info: ServerInfo = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
     assert_eq!(info.protocol, rpc::PROTOCOL_VERSION);
+
+    let scratch_path = base.join("data/scratches");
+    assert!(!scratch_path.exists());
+    let expected = serde_json::to_value(ide_core::IpcPath::from(scratch_path.clone())).unwrap();
+    assert_eq!(invoke(&peer, "fs_scratches_dir", json!({})).await.unwrap(), expected);
+    assert!(scratch_path.is_dir());
+    assert_eq!(invoke(&peer, "fs_scratches_dir", json!({})).await.unwrap(), expected);
 
     let opened = invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
     assert_eq!(opened["name"], "demo");
@@ -128,6 +130,44 @@ async fn serves_projects_files_documents_search_and_runs() {
     let current = invoke(&peer, "project_current", json!({})).await.unwrap();
     assert_eq!(current["name"], "demo");
 
+    // A SQL batch sends each outcome precisely once before the request reply.
+    let file = project.join("test.sqlite");
+    std::fs::File::create(&file).unwrap();
+    let source = ide_db::DataSource {
+        id: "test-db".into(),
+        name: "Test database".into(),
+        file: Some(file.into()),
+        ..Default::default()
+    };
+    invoke(&peer, "db_save_sources", json!({ "sources": [source] })).await.unwrap();
+    let sql = "SELECT 1 AS n; SELECT 'second' AS n";
+    let statements =
+        invoke(&peer, "db_statements", json!({ "id": "test-db", "text": sql, "from": 0, "to": sql.len() }))
+            .await
+            .unwrap();
+    let done = invoke(
+        &peer,
+        "db_execute_stream",
+        json!({ "request": 21, "id": "test-db", "statements": statements, "maxRows": 10,
+            "schema": null, "onProgress": { "$channel": 521 } }),
+    )
+    .await
+    .unwrap();
+    assert!(done.is_null());
+    let events = client
+        .channels
+        .lock()
+        .iter()
+        .filter(|frame| frame.id == 521)
+        .map(|frame| frame.data.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[0], json!({ "type": "started", "index": 0 }));
+    assert_eq!(events[1]["outcome"]["result"]["rows"], json!([["1"]]));
+    assert_eq!(events[2], json!({ "type": "started", "index": 1 }));
+    assert_eq!(events[3]["outcome"]["result"]["rows"], json!([["second"]]));
+    assert_eq!(events[4], json!({ "type": "done", "error": null }));
+
     // The built-in web server runs where the project is; the client forwards its port.
     let root = std::path::PathBuf::from(opened["root"].as_str().unwrap());
     let url = invoke(&peer, "web_url", json!({ "path": root.join("src/main.py") })).await.unwrap();
@@ -146,8 +186,7 @@ async fn serves_projects_files_documents_search_and_runs() {
     std::fs::write(right.join("中文.bin"), [0, 254, 1]).unwrap();
     assert_eq!(invoke(&peer, "fs_entry_kind", json!({"path": left})).await.unwrap(), "dir");
     assert_eq!(invoke(&peer, "fs_entry_kind", json!({"path": left.join("中文.bin")})).await.unwrap(), "file");
-    let compare_args =
-        |request| json!({"left": left, "right": right, "request": request, "onProgress": {"$channel": 520}});
+    let compare_args = |request| json!({"left": left, "right": right, "mode": "content", "request": request, "onProgress": {"$channel": 520}});
     let rows = invoke(&peer, "fs_compare_directories", compare_args(520)).await.unwrap();
     assert_eq!(rows[0]["status"], "different");
     assert!(client.channels.lock().iter().any(|c| c.id == 520 && c.data["compared"] == 1));
@@ -311,15 +350,8 @@ async fn local_deployment_runs_on_the_project_host() {
     let slot = Arc::new(OnceLock::new());
     let sink_slot = slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_slot.clone(), Some(w.to_owned()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(tmp.path())
     }));
     let dispatcher = Dispatcher::standard();
     for cmd in [
@@ -421,17 +453,7 @@ async fn properties_conversion_through_remote_dispatch_without_a_remote_host() {
     let path = root.join("messages.properties");
     std::fs::write(&path, r"value=\u4F60\u597D\uD83D\uDE00!").unwrap();
     let peer_slot = Arc::new(OnceLock::new());
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(tmp.path())));
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let (sr, sw) = tokio::io::split(server_io);
     tokio::spawn(rpc::serve(host, Dispatcher::standard(), peer_slot, sr, sw));
@@ -489,17 +511,7 @@ async fn renames_a_branch_with_the_clients_argument_names() {
     git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
     git(&["branch", "feature"]);
     let peer_slot = Arc::new(OnceLock::new());
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(tmp.path())));
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let (sr, sw) = tokio::io::split(server_io);
     tokio::spawn(rpc::serve(host, Dispatcher::standard(), peer_slot, sr, sw));
@@ -536,15 +548,8 @@ async fn serves_builtin_mcp_over_remote_dispatch_and_routes_ui_requests() {
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: data_dir.clone(),
-        local_data_dir: data_dir.clone(),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let server_exe = base.join("bin/openidea-server");
     host.mcp.set_stdio_link(server_exe.clone());

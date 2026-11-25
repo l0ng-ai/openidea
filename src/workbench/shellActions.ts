@@ -101,7 +101,7 @@ export function registerShellActions(): () => void {
       title: "Quick Switch Scheme…",
       category: "View",
       keywords: ["theme", "color scheme", "keymap", "view mode"],
-      run: () => showQuickSwitch({ x: window.innerWidth / 2 - 120, y: 96 }),
+      run: showQuickSwitch,
     },
     {
       id: "toolbar.customize",

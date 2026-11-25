@@ -1,13 +1,14 @@
 /** Remote Host tool window operations: list, open, create, rename, delete and download remote files. */
 import { tx, txTemplate } from "@/platform/i18n";
-import { call, commands, type RemoteEntry } from "@/platform/ipc";
+import { choosePath, choosePaths } from "@/platform/choosePath";
+import { call, commands, isCancelled, nextRequestId, type RemoteEntry } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { deploymentConnection, deploymentSecretKey, type DeploymentServerValid } from "@/platform/remoteSettings";
 import { copyText } from "@/ui";
 import { editorService, notifications, projectViewSelection } from "@/workbench/contributions";
 import { promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
-import { downloadPaths, downloadRemoteInto } from "./actions";
+import { downloadPaths, downloadRemoteInto, showReport } from "./actions";
 import { joinRemote, localPathForRemote, remoteName, remoteParent } from "./model";
 import { withSsh } from "./ssh";
 import { EMPTY_TREE, patchTree, useDeployment } from "./store";
@@ -183,10 +184,8 @@ export async function downloadToProject(server: DeploymentServerValid, entries: 
  *  the project root, preselected), without the server path above them. */
 export async function downloadTo(server: DeploymentServerValid, entries: RemoteEntry[]) {
   if (!entries.length) return;
-  const { open } = await import("@/platform/dialog");
-  const target = await open({
+  const target = await choosePath({
     directory: true,
-    multiple: false,
     title: tx("Download to"),
     defaultPath: (await defaultDownloadFolder()) ?? undefined,
   });
@@ -209,3 +208,65 @@ async function defaultDownloadFolder(): Promise<string | null> {
 }
 
 export const copyRemotePath = (entry: RemoteEntry) => void copyText(entry.path);
+
+/** Ad-hoc uploads deliberately do not consult project mappings or deployment exclusions. */
+export async function uploadLocalInto(server: DeploymentServerValid, paths: string[], target: string) {
+  if (!paths.length) return;
+  const connection = deploymentConnection(server);
+  const source = sourceKey(server);
+  let started = false;
+  try {
+    const entries = await withSsh(deploymentSecretKey(server), () => call(commands.remoteList(connection, target)));
+    const names = new Set(
+      paths.map((path) =>
+        path
+          .replace(/[\\/]+$/, "")
+          .split(/[\\/]/)
+          .pop(),
+      ),
+    );
+    const count = entries.filter((entry) => names.has(entry.name)).length;
+    const replace = count > 0;
+    if (
+      replace &&
+      !(await confirm({
+        title: "Replace Existing Files?",
+        message:
+          count === 1
+            ? tx("An item with the same name already exists in {path}. Replace files and merge folders?").replace(
+                "{path}",
+                target,
+              )
+            : tx("{count} items already exist in {path}. Replace files and merge folders?")
+                .replace("{count}", String(count))
+                .replace("{path}", target),
+        ok: "Replace",
+        icon: "warning",
+      }))
+    )
+      return;
+    const request = nextRequestId();
+    started = true;
+    const report = await withSsh(deploymentSecretKey(server), () =>
+      call(commands.remoteUploadInto(connection, paths, target, replace, request)),
+    );
+    showReport(report, "upload", server);
+  } catch (error) {
+    if (!isCancelled(error)) fail("Cannot upload files", error);
+  } finally {
+    if (started && tree(server.id).source === source) {
+      const expanded = [...tree(server.id).expanded].filter((path) => path.startsWith(`${target.replace(/\/$/, "")}/`));
+      await Promise.all([target, ...expanded].map((path) => loadFolder(server, path)));
+    }
+  }
+}
+
+export async function chooseUploadFiles(server: DeploymentServerValid, target: string) {
+  const paths = await choosePaths({ directory: false, title: tx("Upload Files") });
+  await uploadLocalInto(server, paths, target);
+}
+
+export async function chooseUploadFolder(server: DeploymentServerValid, target: string) {
+  const path = await choosePath({ directory: true, title: tx("Upload Folder") });
+  if (path) await uploadLocalInto(server, [path], target);
+}

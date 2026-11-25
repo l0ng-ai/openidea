@@ -53,7 +53,7 @@ it("shows a plain count for unclassified searches after a Java access mode was s
   });
   const view = render(<UsagesView />);
   expect(screen.getByText("2 results")).toBeInTheDocument();
-  expect(screen.queryByRole("toolbar", { name: "Usage access filters" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Usage access filters" })).toBeNull();
   view.unmount();
   useUsageAccessOptions.setState({ read: true, write: true });
   useUsages.setState({ tabs: [], active: null });

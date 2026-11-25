@@ -23,7 +23,25 @@ const DEFAULT_TREE_DEPTH: i64 = 5;
 const TREE_LIMIT: usize = 100;
 
 pub fn tools() -> Vec<Tool> {
-    vec![read_file(), list_directory_tree()]
+    vec![get_workspace_roots(), read_file(), list_directory_tree()]
+}
+
+// --- get_workspace_roots ---------------------------------------------------------
+
+fn get_workspace_roots() -> Tool {
+    Tool::new(
+        "get_workspace_roots",
+        "Returns the root directories of the IDE workspace: this project and the trusted projects attached to it
+in the same window, as absolute paths. A task works in one directory, but its workspace can hold several projects.
+Call this when asked about the workspace, project or working directories, and before planning a change that may span
+projects. Other tools reach an attached project by its root as `projectPath`.",
+        |call| async move {
+            let root = call.root().to_path_buf();
+            let mut roots = vec![root.clone()];
+            roots.extend(crate::mcp::tool::trusted_attachments(&call.host.trust, &root));
+            Output::json(json!({ "projectRoot": root, "roots": roots }))
+        },
+    )
 }
 
 // --- read_file -----------------------------------------------------------------
@@ -184,10 +202,9 @@ marked directory are not marked again.",
             }
             let deadline = Instant::now() + Duration::from_millis(timeout.max(0) as u64);
             let cancel = call.cancel.clone();
-            let marks = Marks {
-                root: call.root().to_path_buf(),
-                excludes: FileMask::new(&[], &call.project().search_excludes()).ok(),
-            };
+            // Matched from the root holding the directory: an attached project has its own exclusions.
+            let root = call.project().root_of(&dir);
+            let marks = Marks { excludes: FileMask::new(&[], &call.project().search_excludes_in(&root)).ok(), root };
             // The directory itself, when it or one above it is left out.
             let root_mark = marker(ide_index::walk_skips(call.root(), &dir), marks.ide_excluded(&dir, true));
             let mut tree = TreeRender {

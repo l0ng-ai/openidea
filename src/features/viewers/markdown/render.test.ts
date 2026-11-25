@@ -5,6 +5,7 @@ import { renderMath } from "@/editor/lsp/markdownMath";
 import {
   createMarkdownRenderer,
   frontMatter,
+  headingLine,
   joinPath,
   previewLineAtOffset,
   previewOffsetForLine,
@@ -51,6 +52,69 @@ describe("front matter", () => {
 });
 
 describe("markdown preview rendering", () => {
+  it("links repeated footnote references to a multiline definition and back to each citation", () => {
+    const text = [
+      "Ayer et al. [^10], again [^10].",
+      "",
+      "[^10]: Ayer et al. (1955).",
+      "",
+      "    [Paper](https://doi.org/10.1214/aoms/1177728423).",
+      "",
+      "## Appendix",
+    ].join("\n");
+    const root = document.createElement("div");
+    root.innerHTML = createMarkdownRenderer()(text);
+    const note = root.querySelector('[role="doc-footnote"]')!;
+    const citations = [...root.querySelectorAll('sup > [role="doc-noteref"]')];
+    const backlinks = [...note.querySelectorAll('[role="doc-backlink"]')];
+    expect(citations.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["[1]", "#user-content-footnote:1"],
+      ["[1]", "#user-content-footnote:1"],
+    ]);
+    expect(note.id).toBe("user-content-footnote:1");
+    expect(note.closest("[data-line]")?.getAttribute("data-line")).toBe("6");
+    expect(note.querySelector('a[href^="https:"]')?.textContent).toBe("Paper");
+    expect(backlinks.map((link) => link.getAttribute("href"))).toEqual(citations.map((link) => "#" + link.id));
+    expect(backlinks.map((link) => link.parentElement)).toEqual([
+      note.querySelector("p:last-child"),
+      note.querySelector("p:last-child"),
+    ]);
+    expect(note.closest("[data-line]")?.previousElementSibling?.textContent?.trim()).toBe("Appendix");
+  });
+
+  it("puts footnotes after the document body in citation order even when the definitions are out of order", () => {
+    const text = "First [^a], second [^b].\n\n[^b]: Second note.\n\n[^a]: First note.\n\n## Appendix";
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(text);
+    const endnotes = root.lastElementChild?.firstElementChild;
+    expect(endnotes?.getAttribute("role")).toBe("doc-endnotes");
+    expect(endnotes?.firstElementChild?.tagName).toBe("HR");
+    expect(root.children[1]?.textContent?.trim()).toBe("Appendix");
+    expect(
+      [...endnotes!.querySelectorAll(':scope > [role="doc-footnote"]')].map((note) => [
+        note.firstElementChild?.textContent,
+        note.querySelector("p")?.textContent,
+      ]),
+    ).toEqual([
+      ["1", "First note. ↩"],
+      ["2", "Second note. ↩"],
+    ]);
+  });
+
+  it("keeps code and unresolved footnotes literal and numbers each preview independently", () => {
+    const render = createMarkdownRenderer();
+    const text = "Known [^a], missing [^b], code `[^a]`.\n\n[^a]: A note.\n\n```md\n[^b]: Code\n```";
+    const first = render(text);
+    const root = document.createElement("div");
+    root.innerHTML = render("Other [^c].\n\n[^c]: Other note.");
+    expect(root.querySelector('[role="doc-noteref"]')?.textContent).toBe("[1]");
+    expect(render(text)).toBe(first);
+    root.innerHTML = first;
+    expect(root.querySelector("code")?.textContent).toBe("[^a]");
+    expect(root.querySelector("p")?.textContent).toBe("Known [1], missing [^b], code [^a].");
+    expect(root.querySelectorAll('[role="doc-footnote"]')).toHaveLength(1);
+  });
+
   it("tags blocks with their source line", () => {
     const html = renderMarkdown("# Title\n\nPara one\nstill one\n\n- a\n- b\n");
     const root = document.createElement("div");
@@ -65,6 +129,19 @@ describe("markdown preview rendering", () => {
       ["5", "UL"],
     ]);
     expect(root.querySelector("h1")?.id).toBe("user-content-title");
+  });
+
+  it("keeps embedded image destinations and code samples intact", () => {
+    const url = "data:image/png;base64," + "abcd".repeat(100);
+    const line = `![](${url})`;
+    const render = createMarkdownRenderer();
+    const root = document.createElement("div");
+    root.innerHTML = render([line, "", "## Next", "", line].join("\n"));
+    expect([...root.querySelectorAll("img")].map((img) => img.dataset.src)).toEqual([url, url]);
+    expect(root.querySelector("h2")?.parentElement?.dataset.line).toBe("2");
+    root.innerHTML = render([line, "", "```md", line, "```"].join("\n"));
+    expect(root.querySelector("code")?.textContent?.trimEnd()).toBe(line);
+    expect(root.querySelector("img")?.dataset.src).toBe(url);
   });
 
   it("sanitizes and defers image loading", () => {
@@ -223,6 +300,36 @@ describe("markdown preview rendering", () => {
     expect(slugify("Hello, World! v2")).toBe("hello-world-v2");
   });
 
+  it("finds the source line of a heading anchor, as a link from another file opens there", () => {
+    const text = [
+      "---",
+      "title: x",
+      "---",
+      "# 成交对账",
+      "",
+      "```md",
+      "## 5.2 状态机",
+      "```",
+      "",
+      "## 5.2 状态机",
+      "",
+      "正文",
+      "",
+      "## 5.2 状态机",
+      "",
+      "### 4.1 Dubbo（`otcs-t0-server` client）",
+    ].join("\n");
+    expect(headingLine(text, "成交对账")).toBe(3);
+    expect(headingLine(text, "52-状态机")).toBe(9);
+    expect(headingLine(text, "52-状态机-1")).toBe(13);
+    expect(headingLine(text, "user-content-52-状态机")).toBe(9);
+    expect(headingLine(text, "41-dubbootcs-t0-server-client")).toBe(15);
+    const link = resolveLink("/repo/a.md", "b.md#52-%E7%8A%B6%E6%80%81%E6%9C%BA");
+    expect(link).toEqual({ kind: "file", path: "/repo/b.md", anchor: "52-状态机" });
+    expect(headingLine(text, "missing")).toBeNull();
+    expect(headingLine(text, "")).toBeNull();
+  });
+
   it("resolves links against the file", () => {
     const file = "/repo/docs/guide.md";
     expect(resolveLink(file, "https://x.dev")).toEqual({ kind: "external", url: "https://x.dev" });
@@ -268,6 +375,28 @@ describe("markdown preview rendering", () => {
     expect(previewOffsetForLine([], 3, 400)).toBe(0);
   });
 
+  it("tracks table rows across the delimiter and excludes trailing blank lines from a block", () => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nNext");
+    const table = root.querySelector("table[data-markdown-table]")!;
+    expect(table.querySelectorAll("tr")).toHaveLength(3);
+    expect(table.parentElement?.dataset).toMatchObject({ line: "0", endLine: "4" });
+    expect(root.lastElementChild?.getAttribute("data-line")).toBe("5");
+  });
+
+  it("follows source characters inside a wrapped block and crosses the gap below its rendered box", () => {
+    const blocks = [
+      { line: 0, endLine: 2, top: 10, bottom: 110 },
+      { line: 4, endLine: 5, top: 130, bottom: 160 },
+    ];
+    const sourceOffsets = [0, 80, 100, 101, 102, 110];
+    expect(previewOffsetForLine(blocks, 0.5, 400, sourceOffsets)).toBe(50);
+    expect(previewOffsetForLine(blocks, 1, 400, sourceOffsets)).toBe(90);
+    expect(previewOffsetForLine(blocks, 2, 400, sourceOffsets)).toBe(110);
+    expect(previewOffsetForLine(blocks, 3, 400, sourceOffsets)).toBe(120);
+    expect(previewOffsetForLine(blocks, 4, 400, sourceOffsets)).toBe(130);
+  });
+
   it("finds the block at the top of a scrolled preview", () => {
     const blocks = [
       { line: 2, top: 0 },
@@ -280,6 +409,19 @@ describe("markdown preview rendering", () => {
     expect(previewLineAtOffset(blocks, 250)).toBe(10);
     expect(previewLineAtOffset(blocks, 5000)).toBe(20);
     expect(previewLineAtOffset([], 50)).toBe(0);
+  });
+
+  it("reads only the offsets needed to locate the last block at the viewport top", () => {
+    let reads = 0;
+    const blocks = Array.from({ length: 1024 }, (_, line) => ({
+      line,
+      get top() {
+        reads++;
+        return Math.floor(line / 2) * 20;
+      },
+    }));
+    expect(previewLineAtOffset(blocks, 999)).toBe(101);
+    expect(reads).toBe(10);
   });
 
   it("renders LaTeX math blocks with source lines and inline math", () => {

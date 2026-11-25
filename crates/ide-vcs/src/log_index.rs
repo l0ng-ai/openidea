@@ -28,6 +28,7 @@ pub(crate) struct IndexedRow {
     pub graph_parents: Vec<ObjectId>,
     pub on_current_branch: bool,
     pub history_path: Option<String>,
+    pub merge_time_secs: i64,
 }
 
 pub(crate) struct IndexedView {
@@ -35,8 +36,15 @@ pub(crate) struct IndexedView {
     pub positions: HashMap<ObjectId, usize>,
 }
 impl IndexedView {
-    pub fn new(rows: Vec<IndexedRow>) -> Self {
-        let positions = rows.iter().enumerate().map(|(i, r)| (r.id, i)).collect();
+    pub fn new(mut rows: Vec<IndexedRow>) -> Self {
+        let mut positions = HashMap::with_capacity(rows.len());
+        let mut latest = i64::MIN;
+        // Compute priority across the whole log so it stays the same on every page.
+        for (i, row) in rows.iter_mut().enumerate().rev() {
+            latest = latest.max(row.merge_time_secs);
+            row.merge_time_secs = latest;
+            positions.insert(row.id, i);
+        }
         Self { rows, positions }
     }
 }
@@ -341,6 +349,7 @@ impl LogIndex {
                 history_path: None,
                 log_position: None,
                 log_total: None,
+                log_merge_time_ms: None,
                 graph_boundary_parents: Vec::new(),
                 refs: Vec::new(),
             });
@@ -437,7 +446,7 @@ pub(crate) fn matches_user(query: &str, name: &str, email: &str) -> bool {
 
 /// git's subject (`%s`, `git log --oneline`): the message's first paragraph on one line.
 /// A whitespace-only line ends the paragraph, as in git; `\r\n` endings count as newlines.
-fn subject(message: &gix::bstr::BStr) -> String {
+pub(crate) fn subject(message: &gix::bstr::BStr) -> String {
     let lines = message.lines().map(|l| l.trim_end()).skip_while(|l| l.is_empty());
     let paragraph: Vec<String> = lines.take_while(|l| !l.is_empty()).map(|l| to_string(l.as_bstr())).collect();
     // git skips leading whitespace (blank lines and the first line's indent) before the subject.

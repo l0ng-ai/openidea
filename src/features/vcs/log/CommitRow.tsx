@@ -27,6 +27,7 @@ function CommitRowView({
   head,
   mine,
   onBranch,
+  outsideUnpicked,
   opts,
   remoteNames,
   onPick,
@@ -51,6 +52,7 @@ function CommitRowView({
   head: boolean;
   mine: boolean;
   onBranch: boolean;
+  outsideUnpicked: boolean;
   opts: LogOptions;
   remoteNames: ReadonlySet<string>;
   onPick: (id: string, e: ReactMouseEvent) => void;
@@ -125,7 +127,11 @@ function CommitRowView({
         {opts.refsOnLeft && refs}
         <span
           ref={subjectRef}
-          className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
+          className={clsx(
+            styles.subject,
+            head && styles.headSubject,
+            (merge || outsideUnpicked) && styles.mergeSubject,
+          )}
           onPointerEnter={enterTooltip}
           onPointerMove={enterTooltip}
           onPointerLeave={leaveTooltip}
@@ -134,7 +140,9 @@ function CommitRowView({
             setTooltip(false);
           }}
         >
-          <IssueText text={c.summary} />
+          <span className={styles.subjectText}>
+            <IssueText text={c.summary} />
+          </span>
         </span>
         {!opts.refsOnLeft && refs}
       </span>

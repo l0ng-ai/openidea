@@ -5,7 +5,7 @@
 import type { DataSource, DbDriver, DbSnowflake, DbSslMode } from "@/platform/ipc";
 
 export interface DbVendor {
-  /** Stored in `DataSource.vendor`; a driver's own entry has the driver's id. */
+  /** Stored in `DataSource.vendor` when the transport differs from the preset. */
   id: string;
   label: string;
   driver: DbDriver;
@@ -112,7 +112,8 @@ const BY_ID = new Map(VENDORS.map((v) => [v.id, v]));
 /** The type of a data source: its preset, else its driver's own entry. */
 export function vendorOf(s: Pick<DataSource, "vendor" | "driver">): DbVendor {
   const v = s.vendor ? BY_ID.get(s.vendor) : undefined;
-  return v && v.driver === (s.driver ?? "sqlite") ? v : BY_ID.get(s.driver ?? "sqlite")!;
+  const driver = s.driver ?? "sqlite";
+  return v && (v.driver === driver || driver === "jdbc") ? v : BY_ID.get(driver)!;
 }
 
 export const vendorById = (id: string): DbVendor | undefined => BY_ID.get(id);
@@ -190,7 +191,7 @@ const bracketed = (host: string) => (host.includes(":") && !host.startsWith("[")
 /** The JDBC URL of a data source's fields (the General tab's URL preview). */
 export function sourceUrl(s: DataSource): string {
   const v = vendorOf(s);
-  if (v.driver === "jdbc") return s.url ?? "";
+  if (s.driver === "jdbc") return s.url ?? "";
   if (v.driver === "sqlite") return `jdbc:sqlite:${s.file ?? ""}`;
   const host = bracketed(s.host?.trim() || "localhost");
   const port = s.port ?? v.port;

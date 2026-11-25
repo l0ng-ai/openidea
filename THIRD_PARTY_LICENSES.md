@@ -35,7 +35,8 @@ icon set, copied unmodified (some renamed) from JetBrains' open-source repositor
   → `maven/`); `plugins/gradle` (`icons/expui/gradle` → `toolwindows/gradle`,
   `icons/expui/gradleLoadChanges` → `build/gradleLoadChanges`,
   `icons/expui/gradle`, `icons/gradleSubproject` → `gradle/`);
-  `platform/external-system-impl` (`icons/newui/task` → `externalSystem/task`).
+  `platform/external-system-impl` (`icons/newui/task` → `externalSystem/task`);
+  `platform/dvcs-impl` (`icons/new/cherryPick` → `vcs/cherryPick`).
   Copyright 2000-2026 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
 - [intellij-plugins](https://github.com/JetBrains/intellij-plugins) (each plugin
   carries its own licence): `protobuf/protoeditor-core` (`newui/protoFile` →

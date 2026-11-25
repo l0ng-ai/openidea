@@ -15,3 +15,59 @@ command = "vscode-json-language-server"
 args = ["--stdio"]
 initialization-options = { provideFormatter = true }
 install-hint = "npm i -g vscode-langservers-extracted"
+
+# Validation is off in vscode-json-language-server unless enabled. Schemas from SchemaStore for
+# common configuration files; a `$schema` in the file itself still wins.
+[language-servers.settings.json.validate]
+enable = true
+
+[[language-servers.settings.json.schemas]]
+fileMatch = ["package.json"]
+url = "https://json.schemastore.org/package.json"
+
+[[language-servers.settings.json.schemas]]
+fileMatch = ["tsconfig.json", "tsconfig.*.json"]
+url = "https://json.schemastore.org/tsconfig.json"
+
+[[language-servers.settings.json.schemas]]
+fileMatch = ["jsconfig.json", "jsconfig.*.json"]
+url = "https://json.schemastore.org/jsconfig.json"
+
+[[language-servers.settings.json.schemas]]
+fileMatch = [".eslintrc", ".eslintrc.json"]
+url = "https://json.schemastore.org/eslintrc.json"
+
+[[language-servers.settings.json.schemas]]
+fileMatch = [".prettierrc", ".prettierrc.json"]
+url = "https://json.schemastore.org/prettierrc.json"
+
+[[language-servers.settings.json.schemas]]
+fileMatch = [".babelrc", ".babelrc.json", "babel.config.json"]
+url = "https://json.schemastore.org/babelrc.json"
+
+[[language-servers.settings.json.schemas]]
+fileMatch = ["lerna.json"]
+url = "https://json.schemastore.org/lerna.json"
+
+[[language-servers.settings.json.schemas]]
+fileMatch = ["turbo.json"]
+url = "https://turbo.build/schema.json"
+
+[[language-servers.settings.json.schemas]]
+fileMatch = [".swcrc"]
+url = "https://swc.rs/schema.json"
+
+[[language-servers.settings.json.schemas]]
+fileMatch = ["composer.json"]
+url = "https://getcomposer.org/schema.json"
+
+# Biome: lint diagnostics, quick fixes and fix-all below a Biome configuration or installation,
+# from the project's own biome. Formatting is Reformat Code's (Settings › Biome).
+[[language-servers]]
+name = "biome"
+command = "biome"
+args = ["lsp-proxy"]
+root-markers = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome"]
+require-root-marker = true
+features = ["code-action", "diagnostics"]
+install-hint = "npm i -D @biomejs/biome"

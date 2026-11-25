@@ -33,6 +33,7 @@ import {
 } from "@/editor/api";
 import { showContextMenu } from "@/ui";
 import { baseExtensions, compartments, contributionExtensions } from "../cm/setup";
+import { markdownImageFolds } from "../cm/folding";
 import { gutterMenuItems, inGutterMenuArea } from "../gutterMenu";
 import { offerMakeWritable } from "../fileAttributes";
 import type { DocModel } from "./document";
@@ -142,6 +143,10 @@ export class EditorSlot {
         }),
       ],
     });
+    if (model.ctx().language === "markdown") {
+      const effects = markdownImageFolds(this.stored);
+      if (effects.length) this.stored = this.stored.update({ effects }).state;
+    }
     this.contributionsVersion = model.manager.contributionsVersion;
     if (source?.view) this.scroll = source.view.scrollSnapshot();
     else if (source) this.scroll = source.scroll;
@@ -155,7 +160,7 @@ export class EditorSlot {
   }
 
   /** The visible or kept view: the one holding the tab's state. */
-  private get live(): EditorView | null {
+  get live(): EditorView | null {
     return this.view ?? this.kept;
   }
 

@@ -13,11 +13,13 @@
 }
 .toolbar {
   flex: none;
-  height: var(--h-header);
+  min-height: var(--h-header);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  align-content: center;
   gap: var(--space-0-5);
-  padding: 0 6px;
+  padding: var(--space-0-5) var(--space-1-5);
   border-bottom: 1px solid var(--border);
 }
 .toolbar > * {
@@ -29,16 +31,32 @@
   margin: 0 4px;
   background: var(--border-strong);
 }
-.toolbar > .count {
+.toolbar > .statusTools {
   flex-shrink: 1;
-  min-width: 0;
-  margin-left: auto;
-  padding: 0 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-0-5);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  margin-inline-start: auto;
+}
+.statusTools > :not(.count) {
+  flex: none;
+}
+.count {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding-inline: var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: end;
+}
+.count:empty {
+  display: none;
 }
 /* Narrow (a side-docked preview): the whitespace / highlighting pickers stay in the gear menu. */
 @container diff-editor (max-width: 640px) {
@@ -46,22 +64,10 @@
     display: none;
   }
 }
-@container diff-editor (max-width: 380px) {
-  .toolbar {
-    height: auto;
-    min-height: var(--h-header);
-    flex-wrap: wrap;
-    align-content: center;
-    padding-block: var(--space-0-5);
-  }
+@container diff-editor (max-width: 520px) {
   .toolbar > .sep,
   .toolbar > .inlineOption {
     display: none;
-  }
-  .toolbar > .count {
-    flex: 1 1 auto;
-    order: 1;
-    text-align: end;
   }
 }
 .labels {
@@ -97,6 +103,36 @@
   text-overflow: ellipsis;
   color: var(--fg-subtle);
   font-family: var(--font-ui);
+}
+.sourceLabels {
+  font-size: var(--fs-ui);
+}
+.sourceLabels .label {
+  font-family: var(--font-ui);
+}
+.sourceLabels .labelText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sourceLabels .labelFile {
+  font-size: var(--fs-small);
+}
+.labelFile.revisionPath {
+  display: inline-flex;
+  color: var(--fg-muted);
+  font-size: var(--fs-ui);
+}
+.revisionDirectory,
+.revisionFilename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.revisionFilename {
+  /* Let the directory shrink first, then elide the filename if it still exceeds the path's width. */
+  flex: none;
+  max-width: 100%;
 }
 .badge {
   padding: 0 5px;
@@ -138,6 +174,17 @@
   justify-content: center;
   padding: 24px;
   color: var(--fg-subtle);
+}
+.stagedNotice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  color: var(--fg-subtle);
+}
+.indexDeletion {
+  --diff-inserted: var(--diff-deleted);
+  --diff-inserted-stripe: var(--diff-deleted-stripe);
 }
 .host {
   flex: 1;
@@ -187,6 +234,35 @@
   color: var(--fg-strong);
   background: transparent;
 }
+.hunkGutter {
+  min-width: var(--h-row);
+}
+.host :global(.cm-openidea-withOverview .cm-gutters-after):has(> .hunkGutter) {
+  inset-inline-end: var(--space-3);
+  margin-inline-end: var(--space-3);
+}
+.hunkButtons {
+  display: inline-flex;
+  vertical-align: top;
+}
+.hunkButtons > button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--h-row);
+  height: 100%;
+  min-height: var(--space-4);
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 0;
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: pointer;
+}
+.hunkButtons > button:hover,
+.hunkButtons > button:focus-visible {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
 .select {
   height: var(--h-control-small);
   font-size: var(--fs-small);
@@ -231,9 +307,31 @@
   color: var(--fg-strong);
   background: var(--bg-hover);
 }
+.host :global(.cm-diffNumbers) {
+  position: relative;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+.host :global(.cm-diffNumbers .cm-gutterElement),
+.host :global(.cm-diffWidgetNumber) {
+  min-inline-size: calc(var(--space-4) + var(--space-2));
+  padding-inline: var(--space-1) var(--space-2);
+}
+.host :global(.cm-diffWidgetNumbers) {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.host :global(.cm-diffWidgetNumber) {
+  position: absolute;
+  inset-inline: 0;
+}
 .noHighlight :global(.cm-changedLine),
 .noHighlight :global(.cm-insertedLine),
 .noHighlight :global(.cm-changedText),
+.noHighlight :global(.cm-inlineChangedLine),
+.noHighlight :global(.cm-unifiedWorkingChunk),
+.noHighlight :global(.cm-unifiedWorkingWord),
 .noHighlight :global(.cm-diffLine),
 .noHighlight :global(.cm-diffChangedGutter) {
   background: none !important;
@@ -257,6 +355,10 @@
 .paneScroll :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
   overflow: auto !important;
 }
+.measuringPanes {
+  opacity: 0;
+}
+
 .host :global(.cm-diffDivider) {
   position: relative;
   flex: none;

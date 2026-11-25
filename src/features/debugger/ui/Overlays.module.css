@@ -1,7 +1,3 @@
-.spacer {
-  flex: 1;
-}
-
 .empty {
   padding: 16px;
   color: var(--fg-faint);
@@ -21,12 +17,70 @@
 }
 
 /* breakpoint popover */
-.bpEditor {
-  width: 340px;
-  padding: 10px 12px;
+.bpPopover {
+  display: flex;
+  flex-direction: column;
+  width: 400px;
+  overflow: hidden;
+  font-size: var(--fs-ui);
+}
+
+.bpPopoverTitle,
+.bpFooter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.bpPopoverTitle {
+  color: var(--fg-strong);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bpPopoverTitle > svg {
+  flex: none;
+}
+
+.bpPopoverTitle .bpFile {
+  font-family: var(--font-ui);
+}
+
+.bpPopoverFields {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  min-height: 0;
+  padding: var(--space-1) var(--space-3) var(--space-2);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.bpPopoverFields > * {
+  flex: none;
+}
+
+.bpPopoverFields .label {
+  font-size: var(--fs-ui);
+}
+
+.bpActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.bpActions > legend {
+  padding-inline: var(--space-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-ui);
 }
 
 .bpTitle {
@@ -69,21 +123,27 @@
 }
 
 .bpFooter {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  margin-top: 2px;
+  flex-wrap: wrap;
+  border-block-start: 1px solid var(--border-popup);
 }
 
-.link {
+.bpFooterButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-inline-start: auto;
+}
+
+.bpMore {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1-5);
   color: var(--accent);
   font-size: var(--fs-ui);
   cursor: pointer;
 }
-.link:hover {
+.bpMore:hover {
   color: var(--accent-hover);
 }
 
@@ -212,13 +272,24 @@
   font-family: var(--font-ui);
 }
 
-.detail .label {
+:is(.detail, .bpEditor) .label {
   font-size: var(--fs-ui);
 }
 
 .statusLine {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
+}
+
+.unsupportedField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* A disabled control gets no pointer events in WebKit: the field shows the tooltip instead. */
+.unsupportedField > * {
+  pointer-events: none;
 }
 
 /* evaluate dialog */
@@ -292,6 +363,38 @@
 
 .chooser {
   height: 260px;
+}
+
+.stepPopup {
+  display: flex;
+  flex-direction: column;
+  width: min(460px, calc(100vw - 12px));
+  padding-block-end: var(--space-0-5);
+  overflow: hidden;
+  font-size: var(--fs-ui);
+}
+
+.stepHeading {
+  flex: none;
+  padding: var(--space-1-5) var(--space-3);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.stepTargets {
+  display: flex;
+  min-height: 0;
+}
+
+.stepList {
+  flex: 1;
+  min-width: 0;
+}
+
+.stepLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .exceptions {
@@ -460,10 +563,10 @@
   border: 0;
   background: none;
   color: var(--fg-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
+  font-family: var(--evaluate-font, var(--font-mono));
+  font-size: var(--evaluate-font-size, var(--fs-code));
   font-weight: var(--fw-code);
-  line-height: var(--lh-code);
+  line-height: var(--evaluate-line-height, var(--lh-code));
   outline: none;
   -webkit-user-select: text;
   user-select: text;
@@ -474,4 +577,16 @@
 .evalHistory {
   align-self: flex-start;
   margin: var(--space-1);
+}
+
+.evalHistoryPopup {
+  width: 0;
+  padding-block: var(--space-1);
+}
+
+.evalHistoryPopup [role="menuitem"] {
+  height: max(var(--h-list-row), var(--evaluate-line-height, var(--lh-code)));
+  font-family: var(--evaluate-font, var(--font-mono));
+  font-size: var(--evaluate-font-size, var(--fs-code));
+  font-weight: var(--fw-code);
 }

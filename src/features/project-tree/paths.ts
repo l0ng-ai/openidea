@@ -1,6 +1,6 @@
 /** POSIX path helpers for backend paths (the backend always reports `/`-separated absolute paths). */
 import { tx } from "@/platform/i18n";
-import { isSameOrInside } from "@/platform/paths";
+import { ipcPath, isSameOrInside } from "@/platform/paths";
 export { isSameOrInside } from "@/platform/paths";
 
 export function joinPath(dir: string, name: string): string {
@@ -20,6 +20,61 @@ export function nameOf(path: string): string {
 
 export function isInside(path: string, ancestor: string): boolean {
   return path !== ancestor && isSameOrInside(path, ancestor);
+}
+
+/**
+ * `path => ancestors.some((a) => isSameOrInside(path, a))`, answered by looking up the path and each
+ * of its parent folders in a set instead of comparing against every ancestor.
+ */
+export function insideAnyOf(ancestors: readonly string[]): (path: string) => boolean {
+  if (!ancestors.length) return () => false;
+  const same = new Set<string>();
+  const below = new Set<string>();
+  for (const a of ancestors) {
+    const n = ipcPath(a);
+    same.add(n);
+    below.add(n.endsWith("/") ? n : `${n}/`);
+  }
+  return (path) => {
+    const n = ipcPath(path);
+    if (same.has(n)) return true;
+    for (let i = n.indexOf("/"); i >= 0; i = n.indexOf("/", i + 1)) if (below.has(n.slice(0, i + 1))) return true;
+    return false;
+  };
+}
+
+/**
+ * `paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)))` without comparing every pair:
+ * a path is looked up, with each folder above it, in a map from the paths' normalised forms, so the
+ * cost grows linearly with the number of paths.
+ */
+export function outermostPaths(paths: string[]): string[] {
+  // A few paths: comparing pairs costs less than building the maps.
+  if (paths.length < 8) return paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)));
+  const norms = paths.map(ipcPath);
+  // Normalised form → the path behind it, or null when several different strings share it.
+  const forms = new Map<string, string | null>();
+  paths.forEach((p, i) => {
+    const v = forms.get(norms[i]!);
+    forms.set(norms[i]!, v === undefined || v === p ? p : null);
+  });
+  // The "…/" folder above a path or folder ("" at the top).
+  const up = (n: string) => n.slice(0, n.length < 2 ? 0 : n.lastIndexOf("/", n.length - 2) + 1);
+  // Whether a path is `dir` (with or without its "/") or a folder above it, once per folder.
+  const covered = new Map<string, boolean>();
+  const isCovered = (dir: string): boolean => {
+    let c = covered.get(dir);
+    if (c === undefined)
+      covered.set(dir, (c = !!dir && (forms.has(dir) || forms.has(dir.slice(0, -1)) || isCovered(up(dir)))));
+    return c;
+  };
+  return paths.filter((p, i) => {
+    const n = norms[i]!;
+    const v = forms.get(n);
+    // Another string with the same form, or `n` is "x/" and "x" is a path: inside it, as `q !== p` above.
+    if (v !== p || (n.endsWith("/") && forms.has(n.slice(0, -1)))) return false;
+    return !isCovered(up(n));
+  });
 }
 
 /** Path relative to `root` (`""` for the root itself); `path` unchanged when outside. */
@@ -54,12 +109,17 @@ export function splitExtension(name: string): [string, string] {
   return [name.slice(0, i), name.slice(i)];
 }
 
-/** Finder-style non-conflicting name: `Foo.kt` → `Foo copy.kt` → `Foo copy 2.kt`. */
+/**
+ * Finder-style non-conflicting name: `Foo.kt` → `Foo copy.kt` → `Foo copy 2.kt`. A Java source
+ * keeps a name its type can take: `Foo.java` → `FooCopy.java` → `FooCopy2.java`.
+ */
 export function uniqueName(name: string, taken: (candidate: string) => boolean, isDir = false): string {
   if (!taken(name)) return name;
   const [stem, ext] = isDir ? [name, ""] : splitExtension(name);
+  const java = ext === ".java";
   for (let n = 1; ; n++) {
-    const candidate = `${stem} copy${n > 1 ? ` ${n}` : ""}${ext}`;
+    const suffix = n > 1 ? (java ? `${n}` : ` ${n}`) : "";
+    const candidate = java ? `${stem}Copy${suffix}${ext}` : `${stem} copy${suffix}${ext}`;
     if (!taken(candidate)) return candidate;
   }
 }

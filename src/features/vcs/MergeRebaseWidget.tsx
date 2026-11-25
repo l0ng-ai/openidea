@@ -28,14 +28,15 @@ function Button(props: { label: string; icon: IconName; tone: "go" | "abort"; di
 export function MergeRebaseWidget() {
   const op = useVcs((s) => inProgress(s.branch?.operation));
   const conflicts = useVcs((s) => s.status.some((f) => f.unstaged === "conflicted"));
+  const resolved = useVcs((s) => s.resolvedConflicts.size > 0);
   const busy = useVcs((s) => !!s.remoteBusy);
-  if (!op && !conflicts) return null;
+  if (!op && !conflicts && !resolved) return null;
   return (
     <div className={styles.widget} role="group" aria-label={tx("Merge conflicts")}>
-      {conflicts && (
+      {(conflicts || resolved) && (
         <Button
-          label={tx("Resolve Conflicts…")}
-          icon="resolve-continue"
+          label={conflicts ? tx("Resolve Conflicts…") : tx("Review Resolved Conflicts…")}
+          icon={conflicts ? "resolve-continue" : "check"}
           tone="go"
           disabled={busy}
           run={() => void executeAction("vcs.resolveConflicts")}

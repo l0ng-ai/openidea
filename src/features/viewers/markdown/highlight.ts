@@ -97,7 +97,7 @@ function collectRuns(root: Node): TextRun[] {
     const el = node as Element;
     const tag = el.tagName.toUpperCase();
     if (SKIP_TAGS.has(tag)) return;
-    if (el.classList.contains("katex-mathml")) return;
+    if (tag === "MJX-ASSISTIVE-MML" || el.classList.contains("katex-mathml")) return;
     if (tag === "PRE" && el.parentElement?.getAttribute("data-mermaid-state") === "ok") return;
     const isBlock = BLOCK_TAGS.has(tag);
     if (isBlock) flush();
@@ -198,7 +198,8 @@ export function invalidatePreviewIndex(root: HTMLElement) {
 function previewIndex(root: HTMLElement): PreviewIndex {
   let index = previewIndexes.get(root);
   if (!index) {
-    const els = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")];
+    const content = root.querySelector(":scope > [data-preview-blocks]") ?? root;
+    const els = [...content.querySelectorAll<HTMLElement>(":scope > [data-line]")];
     const blocks = els.map((el) => ({ startLine: Number(el.dataset.line), runs: collectRuns(el) }));
     index = { blocks, runs: blocks.length ? blocks.flatMap((b) => b.runs) : collectRuns(root) };
     previewIndexes.set(root, index);

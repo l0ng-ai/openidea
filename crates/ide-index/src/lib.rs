@@ -8,7 +8,8 @@ use ide_language::{LanguageRegistry, Syntax};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -92,15 +93,18 @@ pub struct ProjectIndex {
 }
 
 /// Folders indexed alongside the internal state root.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct IndexRoots {
     pub include_root: bool,
     pub folders: Vec<PathBuf>,
+    /// Folders with exclude globs of their own (an attached project's), relative to the folder;
+    /// the other folders share the project's.
+    pub excludes: std::collections::BTreeMap<PathBuf, Vec<String>>,
 }
 
 impl From<Vec<PathBuf>> for IndexRoots {
     fn from(folders: Vec<PathBuf>) -> Self {
-        Self { include_root: true, folders }
+        Self { include_root: true, folders, ..Default::default() }
     }
 }
 
@@ -275,6 +279,28 @@ impl ProjectIndex {
         let mut files: Vec<_> = data.files.iter().flatten().filter(|file| file.name() == name).collect();
         files.sort_by(|a, b| a.rel.len().cmp(&b.rel.len()).then_with(|| a.rel.cmp(&b.rel)));
         files.into_iter().map(|file| file.path.clone()).collect()
+    }
+
+    /// Find exact basenames across the indexed workspace in a single pass.
+    pub fn files_with_names(&self, names: &HashSet<&OsStr>) -> Vec<PathBuf> {
+        if names.is_empty() {
+            return Vec::new();
+        }
+        self.shared
+            .data
+            .read()
+            .files
+            .iter()
+            .flatten()
+            .filter(|file| !file.ignored && file.path.file_name().is_some_and(|name| names.contains(name)))
+            .map(|file| file.path.clone())
+            .collect()
+    }
+
+    /// Exact folder names in the project scope, including empty folders absent from file search.
+    /// Run off the caller's request thread because discovering those folders walks the disk.
+    pub fn directories_with_names(&self, names: &HashSet<&OsStr>) -> Vec<PathBuf> {
+        if names.is_empty() { Vec::new() } else { self.shared.filter().directories_with_names(names) }
     }
 
     /// Up to `limit` indexed files below `dir` (VCS-ignored ones left out) whose path relative to
@@ -510,7 +536,7 @@ impl Drop for ProjectIndex {
 mod tests;
 
 /// Synthetic in-memory index for benchmarks (`benches/index.rs`); not a stable API.
-#[doc(hidden)]
+#[cfg(any(test, feature = "bench-support"))]
 pub mod bench_support {
     use super::*;
     use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};

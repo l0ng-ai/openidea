@@ -136,9 +136,12 @@ OpenIDEA 通过 [GitHub CLI](https://cli.github.com)（`gh`）对接 GitHub：�
 
 Git 日志可以显示每个提交在 GitHub 上的检查状态。在日志的 **视图选项 › 列** 中，或在 **设置 › 版本控制 › 日志** 中打开 **GitHub 提交检查** 列。点击提交的图标列出它的检查运行，再点击某项即可在 GitHub 上打开。
 
+## 在 GitHub 上打开文件
+
+在编辑器或项目视图中，**打开方式 › GitHub** 在浏览器中打开该文件（定位到选中的行）或目录，**复制路径/引用… › GitHub 链接** 复制它的地址。链接指向当前分支的上游分支；分支没有上游时指向 HEAD 提交。远程仓库在 GitLab 或 Bitbucket 上时，同样有这两项。
+
 ## 暂不支持
 
 - GitHub Enterprise、GitLab、Bitbucket。
 - Issue、Gist、通知，以及创建或分享仓库。
-- 在 GitHub 上打开文件或某一行、复制永久链接。
 - 管理 GitHub Actions（重新运行作业、查看日志）。

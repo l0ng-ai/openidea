@@ -1,7 +1,7 @@
 /**
  * Folding: ranges from the backend (`doc_folding`, tree-sitter based) merged
  * with CodeMirror's syntax folding (`foldNodeProp`) as fallback, IDEA-style
- * chevrons in the gutter (open chevrons only on gutter hover).
+ * chevrons in the gutter (open chevrons can be shown only on hover).
  */
 import {
   EditorSelection,
@@ -23,7 +23,10 @@ import {
   unfoldEffect,
 } from "@codemirror/language";
 import type { FoldRange } from "@/platform/ipc";
+import type { FoldingOutlineVisibility } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { enclosingCodeBlock } from "./caretCommands";
+import { foldPreviewExtension } from "./foldPreview";
 import { regionMarkerAt, regionNameAt } from "./regions";
 
 export interface BackendFold {
@@ -43,7 +46,7 @@ export const setBackendFolds = StateEffect.define<FoldRange[]>();
  * folds from the declaration line above it, so the fold and the sticky line
  * show `namespace Demo` / `void F()` rather than a bare brace.
  */
-function allmanHeader(state: EditorState, line: Line): Line {
+export function allmanHeader(state: EditorState, line: Line): Line {
   if (line.text.trim() !== "{" || line.number === 1) return line;
   const prev = state.doc.line(line.number - 1);
   const code = prev.text.trim();
@@ -432,9 +435,10 @@ export const expandRecursively = (view: EditorView) =>
     view.state.selection.ranges.flatMap((r) => expandRecursivelyEffects(view.state, r.head)),
   );
 
-function chevron(open: boolean): HTMLElement {
+function chevron(open: boolean, visibility: FoldingOutlineVisibility): HTMLElement {
   const span = document.createElement("span");
   span.className = open ? "cm-openidea-foldOpen" : "cm-openidea-foldClosed";
+  span.classList.toggle("cm-openidea-foldOnHover", open && visibility === "hover");
   span.title = open ? "Collapse" : "Expand";
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -477,12 +481,39 @@ export function foldChipWidth(el: HTMLElement): number {
   return Math.round(chip.getBoundingClientRect().width);
 }
 
-export function foldingExtension(showOutline = true): Extension {
+// Long image payloads would occupy thousands of soft-wrapped rows before the first editor measure.
+export function markdownImageFolds(state: EditorState) {
+  const effects = [];
+  const destination =
+    /(?:\]\(\s*<?|<img\b[^>]*?\ssrc\s*=\s*["'])data:image\/[\w.+-]+;base64,([A-Za-z0-9+/]{256,}={0,2})(?=[>\s)"'])/gi;
+  let offset = 0;
+  let fence = "";
+  for (const line of state.doc.iterLines()) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker && !fence) fence = marker;
+    else if (marker && marker.startsWith(fence) && !line.trim().slice(marker.length).trim()) fence = "";
+    else if (!fence && line.length >= 256) {
+      for (const match of line.matchAll(destination)) {
+        const to = offset + match.index + match[0].length;
+        effects.push(foldEffect.of({ from: to - match[1]!.length, to }));
+      }
+    }
+    offset += line.length + 1;
+  }
+  return effects;
+}
+
+export function foldingExtension(showOutline = true, visibility: FoldingOutlineVisibility = "hover"): Extension {
   return [
     // The chevron column sits right of contributed icon gutters (IDEA new UI).
-    showOutline ? Prec.lowest(foldGutter({ markerDOM: chevron, foldingChanged: backendFoldingChanged })) : [],
+    showOutline
+      ? Prec.lowest(
+          foldGutter({ markerDOM: (open) => chevron(open, visibility), foldingChanged: backendFoldingChanged }),
+        )
+      : [],
     backendFolds,
     backendFoldService,
+    foldPreviewExtension,
     codeFolding({
       // A folded custom region shows its name, as in IDEA.
       preparePlaceholder: (state, range) => {
@@ -500,8 +531,7 @@ export function foldingExtension(showOutline = true): Extension {
         const el = document.createElement("span");
         el.className = "cm-foldPlaceholder";
         el.textContent = name ?? "…";
-        el.title = "Expand";
-        el.setAttribute("aria-label", "folded code");
+        el.setAttribute("aria-label", tx("Folded code"));
         // The chip is a button, not a text anchor. Letting the mousedown through
         // starts a mouse selection that moves the caret to the chip's line; a caret
         // change re-runs the inline blame refresh, which replaces this line's DOM

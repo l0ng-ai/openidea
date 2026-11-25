@@ -5,6 +5,8 @@
 
 #![cfg(unix)]
 
+mod common;
+
 use ide_core::IdeEvent;
 use ide_host::plugins::remote_host::{
     EVENT_NOTIFICATION, PackageSyncReport, PluginEventMessage, RemotePlugins, SECRET_REQUEST, SYNC_PACKAGES,
@@ -139,15 +141,8 @@ async fn remote_projects_run_the_desktops_code_plugins_on_the_server() {
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().set_program_path(path_var);
@@ -260,15 +255,8 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().set_program_path(path_var);
@@ -382,15 +370,8 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.into()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     let mut dispatcher = Dispatcher::standard();
@@ -600,15 +581,8 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.into()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().set_program_path(path_var);
@@ -746,6 +720,14 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     .await
     .unwrap();
     assert_eq!(run.await.unwrap(), operation);
+    let attached = invoke(
+        &peer,
+        "term_attach",
+        json!({"id": terminal["id"], "cols": 80, "rows": 24, "onOutput": {"$channel": 41}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(attached["session"]["id"], terminal["id"]);
     invoke(
         &peer,
         "plugin_run_command",
@@ -755,16 +737,23 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     .unwrap();
     until("PTY exit", 5, || client.events.lock().iter().any(|m| matches!(m.event, IdeEvent::TerminalExited { .. })))
         .await;
-    plugins.host().flush_events_at(std::time::Instant::now() + Duration::from_secs(3));
-    plugins.host().wait_events(Duration::from_secs(5));
-    let received = invoke(
-        &peer,
-        "plugin_run_command",
-        json!({"pluginId": "execution", "commandId": "events", "arg": null, "editor": null}),
-    )
+    let received = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let received = invoke(
+                &peer,
+                "plugin_run_command",
+                json!({"pluginId": "execution", "commandId": "events", "arg": null, "editor": null}),
+            )
+            .await
+            .unwrap();
+            if let Some(events) = received.as_str() {
+                break serde_json::from_str::<Value>(events).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
-    .unwrap();
-    let received: Value = serde_json::from_str(received.as_str().unwrap()).unwrap();
+    .expect("plugin terminal completion after reattach");
     assert_eq!(received.as_array().unwrap().len(), 1);
     assert_eq!(received[0]["kind"], "terminal-exited");
     let data: Value = serde_json::from_str(received[0]["data"].as_str().unwrap()).unwrap();
@@ -850,15 +839,9 @@ async fn api14_database_sources_credentials_and_disable_lifetime_run_on_the_serv
     let slot = Arc::new(OnceLock::new());
     let sink = slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink.clone(), Some(w.into()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        local_data_dir: base.join("local"),
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, slot.clone()).unwrap();
     let mut dispatcher = Dispatcher::standard();
@@ -947,17 +930,7 @@ async fn api14_database_sources_credentials_and_disable_lifetime_run_on_the_serv
 async fn command_rpc_fixture() -> (tempfile::TempDir, Arc<RemotePlugins>, Peer, Arc<Client>) {
     let tmp = tempfile::tempdir().unwrap();
     let peer_slot = Arc::new(OnceLock::new());
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(|_: IdeEvent| {})),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(tmp.path())));
     let plugins = RemotePlugins::start(&tmp.path().join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().install_from_dir(&fixture("misbehave"), &Consent::all()).unwrap();
     plugins.host().install_from_dir(&fixture("jobs"), &Consent::all()).unwrap();
@@ -1078,6 +1051,53 @@ async fn cancelling_one_request_does_not_interrupt_another_running_command() {
     );
     assert_eq!(tokio::time::timeout(Duration::from_secs(1), active).await.unwrap().unwrap().unwrap(), "kept running");
     assert_eq!(plugins.host().info_of("jobs").unwrap().stats.crashes, 0);
+    plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_focus_preserves_the_editor_for_following_plugin_events() {
+    let (tmp, plugins, peer, _client) = command_rpc_fixture().await;
+    plugins.host().install_from_dir(&fixture("api14"), &Consent::all()).unwrap();
+    let path = tmp.path().join("project/notes.txt").to_string_lossy().into_owned();
+    let selection = json!({"start":{"line":4,"col":2},"end":{"line":4,"col":5}});
+    invoke(
+        &peer,
+        "plugin_set_active_file",
+        json!({"path":path,"editor":{"path":path,"language":"text","selections":[selection]}}),
+    )
+    .await
+    .unwrap();
+    for focused in [true, false] {
+        if !focused {
+            invoke(&peer, "plugin_set_active_file", json!({"path":null,"editor":null})).await.unwrap();
+        }
+        plugins.host().post_events(
+            Some("main"),
+            vec![WorkbenchEvent::InputModeChanged(ide_plugin::InputMode {
+                path: path.clone(),
+                mode: "visual".into(),
+                sub: None,
+            })],
+        );
+        plugins.host().flush_events_at(std::time::Instant::now() + Duration::from_secs(2));
+        assert!(plugins.host().wait_events(Duration::from_secs(5)));
+        let received = invoke(
+            &peer,
+            "plugin_run_command",
+            json!({"pluginId":"api14","commandId":"events","arg":null,"editor":null}),
+        )
+        .await
+        .unwrap();
+        let events: Value = serde_json::from_str(received.as_str().unwrap()).unwrap();
+        let event = events.as_array().unwrap().iter().rev().find(|e| e["kind"] == "input-mode-changed").unwrap();
+        if focused {
+            assert_eq!(event["editor"], json!([path, [[4, 2, 4, 5]]]));
+        } else {
+            assert!(event["editor"].is_null(), "lost focus must clear the previous editor: {event}");
+        }
+    }
+    // Older callers may omit the optional editor payload.
+    invoke(&peer, "plugin_set_active_file", json!({"path":path})).await.unwrap();
     plugins.host().shutdown();
 }
 

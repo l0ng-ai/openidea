@@ -49,9 +49,12 @@ never to a settings file. The **+**, **−** and copy buttons above the list add
 ### `~/.ssh/config` support
 
 OpenIDEA has its own SSH client and reads `~/.ssh/config` itself. It understands `Host`, `Match`, `Include`,
-`HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `ProxyCommand`, `StrictHostKeyChecking` and
+`HostName`, `User`, `Port`, `IdentityFile`, `IdentityAgent`, `ProxyJump`, `ProxyCommand`, `StrictHostKeyChecking` and
 `UserKnownHostsFile`. Jump hosts authenticate with the agent and identity files; the password or passphrase of the
 configuration is only used for the target host.
+
+The SSH agent is the one `IdentityAgent` names, otherwise `SSH_AUTH_SOCK` as your login shell sets it, so an agent
+socket exported in `~/.zshrc` (for example a password manager's agent) works even when OpenIDEA is started from the Dock.
 
 Host keys are checked against `known_hosts`. An unknown key has to be trusted once; a changed key is refused unless
 host key checking is turned off for that host.
@@ -93,7 +96,8 @@ After the project opens you are asked whether to trust it, as for a local folder
 - Your keymap, appearance, editor font and colour scheme stay on the desktop. Project and tool settings live on the
   host.
 - Your code plugins are synced to the server and run next to the project.
-- **File › Disconnect from Remote Host** closes the project and ends the connection.
+- **Keep Backend Running** when closing a remote window, or **File › Disconnect from Remote Host**, leaves the remote IDE backend and its workloads running. Reopen the project to reattach.
+- **Stop Backend** when closing the window, or **File › Stop Remote Backend**, shuts down the backend and its workloads. See [Stopping a remote backend](/en/guide/remote/server#closing-or-stopping-a-remote-backend) for idle timeout and manual cleanup.
 
 ### Forward ports
 
@@ -130,6 +134,10 @@ needed. The status bar then shows **WSL: `<distribution>`**.
 
 Opening a folder under `\\wsl.localhost\<distribution>\` also opens it through the distribution.
 **Browse** is not available for WSL.
+
+The **Ports** tool window is available in a WSL window too. Because the distribution shares this machine's
+`localhost`, a forwarded port is reachable here on the same port; the window lists, opens and remembers ports as it
+does for SSH.
 
 ## Other uses of SSH configurations
 

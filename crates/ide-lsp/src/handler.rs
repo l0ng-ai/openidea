@@ -25,6 +25,17 @@ const PROGRESS_SWEEP: Duration = Duration::from_secs(15);
 /// visible, but stops holding the server busy while the work behind it keeps running.
 const PROGRESS_STALE: Duration = Duration::from_secs(180);
 
+/// How long a cancelled progress task waits for its server to end it.
+const CANCEL_GRACE: Duration = Duration::from_secs(5);
+
+/// The key of progress token `token` in [`Server::progress`].
+fn progress_key(token: &Value) -> String {
+    match token {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Task message after [`PROGRESS_STALE`] of silence: keep the server's last message and
 /// say how long nothing happened.
 fn stalled_message(message: Option<&str>) -> String {
@@ -97,22 +108,50 @@ impl ClientHandler {
     }
 
     /// Cancelling task `task` asks this server instance to stop the work of progress `token`.
+    /// A server that never ends it (Pyright waiting on a workspace that never loads) would
+    /// leave the task "Cancelling…" for good: after [`CANCEL_GRACE`] the task ends here.
     fn cancel_handle(&self, task: TaskId, token: &Value) -> ide_core::task::CancelHandle {
-        let (server, generation, token) = (self.server.clone(), self.generation, token.clone());
+        let (mgr, server, generation, token) = (self.mgr.clone(), self.server.clone(), self.generation, token.clone());
         ide_core::task::on_cancel(task, move || {
             if let Some(run) = server.initialized_gen(generation)
                 && let Err(e) = run.peer.notify("window/workDoneProgress/cancel", json!({ "token": token }))
             {
                 tracing::debug!("{}: cannot cancel progress: {e}", server.name);
             }
+            let Some(runtime) = mgr.upgrade().map(|m| m.runtime.clone()) else { return };
+            runtime.spawn(async move {
+                tokio::time::sleep(CANCEL_GRACE).await;
+                let Some(mgr) = mgr.upgrade() else { return };
+                let key = progress_key(&token);
+                let ended = {
+                    let mut progress = server.progress.lock();
+                    if progress.get(&key).is_none_or(|p| p.task != task) {
+                        return; // the server ended it, or the token began new work
+                    }
+                    progress.remove(&key)
+                };
+                if let Some(p) = ended {
+                    tracing::info!("{}: progress '{key}' did not end after cancel; ending its task", server.name);
+                    server.emit(
+                        mgr.sink(),
+                        IdeEvent::Task {
+                            id: p.task,
+                            title: p.title,
+                            message: p.message,
+                            fraction: None,
+                            done: true,
+                            cancellable: false,
+                        },
+                    );
+                    server.refresh_busy_status(mgr.sink());
+                    server.progress_ended();
+                }
+            });
         })
     }
 
     fn progress(&self, mgr: &LspManager, params: Value) {
-        let token = match &params["token"] {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
+        let token = progress_key(&params["token"]);
         let value = &params["value"];
         let kind = value.get("kind").and_then(Value::as_str);
         let message = value.get("message").and_then(Value::as_str).map(str::to_owned);
@@ -321,6 +360,9 @@ impl ClientHandler {
         else {
             return;
         };
+        if self.server.redirect_transient_diagnostics(&path, self.generation, params.version, &mut params.diagnostics) {
+            return;
+        }
         if self.server.name == crate::compose::SERVER {
             // Maven resource-filtering placeholders (`@profileActive@`) parse as invalid
             // YAML but are replaced before the file is ever read: their parser error is noise.
@@ -338,9 +380,8 @@ impl ClientHandler {
             return;
         }
         // Files opened only for a request (references search) are not the user's problems.
-        if (self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
-            && !mgr.docs.lock().values().any(|d| d.path == path))
-            || self.server.suppresses_diagnostics(&path)
+        if self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
+            && !mgr.docs.lock().values().any(|d| d.path == path)
         {
             return;
         }
@@ -603,6 +644,11 @@ impl Handler for ClientHandler {
                     && text.contains(" to import Gradle project ")
                 {
                     self.show_message(&mgr, &json!({ "type": 1, "message": text.lines().next().unwrap_or(text) }));
+                }
+                if self.server.name == "jdtls"
+                    && let Some(failure) = crate::jdtls::gradle_sync_failure(text)
+                {
+                    mgr.report_gradle_sync_failure(failure);
                 }
                 if self.server.name == "jdtls"
                     && params.get("type").and_then(Value::as_u64) == Some(1)

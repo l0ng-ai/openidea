@@ -6,19 +6,15 @@ import { languages } from "@codemirror/language-data";
 import type { FileMatches } from "@/platform/ipc";
 import {
   buildTodoQuery,
-  changedPaths,
-  todoSearchScope,
-  countItems,
   DEFAULT_TODO_SETTINGS,
-  groupTodos,
   itemsFromMatches,
   looksLikeComment,
-  mergeLive,
   scanText,
   todoRegexSource,
   type TodoItem,
   type TodoSettings,
-} from "./model";
+} from "@/platform/todo";
+import { changedPaths, todoSearchScope, countItems, groupTodos, mergeLive } from "./model";
 import { todoDecorations } from "./highlight";
 
 const S = DEFAULT_TODO_SETTINGS;
@@ -71,7 +67,7 @@ describe("comment markers", () => {
 
 describe("query", () => {
   it("builds the keyword regex from enabled patterns", () => {
-    expect(todoRegexSource(S)).toBe("\\b(TODO|FIXME|HACK|XXX)\\b.*");
+    expect(todoRegexSource(S)).toBe("\\b(FIXME|TODO|HACK|XXX)\\b");
     const q = buildTodoQuery({ ...S, caseSensitive: false }, { kind: "files", paths: ["/a"] })!;
     expect(q).toMatchObject({ isRegex: true, caseSensitive: false, scope: { kind: "files", paths: ["/a"] } });
     const none: TodoSettings = { ...S, patterns: S.patterns.map((p) => ({ ...p, enabled: false })) };
@@ -84,10 +80,10 @@ describe("matches → items", () => {
     path: "/p/src/a.ts",
     relPath: "src/a.ts",
     matches: [
-      { line: 3, text: "  // TODO: fix this", ranges: [[5, 19]], textOffset: 0 },
-      { line: 9, text: "const TODO_LIST = 1; /* FIXME later */", ranges: [[24, 38]], textOffset: 0 },
-      { line: 12, text: 'const s = "TODO nope";', ranges: [[11, 21]], textOffset: 0 },
-      { line: 20, text: "…x # HACK around", ranges: [[5, 16]], textOffset: 100 },
+      { line: 3, text: "  // TODO: fix this", ranges: [[5, 9]], textOffset: 0 },
+      { line: 9, text: "const TODO_LIST = 1; /* FIXME later */", ranges: [[24, 29]], textOffset: 0 },
+      { line: 12, text: 'const s = "TODO nope";', ranges: [[11, 15]], textOffset: 0 },
+      { line: 20, text: "…x # HACK around", ranges: [[5, 9]], textOffset: 100 },
     ],
   };
 
@@ -106,6 +102,22 @@ describe("matches → items", () => {
 });
 
 describe("local scan", () => {
+  it("finds each pattern on a line, including one after a keyword outside a comment", () => {
+    const text = 'const example = "TODO"; // FIXME now; TODO later';
+    const matches = scanText("/p/a.ts", text, S);
+    expect(matches.map(({ keyword, text }) => [keyword, text])).toEqual([
+      ["FIXME", "FIXME now; TODO later"],
+      ["TODO", "TODO later"],
+    ]);
+    const ranges: [number, number][] = [...text.matchAll(new RegExp(todoRegexSource(S)!, "g"))].map((match) => [
+      match.index!,
+      match.index! + match[0].length,
+    ]);
+    expect(
+      itemsFromMatches({ path: "/p/a.ts", relPath: "a.ts", matches: [{ line: 0, text, ranges, textOffset: 0 }] }, S),
+    ).toEqual(matches);
+  });
+
   it("finds items with 0-based lines and columns", () => {
     const text = "fn a() {}\n// todo lower\n    // TODO: one\n/* XXX two */\nlet TODO = 1;";
     expect(scanText("/f.rs", text, S)).toEqual([

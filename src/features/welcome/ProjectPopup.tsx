@@ -4,11 +4,12 @@ import { executeAction, useActions } from "@/platform/actions";
 import { call, commands, isTauri, type OpenProject, type RecentProject } from "@/platform/ipc";
 import { HighlightedText, Icon, Popup, showContextMenu, type IconName, T } from "@/ui";
 import type { ProjectPopupProps } from "@/workbench/contributions";
-import { askRemoveRecent, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
+import { askRemoveRecent, ProjectBadge, projectAppearanceMenu, recentMenu, unavailableTitle } from "./RecentList";
 import { filterRecent, loadRecent, openRecent, recentRows, useRecent, type RecentMatch } from "./recent";
 import styles from "./ProjectPopup.module.css";
 import { tx } from "@/platform/i18n";
 import { parseRemoteLocation, remoteLocation } from "@/platform/remote";
+import { projectWindowOverride, type ProjectWindowOverride } from "@/workbench/projectWindow";
 
 type Entry =
   | { kind: "action"; id: string; label: string; icon: IconName }
@@ -18,7 +19,7 @@ const ACTIONS: { id: string; label: string; icon: IconName }[] = [
   { id: "file.newProject", label: "New Project…", icon: "plus" },
   { id: "file.openProject", label: "Open…", icon: "folder" },
   { id: "vcs.clone", label: "Clone Repository…", icon: "branch" },
-  { id: "remote.connect", label: "Remote Development…", icon: "terminal" },
+  { id: "remote.connect", label: "Remote Development…", icon: "remote" },
 ];
 
 function useOpenProjects(): OpenProject[] {
@@ -81,14 +82,16 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
     listRef.current?.querySelector(`[data-index="${current}"]`)?.scrollIntoView({ block: "nearest" });
   }, [current]);
 
-  const activate = (e: Entry | undefined) => {
+  /** `override`: the window a modifier key picked ({@link projectWindowOverride}). */
+  const activate = (e: Entry | undefined, override: ProjectWindowOverride | null = null) => {
     if (!e) return;
     onClose();
     if (e.kind === "action") void executeAction(e.id);
+    // An open project goes to its window.
     else if (e.open && !parseRemoteLocation(e.m.project.path))
       void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
     // Opening a remote location focuses the window already connected to it.
-    else void openRecent(e.m.project);
+    else void openRecent(e.m.project, override);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -101,7 +104,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
       setActive(e.key === "Home" ? 0 : n - 1);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      activate(entries[current]);
+      activate(entries[current], projectWindowOverride(e));
     } else if (e.key === "Escape" && query) {
       e.preventDefault();
       e.stopPropagation();
@@ -164,12 +167,17 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
               data-index={i}
               className={clsx(styles.row, e.kind === "project" && styles.projectRow, i === current && styles.active)}
               onMouseMove={() => i !== current && setActive(i)}
-              onClick={() => activate(e)}
+              onClick={(ev) => activate(e, projectWindowOverride(ev))}
               onContextMenu={(ev) => {
-                if (e.kind !== "project" || e.open) return;
+                if (e.kind !== "project") return;
+                // Not the title bar's own menu: the popup sits inside it.
                 ev.preventDefault();
                 setActive(i);
-                showContextMenu(ev, recentMenu(e.m.project, onClose, onClose));
+                // An open project is switched to, not opened or removed: only its colour and icon.
+                showContextMenu(
+                  ev,
+                  e.open ? projectAppearanceMenu(e.m.project) : recentMenu(e.m.project, onClose, onClose),
+                );
               }}
             >
               {e.kind === "action" ? (
@@ -223,6 +231,12 @@ function GroupBoundary({
 }
 
 function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
+  const { remote, pathMatch } = m;
+  const pathStart = remote ? remote.host.length + 1 : 0;
+  const hostMatch = remote && pathMatch ? pathMatch.filter((i) => i < remote.host.length) : null;
+  const locationMatch =
+    remote && pathMatch ? pathMatch.filter((i) => i >= pathStart).map((i) => i - pathStart) : pathMatch;
+
   return (
     <>
       <ProjectBadge
@@ -232,21 +246,25 @@ function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
         missing={!!m.project.missing}
       />
       <span className={styles.text} title={unavailableTitle(m.project)}>
-        <span className={styles.top}>
-          <HighlightedText
-            className={clsx(styles.name, m.project.missing && styles.unavailable)}
-            text={m.project.name}
-            indices={m.nameMatch}
-            tone={active ? "accent" : "strong"}
-          />
-          {m.project.branch && (
-            <span className={styles.branch}>
-              <Icon name="branch" size={11} />
-              {m.project.branch}
-            </span>
-          )}
-        </span>
-        <HighlightedText className={styles.path} text={m.displayPath} indices={m.pathMatch} />
+        <HighlightedText
+          className={clsx(styles.name, m.project.missing && styles.unavailable)}
+          text={m.project.name}
+          indices={m.nameMatch}
+          tone={active ? "accent" : "strong"}
+        />
+        {remote && (
+          <span className={styles.metadata}>
+            <Icon name="terminal" size={12} />
+            <HighlightedText className={styles.ellipsis} text={remote.host} indices={hostMatch} />
+          </span>
+        )}
+        <HighlightedText className={styles.path} text={remote?.path ?? m.displayPath} indices={locationMatch} />
+        {m.project.branch && (
+          <span className={styles.metadata}>
+            <Icon name="branch" size={12} />
+            <span className={styles.ellipsis}>{m.project.branch}</span>
+          </span>
+        )}
       </span>
     </>
   );

@@ -1,0 +1,9 @@
+id = "test.agent-skills"
+name = "Agent Skills Fixture"
+version = "1.0.0"
+description = "Declarative plugin contributing an agent skill."
+authors = ["OpenIDEA contributors"]
+engines.openidea = "^1.15"
+
+[[contributes.skills]]
+path = "skills/release-notes/SKILL.md"

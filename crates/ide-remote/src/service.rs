@@ -354,6 +354,22 @@ impl RemoteService {
         r
     }
 
+    /// Remote Host uploads into a chosen folder, without deployment mappings.
+    pub async fn upload_into(
+        &self,
+        connection: &FsConnection,
+        paths: &[PathBuf],
+        directory: &str,
+        replace: bool,
+        cancel: &CancellationToken,
+        progress: Progress<'_>,
+    ) -> IdeResult<TransferReport> {
+        let fs = self.fs(connection).await?;
+        let result = crate::upload::upload_into(&fs, paths, directory, replace, cancel, progress).await;
+        fs.close().await;
+        result
+    }
+
     // --- save hook -----------------------------------------------------------------
 
     /// After a document save: uploads a remote file's copy, or (automatic upload)

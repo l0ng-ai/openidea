@@ -1,4 +1,4 @@
-use ide_core::{ChangeSet, FileEdit, LanguageId, NullSink, Pos, Range, TextChange, TextEdit, WorkspaceEdit};
+use ide_core::{ChangeSet, FileEdit, FileMove, LanguageId, NullSink, Pos, Range, TextChange, TextEdit, WorkspaceEdit};
 use ide_core::{IdeEvent, error::ErrorKind};
 use ide_workspace::Documents;
 use parking_lot::Mutex;
@@ -160,6 +160,45 @@ fn undo_id(events: &Mutex<Vec<IdeEvent>>) -> u32 {
             _ => None,
         })
         .expect("successful transaction has one undo record")
+}
+
+#[test]
+fn applied_event_lists_the_files_the_edit_renamed() {
+    for by_agent in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("ListPrice.java");
+        let to = tmp.path().join("BasePrice.java");
+        let user = tmp.path().join("BulkDiscount.java");
+        std::fs::write(&from, "old").unwrap();
+        std::fs::write(&user, "old\n").unwrap();
+        let (docs, events) = recorded_documents();
+        let edit = WorkspaceEdit {
+            files: vec![edit(&user, "new"), FileEdit::Rename { from: from.clone().into(), to: to.clone().into() }],
+            ..Default::default()
+        };
+        if by_agent { docs.apply_agent_workspace_edit(&edit) } else { docs.apply_workspace_edit(&edit) }.unwrap();
+        let moves = events
+            .lock()
+            .iter()
+            .find_map(|event| match event {
+                IdeEvent::WorkspaceEditApplied { moves, .. } => Some(moves.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(moves, vec![FileMove { from: from.into(), to: to.into() }], "by_agent: {by_agent}");
+    }
+}
+
+#[test]
+fn applied_event_lists_no_moves_for_text_edits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    assert!(
+        events.lock().iter().any(|e| matches!(e, IdeEvent::WorkspaceEditApplied { moves, .. } if moves.is_empty()))
+    );
 }
 
 #[test]

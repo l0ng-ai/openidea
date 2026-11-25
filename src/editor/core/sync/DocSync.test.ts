@@ -82,12 +82,14 @@ class FakeServer {
   async processAll() {
     while (this.queue.length) {
       this.queue.shift()!();
+      // oxlint-disable-next-line no-await-in-loop -- queued edits are ordered: each reply must land before the next request is processed
       await flushMicrotasks();
     }
   }
 }
 
 async function flushMicrotasks() {
+  // oxlint-disable-next-line no-await-in-loop -- each await is a separate microtask turn, flushing replies chained by earlier ones
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
 
@@ -235,7 +237,9 @@ describe("DocSync", () => {
       let idle = false;
       void sync.whenIdle().then(() => (idle = true));
       for (let i = 0; i < 4; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- the queued reply must land before fake time triggers the retry timer
         await server.processAll();
+        // oxlint-disable-next-line no-await-in-loop -- advancing time after the reply schedules the next snapshot attempt
         await vi.advanceTimersByTimeAsync(100);
       }
       expect(server.snapshots).toBe(2);
@@ -268,7 +272,9 @@ describe("DocSync", () => {
       let idle = false;
       void sync.whenIdle().then(() => (idle = true));
       for (let i = 0; i < 20 && !idle; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- retry loop exits on idle: replies must be processed before time advances
         await server.processAll();
+        // oxlint-disable-next-line no-await-in-loop -- this tick may settle the retry; the loop condition is checked only afterwards
         await vi.advanceTimersByTimeAsync(100);
       }
       // A save waiting on the document is released instead of hanging, and nothing is in flight.
@@ -283,7 +289,9 @@ describe("DocSync", () => {
       type(0, 0, "#");
       frame();
       for (let i = 0; i < 4; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- queued edits must be answered before fake time moves on
         await server.processAll();
+        // oxlint-disable-next-line no-await-in-loop -- the timer tick belongs after the reply in this deterministic sequence
         await vi.advanceTimersByTimeAsync(100);
       }
       expect(server.text).toBe("#ONE\ntwo\nthree\n");
@@ -383,15 +391,19 @@ describe("DocSync", () => {
           const from = rnd(len + 1);
           sync.remote(server.patch([{ from, to: Math.min(len, from + rnd(2)), insert: "R" }]));
         } else if (action === 3 && server.pending()) {
+          // oxlint-disable-next-line no-await-in-loop -- the pseudorandom action order is the scenario; replies must be processed at this step
           await server.processAll();
         } else {
+          // oxlint-disable-next-line no-await-in-loop -- this step flushes microtasks before the next pseudorandom action runs
           await flushMicrotasks();
         }
       }
       frame();
       for (let i = 0; i < 10 && !sync.idle; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- drain loop exits on idle; each iteration must fully settle before rechecking
         await server.processAll();
         frame();
+        // oxlint-disable-next-line no-await-in-loop -- replies must flush before the idle check on the next iteration
         await flushMicrotasks();
       }
       expect(sync.idle).toBe(true);

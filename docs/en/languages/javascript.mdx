@@ -7,19 +7,24 @@ OpenIDEA edits JavaScript (`.js`, `.mjs`, `.cjs`, `.jsx`) and TypeScript (`.ts`,
 
 ## Language servers
 
-| Files                           | Server                                 | Notes                                                                                               |
-| ------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| JS, JSX, TS, TSX                | `vtsls`                                | Default TypeScript server.                                                                          |
-| JS, JSX, TS, TSX                | `typescript-language-server`           | Fallback: used only while `vtsls` is not installed.                                                 |
-| `.vue`                          | `vue-language-server` + `vtsls`        | Vue's hybrid mode: TypeScript inside `.vue` files comes from `vtsls` with `@vue/typescript-plugin`. |
-| `.svelte`                       | `svelte-language-server`               |                                                                                                     |
-| `.astro`                        | `astro-ls`                             | Needs Node.js and a TypeScript library.                                                             |
-| TS and HTML in Angular projects | `angular-language-server` (`ngserver`) | Only below `angular.json` or `node_modules/@angular/core`.                                          |
-| All of the above                | `oxlint`                               | Only below an `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts` or `oxlint.config.mts`.       |
+| Files                           | Server                                       | Notes                                                                                                                                                      |
+| ------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| JS, JSX, TS, TSX                | `vtsls`                                      | Default TypeScript server.                                                                                                                                 |
+| JS, JSX, TS, TSX                | `typescript-language-server`                 | Fallback: used only while `vtsls` is not installed.                                                                                                        |
+| `.vue`                          | `vue-language-server` + `vtsls`              | Vue's hybrid mode: TypeScript inside `.vue` files comes from `vtsls` with `@vue/typescript-plugin`.                                                        |
+| `.svelte`                       | `svelte-language-server`                     |                                                                                                                                                            |
+| `.astro`                        | `astro-ls`                                   | Needs Node.js and a TypeScript library.                                                                                                                    |
+| TS and HTML in Angular projects | `angular-language-server` (`ngserver`)       | Only below `angular.json` or `node_modules/@angular/core`.                                                                                                 |
+| All of the above                | `oxlint`                                     | Only below an `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts` or `oxlint.config.mts`.                                                              |
+| All of the above                | `vscode-eslint-language-server` (ESLint)     | Only below an ESLint configuration (`eslint.config.*`, `.eslintrc*` or `eslintConfig` in `package.json`); runs the project's own `eslint`.                 |
+| JS, JSX, TS, TSX, JSON, CSS     | `biome lsp-proxy` (Biome)                    | Only below a `biome.json` / `biome.jsonc` or an installed `@biomejs/biome`; runs the project's own `biome`.                                                |
+| All of the above, HTML and CSS  | `tailwindcss-language-server` (Tailwind CSS) | Only below a `tailwind.config.*` or a `package.json` that depends on `tailwindcss`: class completion, hover with the generated CSS, and class diagnostics. |
 
 The TypeScript servers start for a workspace marked by `tsconfig.json`, `jsconfig.json` or `package.json`. Files outside any `tsconfig.json` / `jsconfig.json` are still registered with tsserver, so loose scripts get code insight too.
 
 Two behaviours differ from the servers' defaults: renaming a symbol never introduces an `import { a as b }` alias, and moving a file does not make the server rewrite imports on its own; the IDE asks for the import updates first and shows them as a preview you can undo.
+
+Inlay hints show parameter names at literal arguments, inferred variable types and enum member values; turn kinds off in **Settings › Editor › Inlay Hints**.
 
 ### TypeScript version
 
@@ -44,7 +49,8 @@ All servers, debuggers and formatters are listed in **Settings › Languages & F
 | `vtsls`, `typescript-language-server`                                                  | npm (`@vtsls/language-server`; `typescript-language-server` + `typescript@6`) |
 | `vue-language-server`, `svelte-language-server`, `astro-ls`, `angular-language-server` | npm                                                                           |
 | `oxlint`                                                                               | npm                                                                           |
-| Prettier, oxfmt                                                                        | npm                                                                           |
+| `tailwindcss-language-server`                                                          | npm (`@tailwindcss/language-server`)                                          |
+| Prettier, oxfmt, Biome                                                                 | npm                                                                           |
 | JavaScript Debugger (vscode-js-debug)                                                  | GitHub release (`microsoft/vscode-js-debug`)                                  |
 
 The Astro and Angular servers also run from the project's own `node_modules/.bin` when it has them.
@@ -64,14 +70,20 @@ The Astro and Angular servers also run from the project's own `node_modules/.bin
 
 - **Prettier** (**Settings › Languages & Frameworks › Prettier**) formats JavaScript, JSX, TypeScript, TSX, JSON, Vue, HTML, CSS, SCSS, Less, GraphQL, YAML and Markdown by default. The executable is found in the project's `node_modules`, then the managed installation, then `PATH`, unless you set **Prettier path**.
 - **oxfmt** (**Settings › Languages & Frameworks › oxfmt**) replaces Prettier for an enabled language in files below an oxfmt configuration (`.oxfmtrc.json`, `oxfmt.config.ts`), or when it is the selected provider.
+- **Biome** (**Settings › Languages & Frameworks › Biome**) replaces Prettier and oxfmt for JavaScript, JSX, TypeScript, TSX, JSON, CSS and GraphQL in files below a `biome.json` / `biome.jsonc` or an installed `@biomejs/biome` (unless the configuration sets `formatter.enabled` to `false`), or when it is the selected provider. It formats whole files and reads its own configuration.
 
-On both pages, **Formatting provider** chooses between **Automatic (language server first)** and the tool itself, **Run on save** formats on save, and **Enabled languages** limits which languages the tool handles.
+On these pages, **Formatting provider** chooses between **Automatic (language server first)** and the tool itself, **Run on save** formats on save, and **Enabled languages** limits which languages the tool handles.
+
+### Biome lint
+
+In a Biome project, Biome's diagnostics show in the editor and the Problems tool window, and `⌥⏎` / `Alt+Enter` offers its quick fixes and suppressions. Biome's safe fixes (`source.fixAll.biome`) run with **Code › Code Cleanup** and, when **Settings › Tools › Actions on Save › Run code cleanup** is on, on save. When Biome's formatter is enabled, its fix-all formats the file too.
 
 ## Run and test
 
 OpenIDEA detects run configurations when the project opens:
 
-- One configuration per `package.json` script (`npm run build`, `pnpm run dev`, …), for the root package, nested packages and workspace members. Scripts named `test`, `jest`, `vitest` or `test:*` are test configurations.
+- One configuration per `package.json` script (`npm run build`, `pnpm run dev`, …), for the root package, nested packages and workspace members. Scripts named `test`, `jest`, `vitest` or `test:*`, and scripts that run `playwright test`, `node --test` or `mocha`, are test configurations.
+- `playwright test` (through `npx`) for a package with a `playwright.config.*` that no script runs.
 - One per task in `deno.json` / `deno.jsonc` (`deno task <name>`).
 
 In `package.json`, the gutter shows run icons on each `scripts` entry to run or debug it.
@@ -82,7 +94,7 @@ In `package.json`, the gutter shows run icons on each `scripts` entry to run or 
 - Any other `.js` file runs with `node` (with `deno run` or `bun run` in a project with `deno.json` or `bun.lock`).
 - A `.ts` file runs with Node.js directly on 22.18+ / 23.6+, with `--experimental-strip-types` on 22.6–22.17 and 23.0–23.5, else through `tsx` or `ts-node`.
 
-Jest and Vitest output is turned into the test tree, with **Rerun Failed Tests**. **Run with Coverage** works for scripts that run `vitest` or `jest` (Vitest needs a coverage provider such as `@vitest/coverage-v8`; the IDE offers to add it) and for `node` / `tsx` / `ts-node` runs through `c8`. See [Testing](/en/guide/testing) and [Coverage](/en/guide/coverage).
+Jest, Vitest, Playwright Test, `node --test` and Mocha output is turned into the test tree, with **Rerun Failed Tests**. Playwright runs report through its `list` reporter unless the configuration names another; a test in the gutter runs by its line (`file:line`), and runs with several projects show each project under its file. `node --test` runs report through the IDE's reporter next to `spec`, added to `NODE_OPTIONS` (a script that chooses its own `--test-reporter` runs without the tree); single tests and reruns are selected by full name (`--test-name-pattern`). Mocha runs keep their reporter and load an IDE hook through `NODE_OPTIONS` that reports each test with its line; single tests and reruns use `--grep`, and in projects that test with Mocha or `node --test`, tests in `test/` get gutter icons whatever their file name. **Run with Coverage** works for scripts that run `vitest` or `jest` (Vitest needs a coverage provider such as `@vitest/coverage-v8`; the IDE offers to add it) and for `node` / `tsx` / `ts-node` runs through `c8`. See [Testing](/en/guide/testing) and [Coverage](/en/guide/coverage).
 
 ## Debugging
 
@@ -91,12 +103,13 @@ Debugging uses the JavaScript Debugger (vscode-js-debug); if it is missing, the 
 - **Debug** works for npm script configurations, Node.js files and `deno run` / `deno test`. Child processes are attached automatically.
 - **Attach to Node.js** is a run configuration type for a process started with `--inspect` on this or another machine (default port 9229), with local and remote root mapping.
 - **Attach to Process…** in the Run menu lists running Node.js processes.
+- **JavaScript Debug** is a run configuration type that opens a URL in Chrome or Edge and debugs the page's JavaScript and TypeScript through source maps. Start the page's server first (for example with the `dev` npm script); **Web root** is the folder the URL serves, the project root by default.
 
 With **Do not step into library scripts** (**Settings › Build, Execution, Deployment › Debugger › Stepping**, on by default), stepping skips Node.js internals and `node_modules`. More in [Debugging](/en/guide/debugging).
 
 ## Framework support
 
-- **React**: JSX and TSX get their own highlighting modes and full TypeScript server support. There is no React-specific tooling beyond that.
+- **React**: JSX and TSX get their own highlighting modes and full TypeScript server support. Typing `>` closes the tag, renaming an opening or closing tag renames its partner, and completing a prop name or typing `=` after one inserts `""` for string props or `{}` for others (from the prop's type). `⇥` / `Tab` expands Emmet abbreviations among an element's children or after `return` / `=>`: `.card` becomes `<div className="card"></div>`.
 - **Vue**: `.vue` files are highlighted per block and served by Vue Language Server in hybrid mode. In a Vue CLI project without `tsconfig.json`, webpack's `resolve.alias` entries (such as `@/`) are read so imports resolve. Prettier formats `.vue` files. Emmet works in templates.
 - **Svelte**: Svelte Language Server; highlighting uses the HTML mode (script as TypeScript, style as CSS). Emmet works in markup.
 - **Astro**: Astro Language Server with its own highlighting mode. It needs Node.js; if it can't find one, select it in **Settings › Languages & Frameworks › JavaScript Runtime**.
@@ -104,9 +117,6 @@ With **Do not step into library scripts** (**Settings › Build, Execution, Depl
 
 ## Limitations
 
-- No built-in ESLint integration; oxlint is the bundled linter. You can still add any server with **Add Language Server…** on the Language Servers page.
-- No browser (Chrome/Edge) debugging; only Node.js and Deno are debugged.
-- Bun runs but can't be debugged: its inspector uses the WebKit protocol, which vscode-js-debug can't attach to.
+- Debugging Bun needs `bun-dap`, which has no release yet: build it from `morf-bls/bun-dap` and put it on `PATH` (the IDE shows the steps when it is missing). vscode-js-debug can't attach to Bun's WebKit-protocol inspector.
 - Deno has run and debug support but no Deno language server; Deno files use the TypeScript servers.
 - Coverage of Deno tasks is not supported.
-- Emmet expands in HTML, Vue and Svelte, not in JSX.

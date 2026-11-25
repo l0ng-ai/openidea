@@ -25,8 +25,11 @@ let open = false;
 
 /** Opens the Commit dialog (or focuses the message of the one open). */
 export function showCommitDialog() {
-  useCommit.setState((s) => ({ tab: "changes", focusTick: s.focusTick + 1 }));
-  if (open) return;
+  if (open) {
+    useCommit.setState((s) => ({ focusTick: s.focusTick + 1 }));
+    return;
+  }
+  useCommit.setState({ tab: "changes" });
   open = true;
   openDialog((close) => (
     <CommitDialog
@@ -41,7 +44,7 @@ export function showCommitDialog() {
 function CommitDialog({ onClose }: { onClose: () => void }) {
   const included = useIncludedCount();
   const amend = useCommit((s) => s.amend);
-  const problems = useCommit((s) => s.checkProblems.length > 0);
+  const blocked = useCommit((s) => !!s.checkResult?.blocked && !s.checkResult.stale);
   const remoteBusy = useVcs((s) => s.remoteBusy);
   const runner = useCommitRunner(included, onClose);
   return (
@@ -52,7 +55,7 @@ function CommitDialog({ onClose }: { onClose: () => void }) {
       width={880}
       buttons={[
         {
-          label: commitLabel(amend, problems),
+          label: commitLabel(amend, blocked),
           role: "default",
           disabled: !runner.canCommit,
           title: "⌘↩",
@@ -90,7 +93,7 @@ function CommitDialog({ onClose }: { onClose: () => void }) {
           <SplitHandle />
           <SplitPanel id="message" defaultSize="42%" minSize="120px">
             <div className={viewStyles.commit}>
-              <CommitMessageField included={included} runner={runner} autoFocus />
+              <CommitMessageField runner={runner} onOpenToolWindow={onClose} />
             </div>
           </SplitPanel>
         </SplitGroup>

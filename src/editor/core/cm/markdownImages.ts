@@ -65,8 +65,8 @@ export async function saveImage(
   markdown: string,
   folder: string,
   name: string,
-  data: number[],
-  create = (path: string, bytes: number[]) => call(commands.fsCreateFileBytes(path, bytes)),
+  data: string,
+  create = (path: string, base64: string) => call(commands.fsCreateFileBytes(path, base64)),
 ): Promise<string> {
   const dot = name.lastIndexOf(".");
   const stem = dot > 0 ? name.slice(0, dot) : name;
@@ -74,6 +74,7 @@ export async function saveImage(
   for (let n = 0; ; n++) {
     const target = imageTarget(markdown, folder, `${stem}${n ? `-${n}` : ""}${ext}`);
     try {
+      // oxlint-disable-next-line no-await-in-loop -- retry loop: the next filename is only tried after this one reports alreadyExists
       await create(target, data);
       return `![](${relativeImagePath(markdown, target)})`;
     } catch (error) {
@@ -82,12 +83,15 @@ export async function saveImage(
   }
 }
 
-function imageBytes(blob: Blob | string): Promise<number[]> {
+/** The image as base64, the form `fsCreateFileBytes` takes. */
+function imageBytes(blob: Blob | string): Promise<string> {
   if ((typeof blob === "string" ? blob.length * 0.75 : blob.size) > MAX_IMAGE_BYTES)
     return Promise.reject(new Error(tx("Image exceeds 16 MB.")));
+  // The data URL from fs_read_image already contains standard base64.
+  if (typeof blob === "string") return Promise.resolve(blob.slice(blob.indexOf(",") + 1));
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./imageBytes.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ data: number[]; error?: string }>) => {
+    worker.onmessage = (event: MessageEvent<{ data: string; error?: string }>) => {
       worker.terminate();
       if (event.data.error) reject(new Error(event.data.error));
       else resolve(event.data.data);
@@ -154,11 +158,14 @@ export function markdownImages(options: ImageOptions): Extension {
           const links: string[] = [];
           try {
             for (const source of sources) {
+              // oxlint-disable-next-line no-await-in-loop -- images are read one at a time so the loop stops as soon as the view is gone
               const { blob, name } = await source();
               if (!this.alive) return;
+              // oxlint-disable-next-line no-await-in-loop -- each conversion ends with an alive check before more work is started
               const bytes = await imageBytes(blob);
               if (!this.alive) return;
               links.push(
+                // oxlint-disable-next-line no-await-in-loop -- saveImage allocates names via alreadyExists retries; same-named images would race in parallel
                 await saveImage(
                   options.path,
                   options.folder,

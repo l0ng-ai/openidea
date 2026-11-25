@@ -224,7 +224,8 @@ for (const theme of ["dark", "light"] as const) {
         await page.keyboard.press("Tab");
         await expect(card.getByRole("tabpanel", { name: "Layout" })).toBeFocused();
         await page.keyboard.press("1");
-        await expect(card.getByRole("radio", { name: /^Table/ })).toBeChecked();
+        // Picking an option answers the single-select question: the next one opens, focused.
+        await expect(card.getByRole("tabpanel", { name: "Checks" })).toBeFocused();
         await expect(submit).toBeEnabled();
         expect((await card.boundingBox())!.height).toBeCloseTo(initial!.height, 0);
         await submit.focus();

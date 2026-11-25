@@ -1,5 +1,6 @@
 /** Remote Host tool window: the files of a deployment server, lazily listed over SFTP. */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import type { RemoteEntry } from "@/platform/ipc";
 import { useTx } from "@/platform/i18n";
@@ -17,7 +18,9 @@ import {
   showContextMenu,
   type MenuItem,
 } from "@/ui";
-import { resolveServer, serverLabel } from "./model";
+import { remoteParent, resolveServer, serverLabel } from "./model";
+import { OWNS_FILE_DROP } from "@/workbench/contributions";
+import { useRemoteUploadDrop } from "./useRemoteUploadDrop";
 import {
   copyRemotePath,
   deleteEntries,
@@ -46,6 +49,7 @@ export function RemoteHostView() {
   const { servers, server } = useCurrentServer();
   const tree = useDeployment((s) => (server ? s.trees[server.id] : undefined)) ?? EMPTY_TREE;
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const view = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (server) void ensureRoot(server);
@@ -56,6 +60,7 @@ export function RemoteHostView() {
     for (const list of Object.values(tree.listings)) for (const e of list) map.set(e.path, e);
     return map;
   }, [tree.listings]);
+  const uploadFolder = useRemoteUploadDrop(view, server ?? null, tree.error ? null : tree.root, byPath);
 
   if (!servers.length || !server)
     return (
@@ -75,7 +80,22 @@ export function RemoteHostView() {
     const entries = node && !selection.has(node.path) ? [node] : picked;
     const single = entries.length === 1 ? entries[0]! : null;
     const folder = single?.isDir ? single.path : single ? null : tree.root;
+    const target = node ? (node.isDir ? node.path : remoteParent(node.path)) : tree.root;
     return [
+      {
+        id: "upload",
+        label: "Upload Files…",
+        icon: "export",
+        disabled: !target,
+        run: () => target && void executeAction("deployment.uploadFiles", { server: server.id, target }),
+      },
+      {
+        id: "uploadFolder",
+        label: "Upload Folder…",
+        icon: "folder",
+        disabled: !target,
+        run: () => target && void executeAction("deployment.uploadFolder", { server: server.id, target }),
+      },
       {
         id: "open",
         label: "Open",
@@ -130,7 +150,7 @@ export function RemoteHostView() {
   };
 
   return (
-    <div className={styles.view}>
+    <div ref={view} className={styles.view} {...OWNS_FILE_DROP}>
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Remote host actions")}>
         <Select
           className={styles.serverSelect}
@@ -154,7 +174,7 @@ export function RemoteHostView() {
         />
       </div>
       {tree.root && (
-        <div className={styles.rootPath} title={tree.root}>
+        <div className={clsx(styles.rootPath, uploadFolder === tree.root && styles.dropTarget)} title={tree.root}>
           {tree.root}
         </div>
       )}
@@ -187,6 +207,7 @@ export function RemoteHostView() {
             onSelectionChange={(s) => setSelected(s)}
             multiSelect
             speedSearch
+            rowClassName={(entry) => (entry.path === uploadFolder ? styles.dropTarget : undefined)}
             onActivate={(e) => !e.isDir && void openRemote(server, e)}
             onContextMenu={(node, selection, e) => showContextMenu(e, menuFor(node, selection))}
             getDragData={(nodes) => ({
@@ -195,6 +216,11 @@ export function RemoteHostView() {
             })}
             empty={<T>Empty folder</T>}
           />
+        </div>
+      )}
+      {uploadFolder && (
+        <div className={styles.uploadHint} role="status">
+          {tx("Upload to {server}").replace("{server}", uploadFolder)}
         </div>
       )}
     </div>

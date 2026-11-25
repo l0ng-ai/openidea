@@ -15,7 +15,9 @@ import {
   commentBlock,
   commentLine,
   completeStatement,
+  cycleCase,
   deleteLine,
+  duplicateEntireLines,
   duplicateLineOrSelection,
   joinLines,
   moveStatementDown,
@@ -35,7 +37,14 @@ import {
   type SimpleRange,
 } from "./model/selectionStack";
 import type { EditorSlot } from "./model/slot";
-import { findAgain, findPanelTarget, openFindBar, openFindBarResults, useFindPreferences } from "./view/FindBar";
+import {
+  findAgain,
+  findPanelTarget,
+  findWordAtCaretInPane,
+  openFindBar,
+  openFindBarResults,
+  useFindPreferences,
+} from "./view/FindBar";
 import {
   collapseAll,
   collapseRecursively,
@@ -47,7 +56,9 @@ import {
   foldSelection,
   unfoldAtCaret,
 } from "./cm/folding";
-import { reverseLines, sortLines } from "./cm/lines";
+import { fillParagraph } from "./cm/fillParagraph";
+import { convertIndentsToSpaces, convertIndentsToTabs, reverseLines, sortLines } from "./cm/lines";
+import { hardWrapAt } from "./cm/setup";
 import { customRegions } from "./cm/regions";
 import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
 import { enclosingHeaders } from "./cm/stickyScroll";
@@ -57,7 +68,9 @@ import {
   cursorCodeBlockEnd,
   cursorCodeBlockStart,
   cursorMatchBrace,
+  scrollDown,
   scrollToCenter,
+  scrollUp,
   selectCodeBlockEnd,
   selectCodeBlockStart,
   splitLine,
@@ -68,6 +81,7 @@ import { cloneCaretAbove, cloneCaretBelow } from "./cm/verticalMotion";
 import { pasteAsPlainText, pasteFromHistory, unwrapAtCaret } from "./extras";
 import { cyclicExpandWord } from "./wordCompletion";
 import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOffset } from "./copyReference";
+import { selectedLineContext, selectedLines } from "./selectedLines";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
@@ -80,6 +94,7 @@ import { togglePinSelectedContent } from "@/workbench/toolwindows/content";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { toggleReadOnly } from "./fileAttributes";
 import { codeVisionShown, toggleCodeVision } from "./codeVision";
+import { appearanceSwitches, toggleAppearance, type AppearanceSwitch } from "./gutterMenu";
 import { openNavBarPopup } from "./view/NavBarPopup";
 import {
   cachedStructureQueries,
@@ -589,28 +604,17 @@ function copyReference(reference: Promise<string>) {
   }
 }
 
-/** The selected lines (1-based), leaving out the one a selection ends at the start of. */
-function selectedLines(state: EditorState): { first: number; last: number } {
-  const { doc, selection } = state;
-  const { from, to } = selection.main;
-  const first = doc.lineAt(from).number;
-  const last = Math.max(first, doc.lineAt(to).number - (to > from && doc.lineAt(to).from === to ? 1 : 0));
-  return { first, last };
-}
-
 /** `path:12`, or `path:12-18` for a selection over several lines. */
-function pathWithLines(state: EditorState, path: string): string {
+function pathWithLines(state: EditorState, path: string, kind: "relative" | "absolute" = "relative"): string {
   const { first, last } = selectedLines(state);
-  return `${pathToCopy("relative", path)}:${first}${last > first ? `-${last}` : ""}`;
+  return `${pathToCopy(kind, path)}:${first}${last > first ? `-${last}` : ""}`;
 }
 
 function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const path = slot.model.path;
-  const { first, last } = selectedLines(view.state);
   const contributed = menuGroupItems("copyPath", {
     paths: [path],
-    line: first - 1,
-    endLine: last > first ? last - 1 : undefined,
+    ...selectedLineContext(view.state),
   }).flatMap((item) =>
     (item.kind ?? "item") === "item" && "run" in item && item.id && item.run && item.preview
       ? [
@@ -626,6 +630,11 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   );
   const flavours = [
     { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
+    {
+      id: "editor.copyAbsolutePathWithLineNumber",
+      label: "Absolute Path with line number",
+      value: pathWithLines(view.state, path, "absolute"),
+    },
     { id: "project.copyFileName", label: "File Name", value: pathToCopy("name", path) },
     { id: "project.copyRelativePath", label: "Path From Content Root", value: pathToCopy("relative", path) },
     { id: "project.copySourceRootPath", label: "Path From Source Root", value: pathToCopy("source", path) },
@@ -638,6 +647,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const popup: Extract<LspPopup, { kind: "list" }> = {
     kind: "list",
     title: tx("Copy Path/Reference…"),
+    layout: "copyPath",
     anchor: caretAnchor(view, view.state.selection.main.head),
     items: [
       ...flavours
@@ -648,7 +658,9 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
           preview: f.value!,
           shortcut: shortcutLabel(f.id),
           run: () => {
-            void executeAction(f.id, f.id === "editor.copyPathWithLineNumber" ? f.value : path);
+            const lineNumbered =
+              f.id === "editor.copyPathWithLineNumber" || f.id === "editor.copyAbsolutePathWithLineNumber";
+            void executeAction(f.id, lineNumbered ? f.value : path);
           },
         })),
       ...contributed,
@@ -729,6 +741,15 @@ export async function toggleSchemeSwitch(key: SchemeSwitch, on = !editorPrefs()[
   }
 }
 
+const appearanceSwitch = (id: string, s: AppearanceSwitch, keywords: string[]): Action => ({
+  id,
+  title: s.title,
+  category: "View",
+  keywords,
+  toggled: s.on,
+  run: () => toggleAppearance(s),
+});
+
 const schemeSwitch = (id: string, title: string, key: SchemeSwitch, keywords: string[]): Action => ({
   id,
   title,
@@ -794,6 +815,14 @@ export function registerEditorActions(): () => void {
       "rainbow parentheses",
       "color scheme",
     ]),
+    appearanceSwitch("editor.toggleLineNumbers", appearanceSwitches.lineNumbers, ["gutter", "hide line numbers"]),
+    appearanceSwitch("editor.toggleIndentGuides", appearanceSwitches.indentGuides, ["indent lines", "indentation"]),
+    appearanceSwitch("editor.toggleStickyLines", appearanceSwitches.stickyLines, ["sticky scroll"]),
+    appearanceSwitch("editor.toggleWhitespaces", appearanceSwitches.whitespaces, [
+      "render whitespace",
+      "spaces",
+      "tabs",
+    ]),
     {
       id: "editor.toggleCodeVision",
       title: "Code Vision",
@@ -805,6 +834,7 @@ export function registerEditorActions(): () => void {
     edit("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
     edit("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
     edit("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
+    edit("code.duplicateEntireLines", "Duplicate Entire Lines", (v) => duplicateEntireLines(v)),
     edit("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
     edit("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
     edit("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
@@ -895,6 +925,8 @@ export function registerEditorActions(): () => void {
     edit("code.startNewLineBefore", "Start New Line Before Current", (v) => startNewLineBefore(v)),
     edit("code.splitLine", "Split Line", (v) => splitLine(v)),
     caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
+    caret("editor.scrollUp", "Scroll Up", (v) => scrollUp(v), { category: "Editor Actions" }),
+    caret("editor.scrollDown", "Scroll Down", (v) => scrollDown(v), { category: "Editor Actions" }),
     caret("editor.codeBlockStart", "Move Caret to Code Block Start", (v) => cursorCodeBlockStart(v), {
       category: "Editor Actions",
     }),
@@ -973,6 +1005,9 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.joinLines", "Join Lines", (v) => joinLines(v)),
     edit("code.toggleCase", "Toggle Case", (v) => toggleCase(v), { keywords: ["upper", "lower"] }),
+    edit("code.cycleCase", "Cycle Identifier Case", (v) => cycleCase(v), {
+      keywords: ["camel", "snake", "kebab", "pascal", "screaming"],
+    }),
     caret("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
       category: "Edit",
     }),
@@ -983,6 +1018,23 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
     edit("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
+    text(
+      "code.fillParagraph",
+      "Fill Paragraph",
+      (v, slot) => fillParagraph(v, hardWrapAt(slot.model.settings(), slot.model.info)),
+      {
+        category: "Edit",
+        keywords: ["wrap", "reflow", "rewrap comment"],
+      },
+    ),
+    edit("code.convertIndentsToSpaces", "Convert Indents to Spaces", (v) => convertIndentsToSpaces(v), {
+      category: "Edit",
+      keywords: ["tabs", "indentation"],
+    }),
+    edit("code.convertIndentsToTabs", "Convert Indents to Tabs", (v) => convertIndentsToTabs(v), {
+      category: "Edit",
+      keywords: ["spaces", "indentation"],
+    }),
     text("code.unwrap", "Unwrap/Remove…", (_v, slot) => void unwrapAtCaret(slot), {
       keywords: ["unwrap", "remove if"],
     }),
@@ -1037,7 +1089,7 @@ export function registerEditorActions(): () => void {
       title: "Reset Font Size",
       category: "View",
       keywords: ["zoom", "font size", "mouse wheel"],
-      when: "projectOpen",
+      when: "projectOpen || lightEdit",
       run: resetFontSize,
     },
     {
@@ -1122,6 +1174,20 @@ export function registerEditorActions(): () => void {
       icon: "arrow-up",
       when: EDITOR_WHEN,
       run: () => findAgain(useTabs.getState().activePane, false),
+    },
+    {
+      id: "find.wordAtCaret",
+      title: "Find Word at Caret",
+      category: "Find",
+      when: EDITOR_WHEN,
+      run: () => findWordAtCaretInPane(useTabs.getState().activePane, true),
+    },
+    {
+      id: "find.previousWordAtCaret",
+      title: "Find Previous Word at Caret",
+      category: "Find",
+      when: EDITOR_WHEN,
+      run: () => findWordAtCaretInPane(useTabs.getState().activePane, false),
     },
     {
       id: "navigate.gotoLine",
@@ -1330,6 +1396,16 @@ export function registerEditorActions(): () => void {
       run: ({ arg }) => {
         if (typeof arg === "string") copyEditorPath(arg);
         else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path)))();
+      },
+    },
+    {
+      id: "editor.copyAbsolutePathWithLineNumber",
+      title: "Copy Absolute Path with Line Number",
+      category: "Edit",
+      when: TEXT_WHEN,
+      run: ({ arg }) => {
+        if (typeof arg === "string") copyEditorPath(arg);
+        else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path, "absolute")))();
       },
     },
     {

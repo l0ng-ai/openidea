@@ -30,6 +30,7 @@ import {
   untitledTitle,
 } from "@/platform/virtualDocs";
 import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } from "../controller";
+import { languageInfo } from "../cm/languages";
 import { useDocMeta, useOutline, type DocMeta } from "../model/document";
 import { symbolChain } from "./outline";
 import { NavChildrenPopup } from "./NavBarPopup";
@@ -247,7 +248,8 @@ function CrumbNav({
         const current = i === segments.length - 1;
         const icon = s.nav?.kind === "dir" && !s.nav.root && !current ? undefined : s.icon;
         return (
-          <Fragment key={i}>
+          // oxlint-disable-next-line react/no-array-index-key -- the `…` crumb and the last directory crumb can share a title; position disambiguates them
+          <Fragment key={`${i}:${s.title}`}>
             {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
             <BarButton
               className={styles.crumbButton}
@@ -380,7 +382,7 @@ export function CodeBreadcrumbs({
     >
       {chain.map((item, i) => (
         <BarButton
-          key={i}
+          key={`${item.name}:${item.detail ?? ""}:${item.selection_range.start.line}:${item.selection_range.start.col}`}
           className={styles.crumbButton}
           tooltip={item.detail ?? item.name}
           aria-current={i === chain.length - 1 ? "location" : undefined}
@@ -416,6 +418,11 @@ export function CaretStatus() {
 }
 
 const EOL_LABEL: Record<LineEnding, string> = { lf: "LF", crLf: "CRLF", cr: "CR" };
+const EOL_CHOICES: { id: LineEnding; label: string }[] = [
+  { id: "crLf", label: "Windows (\\r\\n)" },
+  { id: "lf", label: "Unix and macOS (\\n)" },
+  { id: "cr", label: "Classic Mac OS (\\r)" },
+];
 
 export function LineEndingStatus() {
   const meta = useActiveMeta();
@@ -453,12 +460,12 @@ export function LineEndingStatus() {
         onClose={() => setOpen(false)}
         anchor={ref}
         placement="top-end"
-        aria-label="Line separator"
-        items={(["lf", "crLf", "cr"] as LineEnding[]).map((le) => ({
-          id: le,
-          label: `${EOL_LABEL[le]} – ${le === "lf" ? "Unix and macOS (\\n)" : le === "crLf" ? "Windows (\\r\\n)" : "Classic Mac OS (\\r)"}`,
-          checked: meta.lineEnding === le ? true : undefined,
-          run: () => choose(le),
+        title="Line Separator"
+        items={EOL_CHOICES.map(({ id, label }) => ({
+          id,
+          label,
+          checked: meta.lineEnding === id ? true : undefined,
+          run: () => choose(id),
         }))}
       />
     </>
@@ -625,13 +632,18 @@ export function IndentStatus() {
   const ref = useRef<HTMLButtonElement>(null);
   if (!meta) return null;
   const { tabSize, insertSpaces } = meta.indent;
-  const label = insertSpaces ? `${tabSize} spaces` : `Tab (${tabSize})`;
+  const language = languageInfo(meta.language)?.name;
+  const title = language ? tx`${language} Code Style` : tx("Code Style");
+  const spaces = (width: number) => (width === 1 ? tx`${width} space` : tx`${width} spaces`);
+  const tabs = tx`Tab (${tabSize})`;
+  const widths = [...new Set(insertSpaces ? [2, 4, 8, tabSize] : [2, 4, 8])].sort((a, b) => a - b);
+  const label = insertSpaces ? spaces(tabSize) : tabs;
   const set = (indent: { tabSize: number; insertSpaces: boolean }) =>
     editorController().manager.get(meta.path)?.setIndent(indent);
   const choice = (id: string, text: string, indent: { tabSize: number; insertSpaces: boolean }) => ({
     id,
     label: text,
-    checked: indent.tabSize === tabSize && indent.insertSpaces === insertSpaces ? true : undefined,
+    checked: indent.tabSize === tabSize && indent.insertSpaces === insertSpaces,
     run: () => set(indent),
   });
   return (
@@ -650,12 +662,11 @@ export function IndentStatus() {
         onClose={() => setOpen(false)}
         anchor={ref}
         placement="top-end"
+        title={title}
         aria-label="Indentation"
         items={[
-          choice("s2", "2 spaces", { tabSize: 2, insertSpaces: true }),
-          choice("s4", "4 spaces", { tabSize: 4, insertSpaces: true }),
-          choice("s8", "8 spaces", { tabSize: 8, insertSpaces: true }),
-          choice("tab", `Tab (${tabSize})`, { tabSize, insertSpaces: false }),
+          ...widths.map((width) => choice(`s${width}`, spaces(width), { tabSize: width, insertSpaces: true })),
+          choice("tab", tabs, { tabSize, insertSpaces: false }),
           { kind: "separator" },
           {
             id: "configure",

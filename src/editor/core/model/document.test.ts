@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorState, StateEffect } from "@codemirror/state";
+import { ChangeSet, EditorState, StateEffect } from "@codemirror/state";
 import { showTooltip, type Tooltip } from "@codemirror/view";
 import { indentUnit, language as languageFacet } from "@codemirror/language";
 import { HEAVY_LIMIT, onEditorEvent, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
@@ -27,6 +27,7 @@ const testTooltip: Tooltip = {
 };
 
 async function settle() {
+  // oxlint-disable-next-line no-await-in-loop -- each tick flushes work scheduled during the previous tick
   for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
@@ -403,8 +404,9 @@ describe("DocumentManager + slots", () => {
       const unregister = registerSaveParticipant({ id: "test.save", beforeSave: participant });
       const save = vi.spyOn(backend, "save");
       try {
-        const slots = [];
-        for (const path of Object.keys(files)) slots.push(new EditorSlot(await manager.acquire(path), path, host));
+        const slots = await Promise.all(
+          Object.keys(files).map(async (path) => new EditorSlot(await manager.acquire(path), path, host)),
+        );
         const edited = slots.at(-1)!;
         edited.dispatchLocal({ changes: { from: 0, insert: "// edited\n" } });
         await manager.saveAll(reason);
@@ -571,7 +573,10 @@ describe("DocumentManager + slots", () => {
         if (id === a.doc) throw new Error("disk full");
         await save(id);
       });
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
       await expect(manager.saveAll("explicit")).rejects.toThrow("disk full");
+      expect(logged).toHaveBeenCalledWith("saving /p/a.txt failed", expect.objectContaining({ message: "disk full" }));
+      logged.mockRestore();
       expect(backend.files.get("/p/a.txt")).toBe("a\n");
       expect(backend.files.get("/p/b.txt")).toBe("changed b\n");
       expect(a.getMeta().dirty).toBe(true);
@@ -669,6 +674,24 @@ describe("DocumentManager + slots", () => {
     expect(restored.yMargin).toBe(expected.yMargin);
     for (const s of [slot, ...others]) s.dispose();
     manager.stop();
+  });
+});
+
+describe("modified ranges", () => {
+  it("drops a range past the end instead of throwing out of the edit", () => {
+    const m = new ModifiedRanges();
+    m.ranges = [
+      [2, 4],
+      [580, 587],
+    ];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    m.add(ChangeSet.of({ from: 0, insert: "ab" }, 10));
+    expect(m.ranges).toEqual([
+      [4, 6],
+      [0, 2],
+    ]);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 });
 

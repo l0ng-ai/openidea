@@ -182,15 +182,27 @@ impl Tail {
     }
 }
 
-/// Starts `bin --stdio` in `distro` and speaks the protocol over its stdio. The process dies
-/// with the connection.
-pub(crate) fn spawn(distro: &str, bin: &str, handler: Arc<dyn Handler>, tail: &Tail) -> IdeResult<Peer> {
-    spawn_with(ide_core::wsl::EXE, distro, bin, handler, tail)
+/// Starts `bin --attach <project_path>` in `distro` and speaks the protocol over its stdio.
+pub(crate) fn spawn(
+    distro: &str,
+    bin: &str,
+    project_path: &str,
+    handler: Arc<dyn Handler>,
+    tail: &Tail,
+) -> IdeResult<Peer> {
+    spawn_with(ide_core::wsl::EXE, distro, bin, project_path, handler, tail)
 }
 
 /// [`spawn`] through `launcher` instead of `wsl.exe` (tests put a stand-in there).
-fn spawn_with(launcher: &str, distro: &str, bin: &str, handler: Arc<dyn Handler>, tail: &Tail) -> IdeResult<Peer> {
-    let args: Vec<String> = ["-d", checked(distro)?, "--exec", bin, "--stdio"].map(str::to_owned).into();
+fn spawn_with(
+    launcher: &str,
+    distro: &str,
+    bin: &str,
+    project_path: &str,
+    handler: Arc<dyn Handler>,
+    tail: &Tail,
+) -> IdeResult<Peer> {
+    let args: Vec<String> = ["-d", checked(distro)?, "--exec", bin, "--attach", project_path].map(str::to_owned).into();
     let tail = tail.clone();
     Peer::spawn(launcher, &args, &std::env::temp_dir(), &[], handler, Box::new(move |line| tail.push(line)))
         .map_err(|e| IdeError::unavailable(format!("cannot start wsl.exe: {e}")))
@@ -274,12 +286,12 @@ mod tests {
     #[tokio::test]
     async fn speaks_the_protocol_through_the_launcher_after_its_utf16_notice() {
         use std::os::unix::fs::PermissionsExt;
-        let (distro, bin) = ("Debian-12", "/home/me/server");
+        let (distro, bin, project) = ("Debian-12", "/home/me/server", "/home/me/proj");
         let dir = tempfile::tempdir().unwrap();
         let launcher = dir.path().join("fake-wsl");
         let script = format!(
             r#"#!/bin/sh
-[ "$*" = "-d {distro} --exec {bin} --stdio" ] || {{ echo "unexpected arguments: $*" >&2; exit 2; }}
+[ "$*" = "-d {distro} --exec {bin} --attach {project}" ] || {{ echo "unexpected arguments: $*" >&2; exit 2; }}
 printf '\377\376N\000o\000\r\000\n\000'
 while read -r line; do
   line=${{line%?}}
@@ -293,7 +305,7 @@ printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
         std::fs::write(&launcher, script).unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
         let tail = Tail::default();
-        let peer = spawn_with(launcher.to_str().unwrap(), distro, bin, Arc::new(Silent), &tail).unwrap();
+        let peer = spawn_with(launcher.to_str().unwrap(), distro, bin, project, Arc::new(Silent), &tail).unwrap();
         let reply: String = peer.request("ping", serde_json::Value::Null, None).await.unwrap_or_else(|e| {
             panic!("{e:?}; launcher said: {}", tail.text());
         });
@@ -302,7 +314,7 @@ printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
 
     #[tokio::test]
     async fn a_bad_distro_name_never_starts_the_launcher() {
-        let err = spawn_with("does-not-exist", "-d", "/x", Arc::new(Silent), &Tail::default()).err().unwrap();
+        let err = spawn_with("does-not-exist", "-d", "/x", "~", Arc::new(Silent), &Tail::default()).err().unwrap();
         assert!(err.message.contains("not a valid"), "{}", err.message);
     }
 }

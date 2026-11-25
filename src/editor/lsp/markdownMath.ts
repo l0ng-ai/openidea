@@ -21,6 +21,9 @@ interface MathToken extends Tokens.Generic {
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+export const declaresMathMacros = (source: string) =>
+  /\\(?:(?:re)?new(?:command|environment)|def|let|DeclareMathOperator)\b/.test(source);
+
 export function mathPlaceholder(tex: string, display: boolean, block = display): string {
   const tag = block ? "div" : "span";
   const mode = display ? "display" : "inline";
@@ -39,9 +42,10 @@ function findClosingDelimiter(src: string, from: number, delim: string): number 
   return -1;
 }
 
-const PROTECTED_INLINE_DOLLAR = /^\$`([^`\r\n]+)`\$/;
+// The first backtick run of the opening length ends the code span.
+const PROTECTED_INLINE_DOLLAR = /^\$(?<ticks>`+)(?!`)(?<tex>(?:[^`\r\n]|(?!\k<ticks>(?!`))`+(?!`))+)\k<ticks>\$/;
 // Marked masks code spans as `[aaa]` before calling emStrongMask
-const MASKED_PROTECTED_INLINE_DOLLAR = /^\$\[(a+)\]\$/;
+const MASKED_PROTECTED_INLINE_DOLLAR = /^\$\[(?<tex>a+)\]\$/;
 
 /**
  * Matches inline `$...$` from index 0 using Pandoc-style guards so currency
@@ -87,7 +91,7 @@ function matchInlineMath(
   if (src[0] === "$") {
     const match = protectedDollar.exec(src);
     if (match) {
-      const text = match[1]!;
+      const text = match.groups!.tex!;
       return text.trim() ? { raw: match[0], text, display: false } : null;
     }
     if (src[1] === "`") return null;
@@ -128,26 +132,22 @@ function matchBlockMath(src: string): { raw: string; text: string } | null {
 
 /** Masks math spans with `a`s (preserving newlines) so `*` and `_` inside math never trigger emphasis. */
 function maskInlineMath(src: string): string {
+  const delimiters = /[$\\]/g;
   let out = "";
-  let i = 0;
-  while (i < src.length) {
+  let start = 0;
+  for (let at = delimiters.exec(src); at; at = delimiters.exec(src)) {
+    const i = at.index;
     if (src[i] === "\\" && src[i + 1] !== "(" && src[i + 1] !== "[") {
-      out += src.slice(i, i + 2);
-      i += 2;
+      delimiters.lastIndex++;
       continue;
     }
-    if (src[i] === "$" || (src[i] === "\\" && (src[i + 1] === "(" || src[i + 1] === "["))) {
-      const m = matchInlineMath(src.slice(i), MASKED_PROTECTED_INLINE_DOLLAR);
-      if (m) {
-        out += m.raw.replace(/[^\r\n]/g, "a");
-        i += m.raw.length;
-        continue;
-      }
+    const math = matchInlineMath(src.slice(i), MASKED_PROTECTED_INLINE_DOLLAR);
+    if (math) {
+      out += src.slice(start, i) + math.raw.replace(/[^\r\n]/g, "a");
+      start = delimiters.lastIndex = i + math.raw.length;
     }
-    out += src[i]!;
-    i++;
   }
-  return out;
+  return start ? out + src.slice(start) : src;
 }
 
 export function mathExtension(): MarkedExtension {

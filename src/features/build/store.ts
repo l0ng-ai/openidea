@@ -26,7 +26,7 @@ import {
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { workflowSettings, type BuildToolWindowWhen } from "@/platform/workflowSettings";
-import { maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
+import { maybeEditorService, notifications, notifyBuildCompleted, toolWindowService } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { appendOutput, finishSummary, firstError, messageFiles, type BuildStatus, type ConsoleLine } from "./model";
 
@@ -178,6 +178,7 @@ export async function startBuild(
   return executeBuild(
     request,
     taskTitle,
+    { kind, file, userInitiated: activate },
     (files, onEvent) => backend.run(kind, file, request, files, onEvent, cmake),
     cancel,
   );
@@ -201,6 +202,7 @@ export async function startCompileFile(file: string, activate = true): Promise<B
   return executeBuild(
     request,
     taskTitle,
+    { kind: "compileFile", file, userInitiated: activate },
     (files, onEvent) => backend.compileFile(file, request, files, onEvent),
     cancel,
   );
@@ -210,6 +212,7 @@ export async function startCompileFile(file: string, activate = true): Promise<B
 async function executeBuild(
   request: RequestId,
   taskTitle: string,
+  meta: { kind: "compileFile" | BuildKind; file: string | null; userInitiated: boolean },
   invoke: (previous: string[], onEvent: (e: BuildEvent) => void) => Promise<BuildResult>,
   cancel: () => void,
 ): Promise<BuildResult | null> {
@@ -266,7 +269,16 @@ async function executeBuild(
           ? undefined
           : [{ label: "Show Build", run: () => toolWindowService().show("build", true) }],
     });
-    if (!result.success) showFailure();
+    if (result.success) {
+      notifyBuildCompleted({
+        kind: meta.kind,
+        file: meta.file,
+        system: result.system,
+        userInitiated: meta.userInitiated,
+      });
+    } else {
+      showFailure();
+    }
   } catch (e) {
     if (!ownsBuild()) return null;
     flush();

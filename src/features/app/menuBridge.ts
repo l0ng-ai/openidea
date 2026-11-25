@@ -21,7 +21,8 @@ import {
 } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { useContributions, useMenuSlotItems, useStandaloneEditor } from "@/workbench/contributions";
-import { isDistractionFree, useDistractionFree } from "@/workbench/distractionFree";
+import { useDistractionFree } from "@/workbench/distractionFree";
+import { javaFileNameOf, menuLabelParams } from "@/workbench/menuLabels";
 import { orderStatusItems } from "@/workbench/StatusBar";
 import { statusWidgetRows } from "@/workbench/statusBarWidgets";
 import { useToolWindowLayouts } from "@/workbench/toolwindows/layouts";
@@ -101,12 +102,13 @@ export function menuAccelerator(binding: string): string | undefined {
 export function buildMenuConfig(os: HostOs): MenuConfig {
   const labels: Record<string, string> = {};
   // Per-window state some labels follow (View › Appearance › Enter / Exit Distraction Free Mode).
-  const params = {
-    os,
-    distractionFree: isDistractionFree() ? "on" : "off",
-    toolWindows: toolWindowsRestorable() ? "hidden" : "shown",
-  };
+  const params = menuLabelParams(os);
   for (const key of keysWithPrefix("menu.")) labels[key] = t(key, params);
+  labels["menu.layout.applyNamed"] = tx("Apply");
+  labels["menu.layout.restoreNamed"] = tx("Restore");
+  labels["menu.layout.saveNamed"] = tx("Save Changes");
+  labels["menu.layout.renameNamed"] = tx("Rename…");
+  labels["menu.layout.deleteNamed"] = tx("Delete…");
   const accelerators: Record<string, string> = {};
   const seen = new Set<string>();
   for (const [, id] of effectiveBindings()) {
@@ -154,9 +156,13 @@ export function dynamicMenuItems(): Record<string, DynamicItem[]> {
   const toolWindows = [...useContributions.getState().toolWindows.values()]
     .map((tw) => ({ action: `toolwindow.${tw.id}`, arg: null, label: tw.verbatim ? tw.title : tx(tw.title) }))
     .sort((a, b) => a.label.localeCompare(b.label));
-  const layouts = useToolWindowLayouts
-    .getState()
-    .layouts.map((l) => ({ action: "layout.restore", arg: l.name, label: l.name }));
+  const { layouts, active } = useToolWindowLayouts.getState();
+  const namedLayouts = layouts.map(({ name }) => ({
+    action: "layout.restore",
+    arg: name,
+    label: name,
+    checked: name === active,
+  }));
   const slots = Object.fromEntries(
     Object.entries(useMenuSlotItems.getState().slots).map(([slot, items]) => [
       slot,
@@ -165,7 +171,7 @@ export function dynamicMenuItems(): Record<string, DynamicItem[]> {
         .sort((a, b) => a.label.localeCompare(b.label)),
     ]),
   );
-  return { ...slots, toolWindows, toolWindowLayouts: layouts, statusBarWidgets: statusBarWidgetItems() };
+  return { ...slots, toolWindows, toolWindowLayouts: namedLayouts, statusBarWidgets: statusBarWidgetItems() };
 }
 
 /** Action ids of every IDE item in a menu model. */
@@ -279,7 +285,10 @@ export function installMenuBridge(): () => void {
     }),
     useToolWindowLayouts.subscribe(push),
     useMenuSlotItems.subscribe(push),
-    useContextKeys.subscribe(() => pushEnablement()),
+    useContextKeys.subscribe((s, prev) => {
+      pushEnablement();
+      if (javaFileNameOf(s.editorPath) !== javaFileNameOf(prev.editorPath)) push();
+    }),
     useActions.subscribe(() => pushEnablement()),
     // Project membership and names also change the Open Recent list.
     useProject.subscribe((s, prev) => {

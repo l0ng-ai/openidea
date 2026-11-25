@@ -5,6 +5,8 @@
 //! `misbehave`) so tests need no wasm toolchain. Rebuild them with
 //! `plugins/build.sh <dir>` after changing their source or `wit/`.
 
+mod common;
+
 use ide_core::error::ErrorKind;
 use ide_core::ipc_path::to_ipc;
 use ide_host::plugins::*;
@@ -122,6 +124,7 @@ impl PluginWorkspace for TestWorkspace {
             max_matches: limit,
             context: Default::default(),
             include_excluded: false,
+            skip_large_files: false,
         };
         let files = Mutex::new(Vec::new());
         let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
@@ -824,6 +827,11 @@ fn plugin_processes_end_with_their_owner() {
             String::from_utf8_lossy(&ps.stdout).lines().any(|line| line.contains(&marker))
         };
         f.run("misbehave", "childkeep", marker.strip_prefix("--path=")).unwrap();
+        // fork+exec is not atomic: `ps` can still report the owner until the child execs.
+        let started = Instant::now() + Duration::from_secs(5);
+        while !alive() && Instant::now() < started {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(alive(), "{mode}: the process started");
         match mode {
             "disable" => f.host.set_enabled("misbehave", false).unwrap(),
@@ -3520,6 +3528,77 @@ fn views_open_project_files_at_a_line() {
 }
 
 #[test]
+fn views_open_locations_use_invoking_root_and_reject_symlink_escapes() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let other = f._tmp.path().join("project-b");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = dunce::canonicalize(other).unwrap();
+    for root in [&f.project, &other] {
+        std::fs::write(root.join("jobs.log"), "build\ndeploy\nfailed\n").unwrap();
+    }
+    let press = |client: &str, root: Option<&Path>| {
+        f.take_events();
+        let inv = Invocation {
+            client: Some(client.into()),
+            workspace_root: root.map(Path::to_path_buf),
+            ..Default::default()
+        };
+        let result = f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Button { id: "log".into() }, inv);
+        let opened = f
+            .take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::OpenLocation { plugin_id, path, line, column } => {
+                    Some((client, plugin_id, path.0, line, column))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (result, opened)
+    };
+
+    for (client, root) in [("window-a", &f.project), ("window-b", &other), ("window-a", &f.project)] {
+        let (result, opened) = press(client, Some(root));
+        result.unwrap();
+        assert_eq!(opened, vec![(Some(client.into()), "jobs".into(), root.join("jobs.log"), 2, 4)]);
+    }
+
+    let link = f.project.join("jobs.log");
+    std::fs::remove_file(&link).unwrap();
+    let (result, opened) = press("window-a", Some(&f.project));
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains("no such file"), "{error:?}");
+    assert!(opened.is_empty());
+
+    let (result, opened) = press("window-a", None);
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains("no project is open"), "{error:?}");
+    assert!(opened.is_empty());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(other.join("jobs.log"), &link).unwrap();
+        let (result, opened) = press("window-a", Some(&f.project));
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.message.contains("outside the project root"), "{error:?}");
+        assert!(opened.is_empty());
+
+        std::fs::remove_file(&link).unwrap();
+        let target = f.project.join("构建 日志 [ ] # %.log");
+        std::fs::write(&target, "build\ndeploy\nfailed\n").unwrap();
+        symlink(target.file_name().unwrap(), &link).unwrap();
+        let (result, opened) = press("window-a", Some(&f.project));
+        result.unwrap();
+        assert_eq!(opened, vec![(Some("window-a".into()), "jobs".into(), target, 2, 4)]);
+    }
+}
+
+#[test]
 fn commands_see_the_paths_they_were_run_on() {
     let f = fixture(Limits::default());
     f.install(&sample("jobs"));
@@ -3893,6 +3972,68 @@ path = "templates/new.draw"
     f.host.set_enabled("web-demo", false).unwrap();
     assert!(file(&format!("{rev}/web/index.html")).is_err());
     assert!(f.host.web_page("web-demo", "draw").is_err());
+}
+
+#[test]
+fn web_pages_embed_only_declared_and_granted_frames() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("frame-demo");
+    for (path, text) in [
+        ("hall/index.html", "<iframe src=\"https://play.games.test:8443/room\"></iframe>"),
+        ("hall/rules.html", "<p>rules</p>"),
+        ("hall/app.js", "console.log(1)"),
+        ("panel/index.html", "<p>panel</p>"),
+    ] {
+        std::fs::create_dir_all(pkg.join(path).parent().unwrap()).unwrap();
+        std::fs::write(pkg.join(path), text).unwrap();
+    }
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        r#"id = "frame-demo"
+name = "Frame Demo"
+version = "1.0.0"
+engines.openidea = "^1.16"
+
+[capabilities]
+optional = ["net:example.com", "net:*.games.test"]
+
+[[contributes.views]]
+id = "hall"
+title = "Hall"
+web = "hall/index.html"
+frames = ["https://example.com/", "https://play.games.test:8443", "https://example.com"]
+
+[[contributes.views]]
+id = "panel"
+title = "Panel"
+web = "panel/index.html"
+"#,
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert_eq!(
+        f.host.ui_items("views").iter().find(|v| v.decl["id"] == "hall").unwrap().decl["frames"],
+        serde_json::json!(["https://example.com", "https://play.games.test:8443"])
+    );
+    let page = f.host.web_page("frame-demo", "hall").unwrap();
+    let rev = page.path.strip_prefix("frame-demo/").unwrap().split_once('/').unwrap().0.to_owned();
+    let frames = |path: &str| f.host.web_file("frame-demo", &format!("{rev}/{path}")).unwrap().frames;
+    let both = Some(vec!["https://example.com".to_owned(), "https://play.games.test:8443".to_owned()]);
+    // Every page in the declaring view's directory, not its other files nor another view's pages.
+    assert_eq!(frames("hall/index.html"), both);
+    assert_eq!(frames("hall/rules.html"), both);
+    assert_eq!(frames("hall/app.js"), None);
+    assert_eq!(frames("panel/index.html"), None);
+
+    // Only what the user granted: declining a host takes it out of the policy.
+    f.host.set_capability("frame-demo", "net:example.com", false).unwrap();
+    assert_eq!(frames("hall/index.html"), Some(vec!["https://play.games.test:8443".to_owned()]));
+    f.host.set_capability("frame-demo", "net:*.games.test", false).unwrap();
+    assert_eq!(frames("hall/index.html"), Some(Vec::new()));
+    f.host.set_capability("frame-demo", "net:example.com", true).unwrap();
+    assert_eq!(frames("hall/index.html"), Some(vec!["https://example.com".to_owned()]));
 }
 
 #[test]
@@ -5280,6 +5421,34 @@ fn project_notifications_go_to_a_window_of_that_project_only() {
 }
 
 #[test]
+fn file_prompts_return_the_path_from_the_calling_window_without_a_capability() {
+    use ide_plugin::{PluginFileFilter, Prompt};
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    for name in [None, Some("result.parquet")] {
+        let (result, prompt) = run_and_answer(&f, "pick-file", name, Some(&["C:/data/chosen.parquet"]), Duration::ZERO);
+        assert_eq!(result.unwrap().as_deref(), Some("C:/data/chosen.parquet"));
+        assert_eq!(
+            prompt,
+            Prompt::PickFile {
+                title: "Data file".into(),
+                save: name.is_some(),
+                name: name.map(str::to_owned),
+                filters: vec![PluginFileFilter { name: "Parquet".into(), extensions: vec!["parquet".into()] }],
+            }
+        );
+    }
+    // A suggested name is only a file name, never a directory to start in.
+    let (_, prompt) =
+        run_and_answer(&f, "pick-file", Some("/etc/out.parquet"), Some(&["C:/data/x.parquet"]), Duration::ZERO);
+    assert!(matches!(&prompt, Prompt::PickFile { name: Some(n), .. } if n == "out.parquet"), "{prompt:?}");
+    assert_eq!(run_and_answer(&f, "pick-file", None, None, Duration::ZERO).0.unwrap(), None);
+    assert!(run_and_answer(&f, "pick-file", None, Some(&["relative"]), Duration::ZERO).0.is_err());
+    assert!(f.host.run_command("jobs", "pick-file", None, Invocation::default()).is_err());
+}
+
+#[test]
 fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
     use ide_plugin::Prompt;
     let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
@@ -5698,15 +5867,8 @@ async fn web_ptys_are_capped_across_windows_and_end_with_the_plugin() {
     f.install(&sample("web-pty"));
     let root = tempfile::tempdir().unwrap();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: root.path().join("config"),
-        data_dir: root.path().join("data"),
         local_data_dir: root.path().join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(root.path())
     }));
     let spawn = |window: &str| {
         f.host.spawn_web_pty(
@@ -6466,6 +6628,7 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
                 mode: "visual".into(),
                 sub: Some("linewise".into()),
             }),
+            E::CaretMoved(ide_plugin::CaretMoved { path: path.clone(), line: 4, col: 2, settled: true }),
         ],
         Some(PluginEditor {
             path: path.clone(),
@@ -6477,7 +6640,7 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert!(f.host.wait_events(Duration::from_secs(5)));
     let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
     let events = received.as_array().unwrap();
-    assert_eq!(events.len(), 4, "{received}");
+    assert_eq!(events.len(), 5, "{received}");
     // The first synthetic post hands over the current keys ("enabled": false);
     // the second is a real diff to true. Keys come from the recomputed
     // snapshot, never from the event payload ("another-plugin-key").
@@ -6486,6 +6649,14 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert_eq!(events[1]["kind"], "settings-changed");
     assert_eq!(events[1]["data"], "[\"enabled\"]");
     assert_eq!(events[3]["kind"], "input-mode-changed");
+    assert_eq!(events[4]["kind"], "caret-moved");
+    let caret: serde_json::Value =
+        serde_json::from_str(events[4]["data"].as_str().expect("caret data is JSON")).unwrap();
+    assert_eq!(caret["path"], path.as_str());
+    assert_eq!(caret["line"], 4);
+    assert_eq!(caret["col"], 2);
+    assert_eq!(caret["settled"], true);
+    assert_eq!(events[4]["editor"][0], path.as_str());
     assert_eq!(events[2]["editor"][0], path);
     assert_eq!(events[2]["editor"][1][0], serde_json::json!([0, 0, 0, 0]));
 }
@@ -6783,6 +6954,26 @@ fn api14_stage3_terminal_calls_are_denied_without_process_grants() {
     let f = execution_fixture();
     f.host.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(f.run("execution", "terminal", None).unwrap_err().contains("not granted"));
+}
+
+/// API 1.15: a plugin pushes line-end labels whose hover is Markdown, and clears them.
+#[test]
+fn markdown_decorations_publish_a_hover_card_and_clear() {
+    let f = fixture(Limits::default());
+    f.install(&sample("decorations"));
+    f.run("decorations", "publish", Some("src/notes.txt")).unwrap();
+    let sets = f.host.decoration_sets();
+    let set = &sets["decorations"][0];
+    assert_eq!((set.set_id.as_str(), set.tree), ("example", false));
+    assert_eq!(set.items.len(), 1);
+    assert_eq!(set.items[0].style, "highlight");
+    assert_eq!(set.items[0].after.as_deref(), Some(" + model-x"));
+    assert_eq!(
+        set.items[0].markdown_hover.as_deref(),
+        Some("**model-x** generated this line\n\n- prompt: add a greeting")
+    );
+    f.run("decorations", "clear", None).unwrap();
+    assert!(f.host.decoration_sets()["decorations"].is_empty());
 }
 
 // ─── Project window groups ────────────────────────────────────────────────────
@@ -7298,4 +7489,113 @@ fn a_freshly_installed_plugin_gets_the_post_install_settings_event() {
         events.iter().any(|e| e["kind"] == "settings-changed"),
         "freshly installed plugin got no post-install event: {received}"
     );
+}
+
+#[test]
+fn contributes_skills_installs_discovers_and_tracks_plugin_lifecycle() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("agent-skills"));
+    assert_eq!(info.status, PluginStatus::Static);
+    assert!(info.warnings.is_empty(), "{:?}", info.warnings);
+    assert!(info.contributions.iter().any(|c| c.point == "skills" && c.label == "/release-notes"));
+
+    let dirs = f.host.skill_dirs(Some(&f.project), true);
+    assert_eq!(dirs.len(), 1);
+    assert!(dirs[0].join("SKILL.md").is_file(), "SKILL.md copied to install dir");
+    assert!(
+        dirs[0].join("references/template.md").is_file(),
+        "bundled supporting files in the skill folder copied to install dir"
+    );
+
+    let discovered = ide_agent::skills::discover_skills_with_plugins(std::slice::from_ref(&f.project), None, &dirs);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].name, "release-notes");
+    assert_eq!(discovered[0].source, ide_agent::AgentSkillSource::Plugin);
+    assert_eq!(discovered[0].hint.as_deref(), Some("[tag]"));
+
+    // Workspace skill with the same name wins; the plugin skill is never silently renamed.
+    let ws_skill = f.project.join(".agents/skills/release-notes");
+    std::fs::create_dir_all(&ws_skill).unwrap();
+    std::fs::write(ws_skill.join("SKILL.md"), "---\nname: release-notes\ndescription: workspace override\n---\n")
+        .unwrap();
+    let clashed = ide_agent::skills::discover_skills_with_plugins(std::slice::from_ref(&f.project), None, &dirs);
+    assert_eq!(clashed.len(), 1);
+    assert_eq!(clashed[0].source, ide_agent::AgentSkillSource::Workspace);
+    assert_eq!(clashed[0].description, "workspace override");
+
+    // Disabling or uninstalling removes the plugin's skill directories immediately.
+    f.host.set_enabled("test.agent-skills", false).unwrap();
+    assert!(f.host.skill_dirs(Some(&f.project), true).is_empty());
+    f.host.set_enabled("test.agent-skills", true).unwrap();
+    assert_eq!(f.host.skill_dirs(Some(&f.project), true).len(), 1);
+    f.host.uninstall("test.agent-skills").unwrap();
+    assert!(f.host.skill_dirs(Some(&f.project), true).is_empty());
+}
+
+#[test]
+fn contributes_skills_needs_api_1_15_and_warns_without_failing_plugin_on_bad_entries() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Older `engines.openidea` is refused at the manifest check.
+    let old_api = tmp.path().join("old-api");
+    copy_dir(&sample("agent-skills"), &old_api);
+    let manifest = std::fs::read_to_string(old_api.join("plugin.toml")).unwrap();
+    std::fs::write(old_api.join("plugin.toml"), manifest.replace("\"^1.15\"", "\"^1.14\"")).unwrap();
+    let err = f.host.install_from_dir(&old_api, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.15"), "{err:?}");
+
+    // Invalid skill entries emit load warnings while valid skills and the plugin itself still load.
+    let pkg = tmp.path().join("mixed-skills");
+    std::fs::create_dir_all(pkg.join("skills/good-skill")).unwrap();
+    std::fs::write(pkg.join("skills/good-skill/SKILL.md"), "---\nname: good-skill\ndescription: valid skill\n---\n")
+        .unwrap();
+    std::fs::create_dir_all(pkg.join("skills/wrong-name")).unwrap();
+    std::fs::write(
+        pkg.join("skills/wrong-name/SKILL.md"),
+        "---\nname: mismatched\ndescription: bad frontmatter name\n---\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(pkg.join("skills/not-skill-md")).unwrap();
+    std::fs::write(pkg.join("skills/not-skill-md/README.md"), "nope\n").unwrap();
+    std::fs::create_dir_all(pkg.join("skills/oversize")).unwrap();
+    std::fs::write(pkg.join("skills/oversize/SKILL.md"), "---\nname: oversize\ndescription: too big\n---\n").unwrap();
+    std::fs::write(pkg.join("skills/oversize/blob.bin"), vec![b'x'; (2 << 20) + 16]).unwrap();
+
+    #[allow(unused_mut)]
+    let mut manifest = String::from(
+        "id = \"acme.mixed-skills\"\n\
+         name = \"Mixed Skills\"\n\
+         version = \"1.0.0\"\n\
+         engines.openidea = \"^1.15\"\n\n\
+         [[contributes.skills]]\npath = \"skills/good-skill/SKILL.md\"\n\
+         [[contributes.skills]]\npath = \"../outside/SKILL.md\"\n\
+         [[contributes.skills]]\npath = \"skills/not-skill-md/README.md\"\n\
+         [[contributes.skills]]\npath = \"skills/wrong-name/SKILL.md\"\n\
+         [[contributes.skills]]\npath = \"skills/oversize/SKILL.md\"\n",
+    );
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "secret\n").unwrap();
+        std::fs::create_dir_all(pkg.join("skills/escape-link")).unwrap();
+        std::fs::write(
+            pkg.join("skills/escape-link/SKILL.md"),
+            "---\nname: escape-link\ndescription: has escaping symlink\n---\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, pkg.join("skills/escape-link/leak.txt")).unwrap();
+        manifest.push_str("[[contributes.skills]]\npath = \"skills/escape-link/SKILL.md\"\n");
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest).unwrap();
+
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "bad skill entries must not fail the plugin");
+    let expected_warnings = if cfg!(unix) { 5 } else { 4 };
+    assert_eq!(info.warnings.len(), expected_warnings, "{:?}", info.warnings);
+    assert!(info.warnings.iter().all(|w| w.starts_with("contributes.skills[")), "{:?}", info.warnings);
+
+    let dirs = f.host.skill_dirs(Some(&f.project), true);
+    assert_eq!(dirs.len(), 1);
+    assert!(dirs[0].ends_with("skills/good-skill"), "{dirs:?}");
 }

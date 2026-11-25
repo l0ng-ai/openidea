@@ -5,7 +5,9 @@ import type { EditorView } from "@codemirror/view";
 import { structure } from "@/editor/structure";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
+import { clearTemporaryHighlight, highlightRanges } from "@/editor/lsp/tempHighlight";
 import { executeAction } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
 import { clipboardHistory, isLinewiseClipboardText, recordClipboard } from "./clipboardHistory";
 import { openPasteHistory } from "./view/PasteHistoryDialog";
 import { dispatchPaste } from "./cm/clipboard";
@@ -83,11 +85,25 @@ export async function unwrapAtCaret(slot: EditorSlot) {
   openPopup({
     kind: "list",
     anchor: caretAnchor(v, head),
-    title: "Choose the Statement to Unwrap/Remove",
+    title: tx("Choose the Statement to Unwrap/Remove"),
+    compact: true,
     items: options.map((o, i) => ({
       id: `${i}`,
       label: o.label,
-      preview: state.sliceDoc(o.target.from, Math.min(o.target.to, state.doc.lineAt(o.target.from).to)).trim(),
+      onActive: () => {
+        if (slot.view !== v || v.state.doc !== state.doc) return;
+        const retained = o.retained ?? { from: o.target.to, to: o.target.to };
+        highlightRanges(
+          v,
+          [
+            { from: o.target.from, to: retained.from, tone: "removed" },
+            retained,
+            { from: retained.to, to: o.target.to, tone: "removed" },
+          ],
+          { scroll: false },
+        );
+        return () => clearTemporaryHighlight(v);
+      },
       run: () => {
         if (slot.view === v && v.state.doc === state.doc) applyUnwrap(v, o);
       },

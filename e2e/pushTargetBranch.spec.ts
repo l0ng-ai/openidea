@@ -46,6 +46,7 @@ async function openPushDialog(page: Page, { outgoing = false, multi = false } = 
       h.vcs_commit_files = () => [{ path: "checkout.ts", oldPath: null, kind: "modified" }];
       h.vcs_has_hook = () => false;
       h.vcs_remotes = () => [{ name: "origin", url: "git@example.com:acme/api.git" }];
+      h.vcs_push_target_choices = () => ({ branch: head, destination: null, destinations: [] });
       const branch = (name: string, remote: boolean, upstream: string | null = null) => ({
         name,
         remote,
@@ -76,7 +77,7 @@ async function openPushDialog(page: Page, { outgoing = false, multi = false } = 
   );
   const dialog = page.getByRole("dialog", { name: /Push/ });
   const input = multi
-    ? dialog.getByRole("textbox", { name: "Target branch of acme-api" })
+    ? dialog.getByRole("combobox", { name: "Target branch of acme-api" })
     : dialog.getByRole("combobox", { name: "Target branch" });
   await expect(input).toBeVisible();
   return { dialog, input };
@@ -176,7 +177,29 @@ test("Push keeps commit subjects and changed files readable in a narrow window",
   await expect(input).toHaveValue("main");
   await expect(dialog.getByRole("button", { name: "Push", exact: true })).toBeInViewport();
   const details = dialog.getByRole("region", { name: "Commit details" });
-  await expect(details).toContainText("Keep the new totals consistent with receipts.");
+  await page.evaluate(async () => {
+    const project = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ project);
+    const { settings } = useProject.getState();
+    useProject.setState({
+      settings: {
+        ...settings,
+        editor: { ...settings?.editor, fontFamily: "Consolas", fontSize: 18, fontWeight: 400, boldFontWeight: 700 },
+      },
+    });
+  });
+  const messageSubject = details.getByText(OUTGOING, { exact: true });
+  const messageBody = details.getByText("Keep the new totals consistent with receipts.", { exact: true });
+  await expect(messageSubject).toHaveCSS("font-weight", "700");
+  await expect(messageBody).toHaveCSS("font-weight", "400");
+  await expect(messageSubject).toHaveCSS("font-size", "18px");
+  await expect(messageBody).toHaveCSS("font-size", "18px");
+  await expect(messageBody).toHaveCSS("font-family", /Consolas/);
+  const metadata = details.getByText(/Sam Rivera <sam@example\.com>/);
+  await expect(metadata).toHaveCSS("font-size", "12px");
+  await metadata.scrollIntoViewIfNeeded();
+  await expect(metadata).toBeInViewport();
+  expect(await details.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   await expect
     .poll(async () => {
       const [tree, message] = await Promise.all([files.boundingBox(), details.boundingBox()]);
@@ -188,7 +211,7 @@ test("Push keeps commit subjects and changed files readable in a narrow window",
 test("Push keeps per-repository targets editable with long source branches", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 475, height: 620 });
   const { dialog, input } = await openPushDialog(page, { outgoing: true, multi: true });
-  const other = dialog.getByRole("textbox", { name: "Target branch of billing-and-refunds" });
+  const other = dialog.getByRole("combobox", { name: "Target branch of billing-and-refunds" });
   for (const field of [input, other]) {
     await expect
       .poll(() =>
@@ -204,4 +227,19 @@ test("Push keeps per-repository targets editable with long source branches", asy
   await expect(input).toHaveValue("release/checkout");
   await expect(other).toHaveValue(/^feature\//);
   await expect(dialog.getByRole("checkbox", { name: "acme-api" })).toBeChecked();
+  await expect(dialog.getByRole("checkbox", { name: "Push tags:" })).toBeInViewport();
+});
+
+test("selecting a completion in a repository row keeps the Push dialog open", async ({ workbench: page }) => {
+  const { dialog, input } = await openPushDialog(page, { multi: true });
+  const other = dialog.getByRole("combobox", { name: "Target branch of billing-and-refunds" });
+  const otherTarget = await other.inputValue();
+  await input.fill("error");
+  await expect(page.getByRole("option", { name: "fix/error-auth" })).toBeVisible();
+  await input.press("ArrowDown");
+  await input.press("Enter");
+  await expect(input).toHaveValue("fix/error-auth");
+  await expect(other).toHaveValue(otherTarget);
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole("listbox", { name: "Remote branches" })).toHaveCount(0);
 });

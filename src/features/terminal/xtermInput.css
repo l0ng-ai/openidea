@@ -17,6 +17,15 @@
   overflow: clip;
 }
 
+/* During a composition xterm clips its composition view to the space between the cursor and the
+   right edge, and sizes the helper textarea from that view. A program that leaves the cursor in the
+   last column therefore leaves one cell of room, and the pre-edit text is painted almost invisibly.
+   The view is drawn on the caret instead (imeAnchor), so the width that matters is the space from
+   that caret to the edge — which `.xterm` clips anyway. */
+.xterm .composition-view[data-openidea-ime-anchor] {
+  max-width: none !important;
+}
+
 /* An icon or fallback symbol wider than its cell stays over the next cell's background
    (domRowCache), while selected spans keep xterm's `.xterm-decoration-top` z-index (2). */
 .xterm .xterm-rows .openidea-terminal-icon:not(.xterm-decoration-top) {

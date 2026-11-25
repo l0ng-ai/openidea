@@ -10,9 +10,13 @@ import { indentUnit } from "@codemirror/language";
 import { diff } from "@codemirror/merge";
 import { commands, isCancelled, type CodeAction, type Diagnostic } from "@/platform/ipc";
 import {
+  asyncIntentionProviders,
   contributedIntentions,
+  contributedIntentionsAsync,
   contributedQuickFixes,
+  inspectionControlProviders,
   intentionProviders,
+  quickFixProviders,
   intentionsChanged,
   whenSynced,
 } from "@/editor/api";
@@ -38,10 +42,10 @@ import { iconNode } from "@/ui/iconNode";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
 import { inspectionsAt, type EditorDiagnostic } from "./diagnostics";
-import { SPELLING_INSPECTION } from "@/platform/inspections";
+import { SPELLING_INSPECTION, type InspectionRef } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 const codeActionBackoff = featureBackoff();
 
@@ -60,11 +64,18 @@ export function quickFixIcon(view: EditorView): "bulb" | "bulb-fix" {
 
 const isFixItem = (item: ListPopupItem) => item.quickFix ?? item.icon === "bulb-fix";
 
-/** Local and language-server fixes share icons and the same stable ordering. */
+/** Local and language-server fixes share icons and are grouped separately from other actions. */
 export function listedIntentions(view: EditorView, items: ListPopupItem[]): ListPopupItem[] {
   const rank = (item: ListPopupItem) => (item.disabled ? 4 : 0) + (isFixItem(item) ? 0 : 2) + (item.emphasis ? 0 : 1);
   return items
-    .map((item) => (isFixItem(item) ? { ...item, quickFix: true, icon: quickFixIcon(view) } : item))
+    .map((item) => {
+      const fix = isFixItem(item);
+      return {
+        ...item,
+        ...(fix && { quickFix: true, icon: quickFixIcon(view) }),
+        section: item.section ?? { id: item.disabled ? "unavailable" : fix ? "quick-fixes" : "intentions" },
+      };
+    })
     .sort((a, b) => rank(a) - rank(b));
 }
 
@@ -144,6 +155,7 @@ async function fetchIntentions(view: EditorView): Promise<CodeAction[]> {
 
   const lineFixes = async (): Promise<CodeAction[]> => {
     for (const p of errors) {
+      // oxlint-disable-next-line no-await-in-loop -- returns the first line's fixes; a stale document stops the search entirely
       const more = await lspRequest(() =>
         commands.lspCodeActions(doc!.doc, offsetsToRange(state.doc, p.from, p.to), ["quickfix"]),
       ).catch(() => null);
@@ -205,6 +217,7 @@ export async function applyQuickFix(view: EditorView) {
   problems.sort((a, b) => a.rank - b.rank);
   try {
     for (const p of problems) {
+      // oxlint-disable-next-line no-await-in-loop -- applies the first available fix, then stops; later fixes are not requested
       const fix = (await quickFixesAt(view, p.from, p.to, p.problem))[0];
       if (view.state.doc !== state.doc) return;
       if (fix) return applyCodeAction(view, fix);
@@ -265,7 +278,10 @@ export async function applyCodeAction(view: EditorView, action: EditorQuickFix) 
  * to the file's style.
  */
 async function reformatGenerated(view: EditorView, before: Text) {
-  for (let i = 0; i < 100 && view.state.doc === before; i++) await new Promise((r) => setTimeout(r, 20));
+  for (let i = 0; i < 100 && view.state.doc === before; i++) {
+    // oxlint-disable-next-line no-await-in-loop -- polls for the generated edit to land before formatting it
+    await new Promise((r) => setTimeout(r, 20));
+  }
   // Bottom up, so the line numbers of the hunks above stay valid.
   for (const lines of changedLines(before, view.state.doc).reverse()) {
     if (lines.to - lines.from < 1) continue;
@@ -274,8 +290,11 @@ async function reformatGenerated(view: EditorView, before: Text) {
     // A server that generated code without its context formats ranges the same
     // way (back to column 0): its range formatting is skipped then.
     if (shift.length) view.dispatch({ changes: shift, userEvent: "format", scrollIntoView: false });
-    else if (!(await formatLines(view, doc.line(lines.from).from, doc.line(lines.to).to)) && view.state.doc !== doc)
-      return;
+    else {
+      // oxlint-disable-next-line no-await-in-loop -- hunks are formatted bottom up so earlier line numbers stay valid
+      const formatted = await formatLines(view, doc.line(lines.from).from, doc.line(lines.to).to);
+      if (!formatted && view.state.doc !== doc) return;
+    }
   }
 }
 
@@ -373,6 +392,7 @@ export async function applyKindSilently(view: EditorView, kind: string): Promise
     if (i > 0) {
       // The previous server's edit changed the document: this one's answer must be fresh.
       try {
+        // oxlint-disable-next-line no-await-in-loop -- the previous server's edit changed the document; this answer must be fresh
         action = pick(matching(await fetchActions(view, [kind], true), server));
       } catch (e) {
         console.warn(`[lsp] ${kind} on ${doc.path} failed`, e);
@@ -383,13 +403,17 @@ export async function applyKindSilently(view: EditorView, kind: string): Promise
     const before = view.state.doc;
     const chosen = action;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- each server's edit is applied before the next server is queried
       await lspRequest(() => commands.lspApplyCodeAction(doc.doc, chosen));
     } catch (e) {
       console.warn(`[lsp] applying ${chosen.kind} on ${doc.path} failed`, e);
       continue;
     }
     applied = true;
-    for (let i = 0; i < 25 && view.state.doc === before; i++) await new Promise((r) => setTimeout(r, 20));
+    for (let i = 0; i < 25 && view.state.doc === before; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- polls for this server's edit before moving to the next server
+      await new Promise((r) => setTimeout(r, 20));
+    }
   }
   return applied;
 }
@@ -407,11 +431,12 @@ function actionItems(
   view: EditorView,
   actions: CodeAction[],
   resolved?: Map<CodeAction, Promise<CodeAction>>,
+  actionIcon?: (action: CodeAction) => string,
 ): ListPopupItem[] {
   return listedCodeActions(actions).map((a, i) => ({
     id: `lsp:${i}`,
     label: a.title,
-    icon: isQuickFix(a) ? quickFixIcon(view) : "bulb",
+    icon: actionIcon?.(a) ?? (isQuickFix(a) ? quickFixIcon(view) : "bulb"),
     quickFix: isQuickFix(a),
     emphasis: a.isPreferred,
     disabled: a.disabledReason,
@@ -487,18 +512,23 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
   );
   if (!inspections.length) return items;
   const fixes = items.filter((i) => isFixItem(i) && !i.submenu);
+  const controls = (inspection: InspectionRef) => [
+    ...intentionControls(inspection),
+    ...view.state.facet(inspectionControlProviders).flatMap((provide) => provide(view, inspection.id)),
+  ];
   if (inspections.length === 1 && fixes.length) {
-    const submenu = intentionControls(inspections[0]!);
+    const submenu = controls(inspections[0]!);
     return items.map((i) => (fixes.includes(i) ? { ...i, submenu } : i));
   }
   return [
     ...items,
     ...inspections.map((inspection) => ({
       id: `inspection:${inspection.id}`,
-      label: tx`Inspection '${inspection.name}' options`,
+      label: tx`Inspection '${txPart(inspection.name)}' options`,
+      section: { id: "inspection-options" },
       icon: "settings",
       run: () => editInspectionSettings(inspection.id),
-      submenu: intentionControls(inspection),
+      submenu: controls(inspection),
     })),
   ];
 }
@@ -565,13 +595,18 @@ export async function showIntentions(view: EditorView) {
     display(itemsFor([]), true);
   }, INTENTIONS_POPUP_DELAY_MS);
 
+  const asked = new AbortController();
   try {
     let failure: unknown = null;
     // Like IDEA, only applicable intentions are listed (servers also report disabled refactorings).
-    const actions = await fetchIntentions(view).catch((e: unknown) => {
-      failure = e;
-      return null;
-    });
+    const [actions, found] = await Promise.all([
+      fetchIntentions(view).catch((e: unknown) => {
+        failure = e;
+        return null;
+      }),
+      contributedIntentionsAsync(view, asked.signal),
+    ]);
+    local.push(...found);
     clearTimeout(timer);
     const items = actions ? itemsFor(actions) : withInspectionControls(view, listedIntentions(view, local));
     if (!items.length) {
@@ -590,6 +625,8 @@ export async function showIntentions(view: EditorView) {
     clearTimeout(timer);
     if (ours()) closePopup();
     reportLspError(view, e, true);
+  } finally {
+    asked.abort();
   }
 }
 
@@ -604,6 +641,8 @@ export async function runKindAction(
     whole?: boolean;
     none: string;
     label: string;
+    compact?: boolean;
+    actionIcon?: (action: CodeAction) => string;
     /**
      * Syntax-based fallback when the server offers no enabled action
      * (`empty`) or cannot answer; true when it handled the request.
@@ -638,7 +677,8 @@ export async function runKindAction(
       kind: "list",
       anchor: caretAnchor(view, view.state.selection.main.head),
       title: opts.label,
-      items: actionItems(view, enabled),
+      compact: opts.compact,
+      items: actionItems(view, enabled, undefined, opts.actionIcon),
     });
   } catch (e) {
     reportLspError(view, e, true);
@@ -692,6 +732,7 @@ const bulbField = StateField.define<Bulb | null>({
 const bulbPlugin = ViewPlugin.fromClass(
   class {
     private lookup = debounce(() => void this.run(), 500);
+    private asked: AbortController | null = null;
     constructor(private view: EditorView) {
       this.lookup();
     }
@@ -720,7 +761,9 @@ const bulbPlugin = ViewPlugin.fromClass(
       const typoFix = spellingIntentions(this.view).length > 0;
       const selection = state.selection.main;
       const ownFix = contributedQuickFixes(this.view, selection.from, selection.to).length > 0;
-      const local = typoFix || ownFix || contributedIntentions(this.view).length > 0;
+      this.asked?.abort();
+      const asked = (this.asked = new AbortController());
+      const found = contributedIntentionsAsync(this.view, asked.signal);
       const backoff = codeActionBackoff.active(doc.doc);
       let actions: CodeAction[] = [];
       if (!backoff) {
@@ -730,6 +773,7 @@ const bulbPlugin = ViewPlugin.fromClass(
           if (isUnavailable(e)) codeActionBackoff.mark(doc.doc);
         }
       }
+      const local = typoFix || ownFix || contributedIntentions(this.view).length > 0 || (await found).length > 0;
       if (this.view.state.doc !== state.doc || !this.view.state.selection.eq(state.selection) || !this.view.hasFocus)
         return;
       const line = state.doc.lineAt(state.selection.main.head).number;
@@ -747,6 +791,7 @@ const bulbPlugin = ViewPlugin.fromClass(
     }
     destroy() {
       this.lookup.cancel();
+      this.asked?.abort();
     }
   },
 );
@@ -856,5 +901,11 @@ export function intentionsExtension(): Extension {
     bulbPlugin,
     floatingBulb,
     intentionProviders.of((view) => languageSemantics(docOf(view)?.language)?.intentions?.(view) ?? []),
+    quickFixProviders.of(
+      (view, from, to) => languageSemantics(docOf(view)?.language)?.quickFixes?.(view, from, to) ?? [],
+    ),
+    asyncIntentionProviders.of(
+      async (view, signal) => (await languageSemantics(docOf(view)?.language)?.asyncIntentions?.(view, signal)) ?? [],
+    ),
   ];
 }

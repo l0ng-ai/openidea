@@ -6,6 +6,13 @@
   height: var(--h-toolbar-widget);
   border-radius: var(--radius-toolbar-dropdown);
 }
+/* The status bar's Git Branch widget: the bar's own button, sized like its other widgets. */
+.statusWidget {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 240px;
+}
 .icon {
   flex: none;
   color: var(--fg-muted);
@@ -20,6 +27,7 @@
 }
 .repo {
   flex: none;
+  --toolbar-label-max: 120px;
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;

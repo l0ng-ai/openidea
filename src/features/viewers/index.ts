@@ -33,7 +33,7 @@ import {
 import { ImageViewer, toggleChessboard, useImageViewers } from "./ImageViewer";
 import { HexViewer } from "./HexViewer";
 import { registerMarkdownLiveSource } from "./markdown/live";
-import { setMarkdownMode, type MarkdownMode } from "./markdown/modes";
+import { setMarkdownMode, useMarkdownSourceHidden, type MarkdownMode } from "./markdown/modes";
 import { MarkdownLayoutActions } from "./markdown/MarkdownLayoutActions";
 
 const titleOf = (input: EditorInput) => basename(input.path ?? input.key);
@@ -124,9 +124,13 @@ export function activate(): () => void {
     }),
     registerTextEditorWrapper({
       id: "viewers.markdown",
+      keepAlive: true,
       matches: isMarkdownPath,
-      component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)),
+      component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor), {
+        prefetch: true,
+      }),
       tabActions: MarkdownLayoutActions,
+      useSourceHidden: useMarkdownSourceHidden,
     }),
     registerMarkdownLiveSource(),
     registerActions([...imageActions(), ...markdownActions()]),

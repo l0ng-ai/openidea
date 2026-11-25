@@ -10,6 +10,13 @@ export function invalidateLogDetails(roots: readonly string[]) {
   refVersions.setState((s) => Object.fromEntries(roots.map((root) => [root, (s[root] ?? 0) + 1])));
 }
 
+export async function refreshLogDetails(roots: readonly string[]) {
+  await Promise.allSettled(roots.map((root) => call(commands.vcsInvalidateLogSignatures(root))));
+  invalidateLogDetails(roots);
+}
+
+const SIGNATURE_TTL_MS = 60_000;
+
 interface Entry {
   key: string;
   repo: string | null;
@@ -20,6 +27,7 @@ interface Entry {
   users: number;
   request?: RequestId;
   settled: boolean;
+  expires?: number;
 }
 const cache = new Map<string, Entry>();
 const pending: Entry[] = [];
@@ -67,7 +75,9 @@ function flush() {
           entries.forEach((entry, i) => {
             if (details[i]) {
               entry.settled = true;
-              entry.resolve(details[i]!);
+              const result = details[i]!;
+              if (result.signature !== "N") entry.expires = performance.now() + SIGNATURE_TTL_MS;
+              entry.resolve(result);
             } else {
               forget(entry);
               entry.reject(new Error("Commit details were not returned"));
@@ -87,12 +97,16 @@ function flush() {
   }
 }
 
-/** Batches visible rows by root. Ref-dependent fields refresh on version changes;
- * the backend caches immutable messages and signatures independently. */
+/** Batches visible rows by root. Ref-dependent fields refresh on version changes.
+ * Signature results expire because keys and trust can change without moving refs. */
 export function loadLogDetails(commit: Commit, signal?: AbortSignal): Promise<LogDetails> {
   const repo = commitRepo(commit) ?? currentRepo();
   const key = `${repo}\0${commit.id}\0${useVcs.getState().version}\0${refVersions.getState()[repo ?? ""] ?? 0}`;
   let entry = cache.get(key);
+  if (entry?.expires !== undefined && performance.now() >= entry.expires) {
+    forget(entry);
+    entry = undefined;
+  }
   if (!entry) {
     let resolve!: Entry["resolve"], reject!: Entry["reject"];
     const promise = new Promise<LogDetails>((yes, no) => {

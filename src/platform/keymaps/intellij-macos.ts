@@ -69,6 +69,8 @@ export const intellijMacos: Record<string, string[]> = {
   "find.replaceInFile": ["Meta+R"],
   "find.next": ["Meta+G"],
   "find.previous": ["Meta+Shift+G"],
+  "find.wordAtCaret": [],
+  "find.previousWordAtCaret": [],
   "find.inPath": ["Meta+Shift+F"],
   "find.replaceInPath": ["Meta+Shift+R"],
   "find.usages": ["Alt+F7"],
@@ -77,6 +79,7 @@ export const intellijMacos: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": ["Ctrl+Shift+Space"],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Meta+Right"],
@@ -89,6 +92,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.showIntentions": ["Alt+Enter"],
   "code.applyQuickFix": ["Alt+Shift+Enter"],
   "code.reformat": ["Meta+Alt+L"],
+  "code.rearrange": [],
   "code.reformatDialog": ["Meta+Alt+Shift+L"],
   "code.optimizeImports": ["Ctrl+Alt+O"],
   "code.commentLine": ["Meta+/"],
@@ -96,6 +100,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.extendSelection": ["Alt+Up"],
   "code.shrinkSelection": ["Alt+Down"],
   "code.duplicateLine": ["Meta+D"],
+  "code.duplicateEntireLines": [],
   "code.deleteLine": ["Meta+Backspace"],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
@@ -122,6 +127,8 @@ export const intellijMacos: Record<string, string[]> = {
   // Before the HTTP / SQL consoles' ⌘↵ (Run), which wins there.
   "code.splitLine": ["Meta+Enter"],
   "editor.scrollToCenter": ["Ctrl+L"],
+  "editor.scrollUp": [],
+  "editor.scrollDown": [],
   "editor.codeBlockStart": ["Meta+Alt+["],
   "editor.codeBlockEnd": ["Meta+Alt+]"],
   "editor.codeBlockStartWithSelection": ["Meta+Alt+Shift+["],
@@ -151,9 +158,13 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.toggleInsertState": ["Insert"],
   "code.joinLines": ["Ctrl+Shift+J"],
   "code.toggleCase": ["Meta+Shift+U"],
+  "code.cycleCase": ["Alt+Shift+U"],
   "code.pasteFromHistory": ["Meta+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],
+  "code.fillParagraph": [],
+  "code.convertIndentsToSpaces": [],
+  "code.convertIndentsToTabs": [],
   "code.unwrap": ["Meta+Shift+Delete"],
   "code.foldSelection": ["Meta+."],
   "editor.toggleColumnSelection": ["Meta+Shift+8"],
@@ -253,10 +264,15 @@ export const intellijMacos: Record<string, string[]> = {
   // (ToggleDistractionFreeMode has no default). ⌃⌘D is macOS's system-wide
   // "Look Up in Dictionary" hotkey, which never reaches the webview.
   "editor.toggleZen": [],
+  "editor.toggleLineNumbers": [],
+  "editor.toggleIndentGuides": [],
+  "editor.toggleStickyLines": [],
+  "editor.toggleWhitespaces": [],
 
   // Build
   "build.buildProject": ["Meta+F9"],
-  "build.buildModule": ["Meta+Shift+F9"],
+  "build.buildModule": [],
+  "build.compileFile": ["Meta+Shift+F9"],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 
@@ -282,6 +298,8 @@ export const intellijMacos: Record<string, string[]> = {
   "run.editConfigs": ["Ctrl+Alt+Shift+R"],
   "debug.toggleBreakpoint": ["Meta+F8"],
   "debug.viewBreakpoints": ["Meta+Shift+F8"],
+  "debug.removeAllBreakpoints": [],
+  "debug.removeAllBreakpointsInFile": [],
   "debug.resume": ["Meta+Alt+R", "F9"],
   "debug.stepOver": ["F8"],
   "debug.stepInto": ["F7"],
@@ -329,6 +347,12 @@ export const intellijMacos: Record<string, string[]> = {
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Meta+Alt+Shift+C"],
   "vcs.log.goToRef": ["Meta+F"],
+  "vcs.log.editMessage": ["F2", "Shift+F6"],
+  "vcs.log.newBranch": ["Meta+Alt+N"],
+  "vcs.log.goToChild": ["Left"],
+  "vcs.log.goToParent": ["Right"],
+  "vcs.log.toggleBookmark": ["F3"],
+  "vcs.log.toggleBookmarkWithMnemonic": ["Alt+F3"],
   // View › Appearance › Zoom IDE
   "view.zoomIn": ["Ctrl+Alt+="],
   "view.zoomOut": ["Ctrl+Alt+-"],
@@ -374,6 +398,7 @@ export const intellijMacos: Record<string, string[]> = {
   "db.openValueWindow": [],
   "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
+  "python.console.executeSelection": ["Alt+Shift+E"],
   "db.nextResultTab": ["Meta+Shift+]", "Ctrl+Right"],
   "db.previousResultTab": ["Meta+Shift+[", "Ctrl+Left"],
   // Table editor with pending changes (after `vcs.rollback`, so ⌥⌘Z reverts the table's edits there).
@@ -397,6 +422,8 @@ export const intellijMacos: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Agents task list (when it has focus)
+  "agents.archiveTasks": ["Meta+Shift+E"],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
   "db.openConsole": ["Meta+Shift+L"],
   "db.newDataSource": [],

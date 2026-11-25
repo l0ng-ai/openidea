@@ -202,7 +202,8 @@ it("refreshes an existing chat's searchable model choices and switches through i
   const modelButton = screen.getByRole("button", { name: "Model" });
   fireEvent.click(modelButton);
   expect(await screen.findByRole("alert")).toHaveTextContent("discovery offline");
-  expect(screen.getByRole("option", { name: "session-only" })).toBeVisible();
+  expect(screen.queryByRole("option", { name: "session-only" })).not.toBeInTheDocument();
+  expect(screen.getByRole("option", { name: /^old/ })).toBeVisible();
   expect(screen.getByRole("option", { name: "second-cached" })).toBeVisible();
   expect(backend.refresh.mock.calls).toEqual([["second", false, null]]);
   expect(screen.queryByRole("option", { name: "big" })).not.toBeInTheDocument();
@@ -219,7 +220,8 @@ it("refreshes an existing chat's searchable model choices and switches through i
   await act(async () => pending.resolve(ok(fresh)));
 
   expect(modelButton).toHaveTextContent("old");
-  expect(screen.getByRole("option", { name: "session-only" })).toBeVisible();
+  expect(screen.queryByRole("option", { name: "session-only" })).not.toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "fresh" })).toBeVisible();
   expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("low");
   expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("plan");
   expect(screen.getByText("Earlier message")).toBeVisible();
@@ -509,7 +511,7 @@ it("discovers an uncached model's own settings before its first task and restore
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("option", { name: "small" }));
   await waitFor(() => expect(backend.refresh).toHaveBeenLastCalledWith("first", false, "small"));
-  expect(screen.getByText("Loading model settings…")).toHaveAttribute("role", "status");
+  expect(screen.getByRole("status", { name: "Loading model settings…" })).toBeVisible();
   expect(screen.queryByRole("dialog", { name: "Model" })).not.toBeInTheDocument();
   expect(backend.create).not.toHaveBeenCalled();
   await act(async () =>
@@ -527,14 +529,14 @@ it("discovers an uncached model's own settings before its first task and restore
       ),
     ),
   );
-  expect(screen.queryByText("Loading model settings…")).not.toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "Loading model settings…" })).not.toBeInTheDocument();
   const settings = screen.getByRole("button", { name: /^Model settings:/ });
   expect(settings).toHaveTextContent("medium");
   fireEvent.click(settings);
   fireEvent.click(screen.getByRole("radio", { name: "max" }));
   expect(screen.getByRole("radio", { name: "long_context" })).toBeVisible();
   fireEvent.click(screen.getByRole("radio", { name: "long_context" }));
-  fireEvent.click(screen.getByRole("button", { name: "Back to models" }));
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByTitle("big"));
   expect(settings).toHaveTextContent("high");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
@@ -560,39 +562,8 @@ it("does not rediscover a model that explicitly reports no per-model controls", 
     fireEvent.click(screen.getByTitle(model));
   }
   expect(backend.refresh).toHaveBeenCalledExactlyOnceWith("first", false, "big");
-  expect(screen.queryByText("Loading model settings…")).not.toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "Loading model settings…" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Reasoning" })).not.toBeInTheDocument();
-});
-
-it("inspects uncached settings without switching models or borrowing the current model's levels", async () => {
-  delete backend.providers[0]!.thoughtLevels!.small;
-  await connect();
-  render(<HomeEditor />);
-  await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
-  const pending = deferred<CatalogReply>();
-  backend.refresh.mockReturnValueOnce(pending.promise);
-  fireEvent.click(screen.getByRole("button", { name: "Model" }));
-  fireEvent.click(screen.getByRole("button", { name: "Configure small…" }));
-  expect(backend.refresh).toHaveBeenLastCalledWith("first", false, "small");
-  expect(screen.getByRole("status")).toHaveTextContent("Loading model settings…");
-  expect(screen.queryByRole("radio")).not.toBeInTheDocument();
-  await act(async () =>
-    pending.resolve(
-      ok(
-        catalog("first", {
-          thoughtLevels: {
-            ...catalog().thoughtLevels,
-            small: [option("effort", "thought_level", ["quick", "thorough"])],
-          },
-        }),
-      ),
-    ),
-  );
-  expect(screen.getByRole("radio", { name: "quick" })).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Back to models" }));
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("big");
-  expect(backend.setConfig).not.toHaveBeenCalled();
-  expect(backend.create).not.toHaveBeenCalled();
 });
 
 it("waits for an unrelated lookup and discovers only the latest selected model", async () => {

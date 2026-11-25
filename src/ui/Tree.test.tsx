@@ -319,6 +319,71 @@ describe("Tree speed search", () => {
     }
   });
 
+  it.each([
+    { os: "macos", preset: "intellij-macos", binding: "Meta+V", key: "v", modifiers: { metaKey: true } },
+    { os: "windows", preset: "intellij-windows", binding: "Ctrl+V", key: "v", modifiers: { ctrlKey: true } },
+    {
+      os: "windows",
+      preset: "intellij-windows",
+      binding: "Shift+Insert",
+      key: "Insert",
+      modifiers: { shiftKey: true },
+    },
+  ])("$binding routes clipboard text to speed search", ({ os, preset, binding, key, modifiers }) => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os });
+    const pasteFiles = vi.fn();
+    useKeymap.setState({ preset, overrides: { "test.paste": [binding] } });
+    const find = os === "macos" ? { metaKey: true } : { ctrlKey: true };
+    const dispose = [
+      registerAction({ id: "test.paste", title: "Paste", run: pasteFiles }),
+      installKeyboardDispatcher(),
+    ];
+    try {
+      const view = setup({
+        defaultExpanded: ["src", "main"],
+        roots: [...data, { id: "notes v1" }, { id: "notes  v1" }],
+      });
+      const tree = view.tree;
+      const paste = (text: string) =>
+        fireEvent.paste(tree, { clipboardData: { getData: () => text } } as unknown as ClipboardEventInit);
+      view.key("ArrowDown");
+      // Find arms the search with an empty query; the clipboard text becomes the query.
+      view.key("f", find);
+      expect(screen.getByRole("status").textContent).toBe("");
+      paste("index.t");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.t$/);
+      expect(view.lead()).toBe("index.ts");
+      // A line of pasted text joins the query as typing it would; a wrapped name stays one line.
+      paste("s");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.ts$/);
+      // Paste is the query's, not the view's file Paste, while the search is active.
+      view.key(key, modifiers);
+      expect(pasteFiles).not.toHaveBeenCalled();
+      // A blank clipboard changes nothing.
+      paste("   ");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.ts$/);
+      // Closed, the view's Paste owns the shortcut again.
+      view.key("Escape");
+      view.key(key, modifiers);
+      expect(pasteFiles).toHaveBeenCalledOnce();
+      expect(view.tree).toHaveFocus();
+      // A multi-line clipboard is flattened into the one-line query.
+      view.key("f", find);
+      paste("App\n.tsx");
+      expect(screen.getByRole("status")).toHaveTextContent(/^App \.tsx$/);
+      view.key("Escape");
+      view.key("f", find);
+      paste("notes  v1");
+      expect(screen.getByRole("status").textContent).toBe("notes  v1");
+      expect(view.lead()).toBe("notes  v1");
+    } finally {
+      dispose.forEach((d) => d());
+      useKeymap.setState({ overrides: {} });
+      usePlatform.setState({ os: previousOs });
+    }
+  });
+
   it("filter mode hides non-matching rows but keeps ancestors", () => {
     const { tree, key } = setup({ defaultExpanded: ["src", "main"], speedSearchMode: "filter" });
     key("ArrowDown");

@@ -20,7 +20,7 @@ export function activateEmbeddedDocuments() {
     notify: (message) => notifications().notify(message),
   });
   manager.start();
-  _provideDocumentAttacher((path) => attachDocument(manager, path));
+  _provideDocumentAttacher((path, options) => attachDocument(manager, path, options));
   _provideCodePreview((path) => previewExtensions(path, useProject.getState().settings?.editor, ipcBackend));
   const offColor = installColorScheme();
   const offSettings = useProject.subscribe((s, prev) => {
@@ -37,13 +37,17 @@ export function activateEmbeddedDocuments() {
       offSettings();
       offColor();
       manager.stop();
-      for (const model of manager.byPath.values()) {
-        await model.sync.whenIdle();
-        model.dispose();
-        await ipcBackend.close(model.doc);
-      }
+      const results = await Promise.allSettled(
+        [...manager.byPath.values()].map(async (model) => {
+          await model.sync.whenIdle();
+          model.dispose();
+          await ipcBackend.close(model.doc);
+        }),
+      );
       manager.byPath.clear();
       manager.byId.clear();
+      const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (failure) throw failure.reason;
     },
   };
 }

@@ -1,6 +1,6 @@
-use ide_core::NullSink;
+mod common;
+
 use ide_host::{Host, HostConfig, ops};
-use std::sync::Arc;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn links_are_validated_persisted_and_unlinked_without_removing_files() {
@@ -12,17 +12,7 @@ async fn links_are_validated_persisted_and_unlinked_without_removing_files() {
         std::fs::write(dir.join("settings.gradle"), "rootProject.name = 'same-name'").unwrap();
     }
     let config = base.join("config");
-    let host = Host::new(HostConfig {
-        config_dir: config.clone(),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..common::host_config(&base) });
     host.open_project("main", &root).unwrap();
     assert!(ops::build::gradle_link_projects(&host, "main", vec!["b".into()]).await.is_err());
     host.set_project_trust(&root, true, false).await.unwrap();

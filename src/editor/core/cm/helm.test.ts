@@ -4,8 +4,8 @@ import { completedSyntaxTree } from "@/test/syntax";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { findLanguageDescription, loadSupport } from "./languages";
 
-async function tokens(source: string) {
-  const desc = findLanguageDescription("Helm Template", "templates/applications.yaml")!;
+async function tokens(source: string, mode = "Helm Template") {
+  const desc = findLanguageDescription(mode, "")!;
   const support = await loadSupport(desc);
   const state = EditorState.create({ doc: source, extensions: [support!] });
   const result: { text: string; style: string }[] = [];
@@ -50,5 +50,23 @@ describe("Helm Template mode", () => {
     expect(out).toContainEqual(expect.objectContaining({ text: "{{/* line 1", style: "tok-comment" }));
     expect(out).toContainEqual(expect.objectContaining({ text: "line 2 */}}", style: "tok-comment" }));
     expect(out).toContainEqual(expect.objectContaining({ text: "replicas", style: "tok-propertyName" }));
+  });
+});
+
+describe("Go Template mode", () => {
+  it.each(["common.gotmpl", "message.tmpl", "docker-stack.yaml.go.tmpl"])("loads for %s", (path) => {
+    expect(findLanguageDescription(null, path)?.name).toBe("Go Template");
+  });
+
+  it("highlights actions and keeps host text plain", async () => {
+    const out = await tokens(
+      'services:\n  web: {{- if .Image }}{{ printf "nginx:%s" .Image }}{{ end -}}\n{{/* note */}}',
+      "Go Template",
+    );
+    expect(out).toContainEqual({ text: "if", style: "tok-keyword" });
+    expect(out).toContainEqual({ text: ".Image", style: "tok-propertyName" });
+    expect(out).toContainEqual({ text: '"nginx:%s"', style: "tok-string" });
+    expect(out.some(({ text }) => /services|web/.test(text))).toBe(false);
+    expect(out).toContainEqual({ text: "{{/* note */}}", style: "tok-comment" });
   });
 });

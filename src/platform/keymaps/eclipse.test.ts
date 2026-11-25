@@ -46,6 +46,8 @@ const shared = [
   ["navigate.fileStructure", "db.goToColumn"],
   ["find.replaceInFile", "agents.findInConversation", "vcs.log.goToRef"],
   ["find.next", "find.popup.nextResult"],
+  ["navigate.toggleBookmark", "vcs.log.toggleBookmark"],
+  ["navigate.toggleBookmarkWithMnemonic", "vcs.log.toggleBookmarkWithMnemonic"],
   ["find.previous", "find.popup.previousResult"],
   ["find.usages", "project.findUsages"],
   ["code.quickDocumentation", "db.quickDoc", "debug.setValue", "vcs.changelist.edit"],
@@ -287,4 +289,11 @@ it("renames in the project view although the preset shares Alt+Shift+R with the 
     disposers.forEach((dispose) => dispose());
     for (const key of ["projectOpen", "vcsAvailable", "projectViewFocus"]) clearContext(key);
   }
+});
+
+it("keeps Eclipse's Find Word at Caret binding and removals", () => {
+  expect(eclipseWindows["find.wordAtCaret"]).toEqual(["Ctrl+F12"]);
+  expect(eclipseWindows["find.previousWordAtCaret"]).toEqual([]);
+  expect(eclipseMacos["find.wordAtCaret"]).toEqual([]);
+  expect(eclipseMacos["find.previousWordAtCaret"]).toEqual([]);
 });

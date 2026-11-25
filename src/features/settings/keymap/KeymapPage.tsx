@@ -10,7 +10,7 @@ import { useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { allActions, useActions, type Action } from "@/platform/actions";
 import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS } from "@/platform/keymap";
-import { call, commands } from "@/platform/ipc";
+import { readDesktopText, writeDesktopText } from "@/platform/desktopFiles";
 import { notifications } from "@/workbench/contributions";
 import { ask, confirm, showError } from "@/workbench/messages";
 import {
@@ -41,6 +41,8 @@ import {
   isKeymapAction,
   keymapName,
   keymapSearchLabels,
+  parseShortcutQuery,
+  shortcutQueryMatches,
   removeBinding,
   removeConflicts,
   renameKeymap,
@@ -58,7 +60,7 @@ import { parseIdeaKeymap } from "@/platform/ideaKeymap";
 import { RecordShortcutDialog } from "./RecordShortcutDialog";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 type KNode =
   | { kind: "group"; key: string; name: string; path: string[]; children: KNode[] }
@@ -122,6 +124,7 @@ export function buildKeymapTree(
     return parent;
   };
   const q = query.toLowerCase();
+  const typedShortcut = query ? parseShortcutQuery(query) : null;
   for (const action of actions) {
     const bindings = resolveBindings(draft, action.id);
     if (!isKeymapAction(action, draft)) continue;
@@ -130,7 +133,9 @@ export function buildKeymapTree(
       hits = wordMatch(action.title, query);
       if (!hits) {
         const other =
-          action.id.toLowerCase().includes(q) || (action.keywords ?? []).some((k) => k.toLowerCase().includes(q));
+          action.id.toLowerCase().includes(q) ||
+          (action.keywords ?? []).some((k) => k.toLowerCase().includes(q)) ||
+          (!!typedShortcut && shortcutQueryMatches(bindings, typedShortcut));
         if (!other) continue;
         hits = [];
       }
@@ -225,7 +230,11 @@ export function KeymapPage() {
     ...Object.keys(PRESETS).map((id) => ({ value: id, label: PRESET_TITLES[id] ?? id })),
     ...Object.entries(customs)
       .sort(([, a], [, b]) => a.name.localeCompare(b.name))
-      .map(([id, k]) => ({ value: id, label: k.name, detail: tx`based on ${PRESET_TITLES[k.parent] ?? k.parent}` })),
+      .map(([id, k]) => ({
+        value: id,
+        label: k.name,
+        detail: tx`based on ${txPart(PRESET_TITLES[k.parent] ?? k.parent)}`,
+      })),
   ];
 
   const confirmDelete = async () => {
@@ -248,7 +257,7 @@ export function KeymapPage() {
     if (!path) return;
     let parsed;
     try {
-      parsed = parseIdeaKeymap(await call(commands.fsReadText(path)));
+      parsed = parseIdeaKeymap(await readDesktopText(path));
     } catch (e) {
       await showError(tx("Import Keymap"), e instanceof Error ? e.message : String(e));
       return;
@@ -263,7 +272,7 @@ export function KeymapPage() {
       body: (
         <>
           <div>
-            {tx`Imported '${name}' (based on ${PRESET_TITLES[parsed.parent] ?? parsed.parent}): ${parsed.applied} actions.`}
+            {tx`Imported '${name}' (based on ${txPart(PRESET_TITLES[parsed.parent] ?? parsed.parent)}): ${parsed.applied} actions.`}
           </div>
           {unknown.length > 0 && <div>{tx`Not available in OpenIDEA (${unknown.length}): ${unknown.join(", ")}.`}</div>}
           {parsed.skippedShortcuts > 0 && <div>{tx`Skipped ${parsed.skippedShortcuts} unsupported shortcuts.`}</div>}
@@ -289,9 +298,7 @@ export function KeymapPage() {
       draft,
     );
     try {
-      // The save dialog already confirmed replacing an existing file.
-      await call(commands.fsDelete(path)).catch(() => {});
-      await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(json))));
+      await writeDesktopText(path, json);
       notifications().notify({
         level: "info",
         title: tx("Keymap exported"),

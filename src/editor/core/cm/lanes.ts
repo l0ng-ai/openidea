@@ -6,6 +6,7 @@ import { EditorSelection, type EditorState, type Extension, type StateEffect } f
 import { foldedRanges, unfoldEffect } from "@codemirror/language";
 import { EditorView, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import { gutterLaneMarkers, scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { lockScrollbarCursor } from "@/ui/dragCursor";
 
 export const changeLane: Extension = gutter({
   class: "cm-openidea-lane",
@@ -42,7 +43,8 @@ export function scrollbarThumb(
   minThumb = MIN_THUMB,
 ): { top: number; bottom: number } | null {
   const max = scrollHeight - clientHeight;
-  if (max <= 0 || clientHeight <= 0) return null;
+  // A pixel of range is WebKit rounding after a resize, not content to scroll to.
+  if (max <= 1 || clientHeight <= 0) return null;
   const length = Math.min(clientHeight, Math.max(minThumb, (clientHeight * clientHeight) / scrollHeight));
   const top = (Math.min(Math.max(scrollTop, 0), max) / max) * (clientHeight - length);
   return { top, bottom: top + length };
@@ -72,6 +74,7 @@ class OverviewLane {
    * press on this strip stays here instead of reaching the text layer as a text drag.
    */
   private thumb: HTMLElement;
+  private endThumbDrag?: () => void;
 
   constructor(private view: EditorView) {
     this.scroller = view.scrollDOM;
@@ -252,6 +255,8 @@ class OverviewLane {
     const s = this.scroller;
     const thumb = scrollbarThumb(s.scrollTop, s.scrollHeight, s.clientHeight);
     if (!thumb) return;
+    this.endThumbDrag?.();
+    const unlock = lockScrollbarCursor();
     const startY = e.clientY;
     const startTop = s.scrollTop;
     const travel = s.scrollHeight - s.clientHeight;
@@ -260,11 +265,20 @@ class OverviewLane {
     const onMove = (ev: MouseEvent) => {
       s.scrollTop = startTop + ((ev.clientY - startY) * travel) / track;
     };
-    const onUp = () => {
+    const onUp = (event?: MouseEvent | PointerEvent | FocusEvent) => {
+      if (event?.type === "mouseup" && (event as MouseEvent).button !== 0) return;
+      if (event?.type === "pointercancel" && (event as PointerEvent).pointerType !== "mouse") return;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      this.endThumbDrag = undefined;
+      unlock();
       this.updateThumbPassThrough();
     };
+    this.endThumbDrag = onUp;
+    window.addEventListener("blur", onUp);
+    window.addEventListener("pointercancel", onUp);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
@@ -299,6 +313,7 @@ class OverviewLane {
   };
 
   destroy() {
+    this.endThumbDrag?.();
     if (this.markTimer !== undefined) window.clearTimeout(this.markTimer);
     this.dom.removeEventListener("mousedown", this.onMouseDown);
     this.thumb.removeEventListener("mousedown", this.onThumbMouseDown);

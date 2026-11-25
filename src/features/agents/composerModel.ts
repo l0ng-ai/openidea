@@ -11,7 +11,7 @@ import type {
   AgentTokens,
   AgentUsage,
 } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export interface FileRef {
   /** Absolute path (in the task's directory). */
@@ -373,6 +373,10 @@ export function mentionOf(rel: string, lines?: { from: number; to: number }): st
   return lines.from === lines.to ? `@${rel}:${lines.from}` : `@${rel}:${lines.from}-${lines.to}`;
 }
 
+/** Whether `text` holds exactly `mention` (as made by {@link mentionOf}): same file, same lines. */
+export const hasMention = (text: string, mention: string) =>
+  new RegExp(`(?:^|\\s)${escapeRe(mention)}(?=\\s|$)`).test(text);
+
 /** Whether `text` still holds the `@rel` mention, with or without a line range. */
 export const isMentioned = (text: string, rel: string) =>
   new RegExp(`@${escapeRe(rel)}(?![\\w./-])|@${escapeRe(rel)}:`).test(text);
@@ -562,7 +566,7 @@ const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
 export function limitLabel(l: AgentLimit, now: number): { short: string; percent: number; detail: string } {
   const known = LIMIT_WINDOWS[l.window];
   const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
-  const name = known ? tx(known.name) : l.window;
+  const name = known ? txPart(known.name) : l.window;
   const used = tx`${name}: ${percent}% used`;
   if (l.resetsMs == null)
     return {

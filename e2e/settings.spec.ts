@@ -1,5 +1,59 @@
 import { expect, stubDesktop, test } from "./fixtures";
 
+test("System Settings groups file controls before caches and keeps the idle timeout unit beside its field", async ({
+  workbench: page,
+}) => {
+  await page.keyboard.press("Meta+,");
+  const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  const system = dialog.getByRole("treeitem", { name: "System Settings", exact: true });
+  const search = dialog.getByRole("textbox", { name: "Search settings" });
+  await search.fill("Autosave");
+  await expect(system).toBeVisible();
+  await search.clear();
+  await system.click();
+  const exit = dialog.getByRole("checkbox", { name: "Confirm before exiting the IDE" });
+  const reopen = dialog.getByRole("checkbox", { name: "Reopen projects on startup" });
+  const project = dialog.getByRole("region", { name: "Project", exact: true });
+  const directory = project.getByRole("textbox", { name: /^Default directory/ });
+  const browse = project.getByRole("button", { name: "Browse", exact: true });
+  const idle = dialog.getByRole("checkbox", { name: "Save files if the IDE is idle for" });
+  const timeout = dialog.getByRole("textbox", { name: "Idle seconds" });
+  const unit = dialog.getByText("seconds", { exact: true });
+  const caches = dialog.getByRole("region", { name: "Caches", exact: true });
+  for (const width of [1120, 580]) {
+    await page.setViewportSize({ width, height: 760 });
+    await expect(async () => {
+      const [exitBox, projectBox, idleBox, timeoutBox, unitBox, cacheBox] = await Promise.all(
+        [exit, reopen, idle, timeout, unit, caches].map((item) => item.boundingBox()),
+      );
+      expect(exitBox!.y).toBeLessThan(projectBox!.y);
+      expect(projectBox!.y).toBeLessThan(idleBox!.y);
+      expect(idleBox!.y).toBeLessThan(cacheBox!.y);
+      expect(unitBox!.x).toBeGreaterThanOrEqual(timeoutBox!.x + timeoutBox!.width);
+      expect(unitBox!.y).toBeGreaterThan(timeoutBox!.y);
+      expect(unitBox!.y + unitBox!.height).toBeLessThanOrEqual(timeoutBox!.y + timeoutBox!.height + 1);
+      const [directoryBox, browseBox] = await Promise.all([directory.boundingBox(), browse.boundingBox()]);
+      expect(browseBox!.x).toBeGreaterThanOrEqual(directoryBox!.x + directoryBox!.width);
+      expect(browseBox!.y).toBeGreaterThanOrEqual(directoryBox!.y);
+      expect(browseBox!.y + browseBox!.height).toBeLessThanOrEqual(directoryBox!.y + directoryBox!.height + 1);
+    }).toPass({ timeout: 3000 });
+  }
+
+  const files = dialog.getByRole("region", { name: "Files", exact: true });
+  const sync = files
+    .getByRole("group", { name: "Synchronization", exact: true })
+    .getByRole("checkbox", { name: "Synchronize external changes when switching to the IDE window" });
+  await idle.check();
+  await timeout.fill("22");
+  await sync.uncheck();
+  await dialog.getByRole("button", { name: "OK", exact: true }).click();
+  await page.keyboard.press("Meta+,");
+  await system.click();
+  await expect(idle).toBeChecked();
+  await expect(timeout).toHaveValue("22");
+  await expect(sync).not.toBeChecked();
+});
+
 test("Add Python Interpreter keeps environment labels and fields inside their rows", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
   const settings = page.getByRole("dialog", { name: "Settings", exact: true });
@@ -120,15 +174,53 @@ test("Directory Mappings keeps the controls and headers visible while scrolling 
     name: "VCS of integrations/finance-and-order-reconciliation/ledger-adapter-32",
     exact: true,
   });
-  await vcs.click();
-  await page.getByRole("option", { name: "<none>", exact: true }).click();
-  await expect(vcs).toHaveText("<none>");
+  await name.click();
+  const remove = toolbar.getByRole("button", { name: "Remove", exact: true });
+  await expect(remove).toBeEnabled();
+  await remove.click();
+  const unregistered = table.getByRole("rowgroup", { name: "Unregistered roots" });
+  await expect(unregistered.getByRole("row").last()).toContainText("ledger-adapter-32");
+  await expect(repo).toHaveAttribute("aria-selected", "true");
+  await expect(repo.getByRole("cell", { name: "Git", exact: true })).toBeVisible();
+  await expect(remove).toBeDisabled();
 
-  await toolbar.getByRole("button", { name: "Add", exact: true }).click();
+  const add = toolbar.getByRole("button", { name: "Add", exact: true });
+  await add.click();
+  await expect(vcs).toHaveText("Git");
+  await expect(unregistered).toHaveCount(0);
+  await expect(table.getByText("billing-audit-adapter", { exact: true })).toHaveCount(0);
+
+  const ledger = (n: number) => table.getByText(`ledger-adapter-${n}`, { exact: true });
+  const selectedNames = () => table.locator("tr[aria-selected=true] td:first-child").allTextContents();
+  await ledger(29).click();
+  await ledger(31).click({ modifiers: ["Meta"] });
+  expect(await selectedNames()).toEqual([
+    "integrations/finance-and-order-reconciliation/ledger-adapter-29",
+    "integrations/finance-and-order-reconciliation/ledger-adapter-31",
+  ]);
+  await ledger(29).click();
+  await ledger(31).click({ modifiers: ["Shift"] });
+  await expect(table.locator("tr[aria-selected=true]")).toHaveCount(3);
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("");
+  await remove.click();
+  await expect(unregistered.getByRole("row")).toHaveCount(4);
+  await expect(unregistered.locator("tr[aria-selected=true]")).toHaveCount(3);
+  await expect(unregistered.getByText("ledger-adapter-29", { exact: true })).toBeVisible();
+  await expect(unregistered.getByText("ledger-adapter-30", { exact: true })).toBeVisible();
+  await expect(unregistered.getByText("ledger-adapter-31", { exact: true })).toBeVisible();
+  await ledger(32).click({ modifiers: ["Meta"] });
+  await expect(remove).toBeDisabled();
+  await expect(add).toBeDisabled();
+  await ledger(32).click({ modifiers: ["Meta"] });
+  await add.click();
+  await expect(unregistered).toHaveCount(0);
+  await expect(table.locator("tr[aria-selected=true]")).toHaveCount(3);
+
+  await add.click();
   const added = table.getByRole("row").filter({ hasText: "billing-audit-adapter" });
   await expect(added.getByText("billing-audit-adapter", { exact: true })).toBeInViewport({ ratio: 1 });
   await expect(added).toHaveAttribute("aria-selected", "true");
-  await toolbar.getByRole("button", { name: "Remove", exact: true }).click();
+  await remove.click();
   await expect(added).toHaveCount(0);
 
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -184,6 +276,7 @@ test("Language Servers page installs a tool with progress (in-memory installer)"
 test("font picker supports manual families and CJK fallback in browser development", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Settings" });
+  const preview = dialog.getByRole("textbox", { name: "Font preview", exact: true });
   await dialog.getByRole("textbox", { name: "Search settings" }).fill("Typography Settings");
   await dialog.getByRole("treeitem", { name: "Font", exact: true }).click();
   const family = dialog.getByRole("combobox", { name: "Font", exact: true });
@@ -201,16 +294,16 @@ test("font picker supports manual families and CJK fallback in browser developme
   await family.fill("Inter");
   await family.press("Enter");
   // Computed styles drop redundant quotes around single-token families ("Inter" -> Inter).
-  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /^Inter, "Inter Variable",/);
+  await expect(preview).toHaveCSS("font-family", /^Inter, "Inter Variable",/);
   const fallback = dialog.getByRole("combobox", { name: "Fallback font", exact: true });
   await family.fill("Maple Mono NF");
   await family.press("Enter");
   await fallback.fill("Inter");
   await fallback.press("Enter");
-  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /Maple Mono NF.*Inter Variable/);
+  await expect(preview).toHaveCSS("font-family", /Maple Mono NF.*Inter Variable/);
   await fallback.fill("思源宋体");
   await fallback.press("Enter");
-  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /思源宋体/);
+  await expect(preview).toHaveCSS("font-family", /思源宋体/);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toBeHidden();
 });

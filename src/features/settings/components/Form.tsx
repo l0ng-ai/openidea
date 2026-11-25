@@ -7,6 +7,8 @@ import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "rea
 import clsx from "clsx";
 import { Checkbox, IconButton, Input, Select as UiSelect, type SelectOption, T } from "@/ui";
 import { tx, useTx } from "@/platform/i18n";
+import { ColorPicker, rememberColor } from "@/ui/ColorPicker";
+import { fromOpaqueHex, toHex6 } from "@/ui/colorPickerValues";
 import { choosePath } from "@/platform/choosePath";
 import { isTauri } from "@/platform/ipc";
 import { highlightIndices } from "../model/pages";
@@ -43,7 +45,17 @@ export function SearchLabel({ text: source, className }: { text: string; classNa
   return <span className={className}>{parts}</span>;
 }
 
-export function Section({ title, children, className }: { title?: string; children: ReactNode; className?: string }) {
+export function Section({
+  title,
+  children,
+  className,
+  stackFields,
+}: {
+  title?: string;
+  children: ReactNode;
+  className?: string;
+  stackFields?: boolean;
+}) {
   return (
     <section className={clsx(styles.section, className)} aria-label={tx(title)}>
       {title && (
@@ -52,7 +64,7 @@ export function Section({ title, children, className }: { title?: string; childr
           <span className={styles.sectionRule} aria-hidden />
         </div>
       )}
-      <FormGroup className={styles.sectionBody}>{children}</FormGroup>
+      <FormGroup className={clsx(styles.sectionBody, stackFields && styles.stackFields)}>{children}</FormGroup>
     </section>
   );
 }
@@ -240,13 +252,23 @@ export interface ColorSwatchesProps {
   onChange: (value: string) => void;
   /** Offer a custom colour picker + hex field. */
   allowCustom?: boolean;
+  useColorPicker?: boolean;
   "aria-label"?: string;
 }
 
-export function ColorSwatches({ value, presets, onChange, allowCustom = true, ...aria }: ColorSwatchesProps) {
+export function ColorSwatches({
+  value,
+  presets,
+  onChange,
+  allowCustom = true,
+  useColorPicker = false,
+  ...aria
+}: ColorSwatchesProps) {
   const current = value.toLowerCase();
   const isPreset = presets.some((p) => p.value.toLowerCase() === current);
   const [hex, setHex] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  const initial = useColorPicker ? fromOpaqueHex(value) : null;
   const hexText = hex ?? (isPreset ? "" : value);
   const hexInvalid = hex !== null && hex !== "" && !HEX_COLOR.test(hex);
   return (
@@ -268,7 +290,41 @@ export function ColorSwatches({ value, presets, onChange, allowCustom = true, ..
           </button>
         );
       })}
-      {allowCustom && (
+      {allowCustom && initial && (
+        <>
+          <button
+            type="button"
+            className={clsx(styles.swatch, styles.custom, !isPreset && styles.swatchOn)}
+            aria-label={isPreset ? tx("Custom colour") : `${tx("Custom colour")} ${value}`}
+            aria-pressed={!isPreset}
+            aria-haspopup="dialog"
+            aria-expanded={!!anchor}
+            title={tx("Custom colour")}
+            onClick={(event) => {
+              event.currentTarget.focus();
+              setAnchor(anchor ? null : event.currentTarget);
+            }}
+          >
+            <span className={styles.swatchColor} style={!isPreset ? { background: value } : undefined} />
+          </button>
+          {anchor && (
+            <ColorPicker
+              anchor={anchor}
+              initial={initial}
+              opaque
+              onFinish={(commit, color) => {
+                setAnchor(null);
+                const next = toHex6(color);
+                if (commit && next !== toHex6(initial)) {
+                  rememberColor(color);
+                  onChange(next);
+                }
+              }}
+            />
+          )}
+        </>
+      )}
+      {allowCustom && !useColorPicker && (
         <>
           <label
             className={clsx(styles.swatch, styles.custom, !isPreset && styles.swatchOn)}
@@ -307,12 +363,15 @@ export function ColorSwatches({ value, presets, onChange, allowCustom = true, ..
 export interface GlobListEditorProps {
   value: readonly string[];
   onChange: (value: string[]) => void;
+  className?: string;
+  mono?: boolean;
   placeholder?: string;
   "aria-label"?: string;
   /** Shown for an empty list. */
   emptyText?: string;
   /** Accessible name of the inline editor. */
   itemLabel?: string;
+  fullWidth?: boolean;
   /** Entries are paths: + opens this chooser (Edit still takes typing). */
   browse?: { directory: boolean; title: string };
 }
@@ -321,9 +380,12 @@ export interface GlobListEditorProps {
 export function GlobListEditor({
   value,
   onChange,
+  className,
+  mono = true,
   placeholder = "**/pattern",
   emptyText = "No patterns",
   itemLabel = "Pattern",
+  fullWidth,
   browse,
   ...aria
 }: GlobListEditorProps) {
@@ -404,7 +466,7 @@ export function GlobListEditor({
 
   const rows = editing && editing.index >= value.length ? [...value, ""] : value;
   return (
-    <div className={styles.globEditor}>
+    <div className={clsx(styles.globEditor, !fullWidth && styles.globCompact, className)}>
       <div className={styles.listToolbar} role="toolbar" aria-controls={listId}>
         <IconButton icon="plus" title="Add" size="small" onClick={() => void add()} />
         <IconButton icon="minus" title="Remove" size="small" disabled={selected === null} onClick={remove} />
@@ -433,18 +495,19 @@ export function GlobListEditor({
         )}
         {rows.map((glob, i) => (
           <li
+            // oxlint-disable-next-line react/no-array-index-key -- globs can repeat; position is the identity
             key={i}
             id={`${listId}-${i}`}
             role="option"
             aria-selected={selected === i}
-            className={clsx(styles.globRow, selected === i && styles.globSelected)}
+            className={clsx(styles.globRow, mono && styles.globMono, selected === i && styles.globSelected)}
             onMouseDown={() => setSelected(i)}
             onDoubleClick={() => setEditing({ index: i, text: glob })}
           >
             {editing?.index === i ? (
               <Input
                 autoFocus
-                mono
+                mono={mono}
                 variant="bare"
                 className={styles.globInput}
                 value={editing.text}

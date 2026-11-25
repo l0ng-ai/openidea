@@ -71,6 +71,11 @@ pub struct SpellingSettings {
     pub project_words: Vec<String>,
     /// Custom dictionaries: plain word lists or Hunspell `.dic` files.
     pub custom_dictionaries: Vec<String>,
+    /// Where "Save '…' to dictionary" writes: `project`, `application`, or a
+    /// `spelling.customDictionaries` entry verbatim; empty (the default) is
+    /// project when one is open, application otherwise.
+    #[specta(optional)]
+    pub default_dictionary: Option<String>,
 }
 
 /// Changes to one inspection; absent fields keep the inspection's defaults.

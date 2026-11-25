@@ -35,6 +35,7 @@ test("parameter info wraps long parameters and follows the editor width", async 
     activeSignature: 0,
     activeParameter: 1,
   });
+  await editor.locator(".cm-content").evaluate((el) => el.style.setProperty("font-size", "20px"));
   await page.setViewportSize({ width: 560, height: 650 });
   await expect
     .poll(async () => {
@@ -44,8 +45,14 @@ test("parameter info wraps long parameters and follows the editor width", async 
     .toBe(true);
   await expect.poll(() => popup.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   await expect(popup.locator("b")).toHaveText(parameter);
-  const fontSize = await editor.locator(".cm-content").evaluate((el) => getComputedStyle(el).fontSize);
-  await expect(popup).toHaveCSS("font-size", fontSize);
+  const ui = await page.locator("body").evaluate((el) => {
+    const { fontFamily, fontSize } = getComputedStyle(el);
+    return { fontFamily, fontSize };
+  });
+  await expect(popup).toHaveCSS("font-family", ui.fontFamily);
+  await expect(popup).toHaveCSS("font-size", ui.fontSize);
+  await expect(popup.locator(".cm-lsp-signature-active")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(popup.locator("b")).toHaveCSS("font-weight", "700");
   await page.keyboard.press("Escape");
   await expect(popup).toBeHidden();
 });
@@ -55,8 +62,14 @@ test("parameter info keeps the active overload visible and scrolls to the others
     signature("formatInvoice", [`order: Cart${i}`, "currency: string"]),
   );
   const { popup } = await openParameterInfo(page, { signatures, activeSignature: 16, activeParameter: 1 });
-  await expect(popup.locator(".cm-lsp-signature-row")).toHaveCount(signatures.length);
-  const active = popup.locator(".cm-lsp-signature-active b");
+  const rows = popup.locator(".cm-lsp-signature-row");
+  await expect(rows).toHaveCount(signatures.length);
+  const activeRow = popup.locator(".cm-lsp-signature-active");
+  await expect(activeRow).toHaveAttribute("aria-current", "true");
+  await expect(activeRow).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect.poll(() => rows.nth(1).evaluate((el) => getComputedStyle(el, "::before").borderTopWidth)).toBe("1px");
+  await expect.poll(() => rows.first().evaluate((el) => getComputedStyle(el, "::before").content)).toBe("none");
+  const active = activeRow.locator("b");
   await expect(active).toHaveText("currency: string");
   await expect
     .poll(async () => {

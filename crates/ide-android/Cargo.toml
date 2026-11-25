@@ -10,6 +10,3 @@ ide-core.workspace = true
 serde.workspace = true
 specta.workspace = true
 which = "8"
-
-[dev-dependencies]
-tempfile.workspace = true

@@ -5,7 +5,7 @@ use crate::cli::{self, run};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Merge dialog › Modify options (shared by the Pull dialog).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -19,22 +19,45 @@ pub struct MergeOptions {
     pub squash: bool,
     #[serde(default)]
     pub no_commit: bool,
+    #[serde(default)]
+    pub no_verify: bool,
+    /// Merge histories whose commits have no common ancestor.
+    #[serde(default)]
+    pub allow_unrelated_histories: bool,
     /// `-m`: message of the merge commit (Merge dialog only).
     #[serde(default)]
     pub message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MergeOutcome {
+    Done,
+    LocalChanges { files: Vec<String> },
+    Conflicts,
+    AlreadyUpToDate,
+    ReadyToCommit,
+    Squashed,
 }
 
 /// Rebase dialog options.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RebaseOptions {
-    /// `--onto <newbase>`: replay `upstream..HEAD` onto this revision instead.
+    /// Replay the selected commits onto this revision instead.
     #[serde(default)]
     pub onto: Option<String>,
+    /// Switch to this local branch before rebasing it.
+    #[serde(default)]
+    pub branch: Option<String>,
     #[serde(default)]
     pub rebase_merges: bool,
     #[serde(default)]
     pub keep_empty: bool,
+    #[serde(default)]
+    pub update_refs: bool,
+    #[serde(default)]
+    pub autosquash: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -49,6 +72,10 @@ pub struct Worktree {
     pub main: bool,
     pub locked: bool,
     pub prunable: bool,
+    /// This worktree belongs to a repository checked out as a submodule.
+    #[serde(default)]
+    #[specta(optional)]
+    pub submodule: bool,
 }
 
 /// Manage Remotes edits.
@@ -98,6 +125,9 @@ fn merge_flags(o: &MergeOptions) -> IdeResult<Vec<&'static str>> {
     if o.no_commit {
         flags.push("--no-commit");
     }
+    if o.no_verify {
+        flags.push("--no-verify");
+    }
     Ok(flags)
 }
 
@@ -108,6 +138,9 @@ pub(crate) fn merge_args(branches: &[String], o: &MergeOptions) -> IdeResult<Vec
     }
     let mut args: Vec<String> = vec!["merge".into()];
     args.extend(merge_flags(o)?.into_iter().map(String::from));
+    if o.allow_unrelated_histories {
+        args.push("--allow-unrelated-histories".into());
+    }
     match o.message.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
         Some(m) => args.extend(["-m".into(), m.to_string()]),
         None => args.push("--no-edit".into()),
@@ -119,7 +152,7 @@ pub(crate) fn merge_args(branches: &[String], o: &MergeOptions) -> IdeResult<Vec
 }
 
 /// `git rebase` arguments for the Rebase dialog.
-pub(crate) fn rebase_args(upstream: &str, o: &RebaseOptions) -> IdeResult<Vec<String>> {
+pub(crate) fn rebase_args(upstream: Option<&str>, o: &RebaseOptions) -> IdeResult<Vec<String>> {
     let mut args: Vec<String> = vec!["rebase".into()];
     if o.rebase_merges {
         args.push("--rebase-merges".into());
@@ -127,26 +160,44 @@ pub(crate) fn rebase_args(upstream: &str, o: &RebaseOptions) -> IdeResult<Vec<St
     if o.keep_empty {
         args.push("--keep-empty".into());
     }
+    if o.update_refs {
+        args.push("--update-refs".into());
+    }
+    if let Some(autosquash) = o.autosquash {
+        args.push(if autosquash { "--autosquash" } else { "--no-autosquash" }.into());
+    }
     if let Some(onto) = o.onto.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         args.extend(["--onto".into(), arg(onto, "revision")?]);
     }
-    args.push(arg(upstream, "revision")?);
+    if let Some(upstream) = upstream {
+        args.push(arg(upstream, "revision")?);
+    } else {
+        args.push("--root".into());
+    }
+    if let Some(branch) = o.branch.as_deref() {
+        args.push(arg(branch, "branch")?);
+    }
     Ok(args)
 }
 
 /// `git pull` arguments for the Pull dialog: `remote` and its `branches` (none = the
 /// upstream's configured merge branch).
-pub(crate) fn pull_args(remote: &str, branches: &[String], rebase: bool, o: &MergeOptions) -> IdeResult<Vec<String>> {
+pub(crate) fn pull_args(
+    remote: &str,
+    branches: &[String],
+    rebase: Option<bool>,
+    o: &MergeOptions,
+) -> IdeResult<Vec<String>> {
     let mut args: Vec<String> = vec!["pull".into(), "--progress".into()];
-    if rebase {
+    if rebase == Some(true) {
         if o.no_ff || o.ff_only || o.squash || o.no_commit {
             return Err(IdeError::invalid("--rebase cannot be combined with merge options"));
         }
         args.push("--rebase".into());
-    } else {
+    } else if rebase == Some(false) {
         args.push("--no-rebase".into());
-        args.extend(merge_flags(o)?.into_iter().map(String::from));
     }
+    args.extend(merge_flags(o)?.into_iter().map(String::from));
     args.push(arg(remote, "remote")?);
     for b in branches {
         args.push(arg(b, "branch")?);
@@ -171,6 +222,7 @@ pub(crate) fn parse_worktrees(text: &str) -> Vec<Worktree> {
                         main: out.is_empty(),
                         locked: false,
                         prunable: false,
+                        submodule: false,
                     })
                 }
                 "HEAD" => {
@@ -208,20 +260,68 @@ pub(crate) fn parse_worktrees(text: &str) -> Vec<Worktree> {
 }
 
 impl Repo {
+    /// Git can list the repository's separate Git directory as the first worktree.
+    fn main_worktree_checkout(&self, reported: &Path) -> Option<PathBuf> {
+        let repo = self.gix().ok()?;
+        let common = crate::repo::absolute(repo.common_dir()).ok()?;
+        if reported != common {
+            return None;
+        }
+        if self.git_dir == common {
+            return Some(self.root().to_path_buf());
+        }
+        let configured = repo.config_snapshot().string("core.worktree")?;
+        let path = crate::repo::absolute(&common.join(gix::path::from_bstr(&configured).ok()?)).ok()?;
+        let main = Self::discover(&path).ok()??;
+        (main.root() == path && main.git_dir == common).then_some(path)
+    }
+
     /// Merges `branches` into the current branch (Git › Merge…).
     pub fn merge_with(&self, branches: &[String], options: &MergeOptions) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let args = merge_args(branches, options)?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         crate::preserve::around(self, "Local changes saved before merge", || run(self.root(), &args, None).map(|_| ()))
     }
 
-    /// Rebases the current branch onto `upstream` (or `upstream..HEAD` onto `options.onto`).
-    pub fn rebase_with(&self, upstream: &str, options: &RebaseOptions) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+    /// Tries the merge as requested. Smart Merge preserves local changes after user confirmation.
+    pub fn merge_attempt(&self, branches: &[String], options: &MergeOptions, smart: bool) -> IdeResult<MergeOutcome> {
+        let _scope = self.execution_scope();
+        let branches = branches
+            .iter()
+            .map(|branch| crate::write::unambiguous_branch_name(self, branch.trim()).to_owned())
+            .collect::<Vec<_>>();
+        let args = merge_args(&branches, options)?;
+        let args: Vec<_> = args.iter().map(String::as_str).collect();
+        crate::write::merge_attempt(self, &args, options, smart)
+    }
+
+    /// Predicts which tracked local changes a branch merge may have to save.
+    pub fn merge_affected_files(&self, branch: &str) -> IdeResult<Vec<String>> {
+        let _scope = self.execution_scope();
+        crate::write::merge_affected_files(self, branch)
+    }
+
+    /// Rebases the chosen branch or HEAD. Without an upstream, rebases from the root.
+    pub fn rebase_with(&self, upstream: Option<&str>, options: &RebaseOptions) -> IdeResult<()> {
+        let _scope = self.execution_scope();
         let args = rebase_args(upstream, options)?;
+        self.validate_rebase(options)?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         crate::preserve::around(self, "Local changes saved before rebase", || run(self.root(), &args, None).map(|_| ()))
+    }
+
+    pub(crate) fn validate_rebase(&self, options: &RebaseOptions) -> IdeResult<()> {
+        if self.operation()?.is_some() {
+            return Err(IdeError::invalid("another merge, rebase, cherry-pick or revert is in progress"));
+        }
+        if let Some(branch) = options.branch.as_deref() {
+            let name = format!("refs/heads/{}", branch.trim());
+            if self.gix()?.try_find_reference(name.as_str()).map_err(crate::repo::gx)?.is_none() {
+                return Err(IdeError::invalid("Select an existing local branch to rebase."));
+            }
+        }
+        Ok(())
     }
 
     /// Git › Pull…: pulls `branches` of `remote` into the current branch.
@@ -229,12 +329,12 @@ impl Repo {
         &self,
         remote: &str,
         branches: &[String],
-        rebase: bool,
+        rebase: Option<bool>,
         options: &MergeOptions,
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let args = pull_args(remote, branches, rebase, options)?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         crate::preserve::around(self, "Local changes saved before update", || {
@@ -244,7 +344,7 @@ impl Repo {
 
     /// Manage Remotes: adds, removes or edits a remote.
     pub fn edit_remote(&self, edit: &RemoteEdit) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         match edit {
             RemoteEdit::Add { name, url } => {
                 let (name, url) = (arg(name, "remote name")?, arg(url, "URL")?);
@@ -268,15 +368,29 @@ impl Repo {
 
     /// Working trees of the repository, the main one first.
     pub fn worktrees(&self) -> IdeResult<Vec<Worktree>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let out = run(self.root(), &["worktree", "list", "--porcelain"], None)?;
-        Ok(parse_worktrees(&out.stdout_str()))
+        let mut trees = parse_worktrees(&out.stdout_str());
+        if let Some(main) = trees.first_mut().filter(|main| main.head.is_some()) {
+            if let Some(path) = self.main_worktree_checkout(&main.path) {
+                main.path = path.into();
+            }
+            let parent = main.path.parent().and_then(|path| Self::discover(path).ok().flatten());
+            let submodule =
+                parent.and_then(|parent| parent.file_mode_at(&main.path, Some(":0")).ok().flatten()).as_deref()
+                    == Some("160000");
+            if submodule {
+                for tree in &mut trees {
+                    tree.submodule = true;
+                }
+            }
+        }
+        Ok(trees)
     }
 
-    /// Git › New Worktree…: checks out `commitish` at `path`, on a new branch `new_branch`
-    /// when given (otherwise `commitish` must be a branch not checked out elsewhere).
+    /// Checks out a local branch, a new branch, or a detached revision in a new worktree.
     pub fn add_worktree(&self, path: &Path, commitish: &str, new_branch: Option<&str>) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let path = path.to_string_lossy().into_owned();
         let commitish = arg(commitish, "revision")?;
         let mut args: Vec<String> = vec!["worktree".into(), "add".into()];
@@ -285,6 +399,8 @@ impl Repo {
                 args.push("--no-track".into());
             }
             args.extend(["-b".into(), arg(b, "branch name")?]);
+        } else if commitish.starts_with("refs/tags/") {
+            args.push("--detach".into());
         }
         args.extend(["--".into(), path, commitish]);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -294,7 +410,7 @@ impl Repo {
     /// Move Worktree…: moves a linked worktree's folder to exactly `to`. An empty folder there
     /// is replaced (Git would move the worktree inside it); any other existing `to` is refused.
     pub fn move_worktree(&self, path: &Path, to: &Path) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         if std::fs::symlink_metadata(to).is_ok() {
             let empty_dir = to.is_dir() && std::fs::read_dir(to).is_ok_and(|mut d| d.next().is_none());
             if !empty_dir {
@@ -307,7 +423,7 @@ impl Repo {
     }
 
     pub fn remove_worktree(&self, path: &Path, force: bool) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let path = path.to_string_lossy().into_owned();
         let mut args = vec!["worktree", "remove"];
         if force {
@@ -315,6 +431,17 @@ impl Repo {
         }
         args.extend(["--", &path]);
         run(self.root(), &args, None).map(|_| ())
+    }
+
+    pub fn set_worktree_locked(&self, path: &Path, locked: bool) -> IdeResult<()> {
+        let _scope = self.execution_scope();
+        let operation = if locked { "lock" } else { "unlock" };
+        run(self.root(), &["worktree", operation, "--", &path.to_string_lossy()], None).map(|_| ())
+    }
+
+    pub fn prune_worktrees(&self) -> IdeResult<()> {
+        let _scope = self.execution_scope();
+        run(self.root(), &["worktree", "prune", "--expire", "now"], None).map(|_| ())
     }
 }
 
@@ -324,8 +451,17 @@ mod tests {
 
     #[test]
     fn merge_args_follow_the_options() {
-        let o = MergeOptions { no_ff: true, message: Some("Merge it".into()), ..Default::default() };
-        assert_eq!(merge_args(&["dev".into()], &o).unwrap(), ["merge", "--no-ff", "-m", "Merge it", "dev"]);
+        let o = MergeOptions {
+            no_ff: true,
+            no_verify: true,
+            allow_unrelated_histories: true,
+            message: Some("Merge it".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            merge_args(&["dev".into()], &o).unwrap(),
+            ["merge", "--no-ff", "--no-verify", "--allow-unrelated-histories", "-m", "Merge it", "dev"]
+        );
         assert_eq!(
             merge_args(&["a".into(), "b".into()], &MergeOptions::default()).unwrap(),
             ["merge", "--no-edit", "a", "b"]
@@ -338,18 +474,37 @@ mod tests {
 
     #[test]
     fn rebase_and_pull_args() {
-        let o = RebaseOptions { onto: Some("main".into()), rebase_merges: true, keep_empty: false };
-        assert_eq!(rebase_args("feature~3", &o).unwrap(), ["rebase", "--rebase-merges", "--onto", "main", "feature~3"]);
+        let o = RebaseOptions { onto: Some("main".into()), rebase_merges: true, ..Default::default() };
         assert_eq!(
-            pull_args("origin", &["main".into()], false, &MergeOptions { ff_only: true, ..Default::default() })
+            rebase_args(Some("feature~3"), &o).unwrap(),
+            ["rebase", "--rebase-merges", "--onto", "main", "feature~3"]
+        );
+        let root = RebaseOptions {
+            onto: Some("main".into()),
+            branch: Some("topic".into()),
+            update_refs: true,
+            autosquash: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            rebase_args(None, &root).unwrap(),
+            ["rebase", "--update-refs", "--no-autosquash", "--onto", "main", "--root", "topic"]
+        );
+        assert!(rebase_args(Some("--quit"), &o).is_err());
+        assert_eq!(
+            pull_args("origin", &["main".into()], Some(false), &MergeOptions { ff_only: true, ..Default::default() })
                 .unwrap(),
             ["pull", "--progress", "--no-rebase", "--ff-only", "origin", "main"]
         );
         assert_eq!(
-            pull_args("origin", &[], true, &MergeOptions::default()).unwrap(),
-            ["pull", "--progress", "--rebase", "origin"]
+            pull_args("origin", &[], Some(true), &MergeOptions { no_verify: true, ..Default::default() }).unwrap(),
+            ["pull", "--progress", "--rebase", "--no-verify", "origin"]
         );
-        assert!(pull_args("origin", &[], true, &MergeOptions { squash: true, ..Default::default() }).is_err());
+        assert_eq!(
+            pull_args("origin", &["main".into()], None, &MergeOptions::default()).unwrap(),
+            ["pull", "--progress", "origin", "main"]
+        );
+        assert!(pull_args("origin", &[], Some(true), &MergeOptions { squash: true, ..Default::default() }).is_err());
     }
 
     #[test]

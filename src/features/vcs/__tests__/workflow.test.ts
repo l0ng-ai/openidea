@@ -2,14 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { BranchInfo } from "@/bindings";
 import { addBlankLineAfterSubject, messageProblems, wrapAtMargin } from "../CommitView";
 import { linkifyIssues } from "../issueLinks";
-import {
-  isProtectedBranch,
-  isLeaseRejected,
-  isPushRejected,
-  pushCandidates,
-  pushRepoCommits,
-  type RepoPush,
-} from "../remoteUi";
+import { isProtectedBranch } from "../branches";
+import { isLeaseRejected, isPushRejected, pushCandidates, pushRepoCommits, type RepoPush } from "../remoteUi";
 import { attentionRepo } from "../store";
 import { statusDecorations } from "../model";
 
@@ -112,7 +106,7 @@ describe("several repositories", () => {
     expect(attentionRepo("/p", {}, {})).toBeNull();
   });
 
-  it("lists every repository on a branch, up-to-date ones too", () => {
+  it("lists repositories with a branch or a detached commit, including up-to-date ones", () => {
     const branch = (head: string | null, upstream: string | null) => ({
       head,
       headCommit: "c1",
@@ -127,8 +121,9 @@ describe("several repositories", () => {
       { root: "/p/a", branch: branch("main", "origin/main"), commits: [] },
       { root: "/p/b", branch: branch("feature", null), commits: [commit] },
       { root: "/p/c", branch: branch(null, null), commits: [] },
+      { root: "/p/d", branch: { ...branch(null, null), headCommit: null }, commits: [] },
     ];
-    expect(pushCandidates(repos).map((r) => r.root)).toEqual(["/p", "/p/a", "/p/b"]);
+    expect(pushCandidates(repos).map((r) => r.root)).toEqual(["/p", "/p/a", "/p/b", "/p/c"]);
   });
 });
 
@@ -149,6 +144,22 @@ describe("pushRepoCommits", () => {
           error: "fatal: ambiguous argument '@{u}..HEAD': unknown revision or path not in the working tree.",
         })
       : Promise.resolve({ status: "ok", data: [{ id: "c1" }] });
+
+  it("loads the push destination's commits before the live preview resolves", async () => {
+    vcsLog.mockReset().mockResolvedValue({ status: "ok", data: [{ id: "c1" }] });
+    await expect(
+      pushRepoCommits("/p", {
+        ...branch("feature", "origin/feature"),
+        outgoing: { remote: "fork", branch: "review", reference: "refs/remotes/published/review", count: 1 },
+      }),
+    ).resolves.toEqual([{ id: "c1" }]);
+    expect(vcsLog).toHaveBeenCalledWith(
+      "/p",
+      expect.objectContaining({
+        range: "refs/remotes/published/review..refs/heads/feature",
+      }),
+    );
+  });
 
   it("lists the commits no remote branch has when the upstream no longer resolves", async () => {
     vcsLog.mockReset().mockImplementation(upstreamGone);
@@ -209,9 +220,13 @@ describe("pushRepoCommits", () => {
     expect(vcsLog).toHaveBeenCalledWith("/p", expect.objectContaining({ range: "@{u}..HEAD", limit: 1000 }));
   });
 
-  it("lists no commits for a detached HEAD", async () => {
-    vcsLog.mockClear();
-    await expect(pushRepoCommits("/p", branch(null, null))).resolves.toEqual([]);
-    expect(vcsLog).not.toHaveBeenCalled();
+  it("lists unpublished commits relative to the captured detached HEAD", async () => {
+    vcsLog.mockReset().mockResolvedValue({ status: "ok", data: [{ id: "c1" }] });
+    vcsBranches.mockReset().mockResolvedValue({ status: "ok", data: [{ name: "origin/main", remote: true }] });
+    await expect(pushRepoCommits("/p", branch(null, null))).resolves.toEqual([{ id: "c1" }]);
+    expect(vcsLog).toHaveBeenCalledWith(
+      "/p",
+      expect.objectContaining({ branch: "c1", range: "c1 ^refs/remotes/origin/main", limit: 1000 }),
+    );
   });
 });

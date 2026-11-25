@@ -79,12 +79,19 @@ class LineOffsets {
 }
 
 /** Line fragments of two texts with their inner word changes, as IDEA's diff viewer computes them. */
-export function compareTexts(text1: string, text2: string, options: CompareOptions): LineFragment[] {
+export function compareTexts(text1: string, text2: string, options: CompareOptions) {
   const { policy } = options;
-  const fragments = options.words
-    ? compareLinesInner(text1, text2, policy)
-    : compareLineFragments(text1, text2, policy);
-  return processBlocks(fragments, text1, text2, policy, !options.split, !!options.trimChunks);
+  const raw = compareLineFragments(text1, text2, policy);
+  const fragments = processBlocks(
+    options.words ? innerFragments(raw, text1, text2, policy) : raw,
+    text1,
+    text2,
+    policy,
+    !options.split,
+    !!options.trimChunks,
+  );
+  // Ignored empty lines can still shift the line numbers of matching rows.
+  return { fragments, lineChanges: options.trimChunks ? raw : fragments };
 }
 
 /** Changed lines (ComparisonManagerImpl.compareLines). */

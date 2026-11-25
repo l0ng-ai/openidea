@@ -1,17 +1,76 @@
 .error {
   color: var(--danger);
 }
-.color {
-  display: inline-flex;
+.fileColorsLayout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  font-size: var(--fs-ui);
+}
+.colorOptions {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-1-5);
+  column-gap: var(--space-4);
+}
+.colorOptions > * {
+  min-width: 0;
+}
+.colorRows {
+  height: clamp(144px, 30vh, 264px);
+  overflow: auto;
+  scroll-padding-top: var(--h-list-row);
+}
+.colorRows th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-control);
+  border-bottom: 0;
+  box-shadow: inset 0 -1px var(--border);
+}
+.colorColumn {
+  width: 40%;
+}
+.scopeButton {
+  display: block;
+  width: 100%;
+  height: var(--h-list-row);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  overflow: hidden;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scopeButton:focus-visible {
+  outline-offset: -2px;
+}
+.colorRows .emptyColorRow:hover {
+  background: none;
+}
+.colorRows .emptyColorRow td {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .swatch {
-  flex: none;
-  width: 12px;
-  height: 12px;
+  display: inline-block;
+  width: calc(var(--space-4) + var(--space-2));
+  height: var(--space-3);
+  margin-inline-end: var(--space-2);
   border-radius: 3px;
   border: 1px solid var(--border-strong);
+  vertical-align: middle;
+}
+.colorDetail [role="radiogroup"] {
+  flex-wrap: wrap;
+}
+.colorDetail [role="radiogroup"] > * {
+  flex-shrink: 0;
+  max-width: 100%;
 }
 .custom {
   display: inline-flex;

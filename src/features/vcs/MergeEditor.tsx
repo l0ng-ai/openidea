@@ -21,6 +21,7 @@ import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } fro
 import { mergeDividers } from "./mergeDividers";
 import { syncMergeScroll } from "./mergeScroll";
 import { mergeTitles } from "./conflicts";
+import { acceptConflictSide } from "./conflictsUi";
 import {
   mergeChanged,
   mergeStripe,
@@ -107,13 +108,14 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     theirs: string;
     base: string | null;
     sides: MergeSides;
-    deleted: Record<MergeSide, boolean>;
   } | null>(null);
+  const [binary, setBinary] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lang, setLang] = useState<Extension | null>(null);
   const [summary, setSummary] = useState<MergeSummary>(NOTHING_LEFT);
   const [autoApply, setAutoApply] = useState(readAutoApply);
   const [resolved, setResolved] = useState(false);
+  const accepting = useRef(false);
   const paneId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<MergeSide | "result">("result");
@@ -140,18 +142,21 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const load = useCallback(async () => {
     try {
       const v = await call(commands.vcsConflictVersions(path));
-      if ([v.base, v.ours, v.theirs].some((text) => text?.includes("\0"))) {
-        throw new Error(tx("Binary files cannot be resolved in the merge editor."));
+      const binaryContent = !!v.binary || [v.base, v.ours, v.theirs].some((text) => text?.includes("\0"));
+      setBinary(binaryContent);
+      setError(null);
+      if (binaryContent) {
+        setState(null);
+        return;
       }
       setState({
         ours: v.ours ?? "",
         theirs: v.theirs ?? "",
         base: v.base,
         sides: v.sides,
-        deleted: { left: v.ours === null, right: v.theirs === null },
       });
-      setError(null);
     } catch (e) {
+      setBinary(false);
       setError(errorMessage(e));
     }
   }, [path]);
@@ -284,23 +289,24 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     if (first) moveTo(v, first.from);
   };
 
-  /** Saves `text` as the resolved file and stages it; like IDEA, that closes the merge editor. */
-  const writeResolved = async (text: string | null) => {
+  const closeResolved = async () => {
+    setResolved(true);
+    await refreshNow();
+    await editorService().closeInput?.(input.key);
+  };
+
+  /** Saves the edited merge result as text and stages it. */
+  const writeResolved = async (text: string) => {
     const ok = await runOp(
       tx`Resolve ${baseName(path)}`,
       async () => {
-        if (text === null) await call(commands.fsDelete(path));
-        else await writeFileText(path, text, { save: true, exact: true });
+        await writeFileText(path, text, { save: true, exact: true });
         await call(commands.vcsStage([path]));
         return true;
       },
       { success: tx`${baseName(path)}: conflicts resolved` },
     );
-    if (ok) {
-      setResolved(true);
-      await refreshNow();
-      await editorService().closeInput?.(input.key);
-    }
+    if (ok) await closeResolved();
   };
 
   const apply = async () => {
@@ -331,18 +337,23 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   /** Accept Yours / Accept Theirs: that version as it is, whatever was done in the result. */
   const acceptSide = async (side: MergeSide) => {
-    if (!state) return;
-    if (
-      modified() &&
-      !(await confirmDialog({
-        title: side === "left" ? "Accept Yours" : "Accept Theirs",
-        message: "The result was changed. Discard the changes and take this version as it is?",
-        okLabel: "Discard Changes",
-        danger: true,
-      }))
-    )
-      return;
-    await writeResolved(state.deleted[side] ? null : side === "left" ? state.ours : state.theirs);
+    if ((!state && !binary) || accepting.current) return;
+    accepting.current = true;
+    try {
+      if (
+        modified() &&
+        !(await confirmDialog({
+          title: side === "left" ? "Accept Yours" : "Accept Theirs",
+          message: "The result was changed. Discard the changes and take this version as it is?",
+          okLabel: "Discard Changes",
+          danger: true,
+        }))
+      )
+        return;
+      if (await acceptConflictSide([path], side === "left" ? "ours" : "theirs")) await closeResolved();
+    } finally {
+      accepting.current = false;
+    }
   };
 
   const cancel = async () => {
@@ -417,6 +428,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   const enabled = (id: MergeCommand) => {
     if (id === "reload" || id === "cancel") return !resolved;
+    if (binary && !resolved) return id === "acceptYours" || id === "acceptTheirs";
     const v = resultView.current;
     if (!v || error || resolved) return false;
     const available = summarize(v.state);
@@ -605,6 +617,23 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         <Button onClick={() => void editorService().openFile(path, { focus: true })}>
           <T>Open File</T>
         </Button>
+      </div>
+    );
+  if (binary)
+    return (
+      <div ref={rootRef} className={styles.message} {...focusProps}>
+        <T>Binary file. Choose which version to keep.</T>
+        <div className={styles.binaryActions}>
+          <Button onClick={() => void runAction("acceptYours")}>
+            <T>Accept Yours</T>
+          </Button>
+          <Button onClick={() => void runAction("acceptTheirs")}>
+            <T>Accept Theirs</T>
+          </Button>
+          <Button onClick={() => void runAction("cancel")}>
+            <T>Cancel</T>
+          </Button>
+        </div>
       </div>
     );
 

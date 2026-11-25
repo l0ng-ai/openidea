@@ -4,6 +4,7 @@
 //! program: started with [`PORT_ENV`] set, it sends the prompt to the
 //! [`AskpassServer`] on 127.0.0.1 and prints the answer ([`run_helper`]).
 
+use ide_core::process::ASKPASS_SILENT_ENV;
 use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-pub const PORT_ENV: &str = "OPENIDEA_ASKPASS_PORT";
+pub const PORT_ENV: &str = ide_core::process::ASKPASS_PORT_ENV;
 pub const COMMAND_ENV: &str = "OPENIDEA_GIT_COMMAND_ID";
 pub const TOKEN_ENV: &str = "OPENIDEA_ASKPASS_TOKEN";
 /// An unanswered prompt fails after this long.
@@ -51,6 +52,8 @@ pub fn remembers(prompt: &str) -> bool {
 struct Request {
     #[serde(default)]
     command_id: Option<u64>,
+    #[serde(default)]
+    silent: bool,
     token: String,
     prompt: String,
 }
@@ -157,12 +160,16 @@ fn serve(
             let _ = writeln!(out, "{}", serde_json::to_string(&Response { answer: Some(answer) }).unwrap_or_default());
             return;
         }
-        let (tx, rx) = mpsc::channel();
-        pending.lock().insert(id, PendingPrompt { command_id: req.command_id, prompt: prompt.clone(), tx });
-        on_prompt(AskpassPrompt { id, kind: classify(&prompt), prompt });
-        let answer = rx.recv_timeout(ANSWER_TIMEOUT).ok().flatten();
-        pending.lock().remove(&id);
-        answer
+        if req.silent {
+            None
+        } else {
+            let (tx, rx) = mpsc::channel();
+            pending.lock().insert(id, PendingPrompt { command_id: req.command_id, prompt: prompt.clone(), tx });
+            on_prompt(AskpassPrompt { id, kind: classify(&prompt), prompt });
+            let answer = rx.recv_timeout(ANSWER_TIMEOUT).ok().flatten();
+            pending.lock().remove(&id);
+            answer
+        }
     };
     let mut out = stream;
     let _ = writeln!(out, "{}", serde_json::to_string(&Response { answer }).unwrap_or_default());
@@ -190,9 +197,14 @@ pub fn run_helper() -> Option<i32> {
     let token = std::env::var(TOKEN_ENV).unwrap_or_default();
     let prompt = std::env::args().nth(1).unwrap_or_else(|| "Password:".into());
     let command_id = std::env::var(COMMAND_ENV).ok().and_then(|id| id.parse().ok());
+    let silent = std::env::var(ASKPASS_SILENT_ENV).is_ok_and(|value| value == "1");
     let ask = || -> std::io::Result<Option<String>> {
         let mut stream = TcpStream::connect(("127.0.0.1", port))?;
-        writeln!(stream, "{}", serde_json::to_string(&Request { command_id, token, prompt }).unwrap_or_default())?;
+        writeln!(
+            stream,
+            "{}",
+            serde_json::to_string(&Request { command_id, silent, token, prompt }).unwrap_or_default()
+        )?;
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line)?;
         Ok(serde_json::from_str::<Response>(&line).ok().and_then(|r| r.answer))
@@ -233,7 +245,13 @@ mod tests {
             writeln!(
                 stream,
                 "{}",
-                serde_json::to_string(&Request { command_id: Some(42), token, prompt: "Password: ".into() }).unwrap()
+                serde_json::to_string(&Request {
+                    command_id: Some(42),
+                    silent: false,
+                    token,
+                    prompt: "Password: ".into()
+                })
+                .unwrap()
             )
             .unwrap();
             let mut line = String::new();
@@ -251,5 +269,23 @@ mod tests {
         server.answer(id, Some("hunter2".into()), false);
         assert_eq!(client.join().unwrap().as_deref(), Some("hunter2"));
         assert!(server.env().iter().any(|(k, v)| k == "SSH_ASKPASS" && v == "helper"));
+    }
+
+    #[test]
+    fn silent_request_with_no_saved_credentials_returns_without_prompting() {
+        let server = AskpassServer::start("helper".into(), Arc::new(|_| panic!("unexpected prompt"))).unwrap();
+        let mut stream = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let request = Request {
+            command_id: Some(42),
+            silent: true,
+            token: server.token.clone(),
+            prompt: "Password for 'https://test-password.example.invalid': ".into(),
+        };
+        writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        assert!(serde_json::from_str::<Response>(&line).unwrap().answer.is_none());
+        assert!(server.pending.lock().is_empty());
     }
 }

@@ -3,8 +3,8 @@
 //! This crate is glue only. `commands/<domain>.rs` holds the commands only the desktop runs; the
 //! Tauri adapters of project-host commands are derived from their `ide-host` declarations. No
 //! domain logic lives here.
-// `commands::catalogue!` recurses a few times per command domain.
-#![recursion_limit = "256"]
+// `commands::catalogue!` recurses once per command, so the limit grows with the command count.
+#![recursion_limit = "512"]
 
 mod application_focus;
 mod cli;
@@ -43,6 +43,8 @@ mod window_zoom;
 mod windows;
 #[cfg(windows)]
 mod windows_error_mode;
+#[cfg(windows)]
+mod windows_webview_keys;
 #[cfg(windows)]
 mod windows_webview_recovery;
 
@@ -139,6 +141,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init());
+    #[cfg(windows)]
+    let app = app.plugin(windows_webview_keys::init());
     #[cfg(windows)]
     let app = app.plugin(windows_webview_recovery::init());
     #[cfg(target_os = "linux")]

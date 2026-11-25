@@ -43,6 +43,7 @@ function notifyMissing(tool: string, message: string, install: ProfilerInstall |
     title: `${tool} is not installed`,
     body: line ? tx`${message} Install it with: ${line}` : homepage ? `${message} ${homepage}` : message,
     sticky: true,
+    userInitiated: true,
     actions,
   });
 }
@@ -55,7 +56,12 @@ export const LIVE_NOT_COLLECTED =
 
 async function prepare(config: RunConfig, mode: ProfileMode): Promise<ExecutorLaunch | null> {
   if (!isTauri()) {
-    notifications().notify({ group: "run", level: "warning", title: "Profiling needs the desktop app" });
+    notifications().notify({
+      group: "run",
+      level: "warning",
+      title: "Profiling needs the desktop app",
+      userInitiated: true,
+    });
     return null;
   }
   const plan = await call(commands.profilerPrepare(config, mode));
@@ -66,6 +72,7 @@ async function prepare(config: RunConfig, mode: ProfileMode): Promise<ExecutorLa
       key: "profiler-unsupported",
       title: `Cannot profile '${config.name}'`,
       body: plan.reason,
+      userInitiated: true,
     });
     return null;
   }
