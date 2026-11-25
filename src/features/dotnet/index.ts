@@ -1,7 +1,5 @@
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
-import { DotnetView } from "./DotnetView";
 import {
   buildDotnet,
   cancelDotnet,
@@ -17,26 +15,7 @@ import {
 } from "./store";
 
 export function activate() {
-  const offWindow = registerToolWindow({
-    id: "dotnet",
-    title: ".NET",
-    icon: "file-csharp",
-    anchor: "right",
-    stripe: "onUse",
-    component: DotnetView,
-  });
-  const show = () => toolWindowService().show("dotnet", true);
   const offActions = registerActions([
-    {
-      id: "dotnet.show",
-      title: ".NET Workspace",
-      category: "Build",
-      when: "projectOpen",
-      run: () => {
-        show();
-        return reloadDotnet();
-      },
-    },
     {
       id: "dotnet.reload",
       title: "Reload .NET Workspace",
@@ -120,6 +99,5 @@ export function activate() {
     resetDotnet();
     offProject();
     offActions();
-    offWindow();
   };
 }
