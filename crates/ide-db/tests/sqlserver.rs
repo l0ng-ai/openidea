@@ -136,3 +136,62 @@ async fn sqlserver_creates_from_a_held_model_and_force_drops_a_held_database() {
     assert!(!db.databases("s").await.unwrap().names.contains(&name));
     drop(held);
 }
+
+/// #5772: a case-sensitive collation resolves catalog names only in their declared case.
+#[tokio::test]
+async fn sqlserver_introspection_works_under_a_case_sensitive_collation() {
+    use ide_db::sql;
+    let Ok(server) = std::env::var("OPENIDEA_TEST_SQLSERVER") else { return };
+    let parts = server.splitn(4, ':');
+    let source = |database: &str| DataSource {
+        driver: DbDriver::SqlServer,
+        host: parts.clone().next().unwrap().into(),
+        port: Some(parts.clone().nth(1).unwrap().parse().unwrap()),
+        user: parts.clone().nth(2).unwrap().into(),
+        database: database.into(),
+        ssl: DbSslMode::Disable,
+        ..Default::default()
+    };
+    let password = parts.clone().nth(3);
+    let name = format!("oi_cs_catalog_{}", std::process::id());
+    let master = Pool::connect(&source("master"), password, None).await.unwrap();
+    master.rows(&format!("CREATE DATABASE {name} COLLATE Latin1_General_CS_AS"), 1).await.unwrap();
+    let pool = Pool::connect(&source(&name), password, None).await.unwrap();
+    pool.rows("CREATE TABLE dbo.Parent (Id int PRIMARY KEY)", 1).await.unwrap();
+    pool.rows("CREATE TABLE dbo.Child (Id int PRIMARY KEY, ParentId int CONSTRAINT FK_Child_Parent REFERENCES dbo.Parent (Id))", 1)
+        .await
+        .unwrap();
+    pool.rows("CREATE VIEW dbo.Kids AS SELECT Id FROM dbo.Child", 1).await.unwrap();
+    pool.rows("CREATE PROCEDURE dbo.Touch AS SELECT 1", 1).await.unwrap();
+    let d = DbDriver::SqlServer;
+    let cells = |rows: Vec<Vec<Option<String>>>| -> Vec<Vec<String>> {
+        rows.into_iter().map(|r| r.into_iter().map(Option::unwrap_or_default).collect()).collect()
+    };
+    let schemas = cells(pool.rows(sql::schemas(d, false), 100).await.unwrap());
+    assert!(schemas.contains(&vec!["dbo".to_owned()]));
+    assert!(!schemas.iter().any(|s| s[0] == "INFORMATION_SCHEMA" || s[0] == "sys"));
+    assert!(
+        cells(pool.rows(sql::schemas(d, true), 100).await.unwrap()).contains(&vec!["INFORMATION_SCHEMA".to_owned()])
+    );
+    assert_eq!(
+        cells(pool.rows(&sql::tables(d, "dbo"), 100).await.unwrap()),
+        [["Child", "table"], ["Kids", "view"], ["Parent", "table"]]
+    );
+    assert_eq!(
+        cells(pool.rows(&sql::columns(d, "dbo", "Child"), 100).await.unwrap())
+            .iter()
+            .map(|c| (c[0].as_str(), c[4].as_str()))
+            .collect::<Vec<_>>(),
+        [("Id", "1"), ("ParentId", "0")]
+    );
+    let fk = ["dbo", "Child", "FK_Child_Parent", "ParentId", "dbo", "Parent", "Id"];
+    assert_eq!(cells(pool.rows(&sql::table_foreign_keys(d, "dbo", "Child"), 100).await.unwrap()), [fk]);
+    assert_eq!(cells(pool.rows(sql::foreign_keys(d), 100).await.unwrap()), [fk]);
+    assert_eq!(cells(pool.rows(sql::completion_columns(d), 100).await.unwrap()).len(), 4);
+    assert_eq!(cells(pool.rows(&sql::routines(d, "dbo").unwrap(), 100).await.unwrap())[0][..2], ["Touch", "procedure"]);
+    drop(pool);
+    master
+        .rows(&format!("ALTER DATABASE {name} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE {name}"), 1)
+        .await
+        .unwrap();
+}
