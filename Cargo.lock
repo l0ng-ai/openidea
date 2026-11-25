@@ -4988,6 +4988,8 @@ version = "0.1.52"
 dependencies = [
  "flate2",
  "hex",
+ "http",
+ "hyper-util",
  "ide-core",
  "ide-language",
  "libc",
