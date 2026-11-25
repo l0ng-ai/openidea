@@ -85,6 +85,13 @@ export function devToolsUrl(
   return `${server}/${window.page}?${query}`;
 }
 
+export const WIDGET_PREVIEW_WINDOW = "flutter-widget-preview";
+
+/** The Widget Preview page in the IDE's look; like DevTools, a loaded page keeps its own. */
+export function widgetPreviewUrl(server: string, look: DevToolsLook): string {
+  return `${server}/?${new URLSearchParams({ theme: look.theme })}`;
+}
+
 /** Bumped by Refresh, per window: the page loads again, on a server started anew if it is gone. */
 export const useDevToolsRefresh = create<Record<string, number>>(() => ({}));
 
@@ -92,15 +99,21 @@ export function refreshDevTools(id: string) {
   useDevToolsRefresh.setState((s) => ({ [id]: (s[id] ?? 0) + 1 }));
 }
 
-const view = (name: "FlutterDevToolsView" | "FlutterDevToolsTabs" | "FlutterDevToolsRefresh") =>
-  lazyComponent(() => import("../ui/FlutterDevTools").then((m) => m[name]));
+const view = (
+  name:
+    | "FlutterDevToolsView"
+    | "FlutterDevToolsTabs"
+    | "FlutterDevToolsRefresh"
+    | "FlutterWidgetPreviewView"
+    | "FlutterWidgetPreviewRefresh",
+) => lazyComponent(() => import("../ui/FlutterDevTools").then((m) => m[name]));
 
 /** A Flutter project's `pubspec.yaml`, by the rule the run and debug backends use. */
 export const isFlutterPubspec = (text: string) => text.includes("sdk: flutter");
 
 /**
- * Keeps the tool windows, the Property Editor's too, registered while the project's root
- * `pubspec.yaml` depends on Flutter.
+ * Keeps the tool windows, the Property Editor's and Widget Preview's too, registered while the
+ * project's root `pubspec.yaml` depends on Flutter.
  */
 export function registerDevToolsWindows(): () => void {
   let dispose: (() => void)[] | null = null;
@@ -134,6 +147,17 @@ export function registerDevToolsWindows(): () => void {
         order: 40 + DEVTOOLS_WINDOWS.length,
         stripe: "onUse",
         component: lazyComponent(() => import("../ui/FlutterPropertyEditor").then((m) => m.FlutterPropertyEditorView)),
+      }),
+      // Its server starts when the window first opens.
+      registerToolWindow({
+        id: WIDGET_PREVIEW_WINDOW,
+        title: "Flutter Widget Preview",
+        icon: "toolwindow-flutter-widget-preview",
+        anchor: "right",
+        order: 41 + DEVTOOLS_WINDOWS.length,
+        stripe: "onUse",
+        component: view("FlutterWidgetPreviewView"),
+        headerActions: view("FlutterWidgetPreviewRefresh"),
       }),
       trackPropertyEditorCaret(),
     ];

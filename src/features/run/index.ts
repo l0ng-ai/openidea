@@ -27,6 +27,7 @@ import {
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
+import { useFlutterRunApps } from "@/workbench/flutterRunApps";
 import { restartFlutterDaemon, selectFlutterDevice, useFlutterDevices } from "@/workbench/flutterDevices";
 import { chooserJustClosed, ConfigChooserOverlay } from "./ConfigChooser";
 import {
@@ -77,7 +78,7 @@ import {
   showApplicationUpdate,
   updatableSessions,
 } from "./applicationUpdate";
-import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
+import { hotReload, hotReloadSession, hotRestart, syncFlutterRunApps } from "./flutterHotReload";
 import { registerFlutterBuildActions } from "./flutterBuild";
 import { npmGutter } from "./npmGutter";
 import { launchSettingsGutter } from "./launchSettingsGutter";
@@ -943,8 +944,10 @@ export function activate(): () => void {
       const cmake = selected ?? s.configs.find((c) => c.kind === "cmake" && c.args[0] === "--build");
       setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
       setContext("run.updatableRunning", updatableSessions().length > 0);
+      syncFlutterRunApps(s.sessions);
       setContext("run.flutterHotReloadable", !!hotReloadSession());
     }),
+    useFlutterRunApps.subscribe(() => setContext("run.flutterHotReloadable", !!hotReloadSession())),
     // Agent tabs (`run_command`): the archive keeps at most Settings' number of them.
     useRun.subscribe((s, prev) => {
       if (s.sessions !== prev.sessions) trimAgentArchive();

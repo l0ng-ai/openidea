@@ -62,7 +62,7 @@ import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
 import { warnPinnedFlutterDevice } from "@/workbench/flutterDevices";
-import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools } from "./flutter/devTools";
+import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools, WIDGET_PREVIEW_WINDOW } from "./flutter/devTools";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import { attachConfig } from "./attach";
 import {
@@ -890,6 +890,15 @@ export function registerDebugActions(): () => void {
         const id = c.arg;
         for (const w of DEVTOOLS_WINDOWS) if (!id || id === w.id) refreshDevTools(w.id);
       },
+    },
+    {
+      id: "debug.refreshWidgetPreview",
+      title: "Refresh Flutter Widget Preview",
+      category: "Debug",
+      icon: "refresh",
+      description: "Flutter: load the Widget Preview page again",
+      when: "flutterDevTools",
+      run: () => refreshDevTools(WIDGET_PREVIEW_WINDOW),
     },
     step("debug.stepOver", "Step Over", "over", "step-over"),
     step("debug.stepInto", "Step Into", "into", "step-into"),
