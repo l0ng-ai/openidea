@@ -3963,5 +3963,17 @@
   "Resize hover card from the right": "Resize hover card from the right",
   "Resize hover card from the bottom": "Resize hover card from the bottom",
   "Resize hover card from the left": "Resize hover card from the left",
-  "Resize hover card from the corner": "Resize hover card from the corner"
+  "Resize hover card from the corner": "Resize hover card from the corner",
+  "Pub get has not been run": "Pub get has not been run",
+  "pubspec.yaml has been edited": "pubspec.yaml has been edited",
+  "Flutter commands": "Flutter commands",
+  "Dart commands": "Dart commands",
+  "Pub get": "Pub get",
+  "Pub upgrade": "Pub upgrade",
+  "Pub outdated": "Pub outdated",
+  "Flutter doctor": "Flutter doctor",
+  "Pub Get": "Pub Get",
+  "Pub Upgrade": "Pub Upgrade",
+  "Pub Outdated": "Pub Outdated",
+  "Flutter Doctor": "Flutter Doctor"
 }

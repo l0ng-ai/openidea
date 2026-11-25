@@ -10248,5 +10248,17 @@
   "Find where this component is imported and used": "查找此组件被导入和使用的位置",
   "Gradle project sync failed": "Gradle 项目同步失败",
   "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. Cause: {cause}": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。原因：{cause}",
-  "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project.": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。"
+  "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project.": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。",
+  "Pub get has not been run": "尚未运行 Pub get",
+  "pubspec.yaml has been edited": "pubspec.yaml 已修改",
+  "Flutter commands": "Flutter 命令",
+  "Dart commands": "Dart 命令",
+  "Pub get": "Pub get",
+  "Pub upgrade": "Pub upgrade",
+  "Pub outdated": "Pub outdated",
+  "Flutter doctor": "Flutter doctor",
+  "Pub Get": "运行 Pub Get",
+  "Pub Upgrade": "运行 Pub Upgrade",
+  "Pub Outdated": "运行 Pub Outdated",
+  "Flutter Doctor": "运行 Flutter Doctor"
 }
