@@ -598,6 +598,9 @@ function caretOnScreen(view: EditorView, pos: number): boolean {
 /** Movement in px that turns an editor press into a drag rather than a click. */
 const POINTER_DRAG_SLOP = 4;
 
+/** The caret position transitions the glide adds; nothing else on a caret is ours to cancel. */
+const CARET_MOVE_PROPERTIES = new Set(["left", "top", "width", "height"]);
+
 /**
  * Use smooth caret movement. The cursor layer reuses its caret elements, so a
  * CSS transition on their position animates a move (VS Code's
@@ -680,7 +683,10 @@ const caretGlide = ViewPlugin.fromClass(
       const layer = this.view.scrollDOM.querySelector(":scope > .cm-cursorLayer");
       if (!layer) return;
       for (const caret of layer.querySelectorAll(".cm-cursor"))
-        for (const animation of caret.getAnimations?.() ?? []) animation.cancel();
+        for (const animation of caret.getAnimations?.() ?? []) {
+          const property = (animation as CSSTransition).transitionProperty;
+          if (property && CARET_MOVE_PROPERTIES.has(property)) animation.cancel();
+        }
     }
     set(on: boolean) {
       if (on === this.on) return;

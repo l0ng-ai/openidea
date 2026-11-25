@@ -468,7 +468,7 @@ describe("smooth caret", () => {
     expect(glides(v)).toBe(true);
   });
 
-  it("stops a caret move in flight when a drag starts", () => {
+  it("cancels only the caret's movement transitions when a drag starts", () => {
     const v = smoothCaret();
     const p = pointer(v);
     p.press();
@@ -479,11 +479,13 @@ describe("smooth caret", () => {
     const caret = v.scrollDOM.querySelector(".cm-cursor") as HTMLElement;
     const cancelled: string[] = [];
     (caret as unknown as { getAnimations: () => Animation[] }).getAnimations = () => [
-      { cancel: () => cancelled.push("move") } as unknown as Animation,
+      { transitionProperty: "left", cancel: () => cancelled.push("left") } as unknown as Animation,
+      { transitionProperty: "opacity", cancel: () => cancelled.push("opacity") } as unknown as Animation,
+      { animationName: "cm-blink2", cancel: () => cancelled.push("blink") } as unknown as Animation,
     ];
     p.move(40);
     v.dispatch({ selection: { anchor: 0, head: 2 }, userEvent: "select.pointer" });
-    expect(cancelled).toEqual(["move"]);
+    expect(cancelled).toEqual(["left"]);
     expect(glides(v)).toBe(false);
     p.release();
   });

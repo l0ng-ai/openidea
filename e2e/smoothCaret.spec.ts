@@ -7,7 +7,11 @@ async function enableSmoothCaret(page: Page) {
     const projectModule = "/src/platform/project.ts";
     const { useProject } = await import(/* @vite-ignore */ projectModule);
     useProject.setState({
-      settings: { editor: { appearance: { smoothCaretMovement: true, caretMovementStyle: "gliding" } } },
+      settings: {
+        editor: {
+          appearance: { smoothCaretMovement: true, caretMovementStyle: "gliding", smoothCaretBlinking: true },
+        },
+      },
     });
   });
 }
@@ -56,6 +60,20 @@ const caretGap = async (page: Page) => {
   return s.caretX === null || s.headX === null ? Infinity : Math.abs(s.caretX - s.headX);
 };
 
+/** The CSS animations on the cursor layer; the blink is one of them. */
+const layerAnimations = (page: Page): Promise<{ name: string; state: AnimationPlayState }[]> =>
+  page.evaluate(async () => {
+    const controllerModule = "/src/editor/core/controller.ts";
+    const { editorController, useEditorStatus } = await import(/* @vite-ignore */ controllerModule);
+    const path = useEditorStatus.getState().status!.path;
+    const view = editorController().manager.get(path)!.primarySlot()!.view!;
+    const layer = view.scrollDOM.querySelector(".cm-cursorLayer")!;
+    return (layer.getAnimations() as Animation[]).map((animation) => ({
+      name: (animation as CSSAnimation).animationName,
+      state: animation.playState,
+    }));
+  });
+
 /** Two frames: CodeMirror draws new caret positions in a measure on the next frame. */
 const nextFrames = (page: Page) =>
   page.evaluate(
@@ -86,6 +104,9 @@ test("smooth caret follows the pointer during a drag and still glides a click", 
   expect((await caretState(page)).empty).toBe(true);
   expect((await caretState(page)).glide).toBe(false);
   expect(await caretGap(page)).toBeLessThanOrEqual(3);
+  // Cancelling the caret's moves must leave the blink animation on the cursor layer alone.
+  const blink = await layerAnimations(page);
+  expect(blink.some((a) => /^cm-blink/.test(a.name) && a.state === "running")).toBe(true);
   await page.mouse.up();
 
   // Clicks still glide.
