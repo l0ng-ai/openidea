@@ -9,6 +9,10 @@
 //! With IBus behind it, a dead key waiting for its second key makes WebKit collapse every
 //! new selection in the window to its caret (Select All, mouse drags, text fields) until a
 //! composition completes. GTK's own IBus module does not, so IBus sessions use that.
+//!
+//! WSLg's Wayland compositor has no usable GPU path for WebKitGTK (Mesa reports an
+//! incompatible driver and the window stays blank); its X server works, so WSL uses X11
+//! unless `GDK_BACKEND` is set.
 
 const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 const DISABLE_EXPLICIT_SYNC: &str = "__NV_DISABLE_EXPLICIT_SYNC";
@@ -17,6 +21,10 @@ const IM_MODULE: &str = "GTK_IM_MODULE";
 /// Run before other threads start (`set_var`).
 #[cfg(target_os = "linux")]
 pub fn configure() {
+    if use_x11_on_wsl(|k| std::env::var(k).ok()) {
+        tracing::info!("WSLg: GDK_BACKEND=x11");
+        unsafe { std::env::set_var("GDK_BACKEND", "x11") };
+    }
     let nvidia = ["/proc/driver/nvidia/version", "/sys/module/nvidia"].iter().any(|p| std::path::Path::new(p).exists());
     if disable_explicit_sync(|k| std::env::var(k).ok(), nvidia) {
         tracing::info!("Wayland with the NVIDIA driver: {DISABLE_EXPLICIT_SYNC}=1");
@@ -26,6 +34,12 @@ pub fn configure() {
         tracing::info!("Wayland with IBus: {IM_MODULE}=ibus");
         unsafe { std::env::set_var(IM_MODULE, "ibus") };
     }
+}
+
+/// Under WSL with WSLg's X server available, unless the user chose a GDK backend.
+fn use_x11_on_wsl(var: impl Fn(&str) -> Option<String>) -> bool {
+    let set = |k: &str| var(k).is_some_and(|v| !v.is_empty());
+    (set("WSL_DISTRO_NAME") || set("WSL_INTEROP")) && set("DISPLAY") && !set("GDK_BACKEND")
 }
 
 /// GTK 3's IBus input method module (`ibus-gtk3`), wherever the distribution keeps it.
@@ -130,6 +144,20 @@ mod tests {
         assert!(!decide_im(&[("WAYLAND_DISPLAY", "wayland-0")], true));
         assert!(!decide_im(&[("DISPLAY", ":0"), ("XMODIFIERS", "@im=ibus")], true));
         assert!(!decide_im(&[gnome[0], gnome[1], ("GDK_BACKEND", "x11")], true));
+    }
+
+    #[test]
+    fn wsl_uses_x11_unless_a_backend_is_chosen() {
+        let vars = |extra: &[(&'static str, &'static str)]| {
+            let extra = extra.to_vec();
+            move |k: &str| extra.iter().find(|(name, _)| *name == k).map(|(_, v)| v.to_string())
+        };
+        let wslg = [("WSL_DISTRO_NAME", "Ubuntu-24.04"), ("WAYLAND_DISPLAY", "wayland-0"), ("DISPLAY", ":0")];
+        assert!(use_x11_on_wsl(vars(&wslg)));
+        assert!(use_x11_on_wsl(vars(&[("WSL_INTEROP", "/run/WSL/1_interop"), ("DISPLAY", ":0")])));
+        assert!(!use_x11_on_wsl(vars(&[wslg[0], wslg[1], wslg[2], ("GDK_BACKEND", "wayland")])));
+        assert!(!use_x11_on_wsl(vars(&[wslg[0], wslg[1]])), "no X server");
+        assert!(!use_x11_on_wsl(vars(&[wslg[1], wslg[2]])), "not WSL");
     }
 
     #[test]
