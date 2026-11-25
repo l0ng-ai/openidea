@@ -146,7 +146,7 @@ impl ToolServer {
         self.0.changed.notify_all();
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn is_stopped(&self) -> bool {
         matches!(self.0.state.lock().status, Status::Stopped)
     }
