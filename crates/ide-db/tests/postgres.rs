@@ -14,7 +14,9 @@ fn endpoint(variable: &str) -> Option<(String, u16, String, String)> {
     Some((it.next()?.into(), it.next()?.parse().ok()?, it.next()?.into(), it.next().unwrap_or("").into()))
 }
 
-/// A disposable PgBouncer transaction pool which rejects default_transaction_read_only at startup.
+/// A disposable PgBouncer transaction pool which rejects default_transaction_read_only at startup
+/// (`OPENIDEA_TEST_PGBOUNCER`, same format). PgBouncer 1.24 rejects it; 1.26 tracks it per client,
+/// which keeps the startup option in use and fails the fallback assertion below.
 #[tokio::test]
 async fn transaction_pooler_runs_read_only_work_on_the_assigned_backend() -> IdeResult<()> {
     let Some((host, port, user, password)) = endpoint("OPENIDEA_TEST_PGBOUNCER") else { return Ok(()) };
