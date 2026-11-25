@@ -166,3 +166,24 @@ describe("JavaScript and TypeScript methods", () => {
     ]);
   });
 });
+
+describe("TypeScript kinds of type (#5619)", () => {
+  it("marks interfaces, type aliases and type parameters, but not library types", () => {
+    const doc = Text.of(["Named Pair T Promise Quiz"]);
+    const tokens = {
+      tokenTypes: ["interface", "type", "typeParameter", "class"],
+      tokenModifiers: ["declaration", "defaultLibrary"],
+      data: [0, 0, 5, 0, 0b01, 0, 6, 4, 1, 0, 0, 11, 1, 2, 0b01, 0, 13, 7, 0, 0b10, 0, 21, 4, 3, 0],
+    };
+    const classes = Object.fromEntries(
+      semanticRanges(doc, tokens, false, "typescript").map((r) => [doc.sliceString(r.from, r.to), r.className]),
+    );
+    expect(classes).toEqual({
+      Named: "cm-sem-type cm-sem-declaration cm-sem-js-interface",
+      Pair: "cm-sem-type cm-sem-js-type-alias",
+      T: "cm-sem-typeParameter cm-sem-declaration cm-sem-js-type-parameter",
+      Promise: "cm-sem-type cm-sem-builtin",
+      Quiz: "cm-sem-type",
+    });
+  });
+});

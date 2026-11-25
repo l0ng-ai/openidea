@@ -599,6 +599,10 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
   // --- semantic tokens -----------------------------------------------------
   ".cm-sem-type, .cm-sem-typeParameter": semanticStyle("type", "type"),
+  // WebStorm's Interface / Type alias / Type parameter: unset, they keep the type colour.
+  ".cm-sem-js-interface": inheritedStyle("javascript-interface", "type"),
+  ".cm-sem-js-type-alias": inheritedStyle("javascript-type-alias", "type"),
+  ".cm-sem-js-type-parameter": inheritedStyle("javascript-type-parameter", "type"),
   // IDEA colours declarations, calls stay (nearly) plain text.
   ".cm-sem-function": semanticStyle("function-call", "function"),
   // Keep role selectors at one class so static/deprecated modifiers can override their styles.
