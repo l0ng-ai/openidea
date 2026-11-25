@@ -472,8 +472,16 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
       },
       { root, rootMargin: "100% 0px" },
     );
-    for (const block of root.querySelectorAll(":scope > [data-preview-blocks] > [data-line]"))
-      visibility.observe(block);
+    // The blocks to watch: the preview's content is replaced without a new `html` too (a parked
+    // preview restored on a tab switch, a theme or diagram re-render).
+    const observeBlocks = () => {
+      visibility.disconnect();
+      for (const block of root.querySelectorAll(":scope > [data-preview-blocks] > [data-line]"))
+        visibility.observe(block);
+    };
+    observeBlocks();
+    const replaced = new MutationObserver(observeBlocks);
+    replaced.observe(root, { childList: true });
 
     let width = 0;
     let settled = 0;
@@ -500,9 +508,20 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
         if (!document.querySelector('[data-drag-cursor-surface$="resize"], [data-separator="active"]')) apply();
       }, 150);
     };
+    // When a resize starts, the blocks in and near the viewport by their position: they reflow
+    // live even where the observer has not reported them (yet).
+    const markVisible = () => {
+      const top = root.scrollTop - root.clientHeight;
+      const bottom = root.scrollTop + 2 * root.clientHeight;
+      for (const block of root.querySelectorAll<HTMLElement>(":scope > [data-preview-blocks] > [data-line]")) {
+        if (block.offsetTop > bottom) break;
+        if (block.offsetTop + block.offsetHeight >= top) block.toggleAttribute("data-in-viewport", true);
+      }
+    };
     const sizes = new ResizeObserver(([entry]) => {
       if (!entry || width === entry.contentRect.width) return;
       width = entry.contentRect.width;
+      if (settled && width !== settled) markVisible();
       root.toggleAttribute("data-constrain-blocks", width < settled);
       if (!settled) apply();
       else schedule();
@@ -513,6 +532,7 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
     window.addEventListener("blur", schedule);
     return () => {
       visibility.disconnect();
+      replaced.disconnect();
       sizes.disconnect();
       window.clearTimeout(timer);
       document.removeEventListener("pointerup", schedule, true);

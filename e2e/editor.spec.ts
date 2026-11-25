@@ -967,6 +967,49 @@ test("visible Markdown reflows during a tool window drag and distant blocks catc
   await expect.poll(() => width(far)).toBe(await width(near));
 });
 
+test("visible Markdown reflows during a drag even when the viewport observer has not marked it", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText(
+    Array.from({ length: 180 }, (_, i) => `Paragraph ${i} with enough text to wrap across the pane.`).join("\n\n"),
+  );
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await expect(preview).toContainText("Paragraph 179");
+  // Widths of a block in view and of the block farthest from it.
+  const widths = () =>
+    preview.evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      const blocks = [...el.querySelectorAll(":scope > [data-preview-blocks] > [data-line]")];
+      const shown = blocks.find((n) => n.getBoundingClientRect().top >= box.top)!;
+      const far = el.scrollTop > el.scrollHeight / 2 ? blocks[0]! : blocks.at(-1)!;
+      return { near: shown.getBoundingClientRect().width, far: far.getBoundingClientRect().width };
+    });
+  await expect.poll(async () => ((w) => w.near === w.far)(await widths())).toBe(true);
+  const before = (await widths()).far;
+  // Content swapped in without a new render (e.g. a restored preview) carries no marks yet.
+  await preview.evaluate((el) =>
+    el.querySelectorAll("[data-in-viewport]").forEach((n) => n.removeAttribute("data-in-viewport")),
+  );
+  const handle = page.getByRole("separator", { name: "Resize left tool window", exact: true });
+  const box = (await handle.boundingBox())!;
+  const x = box.x + box.width / 2,
+    y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(x + 160, y, { steps: 4 });
+    await expect.poll(async () => (await widths()).near).toBeLessThan(before - 30);
+    expect((await widths()).far).toBe(before);
+  } finally {
+    await page.mouse.up();
+  }
+  await expect.poll(async () => ((w) => w.near === w.far)(await widths())).toBe(true);
+});
+
 test("dragging the Markdown split divider resizes and reflows editor and preview content, keeps the ratio, and resets on double-click", async ({
   workbench: page,
 }) => {

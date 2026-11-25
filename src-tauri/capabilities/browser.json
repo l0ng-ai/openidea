@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "browser",
+  "description": "Untrusted localhost Browser child. No core, plugin, or application commands.",
+  "webviews": ["browser-guest-*"],
+  "permissions": []
+}
