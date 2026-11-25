@@ -8781,5 +8781,13 @@
   "Search NuGet packages": "NuGet paketlerinde ara",
   "Install / Update": "Yükle / Güncelle",
   "Versions": "Sürümler",
-  "Transitive": "Geçişli"
+  "Transitive": "Geçişli",
+  "Table properties": "Tablo özellikleri",
+  "Grants": "Yetkiler",
+  "Grantee": "Yetki verilen",
+  "Grantor": "Yetki veren",
+  "Granted": "Verildi",
+  "Granted with grant option": "Yetki verme hakkıyla verildi",
+  "No privileges are granted on this table.": "Bu tabloda verilmiş yetki yok.",
+  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION: yetki verilen bu yetkiyi başkalarına verebilir."
 }

@@ -673,6 +673,28 @@ pub fn triggers(driver: DbDriver, schema: &str, table: &str) -> String {
     }
 }
 
+/// `grantee, grantor, privilege, grantable` rows of `table`'s object privileges, for the
+/// engines whose catalog keeps them per table: PostgreSQL's ACL (its implicit owner
+/// privileges when `relacl` is null) and MySQL's `TABLE_PRIVILEGES` (no grantor). `None`
+/// for the other engines, which then run no query.
+pub fn table_grants(driver: DbDriver, schema: &str, table: &str) -> Option<String> {
+    let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
+    match driver {
+        DbDriver::Postgres => Some(format!(
+            "SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END, \
+             pg_get_userbyid(a.grantor), a.privilege_type, CASE WHEN a.is_grantable THEN 'YES' ELSE 'NO' END \
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+             CROSS JOIN LATERAL aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a \
+             WHERE n.nspname = {s} AND c.relname = {t} ORDER BY 1, 2"
+        )),
+        DbDriver::Mysql => Some(format!(
+            "SELECT grantee, NULL, privilege_type, is_grantable FROM information_schema.table_privileges \
+             WHERE table_schema = {s} AND table_name = {t} ORDER BY 1"
+        )),
+        _ => None,
+    }
+}
+
 /// `before`, `insert` of SQLite's `CREATE TRIGGER name BEFORE INSERT ON …` (its catalog keeps only the text).
 pub fn sqlite_trigger_event(sql: &str) -> (String, String) {
     let upper = sql.to_ascii_uppercase();
