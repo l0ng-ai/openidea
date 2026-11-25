@@ -8511,6 +8511,7 @@
   "Show Changes": "顯示更改",
   "Previous Failed Test": "上一個失敗的測試",
   "Next Failed Test": "下一個失敗的測試",
+  "Select First Failed Test When Finished": "完成後選取第一個失敗的測試",
   "Run '{name}' with Fuzzing": "使用模糊測試執行 '{name}'",
   "Reading…": "正在讀取…",
   "Editing…": "正在編輯…",
