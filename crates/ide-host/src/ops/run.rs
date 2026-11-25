@@ -391,8 +391,10 @@ async fn start_inner(
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
     }
-    let on_target = config.extras.target.as_deref().is_some_and(|t| !t.is_empty());
-    add_java_agents(&mut config, &on_output, !on_target);
+    // A JVM on a run target gets no plugin agents; a local one gets them once its JDK is resolved.
+    if config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
+        add_java_agents(&mut config, &on_output, None);
+    }
     // Settings › Run Targets: over SSH, or in a container.
     if config.kind == "tomcat" && config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
         return Err(IdeError::invalid("Tomcat Local requires the local machine"));
@@ -483,6 +485,8 @@ async fn start_inner(
         );
         ide_sdk::go::apply_to_run(&mut config, &settings.languages.go.build_tags);
     }
+    let run_dir = project.root.join(config.cwd.as_deref().unwrap_or(Path::new("")));
+    add_java_agents(&mut config, &on_output, Some(&run_dir));
     if config.command == ide_sdk::godot::COMMAND {
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
     }
@@ -555,14 +559,24 @@ async fn start_inner(
 /// Plugins' Java agents (`[[contributes.javaAgents]]`, granted `java.agent`) for the JVM of an
 /// Application, Spring Boot or JAR Application configuration started on this machine. A JVM on a
 /// run target gets none; the console says so, and why an approved agent was left out.
-fn add_java_agents(config: &mut RunConfig, on_output: &Emit<OutputChunk>, local: bool) {
+fn add_java_agents(config: &mut RunConfig, on_output: &Emit<OutputChunk>, run_dir: Option<&Path>) {
     if !ide_run::java_agent::applies(&config.kind) {
         return;
     }
-    let java = std::path::Path::new(&config.command);
-    let agents = ide_run::java_agent::current_for(Some(java));
+    // The JVM the launch starts: a bare `java` (what generated configurations name) is looked
+    // up the way the process start finds it, so the `jdk` filter of `vmOptions` sees that JDK.
+    let java = run_dir.and_then(|dir| {
+        let search = ide_run::wrap::search_path_in(config, dir);
+        let home = config
+            .env
+            .get("JAVA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("JAVA_HOME").map(std::path::PathBuf::from));
+        ide_run::java_agent::launched_java(&config.command, &search, home.as_deref())
+    });
+    let agents = ide_run::java_agent::current_for(java.as_deref());
     let say = |text: &str| on_output(OutputChunk::System { text: format!("{text}\n") });
-    if !local {
+    if run_dir.is_none() {
         if !agents.options.is_empty() {
             say(
                 "Plugin Java agents were not added: they load only into JVMs started on this machine, not on a run target.",
