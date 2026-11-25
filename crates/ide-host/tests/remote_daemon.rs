@@ -136,7 +136,8 @@ async fn ssh_server(home: &Path, server_home: &Path, project: &Path) -> Arc<ide_
         save_secret: true,
         ..Default::default()
     }]);
-    ssh.set_secret("local-test", Some("secret".into()), true);
+    ide_ssh::secrets::testing::use_memory_store();
+    ssh.set_secret("local-test", Some("secret".into()), true).unwrap();
     assert!(ssh.session("local-test").await.is_err(), "unknown host key first");
     ssh.trust_host("local-test").await.unwrap();
     ssh.session("local-test").await.unwrap()

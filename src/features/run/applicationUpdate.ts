@@ -54,6 +54,8 @@ async function updateSpringBoot(config: RunConfig, mode: UpdateMode, debugging: 
     mode === "classes" ? "make" : "noBuild",
     request,
     followLaunchBuild(request, tx`Build before launch: ${config.name}`),
+    // HotSwap reloads what the Java language server compiles.
+    debugging,
   );
   if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
     throw updateBuildError(info);

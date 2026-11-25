@@ -44,6 +44,9 @@ async function requestClose(
         idlePolicy: { overrideSeconds },
       });
       window.__ipc.handlers.window_close_context = () => ({ windows, quitting });
+      window.__ipc.handlers.window_begin_prompt = () => true;
+      window.__ipc.handlers.window_end_prompt = () => null;
+      window.__ipc.handlers.window_ready_to_close = () => true;
       window.__ipc.handlers.close_project = () => null;
       window.__ipc.handlers.remote_invoke = ({ cmd }) => {
         if (cmd === "remote_idle_timeout_minutes") {

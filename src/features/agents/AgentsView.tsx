@@ -422,8 +422,6 @@ export function AgentsView() {
                       n.task.title
                     )}
                   </span>
-                  {/* Ready tasks say so by their group; the others show what they're doing. */}
-                  {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
                   {unread.has(n.task.id) && (
                     <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
                   )}
@@ -442,6 +440,13 @@ export function AgentsView() {
                     {canArchive(n.task) &&
                       rowButton("Archive", "archive", () => void executeAction("agents.archiveTasks", [n.task.id]))}
                   </span>
+                  {/* Ready tasks say so by their group; the others show what they're doing, in a column
+                      beside the age so the marks line up whatever the title length. */}
+                  {n.task.status !== "ready" && (
+                    <span className={styles.status}>
+                      <TaskStatusIcon status={n.task.status} />
+                    </span>
+                  )}
                   <span className={styles.age}>{age(n.task.updatedMs ?? 0)}</span>
                 </span>
               );

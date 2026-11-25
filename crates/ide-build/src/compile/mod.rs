@@ -3,7 +3,7 @@
 //! background with cancellation and parses the compiler output into messages
 //! for the Build tool window, the Problems view and the editor.
 
-mod fingerprint;
+pub(crate) mod fingerprint;
 mod launch_resources;
 mod modules;
 mod parse;
@@ -843,6 +843,28 @@ fn reactor_projects<'a>(m: &'a maven::MavenModel, top: &'a maven::MavenProject) 
         pending.extend(m.projects.iter().filter(|child| p.modules.contains(&child.pom)));
     }
     projects
+}
+
+/// A step running Maven, its output parsed as Maven's.
+pub(crate) fn maven_build_step(program: &str, args: &[&str], cwd: &Path) -> BuildStep {
+    BuildStep::new(program, args, cwd, Format::Maven)
+}
+
+pub(crate) fn gradle_build_step(program: &str, args: &[&str], cwd: &Path) -> BuildStep {
+    BuildStep::new(program, args, cwd, Format::Gradle)
+}
+
+/// The linked reactor root building the project at `module` (project-relative).
+pub(crate) fn maven_reactor_dir<'a>(m: &'a maven::MavenModel, module: &str) -> Option<&'a maven::MavenProject> {
+    maven_reactor(m, module)
+}
+
+/// The projects of the reactor `top`.
+pub(crate) fn reactor_projects_of<'a>(
+    m: &'a maven::MavenModel,
+    top: &'a maven::MavenProject,
+) -> Vec<&'a maven::MavenProject> {
+    reactor_projects(m, top)
 }
 
 fn maven_reactor<'a>(m: &'a maven::MavenModel, module: &str) -> Option<&'a maven::MavenProject> {

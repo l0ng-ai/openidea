@@ -80,7 +80,7 @@ async fn welcome_window_browses_selected_ssh_host_without_executing_commands() {
         auth: SshAuth::Password,
         ..Default::default()
     }]);
-    ssh.set_secret("selected-host", Some("secret".into()), false);
+    ssh.set_secret("selected-host", Some("secret".into()), false).unwrap();
     assert!(ssh.session("selected-host").await.is_err());
     ssh.trust_host("selected-host").await.unwrap();
 

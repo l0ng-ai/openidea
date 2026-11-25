@@ -6,6 +6,17 @@
 [Simple Icons](https://github.com/simple-icons/simple-icons), retrieved through
 Iconify (`simple-icons:angular`, `simple-icons:astro`, `simple-icons:cplusplus`, `simple-icons:dart`, `simple-icons:deepseek`, `simple-icons:django`, `simple-icons:dotnet`, `simple-icons:elixir`, `simple-icons:express`, `simple-icons:fastapi`, `simple-icons:flask`, `simple-icons:flutter`, `simple-icons:go`, `simple-icons:haskell`, `simple-icons:html5`, `simple-icons:kotlin`, `simple-icons:ktor`, `simple-icons:laravel`, `simple-icons:nestjs`, `simple-icons:nextdotjs`, `simple-icons:nodedotjs`, `simple-icons:nuxt`, `simple-icons:openjdk`, `simple-icons:phoenixframework`, `simple-icons:php`, `simple-icons:python`, `simple-icons:quarkus`, `simple-icons:ruby`, `simple-icons:rubyonrails`, `simple-icons:rust`, `simple-icons:scala`, `simple-icons:springboot`, `simple-icons:svelte`, `simple-icons:swift`, `simple-icons:symfony`, `simple-icons:vite`, `simple-icons:zig`) and filled with the brand colors (the standard icon grey for black logos). Licensed under [CC0 1.0 Universal](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md).
 
+## Agent logos
+
+The `src/ui/openidea/agents/` logos of agents listed in the
+[ACP agent registry](https://github.com/agentclientprotocol/registry) (`agoragentic-acp`, `amp-acp`,
+`antigravity-acp`, `autohand`, `bob`, `cline`, `codebuddy-code`, `cortex-code`, `corust-agent`,
+`crow-cli`, `deepagents`, `devin`, `dimcode`, `dirac`, `factory-droid`, `fast-agent`, `glm-acp-agent`,
+`grok-build`, `harn`, `junie`, `kilo`, `kimchi`, `minimax-code`, `minion-code`, `muse-code`, `nova`,
+`pi-acp`, `poolside`, `sigit`, `stakpak`, `vtcode`) are the registry's icons, with a root `fill`
+moved onto a group. The registry is licensed under Apache-2.0; the logos remain trademarks of
+their owners.
+
 ## Microsoft ConPTY
 
 `crates/ide-core/resources/conpty/` contains the unmodified Microsoft Windows Console

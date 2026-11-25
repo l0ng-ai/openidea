@@ -2291,14 +2291,25 @@ impl AgentManager {
         }
     }
 
+    /// Stops sending events to UI sinks (project closing).
+    pub fn detach_sinks(&self) {
+        self.shared.sinks.write().clear();
+    }
+
     /// Stops every agent (project closed).
     pub fn shutdown(&self) {
-        for task in self.tasks.read().values() {
-            task.kill();
-            // What arrived after the last save (a subagent's late updates).
-            task.persist();
+        self.detach_sinks();
+        let tasks: Vec<_> = self.tasks.read().values().cloned().collect();
+        for task in tasks {
+            let was_live = task.kill().is_some();
+            if was_live {
+                // Persist late subagent updates and cleared live background state.
+                task.persist();
+            } else {
+                // Flush pending delayed saves without rewriting untouched or archived tasks.
+                task.save();
+            }
         }
-        self.shared.sinks.write().clear();
     }
 }
 
