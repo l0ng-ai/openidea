@@ -80,6 +80,7 @@ async function stop() {
   }
   let initial = "";
   for (;;) {
+    // oxlint-disable-next-line no-await-in-loop -- the interactive prompt decides whether to save, ask again or stop; the loop cannot continue before it resolves.
     const name = await promptInput({
       title: "Enter Macro Name",
       label: "Name (leave empty to keep it only as the last macro):",
@@ -93,6 +94,7 @@ async function stop() {
       saveMacro(name, steps);
       return;
     }
+    // oxlint-disable-next-line no-await-in-loop -- the replace/rename decision determines the next prompt's initial value.
     const { button } = await ask({
       title: "Replace Macro?",
       body: tx`A macro named '${name}' already exists. Replace its recorded steps?`,

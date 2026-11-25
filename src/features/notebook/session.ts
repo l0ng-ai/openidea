@@ -316,8 +316,10 @@ export class NotebookSession {
             try {
               const result =
                 item.edit.type === "undo" || item.edit.type === "redo"
-                  ? await this.backend[item.edit.type](snapshot.id)
-                  : await this.backend.edit(snapshot.id, snapshot.version, item.edit);
+                  ? // oxlint-disable-next-line no-await-in-loop -- queued edits commit in order against the snapshot accepted by the previous edit.
+                    await this.backend[item.edit.type](snapshot.id)
+                  : // oxlint-disable-next-line no-await-in-loop -- queued edits commit in order against the snapshot accepted by the previous edit.
+                    await this.backend.edit(snapshot.id, snapshot.version, item.edit);
               item.committed = true;
               this.accept(result);
             } catch (error) {
@@ -328,10 +330,12 @@ export class NotebookSession {
                 item.edit.type === "redo"
               )
                 throw error;
+              // oxlint-disable-next-line no-await-in-loop -- out-of-sync recovery refetches the snapshot before rebasing; the queue stays blocked meanwhile.
               snapshot = await this.backend.get(snapshot.id);
               this.accept(snapshot);
               // Semantic stable-id rebase, once. Missing/deleted targets remain pending
               // with an actionable backend error rather than silently dropping user intent.
+              // oxlint-disable-next-line no-await-in-loop -- the rebased edit must commit before the next queued edit is processed.
               const result = await this.backend.edit(snapshot.id, snapshot.version, item.edit);
               item.committed = true;
               this.accept(result);
@@ -390,6 +394,7 @@ export class NotebookSession {
       while (this.refreshAgain && !this.disposed) {
         this.refreshAgain = false;
         const id = this.state.snapshot!.id;
+        // oxlint-disable-next-line no-await-in-loop -- refresh responses are accepted in order; refreshAgain is rechecked after each fetch.
         this.accept(await this.backend.get(id));
       }
     })().finally(() => {

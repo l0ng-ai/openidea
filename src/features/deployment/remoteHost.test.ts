@@ -115,6 +115,7 @@ it("refreshes expanded descendants after partial failure or cancellation", async
   for (const kind of ["cancelled", "io"]) {
     ipc.list.mockClear();
     ipc.upload.mockResolvedValueOnce({ status: "error", error: { kind, message: "upload interrupted" } });
+    // oxlint-disable-next-line no-await-in-loop -- each iteration resets the mocks and asserts its own failure path before the next kind runs.
     await uploadLocalInto(uploadServer, ["/outside/a.txt"], "/srv");
     expect(ipc.list.mock.calls.map((call) => call[1])).toEqual(["/srv", "/srv", "/srv/assets"]);
   }

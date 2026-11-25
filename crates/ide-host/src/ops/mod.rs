@@ -19,6 +19,7 @@ pub mod flutter;
 pub mod fs;
 pub mod heap;
 pub mod history;
+pub mod http;
 pub mod java;
 pub mod jvm_icons;
 pub mod lsp;
@@ -92,6 +93,7 @@ ide_command::domains!(
     fs: crate::ops::fs,
     heap: crate::ops::heap,
     history: crate::ops::history,
+    http: crate::ops::http,
     java: crate::ops::java,
     jvm_icons: crate::ops::jvm_icons,
     lsp: crate::ops::lsp,

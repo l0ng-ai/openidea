@@ -40,8 +40,10 @@ export async function openDropped(paths: readonly string[], deps: FileDropDeps):
   const kinds = await Promise.all(paths.map((p) => deps.isDir(p).catch(() => false)));
   const files = paths.filter((_, i) => !kinds[i]);
   const dir = paths.find((_, i) => kinds[i]);
-  for (const [i, path] of files.entries())
+  for (const [i, path] of files.entries()) {
+    // oxlint-disable-next-line no-await-in-loop -- tabs open in drop order so the last dropped file is focused
     await deps.openFile(path, i === files.length - 1).catch((e) => console.warn(`could not open ${path}`, e));
+  }
   if (dir) await deps.openProject(dir);
 }
 
