@@ -45,6 +45,8 @@ import {
   collapseAll,
   currentModel,
   expandAll,
+  expandSelected,
+  hasVisibleSelection,
   modeShows,
   reloadAll,
   revealPath,
@@ -550,6 +552,16 @@ export function registerProjectActions(): () => void {
         const lead = leadNode();
         return expandAll(lead?.dir && !lead.root ? lead.key : undefined);
       },
+    },
+    {
+      id: "project.expandSelected",
+      title: "Expand Selected",
+      category: "Project View",
+      icon: "expand-all",
+      when: OPEN,
+      keyWhen: FOCUS,
+      enabled: () => hasVisibleSelection(),
+      run: expandSelected,
     },
     {
       id: "project.collapseAll",

@@ -7,10 +7,11 @@ interface Node {
   label: string;
   children?: Node[];
 }
+const rowCount = new URLSearchParams(location.search).has("large") ? 6000 : 160;
 const longLabel = `z_${"long_file_name_".repeat(16)}.ts`;
 const initial: Node[] = [
   { key: "src", label: "src", children: [{ key: "child", label: "child.ts" }] },
-  ...Array.from({ length: 160 }, (_, i) => ({ key: `file-${i}`, label: `file_${i}.ts` })),
+  ...Array.from({ length: rowCount }, (_, i) => ({ key: `file-${i}`, label: `file_${i}.ts` })),
   { key: "wide", label: longLabel },
 ];
 const shorten = (nodes: Node[]): Node[] =>

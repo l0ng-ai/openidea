@@ -3596,6 +3596,7 @@
   "Exit": "Çıkış",
   "Expand": "Genişlet",
   "Expand All": "Tümünü Genişlet",
+  "Expand Selected": "Seçilenleri Genişlet",
   "Expand abbreviations with Tab": "Kısaltmaları Tab ile genişlet",
   "Expand folded lines": "Katlanmış satırları genişlet",
   "Expand templates with Tab": "Şablonları Tab ile genişlet",
@@ -7120,7 +7121,6 @@
   "Find in Conversation": "Konuşmada Bul",
   "Find in conversation": "Konuşmada bul",
   "0 results": "0 sonuç",
-  "Time the agent spent on this task": "Ajanın bu görevde harcadığı süre",
   "Send Again": "Yeniden Gönder",
   "Customize IDE appearance and behavior: change themes and font size, configure system settings and notifications.": "IDE görünümünü ve davranışını özelleştirin: temaları ve yazı tipi boyutunu değiştirin, sistem ayarlarını ve bildirimleri yapılandırın.",
   "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.": "Kod düzenlemeyi yapılandırın: tamamlama, katlama, sekmeler, yazı tipleri, renkler, kod stili ve incelemeler.",
@@ -8347,7 +8347,6 @@
   "Chat": "Sohbet",
   "Shown in the Task Header": "Görev Başlığında Gösterilir",
   "Context window usage": "Bağlam penceresi kullanımı",
-  "Time spent on the task": "Görevde harcanan süre",
   "Usage limits": "Kullanım sınırları",
   "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)": "Ajan bildirdiğinde hesabın 5 saatlik ve haftalık sınırları (Claude Code)",
   "Session cost": "Oturum maliyeti",
@@ -8773,5 +8772,6 @@
   "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "Bu sürüm, yüklü olandan farklı bir anahtarla imzalanmış ve yayıncının önceki anahtarı bunu doğrulamıyor. Yalnızca yayıncının anahtar değiştirdiğinden eminseniz devam edin.",
   "Roll Back to Here": "Buraya Geri Al",
   "Couldn't roll back": "Geri alınamadı",
-  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Bu mesaj ve sonrakiler kaldırılır; ajanın o zamandan beri değiştirdiği dosyalar mesaj gönderilmeden önceki hâline döner. Mesaj yazma alanına geri konur."
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Bu mesaj ve sonrakiler kaldırılır; ajanın o zamandan beri değiştirdiği dosyalar mesaj gönderilmeden önceki hâline döner. Mesaj yazma alanına geri konur.",
+  "Resets in {resetIn}": "{resetIn} sonra sıfırlanır"
 }

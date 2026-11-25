@@ -32,6 +32,7 @@ pub fn detect(kind: SdkKind, root: Option<&Path>) -> Vec<Sdk> {
         SdkKind::Ruby => crate::ruby::detect(root),
         SdkKind::Zig => zig(),
         SdkKind::Dotnet => dotnet(),
+        SdkKind::Flutter => crate::flutter::detect(),
     };
     if let Some(root) = root {
         pinned_first(&mut out, kind, root);
@@ -48,7 +49,12 @@ fn tool_of(kind: SdkKind) -> Option<Tool> {
         SdkKind::Maven => Some(Tool::Maven),
         SdkKind::Ruby => Some(Tool::Ruby),
         SdkKind::Zig => Some(Tool::Zig),
-        SdkKind::Php | SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript | SdkKind::Dotnet => None,
+        SdkKind::Php
+        | SdkKind::PackageManager
+        | SdkKind::Rust
+        | SdkKind::TypeScript
+        | SdkKind::Dotnet
+        | SdkKind::Flutter => None,
     }
 }
 

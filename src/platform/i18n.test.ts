@@ -308,6 +308,8 @@ describe("catalogs", () => {
     "Java",
     "Python",
     "Python {short}",
+    "Flutter {framework}",
+    "Dart {dart}",
     "C/C++",
     "C#",
     "Go",

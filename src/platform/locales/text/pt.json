@@ -795,6 +795,7 @@
   "Exit": "Sair",
   "Expand": "Expandir",
   "Expand All": "Expandir tudo",
+  "Expand Selected": "Expandir seleção",
   "Expand abbreviations with Tab": "Expandir abreviações com Tab",
   "Expand folded lines": "Expandir linhas recolhidas",
   "Expand templates with Tab": "Expandir modelos com Tab",
@@ -4398,7 +4399,6 @@
   "Find in Conversation": "Localizar na conversa",
   "Find in conversation": "Localizar na conversa",
   "0 results": "0 resultados",
-  "Time the agent spent on this task": "Tempo que o agente gastou nesta tarefa",
   "Send Again": "Enviar novamente",
   "Customize IDE appearance and behavior: change themes and font size, configure system settings and notifications.": "Personalize a aparência e o comportamento da IDE: altere temas e tamanho da fonte, configure as opções do sistema e notificações.",
   "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.": "Configure a edição de código: preenchimento automático, dobramento de código, abas, fontes, cores, estilo de código e inspeções.",
@@ -5621,7 +5621,6 @@
   "Chat": "Chat",
   "Shown in the Task Header": "Mostrado no cabeçalho da tarefa",
   "Context window usage": "Uso da janela de contexto",
-  "Time spent on the task": "Tempo gasto na tarefa",
   "Usage limits": "Limites de uso",
   "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)": "Os limites de 5 horas e semanais da conta, quando o agente os informa (Claude Code)",
   "Session cost": "Custo da sessão",
@@ -5933,5 +5932,6 @@
   "Roll Back to Here": "Reverter até aqui",
   "Couldn't roll back": "Não foi possível reverter",
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Esta mensagem e as seguintes são removidas, e os arquivos que o agente alterou desde então voltam a como estavam antes do envio. A mensagem volta para a caixa de texto.",
-  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Isso limpa toda a conversa, devolve os arquivos que o agente alterou a como estavam no início da tarefa e inicia uma nova sessão do agente com esta mensagem."
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Isso limpa toda a conversa, devolve os arquivos que o agente alterou a como estavam no início da tarefa e inicia uma nova sessão do agente com esta mensagem.",
+  "Resets in {resetIn}": "Redefine em {resetIn}"
 }

@@ -1843,6 +1843,7 @@
   "Exit": "Выход",
   "Expand": "Развернуть",
   "Expand All": "Развернуть все",
+  "Expand Selected": "Развернуть выбранное",
   "Expand abbreviations with Tab": "Раскрывать сокращения по Tab",
   "Expand folded lines": "Развернуть свёрнутые строки",
   "Expand templates with Tab": "Раскрывать шаблоны по Tab",
@@ -5912,7 +5913,6 @@
   "Find in Conversation": "Найти в диалоге",
   "Find in conversation": "Найти в диалоге",
   "0 results": "0 результатов",
-  "Time the agent spent on this task": "Время, затраченное агентом на эту задачу",
   "Send Again": "Отправить снова",
   "Customize IDE appearance and behavior: change themes and font size, configure system settings and notifications.": "Настройте внешний вид и поведение IDE: измените темы и размер шрифта, задайте системные параметры и уведомления.",
   "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.": "Настройте редактирование кода: автодополнение, сворачивание, вкладки, шрифты, цвета, стиль кода и инспекции.",
@@ -7204,7 +7204,6 @@
   "Chat": "Чат",
   "Shown in the Task Header": "Отображается в заголовке задачи",
   "Context window usage": "Использование контекстного окна",
-  "Time spent on the task": "Время, затраченное на задачу",
   "Usage limits": "Лимиты использования",
   "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)": "5-часовые и недельные лимиты аккаунта, если агент о них сообщает (Claude Code)",
   "Session cost": "Стоимость сессии",
@@ -10116,5 +10115,6 @@
   "Mark Agent Tasks as Read": "Отметить задачи агента как прочитанные",
   "Roll Back to Here": "Откатить до этого места",
   "Couldn't roll back": "Не удалось откатить",
-  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Это сообщение и все последующие будут удалены, а файлы, изменённые агентом с тех пор, вернутся к состоянию до его отправки. Сообщение вернётся в поле ввода."
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Это сообщение и все последующие будут удалены, а файлы, изменённые агентом с тех пор, вернутся к состоянию до его отправки. Сообщение вернётся в поле ввода.",
+  "Resets in {resetIn}": "Сброс через {resetIn}"
 }

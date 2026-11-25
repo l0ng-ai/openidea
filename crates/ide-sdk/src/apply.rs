@@ -1184,13 +1184,31 @@ pub fn tool_command(root: &Path, s: &Settings, command: &str) -> Option<PathBuf>
     if command == godot::COMMAND {
         return godot::find(custom);
     }
-    custom
+    custom.or_else(|| flutter_sdk_tool(root, s, command))
+}
+
+/// `flutter` / `dart` of the Flutter SDK in Settings › Languages & Frameworks › Flutter, else
+/// `None` (the search path). Dart is the SDK's own (`bin/cache/dart-sdk`), else its `bin/dart`
+/// wrapper, which downloads it on first use.
+pub fn flutter_sdk_tool(root: &Path, s: &Settings, command: &str) -> Option<PathBuf> {
+    let bin = setting_path(root, &s.languages.flutter.sdk)?.join("bin");
+    let script = |name: &str| bin.join(if cfg!(windows) { format!("{name}.bat") } else { name.to_owned() });
+    match command {
+        "flutter" => Some(script("flutter")),
+        "dart" => Some(
+            Some(bin.join("cache/dart-sdk/bin").join(exe("dart")))
+                .filter(|d| d.is_file())
+                .unwrap_or_else(|| script("dart")),
+        ),
+        _ => None,
+    }
 }
 
 /// Points a run configuration launching a bare tool name at the executable from
-/// [`tool_command`] (Godot apps live outside the search path).
+/// [`tool_command`] (Godot apps live outside the search path; `flutter` / `dart` follow the
+/// Flutter SDK setting).
 pub fn resolve_run_command(config: &mut RunConfig, root: &Path, s: &Settings) {
-    if config.command == godot::COMMAND
+    if matches!(config.command.as_str(), godot::COMMAND | "flutter" | "dart")
         && let Some(path) = tool_command(root, s, &config.command)
     {
         config.command = path.to_string_lossy().into_owned();
@@ -2207,9 +2225,12 @@ pub fn without_derived_in(config: &RunConfig, root: &Path, fallback: Option<&Pat
         && let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned())
     {
         // Generated configurations name the bare program (`java`), also on Windows where the
-        // derived path ends in `java.exe`.
-        let bare =
-            name.len().checked_sub(4).filter(|&at| name[at..].eq_ignore_ascii_case(".exe")).map(|at| &name[..at]);
+        // derived path ends in `java.exe` (`flutter.bat`).
+        let bare = name
+            .len()
+            .checked_sub(4)
+            .filter(|&at| name[at..].eq_ignore_ascii_case(".exe") || name[at..].eq_ignore_ascii_case(".bat"))
+            .map(|at| &name[..at]);
         for candidate in bare.into_iter().chain([name.as_str()]) {
             let mut probe = out.clone();
             probe.command = candidate.to_owned();

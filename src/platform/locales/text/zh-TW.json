@@ -1465,6 +1465,7 @@
   "Exit": "結束",
   "Expand": "展開",
   "Expand All": "全部展開",
+  "Expand Selected": "展開選取項目",
   "Expand abbreviations with Tab": "使用 Tab 展開縮寫",
   "Expand folded lines": "展開摺疊的行",
   "Expand templates with Tab": "使用 Tab 展開範本",
@@ -5412,7 +5413,6 @@
   "Find in Conversation": "在對話中查詢",
   "Find in conversation": "在對話中查詢",
   "0 results": "0 個結果",
-  "Time the agent spent on this task": "代理在此任務上花費的時間",
   "Send Again": "再次傳送",
   "Customize IDE appearance and behavior: change themes and font size, configure system settings and notifications.": "自訂 IDE 的外觀和行為：更改主題和字號，設定系統設定和通知。",
   "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.": "設定程式碼編輯：自動完成、摺疊、分頁、字型、配色、程式碼樣式和檢查。",
@@ -6698,7 +6698,6 @@
   "Chat": "聊天",
   "Shown in the Task Header": "在任務標題欄中顯示",
   "Context window usage": "上下文視窗用量",
-  "Time spent on the task": "任務耗時",
   "Usage limits": "用量限額",
   "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)": "帳戶的 5 小時和每週限額，在代理報告時顯示（Claude Code）",
   "Session cost": "工作階段花費",
@@ -9292,5 +9291,6 @@
   "Cannot read {path}.": "無法讀取 {path}。",
   "Already in the project": "已在專案中",
   "{name} is inside the opened project, so its sources are already part of it.": "{name} 位於已開啟的專案內，其原始碼已屬於該專案。",
-  "{name} has no pom.xml or Gradle build file. Attach it to this project as another root? Its source folders are detected automatically.": "{name} 沒有 pom.xml 或 Gradle 建置檔案。要將其作為另一個根附加到此專案嗎？其中的原始碼目錄會自動識別。"
+  "{name} has no pom.xml or Gradle build file. Attach it to this project as another root? Its source folders are detected automatically.": "{name} 沒有 pom.xml 或 Gradle 建置檔案。要將其作為另一個根附加到此專案嗎？其中的原始碼目錄會自動識別。",
+  "Resets in {resetIn}": "{resetIn} 後重設"
 }
