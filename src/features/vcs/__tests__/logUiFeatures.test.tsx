@@ -283,7 +283,8 @@ describe("log controls", () => {
     ["first shown column, after a hidden one", ["hash", "author", "subject", "date"]],
   ])("without headers, a row strip of the %s resizes the Repository column", async (_, columnOrder) => {
     useVcs.setState({ roots: ["/repo", "/other"] });
-    api.commits = [{ ...c("tip"), repo: "/repo" }];
+    const tip = { ...c("tip"), repo: "/repo" };
+    api.commits = [tip];
     useLogOptions.setState({ showRepository: true, showHash: false, columnOrder });
     render(<LogView />);
     const rows = await within(screen.getByRole("listbox", { name: "Commits" })).findAllByRole("option");
