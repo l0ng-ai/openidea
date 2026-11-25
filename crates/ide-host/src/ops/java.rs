@@ -809,7 +809,7 @@ mod tests {
         );
         assert_eq!(launch.vm_args, ["-Xmx1g", "-Dopenidea.fail=true"]);
         assert_eq!(launch.env["TZ"], "UTC");
-        assert_eq!(launch.working_directory.as_deref(), Some(Path::new("/m/work").to_str().unwrap()));
+        assert_eq!(launch.working_directory.as_deref(), Path::new("/m").join("work").to_str());
         assert_eq!(launch.surefire.len(), 6);
         let plain = junit_launch(Path::new("/m"), vec![], Default::default(), std::iter::empty());
         assert!(plain.surefire.is_empty() && plain.vm_args.is_empty() && plain.working_directory.is_none());
