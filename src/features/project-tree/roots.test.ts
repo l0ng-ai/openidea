@@ -47,6 +47,7 @@ describe("New › Package", () => {
     expect(packageKindAt("gen/kotlin/x", [root("gen/kotlin", "source", null)])).toBe("jvm");
     // Source sets reported by a Gradle sync, including ones outside `src/*/java`.
     expect(packageKindAt("src/gen/com", [root("src/gen", "source", "Gradle")])).toBe("jvm");
+    expect(packageKindAt("lib/src/gen/com", [root("lib/src/gen", "source", "lib/Gradle")])).toBe("jvm");
     expect(packageKindAt("app/source/com", [root("app/source", "source", "app/.classpath")])).toBe("jvm");
     expect(packageKindAt("py/src/app", py)).toBe("python");
     expect(packageKindAt("py", py)).toBe("python");

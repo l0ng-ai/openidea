@@ -43,7 +43,7 @@ describe("JVM folder presentation", () => {
   });
   it("shows packages below source sets a Gradle sync or an Eclipse .classpath reported", () => {
     const noModules = { modules: new Map(), spring: false };
-    for (const detectedFrom of ["Gradle", "lib/.classpath"]) {
+    for (const detectedFrom of ["Gradle", "lib/Gradle", "lib/.classpath"]) {
       const rs: RootFolder[] = [{ path: "lib/src", kind: "source", detectedFrom }];
       expect(folderKind({ path: "/p/lib/src/com/example", excluded: false }, rs, "/p", noModules)).toBe("package");
     }

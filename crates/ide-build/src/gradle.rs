@@ -364,9 +364,9 @@ pub fn parse_reported_projects(output: &str) -> Vec<ReportedProject> {
     output.lines().filter_map(|l| serde_json::from_str(l.trim_end().strip_prefix(MODEL_LINE)?).ok()).collect()
 }
 
-/// Source roots of the reported source sets: `(absolute folder, is test, is resources)`.
-pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, ReportedRoot)> {
-    let mut out: Vec<(PathBuf, ReportedRoot)> = Vec::new();
+/// Source roots of the reported source sets: `(absolute folder, role, absolute folder of its project)`.
+pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, ReportedRoot, PathBuf)> {
+    let mut out: Vec<(PathBuf, ReportedRoot, PathBuf)> = Vec::new();
     for p in reported {
         for set in &p.source_sets {
             let (src, res) = if set.test {
@@ -377,14 +377,14 @@ pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, Repo
             for (dir, kind) in set.src.iter().map(|d| (d, src)).chain(set.res.iter().map(|d| (d, res))) {
                 let dir = PathBuf::from(dir);
                 // A folder shared by `main` and another set is `main`'s, as in IDEA.
-                if !out.iter().any(|(d, _)| *d == dir) {
-                    out.push((dir, kind));
+                if !out.iter().any(|(d, _, _)| *d == dir) {
+                    out.push((dir, kind, PathBuf::from(&p.dir)));
                 }
             }
         }
         // IDEA excludes the build folder of every module.
         if let Some(b) = &p.build_dir {
-            out.push((PathBuf::from(b), ReportedRoot::Excluded));
+            out.push((PathBuf::from(b), ReportedRoot::Excluded, PathBuf::from(&p.dir)));
         }
     }
     out
