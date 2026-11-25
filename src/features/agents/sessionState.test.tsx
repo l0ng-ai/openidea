@@ -499,7 +499,7 @@ describe("tool result images", () => {
 });
 
 describe("turn folding", () => {
-  it("folds a finished turn's work under its message and keeps the reply", async () => {
+  it("keeps a finished turn's interim text and tools visible by default", async () => {
     backend.entries.set("A", [
       {
         type: "user",
@@ -517,7 +517,43 @@ describe("turn folding", () => {
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    await screen.findByText("Final reply");
+    expect(await screen.findByText("Interim note")).toBeInTheDocument();
+    expect(screen.getByText("two")).toBeInTheDocument();
+    expect(screen.getByText("Final reply")).toBeInTheDocument();
+    expect(stream().querySelector(`.${styles.turnFold}`)).toBeNull();
+  });
+
+  it("folds earlier turns when foldTurns is enabled, keeping the latest turn open and flattening runs inside", async () => {
+    useProject.setState({ settings: { agents: { foldTurns: true } } as never });
+    backend.entries.set("A", [
+      {
+        type: "user",
+        text: "Question",
+        attachments: [],
+        steered: false,
+        sentMs: 1000,
+        doneMs: 13000,
+      },
+      { type: "thought", text: "think" },
+      tool("one"),
+      { type: "agent", text: "Interim note" },
+      tool("two", { kind: "execute" }),
+      { type: "agent", text: "Final reply" },
+      {
+        type: "user",
+        text: "Follow up",
+        attachments: [],
+        steered: false,
+        sentMs: 14000,
+        doneMs: 15000,
+      },
+      tool("latest", { kind: "execute" }),
+      { type: "agent", text: "Latest reply" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Latest reply");
+    expect(screen.getByText("latest")).toBeInTheDocument();
     const summary = screen.getByText("Ran 1 command · Read 1 file · 1 message");
     const fold = summary.closest("details")!;
     expect(fold).toHaveClass(styles.turnFold!);
@@ -526,6 +562,8 @@ describe("turn folding", () => {
     fold.open = true;
     fireEvent(fold, new Event("toggle"));
     expect(await screen.findByText("Interim note")).toBeInTheDocument();
+    expect(screen.getByText("one")).toBeInTheDocument();
+    expect(fold.querySelector(`.${styles.processRun}`)).toBeNull();
   });
 
   it("leaves the turn the agent works on open", async () => {
@@ -589,7 +627,7 @@ describe("working status", () => {
 });
 
 describe("opened runs", () => {
-  it("stay open when the finished turn folds them away and is opened again", async () => {
+  it("stay open while the run grows and when the turn finishes", async () => {
     const asked = {
       type: "user",
       text: "Question",
@@ -631,9 +669,6 @@ describe("opened runs", () => {
         ...setTask("ready"),
       }),
     );
-    const turn = screen.getByText("Read 2 files · 1 message").closest("details")!;
-    expect(turn).toHaveClass(styles.turnFold!);
-    toggle(turn);
     expect(screen.getByText("Read 2 files").closest("details")!.open).toBe(true);
   });
 });
@@ -1256,19 +1291,27 @@ describe("tool calls", () => {
     expect(screen.queryByText("Reading files…")).toBeNull();
   });
 
-  it("folds consecutive finished tool calls into one collapsed row", async () => {
+  it("folds consecutive exploration calls into one collapsed row while keeping edits visible", async () => {
     const edit = (id: string) =>
       tool(id, {
         kind: "edit",
         diffs: [{ path: "/project/a.ts", added: 2, removed: 1 }],
       });
-    backend.entries.set("A", [edit("one"), edit("two"), { type: "agent", text: "Answer A" }]);
+    backend.entries.set("A", [
+      tool("r1", { kind: "read" }),
+      tool("s1", { kind: "search" }),
+      edit("one"),
+      edit("two"),
+      { type: "agent", text: "Answer A" },
+    ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("Edited 1 file");
+    const summary = await screen.findByText("Read 1 file · Searched once");
     expect(summary.closest("details")!.open).toBe(false);
-    expect(screen.getByText("+4")).toBeInTheDocument();
-    expect(screen.getByText("−2")).toBeInTheDocument();
+    expect(screen.getByText("one")).toBeInTheDocument();
+    expect(screen.getByText("two")).toBeInTheDocument();
+    expect(screen.getAllByText("+2")).toHaveLength(2);
+    expect(screen.getAllByText("−1")).toHaveLength(2);
   });
 });
 

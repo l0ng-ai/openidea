@@ -10,7 +10,7 @@ export const AGENT_SETTINGS_DEFAULTS: ResolvedAgentSettings = {
   showWorkTime: true,
   showUsageLimits: true,
   showCost: false,
-  foldTurns: true,
+  foldTurns: false,
   smoothText: true,
   fitWindowWidth: false,
   thinking: "auto",

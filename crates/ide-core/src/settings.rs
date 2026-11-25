@@ -145,7 +145,7 @@ impl Default for AgentSettings {
             show_work_time: true,
             show_usage_limits: true,
             show_cost: false,
-            fold_turns: true,
+            fold_turns: false,
             smooth_text: true,
             fit_window_width: false,
             thinking: ThinkingDisplay::Auto,

@@ -119,7 +119,6 @@
   background: none;
   color: var(--fg-subtle);
   --icon-color: currentColor;
-  cursor: pointer;
   transition:
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
@@ -176,7 +175,6 @@
   background: none;
   color: inherit;
   font: inherit;
-  cursor: pointer;
 }
 .statusItem:hover {
   background: var(--bg-hover);

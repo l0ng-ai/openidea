@@ -11,7 +11,6 @@
   color: var(--fg-secondary);
   font: inherit;
   white-space: nowrap;
-  cursor: pointer;
   transition: background var(--dur-fast) var(--ease);
 }
 
@@ -195,7 +194,6 @@
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-tiny);
-  cursor: pointer;
 }
 
 .inlineLink:hover {
