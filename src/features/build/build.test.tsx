@@ -34,6 +34,7 @@ import {
 } from "./model";
 import {
   BUILD_TASK_ID,
+  followLaunchBuild,
   rerunBuild,
   setBuildBackend,
   startBuild,
@@ -685,5 +686,65 @@ describe("build feature", () => {
       expect.objectContaining({ focus: true, selection: { line: 7, col: 4 } }),
     );
     expect(screen.getByRole("document", { name: "Build message" })).toHaveTextContent("cannot find symbol");
+  });
+
+  it("follows a launch's build: status bar progress, its commands in the console, its output in Build", async () => {
+    vi.useFakeTimers();
+    try {
+      const report = vi.fn();
+      const follower = followLaunchBuild(42 as never, "Build before launch: App", report);
+      follower.onEvent({ kind: "progress", message: "Resolving the module", fraction: null });
+      expect(useTasks.getState().tasks.find((t) => t.id === "launch-build:42")).toMatchObject({
+        title: "Build before launch: App",
+        message: "Resolving the module",
+      });
+      follower.onEvent({ kind: "started", system: "maven", title: "demo: build module 'app'" });
+      follower.onEvent({ kind: "step", command: "mvn -pl app -am compile", cwd: "/p" });
+      follower.onEvent({ kind: "output", text: "[INFO] Building app 1 [2/2]\n", stderr: false });
+      follower.onEvent({ kind: "progress", message: "Building app", fraction: 0.5 });
+      follower.onEvent({ kind: "message", message: err("/p/app/A.java", 3) });
+      vi.advanceTimersByTime(20);
+      expect(report).toHaveBeenCalledWith("mvn -pl app -am compile\n", "system");
+      expect(useTasks.getState().tasks.find((t) => t.id === "launch-build:42")).toMatchObject({
+        message: "Building app",
+        fraction: 0.5,
+      });
+      expect(useBuildRun.getState()).toMatchObject({
+        request: 42,
+        status: "running",
+        title: "demo: build module 'app'",
+      });
+      expect(useBuildRun.getState().lines.map((l) => l.text)).toEqual([
+        "mvn -pl app -am compile",
+        "[INFO] Building app 1 [2/2]",
+      ]);
+      // A launch build stays out of sight at start, as Build before launch does.
+      expect(show).not.toHaveBeenCalled();
+      // Cancel in the status bar cancels the launch's request.
+      useTasks.getState().tasks.find((t) => t.id === "launch-build:42")!.cancel!();
+      expect(fake.cancelled).toEqual([42]);
+      follower.finish("failed");
+      expect(useBuildRun.getState()).toMatchObject({ request: null, status: "failed" });
+      expect(getContext()["build.running"]).toBe(false);
+      expect(show).toHaveBeenCalledWith("build", false);
+      expect(openFile).toHaveBeenCalledWith("/p/app/A.java", expect.objectContaining({ focus: true }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the Build window to a build that is already running", async () => {
+    void startBuild("build");
+    await act(async () => {});
+    const running = useBuildRun.getState().request;
+    const follower = followLaunchBuild(43 as never, "Build before launch: App");
+    follower.onEvent({ kind: "started", system: "maven", title: "launch" });
+    follower.onEvent({ kind: "output", text: "launch output\n", stderr: false });
+    follower.finish("success");
+    expect(useBuildRun.getState().request).toBe(running);
+    expect(useBuildRun.getState().lines.some((l) => l.text === "launch output")).toBe(false);
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
   });
 });

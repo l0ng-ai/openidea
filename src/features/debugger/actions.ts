@@ -13,6 +13,7 @@ import {
   type RunId,
 } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
+import { followLaunchBuild } from "@/features/build/store";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { openExternalUrl } from "@/platform/openUrl";
@@ -383,6 +384,7 @@ async function startJavaConfig(config: RunConfig, root: string, origin: RunConfi
           request,
           signal,
           report,
+          build: followLaunchBuild(request, tx`Build before launch: ${config.name}`, report),
           saveAll: async () => {
             await maybeEditorService()?.saveAll();
           },

@@ -4840,6 +4840,7 @@
   "What should the agent do?": "Что должен сделать агент?",
   "New worktree": "Новый worktree",
   "Building and resolving the classpath of {name}…": "Сборка и разрешение classpath для {name}…",
+  "Build before launch: {name}": "Сборка перед запуском: {name}",
   "The classpath is empty: is the module imported by the Java language server?": "Classpath пуст: импортирован ли модуль языковым сервером Java?",
   "Launch cancelled.": "Запуск отменен.",
   "Starting debugger for {name}…": "Запуск отладчика для {name}…",

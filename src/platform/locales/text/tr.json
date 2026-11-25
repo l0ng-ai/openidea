@@ -6162,6 +6162,7 @@
   "What should the agent do?": "Ajan ne yapmalı?",
   "New worktree": "Yeni çalışma ağacı",
   "Building and resolving the classpath of {name}…": "{name} için sınıf yolu oluşturuluyor ve çözümleniyor…",
+  "Build before launch: {name}": "Başlatmadan önce derleme: {name}",
   "The classpath is empty: is the module imported by the Java language server?": "Sınıf yolu boş: modül Java dil sunucusu tarafından içe aktarıldı mı?",
   "Launch cancelled.": "Başlatma iptal edildi.",
   "Starting debugger for {name}…": "{name} için hata ayıklayıcı başlatılıyor…",

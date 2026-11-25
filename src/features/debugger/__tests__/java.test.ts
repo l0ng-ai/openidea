@@ -7,6 +7,12 @@ let kotlinFiles = false;
 let debugAdapter = "java-debug";
 const files: Record<string, string> = {};
 let missingTools: string[] = [];
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage = null;
+  },
+}));
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   const ok = (data: unknown) => Promise.resolve({ status: "ok", data });
@@ -93,7 +99,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
     expect(isJavaDebuggable({ ...app, kind: "maven" })).toBe(false);
     const l = await javaLaunchConfig(app, "/p");
     expect(invoked).toEqual([
-      ["javaResolveLaunch", ["api", false, "automatic", expect.any(Number)]],
+      ["javaResolveLaunch", ["api", false, "automatic", expect.any(Number), expect.anything()]],
       ["javaDebugAdapter", ["api"]],
       ["javaDebugServer", ["api"]],
     ]);
@@ -232,7 +238,10 @@ it.each(["sibling", "/outside/modules"])("debugs from %s with the main class mod
     invoked.length = 0;
     // oxlint-disable-next-line no-await-in-loop -- invoked is a shared call log reset each iteration; the assertions must follow the matching launch
     const launch = await javaLaunchConfig({ ...app, module, cwd }, "/p");
-    expect(invoked).toContainEqual(["javaResolveLaunch", ["api", false, "automatic", expect.any(Number)]]);
+    expect(invoked).toContainEqual([
+      "javaResolveLaunch",
+      ["api", false, "automatic", expect.any(Number), expect.anything()],
+    ]);
     expect(invoked).toContainEqual(["javaDebugServer", ["api"]]);
     expect(launch.cwd).toBe(cwd.startsWith("/") ? cwd : `/p/${cwd}`);
   }

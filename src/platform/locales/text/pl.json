@@ -3431,6 +3431,7 @@
   "What should the agent do?": "Co agent powinien zrobić?",
   "New worktree": "Nowe worktree",
   "Building and resolving the classpath of {name}…": "Kompilowanie i ustalanie ścieżki klas (classpath) dla {name}…",
+  "Build before launch: {name}": "Kompilacja przed uruchomieniem: {name}",
   "The classpath is empty: is the module imported by the Java language server?": "Ścieżka klas jest pusta: czy moduł został zaimportowany przez serwer językowy Java?",
   "Launch cancelled.": "Uruchomienie anulowane.",
   "Starting debugger for {name}…": "Uruchamianie debugera dla {name}…",

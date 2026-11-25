@@ -4,9 +4,11 @@ pub(crate) mod cache;
 use crate::Host;
 use ide_command::command;
 
+use super::Channel;
 use super::build::{load, with_profiles, workspace};
+use cache::LaunchEvents;
 use ide_build::BuildModel;
-use ide_build::compile;
+use ide_build::compile::{self, BuildEvent};
 use ide_core::error::ErrorKind;
 use ide_core::settings::Settings;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
@@ -18,6 +20,8 @@ use std::path::{Path, PathBuf};
 /// Builds according to `policy`, then resolves the runtime (or test)
 /// classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 /// A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+/// The build streams its console, messages and progress on `on_event` while it runs; a launch
+/// whose build another launch's build joins receives that build's events.
 #[command(trust = trusted)]
 pub async fn java_resolve_launch(
     host: &Host,
@@ -26,12 +30,16 @@ pub async fn java_resolve_launch(
     test: bool,
     policy: BuildPolicy,
     request: RequestId,
+    on_event: Channel<BuildEvent>,
 ) -> IdeResult<JavaLaunchInfo> {
     // Resources a Gradle build filters or renames are processed by Gradle, replacing the language
     // server's plain copies.
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result = resolve_launch(host, window, module, test, policy, &cancel).await;
+    let events: LaunchEvents = std::sync::Arc::new(move |event| {
+        let _ = on_event.send(event);
+    });
+    let result = resolve_launch(host, window, module, test, policy, &cancel, Some(events)).await;
     host.end_request(request);
     result
 }
@@ -43,8 +51,15 @@ pub(crate) async fn resolve_launch(
     test: bool,
     policy: BuildPolicy,
     cancel: &CancellationToken,
+    events: Option<LaunchEvents>,
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
+    let progress = |message: &str| {
+        if let Some(events) = &events {
+            events(BuildEvent::Progress { message: message.to_owned(), fraction: None });
+        }
+    };
+    progress("Resolving the module");
     let project = host.project(window)?;
     let module = ide_core::project_roots::resolve(&project.root, &module);
     let scope = {
@@ -54,11 +69,11 @@ pub(crate) async fn resolve_launch(
             .map_err(|e| IdeError::internal(e.to_string()))??
     };
     if !project.lsp.java_served_by_jdtls(&module) {
-        return resolve_launch_without_jdtls(host, &project, module, scope, test, policy, cancel).await;
+        return resolve_launch_without_jdtls(host, &project, module, scope, test, policy, cancel, events).await;
     }
     let scope = std::sync::Arc::new(scope);
     let launches = project.java_launches.for_cache(&scope.cache);
-    let waiting = launches.waiting.add(module.clone(), test, policy);
+    let waiting = launches.waiting.add(module.clone(), test, policy, events.clone());
     let prefer_maven = scope.settings.languages.java.maven.delegate_build;
     // A launch builds incrementally unless the configuration asks for Rebuild or NoBuild.
     let build = policy != BuildPolicy::NoBuild;
@@ -90,6 +105,9 @@ pub(crate) async fn resolve_launch(
     };
     let mut external_build =
         if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
+    if build && !delegated {
+        progress("Compiling with the Java language server");
+    }
     let mut info = project.lsp.java_launch(&module, test, build && !delegated, full, delegated, cancel).await?;
     if info.errors.iter().any(|e| processor_recreated_a_file(&e.message)) {
         if build && !delegated && is_maven {
@@ -118,6 +136,11 @@ pub(crate) async fn resolve_launch(
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;
         let (root, cache, settings) = (&scope.root, &scope.cache, &scope.settings);
+        let on_event = |event: BuildEvent| {
+            if let Some(events) = &events {
+                events(event);
+            }
+        };
         let local_repo = ide_sdk::apply::maven_local_repository(root, settings);
         // Module outputs the launch runs from a snapshot of: the originals must not come back.
         let mut snapshotted = Vec::new();
@@ -130,7 +153,7 @@ pub(crate) async fn resolve_launch(
                 root,
                 &model,
                 &module,
-                cache::BuildOptions { test, policy, rebuild_on_jdt_errors, members },
+                cache::BuildOptions { test, policy, rebuild_on_jdt_errors, members, events: events.clone() },
                 local_repo.clone(),
                 &cancel,
             )?;
@@ -140,7 +163,7 @@ pub(crate) async fn resolve_launch(
             snapshotted = outputs.originals;
             copies
         } else if external {
-            let built = compile::build_for_launch(root, &model, &module, test, build_kind, &cancel)?;
+            let built = compile::build_for_launch(root, &model, &module, test, build_kind, &cancel, &on_event)?;
             if let Some(failure) = built.failure {
                 if policy != BuildPolicy::MakeAndContinueOnErrors {
                     return Err(IdeError::internal(failure));
@@ -154,6 +177,7 @@ pub(crate) async fn resolve_launch(
         };
         let mut class_paths: Vec<String> = built.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         if delegated {
+            on_event(BuildEvent::Progress { message: "Resolving the classpath".into(), fraction: None });
             // m2e runs inside jdtls on the server JDK and can resolve a different
             // Maven profile/classifier than the module build. Ask the same Maven
             // process that built the module for its runtime/test dependencies.
@@ -203,6 +227,7 @@ fn is_maven_module(root: &Path, model: &BuildModel, module: &Path) -> bool {
 
 /// A launch of a module jdtls doesn't serve (another Java language server, or none): the
 /// build tool compiles it, and the classpath comes from that server, else from Maven.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_launch_without_jdtls(
     host: &Host,
     project: &std::sync::Arc<crate::Project>,
@@ -211,18 +236,24 @@ async fn resolve_launch_without_jdtls(
     test: bool,
     policy: BuildPolicy,
     cancel: &CancellationToken,
+    events: Option<LaunchEvents>,
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
     let scope = std::sync::Arc::new(scope);
     let kind = if policy == BuildPolicy::Rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
     let (model, built) = {
-        let (scope, module, cancel) = (scope.clone(), module.clone(), cancel.clone());
+        let (scope, module, cancel, events) = (scope.clone(), module.clone(), cancel.clone(), events.clone());
         tokio::task::spawn_blocking(move || {
             let model = load_launch_model(&scope);
+            let on_event = |event: BuildEvent| {
+                if let Some(events) = &events {
+                    events(event);
+                }
+            };
             let built = if policy == BuildPolicy::NoBuild {
                 None
             } else {
-                Some(compile::build_for_launch(&scope.root, &model, &module, test, kind, &cancel))
+                Some(compile::build_for_launch(&scope.root, &model, &module, test, kind, &cancel, &on_event))
             };
             (model, built)
         })
@@ -254,6 +285,9 @@ async fn resolve_launch_without_jdtls(
         }
     }
     let build_ms = started.elapsed().as_millis();
+    if let Some(events) = &events {
+        events(BuildEvent::Progress { message: "Resolving the classpath".into(), fraction: None });
+    }
     let from_server = project.lsp.java_server_classpath(&module, test, cancel).await?;
     let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
@@ -474,6 +508,7 @@ async fn build_members(
         members.push(cache::Member {
             module: launch.module.clone(),
             rebuild_on_jdt_errors: rebuild_on_jdt_errors(launch.policy, prefer_maven, errors),
+            events: launch.events.clone(),
         });
     }
     Ok(members)

@@ -3459,6 +3459,7 @@
   "What should the agent do?": "¿Qué debe hacer el agente?",
   "New worktree": "Nuevo árbol de trabajo",
   "Building and resolving the classpath of {name}…": "Compilando y resolviendo el classpath de {name}…",
+  "Build before launch: {name}": "Compilación antes de ejecutar: {name}",
   "The classpath is empty: is the module imported by the Java language server?": "El classpath está vacío: ¿el servidor de lenguaje Java importó el módulo?",
   "Launch cancelled.": "Inicio cancelado.",
   "Starting debugger for {name}…": "Iniciando depurador para {name}…",

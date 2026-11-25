@@ -3,7 +3,8 @@ import { create } from "zustand";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, isTauri, nextRequestId, type RunConfig } from "@/platform/ipc";
-import { parseJavaArgs, resolveJavaModule } from "@/platform/javaLaunch";
+import { parseJavaArgs, resolveJavaLaunch, resolveJavaModule } from "@/platform/javaLaunch";
+import { followLaunchBuild } from "@/features/build/store";
 import {
   maybeEditorService,
   notifications,
@@ -46,13 +47,13 @@ async function updateSpringBoot(config: RunConfig, mode: UpdateMode, debugging: 
   const module = await resolveJavaModule(config);
   const parsed = parseJavaArgs(config.args);
   if (!parsed.mainClass) throw new Error(tx("The Spring Boot configuration has no main class"));
-  const info = await call(
-    commands.javaResolveLaunch(
-      module,
-      parsed.classpath === "test",
-      mode === "classes" ? "make" : "noBuild",
-      nextRequestId(),
-    ),
+  const request = nextRequestId();
+  const info = await resolveJavaLaunch(
+    module,
+    parsed.classpath === "test",
+    mode === "classes" ? "make" : "noBuild",
+    request,
+    followLaunchBuild(request, tx`Build before launch: ${config.name}`),
   );
   if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
     throw updateBuildError(info);
