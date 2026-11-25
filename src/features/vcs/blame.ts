@@ -145,7 +145,7 @@ function setAnnotateColumn(column: AnnotateColumn, shown: boolean) {
   }
 }
 
-/** How the author column shows names (IDEA's annotate Options › Names); kept across sessions. */
+/** How the author column shows names (IDEA's annotate Options › Names; Last Name by default, as there); kept across sessions. */
 const NAMES_KEY = "openidea.vcs.annotateNames";
 const NAME_TYPES = ["initials", "lastName", "firstName", "fullName"] as const;
 type AnnotateNames = (typeof NAME_TYPES)[number];
@@ -153,9 +153,9 @@ type AnnotateNames = (typeof NAME_TYPES)[number];
 export function readAnnotateNames(): AnnotateNames {
   try {
     const raw = localStorage.getItem(NAMES_KEY);
-    return NAME_TYPES.find((t) => t === raw) ?? "fullName";
+    return NAME_TYPES.find((t) => t === raw) ?? "lastName";
   } catch {
-    return "fullName";
+    return "lastName";
   }
 }
 
@@ -177,21 +177,49 @@ function setAnnotateNames(names: AnnotateNames, save = true) {
   }
 }
 
+/** Characters IDEA's ShortNameType splits an email's local part and initials on. */
+const NAME_DELIMITERS = /[.,<>()":_-]/g;
+
+const isLowerCase = (c: string) => c !== c.toUpperCase() && c === c.toLowerCase();
+
 /**
- * Shortens a commit author the way IDEA's ShortNameType does: drops an `<email>` part,
- * takes the local part of a bare email, and splits on spaces, dots, underscores and dashes.
+ * Shortens a commit author the way IDEA's ShortNameType does. An `<email>` part is dropped
+ * (the email stands in for a missing name), and a bare email's local part is split on
+ * delimiters. Names split on spaces, initials also on delimiters, and a first or last name
+ * taken from an email is capitalized.
  */
 export function shortAuthorName(author: string, names: AnnotateNames): string {
-  let name = author.trim();
-  if (names === "fullName") return name;
+  const raw = author.replace(/\s+/g, " ").trim();
+  let name = raw;
+  let fromEmail = false;
   const lt = name.indexOf("<");
-  if (lt > 0 && lt < name.indexOf("@") && name.indexOf("@") < name.indexOf(">")) name = name.slice(0, lt).trim();
-  if (!name.includes(" ") && name.includes("@")) name = name.slice(0, name.indexOf("@"));
-  const parts = name.split(/[\s._-]+/).filter(Boolean);
-  if (!parts.length) return author.trim();
-  const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-  if (names === "initials") return parts.map((p) => p.charAt(0).toUpperCase()).join("");
-  return capitalize(names === "firstName" ? parts[0]! : parts[parts.length - 1]!);
+  const gt = name.indexOf(">");
+  const at = name.indexOf("@");
+  if (lt >= 0 && lt < at && at < gt) {
+    // "Vasya <vasya.pupkin@example.com> Pupkin" → "Vasya Pupkin"
+    const email = name.slice(lt + 1, gt).trim();
+    const around = [name.slice(0, lt).trim(), name.slice(gt + 1).trim()].filter(Boolean).join(" ");
+    fromEmail = !around;
+    name = around || email;
+  }
+  if (names === "fullName") return name;
+  const atIndex = name.indexOf("@");
+  if (atIndex > 0 && !name.includes(" ")) {
+    // "vasya.pupkin@example.com" → "vasya pupkin"
+    fromEmail = true;
+    name = name.slice(0, atIndex).replace(NAME_DELIMITERS, " ");
+  }
+  const parts = name.split(" ").filter((p) => p.trim());
+  if (!parts.length) return raw;
+  if (names === "initials")
+    return parts
+      .flatMap((p) => p.split(NAME_DELIMITERS))
+      .filter((p) => p.trim())
+      .map((p) => p[0]!.toUpperCase())
+      .join("");
+  const picked = names === "firstName" ? parts[0]! : parts[parts.length - 1]!;
+  // Emails are usually lowercase while names are capitalized.
+  return fromEmail && isLowerCase(picked[0]!) ? picked[0]!.toUpperCase() + picked.slice(1) : picked;
 }
 
 /** Hides the columns turned off in Options, here and in editors annotated before the change. */

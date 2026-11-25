@@ -382,7 +382,7 @@ describe("annotate Options", () => {
     });
   };
 
-  it("shows full names by default and switches every annotated editor from Options › Names", async () => {
+  it("shows last names by default and switches every annotated editor from Options › Names", async () => {
     view = await annotated();
     const historical = new EditorView({
       parent: document.body,
@@ -393,11 +393,11 @@ describe("annotate Options", () => {
       const names = options(view).find((i) => i.label === "Names")!.submenu!;
       expect(names.map((i) => [i.label, i.checked])).toEqual([
         ["Initials", false],
-        ["Last Name", false],
+        ["Last Name", true],
         ["First Name", false],
-        ["Full Name", true],
+        ["Full Name", false],
       ]);
-      expect(authors(view)).toEqual(["Aleks Zlateski", "Aleks Zlateski", "Dan Crankshaw"]);
+      expect(authors(view)).toEqual(["Zlateski", "Zlateski", "Crankshaw"]);
 
       await pick(names[0]!);
       expect(authors(view)).toEqual(["AZ", "AZ", "DC"]);
@@ -424,22 +424,22 @@ describe("annotate Options", () => {
 
   it("follows a Names choice made in another window and ignores values it cannot use", async () => {
     view = await annotated();
-    localStorage.setItem("openidea.vcs.annotateNames", "lastName");
+    localStorage.setItem("openidea.vcs.annotateNames", "firstName");
     await act(async () => {
       window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateNames" }));
       await vi.advanceTimersByTimeAsync(20);
     });
-    expect(authors(view)).toEqual(["Zlateski", "Zlateski", "Crankshaw"]);
+    expect(authors(view)).toEqual(["Aleks", "Aleks", "Dan"]);
     const blames = mocks.blame.mock.calls.length;
     await act(async () => {
       window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateNames" }));
       await vi.advanceTimersByTimeAsync(20);
     });
-    await pick(options(view).find((i) => i.label === "Names")!.submenu![1]!);
+    await pick(options(view).find((i) => i.label === "Names")!.submenu![2]!);
     expect(mocks.blame.mock.calls.length).toBe(blames);
     for (const raw of ["", "LASTNAME", "email", '"initials"']) {
       localStorage.setItem("openidea.vcs.annotateNames", raw);
-      expect(readAnnotateNames()).toBe("fullName");
+      expect(readAnnotateNames()).toBe("lastName");
     }
   });
 
@@ -447,15 +447,14 @@ describe("annotate Options", () => {
     const all = (author: string) =>
       (["initials", "lastName", "firstName", "fullName"] as const).map((t) => shortAuthorName(author, t));
     expect(all("Aleks Zlateski")).toEqual(["AZ", "Zlateski", "Aleks", "Aleks Zlateski"]);
-    expect(all("Vasya S. Pupkin <vasya.pupkin@example.com>")).toEqual([
-      "VSP",
-      "Pupkin",
-      "Vasya",
-      "Vasya S. Pupkin <vasya.pupkin@example.com>",
-    ]);
+    expect(all("Vasya S. Pupkin <vasya.pupkin@example.com>")).toEqual(["VSP", "Pupkin", "Vasya", "Vasya S. Pupkin"]);
+    expect(all("Vasya <vasya.pupkin@example.com> Pupkin")).toEqual(["VP", "Pupkin", "Vasya", "Vasya Pupkin"]);
+    expect(all("<vasya.pupkin@example.com>")).toEqual(["VP", "Pupkin", "Vasya", "vasya.pupkin@example.com"]);
     expect(all("john.smith@example.com")).toEqual(["JS", "Smith", "John", "john.smith@example.com"]);
-    expect(all("mary_ann-lee")).toEqual(["MAL", "Lee", "Mary", "mary_ann-lee"]);
-    expect(all("  dependabot[bot] ")).toEqual(["D", "Dependabot[bot]", "Dependabot[bot]", "dependabot[bot]"]);
+    // Only names taken from an email split on delimiters and get capitalized.
+    expect(all("Jean-Luc picard")).toEqual(["JLP", "picard", "Jean-Luc", "Jean-Luc picard"]);
+    expect(all("mary_ann-lee")).toEqual(["MAL", "mary_ann-lee", "mary_ann-lee", "mary_ann-lee"]);
+    expect(all("  dependabot[bot] ")).toEqual(["D", "dependabot[bot]", "dependabot[bot]", "dependabot[bot]"]);
     expect(all("   ")).toEqual(["", "", "", ""]);
   });
 
