@@ -31,8 +31,10 @@ import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
-import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
+import { DEFAULT_FIND_OPTIONS, findInCutLines, marksByRow, type FindOptions } from "@/ui/consoleFind";
 
+/** A row cut at MAX_LINE_LENGTH: the next row continues its line. */
+const cut = (line: ConsoleLine) => !!line.continues;
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
 
@@ -289,22 +291,14 @@ export function ConsoleView({
 
   // Find (⌘F): search the whole buffer, not just the rendered rows.
   const found = useMemo(
-    () => (findOpen ? findInLines(lines, query, findOptions) : { matches: [], overflow: false, invalid: false }),
+    () =>
+      findOpen ? findInCutLines(lines, cut, query, findOptions) : { matches: [], overflow: false, invalid: false },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
     [findOpen, lines, version, query, findOptions],
   );
   const activeIndex = found.matches.length ? Math.min(Math.max(active, 0), found.matches.length - 1) : -1;
   const activeMatch = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
-  const marksByLine = useMemo(() => {
-    const byLine = new Map<number, SegmentMark[]>();
-    found.matches.forEach((match, i) => {
-      const mark: SegmentMark = { start: match.start, end: match.end, current: i === activeIndex };
-      const marks = byLine.get(match.line);
-      if (marks) marks.push(mark);
-      else byLine.set(match.line, [mark]);
-    });
-    return byLine;
-  }, [found, activeIndex]);
+  const marksByLine = useMemo(() => marksByRow(found.matches, activeIndex, lines, cut), [found, activeIndex, lines]);
   const rowOfLine = useMemo(() => {
     const rowsByLine = new Map<number, number>();
     rows.forEach((row, i) => {
@@ -673,7 +667,8 @@ export function ConsoleView({
                 />
                 {row.fold && !row.fold.expanded && foldButton(row.fold, true)}
                 {inputInline && item.index === rows.length - 1 && pendingInput}
-                {"\n"}
+                {/* A row cut at MAX_LINE_LENGTH continues on the next: no line break in a copied selection. */}
+                {!line.continues && "\n"}
               </div>
             );
           })}
