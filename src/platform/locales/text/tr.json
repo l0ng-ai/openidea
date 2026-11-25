@@ -3820,6 +3820,8 @@
   "Indent Block": "Bloğa Girinti Ekle",
   "Indent Each Line": "Her Satıra Girinti Ekle",
   "Collapse Recursively": "Özyinelemeli Daralt",
+  "Expand Doc Comments": "Belgelendirme Yorumlarını Genişlet",
+  "Collapse Doc Comments": "Belgelendirme Yorumlarını Daralt",
   "Expand Recursively": "Özyinelemeli Genişlet",
   "Move Caret to Matching Brace": "İmleci Eşleşen Paranteze Taşı",
   "Toggle Insert/Overwrite": "Ekleme/Üzerine Yazma Modunu Değiştir",

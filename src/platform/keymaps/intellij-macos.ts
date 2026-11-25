@@ -118,6 +118,8 @@ export const intellijMacos: Record<string, string[]> = {
   "code.unfoldAll": ["Meta+Shift+="],
   "code.collapseRecursively": ["Meta+Alt+-"],
   "code.expandRecursively": ["Meta+Alt+="],
+  "code.expandDocComments": [],
+  "code.collapseDocComments": [],
   "code.addCaretNextOccurrence": ["Ctrl+G"],
   "code.selectAllOccurrences": ["Ctrl+Meta+G"],
   "code.unselectOccurrence": ["Ctrl+Shift+G"],
