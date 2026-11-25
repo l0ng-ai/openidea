@@ -328,9 +328,11 @@ export const currentModel = () => selectModel(get());
 
 let generation = 0;
 const inflight = new Map<string, Promise<void>>();
+type ListingBatch = "reload" | "visible";
 /** Listings read by a batch and not applied yet; `reload` marks folders that were loaded when read. */
-const pending = new Map<string, { entries: readonly FileEntry[]; reload: boolean }>();
+const pending = new Map<string, { entries: readonly FileEntry[]; reload: boolean; batch: ListingBatch }>();
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
+let visibleFlush: number | undefined;
 
 /** Resets the view for a newly opened project, restoring its expansion state. */
 export function initProjectTree(
@@ -342,6 +344,8 @@ export function initProjectTree(
   generation++;
   inflight.clear();
   pending.clear();
+  if (visibleFlush !== undefined) cancelAnimationFrame(visibleFlush);
+  visibleFlush = undefined;
   outlineInflight.clear();
   clearTimeout(persistTimer);
   modeExpanded.clear();
@@ -550,44 +554,68 @@ async function withReadSlot<T>(read: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Applies the batched listings in one update, so the tree model is built once for all of them. */
-function flushPending() {
+function flushPending(batch: ListingBatch) {
   const { listings } = get();
   let next: Map<string, readonly FileEntry[]> | undefined;
-  for (const [path, { entries, reload }] of pending) {
+  for (const [path, result] of pending) {
+    if (result.batch !== batch) continue;
+    pending.delete(path);
     // A folder dropped while the batch was reading stays dropped.
-    if (reload && !listings.has(path)) continue;
-    const merged = mergeListing(listings.get(path), entries);
+    if (result.reload && !listings.has(path)) continue;
+    const merged = mergeListing(listings.get(path), result.entries);
     if (merged !== listings.get(path)) (next ??= new Map(listings)).set(path, merged);
   }
-  pending.clear();
   if (next) set({ listings: next });
+}
+
+function flushVisibleListings() {
+  if (visibleFlush === undefined) return;
+  cancelAnimationFrame(visibleFlush);
+  visibleFlush = undefined;
+  flushPending("visible");
 }
 
 /** Loads (or reloads) one folder. Concurrent calls for the same folder share a request. */
 export function loadDir(path: string, force = false): Promise<void> {
-  return load(path, force, false);
+  return load(path, force);
 }
 
-/**
- * With `batched`, the listing waits in `pending` for `flushPending` and the read takes one of `READ_SLOTS`;
- * a later read of the same folder replaces it, so a flush never applies a listing older than one already read.
- */
-function load(path: string, force: boolean, batched: boolean): Promise<void> {
+/** Loads the expanded folders currently waiting for their children. */
+export function loadVisibleDirs(paths: readonly string[]) {
+  const batch = paths.length > 1 ? "visible" : undefined;
+  for (const path of paths) void load(path, false, batch);
+}
+
+function load(path: string, force: boolean, batch?: ListingBatch): Promise<void> {
   const { root, listings } = get();
   if (!root || isGroupKey(path)) return Promise.resolve();
   if (!force && listings.has(path)) return Promise.resolve();
-  const running = inflight.get(path);
-  if (running) return running;
   const gen = generation;
+  const running = inflight.get(path);
+  if (running) {
+    if (batch) return running;
+    return running.then(() => {
+      if (gen === generation && pending.get(path)?.batch === "visible") flushVisibleListings();
+    });
+  }
+  if (!force && pending.has(path)) {
+    if (batch) return Promise.resolve();
+    if (pending.get(path)?.batch === "visible") {
+      flushVisibleListings();
+      return Promise.resolve();
+    }
+  }
   const reload = listings.has(path);
   const p = (async () => {
     try {
       const read = () => projectFs(root).readDir(path);
-      const entries = await (batched ? withReadSlot(read) : read());
+      const entries = await (batch === "reload" ? withReadSlot(read) : read());
       if (gen !== generation) return;
-      if (batched) pending.set(path, { entries, reload });
-      else {
+      if (batch) {
+        pending.set(path, { entries, reload, batch });
+        // Restoring many expanded folders yields several replies in one frame
+        if (batch === "visible") visibleFlush ??= requestAnimationFrame(flushVisibleListings);
+      } else {
         pending.delete(path);
         putListing(path, entries);
       }
@@ -597,12 +625,13 @@ function load(path: string, force: boolean, batched: boolean): Promise<void> {
         const visible = visibleEntries(entries, treeOptions(s));
         const only = visible.length === 1 ? visible[0]! : null;
         if (only && isDirEntry(only) && !only.ignored && !s.listings.has(only.path)) {
-          const next = load(only.path, false, batched);
-          if (batched) await next;
+          const next = load(only.path, false, batch);
+          if (batch === "reload") await next;
         }
       }
     } catch (e) {
       if (gen !== generation) return;
+      pending.delete(path);
       const s = get();
       if (e instanceof IpcError && (e.kind === "notFound" || e.kind === "invalidInput")) {
         const listings = new Map(s.listings);
@@ -624,8 +653,9 @@ function load(path: string, force: boolean, batched: boolean): Promise<void> {
 
 /** Re-reads `paths` as one batch: bounded concurrent reads, one update of the listings. */
 async function reloadDirs(paths: readonly string[]) {
-  await Promise.all(paths.map((p) => load(p, true, true)));
-  flushPending();
+  const gen = generation;
+  await Promise.all(paths.map((p) => load(p, true, "reload")));
+  if (gen === generation) flushPending("reload");
 }
 
 /** Applies a backend `fsChanged` event: reloads affected loaded folders only. */
@@ -635,6 +665,7 @@ export async function applyFsChange(event: {
   removed: string[];
   ignoreRules?: string[];
 }) {
+  flushVisibleListings();
   const s = get();
   if (!s.root) return;
   const plan = planRefresh(event, new Set(s.listings.keys()));
@@ -680,6 +711,7 @@ export async function applyFsChange(event: {
 
 /** Re-reads the folders among `dirs` the tree has loaded; the rest stay unread. */
 export async function reloadLoadedDirs(dirs: readonly string[]) {
+  flushVisibleListings();
   const { listings } = get();
   await reloadDirs(dirs.filter((p) => listings.has(p)));
 }
@@ -689,6 +721,7 @@ export async function reloadLoadedDirs(dirs: readonly string[]) {
  * a library jar in place (a SNAPSHOT installed again), which no file watcher reports.
  */
 export async function reloadArchiveDirs() {
+  flushVisibleListings();
   const { listings } = get();
   const inArchive = (p: string) => p.endsWith("!") || p.includes("!/") || p.includes("!\\");
   await reloadDirs([...listings.keys()].filter(inArchive));
@@ -696,6 +729,7 @@ export async function reloadArchiveDirs() {
 
 /** Re-reads every loaded folder (View › Reload from Disk). */
 export async function reloadAll() {
+  flushVisibleListings();
   const { listings } = get();
   await reloadDirs([...listings.keys()]);
 }

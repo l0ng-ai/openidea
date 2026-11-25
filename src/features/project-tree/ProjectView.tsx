@@ -90,6 +90,7 @@ import {
   clearRevealRequest,
   explainHiddenPath,
   loadDir,
+  loadVisibleDirs,
   loadOutline,
   previewTabEnabled,
   revealPath,
@@ -512,7 +513,7 @@ export function ProjectView() {
 
   // Load folders that are expanded (restored state, reveal, chains) but not read yet.
   useEffect(() => {
-    for (const p of info.pending) void loadDir(p);
+    loadVisibleDirs(info.pending);
   }, [info.pending]);
 
   // Restored file expansion and enabling Show Members also need outlines.

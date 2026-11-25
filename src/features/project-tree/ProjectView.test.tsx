@@ -187,6 +187,65 @@ describe("ProjectView", () => {
     await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "App.kt", "Util.kt", "README.md"]));
   });
 
+  it("restores visible expansion across workspace roots while a compacted folder is slow", async () => {
+    const left = "/left/src/nested/deep";
+    const right = "/right/src/package";
+    fs = new MemoryFs({
+      [`${left}/New.ts`]: "new",
+      [`${right}/Ready.ts`]: "ready",
+      "/left/closed/orphan/Skipped.ts": "",
+      "/left/ignored/inside/Hidden.ts": "",
+    });
+    fs.ignored.add("/left/ignored");
+    const gate = deferred<void>();
+    const read = fs.readDir.bind(fs);
+    const spy = vi.spyOn(fs, "readDir").mockImplementation(async (path) => {
+      if (path === left) await gate.promise;
+      return read(path);
+    });
+    const { showExcluded } = useProjectTree.getState().options;
+    setViewOption("showExcluded", false);
+    try {
+      setProjectFsForTests(fs, ROOT);
+      localStorage.setItem(
+        `openidea.projectTree.expanded:${ROOT}`,
+        JSON.stringify([
+          "/left",
+          "/left/src",
+          "/left/src/nested",
+          left,
+          "/right",
+          "/right/src",
+          right,
+          "/left/closed/orphan",
+          "/left/ignored",
+          "/left/ignored/inside",
+        ]),
+      );
+      initProjectTree(ROOT, "Workspace", ["/left", "/right"]);
+      const { rows } = setup();
+
+      await waitFor(() => expect(rows()).toContain("Ready.ts"));
+      expect(spy).toHaveBeenCalledWith(left);
+      expect(rows()).not.toContain("New.ts");
+
+      gate.resolve();
+      await waitFor(() => expect(rows()).toContain("New.ts"));
+      expect(spy.mock.calls.map(([path]) => path).sort()).toEqual([
+        "/left",
+        "/left/src",
+        "/left/src/nested",
+        left,
+        "/right",
+        "/right/src",
+        right,
+      ]);
+    } finally {
+      gate.resolve();
+      act(() => setViewOption("showExcluded", showExcluded));
+    }
+  });
+
   it("opens the selected file in the right split with ⇧Enter; a folder still expands", async () => {
     dispatchViaKeymap();
     const { tree, row, rows } = setup();

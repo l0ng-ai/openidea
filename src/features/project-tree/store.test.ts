@@ -11,6 +11,7 @@ import {
   hidingOption,
   initProjectTree,
   loadDir,
+  loadVisibleDirs,
   revealPath,
   setExpanded,
   setSelection,
@@ -101,6 +102,88 @@ describe("lazy loading", () => {
     setExpanded(new Set([ROOT, "/p/gone"]));
     await loadDir("/p/gone");
     expect(useProjectTree.getState().expanded.has("/p/gone")).toBe(false);
+  });
+});
+
+describe("visible folder batches", () => {
+  const folders = ["/p/docs", "/p/src/main/kotlin/com/acme"];
+
+  it("publishes multiple listings in one frame", async () => {
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    try {
+      loadVisibleDirs(folders);
+      await vi.waitFor(() => expect(frame).toHaveBeenCalledTimes(1));
+      expect([...useProjectTree.getState().listings]).toEqual([]);
+
+      frame.mock.calls[0]![0](0);
+
+      expect([...useProjectTree.getState().listings.keys()]).toEqual(folders);
+    } finally {
+      frame.mockRestore();
+    }
+  });
+
+  it("publishes a shared visible read before a direct load resolves", async () => {
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const read = vi.spyOn(fs, "readDir");
+    try {
+      loadVisibleDirs(folders);
+      await loadDir("/p/docs");
+
+      expect(read.mock.calls).toEqual(folders.map((path) => [path]));
+      expect(
+        useProjectTree
+          .getState()
+          .listings.get("/p/docs")
+          ?.map((entry) => entry.name),
+      ).toEqual(["guide.md"]);
+    } finally {
+      frame.mockRestore();
+    }
+  });
+
+  it("includes a completed visible read when planning a watcher refresh", async () => {
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    try {
+      loadVisibleDirs(folders);
+      await vi.waitFor(() => expect(frame).toHaveBeenCalledTimes(1));
+      await fs.createFile("/p/docs/new.md");
+      await applyFsChange({ created: ["/p/docs/new.md"], modified: [], removed: [] });
+
+      expect(
+        useProjectTree
+          .getState()
+          .listings.get("/p/docs")
+          ?.map((entry) => entry.name),
+      ).toEqual(["guide.md", "new.md"]);
+    } finally {
+      frame.mockRestore();
+    }
+  });
+
+  it("flushes only fresh reads after reopening a project", async () => {
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const read = vi.spyOn(fs, "readDir");
+    try {
+      loadVisibleDirs(folders);
+      await vi.waitFor(() => expect(frame).toHaveBeenCalledTimes(1));
+      initProjectTree(null);
+      await fs.createFile("/p/docs/new.md");
+
+      initProjectTree(ROOT, "proj");
+      loadVisibleDirs(folders);
+      await loadDir("/p/docs");
+
+      expect(read.mock.calls).toEqual([...folders, ...folders].map((path) => [path]));
+      expect(
+        useProjectTree
+          .getState()
+          .listings.get("/p/docs")
+          ?.map((entry) => entry.name),
+      ).toEqual(["guide.md", "new.md"]);
+    } finally {
+      frame.mockRestore();
+    }
   });
 });
 
