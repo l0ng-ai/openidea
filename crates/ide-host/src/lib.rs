@@ -118,6 +118,8 @@ pub struct Host {
     pub(crate) heap_windows: Mutex<HashMap<ide_heap::HeapSnapshotId, String>>,
     pub(crate) heap_requests: ops::heap::HeapRequests,
     pub(crate) rebase_editors: Arc<ops::vcs::RebaseEditors>,
+    /// The IDE's Java build: resident javac processes shared by every window's launches.
+    pub(crate) java_build: Arc<ide_build::jbuild::JavaBuildService>,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
@@ -227,6 +229,7 @@ impl Host {
             heap_windows: Mutex::default(),
             heap_requests: Default::default(),
             rebase_editors: Default::default(),
+            java_build: Default::default(),
             languages,
             syntax,
             config_dir,

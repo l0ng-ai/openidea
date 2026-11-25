@@ -70,7 +70,7 @@ async function startAndStop() {
   ).toContain("Building and resolving the classpath of Main…");
   expect(useDebugRunSessions.getState().sessions[0]?.configId).toBe(config.id);
   await executeAction("debug.stop");
-  expect(ipc.cancelRequest).toHaveBeenCalledWith(ipc.javaResolveLaunch.mock.calls[0]![3]);
+  expect(ipc.cancelRequest).toHaveBeenCalledWith(ipc.javaResolveLaunch.mock.calls[0]![4]);
   expect(useDebug.getState().sessions[session.id]?.status).toBe("terminated");
   expect(useDebugRunSessions.getState().sessions).toEqual([]);
   return { starting };

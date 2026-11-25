@@ -145,16 +145,16 @@ export async function javaLaunchConfig(
   const parsed = parseJavaArgs(rc.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${rc.name}'`);
   preparation?.signal.throwIfAborted();
-  const { module, info, resolved } = await prepareJavaLaunch(
-    rc,
-    preparation ?? {
+  const { module, info, resolved } = await prepareJavaLaunch(rc, {
+    ...(preparation ?? {
       request: nextRequestId(),
       signal: new AbortController().signal,
       saveAll: async () => {
         await maybeEditorService()?.saveAll();
       },
-    },
-  );
+    }),
+    debug: true,
+  });
   const cwd = resolved.cwd ? join(root, resolved.cwd) : root;
   if (info.errorCount > 0 && !preparation?.report)
     notifications().notify({

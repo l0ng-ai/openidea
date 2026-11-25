@@ -69,7 +69,7 @@ describe("Stop during Java launch resolution", () => {
     await vi.waitFor(() => expect(ipc.javaResolveLaunch).toHaveBeenCalledOnce());
     const session = useRun.getState().sessions[0]!;
     expect(session.status).toBe("starting");
-    const request = ipc.javaResolveLaunch.mock.calls[0]![3];
+    const request = ipc.javaResolveLaunch.mock.calls[0]![4];
     expect(request).toEqual(expect.any(Number));
     await stopSession(session.id);
     expect(ipc.cancelRequest).toHaveBeenCalledExactlyOnceWith(request);
