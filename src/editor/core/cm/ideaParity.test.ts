@@ -427,4 +427,44 @@ describe("smooth caret", () => {
     v.dispatch({ changes: { from: 1, insert: "x" }, selection: { anchor: 2 } });
     expect(layer.classList.contains("cm-openidea-caretGlide")).toBe(false);
   });
+
+  it("glides pointer clicks but keeps the caret with the pointer during a drag", () => {
+    const v = make("ab|c", caret({ smoothCaretMovement: true }));
+    const layer = v.scrollDOM.querySelector(".cm-cursorLayer")!;
+    const flush = () => (v as unknown as { measure(): void }).measure();
+    v.coordsAtPos = () => ({ left: 0, right: 0, top: 0, bottom: 10 });
+    v.scrollDOM.getBoundingClientRect = () => new DOMRect(0, 0, 100, 100);
+    const glides = () => layer.classList.contains("cm-openidea-caretGlide");
+    const win = v.dom.ownerDocument.defaultView!;
+    const press = (x = 0, y = 0) =>
+      v.dom.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
+    const move = (x: number, y = 0) =>
+      win.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
+    const release = () => win.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    // Double-click / Shift+click: a click picks a range at once and the caret glides to it.
+    press();
+    v.dispatch({ selection: { anchor: 0, head: 2 }, userEvent: "select.pointer" });
+    flush();
+    expect(glides()).toBe(true);
+    release();
+
+    // A drag moves the selection end with the pointer: the caret follows it instead of gliding.
+    press();
+    move(40);
+    v.dispatch({ selection: { anchor: 0, head: 2 }, userEvent: "select.pointer" });
+    flush();
+    expect(glides()).toBe(false);
+    // Dragging back onto the anchor empties the selection; the caret must still follow the pointer.
+    v.dispatch({ selection: { anchor: 1 }, userEvent: "select.pointer" });
+    flush();
+    expect(v.state.selection.main.empty).toBe(true);
+    expect(glides()).toBe(false);
+    release();
+
+    // The next keyboard move glides again.
+    v.dispatch({ selection: { anchor: 2 } });
+    flush();
+    expect(glides()).toBe(true);
+  });
 });

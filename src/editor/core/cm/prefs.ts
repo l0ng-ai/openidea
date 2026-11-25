@@ -595,21 +595,62 @@ function caretOnScreen(view: EditorView, pos: number): boolean {
   return c.top >= r.top && c.bottom <= r.bottom;
 }
 
+/** Movement in px that turns an editor press into a drag rather than a click. */
+const POINTER_DRAG_SLOP = 4;
+
 /**
  * Use smooth caret movement. The cursor layer reuses its caret elements, so a
  * CSS transition on their position animates a move (VS Code's
  * `cursorSmoothCaretAnimation: "explicit"`). Only moves of the selection
  * alone glide; typing, edits, a changed number of carets, layout changes and
- * moves that scroll the editor put the caret in place at once.
+ * moves that scroll the editor put the caret in place at once. A pointer drag
+ * puts the caret in place too: every mousemove moves the selection end, so a
+ * transition would leave the caret trailing behind the selection edge until
+ * the drag stops. Clicks, double-clicks and Shift+clicks still glide.
  */
 const caretGlide = ViewPlugin.fromClass(
   class {
     on = false;
-    constructor(readonly view: EditorView) {}
+    private readonly win: Window;
+    /** The pointer is down over the editor, and how far it moved since it went down. */
+    private pointerDown = false;
+    private pointerDragged = false;
+    private pointerOrigin = { x: 0, y: 0 };
+    constructor(readonly view: EditorView) {
+      this.win = view.dom.ownerDocument.defaultView ?? window;
+      // Capture on the window: this plugin is built before CodeMirror's mouse selection and the
+      // gutter's drag, so the movement is already known when their `select.pointer` updates arrive.
+      view.dom.addEventListener("mousedown", this.onMouseDown, true);
+      this.win.addEventListener("mousemove", this.onMouseMove, true);
+      this.win.addEventListener("mouseup", this.onMouseUp, true);
+      this.win.addEventListener("blur", this.onMouseUp);
+    }
+    onMouseDown = (e: MouseEvent) => {
+      this.pointerDown = true;
+      this.pointerDragged = false;
+      this.pointerOrigin = { x: e.clientX, y: e.clientY };
+    };
+    onMouseMove = (e: MouseEvent) => {
+      if (!this.pointerDown) return;
+      if (Math.hypot(e.clientX - this.pointerOrigin.x, e.clientY - this.pointerOrigin.y) > POINTER_DRAG_SLOP)
+        this.pointerDragged = true;
+    };
+    onMouseUp = () => {
+      this.pointerDown = false;
+      this.pointerDragged = false;
+    };
+    destroy() {
+      this.view.dom.removeEventListener("mousedown", this.onMouseDown, true);
+      this.win.removeEventListener("mousemove", this.onMouseMove, true);
+      this.win.removeEventListener("mouseup", this.onMouseUp, true);
+      this.win.removeEventListener("blur", this.onMouseUp);
+    }
     update(u: ViewUpdate) {
       const from = u.startState.selection;
       const to = u.state.selection;
-      if (!u.selectionSet || u.docChanged || u.geometryChanged || from.ranges.length !== to.ranges.length) {
+      const dragging =
+        this.pointerDown && this.pointerDragged && u.transactions.some((tr) => tr.isUserEvent("select.pointer"));
+      if (!u.selectionSet || u.docChanged || u.geometryChanged || from.ranges.length !== to.ranges.length || dragging) {
         this.set(false);
         return;
       }
