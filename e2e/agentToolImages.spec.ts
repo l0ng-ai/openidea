@@ -126,7 +126,10 @@ test("copies full-size PNG pixels from the thumbnail menu and the image preview"
   const clipboard = () =>
     page.evaluate(async () => {
       const items = await navigator.clipboard.read();
-      const png = await items.find((item) => item.types.includes("image/png"))!.getType("image/png");
+      const item = items.find((item) => item.types.includes("image/png"));
+      // The write may still be in flight; let the poll try again.
+      if (!item) return null;
+      const png = await item.getType("image/png");
       const image = await createImageBitmap(png);
       const canvas = document.createElement("canvas");
       canvas.width = image.width;
