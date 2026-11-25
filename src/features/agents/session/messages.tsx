@@ -307,8 +307,8 @@ function UserMessage({
               size="small"
               icon="diff-revert"
               iconSize={14}
-              title="Retract Message"
-              action="agents.retractMessage"
+              title="Roll Back to Here"
+              action="agents.rollBackToMessage"
               actionArg={{ task: task.id, turn }}
             />
           )}
@@ -319,7 +319,12 @@ function UserMessage({
               title={inPlace ? "Run Again From Here" : "Send Again"}
               onClick={() =>
                 void (
-                  inPlace ? rerunFrom(task.id, turn, entry.text, images) : resendMessage(task.id, entry.text)
+                  inPlace
+                    ? rerunFrom(task.id, turn, entry.text, images, {
+                        title: "Run Again From Here",
+                        later: turn < turnCount - 1,
+                      })
+                    : resendMessage(task.id, entry.text)
                 ).catch(fail)
               }
             />
@@ -430,11 +435,16 @@ function MessageEditor({
         </div>
       )}
       <div className={styles.editBar}>
-        {later && (
-          <span className={styles.muted}>
-            <T>The messages after this one are replaced. Files the agent changed stay as they are.</T>
-          </span>
-        )}
+        <span className={styles.muted}>
+          {later ? (
+            <T>
+              The messages after this one are replaced, and the files the agent changed since go back to how they were
+              before this message was sent.
+            </T>
+          ) : (
+            <T>The files the agent changed since go back to how they were before this message was sent.</T>
+          )}
+        </span>
         <span className={styles.editButtons}>
           <IconButton icon="close" title="Cancel" disabled={sending} onClick={onCancel} />
           <SubmitButton

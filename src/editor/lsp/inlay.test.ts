@@ -12,6 +12,7 @@ vi.mock("@/workbench/contributions", async (orig) => {
 });
 const ipc = vi.hoisted(() => ({
   lspInlayHints: vi.fn(),
+  settingsSet: vi.fn(),
 }));
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
@@ -24,6 +25,7 @@ const { usePlatform } = await import("@/platform/platformInfo");
 const { resetNavigationModifier } = await import("@/platform/navigationModifier");
 const { useContextMenuStore } = await import("@/ui");
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
+const { useProject } = await import("@/platform/project");
 
 const hint: InlayHint = {
   position: { line: 0, col: 5 },
@@ -125,6 +127,25 @@ describe("background inlay hints", () => {
     expect(shown(view)).toBe(0);
   });
 
+  it("shows closing labels at the end of the line unless they are turned off", async () => {
+    const closing: InlayHint = {
+      ...hint,
+      kind: "closingLabel",
+      label: "// foo",
+      position: { line: 0, col: 14 },
+      parts: [],
+    };
+    ipc.lspInlayHints.mockResolvedValue(ok([hint, closing]));
+    const view = editor();
+    await afterPass();
+    expect(view.dom.querySelector(".cm-lsp-inlay-closingLabel")?.textContent).toBe("// foo");
+    useProject.setState({ settings: { editor: { inlay: { closingLabels: false } } } as never });
+    await afterPass();
+    expect(shown(view)).toBe(1);
+    expect(view.dom.querySelector(".cm-lsp-inlay-closingLabel")).toBeNull();
+    useProject.setState({ settings: null });
+  });
+
   it("clears the hints of a server that is down and not coming back", async () => {
     ipc.lspInlayHints.mockResolvedValue(ok([hint]));
     const view = editor();
@@ -176,6 +197,16 @@ describe("inlay hints", () => {
       "Inlay Hints Settings…",
     ]);
     expect((inlayMenuItems("parameter")[0] as { label: string }).label).toBe("Disable Parameter name hints");
+  });
+
+  it.each([
+    ["type", "types"],
+    ["closingLabel", "closingLabels"],
+  ] as const)("turns %s hints off with the editor.inlay.%s setting", async (kind, key) => {
+    ipc.settingsSet.mockResolvedValue(ok({}));
+    const disable = inlayMenuItems(kind)[0] as { run: () => void };
+    disable.run();
+    await vi.waitFor(() => expect(ipc.settingsSet).toHaveBeenCalledWith("global", `editor.inlay.${key}`, "false"));
   });
 
   it("uses type declaration navigation for a plain type hint after an identifier", () => {

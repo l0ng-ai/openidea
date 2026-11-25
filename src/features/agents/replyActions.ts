@@ -4,7 +4,7 @@ import { tx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
 import { notifications } from "@/workbench/contributions";
 import { replyOperations, replyTurns, turnNumbers } from "./model";
-import { forkTask, quoteInComposer, rerunFrom, retractFrom, useAgents } from "./store";
+import { forkTask, quoteInComposer, rerunFrom, rollBackTo, useAgents } from "./store";
 
 export interface CopyReply {
   text: string;
@@ -72,8 +72,8 @@ export const replyActions: Action[] = [
     },
   },
   {
-    id: "agents.retractMessage",
-    title: "Retract Message",
+    id: "agents.rollBackToMessage",
+    title: "Roll Back to Here",
     category: "Agents",
     icon: "diff-revert",
     hidden: true,
@@ -87,18 +87,19 @@ export const replyActions: Action[] = [
       const index = [...turns].find(([, turn]) => turn === target.turn)?.[0];
       const prompt = index === undefined ? undefined : entries[index];
       if (prompt?.type !== "user") return;
-      return runReplyOperation(task.id, "Couldn't retract the message", async () => {
+      return runReplyOperation(task.id, "Couldn't roll back", async () => {
         if (
-          target.turn < turns.size - 1 &&
           !(await confirm({
-            title: "Retract Message",
-            message: tx("The messages after this one are replaced. Files the agent changed stay as they are."),
-            ok: "Retract",
+            title: "Roll Back to Here",
+            message: tx(
+              "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.",
+            ),
+            ok: "Roll Back",
             icon: "warning",
           }))
         )
           return;
-        await retractFrom(task.id, target.turn, prompt.text, prompt.images ?? []);
+        await rollBackTo(task.id, target.turn, prompt.text, prompt.images ?? []);
       });
     },
   },
@@ -126,7 +127,9 @@ export const replyActions: Action[] = [
       if (!resolved?.operations.regenerate) return;
       const { task, reply } = resolved;
       return runReplyOperation(task.id, "Couldn't regenerate the response", () =>
-        rerunFrom(task.id, reply.turn, reply.prompt.text, reply.prompt.images ?? []),
+        rerunFrom(task.id, reply.turn, reply.prompt.text, reply.prompt.images ?? [], {
+          title: "Regenerate Response",
+        }),
       );
     },
   },
