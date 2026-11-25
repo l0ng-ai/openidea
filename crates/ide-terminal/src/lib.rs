@@ -4,10 +4,11 @@
 mod integration;
 mod scrollback;
 
+use ide_core::pty::native_pty_system;
 use ide_core::utf8::Utf8Decoder;
 use ide_core::{IdeError, IdeEvent, IdeResult, SharedSink, TerminalId};
 use parking_lot::{Condvar, Mutex};
-use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashMap};
