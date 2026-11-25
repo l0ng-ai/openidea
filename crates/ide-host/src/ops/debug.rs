@@ -75,6 +75,12 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         extra["__adapterJavaHome"] = serde_json::json!(runtime.home);
         config.extra_json = Some(extra.to_string());
     }
+    if config.adapter == "java-debug"
+        && let Ok(project) = host.project(window)
+    {
+        let roots = host.blocking(move || Ok(java_source_roots(&project))).await?;
+        config = add_java_source_paths(config, &roots);
+    }
     let root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
     let mut ruby_tools = Vec::new();
     if config.adapter == "rdbg" && config.request == "launch" {
@@ -96,6 +102,40 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     let result = host.debugger.start_with(config, owner, custom).await;
     flush_output();
     result
+}
+
+/// The project's source and test roots, as the IDE detects them (no Maven / Gradle import needed).
+fn java_source_roots(project: &crate::project::Project) -> Vec<PathBuf> {
+    use ide_workspace::roots::RootKind;
+    project
+        .roots()
+        .roots
+        .iter()
+        .filter(|r| matches!(r.kind, RootKind::Source | RootKind::Test))
+        .map(|r| project.root.join(&r.path))
+        .filter(|p| p.is_dir())
+        .collect()
+}
+
+/// java-debug finds a frame's source through jdtls, then in `sourcePaths`. When jdtls has not
+/// imported the class's project (a failed Maven sync), only `sourcePaths` gives the frame a file,
+/// and without one the editor cannot follow the execution point. The user's own list wins.
+fn add_java_source_paths(mut config: LaunchConfig, roots: &[PathBuf]) -> LaunchConfig {
+    if config.adapter != "java-debug" || roots.is_empty() {
+        return config;
+    }
+    let mut extra = match config.extra_json.as_deref().map(serde_json::from_str) {
+        None => serde_json::Map::new(),
+        Some(Ok(serde_json::Value::Object(extra))) => extra,
+        Some(_) => return config,
+    };
+    if extra.get("sourcePaths").is_some_and(|v| !v.is_null()) {
+        return config;
+    }
+    let paths: Vec<String> = roots.iter().map(|r| r.to_string_lossy().into_owned()).collect();
+    extra.insert("sourcePaths".into(), paths.into());
+    config.extra_json = Some(serde_json::Value::Object(extra).to_string());
+    config
 }
 
 /// A JVM launched by java-debug writes what java-debug decodes its output as
@@ -530,6 +570,33 @@ mod tests {
 
     fn vm_args(config: &LaunchConfig) -> serde_json::Value {
         serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()["vmArgs"].clone()
+    }
+
+    #[test]
+    fn java_debug_sessions_look_up_sources_in_project_roots() {
+        let roots = [PathBuf::from("/p/src/main/java"), PathBuf::from("/p/src/test/java")];
+        let source_paths = |config: &LaunchConfig| {
+            serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()["sourcePaths"]
+                .clone()
+        };
+        for request in ["launch", "attach"] {
+            let config =
+                add_java_source_paths(launch("java-debug", request, serde_json::json!({"port": 5005})), &roots);
+            assert_eq!(source_paths(&config), serde_json::json!(["/p/src/main/java", "/p/src/test/java"]));
+        }
+        let mut bare = launch("java-debug", "attach", serde_json::json!({}));
+        bare.extra_json = None;
+        assert_eq!(
+            source_paths(&add_java_source_paths(bare, &roots)),
+            serde_json::json!(["/p/src/main/java", "/p/src/test/java"])
+        );
+
+        let own = launch("java-debug", "launch", serde_json::json!({"sourcePaths": ["/elsewhere"]}));
+        assert_eq!(source_paths(&add_java_source_paths(own, &roots)), serde_json::json!(["/elsewhere"]));
+        let other = launch("debugpy", "launch", serde_json::json!({}));
+        assert_eq!(add_java_source_paths(other.clone(), &roots).extra_json, other.extra_json);
+        let none = launch("java-debug", "launch", serde_json::json!({}));
+        assert_eq!(add_java_source_paths(none.clone(), &[]).extra_json, none.extra_json);
     }
 
     #[test]
