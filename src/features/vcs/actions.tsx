@@ -337,6 +337,7 @@ const OPERATIONS: MenuItem[] = [
   { kind: "action", action: "vcs.compareWithBranch" },
   { kind: "separator" },
   { kind: "action", action: "vcs.branches" },
+  { kind: "action", action: "vcs.copyBranchName" },
   { kind: "action", action: "vcs.push" },
   { kind: "action", action: "vcs.stash" },
   { kind: "action", action: "vcs.unstash" },

@@ -116,7 +116,10 @@ describe("the session's working state", () => {
   };
   /** A program redrawing every 100 ms for `ms`. */
   const redraw = async (ms: number) => {
-    for (let t = 0; t < ms; t += 100) await feed("\r\x1b[K* Working", 100);
+    for (let t = 0; t < ms; t += 100) {
+      // oxlint-disable-next-line no-await-in-loop -- fake timers must advance one 100ms redraw at a time
+      await feed("\r\x1b[K* Working", 100);
+    }
   };
   const C = "\x1b]133;C\x07";
   const D = "\x1b]133;D;0\x07";
@@ -175,6 +178,7 @@ describe("the session's working state", () => {
     await feed(`${PASTE_OFF}${C}${PASTE_ON}> `, QUIET_MS + 10);
     for (let i = 0; i < 20; i++) {
       session.input("a");
+      // oxlint-disable-next-line no-await-in-loop -- each typed key and its 100ms timer advance must stay in order
       await feed("a", 100);
     }
     expect(session.state.working).toBe(false);

@@ -144,6 +144,7 @@ export async function deleteEntries(server: DeploymentServerValid, entries: Remo
   const parents = new Set<string>();
   for (const entry of entries) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- each delete reports its own failure and SSH remedies can prompt interactively; parents is shared state collected in entry order.
       await withSsh(deploymentSecretKey(server), () =>
         call(commands.remoteDelete(deploymentConnection(server), entry.path)),
       );

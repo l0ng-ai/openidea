@@ -460,6 +460,7 @@ export function installModifierPathLinks(
         const target = await probe(match.candidate.path);
         if (disposed) return;
         if (target) {
+          // oxlint-disable-next-line no-await-in-loop -- the first candidate that resolves is opened, then the loop stops
           await openPathTarget(target);
           return;
         }

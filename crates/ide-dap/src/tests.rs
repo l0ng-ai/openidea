@@ -122,6 +122,8 @@ struct Script {
     run_in_terminal: Option<Vec<String>>,
     /// Send a `startDebugging` reverse request (child session) when a non-child `launch` arrives.
     start_debugging: bool,
+    /// The child's `startDebugging` arguments instead of a js-debug style `launch`.
+    child_request: Option<Value>,
     ignore_configuration_done: bool,
     source_path: Option<String>,
     /// Report this process id in the adapter's `process` event (the program being debugged).
@@ -201,6 +203,7 @@ impl Default for Script {
         Self {
             run_in_terminal: None,
             start_debugging: false,
+            child_request: None,
             ignore_configuration_done: false,
             source_path: None,
             debuggee_pid: None,
@@ -365,10 +368,11 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     );
                 }
                 if script.start_debugging && msg["arguments"]["isChild"] != true {
-                    send!(
+                    let arguments = script.child_request.clone().unwrap_or_else(
                         // Like js-debug, the child's configuration repeats the launch's `type`.
-                        json!({"type": "request", "command": "startDebugging", "arguments": {"request": "launch", "configuration": {"name": "child", "isChild": true, "type": msg["arguments"]["type"]}}})
+                        || json!({"request": "launch", "configuration": {"name": "child", "isChild": true, "type": msg["arguments"]["type"]}}),
                     );
+                    send!(json!({"type": "request", "command": "startDebugging", "arguments": arguments}));
                 }
                 if script.pending_startup != Some(false) {
                     tokio::time::sleep(script.initialized_delay).await;
@@ -1191,6 +1195,46 @@ async fn child_of(h: &Harness, parent: DebugSessionId) -> DebugSessionId {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("no child session of {parent:?}");
+}
+
+/// debugpy's subprocess (`subProcess: true`): an `attach` whose `connect` is the running adapter's
+/// client listener, so the child session connects there instead of starting another adapter.
+#[tokio::test]
+async fn a_debugpy_subprocess_connects_to_the_running_adapter() {
+    /// Each launch's reused port and remote host.
+    type Launches = Arc<Mutex<Vec<(Option<u16>, Option<String>)>>>;
+    struct CaptureLauncher {
+        inner: FakeLauncher,
+        launches: Launches,
+    }
+    impl AdapterLauncher for CaptureLauncher {
+        fn launch(&self, spec: AdapterSpec, reuse: Option<u16>) -> LaunchFuture {
+            self.launches.lock().push((reuse, spec.server_host.clone()));
+            self.inner.launch(spec, reuse)
+        }
+    }
+    let child = |host: &str| {
+        json!({"request": "attach", "configuration": {"name": "Subprocess 42", "isChild": true, "subProcessId": 42,
+            "connect": {"host": host, "port": 51234}}})
+    };
+    for (host, server_host) in [("127.0.0.1", None), ("10.0.0.5", Some("10.0.0.5".to_owned()))] {
+        let launches: Launches = Arc::default();
+        let script = Script { start_debugging: true, child_request: Some(child(host)), ..Script::default() };
+        let launcher =
+            CaptureLauncher { inner: FakeLauncher { log: Arc::default(), script }, launches: launches.clone() };
+        let manager =
+            DebugManager::with_launcher(Arc::new(LanguageRegistry::from_configs(Vec::new())), Arc::new(launcher));
+        let (owner, _) = recording_owner("main");
+        let parent = manager.start(config(), owner).await.unwrap();
+        for _ in 0..200 {
+            if launches.lock().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*launches.lock(), [(None, None), (Some(51234), server_host)], "{host}");
+        manager.stop(parent).await.unwrap();
+    }
 }
 
 #[tokio::test]

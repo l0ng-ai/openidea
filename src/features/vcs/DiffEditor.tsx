@@ -39,6 +39,7 @@ import { auxiliaryWindow } from "@/platform/auxWindow";
 import { getContext, setContext } from "@/platform/context";
 import { editorPrefs } from "@/platform/editorSettings";
 import { call, commands } from "@/platform/ipc";
+import { reducedMotion } from "@/platform/motion";
 import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -1278,7 +1279,7 @@ function TwoPaneDiff({
             write: (top) => {
               const options: ScrollToOptions = {
                 top: Math.max(0, top),
-                behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+                behavior: reducedMotion() ? "instant" : "smooth",
               };
               if (views.panes) views.panes.scrollTo(onA ? "a" : "b", options);
               else scroller.scrollTo(options);

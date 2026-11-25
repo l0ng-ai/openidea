@@ -120,6 +120,8 @@ export function CellEditor({
       ),
       EditorView.updateListener.of((update) => {
         session.editors.set(id, update.state);
+        // The session puts the caret back here after a backend undo/redo (session.ts history).
+        if (update.focusChanged) session.focusedCell = update.view.hasFocus ? id : null;
         if (update.docChanged && update.transactions.some((tr) => !tr.annotation(external))) {
           session.edit({ type: "setSource", cell: id, source: update.state.doc.toString() });
         }
@@ -144,6 +146,7 @@ export function CellEditor({
     return () => {
       alive = false;
       session.editors.set(id, editor.state);
+      if (session.focusedCell === id) session.focusedCell = null;
       view.current = null;
       editor.destroy();
     };

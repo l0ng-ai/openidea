@@ -87,6 +87,8 @@ export interface ToolWindowLayoutState {
   /** Per side: the primary area's share when both areas show. */
   splits: Record<ToolWindowAnchor, number>;
   maximized: ToolWindowAnchor | null;
+  /** Per-window maximized preference: remembered across hide/show and reloads until restored (persisted). */
+  maximizedWindows: Readonly<Record<string, boolean>>;
   /** Tool window containing DOM focus. */
   focused: string | null;
   /** Most recently activated window (target of Shift+Escape). */
@@ -119,6 +121,7 @@ const initial = (): ToolWindowLayoutState => ({
   windowSizes: {},
   splits: { ...DEFAULT_SPLITS },
   maximized: null,
+  maximizedWindows: {},
   focused: null,
   lastActive: null,
   mounted: new Set(Object.values(DEFAULT_VISIBLE).filter((v): v is string => !!v)),
@@ -200,10 +203,18 @@ export function moveToolWindow(id: string, slot: ToolWindowSlot, before: string 
     visible[slot] = id;
   }
   const oldAnchor = slotAnchor(oldSlot);
+  const droppedMaximized = wasVisible && s.maximized === oldAnchor && oldAnchor !== slotAnchor(slot);
+  let maximizedWindows = s.maximizedWindows;
+  if (droppedMaximized && maximizedWindows[id]) {
+    const next = { ...maximizedWindows };
+    delete next[id];
+    maximizedWindows = next;
+  }
   update({
     placements,
     visible,
-    maximized: wasVisible && s.maximized === oldAnchor && oldAnchor !== slotAnchor(slot) ? null : s.maximized,
+    maximized: droppedMaximized ? null : s.maximized,
+    maximizedWindows,
   });
 }
 
@@ -216,7 +227,7 @@ export function resetToolWindowPlacements() {
     const tw = visible[slot] ? useContributions.getState().toolWindows.get(visible[slot]!) : undefined;
     if (tw && slotOf(tw) !== slot) visible[slot] = null;
   }
-  update({ placements: {}, stripeButtons: {}, viewModes: {}, visible });
+  update({ placements: {}, stripeButtons: {}, viewModes: {}, maximizedWindows: {}, maximized: null, visible });
 }
 
 export function viewModeOf(
@@ -261,6 +272,7 @@ function persist() {
     placements,
     stripeButtons,
     viewModes,
+    maximizedWindows,
     distractionFreeStash,
     narrowStash,
   } = useToolWindowLayout.getState();
@@ -269,7 +281,17 @@ function persist() {
   try {
     localStorage.setItem(
       storageKey(scope),
-      JSON.stringify({ v: LAYOUT_VERSION, visible, sizes, windowSizes, splits, placements, stripeButtons, viewModes }),
+      JSON.stringify({
+        v: LAYOUT_VERSION,
+        visible,
+        sizes,
+        windowSizes,
+        splits,
+        placements,
+        stripeButtons,
+        viewModes,
+        maximizedWindows,
+      }),
     );
   } catch {
     /* storage unavailable */
@@ -353,6 +375,13 @@ function sanitizeViewModes(raw: unknown): Record<string, ToolWindowViewMode> {
   return out;
 }
 
+function sanitizeMaximizedWindows(raw: unknown): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  if (raw && typeof raw === "object")
+    for (const [id, v] of Object.entries(raw as Record<string, unknown>)) if (v === true) out[id] = true;
+  return out;
+}
+
 function sanitizeVisible(raw: unknown): SlotRecord {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_VISIBLE };
   const out = { ...NONE };
@@ -413,6 +442,7 @@ export function loadToolWindowLayout(scope: string) {
     placements,
     stripeButtons: sanitizeStripeButtons(saved?.stripeButtons),
     viewModes: sanitizeViewModes(saved?.viewModes),
+    maximizedWindows: sanitizeMaximizedWindows(saved?.maximizedWindows),
     mounted: new Set(Object.values(visible).filter((v): v is string => !!v)),
   });
   publishVisibility();
@@ -541,15 +571,23 @@ export function showToolWindow(id: string, focus = false) {
   const a = slotAnchor(slot);
   lastUsed = id;
   const s = useToolWindowLayout.getState();
+  const wasVisible = isToolWindowVisible(id);
+  const nextVisible = { ...s.visible, [slot]: id };
   const mounted = s.mounted.has(id) ? s.mounted : new Set(s.mounted).add(id);
+  const nextMaximized =
+    !wasVisible && s.maximizedWindows[id]
+      ? a
+      : s.maximized === a && (wasVisible || windowsOn(a, nextVisible).some((wid) => s.maximizedWindows[wid]))
+        ? a
+        : null;
   update({
-    visible: { ...s.visible, [slot]: id },
+    visible: nextVisible,
     // Opening a window puts its button on the stripe (IDEA).
     stripeButtons: s.stripeButtons[id] ? s.stripeButtons : { ...s.stripeButtons, [id]: true },
     mounted,
     lastActive: id,
     stashed: null,
-    maximized: s.maximized && s.maximized !== a ? null : s.maximized,
+    maximized: nextMaximized,
     focusRequest: focus ? { id, seq: ++focusSeq } : s.focusRequest,
   });
 }
@@ -740,10 +778,17 @@ export function setToolWindowSize(anchor: ToolWindowAnchor, px: number) {
   const s = useToolWindowLayout.getState();
   const v = Math.round(px);
   if (s.maximized === anchor || v < 80 || s.sizes[anchor] === v) return;
+  const shown = windowsOn(anchor, s.visible);
   const windowSizes = rememberEachSize()
-    ? { ...s.windowSizes, ...Object.fromEntries(windowsOn(anchor, s.visible).map((id) => [id, v])) }
+    ? { ...s.windowSizes, ...Object.fromEntries(shown.map((id) => [id, v])) }
     : s.windowSizes;
-  update({ sizes: { ...s.sizes, [anchor]: v }, windowSizes });
+  let maximizedWindows = s.maximizedWindows;
+  if (shown.some((id) => maximizedWindows[id])) {
+    const next = { ...maximizedWindows };
+    for (const id of shown) delete next[id];
+    maximizedWindows = next;
+  }
+  update({ sizes: { ...s.sizes, [anchor]: v }, windowSizes, maximizedWindows });
 }
 
 export type ResizeDirection = "left" | "right" | "up" | "down";
@@ -781,9 +826,18 @@ export function setToolWindowSplit(anchor: ToolWindowAnchor, ratio: number) {
 export function toggleMaximizeToolWindow(id: string) {
   const a = anchorOf(id);
   if (!a) return;
-  if (!isToolWindowVisible(id)) showToolWindow(id, true);
+  const wasVisible = isToolWindowVisible(id);
+  if (!wasVisible) showToolWindow(id, true);
   const s = useToolWindowLayout.getState();
-  update({ maximized: s.maximized === a ? null : a, focusRequest: { id, seq: ++focusSeq } }, false);
+  const maximizing = wasVisible ? s.maximized !== a : true;
+  const maximizedWindows = { ...s.maximizedWindows };
+  if (maximizing) {
+    maximizedWindows[id] = true;
+  } else {
+    for (const wid of windowsOn(a, s.visible)) delete maximizedWindows[wid];
+    delete maximizedWindows[id];
+  }
+  update({ maximized: maximizing ? a : null, maximizedWindows, focusRequest: { id, seq: ++focusSeq } });
 }
 
 /** Reveals the editor when navigation opens or focuses an editor tab. */
@@ -838,6 +892,7 @@ export interface ToolWindowLayoutSnapshot {
   placements: Record<string, ToolWindowPlacement>;
   stripeButtons: Record<string, boolean>;
   viewModes: Record<string, ToolWindowViewMode>;
+  maximizedWindows?: Record<string, boolean>;
 }
 
 export function toolWindowLayoutSnapshot(): ToolWindowLayoutSnapshot {
@@ -850,6 +905,7 @@ export function toolWindowLayoutSnapshot(): ToolWindowLayoutSnapshot {
     placements: { ...s.placements },
     stripeButtons: { ...s.stripeButtons },
     viewModes: { ...s.viewModes },
+    maximizedWindows: { ...s.maximizedWindows },
   };
 }
 
@@ -864,6 +920,7 @@ export function sanitizeLayoutSnapshot(raw: unknown): ToolWindowLayoutSnapshot {
     placements: sanitizePlacements(r.placements),
     stripeButtons: sanitizeStripeButtons(r.stripeButtons),
     viewModes: sanitizeViewModes(r.viewModes),
+    maximizedWindows: sanitizeMaximizedWindows(r.maximizedWindows),
   };
 }
 
@@ -889,6 +946,7 @@ export function applyToolWindowLayout(snapshot: ToolWindowLayoutSnapshot) {
     placements,
     stripeButtons: { ...snapshot.stripeButtons },
     viewModes: { ...snapshot.viewModes },
+    maximizedWindows: sanitizeMaximizedWindows(snapshot.maximizedWindows),
     mounted,
     maximized: null,
     stashed: null,

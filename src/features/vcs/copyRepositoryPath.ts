@@ -21,7 +21,8 @@ function repositoryPaths(paths: readonly string[]): string | null {
   return relative.length ? relative.join("\n") : null;
 }
 
-async function copy(text: string) {
+/** Copies `text`, confirming with a hint (or an error notification when the clipboard is unavailable). */
+export async function copyWithHint(text: string) {
   try {
     await writeClipboardText(text);
     void executeAction("editor.showHint", { text: tx`Copied ${text}` });
@@ -44,7 +45,7 @@ export const copyRepositoryPathActions: Action[] = [
     hidden: true,
     run: ({ arg }) => {
       const text = Array.isArray(arg) ? repositoryPaths(arg as string[]) : null;
-      if (text) void copy(text);
+      if (text) void copyWithHint(text);
     },
   },
 ];

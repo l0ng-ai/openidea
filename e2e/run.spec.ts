@@ -569,7 +569,7 @@ test("CMake builds the selected target in Build before starting only the applica
     await loadConfigs();
     selectConfig(app.id);
   });
-  await page.getByRole("button", { name: "Build Project", exact: true }).click();
+  await page.getByRole("button", { name: "Build 'hello [Release, release]'", exact: true }).click();
   const build = page.getByRole("region", { name: "Build", exact: true });
   await expect(build.getByText("COMPILER_OUTPUT", { exact: true })).toBeVisible();
   expect(await ipcCalls(page, "run_start")).toHaveLength(0);

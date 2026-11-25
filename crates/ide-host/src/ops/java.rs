@@ -902,7 +902,8 @@ pub async fn java_build_workspace(
 
 /// The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
 /// the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
-/// classpath has one; from the engine's repository, else downloaded once from Maven Central), and,
+/// classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
+/// Maven Central), and,
 /// for a Maven module, what its Surefire configuration gives the forked test JVM.
 #[command(trust = trusted)]
 pub async fn java_junit_runner(
@@ -926,13 +927,13 @@ pub async fn java_junit_runner(
         let runner = ide_sdk::java::junit_runner_jar(&data_dir)
             .ok_or_else(|| IdeError::internal("Cannot install the JUnit runner"))?;
         let launcher = match ide_sdk::java::junit_launcher(&class_paths) {
-            ide_sdk::java::JunitLauncher::OnClasspath => None,
+            ide_sdk::java::JunitLauncher::OnClasspath | ide_sdk::java::JunitLauncher::Junit4 => None,
             ide_sdk::java::JunitLauncher::Found(path) => Some(path),
             ide_sdk::java::JunitLauncher::Missing(version) => Some(download_junit_launcher(&data_dir, &version)?),
             ide_sdk::java::JunitLauncher::NoPlatform => {
                 return Err(IdeError::unavailable(
-                    "No JUnit Platform (junit-platform-engine) on the test classpath. To run these tests through \
-                     Maven, set Settings › Build Tools › Maven › Run tests using to Maven.",
+                    "Neither JUnit 5 (junit-platform-engine) nor JUnit 4 is on the test classpath. To run these tests \
+                     through Maven, set Settings › Build Tools › Maven › Run tests using to Maven.",
                 ));
             }
         };

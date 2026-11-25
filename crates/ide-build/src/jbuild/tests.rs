@@ -84,6 +84,8 @@ impl Fixture {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap();
         let build = [
+            // A persistent Gradle daemon can keep the fixture's output pipes open on Windows.
+            ("gradle.properties", "org.gradle.daemon=false\n"),
             ("settings.gradle", "rootProject.name = 'root'\ninclude 'lib', 'app'\n"),
             (
                 "build.gradle",
@@ -258,6 +260,12 @@ fn builds_maven_modules_with_javac_and_only_what_changed() {
     assert_eq!(f.build(Target::Project).failure, None);
     assert_eq!(f.steps(), ["javac lib (tests, 1 file)"]);
     assert!(f.out("t.lib/test-classes/l/LTest.class").is_file());
+
+    // Build Module on the root aggregator compiles every submodule under it.
+    f.write("app/src/test/java/a/AggTest.java", "package a;\nclass AggTest { String s = l.L.name(); }\n");
+    assert_eq!(f.build(Target::Module(&f.root)).failure, None);
+    assert_eq!(f.steps(), ["javac app (tests, 1 of 2 files)"]);
+    assert!(f.out("t.app/test-classes/a/AggTest.class").is_file());
 }
 
 #[test]

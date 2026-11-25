@@ -100,6 +100,8 @@ export interface BuildState {
   kind: BuildKind | null;
   /** Module file or folder of a Build Module, `null` for the project. */
   file: string | null;
+  /** CMake build configuration ID when building a CMake target. */
+  cmake: string | null;
   title: string;
   system: BuildSystem | null;
   status: BuildStatus | null;
@@ -119,6 +121,7 @@ const INITIAL: BuildState = {
   request: null,
   kind: null,
   file: null,
+  cmake: null,
   title: "",
   system: null,
   status: null,
@@ -170,7 +173,16 @@ export async function startBuild(
   const taskTitle = TITLES[kind];
   const cancel = () => backend.cancel(request);
   const previous = useBuildRun.getState().files;
-  useBuildRun.setState({ ...INITIAL, request, kind, file, title: taskTitle, status: "running", files: previous });
+  useBuildRun.setState({
+    ...INITIAL,
+    request,
+    kind,
+    file,
+    cmake,
+    title: taskTitle,
+    status: "running",
+    files: previous,
+  });
   setContext(BUILD_LAST_STATUS, null);
   setContext(BUILD_RUNNING, true);
   showBuildWindow("start", activate);
@@ -423,9 +435,9 @@ export function stopBuild() {
 
 /** Runs the last build again (the tool window's rerun button). */
 export function rerunBuild() {
-  const { kind, file } = useBuildRun.getState();
+  const { kind, file, cmake } = useBuildRun.getState();
   if (!kind) return file ? startCompileFile(file) : startBuild("build", null);
-  return startBuild(kind, file);
+  return startBuild(kind, file, true, cmake);
 }
 
 export function resetBuildRun() {

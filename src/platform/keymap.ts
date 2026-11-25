@@ -5,8 +5,10 @@
  * `Meta+Shift+O`, `Alt+F7`, `F8`. Space separates chord strokes
  * (`Meta+K Meta+C`). A modifier pressed twice is `Shift Shift` (IDEA's double
  * Shift, `Ctrl Ctrl`…); pressed twice and held, then a key, `Alt Alt+Up`.
- * Keys are matched by physical position (`KeyboardEvent.code`), so ⌥-letter
- * combos work on macOS where `event.key` would be a symbol. Mouse shortcuts
+ * Keys match by the typed character for letters and unshifted punctuation (so
+ * AZERTY's ⌘, records `Meta+,`, not `Meta+M`), and by physical position
+ * (`KeyboardEvent.code`) when Shift or Alt are held, so ⌥-letter combos work on
+ * macOS where `event.key` would be a symbol. Mouse shortcuts
  * name the button 1-based (`Button1` = left, `Button4` = back side button, `Button5` = forward),
  * or the wheel direction (`WheelUp`, `WheelDown`), optionally with modifiers.
  */
@@ -375,17 +377,27 @@ export function letterOf(e: Pick<KeyboardEvent, "code" | "key"> & { altKey?: boo
   return null;
 }
 
+/** A printable ASCII character other than a letter, digit or space. */
+const ASCII_PUNCTUATION = /^[!-/:-@[-`{-~]$/;
+
 /** Converts a keydown event into a canonical stroke, or null for bare modifiers. */
 export function strokeOf(
   e: Pick<KeyboardEvent, "code" | "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
   let key: string | undefined;
-  const letter = letterOf(e);
-  if (letter) key = letter;
+  if (/^[a-zA-Z]$/.test(e.key) && !e.altKey) key = e.key.toUpperCase();
   else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
   else if (/^Numpad\d$/.test(e.code)) key = e.code.slice(6);
   else if (/^F\d{1,2}$/.test(e.code)) key = e.code;
-  else key = CODE_NAMES[e.code];
+  else if (/^Numpad/.test(e.code)) key = CODE_NAMES[e.code];
+  // Unshifted ASCII punctuation follows the layout, not the QWERTY position
+  // (AZERTY's comma sits on KeyM, so ⌘, must record `Meta+,` not `Meta+M`).
+  // Shift-held events keep the physical key — presets are written
+  // `Meta+Shift+]` — and so do Alt-held ones, since ⌥ on macOS and AltGr type
+  // symbols. Other characters (Cyrillic, Greek, accented letters) keep the
+  // physical key too, so Ctrl+C stays Ctrl+C on those layouts.
+  else if (!e.altKey && !e.shiftKey && ASCII_PUNCTUATION.test(e.key)) key = e.key;
+  else key = letterOf(e) ?? CODE_NAMES[e.code];
   if (!key) {
     if (["Shift", "Meta", "Control", "Alt"].includes(e.key)) return null;
     key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
