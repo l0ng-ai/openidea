@@ -11,8 +11,11 @@ import { foldNodeProp, syntaxTree } from "@codemirror/language";
 import { backendFolds } from "./folding";
 import { LINE_INSET } from "./lineInset";
 import { bracketScanner } from "./rainbowBrackets";
-import { MAX_PREVIEW_LINE_LENGTH, renderLineContent } from "./renderLineContent";
+import { MAX_PREVIEW_LINE_LENGTH, previewHighlightSets, renderLineContent } from "./renderLineContent";
 import { editorLineNumber } from "./relativeLineNumbers";
+
+const sameSets = (a: readonly unknown[], b: readonly unknown[]) =>
+  a.length === b.length && a.every((set, i) => set === b[i]);
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
 export const stickyMaxLines = Facet.define<number, number>({
@@ -133,10 +136,17 @@ class StickyScroll {
   }
   /**
    * Text and syntax tree the rows were rendered from (re-render when either changes), and
-   * the document while bracket colours are on (an edit above may change their depth).
+   * the document while bracket colours are on (an edit above may change their depth), and the
+   * semantic marks painted over the syntax colours.
    */
-  private renderedFrom: { texts: string[]; numbers: string[]; tree: unknown; doc: unknown; scanner: unknown } | null =
-    null;
+  private renderedFrom: {
+    texts: string[];
+    numbers: string[];
+    tree: unknown;
+    doc: unknown;
+    scanner: unknown;
+    highlights: readonly unknown[];
+  } | null = null;
   private gutterWidth = 0;
   private numberWidth = 0;
   private numberLeft = 0;
@@ -165,7 +175,8 @@ class StickyScroll {
       u.geometryChanged ||
       u.transactions.some((tr) => tr.reconfigured) ||
       syntaxTree(u.startState) !== syntaxTree(u.state) ||
-      u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false)
+      u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false) ||
+      !sameSets(previewHighlightSets(u.startState), previewHighlightSets(u.state))
     )
       this.schedule();
   }
@@ -205,6 +216,7 @@ class StickyScroll {
         const numbers = numberWidth > 0 ? lines.map((n) => editorLineNumber(state, n)) : [];
         const tree = syntaxTree(state);
         const scanner = bracketScanner(this.view);
+        const highlights = previewHighlightSets(state);
         const prev = this.renderedFrom;
         const same =
           lines.length === this.lines.length &&
@@ -213,6 +225,7 @@ class StickyScroll {
           prev.tree === tree &&
           prev.doc === (scanner ? state.doc : null) &&
           prev.scanner === scanner &&
+          sameSets(prev.highlights, highlights) &&
           texts.every((t, i) => t === prev.texts[i]) &&
           numbers.every((number, i) => number === prev.numbers[i]);
         if (!lines.length) {
@@ -237,7 +250,7 @@ class StickyScroll {
           numberLeft !== this.numberLeft;
         if (rebuild) {
           this.lines = lines;
-          this.renderedFrom = { texts, numbers, tree, doc: scanner ? state.doc : null, scanner };
+          this.renderedFrom = { texts, numbers, tree, doc: scanner ? state.doc : null, scanner, highlights };
           this.gutterWidth = gutterWidth;
           this.numberWidth = numberWidth;
           this.numberLeft = numberLeft;

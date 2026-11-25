@@ -93,6 +93,7 @@ async function untrustedAttachment() {
   const project = useProject.getState().project;
   if (!project?.workspace || project.workspace.projects[0] !== project.root) return null;
   for (const path of project.workspace.projects) {
+    // oxlint-disable-next-line no-await-in-loop -- returns the first untrusted project in workspace order; later paths are intentionally not queried after a hit.
     const status = await call(commands.projectTrustStatus(path)).catch(() => null);
     if (status && !status.trusted) return status;
   }

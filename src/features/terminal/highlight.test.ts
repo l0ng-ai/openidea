@@ -44,6 +44,7 @@ describe("terminal selection occurrence highlights", () => {
   it("scans only visible rows (plus margin), never the distant scrollback", async () => {
     const term = createTerm(40, 4);
     for (let i = 0; i < 40; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- lines are appended to the terminal in order to build the scrollback
       await writeAsync(term, `line-${i} req-42 req-42\r\n`);
     }
     const lastRow = term.buffer.active.baseY;
@@ -180,6 +181,7 @@ describe("terminal selection occurrence highlights", () => {
       for (let i = 0; i < 9; i++) {
         // Row 6 (first visible row before trim) has "tok_id"; margin row 5 above it does not.
         const body = i === 6 ? "tok_id hit" : `row-${i}`;
+        // oxlint-disable-next-line no-await-in-loop -- rows are appended in order so the trim lands on the expected row
         await writeAsync(term, `${body}\r\n`);
       }
       await writeAsync(term, "tok_id sel");

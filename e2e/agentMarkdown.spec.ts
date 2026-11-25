@@ -794,8 +794,8 @@ test("Find in Conversation skips user-select:none summaries and closed <details>
   }, TASK);
 
   const stream = page.locator("[class*='_stream_']:visible");
-  // A command is its own row, outside the reasoning's run.
-  await expect(stream.getByText("stop_bash")).toBeVisible();
+  // The reasoning and the command fold into one run.
+  await expect(stream.getByText("1 other tool call")).toBeVisible();
 
   await stream.focus();
   await page.keyboard.press("Meta+f");

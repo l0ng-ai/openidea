@@ -93,6 +93,7 @@ describe("terminal link highlights", () => {
     const term = createTerm(60, 5);
     const links = installLinkHighlights(term, () => "#112233");
     for (let i = 0; i < 100; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- rows are appended in order and decorations updated after each write
       await write(term, `row ${i} https://example.com/${i}\r\n`);
       links.update();
     }
