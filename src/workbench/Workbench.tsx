@@ -100,6 +100,7 @@ export function Workbench() {
   return (
     <div
       className={frame ? `${styles.workbench} ${frame}` : styles.workbench}
+      data-project-frame=""
       style={tintName ? tabColorVars(tintName, tintRoot ? tabColorOverride(tintRoot) : null) : undefined}
     >
       <div className={styles.content} inert={openingPath !== null} aria-hidden={openingPath ? true : undefined}>
