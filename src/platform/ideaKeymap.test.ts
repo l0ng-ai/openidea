@@ -92,6 +92,16 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Delete to Line Start / End and Cut up to Line End", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="Mac OS X 10.5+"><action id="EditorDeleteToLineStart"><keyboard-shortcut first-keystroke="meta BACK_SPACE"/></action><action id="EditorDeleteToLineEnd"><keyboard-shortcut first-keystroke="shift meta DELETE"/></action><action id="EditorCutLineEnd"><keyboard-shortcut first-keystroke="control alt K"/></action></keymap>`,
+    );
+    expect(k.overrides["code.deleteToLineStart"]).toEqual([normalizeBinding("Meta+Backspace")]);
+    expect(k.overrides["code.deleteToLineEnd"]).toEqual([normalizeBinding("Shift+Meta+Delete")]);
+    expect(k.overrides["code.cutLineEnd"]).toEqual([normalizeBinding("Ctrl+Alt+K")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Move Caret to Page Top / Bottom", () => {
     const k = parseIdeaKeymap(
       `<keymap name="W" parent="$default"><action id="EditorMoveToPageTop"><keyboard-shortcut first-keystroke="alt PAGE_UP"/></action><action id="EditorMoveToPageBottomWithSelection"><keyboard-shortcut first-keystroke="alt shift PAGE_DOWN"/></action></keymap>`,

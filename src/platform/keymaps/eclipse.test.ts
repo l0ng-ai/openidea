@@ -123,6 +123,7 @@ describe.each(presets)("%s", (preset, title, km, parent, mod) => {
     ["navigate.gotoFile", "Shift+R"],
     ["navigate.gotoClass", "Shift+T"],
     ["code.deleteLine", "D"],
+    ["code.deleteToLineEnd", "Shift+Delete"],
     ["code.showIntentions", "1"],
     ["code.optimizeImports", "Shift+O"],
     ["code.reformat", "Shift+F"],
