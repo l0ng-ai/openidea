@@ -1,4 +1,4 @@
-/** IDEA caret commands that CodeMirror has no equivalent for: Split Line, Scroll to Center, code block and brace navigation. */
+/** IDEA caret commands that CodeMirror has no equivalent for: Split Line, Scroll to Center / Up / Down, code block and brace navigation. */
 import { EditorSelection, type EditorState, type Transaction } from "@codemirror/state";
 import { EditorView, type Command } from "@codemirror/view";
 import { insertNewlineAndIndent } from "@codemirror/commands";
@@ -25,6 +25,16 @@ export const scrollToCenter: Command = (view) => {
   view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }) });
   return true;
 };
+
+/** Scroll Up / Scroll Down: move the viewport by one line, leaving the caret where it is even when it scrolls out of view. */
+const scrollByLine =
+  (lines: number): Command =>
+  (view) => {
+    view.scrollDOM.scrollTop += lines * view.defaultLineHeight;
+    return true;
+  };
+export const scrollUp = scrollByLine(-1);
+export const scrollDown = scrollByLine(1);
 
 const NOT_CODE = /String|Comment|Regexp|Char|Template/;
 

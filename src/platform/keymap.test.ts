@@ -521,6 +521,23 @@ describe("keymap", () => {
       expect(up(3100).defaultPrevented).toBe(false);
     });
 
+    it("leaves a single press to a plain binding of the same key", async () => {
+      const { above, mod, up } = setup();
+      const scroll = vi.fn();
+      registerAction({ id: "t.scrollUp", title: "scroll up", run: scroll });
+      useKeymap.setState({ overrides: { ...useKeymap.getState().overrides, "t.scrollUp": ["Alt+Up"] } });
+      mod("keydown", "Alt", 1000);
+      mod("keyup", "Alt", 1100);
+      mod("keydown", "Alt", 1200);
+      up(1500);
+      mod("keyup", "Alt", 1800);
+      mod("keydown", "Alt", 3000);
+      expect(up(3100).defaultPrevented).toBe(true);
+      await Promise.resolve();
+      expect(above).toHaveBeenCalledOnce();
+      expect(scroll).toHaveBeenCalledOnce();
+    });
+
     it("fires a bare double tap of another modifier on its second release", async () => {
       const { anything, mod } = setup();
       mod("keydown", "Control", 1000);

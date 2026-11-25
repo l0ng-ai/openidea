@@ -689,6 +689,8 @@
   "Start New Line Before Current": "在目前行前開始新行",
   "Split Line": "拆分行",
   "Scroll to Center": "捲動到中央",
+  "Scroll Up": "向上捲動",
+  "Scroll Down": "向下捲動",
   "Move Caret to Code Block Start": "將游標移至程式碼塊開頭",
   "Move Caret to Code Block End": "將游標移至程式碼塊末尾",
   "Clone Caret Above": "在上方新增游標",
