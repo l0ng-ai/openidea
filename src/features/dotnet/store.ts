@@ -12,8 +12,7 @@ import {
 import { dirname, useProject } from "@/platform/project";
 import type { RunConfig } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { useProjectTree } from "@/features/project-tree/store";
-import { maybeEditorService } from "@/workbench/contributions";
+import { maybeEditorService, projectViewSelection } from "@/workbench/contributions";
 import { contextDotnetTarget, isDotnetProjectPath, isDotnetSolutionPath } from "./target";
 
 export interface Package {
@@ -71,10 +70,9 @@ export const selectedProject = () =>
 async function contextTarget(arg?: unknown): Promise<string | null> {
   if (typeof arg === "string" && arg) return arg;
   const resolve = () => {
-    const tree = useProjectTree.getState();
     return (
       contextDotnetTarget({
-        selected: [...(tree.lead ? [tree.lead] : []), ...tree.selected],
+        selected: projectViewSelection(),
         editorFile: maybeEditorService()?.activePath() ?? null,
         model: useDotnet.getState().model,
       }) ??
@@ -89,12 +87,24 @@ async function contextTarget(arg?: unknown): Promise<string | null> {
   if (target) return target;
   const { model } = useDotnet.getState();
   if (model.projects.length || model.solutions.length || !useProject.getState().project?.root) return null;
+  await ensureDotnetModel();
+  return resolve();
+}
+
+/**
+ * Loads the workspace model unless it is loaded: the NuGet window on mount and the context
+ * actions share one scan (#5635), so opening the window while an action resolves its target
+ * does not scan twice.
+ */
+export async function ensureDotnetModel(): Promise<void> {
+  const { model } = useDotnet.getState();
+  if (model.projects.length || model.solutions.length || !useProject.getState().project?.root) return;
   const scan = (contextScan ??= Promise.resolve(reloadDotnet()));
   try {
     await scan;
   } finally {
     // A failed scan must not disable the context actions for the rest of the
-    // session (#5635): drop it so the next action starts a new one. A scan
+    // session (#5635): drop it so the next caller starts a new one. A scan
     // that completed finds the model loaded — or, in a workspace without
     // .NET, no error — and keeps its single-scan no-op.
     if (contextScan === scan) {
@@ -102,7 +112,6 @@ async function contextTarget(arg?: unknown): Promise<string | null> {
       if (error && !model.projects.length && !model.solutions.length) contextScan = undefined;
     }
   }
-  return resolve();
 }
 
 /** The context's target as an evaluated project: a solution has no single project, so the selected one stands in. */

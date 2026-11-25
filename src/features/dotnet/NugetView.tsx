@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { Button, Input } from "@/ui";
-import { reloadDotnet, useDotnet } from "./store";
+import { ensureDotnetModel, useDotnet } from "./store";
 import styles from "./Nuget.module.css";
 
 export function NugetView() {
@@ -21,7 +21,7 @@ export function NugetView() {
   // The workspace scan used to run when the standalone .NET window opened; without it the
   // window shows no project to manage packages for.
   useEffect(() => {
-    if (!useDotnet.getState().model.projects.length) void reloadDotnet();
+    void ensureDotnetModel();
   }, []);
   return (
     <div className={styles.view}>

@@ -15,6 +15,7 @@ import {
   searchPackages,
   selectDotnet,
 } from "./store";
+import { isDotnetProjectPath, isDotnetSolutionPath } from "./target";
 
 const NUGET = "nuget";
 
@@ -120,7 +121,7 @@ export function activate() {
       order: 45,
       items: (_menu, { paths, dirs }) => {
         const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
-        if (!path || !/\.(?:cs|fs)proj$|\.slnx?$/i.test(path)) return [];
+        if (!path || !(isDotnetProjectPath(path) || isDotnetSolutionPath(path))) return [];
         return [
           { kind: "action", action: "dotnet.build", arg: path },
           { kind: "action", action: "dotnet.restore", arg: path },

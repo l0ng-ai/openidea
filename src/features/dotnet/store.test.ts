@@ -12,8 +12,7 @@ import {
 } from "./store";
 import * as platform from "@/platform/dotnet";
 import { useProject } from "@/platform/project";
-import { useProjectTree } from "@/features/project-tree/store";
-import { EditorService, provideEditorService } from "@/workbench/contributions";
+import { EditorService, provideEditorService, provideProjectViewSelection } from "@/workbench/contributions";
 
 afterEach(() => {
   resetDotnet();
@@ -210,18 +209,22 @@ describe("acting on the context before the model was ever loaded (#5635)", () =>
     adapter: "mstest",
     trx: false,
   };
-  const treeState = useProjectTree.getState();
+  let offSelection = () => {};
+  const selectInProjectView = (...paths: string[]) => {
+    offSelection();
+    offSelection = provideProjectViewSelection(() => paths);
+  };
   const previousProject = useProject.getState().project;
 
   beforeEach(() => {
     useProject.setState({ project: { root: "/repo" } as NonNullable<typeof previousProject> });
     // A fresh session: the Project view shows a source file, that file is open in the editor.
-    useProjectTree.setState({ lead: "/repo/src/App/Program.cs", selected: new Set(["/repo/src/App/Program.cs"]) });
+    selectInProjectView("/repo/src/App/Program.cs");
     provideEditorService({ activePath: () => "/repo/src/App/Program.cs" } as unknown as EditorService);
   });
 
   afterEach(() => {
-    useProjectTree.setState({ lead: treeState.lead, selected: treeState.selected });
+    offSelection();
     provideEditorService(undefined as unknown as EditorService);
     useProject.setState({ project: previousProject });
   });
@@ -265,7 +268,7 @@ describe("acting on the context before the model was ever loaded (#5635)", () =>
   });
 
   it("builds a project selected in the Project view without loading the model", async () => {
-    useProjectTree.setState({ lead: path, selected: new Set([path]) });
+    selectInProjectView(path);
     const scan = vi.spyOn(platform, "dotnetWorkspace");
     const command = vi.spyOn(platform, "dotnet").mockResolvedValue("");
 
