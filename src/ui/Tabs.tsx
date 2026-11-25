@@ -22,7 +22,7 @@ import { IconButton } from "./Button";
 import { Menu, type MenuItem } from "./Menu";
 import { HiddenTabsPopup } from "./HiddenTabsPopup";
 import { tooltipAttrs } from "./Tooltip";
-import { isOutsideWindow, registerDropTarget, startPointerDrag } from "./pointerDrag";
+import { isOutsideWindow, registerDropTarget, startPointerDrag, type DragData } from "./pointerDrag";
 import { Given } from "./T";
 import styles from "./Tabs.module.css";
 import { tx, useGivenTx } from "@/platform/i18n";
@@ -69,6 +69,9 @@ export interface TabsDnd {
   type: string;
   payload: (id: string) => string;
   onDrop: (payload: string, index: number) => void;
+  /** Extra drag payloads accepted onto this strip (shown with the cross-strip insertion line). */
+  accepts?: (data: DragData) => boolean;
+  onExternalDrop?: (data: DragData, index: number) => void;
   /**
    * A dragged tab released with no accepting target (the pointer left the
    * window): the editor uses it to detach the tab into a new window. Gets the
@@ -242,12 +245,15 @@ export function Tabs({
       return next ? items.indexOf(next) : items.length;
     };
     return registerDropTarget(el, {
-      accepts: (type) => type === dropState.current.dnd?.type,
+      accepts: (type, data) => type === dropState.current.dnd?.type || !!dropState.current.dnd?.accepts?.(data),
       over: (_, x, y) => setDrop(indexAt(x, y)),
       leave: () => setDrop(null),
       drop: (data, x, y) => {
         setDrop(null);
-        dropState.current.dnd?.onDrop(data.payload, indexAt(x, y));
+        const current = dropState.current.dnd;
+        const at = indexAt(x, y);
+        if (data.type === current?.type) current.onDrop(data.payload, at);
+        else current?.onExternalDrop?.(data, at);
       },
     });
   }, [dndType]);

@@ -100,15 +100,17 @@ In a Maven project with Kotlin sources, OpenIDEA builds the Kotlin code in the b
 
 ## Run and test
 
-| What                              | How it runs                                                                                                              |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `main` method                     | **Application** configuration on the module's runtime or test classpath. Java 25 instance `main` methods are recognized. |
-| `@SpringBootApplication` class    | **Spring Boot** configuration, with active profiles and update actions                                                   |
-| Executable jar                    | **JAR Application** configuration                                                                                        |
-| WAR                               | **Tomcat Server** configuration on a local Tomcat installation (the IDE never writes into it)                            |
-| JUnit 4, JUnit 5 and TestNG tests | Maven (Surefire `-Dtest=…`) or Gradle (`--tests …`) test configurations                                                  |
+| What                              | How it runs                                                                                                                      |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `main` method                     | **Application** configuration on the module's runtime or test classpath. Java 25 instance `main` methods are recognized.         |
+| `@SpringBootApplication` class    | **Spring Boot** configuration, with active profiles and update actions                                                           |
+| Executable jar                    | **JAR Application** configuration                                                                                                |
+| WAR                               | **Tomcat Server** configuration on a local Tomcat installation (the IDE never writes into it)                                    |
+| JUnit 4, JUnit 5 and TestNG tests | Maven (Surefire `-Dtest=…`) or Gradle (`--tests …`) test configurations; JUnit 5 in a Maven module runs on jdtls' test classpath |
 
 Gutter icons on main methods, test classes and test methods create these configurations, and Maven and Gradle run configurations are detected from the build files. For Gradle, **Build and run using** decides whether an Application runs as a Gradle `JavaExec` task (the default) or is launched by OpenIDEA on the classpath reported by jdtls.
+
+A JUnit 5 test class or method run from the gutter of a Maven module starts on jdtls' test classpath with OpenIDEA's JUnit Platform runner, without Maven, like IDEA (**Settings › Build, Execution, Deployment › Maven › Run tests using**). The runner adds `junit-platform-launcher` of the engine's version when the project has none (from the local repository, else downloaded once from Maven Central). As in IDEA, the test JVM gets the module's Surefire configuration: `argLine` (with `@{…}` late replacement), `systemPropertyVariables`, `environmentVariables`, `workingDirectory`, `additionalClasspathElements` and `classpathDependencyExcludes`, read from the effective POM of the last Maven sync (before a sync, from the module's own `pom.xml`). Resource filtering and Surefire's other settings (forking, includes, groups) don't apply; choose **Maven** to run through Surefire.
 
 Test results are read from the JUnit XML reports Maven and Gradle write, so passed tests are listed as well. The test tree supports rerunning failed tests. VM options of a Gradle run configuration are applied to the JVMs Gradle forks (`run`, `bootRun`, `test`). When a classpath is too long for the command line (common on Windows), it is moved into an argument file or a manifest-only jar.
 

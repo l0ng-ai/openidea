@@ -460,4 +460,35 @@ describe("Tabs drag & drop", () => {
     pointer(window, "pointerup", 180);
     expect(onDrop).toHaveBeenCalledWith("a", 2);
   });
+
+  it("accepts external drag types with an insertion marker and routes them to onExternalDrop", () => {
+    const onExternalDrop = vi.fn();
+    render(
+      <>
+        <Strip label="Source" initial={["term-1"]} />
+        <Tabs
+          aria-label="Editor"
+          items={[
+            { id: "c", label: "c" },
+            { id: "d", label: "d" },
+          ]}
+          activeId="c"
+          onSelect={() => {}}
+          dnd={{
+            type: "application/x-other",
+            payload: (id) => id,
+            onDrop: () => {},
+            accepts: (data) => data.type === TYPE && data.payload === "term-1",
+            onExternalDrop,
+          }}
+        />
+      </>,
+    );
+    pointer(within(tab("Source", "term-1")).getByRole("tab"), "pointerdown", 50);
+    hit = strip("Editor");
+    pointer(window, "pointermove", 120);
+    expect(tab("Editor", "d")).toHaveClass(styles.dropBefore!);
+    pointer(window, "pointerup", 120);
+    expect(onExternalDrop).toHaveBeenCalledWith({ type: TYPE, payload: "term-1" }, 1);
+  });
 });

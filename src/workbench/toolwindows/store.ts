@@ -709,6 +709,25 @@ export function hideActiveToolWindow() {
   if (id) hideToolWindow(id);
 }
 
+/**
+ * Hide Side Tool Windows (IDEA's HideSideWindows): hides both areas of the side the active
+ * (else last active) window is docked on. Nothing when that window isn't shown.
+ */
+export function hideSideToolWindows() {
+  const s = useToolWindowLayout.getState();
+  const id = s.focused ?? s.lastActive;
+  const anchor = id && isToolWindowVisible(id) ? anchorOf(id) : undefined;
+  if (!anchor) return;
+  const side = windowsOn(anchor, s.visible);
+  const hadFocus = side.some((w) => s.focused === w || isFocusWithinToolWindow(w));
+  update({
+    visible: { ...s.visible, [anchor]: null, [`${anchor}-split`]: null },
+    maximized: s.maximized === anchor ? null : s.maximized,
+    lastActive: s.lastActive && side.includes(s.lastActive) ? null : s.lastActive,
+  });
+  if (hadFocus) focusEditor();
+}
+
 export function setToolWindowSize(anchor: ToolWindowAnchor, px: number) {
   const s = useToolWindowLayout.getState();
   const v = Math.round(px);

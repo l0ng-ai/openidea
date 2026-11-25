@@ -916,6 +916,7 @@
   "Hide": "Masquer",
   "Hide Active Tool Window": "Masquer la fenêtre d'outil active",
   "Hide All Tool Windows": "Masquer toutes les fenêtres d'outils",
+  "Hide Side Tool Windows": "Masquer les fenêtres d'outils latérales",
   "Hide changes": "Masquer les modifications",
   "Hide Coverage": "Masquer la couverture",
   "Hide Library Frames": "Masquer les cadres de bibliothèque",
@@ -4714,7 +4715,8 @@
   "{provider} didn't start: {error}": "{provider} n'a pas démarré : {error}",
   "resets {resetsMs}": "réinitialisation {resetsMs}",
   "Run Again From Here": "Réexécuter à partir d'ici",
-  "The messages after this one are replaced. Files the agent changed stay as they are.": "Les messages suivants sont remplacés. Les fichiers modifiés par l'agent restent en l'état.",
+  "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "Les messages suivants sont remplacés, et les fichiers modifiés par l'agent depuis reviennent à leur état d'avant l'envoi de ce message.",
+  "The files the agent changed since go back to how they were before this message was sent.": "Les fichiers modifiés par l'agent depuis reviennent à leur état d'avant l'envoi de ce message.",
   "Cancelling…": "Annulation…",
   "Code insight needs the index; it can't be stopped": "L'analyse du code nécessite l'index ; il ne peut pas être arrêté",
   "Waiting for other tasks": "En attente d'autres tâches",
@@ -5746,5 +5748,9 @@
   "Replace preview": "Aperçu du remplacement",
   "Select files in the Project view, Commit tool window, or open a file in the editor": "Sélectionnez des fichiers dans la vue Projet, la fenêtre Commit, ou ouvrez un fichier dans l'éditeur",
   "Agent Reference": "Référence d'agent",
-  "Copy Agent Reference": "Copier la référence d'agent"
+  "Copy Agent Reference": "Copier la référence d'agent",
+  "Roll Back to Here": "Revenir à ce point",
+  "Couldn't roll back": "Impossible de revenir en arrière",
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Ce message et les suivants sont supprimés, et les fichiers modifiés par l'agent depuis reviennent à leur état d'avant l'envoi. Le message revient dans la zone de saisie.",
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Cela efface toute la conversation, remet les fichiers modifiés par l'agent dans leur état du début de la tâche et démarre une nouvelle session de l'agent avec ce message."
 }

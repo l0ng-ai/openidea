@@ -10,7 +10,7 @@ import { goTargets } from "./goTargets";
 import { csharpTargets } from "./csharpTargets";
 import { formatArgs } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
-import { applicationConfig, jvmTestConfig } from "./application";
+import { applicationConfig, junitRunnerConfig, jvmTestConfig, runsJunitInIde } from "./application";
 import { goTestParts, withoutGoSelection } from "./goArguments";
 import { contextConfig, relToCwd, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf } from "./djangoTypes";
@@ -466,12 +466,12 @@ export function targetConfig(
   }
   const file = testConfigFor(relPath, configs, base, content);
   if (!file) return null;
-  if (target.className && (file.kind === "maven" || file.kind === "gradle"))
-    return jvmTestConfig(
-      file,
-      target.className,
-      target.kind === "test" ? target.path[target.path.length - 1] : undefined,
-    );
+  if (target.className && (file.kind === "maven" || file.kind === "gradle")) {
+    const method = target.kind === "test" ? target.path[target.path.length - 1] : undefined;
+    return runsJunitInIde(file, content)
+      ? junitRunnerConfig(target.className, method, relPath, configs)
+      : jvmTestConfig(file, target.className, method);
+  }
   const shortName = target.kind === "suite" ? target.path[target.path.length - 1]! : target.name;
   const named = (args: string[]): RunConfig => ({
     ...file,
