@@ -91,22 +91,25 @@ impl AppState {
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
         let sink_app = app.clone();
         let sink_runtime = runtime.clone();
-        let host = Arc::new(Host::new(ide_host::HostConfig {
-            config_dir: config_dir.clone(),
-            data_dir: data_dir.clone(),
-            local_data_dir,
-            languages: languages.clone(),
-            syntax,
-            sink_for: Box::new(move |window| {
-                coalescing_sink(
-                    Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) }),
-                    sink_runtime.clone(),
-                )
-            }),
-            owner: Self::owner_window,
-            runtime,
-            project_environment: false,
-        }));
+        let host = Arc::new(
+            Host::new(ide_host::HostConfig {
+                config_dir: config_dir.clone(),
+                data_dir: data_dir.clone(),
+                local_data_dir,
+                languages: languages.clone(),
+                syntax,
+                sink_for: Box::new(move |window| {
+                    coalescing_sink(
+                        Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) }),
+                        sink_runtime.clone(),
+                    )
+                }),
+                owner: Self::owner_window,
+                runtime,
+                project_environment: false,
+            })
+            .with_local_database_tunnels(),
+        );
         let announce = global_sink.clone();
         host.set_background_projects_observer(Arc::new(move || announce.emit(IdeEvent::McpBackgroundProjectsChanged)));
         host.start_background_sweeper();

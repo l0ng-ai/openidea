@@ -78,7 +78,7 @@ The benches live in `crates/<crate>/benches/`:
 
 Expected IDs and package ownership are declared independently of collected artifacts in `perf/lib/rust.ts`. A selected package must produce every expected ID, including observe-only measurements. `--package` scopes both collection and required budgets, also with `--no-run`; unknown packages fail before Cargo starts.
 
-Six IDs are observe-only (required finite measurements, without an absolute budget): `syntax_2mb/outline_uncached`, `syntax_2mb/folding_uncached`, `index_100k/find_files/zzzz`, `index_100k/find_symbols/renderView`, `startup_20k/reopen_wait_idle`, and `search_excluded_subtrees/5k_dependencies`. New IDs need an explicit budget or observe-only classification.
+Nine IDs are observe-only (required finite measurements, without an absolute budget): `syntax_2mb/outline_uncached`, `syntax_2mb/folding_uncached`, `index_100k/find_files/zzzz`, `index_100k/find_symbols/renderView`, `startup_20k/reopen_wait_idle`, `search_excluded_subtrees/5k_dependencies`, and `search_long_line/1mb`, `5mb`, `20mb`. New IDs need an explicit budget or observe-only classification.
 
 Normal runs write isolated `<Criterion root>/runs/run-*/criterion` artifacts, a `run.json` manifest and Cargo logs. `CRITERION_HOME` and `CARGO_TARGET_DIR` are passed consistently to Cargo. Both artifact files must fall within the recorded run window; future timestamps fail. `--no-run` inspects the newest recorded run covering the selected packages, retaining original artifact dates and any recorded failure; pre-manifest output is explicitly labelled legacy inspection, not current execution.
 

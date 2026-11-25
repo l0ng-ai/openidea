@@ -20,6 +20,7 @@ import { effectiveBindings, isMacHost, letterOf, registerKeyClaim, strokeOf } fr
 import { workflowSettings } from "@/platform/workflowSettings";
 import { terminalRuntime } from "./loader";
 import { isImeKey } from "@/platform/ime";
+import { usePlatform } from "@/platform/platformInfo";
 
 export type TerminalKeyResult =
   | { kind: "send"; data: string }
@@ -56,6 +57,10 @@ export function terminalKeyAction(e: KeyLike, hasSelection: boolean): TerminalKe
   }
   const letter = letterOf(e);
   if (ctrl && !meta && !alt && letter === "C" && hasSelection && !isMacHost()) return { kind: "copy" };
+  // Windows terminals paste on plain Ctrl+V; elsewhere it stays ^V (the shell's quoted-insert).
+  if (ctrl && !shift && !meta && !alt && letter === "V" && usePlatform.getState().os === "windows") {
+    return { kind: "paste" };
+  }
   if (ctrl && shift && !meta && !alt) {
     if (letter === "C") return hasSelection ? { kind: "copy" } : { kind: "pass" };
     if (letter === "V") return { kind: "paste" };
@@ -135,7 +140,7 @@ export function installTerminalKeys(target: Window = window): () => void {
   // Embedded terminals and sessions with shortcut overrides disabled still own copy/interrupt.
   const releaseCopyClaim = registerKeyClaim(
     (e, stroke) =>
-      !!(e.target as Element | null)?.closest?.(".xterm") &&
+      !!((e.composedPath()[0] ?? e.target) as Element | null)?.closest?.(".xterm") &&
       ["Ctrl+C", "Ctrl+Insert", "Ctrl+Shift+C", "Meta+C"].includes(stroke),
   );
   const onKeyDown = (e: KeyboardEvent) => {

@@ -112,6 +112,7 @@ describe("watches while the program runs", () => {
     ];
     for (const [s, visible] of quiet) {
       const { result, unmount } = renderHook(() => useLiveWatches(s, ["a"], visible));
+      // oxlint-disable-next-line no-await-in-loop -- fake timers and the hook under test are per iteration; the assertion and unmount must follow this advance
       await act(async () => void (await vi.advanceTimersByTimeAsync(2500)));
       expect(result.current).toEqual([]);
       unmount();

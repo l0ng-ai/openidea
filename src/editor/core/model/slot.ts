@@ -33,6 +33,7 @@ import {
 } from "@/editor/api";
 import { showContextMenu } from "@/ui";
 import { baseExtensions, compartments, contributionExtensions } from "../cm/setup";
+import { markdownImageFolds } from "../cm/folding";
 import { gutterMenuItems, inGutterMenuArea } from "../gutterMenu";
 import { offerMakeWritable } from "../fileAttributes";
 import type { DocModel } from "./document";
@@ -56,6 +57,10 @@ export interface Reveal {
   /** Scroll so the target is centred (IDEA navigation) instead of minimally. */
   center?: boolean;
 }
+
+/** Reformat Code and Convert Indents rewrite the file's indents, which are then detected again. */
+const rewritesIndents = (tr: Transaction) =>
+  tr.docChanged && (tr.isUserEvent("format.reformat") || tr.isUserEvent("input.indent.convert"));
 
 /** Hidden views kept for showing again, least recently hidden first. */
 const KEPT_VIEWS = 8;
@@ -142,6 +147,10 @@ export class EditorSlot {
         }),
       ],
     });
+    if (model.ctx().language === "markdown") {
+      const effects = markdownImageFolds(this.stored);
+      if (effects.length) this.stored = this.stored.update({ effects }).state;
+    }
     this.contributionsVersion = model.manager.contributionsVersion;
     if (source?.view) this.scroll = source.view.scrollSnapshot();
     else if (source) this.scroll = source.scroll;
@@ -155,7 +164,7 @@ export class EditorSlot {
   }
 
   /** The visible or kept view: the one holding the tab's state. */
-  private get live(): EditorView | null {
+  get live(): EditorView | null {
     return this.view ?? this.kept;
   }
 
@@ -308,7 +317,7 @@ export class EditorSlot {
   private onTransactions(trs: readonly Transaction[], view: EditorView) {
     view.update(trs);
     let selection = false;
-    let reformatted = false;
+    let reindented = false;
     let navigatedFrom: { line: number; col: number } | undefined;
     for (const tr of trs) {
       if (!navigatedFrom && tr.selection && isNavigation(tr)) {
@@ -327,10 +336,10 @@ export class EditorSlot {
         )
           this.host.onUserEdit(this, tr);
       }
-      if (tr.docChanged && tr.isUserEvent("format.reformat")) reformatted = true;
+      if (rewritesIndents(tr)) reindented = true;
       if (tr.selection || tr.docChanged) selection = true;
     }
-    if (reformatted) this.model.redetectIndent();
+    if (reindented) this.model.redetectIndent();
     if (selection) this.host.onSelection(this, navigatedFrom);
   }
 
@@ -343,7 +352,7 @@ export class EditorSlot {
     const tr = "startState" in spec ? spec : this.stored.update(spec);
     this.stored = tr.state;
     if (tr.docChanged) this.model.onLocal(tr.changes, this);
-    if (tr.docChanged && tr.isUserEvent("format.reformat")) this.model.redetectIndent();
+    if (rewritesIndents(tr)) this.model.redetectIndent();
   }
 
   /** Applies changes that are already in the model (other slot / backend). */

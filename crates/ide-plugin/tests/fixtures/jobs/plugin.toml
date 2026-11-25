@@ -48,6 +48,11 @@ category = "Jobs"
 id = "pick-directory"
 title = "Pick directory"
 [[contributes.commands]]
+id = "pick-file"
+title = "Pick a file"
+category = "Jobs"
+
+[[contributes.commands]]
 id = "open-project"
 title = "Open project"
 [[contributes.commands]]

@@ -148,3 +148,42 @@ describe("decorator names after an edit", () => {
     expect(long).toBeLessThan(short * 2);
   });
 });
+
+describe("JavaScript and TypeScript methods", () => {
+  it("marks instance and static methods, declarations and calls, but not library methods", () => {
+    const doc = Text.of(["run of get log"]);
+    const tokens = {
+      tokenTypes: ["method", "member", "function"],
+      tokenModifiers: ["declaration", "static", "defaultLibrary", "local"],
+      // run: instance method declaration; of: static member call; get: library method; log: local function.
+      data: [0, 0, 3, 0, 0b0001, 0, 4, 2, 1, 0b0010, 0, 7, 3, 0, 0b0100, 0, 11, 3, 2, 0b1000],
+    };
+    expect(semanticRanges(doc, tokens, false, "typescript").map((r) => r.className)).toEqual([
+      "cm-sem-function cm-sem-declaration cm-sem-js-instance-method",
+      "cm-sem-function cm-sem-static cm-sem-js-static-method",
+      "cm-sem-function cm-sem-builtin",
+      "cm-sem-function",
+    ]);
+  });
+});
+
+describe("TypeScript kinds of type (#5619)", () => {
+  it("marks interfaces, type aliases and type parameters, but not library types", () => {
+    const doc = Text.of(["Named Pair T Promise Quiz"]);
+    const tokens = {
+      tokenTypes: ["interface", "type", "typeParameter", "class"],
+      tokenModifiers: ["declaration", "defaultLibrary"],
+      data: [0, 0, 5, 0, 0b01, 0, 6, 4, 1, 0, 0, 11, 1, 2, 0b01, 0, 13, 7, 0, 0b10, 0, 21, 4, 3, 0],
+    };
+    const classes = Object.fromEntries(
+      semanticRanges(doc, tokens, false, "typescript").map((r) => [doc.sliceString(r.from, r.to), r.className]),
+    );
+    expect(classes).toEqual({
+      Named: "cm-sem-type cm-sem-declaration cm-sem-js-interface",
+      Pair: "cm-sem-type cm-sem-js-type-alias",
+      T: "cm-sem-typeParameter cm-sem-declaration cm-sem-js-type-parameter",
+      Promise: "cm-sem-type cm-sem-builtin",
+      Quiz: "cm-sem-type",
+    });
+  });
+});

@@ -127,6 +127,7 @@ pub(crate) fn info(def: &Def) -> GeneratorInfo {
         description: def.description.clone(),
         git: def.git,
         fields: def.fields.iter().map(field).collect(),
+        directory: def.directory.clone(),
         dynamic: def.service.is_some(),
     }
 }

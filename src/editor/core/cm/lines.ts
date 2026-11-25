@@ -1,4 +1,4 @@
-/** Edit › Sort Lines / Reverse Lines: the selected lines, or the whole file without a selection. */
+/** Edit › Sort Lines / Reverse Lines / Convert Indents: the selected lines, or the whole file without a selection. */
 import {
   EditorSelection,
   type ChangeSpec,
@@ -6,6 +6,7 @@ import {
   type Transaction,
   type TransactionSpec,
 } from "@codemirror/state";
+import { formatIndentFacet } from "./setup";
 
 /** Line blocks the command applies to: one per non-empty selection range, or the document. */
 function blocks(state: EditorState): Array<{ from: number; to: number }> {
@@ -68,6 +69,31 @@ export function reverseLinesSpec(state: EditorState): TransactionSpec | null {
   return rewrite(state, (lines) => [...lines].reverse(), "input.reverse");
 }
 
+/**
+ * Edit › Convert Indents › To Spaces / To Tabs: rewrites the leading whitespace of each line, measured in columns
+ * with the Code Style tab size (the editor's when there is none). A space indent detected in the file sets the
+ * editor's tab size to the indent width, but IDEA's detection keeps the tab size. To Tabs keeps the columns left
+ * over after the last full tab stop as spaces, as IDEA does.
+ */
+function convertIndents(state: EditorState, toTabs: boolean): TransactionSpec | null {
+  const tab = state.facet(formatIndentFacet)[0]?.tabSize ?? state.tabSize;
+  const changes: ChangeSpec[] = [];
+  for (const b of blocks(state)) {
+    for (let n = state.doc.lineAt(b.from).number, last = state.doc.lineAt(b.to).number; n <= last; n++) {
+      const line = state.doc.line(n);
+      const old = /^[ \t]*/.exec(line.text)![0];
+      let col = 0;
+      for (const ch of old) col = ch === "\t" ? (Math.floor(col / tab) + 1) * tab : col + 1;
+      const next = toTabs ? "\t".repeat(Math.floor(col / tab)) + " ".repeat(col % tab) : " ".repeat(col);
+      if (next !== old) changes.push({ from: line.from, to: line.from + old.length, insert: next });
+    }
+  }
+  return changes.length ? { changes, scrollIntoView: true, userEvent: "input.indent.convert" } : null;
+}
+
+export const convertIndentsToSpacesSpec = (state: EditorState) => convertIndents(state, false);
+export const convertIndentsToTabsSpec = (state: EditorState) => convertIndents(state, true);
+
 type Dispatch = { state: EditorState; dispatch: (tr: Transaction | TransactionSpec) => void };
 
 export function sortLines(view: Dispatch): boolean {
@@ -80,6 +106,20 @@ export function sortLines(view: Dispatch): boolean {
 export function reverseLines(view: Dispatch): boolean {
   if (view.state.readOnly) return false;
   const spec = reverseLinesSpec(view.state);
+  if (spec) view.dispatch(spec);
+  return !!spec;
+}
+
+export function convertIndentsToSpaces(view: Dispatch): boolean {
+  if (view.state.readOnly) return false;
+  const spec = convertIndentsToSpacesSpec(view.state);
+  if (spec) view.dispatch(spec);
+  return !!spec;
+}
+
+export function convertIndentsToTabs(view: Dispatch): boolean {
+  if (view.state.readOnly) return false;
+  const spec = convertIndentsToTabsSpec(view.state);
   if (spec) view.dispatch(spec);
   return !!spec;
 }

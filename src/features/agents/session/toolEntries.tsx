@@ -13,7 +13,7 @@ import { subagentTitle, subagentWorking, type SubagentEntry } from "../model";
 import { useRevealedText } from "../reveal";
 import { toolDuration, toolRun } from "../timeline";
 import { cancelTask } from "../store";
-import { openChangeDiff } from "./ChangesPane";
+import { openChangeDiff } from "./ChangesTab";
 import { Fold } from "./Folds";
 import { liveTool } from "./conversationRows";
 import { shortTitle, useNow } from "./shared";
@@ -111,7 +111,7 @@ export const ToolEntry = memo(function ToolEntry({
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} className={styles.toolKindIcon} />
-      <span className={clsx(styles.toolTitle, live && styles.shimmer)} title={entry.title || entry.kind}>
+      <span className={styles.toolTitle} title={entry.title || entry.kind}>
         {title}
       </span>
       {links.map((path) => (
@@ -144,8 +144,8 @@ export const ToolEntry = memo(function ToolEntry({
           <span className={styles.added}>+{d.added}</span> <span className={styles.removed}>−{d.removed}</span>
         </button>
       ))}
-      {run?.exitCode != null && (
-        <span className={clsx(styles.exitCode, run.exitCode !== 0 && styles.exitFailed)} title={tx("Exit code")}>
+      {run?.exitCode != null && run.exitCode !== 0 && (
+        <span className={styles.exitCode} title={tx("Exit code")}>
           {run.exitCode}
         </span>
       )}
@@ -161,7 +161,7 @@ export const ToolEntry = memo(function ToolEntry({
       </span>
     </>
   );
-  const className = clsx(styles.process, styles.toolEntry, styles[`kind-${entry.kind}`], live && styles.toolLive);
+  const className = clsx(styles.process, styles.toolEntry);
   if (!entry.output)
     return (
       <div className={className}>

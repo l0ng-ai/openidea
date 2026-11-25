@@ -163,13 +163,17 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
   const options = formatOptionsOf(state);
   const formatted: Change[] = [];
   try {
-    for (const target of targets) {
-      const range = target && { start: offsetToPos(state.doc, target.from), end: offsetToPos(state.doc, target.to) };
-      const edits = await lspRequest(() =>
-        commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave, tool: opts.tool }),
-      );
-      formatted.push(...within(textEditsToChanges(state.doc, edits), opts.ranges ? target : null));
-    }
+    // Each range is formatted independently; requests run together and edits are collected in range order.
+    const editsPerTarget = await Promise.all(
+      targets.map((target) => {
+        const range = target && { start: offsetToPos(state.doc, target.from), end: offsetToPos(state.doc, target.to) };
+        return lspRequest(() =>
+          commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave, tool: opts.tool }),
+        );
+      }),
+    );
+    for (const [i, target] of targets.entries())
+      formatted.push(...within(textEditsToChanges(state.doc, editsPerTarget[i]!), opts.ranges ? target : null));
   } catch (e) {
     const formatter =
       e instanceof IpcError && e.data?.type === "tool"

@@ -53,8 +53,10 @@ export async function choosePaths(opts: ChoosePathOptions): Promise<string[]> {
 }
 
 /** Choose a destination on the project host and confirm replacement if it exists. */
-export async function chooseSavePath(opts: SaveDialogOptions): Promise<string | null> {
-  if (isRemoteWindow()) return (await hostChooser?.({ ...opts, directory: false, save: true }))?.[0] ?? null;
+export async function chooseSavePath(opts: SaveDialogOptions, signal?: AbortSignal): Promise<string | null> {
+  if (signal?.aborted) return null;
+  if (isRemoteWindow())
+    return (await hostChooser?.({ ...opts, directory: false, save: true, ...(signal && { signal }) }))?.[0] ?? null;
   const { save } = await import("@/platform/dialog");
-  return save(opts);
+  return signal?.aborted ? null : save(opts);
 }

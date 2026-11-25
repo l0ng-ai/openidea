@@ -35,7 +35,10 @@ const file = (
 const publish = (...status: FileStatus[]) => useVcs.setState({ status });
 const createFile = (path = asset) => notifyFileOperation({ kind: "created", paths: [path] });
 const settle = async () => {
-  for (let i = 0; i < 30; i++) await Promise.resolve();
+  for (let i = 0; i < 30; i++) {
+    // oxlint-disable-next-line no-await-in-loop -- each await flushes one microtask turn; the number of turns is the point
+    await Promise.resolve();
+  }
 };
 let dispose: () => void;
 

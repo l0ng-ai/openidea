@@ -21,8 +21,15 @@ allprojects { p ->
             t.classpath = p.sourceSets.getByName(System.getProperty('openidea.run.sourceSet', 'main')).runtimeClasspath
             def main = System.getProperty('openidea.run.main')
             if (t.hasProperty('mainClass')) t.mainClass.set(main) else t.main = main
+            // Gradle 6.7+: the project's Java toolchain launches it, as the application plugin's `run` does.
+            if (t.hasProperty('javaLauncher')) {
+                def java = p.extensions.getByType(org.gradle.api.plugins.JavaPluginExtension)
+                t.javaLauncher.set(p.extensions.getByType(org.gradle.jvm.toolchain.JavaToolchainService).launcherFor(java.toolchain))
+            }
             t.args(list('openidea.run.args'))
             t.jvmArgs(list('openidea.run.jvmArgs'))
+            def token = System.getProperty('openidea.run.token')
+            if (token) t.jvmArgs('-Dopenidea.run.token=' + token)
             // The IDE attaches to this JVM, not to the Gradle daemon; port 0 prints the one picked.
             if (Boolean.getBoolean('openidea.run.debug')) {
                 // Opens the attach socket for the memory view, unless the VM options decide about it.

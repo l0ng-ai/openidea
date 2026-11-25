@@ -46,7 +46,8 @@ async function siblingGoPackage(directory: string): Promise<string | null> {
   }
 }
 
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/;
+// `Gradle` marks the source sets a Gradle sync reported (ide-host `with_gradle_roots`).
+const JVM_BUILD = /^Gradle$|(^|\/)(pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
 
 /** JVM source and test roots (project-relative) that packages are counted from. */
 function packageRoots(): string[] {

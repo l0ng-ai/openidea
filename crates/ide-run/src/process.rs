@@ -822,6 +822,17 @@ impl ProcessManager {
         Ok(())
     }
 
+    /// The launched process's pid while it runs; `None` for an unknown or exited run, whose pid
+    /// the system may already have given to something else.
+    pub fn pid(&self, id: RunId) -> Option<u32> {
+        let entry = self.entry(id).ok()?;
+        if entry.exited.load(Ordering::Acquire) {
+            return None;
+        }
+        let pid = entry.pid.lock();
+        *pid
+    }
+
     /// Returns `None` while running, or the exit code once output has drained.
     pub fn exit_code(&self, id: RunId) -> IdeResult<Option<Option<i32>>> {
         let entry = self.entry(id)?;

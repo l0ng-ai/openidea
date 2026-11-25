@@ -870,6 +870,7 @@ async fn occurrences(
         max_matches: 0,
         context,
         include_excluded: false,
+        skip_large_files: false,
     };
     let host = call.host();
     let request = crate::mcp::tool::request_id();

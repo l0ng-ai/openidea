@@ -650,6 +650,7 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         max_matches,
         context: Default::default(),
         include_excluded: call.flag("includeExcluded", false)?,
+        skip_large_files: false,
     };
     if is_regex && let Err(e) = ide_search::match_ranges("", &query) {
         return Err(IdeError::invalid(format!("Invalid regex pattern: {pattern} ({})", e.message)));

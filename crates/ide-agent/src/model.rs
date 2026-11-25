@@ -801,6 +801,16 @@ pub enum AgentEvent {
         from: u32,
         text: String,
     },
+    /// Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+    /// units of its output when the previous event for it was sent. Any other change of the
+    /// tool (status, title, diffs…) arrives as an `Entry`.
+    ToolOutput {
+        task: String,
+        subagent: Option<String>,
+        index: u32,
+        from: u32,
+        text: String,
+    },
     /// An agent reported the usage limits of its account (shared by every task of `provider`).
     Limits {
         provider: String,

@@ -647,6 +647,7 @@ async function applyCommitSelection(commits: Commit[], kind: "cherryPick" | "rev
           if (cancelRequested()) throw new IpcError({ kind: "cancelled", message: "cancelled" });
           activeRepo = repo;
           const revisions = (pick ? group.reverse() : group).map((commit) => commit.id);
+          // oxlint-disable-next-line no-await-in-loop -- each repository runs in order under one shared request and cancellation state
           const origins = addOrigin ? await cherryPickOrigins(repo, group) : [];
           const op: GitOperation = pick
             ? {
@@ -659,6 +660,7 @@ async function applyCommitSelection(commits: Commit[], kind: "cherryPick" | "rev
           if (cancelRequested()) throw new IpcError({ kind: "cancelled", message: "cancelled" });
           const name = repo ? repoName(repo) : "";
           logConsole("cmd", `git ${describeOperation(op, repo)}${multiple && name ? ` (${name})` : ""}`);
+          // oxlint-disable-next-line no-await-in-loop -- the git command consumes the shared request/channel and cancellation is checked between targets
           const result = await call(commands.vcsOperation(repo, request, op, output()));
           if (result && "emptyCherryPicks" in result && result.emptyCherryPicks !== undefined) {
             empty[result.action] += result.emptyCherryPicks;

@@ -147,6 +147,32 @@
         "prefer-rest-params": "error",
         "prefer-spread": "error"
       }
+    },
+    {
+      "files": [
+        "evals/**/*.ts",
+        "perf/**/*.ts",
+        "smoke/**/*.ts",
+        "src/features/vcs/**/*.ts",
+        "src/features/vcs/**/*.tsx",
+        "src/features/run/**/*.ts",
+        "src/features/run/**/*.tsx",
+        "src/features/database/**/*.ts",
+        "src/features/database/**/*.tsx",
+        "src/features/analysis/**/*.ts",
+        "src/features/analysis/**/*.tsx",
+        "src/features/project-tree/**/*.ts",
+        "src/features/project-tree/**/*.tsx",
+        "src/features/http-client/**/*.ts",
+        "src/features/http-client/**/*.tsx",
+        "src/platform/**/*.ts",
+        "src/platform/**/*.tsx",
+        "src/features/debugger/**/*.ts",
+        "src/features/debugger/**/*.tsx"
+      ],
+      "rules": {
+        "no-await-in-loop": "error"
+      }
     }
   ]
 }

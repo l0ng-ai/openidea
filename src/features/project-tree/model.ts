@@ -210,7 +210,7 @@ export function buildModel(
         const visible = visibleEntries(listing, opts);
         if (visible.length !== 1) break;
         const only = visible[0]!;
-        if (!isDirEntry(only) || only.ignored !== entry.ignored || only.excluded !== entry.excluded) break;
+        if (only.kind !== "dir" || only.ignored !== entry.ignored || only.excluded !== entry.excluded) break;
         if (placeholder && placeholder.parent === only.path) break;
         end = only;
         chain.push(only.path);

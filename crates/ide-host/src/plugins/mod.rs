@@ -429,6 +429,8 @@ pub struct PluginHost {
     announced_updates: Mutex<Vec<String>>,
     /// The marketplace used while the user has set none (the app's official one).
     default_market_url: RwLock<Option<String>>,
+    /// Tools › Download sources: where plugin packages are fetched from first.
+    downloads: RwLock<ide_core::settings::ToolDownloadSettings>,
     /// Updates not confirmed yet (the new version hasn't started once): what
     /// to roll back to.
     updates: Mutex<HashMap<String, PendingUpdate>>,
@@ -499,6 +501,7 @@ impl PluginHost {
             official_keys: RwLock::new(official_keys),
             announced_updates: Mutex::default(),
             default_market_url: RwLock::new(None),
+            downloads: RwLock::new(Default::default()),
             updates: Mutex::default(),
             project_policy: RwLock::new(Arc::new(|_| false)),
             engine: PluginEngine::new().map_err(IdeError::internal)?,

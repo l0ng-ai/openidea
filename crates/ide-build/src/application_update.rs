@@ -26,9 +26,10 @@ pub fn plan(root: &Path, model: &BuildModel, module: &Path, cache: &Path) -> Ide
     let module = dunce::canonicalize(root.join(module))?;
     if let Some(p) = model.maven.as_ref().and_then(|m| m.projects.iter().find(|p| root.join(&p.dir) == module)) {
         let mut args = p.options.clone();
+        let repo = crate::maven::local_repository_for(&p.options);
         args.extend([
             "process-resources".into(),
-            "help:evaluate".into(),
+            crate::maven::plugin_goal("help:evaluate", repo.as_deref()),
             "-Dexpression=project.build.outputDirectory".into(),
             format!("-Doutput={}", manifest.display()),
         ]);

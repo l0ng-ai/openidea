@@ -101,6 +101,7 @@ fn http() -> Option<Http> {
         https_only: false,
         revoke_best_effort: false,
         accept: None,
+        compressed: false,
     })
 }
 

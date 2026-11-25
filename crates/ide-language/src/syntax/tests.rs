@@ -1207,6 +1207,56 @@ fn folding_go_imports_and_ruby_ends() {
 }
 
 #[test]
+fn go_compact_folds_keep_only_single_line_statements_inline() {
+    let src = r#"package main
+
+func f() {
+    if err != nil {
+        return err
+    }
+    if err != nil {
+        return err // keep the comment on its own line
+    }
+    switch mode {
+    case "compact":
+        run()
+    case "multi":
+        run()
+        stop()
+    default:
+        return err
+    }
+    if err != nil {
+        return fmt.Errorf(
+            "keep both lines")
+    }
+}
+"#;
+    let found = folds("go", src);
+    let compact: Vec<_> = found.iter().copied().filter(|r| r.2 == FoldKind::Compact).collect();
+    assert_eq!(compact, [(3, 5, FoldKind::Compact), (10, 11, FoldKind::Compact), (15, 16, FoldKind::Compact)]);
+    assert!(found.contains(&(6, 8, FoldKind::Region)));
+    assert!(found.contains(&(18, 21, FoldKind::Region)));
+}
+
+#[test]
+fn go_compact_if_folds_are_limited_to_conventional_error_guards() {
+    for (guard, kind) in [
+        ("err != nil", FoldKind::Compact),
+        ("nil != err", FoldKind::Compact),
+        ("parseErr := parse(); parseErr != nil", FoldKind::Compact),
+        ("cfg != nil", FoldKind::Region),
+        ("err == nil", FoldKind::Region),
+        ("invalid", FoldKind::Region),
+    ] {
+        let source = format!(
+            "package main\nfunc f() error {{\n    if {guard} {{\n        return err\n    }}\n    return nil\n}}\n"
+        );
+        assert!(folds("go", &source).contains(&(2, 4, kind)), "unexpected fold for {guard}");
+    }
+}
+
+#[test]
 fn folding_swift_control_flow_and_haskell_binds() {
     assert_eq!(
         folds("swift", "func f() {\n    if x {\n        g()\n    }\n    for i in xs {\n        g()\n    }\n}\n"),

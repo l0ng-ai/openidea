@@ -13,6 +13,7 @@ import {
   type RunId,
 } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
+import { followLaunchBuild } from "@/features/build/store";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { openExternalUrl } from "@/platform/openUrl";
@@ -23,13 +24,23 @@ import { classFileBreakpointReason } from "@/platform/classFiles";
 import { lineHasCode } from "./breakpoints/codeLines";
 import { canPlaceBreakpoint } from "./breakpoints/languages";
 import {
+  breakpointsOf,
   removeAllBreakpoints,
+  removeFileBreakpoints,
   setMuted,
   toggleBreakpoint,
   toggleTemporaryBreakpoint,
+  updateBreakpoint,
   useBreakpoints,
 } from "./breakpoints/store";
-import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./breakpoints/special";
+import {
+  removeAllSpecial,
+  removeSpecialIn,
+  specialAt,
+  toggleFieldAt,
+  toggleMethodAt,
+  updateSpecial,
+} from "./breakpoints/special";
 import { removeAllExceptionClasses } from "./breakpoints/exceptionClasses";
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
@@ -51,7 +62,7 @@ import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
 import { warnPinnedFlutterDevice } from "@/workbench/flutterDevices";
-import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools } from "./flutter/devTools";
+import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools, WIDGET_PREVIEW_WINDOW } from "./flutter/devTools";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import { attachConfig } from "./attach";
 import {
@@ -110,6 +121,15 @@ function isAttachableTarget(
 ): arg is { attachable: AttachableProcess; process?: RunId | null; runConfig?: RunConfig; show?: boolean } {
   const a = (arg && typeof arg === "object" ? arg : {}) as { attachable?: Partial<AttachableProcess> };
   return typeof a.attachable?.pid === "number" && typeof a.attachable.kind === "string";
+}
+
+/**
+ * Names the run the attach debugs (`RUN_LINK` in ide-dap, kept from the adapter): the run's Dump
+ * Threads then goes through the session, which knows whether the JVM is stopped.
+ */
+function linkedToRun(launch: LaunchConfig, run: RunId): LaunchConfig {
+  const extra = launch.extraJson ? (JSON.parse(launch.extraJson) as Record<string, unknown>) : {};
+  return { ...launch, extraJson: JSON.stringify({ ...extra, __openideaRun: run }) };
 }
 
 function errorText(e: unknown) {
@@ -200,6 +220,24 @@ function cursor(): { path: string; line: number; selection: string } | null {
     path: ed.ctx.path,
     line: state.doc.lineAt(main.head).number - 1,
     selection: state.sliceDoc(main.from, main.to),
+  };
+}
+
+/** Toggle Breakpoint Enabled's subject, as in IDEA: the breakpoints on the lines each caret or selection spans. */
+function breakpointsOnCaretLines() {
+  const ed = activeEditor();
+  if (!ed) return null;
+  const { state } = ed.view;
+  const path = ed.ctx.path;
+  const spans = state.selection.ranges.map((r) => ({
+    from: state.doc.lineAt(r.from).number - 1,
+    to: state.doc.lineAt(r.to).number - 1,
+  }));
+  const on = (line: number) => spans.some((s) => line >= s.from && line <= s.to);
+  return {
+    path,
+    lines: breakpointsOf(path).filter((b) => on(b.line)),
+    special: specialAt(path).filter((b) => on(b.line!)),
   };
 }
 
@@ -346,6 +384,7 @@ async function startJavaConfig(config: RunConfig, root: string, origin: RunConfi
           request,
           signal,
           report,
+          build: followLaunchBuild(request, tx`Build before launch: ${config.name}`, report),
           saveAll: async () => {
             await maybeEditorService()?.saveAll();
           },
@@ -539,6 +578,7 @@ export function registerDebugActions(): () => void {
             else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
             else return;
             const process = (arg.process ?? null) as RunId | null;
+            if (process != null) launch = linkedToRun(launch, process);
             // Another JVM of the same run (a Gradle test worker, the one just detached) keeps it.
             const shared =
               process != null &&
@@ -595,6 +635,7 @@ export function registerDebugActions(): () => void {
           typeof arg === "object" && arg !== null && "configId" in arg && typeof arg.configId === "string"
             ? arg.configId
             : undefined,
+          typeof arg === "object" && arg !== null && "allowBuildErrors" in arg && arg.allowBuildErrors === true,
         ),
     },
     {
@@ -619,6 +660,27 @@ export function registerDebugActions(): () => void {
       run: () => {
         const s = activeSession();
         if (s && sessionSupports("jvmHeap", s)) void captureHeap(s.id);
+      },
+    },
+    {
+      id: "debug.dumpThreads",
+      title: "Dump Threads",
+      category: "Debug",
+      icon: "thread-dump",
+      keywords: ["thread dump", "jstack", "deadlock", "threads"],
+      when: "debugHasJvmMemory",
+      indicatesRunning: true,
+      run: async () => {
+        const s = activeSession();
+        if (!s || !sessionSupports("jvmMemory", s)) return;
+        const session = s.id;
+        const name = s.name;
+        // The Run tool window shows the dump; its tab takes the next one through `take` on Refresh.
+        await executeAction("run.openThreadDump", {
+          title: tx`Threads: ${name}`,
+          source: { session },
+          take: () => call(commands.debugJvmThreadDump(session)),
+        });
       },
     },
     {
@@ -828,6 +890,15 @@ export function registerDebugActions(): () => void {
         const id = c.arg;
         for (const w of DEVTOOLS_WINDOWS) if (!id || id === w.id) refreshDevTools(w.id);
       },
+    },
+    {
+      id: "debug.refreshWidgetPreview",
+      title: "Refresh Flutter Widget Preview",
+      category: "Debug",
+      icon: "refresh",
+      description: "Flutter: load the Widget Preview page again",
+      when: "flutterDevTools",
+      run: () => refreshDevTools(WIDGET_PREVIEW_WINDOW),
     },
     step("debug.stepOver", "Step Over", "over", "step-over"),
     step("debug.stepInto", "Step Into", "into", "step-into"),
@@ -1081,6 +1152,23 @@ export function registerDebugActions(): () => void {
       },
     },
     {
+      id: "debug.toggleBreakpointEnabled",
+      title: "Toggle Breakpoint Enabled",
+      category: "Debug",
+      icon: "breakpoint",
+      keywords: ["enable", "disable"],
+      enabled: () => {
+        const at = breakpointsOnCaretLines();
+        return !!at && at.lines.length + at.special.length > 0;
+      },
+      run: () => {
+        const at = breakpointsOnCaretLines();
+        if (!at) return;
+        for (const b of at.lines) updateBreakpoint(at.path, b.id, { enabled: !b.enabled });
+        for (const b of at.special) updateSpecial(b.id, { enabled: !b.enabled });
+      },
+    },
+    {
       id: "debug.viewBreakpoints",
       title: "View Breakpoints…",
       category: "Debug",
@@ -1107,6 +1195,17 @@ export function registerDebugActions(): () => void {
         removeAllBreakpoints();
         removeAllSpecial();
         removeAllExceptionClasses();
+      },
+    },
+    {
+      id: "debug.removeAllBreakpointsInFile",
+      title: "Remove All Breakpoints In The Current File",
+      category: "Debug",
+      run: () => {
+        const path = activeEditor()?.ctx.path;
+        if (!path) return;
+        removeFileBreakpoints(path);
+        removeSpecialIn(path);
       },
     },
     {

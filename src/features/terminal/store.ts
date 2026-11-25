@@ -115,19 +115,8 @@ function notifyCompletion(key: string, info: CompletionInfo) {
   });
 }
 
-function createSession(
-  cwd: string,
-  command?: SessionOptions["command"],
-  fallbackRoot?: string,
-  attachTerminalId?: number | null,
-): TerminalSession {
-  const key = `s${++seq}`;
-  const session = new TerminalSession({
-    key,
-    cwd,
-    command,
-    fallbackRoot,
-    attachTerminalId,
+function sessionOwner(): Pick<SessionOptions, "onChange" | "onFocus" | "onCompletion" | "onExit"> {
+  return {
     onChange: (k, snapshot) => useTerminals.setState((s) => ({ sessions: { ...s.sessions, [k]: snapshot } })),
     onFocus: (k) => {
       const tab = tabOfSession(k);
@@ -146,9 +135,25 @@ function createSession(
       // Wait for the surviving pane to re-mount before giving xterm the caret.
       else if (hadFocus) requestAnimationFrame(() => activeSession()?.focus());
     },
+  };
+}
+
+function createSession(
+  cwd: string,
+  command?: SessionOptions["command"],
+  fallbackRoot?: string,
+  attachTerminalId?: number | null,
+): TerminalSession {
+  const key = `s${++seq}`;
+  const session = new TerminalSession({
+    key,
+    cwd,
+    command,
+    fallbackRoot,
+    attachTerminalId,
+    ...sessionOwner(),
   });
   sessions.set(key, session);
-  useTerminals.setState((s) => ({ sessions: { ...s.sessions, [key]: session.state } }));
   return session;
 }
 
@@ -160,11 +165,6 @@ function disposeSession(key: string, kill = true) {
   if (focus && session?.host?.contains(focus)) publishFocus(false);
   session?.dispose(kill);
   sessions.delete(key);
-  useTerminals.setState((s) => {
-    const next = { ...s.sessions };
-    delete next[key];
-    return { sessions: next };
-  });
 }
 
 /** Next free default name: "Local", "Local (2)", … */
@@ -250,6 +250,7 @@ export function newTab(cwd: string, name?: string, command?: SessionOptions["com
   };
   useTerminals.setState((s) => ({
     tabs: [...s.tabs, tab],
+    sessions: { ...s.sessions, [session.key]: session.state },
     selected: { ...s.selected, [tab.group]: tab.id },
     activeTab: tab.id,
   }));
@@ -305,7 +306,96 @@ export function closeTab(id: string) {
   const tab = useTerminals.getState().tabs.find((t) => t.id === id);
   if (!tab) return;
   disposeSession(tab.session);
-  useTerminals.setState((s) => withoutTab(s, id));
+  useTerminals.setState((s) => {
+    const next = { ...s.sessions };
+    delete next[tab.session];
+    return { ...withoutTab(s, id), sessions: next };
+  });
+}
+
+export interface TerminalDropTarget {
+  group?: string;
+  index?: number;
+  edge?: SplitEdge;
+}
+
+export interface AdoptedTabMeta {
+  name: string;
+  customName?: string | null;
+  shell?: string | null;
+}
+
+/** Spawns a fresh session for an unstarted restored editor tab being moved to Terminal. */
+export function createDetachedSession(cwd: string, shell?: string | null, fallbackRoot?: string): TerminalSession {
+  const session = new TerminalSession({
+    key: `s${++seq}`,
+    cwd,
+    command: shell ? { program: shell, args: [], shell: true } : undefined,
+    fallbackRoot,
+    ...sessionOwner(),
+  });
+  return session;
+}
+
+/**
+ * Move to Terminal: adopts `session` (moved from an editor tab) into `target`
+ * (a group's strip slot, a group's end, or a new split at `edge`), keeping its PTY and scrollback.
+ */
+export function adoptTab(session: TerminalSession, meta: AdoptedTabMeta, target?: TerminalDropTarget): TerminalTab {
+  sessions.set(session.key, session);
+  session.rebind(sessionOwner());
+  const s = useTerminals.getState();
+  const groups = layoutGroups(s.layout);
+  const fallback = s.tabs.find((t) => t.id === s.activeTab)?.group ?? groups[0]!;
+  const anchor = target?.group && groups.includes(target.group) ? target.group : fallback;
+  if (target?.edge && groupTabs(s.tabs, anchor).length > 0) {
+    const group = newGroupId();
+    const orientation: SplitOrientation = target.edge === "left" || target.edge === "right" ? "horizontal" : "vertical";
+    const tab: TerminalTab = {
+      id: `t${++seq}`,
+      name: meta.name,
+      customName: meta.customName ?? null,
+      shell: meta.shell ?? null,
+      session: session.key,
+      group,
+    };
+    useTerminals.setState((st) => ({
+      tabs: [...st.tabs, tab],
+      sessions: { ...st.sessions, [session.key]: session.state },
+      layout: splitLayout(
+        st.layout,
+        anchor,
+        group,
+        orientation,
+        `split${++splitSeq}`,
+        target.edge === "left" || target.edge === "top",
+      ),
+      selected: { ...st.selected, [group]: tab.id },
+      activeTab: tab.id,
+    }));
+    return tab;
+  }
+  const tab: TerminalTab = {
+    id: `t${++seq}`,
+    name: meta.name,
+    customName: meta.customName ?? null,
+    shell: meta.shell ?? null,
+    session: session.key,
+    group: anchor,
+  };
+  useTerminals.setState((st) => {
+    const others = st.tabs.filter((t) => t.group !== anchor);
+    const strip = groupTabs(st.tabs, anchor);
+    const at = target?.index !== undefined ? Math.max(0, Math.min(target.index, strip.length)) : strip.length;
+    strip.splice(at, 0, tab);
+    return {
+      tabs: [...others, ...strip],
+      sessions: { ...st.sessions, [session.key]: session.state },
+      selected: { ...st.selected, [anchor]: tab.id },
+      activeTab: tab.id,
+    };
+  });
+  return tab;
 }
 
 /**
@@ -316,6 +406,7 @@ export function detachTab(id: string): TerminalSession | undefined {
   const tab = useTerminals.getState().tabs.find((t) => t.id === id);
   const session = tab && sessions.get(tab.session);
   if (!tab || !session) return undefined;
+  if (document.activeElement && session.host?.contains(document.activeElement)) publishFocus(false);
   sessions.delete(tab.session);
   useTerminals.setState((s) => {
     const next = { ...s.sessions };
@@ -476,6 +567,7 @@ export function splitTab(id: string, orientation: SplitOrientation, move = false
   };
   useTerminals.setState((st) => ({
     tabs: [...st.tabs, copy],
+    sessions: { ...st.sessions, [session.key]: session.state },
     layout,
     selected: { ...st.selected, [group]: copy.id },
     activeTab: copy.id,
@@ -683,6 +775,7 @@ function restore(saved: StoredTerminals, root: string, remote: boolean) {
   const idOf = new Map<string, string>();
   const tabs: TerminalTab[] = [];
   const toAttach: TerminalSession[] = [];
+  const snapshots: Record<string, SessionSnapshot> = {};
   for (const savedTab of saved.tabs) {
     const attachId = remote ? (savedTab.terminalId ?? null) : null;
     const session = createSession(
@@ -694,6 +787,7 @@ function restore(saved: StoredTerminals, root: string, remote: boolean) {
     );
     if (attachId !== null) toAttach.push(session);
     const id = `t${seq}`;
+    snapshots[session.key] = session.state;
     idOf.set(savedTab.id, id);
     tabs.push({
       id,
@@ -713,7 +807,7 @@ function restore(saved: StoredTerminals, root: string, remote: boolean) {
     if (id) selected[group] = id;
   }
   const activeTab = (saved.activeTab && idOf.get(saved.activeTab)) || tabs[0]?.id || null;
-  useTerminals.setState({ tabs, layout, selected, activeTab });
+  useTerminals.setState({ tabs, layout, selected, activeTab, sessions: snapshots });
   for (const session of toAttach) void session.start();
 }
 
@@ -753,6 +847,7 @@ async function reconcileRemoteTerminals(scope: string, root: string) {
     };
     useTerminals.setState((s) => ({
       tabs: [...s.tabs, tab],
+      sessions: { ...s.sessions, [session.key]: session.state },
       selected: { ...s.selected, [tab.group]: s.selected[tab.group] ?? tab.id },
       activeTab: s.activeTab ?? tab.id,
     }));

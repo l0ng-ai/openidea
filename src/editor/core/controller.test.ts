@@ -668,7 +668,7 @@ describe("EditorController", () => {
           "vcs.compareWithRevision",
           "vcs.showHistory",
           "vcs.showCurrentRevision",
-          "vcs.showHistoryForSelection",
+          ...(menu === "editor" ? ["vcs.showHistoryForSelection"] : []),
           "vcs.rollback",
         ],
         ["vcs.push", "vcs.pull", "vcs.fetch"],
@@ -683,9 +683,9 @@ describe("EditorController", () => {
         "github.checkoutPullRequest",
         "github.openInBrowser",
       ];
-      const ids = [...groups.flat().filter((id) => id !== "GitHub"), ...github];
+      const ids = new Set([...groups.flat().filter((id) => id !== "GitHub"), ...github, "vcs.showHistoryForSelection"]);
       const dispose = registerActions(
-        ids.map((id) => ({
+        [...ids].map((id) => ({
           id,
           title: id,
           when: id === "vcs.clone" ? undefined : id.startsWith("github.") ? "projectOpen" : "vcsAvailable",
@@ -726,7 +726,8 @@ describe("EditorController", () => {
         expect(gitItems()).toContainEqual({
           kind: "action",
           action: "vcs.compareWithBranch",
-          arg: { path: "/p/a.ts" },
+          arg: "/p/a.ts",
+          label: "Compare with Branch…",
         });
 
         setContext("vcsAvailable", false);
@@ -750,6 +751,42 @@ describe("EditorController", () => {
     },
   );
 
+  it("scopes the tab menu's Git entries to its file, like the project view does", async () => {
+    useProject.setState({
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
+      settings: {} as never,
+    });
+    const dispose = registerActions(
+      ["vcs.commit", "vcs.ignoreShared", "vcs.ignoreLocal"].map((id) => ({ id, title: id, run: () => undefined })),
+    );
+    try {
+      setContext("vcsAvailable", true);
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const state = useTabs.getState();
+      const pane = state.panes[state.activePane]!;
+      const git = () => resolveMenuItems(ctrl!.tabMenu(pane.id, pane.tabs[0]!)).find((i) => i.label === "Git")!;
+      expect(git().submenu).toContainEqual({
+        kind: "action",
+        action: "vcs.commit",
+        arg: "/p/a.ts",
+        label: "Commit File…",
+      });
+      const gitMenu = git().submenu!;
+      expect(
+        resolveMenuItems(gitMenu)
+          .filter((i) => i.kind === "item")
+          .some((i) => i.label === "Add to .gitignore" && i.submenu?.length === 2),
+      ).toBe(true);
+      setContext("vcsAvailable", false);
+    } finally {
+      dispose();
+      useProject.setState({ project: null, settings: null });
+      setContext("vcsAvailable", false);
+    }
+  });
+
   it("switches an open image tab to a text tab when a matching text editor wrapper registers", async () => {
     ctrl = new EditorController(createMemoryBackend({ "/p/arch.diagram.svg": "<svg/>" }));
     ctrl.start();
@@ -765,6 +802,50 @@ describe("EditorController", () => {
       await vi.waitFor(() => expect(ctrl?.activeSlot?.model.path).toBe("/p/arch.diagram.svg"));
     } finally {
       offWrapper();
+    }
+  });
+
+  it("opens inputs at explicit strip indices or split edges and never clones singleton kinds", async () => {
+    let seq = 1;
+    const dispose = registerEditorKind({
+      kind: "singleton-term",
+      component: () => null,
+      title: (i) => i.key,
+      singleton: true,
+      splitInput: () => ({ kind: "singleton-term", key: `singleton-term:${++seq}` }),
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a", "/p/b.ts": "b" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      await ctrl.openFile("/p/b.ts", { focus: false });
+      const p1 = useTabs.getState().activePane;
+
+      // Explicit strip index inserts between a.ts and b.ts.
+      const term1 = { kind: "singleton-term", key: "singleton-term:1" };
+      await ctrl.openInput(term1, { pane: p1, index: 1, focus: false });
+      expect(useTabs.getState().panes[p1]!.tabs.map((t) => t.input.key)).toEqual([
+        "file:/p/a.ts",
+        "singleton-term:1",
+        "file:/p/b.ts",
+      ]);
+
+      // Splitting a singleton tab opens `splitInput` in the new pane instead of duplicating the key.
+      ctrl.activate(p1, useTabs.getState().panes[p1]!.tabs[1]!.id, false);
+      ctrl.split(p1, "row");
+      await vi.waitFor(() => expect(Object.keys(useTabs.getState().panes)).toHaveLength(2));
+      const p2 = Object.keys(useTabs.getState().panes).find((id) => id !== p1)!;
+      expect(useTabs.getState().panes[p1]!.tabs.map((t) => t.input.key)).toContain("singleton-term:1");
+      expect(useTabs.getState().panes[p2]!.tabs.map((t) => t.input.key)).toEqual(["singleton-term:2"]);
+
+      // Re-opening an already open singleton at an edge moves it into the new split instead of duplicating it.
+      await ctrl.openInput(term1, { pane: p2, edge: "bottom", focus: false });
+      const allTerm1 = Object.values(useTabs.getState().panes).flatMap((p) =>
+        p.tabs.filter((t) => t.input.key === "singleton-term:1"),
+      );
+      expect(allTerm1).toHaveLength(1);
+    } finally {
+      dispose();
     }
   });
 });

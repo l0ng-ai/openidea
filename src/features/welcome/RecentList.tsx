@@ -16,8 +16,13 @@ import {
   type MenuItem,
 } from "@/ui";
 import { promptInput } from "@/workbench/inputDialogs";
-import { confirm } from "@/workbench/messages";
-import { projectInitials } from "@/workbench/projectColor";
+import { confirm, showError } from "@/workbench/messages";
+import { describeError } from "@/platform/errorLog";
+import { projectWindowOverride, type ModifierKeys } from "@/workbench/projectWindow";
+import { ProjectAvatar } from "@/workbench/ProjectBadge";
+import { hasCustomProjectIcon, setProjectIcon } from "@/workbench/projectIcon";
+import { openProjectColorPicker } from "@/workbench/TabColorPicker";
+import { open as openDialog } from "@/platform/dialog";
 import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "@/workbench/tabColors";
 import {
   createGroup,
@@ -69,9 +74,39 @@ export function ProjectBadge({
       style={tabColorVars(name, tabColorOverride(path))}
       aria-hidden
     >
-      {projectInitials(name)}
+      <ProjectAvatar name={name} root={path} />
     </span>
   );
+}
+
+/** Change Project Icon…: an SVG or PNG for the project, kept in its `.openidea` folder. */
+async function chooseProjectIcon(root: string) {
+  const file = await openDialog({ filters: [{ name: tx("Image files"), extensions: ["svg", "png"] }] });
+  if (typeof file !== "string") return;
+  await setProjectIcon(root, file).catch((e: unknown) =>
+    showError(tx("Cannot change the project icon"), describeError(e)),
+  );
+}
+
+async function resetProjectIcon(root: string) {
+  await setProjectIcon(root, null).catch((e: unknown) =>
+    showError(tx("Cannot reset the project icon"), describeError(e)),
+  );
+}
+
+/**
+ * IDEA's project widget and Welcome screen: Change Project Color…, and for a local project
+ * Change Project Icon… (with Reset Project Icon once it has one). Also an open project's menu.
+ */
+export function projectAppearanceMenu(project: Pick<RecentProject, "path" | "name">): MenuItem[] {
+  const items: MenuItem[] = [
+    { id: "color", label: "Change Project Color…", run: () => openProjectColorPicker(project.path, project.name) },
+  ];
+  if (parseRemoteLocation(project.path)) return items;
+  items.push({ id: "icon", label: "Change Project Icon…", run: () => void chooseProjectIcon(project.path) });
+  if (hasCustomProjectIcon(project.path))
+    items.push({ id: "resetIcon", label: "Reset Project Icon", run: () => void resetProjectIcon(project.path) });
+  return items;
 }
 
 /** The tooltip of a recent project whose folder is gone. */
@@ -169,6 +204,8 @@ export function recentMenu(project: RecentProject, onOpened?: () => void, onRemo
       icon: "copy",
       run: () => void writeClipboardText(project.path).catch(() => undefined),
     },
+    { kind: "separator" },
+    ...projectAppearanceMenu(project),
     { kind: "separator" },
     // Groups hold local projects (remote ones live in this window's own list).
     ...(remote ? [] : [moveToGroupMenu(project), { kind: "separator" } as const]),
@@ -276,14 +313,15 @@ export function RecentList({ exclude, compact, autoFocus, onOpened, className, t
   );
   const current = Math.min(active, items.length - 1);
 
-  const open = (m: RecentMatch | undefined) => {
-    if (m) void openRecent(m.project).then((ok) => ok && onOpened?.());
+  /** `e`'s modifier keys pick the window ({@link projectWindowOverride}); a plain click or Enter follows "Open project in". */
+  const open = (m: RecentMatch | undefined, e: ModifierKeys) => {
+    if (m) void openRecent(m.project, projectWindowOverride(e)).then((ok) => ok && onOpened?.());
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      open(items[current]);
+      open(items[current], e);
       return;
     }
     // Delete removes the selected project only when it has no text to delete: the caret is at the end
@@ -335,7 +373,7 @@ export function RecentList({ exclude, compact, autoFocus, onOpened, className, t
         focusable={false}
         rowHeight={compact ? 40 : 48}
         className={styles.list}
-        onActivate={(m) => open(m)}
+        onActivate={(m, _i, e) => open(m, e)}
         onContextMenu={(m, i, e: MouseEvent) => {
           e.preventDefault();
           setActive(i);

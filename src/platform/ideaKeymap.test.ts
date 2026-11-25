@@ -49,6 +49,92 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.overrides).toEqual({});
   });
 
+  it("maps Duplicate Entire Lines, which has no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorDuplicateLines"><keyboard-shortcut first-keystroke="shift meta D"/></action></keymap>`,
+    );
+    expect(k.overrides["code.duplicateEntireLines"]).toEqual([normalizeBinding("Shift+Meta+D")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Fill Paragraph, which has no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="FillParagraph"><keyboard-shortcut first-keystroke="alt meta Q"/></action></keymap>`,
+    );
+    expect(k.overrides["code.fillParagraph"]).toEqual([normalizeBinding("Alt+Meta+Q")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Remove All Breakpoints and Remove All Breakpoints In The Current File", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="Debugger.RemoveAllBreakpoints"><keyboard-shortcut first-keystroke="shift meta F9"/></action><action id="Debugger.RemoveAllBreakpointsInFile"><keyboard-shortcut first-keystroke="alt meta F9"/></action></keymap>`,
+    );
+    expect(k.overrides["debug.removeAllBreakpoints"]).toEqual([normalizeBinding("Shift+Meta+F9")]);
+    expect(k.overrides["debug.removeAllBreakpointsInFile"]).toEqual([normalizeBinding("Alt+Meta+F9")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Scroll Up / Scroll Down", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorScrollUp"><keyboard-shortcut first-keystroke="meta UP"/></action><action id="EditorScrollDown"><keyboard-shortcut first-keystroke="meta DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.scrollUp"]).toEqual([normalizeBinding("Meta+Up")]);
+    expect(k.overrides["editor.scrollDown"]).toEqual([normalizeBinding("Meta+Down")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Move Caret to Page Top / Bottom", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="W" parent="$default"><action id="EditorMoveToPageTop"><keyboard-shortcut first-keystroke="alt PAGE_UP"/></action><action id="EditorMoveToPageBottomWithSelection"><keyboard-shortcut first-keystroke="alt shift PAGE_DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.moveToPageTop"]).toEqual([normalizeBinding("Alt+PageUp")]);
+    expect(k.overrides["editor.moveToPageBottomWithSelection"]).toEqual([normalizeBinding("Alt+Shift+PageDown")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Convert Indents to Spaces / to Tabs", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="ConvertIndentsToSpaces"><keyboard-shortcut first-keystroke="shift meta 8"/></action><action id="ConvertIndentsToTabs"><keyboard-shortcut first-keystroke="shift meta 9"/></action></keymap>`,
+    );
+    expect(k.overrides["code.convertIndentsToSpaces"]).toEqual([normalizeBinding("Shift+Meta+8")]);
+    expect(k.overrides["code.convertIndentsToTabs"]).toEqual([normalizeBinding("Shift+Meta+9")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Find Word at Caret / Find Previous Word at Caret", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="FindWordAtCaret"><keyboard-shortcut first-keystroke="alt meta F3"/></action><action id="FindPrevWordAtCaret"><keyboard-shortcut first-keystroke="shift alt meta F3"/></action></keymap>`,
+    );
+    expect(k.overrides["find.wordAtCaret"]).toEqual([normalizeBinding("Alt+Meta+F3")]);
+    expect(k.overrides["find.previousWordAtCaret"]).toEqual([normalizeBinding("Shift+Alt+Meta+F3")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Toggle Breakpoint Enabled, which has no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="ToggleBreakpointEnabled"><keyboard-shortcut first-keystroke="alt meta F8"/></action></keymap>`,
+    );
+    expect(k.overrides["debug.toggleBreakpointEnabled"]).toEqual([normalizeBinding("Alt+Meta+F8")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps the Active Tool Window actions", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="$default"><action id="HideSideWindows"><keyboard-shortcut first-keystroke="control alt shift F12"/></action><action id="HideActiveWindow"><keyboard-shortcut first-keystroke="alt ESCAPE"/></action><action id="MaximizeToolWindow"><keyboard-shortcut first-keystroke="control alt M"/></action><action id="JumpToLastWindow"><keyboard-shortcut first-keystroke="alt F12"/></action><action id="ResizeToolWindowLeft"><keyboard-shortcut first-keystroke="control alt LEFT"/></action><action id="ResizeToolWindowRight"><keyboard-shortcut first-keystroke="control alt RIGHT"/></action><action id="ResizeToolWindowUp"><keyboard-shortcut first-keystroke="control alt UP"/></action><action id="ResizeToolWindowDown"><keyboard-shortcut first-keystroke="control alt DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides).toMatchObject({
+      "toolwindow.hideSide": [normalizeBinding("Ctrl+Alt+Shift+F12")],
+      "toolwindow.hideActive": [normalizeBinding("Alt+Escape")],
+      "toolwindow.maximize": [normalizeBinding("Ctrl+Alt+M")],
+      "toolwindow.jumpToLast": [normalizeBinding("Alt+F12")],
+      "toolwindow.resizeLeft": [normalizeBinding("Ctrl+Alt+Left")],
+      "toolwindow.resizeRight": [normalizeBinding("Ctrl+Alt+Right")],
+      "toolwindow.resizeUp": [normalizeBinding("Ctrl+Alt+Up")],
+      "toolwindow.resizeDown": [normalizeBinding("Ctrl+Alt+Down")],
+    });
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("rejects other XML", () => {
     expect(() => parseIdeaKeymap("<scheme name='x'/>")).toThrow(/keymap/);
   });

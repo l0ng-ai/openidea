@@ -39,6 +39,19 @@ describe("shared search pieces", () => {
     expect(searchHistory("find")).toEqual(["a", "b\nc"]);
   });
 
+  it("keeps each project's history apart (#5758)", () => {
+    openProject("/work/a");
+    rememberSearch("find", "FooService");
+    rememberSearch("replace", "BarService");
+    openProject("/work/b");
+    expect(searchHistory("find")).toEqual([]);
+    rememberSearch("find", "parse_args");
+    expect(searchHistory("find")).toEqual(["parse_args"]);
+    openProject("/work/a");
+    expect(searchHistory("find")).toEqual(["FooService"]);
+    expect(searchHistory("replace")).toEqual(["BarService"]);
+  });
+
   it("custom scopes are saved per project", () => {
     openProject("/p1");
     saveCustomScopes([

@@ -112,6 +112,9 @@
   letter-spacing: 0.02em;
 }
 /* IDEA compact: the avatar follows MainToolbar.Button.iconSize (20 → 16). */
+.avatar:has(> img) {
+  background: none;
+}
 :global(:root[data-compact]) .avatar {
   width: 16px;
   height: 16px;
@@ -121,6 +124,13 @@
   flex: 1;
   align-self: stretch;
   min-width: 24px;
+}
+/* Customize Main Toolbar's Center group; toolbarCenter.ts sizes the spacer before it. */
+.centerGroup {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 .tools {
   display: flex;

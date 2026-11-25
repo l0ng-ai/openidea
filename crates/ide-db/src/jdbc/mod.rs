@@ -1,6 +1,7 @@
 //! A trusted local driver profile is shared by data sources. JDBC URLs and properties
 //! can run driver-specific initialization. A project source may connect only with the
 //! settings its user last accepted in the dialog; the approval lives outside the project.
+use crate::local_settings::persist_local;
 use crate::{DataSource, DbManager, QueryResult, ResultColumn};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -28,15 +29,6 @@ pub struct DbJdbcDriver {
     pub jars: Vec<String>,
     pub class_name: String,
     pub url_template: String,
-}
-
-fn persist_local(path: &Path, data: &[u8]) -> IdeResult<()> {
-    let dir = path.parent().expect("registry paths have a parent");
-    std::fs::create_dir_all(dir)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    std::io::Write::write_all(&mut tmp, data)?;
-    tmp.persist(path).map_err(|e| IdeError::from(e.error))?;
-    Ok(())
 }
 
 fn local_jar(jar: &str) -> IdeResult<&Path> {
@@ -606,6 +598,7 @@ fn decode(data: &[u8], sql: &str, elapsed_ms: f64) -> IdeResult<QueryResult> {
         affected: (affected >= 0).then_some(affected as f64),
         elapsed_ms,
         execution_ms: elapsed_ms,
+        truncated: Vec::new(),
     })
 }
 

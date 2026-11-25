@@ -27,6 +27,7 @@ export async function signatureNameTarget(decl: Location, name: string, lines: n
   return withDocument(decl.path, async (doc) => {
     for (let line = first; line < last; line++) {
       for (const m of text[line]!.matchAll(word)) {
+        // oxlint-disable-next-line no-await-in-loop -- returns on the first occurrence with a definition; the rest must not be requested
         const locs = await lspRequest(() =>
           commands.lspGoto(doc, { line, col: m.index + m[1]!.length }, "definition"),
         ).catch(() => []);

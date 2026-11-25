@@ -92,23 +92,23 @@ async function seedChanges(page: Page) {
   await page.evaluate(async (id) => {
     // Seed the store in the browser realm; a static import would run in Node.
     const storePath = "/src/features/agents/store.ts";
-    (await import(storePath)).useAgents.setState({
-      changes: new Map([
-        [
-          id,
-          [
-            {
-              path: "/dev/acme-api/file.ts",
-              relPath: "file.ts",
-              kind: "modified",
-              added: 1,
-              removed: 0,
-              oldPath: null,
-            },
-          ],
-        ],
-      ]),
-    });
+    const ipcPath = "/src/platform/ipc.ts";
+    const changes = [
+      {
+        path: "/dev/acme-api/file.ts",
+        relPath: "file.ts",
+        kind: "modified",
+        added: 1,
+        removed: 0,
+        oldPath: null,
+        repo: null,
+      },
+    ];
+    const { commands } = await import(ipcPath);
+    // The Changes tab reads them again when it opens.
+    commands.agentChanges = async () => ({ status: "ok", data: changes });
+    commands.agentBaseText = async () => ({ status: "ok", data: "" });
+    (await import(storePath)).useAgents.setState({ changes: new Map([[id, changes]]) });
   }, firstTask.id);
 }
 
@@ -335,7 +335,8 @@ for (const placement of ["editor", "toolWindow"] as const) {
     await seedTasks(page, placement);
     const box = messageBox(page);
     await box.fill(draft);
-    await page.getByRole("treeitem", { name: "README.md", exact: true }).click();
+    await page.getByRole("treeitem", { name: "src", exact: true }).click();
+    await expect(box).toBeVisible();
     await expect(box).not.toBeFocused();
     await page.keyboard.press("Meta+L");
     await expect(box).toBeFocused();
@@ -382,42 +383,35 @@ test("Find Action focuses the current task input after closing its popup", async
   await expect.poll(() => selection(box)).toEqual(expected);
 });
 
-test("docked Changes view returns to the task input without losing its selection", async ({ workbench: page }) => {
-  await seedTasks(page, "toolWindow");
-  const box = messageBox(page);
-  const expected = await selectDraft(box, true);
+test("a task's changes open in a tab of their own", async ({ workbench: page }) => {
+  await seedTasks(page, "editor");
   await seedChanges(page);
-  await page.getByRole("button", { name: /1 changed file/ }).click();
-  const changes = page.getByRole("complementary", { name: "Changes", exact: true });
+  const box = messageBox(page);
+  await expect(box).toBeVisible();
+  const chip = page.getByRole("button", { name: /1 changed file/ });
+  await chip.click();
+  const changes = page.getByRole("region", { name: "Changes", exact: true });
   await expect(changes).toBeVisible();
-  await expect(box).toHaveCount(0);
-  await changes.getByRole("button", { name: "Back to conversation", exact: true }).focus();
-  await page.keyboard.press("Meta+L");
-  await expect(changes).toBeHidden();
-  await expect(box).toBeFocused();
-  await expect(box).toHaveText(draft);
-  await expect.poll(() => selection(box)).toEqual(expected);
+  await expect(changes.getByRole("tree", { name: "Changed files" }).getByText("file.ts")).toBeVisible();
+  await expect(changes.locator('[data-combined-block="/dev/acme-api/file.ts"]')).toBeVisible();
+  // The conversation stays in its tab, as it was.
+  await expect(box).toBeHidden();
+  await page.getByRole("tab", { name: firstTask.title, exact: true }).click();
+  await expect(box).toBeVisible();
+
+  // Again: the same tab, not another one.
+  await chip.click();
+  await expect(changes).toBeVisible();
+  await expect(page.getByRole("tab", { name: `Changes: ${firstTask.title}` })).toHaveCount(1);
 });
 
-test("dragging the Changes pane's edge resizes it for the next session too", async ({ workbench: page }) => {
-  await seedTasks(page, "editor");
+test("a docked task's changes open in the editor, the conversation staying in place", async ({ workbench: page }) => {
+  await seedTasks(page, "toolWindow");
+  const box = messageBox(page);
+  await selectDraft(box, true);
   await seedChanges(page);
-  const changes = page.getByRole("complementary", { name: "Changes", exact: true });
-  await expect(changes).toBeVisible();
-  const handle = changes.getByRole("separator", { name: "Resize changes", exact: true });
-  const before = (await changes.boundingBox())!.width;
-  const box = (await handle.boundingBox())!;
-  await page.mouse.move(box.x, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box.x - 120, box.y + box.height / 2, { steps: 5 });
-  await page.mouse.up();
-  await expect.poll(async () => (await changes.boundingBox())!.width).toBeGreaterThan(before + 100);
-  const widened = (await changes.boundingBox())!.width;
-
-  // The next session starts with the dragged width.
-  await page.reload();
-  await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
-  await seedTasks(page, "editor");
-  await seedChanges(page);
-  await expect.poll(async () => Math.round((await changes.boundingBox())!.width)).toBe(Math.round(widened));
+  await page.getByRole("button", { name: /1 changed file/ }).click();
+  await expect(page.getByRole("region", { name: "Changes", exact: true })).toBeVisible();
+  await expect(box).toBeVisible();
+  await expect(box).toHaveText(draft);
 });

@@ -82,6 +82,7 @@ impl HostConfig {
 }
 
 pub struct Host {
+    local_database_tunnels: bool,
     pub(crate) mcp_executable: Arc<RwLock<Option<PathBuf>>>,
     pub mcp: mcp::McpService,
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
@@ -106,6 +107,7 @@ pub struct Host {
     syntax: Arc<OnceLock<Arc<Syntax>>>,
     pub global_settings: SettingsStore,
     pub dependency_versions: Arc<ide_workspace::dependencies::VersionCache>,
+    pub pypi_names: Arc<ide_workspace::dependencies::pypi::NameCache>,
     pub terminals: TerminalManager,
     pub processes: ProcessManager,
     /// Debug sessions (adapters run on this machine, next to the project).
@@ -165,6 +167,12 @@ impl Host {
         windows
     }
 
+    /// Enables user-approved database helper processes on the local desktop.
+    pub fn with_local_database_tunnels(mut self) -> Self {
+        self.local_database_tunnels = true;
+        self
+    }
+
     pub fn new(config: HostConfig) -> Self {
         let HostConfig {
             config_dir,
@@ -185,6 +193,7 @@ impl Host {
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),
+            local_database_tunnels: false,
             mcp_executable: Arc::default(),
             mcp: Default::default(),
             diagnostics,
@@ -207,6 +216,7 @@ impl Host {
             dependency_versions: Arc::new(ide_workspace::dependencies::VersionCache::new(
                 data_dir.join("cache/dependency-versions"),
             )),
+            pypi_names: Arc::new(ide_workspace::dependencies::pypi::NameCache::new(data_dir.join("cache"))),
             // Sessions, runs and terminals report to the window that started them (`window_sink`).
             terminals: TerminalManager::new(),
             processes: ProcessManager::new(),
@@ -389,6 +399,7 @@ impl Host {
         project.agents.shutdown();
         project.flutter.stop();
         project.devtools.stop();
+        project.widget_preview.stop();
         project.notebooks.stop_admission();
         // What the closing window started goes with it — the builds and searches it
         // asked for, its runs, its shells and its debug sessions — and its language
@@ -518,6 +529,7 @@ impl Host {
         for project in self.projects() {
             project.flutter.kill();
             project.devtools.kill();
+            project.widget_preview.kill();
         }
     }
 
@@ -560,6 +572,7 @@ impl Host {
             project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
             project.flutter.kill();
             project.devtools.kill();
+            project.widget_preview.kill();
         }
         for project in &projects {
             project.plugin_diagnostics.close();

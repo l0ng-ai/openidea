@@ -399,7 +399,7 @@ const surround = [
   ...group(
     "Surround",
     "surround.html",
-    ["html", "xml", "vue", "svelte", "markdown"],
+    ["html", "xml", "axaml", "vue", "svelte", "markdown"],
     [
       {
         abbrev: "T",

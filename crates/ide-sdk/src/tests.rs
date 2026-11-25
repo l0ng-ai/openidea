@@ -11,7 +11,7 @@ use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn fake_venv(root: &Path, name: &str) -> std::path::PathBuf {
@@ -2056,6 +2056,55 @@ fn the_godot_setting_applies_to_server_debugger_and_run_configurations() {
     assert_eq!(Path::new(&run.command), expected);
     // Other commands keep their name without a setting.
     assert_eq!(crate::apply::tool_command(tmp.path(), &s, "zls"), None);
+}
+
+#[test]
+fn the_flutter_sdk_setting_picks_flutter_and_dart_for_server_and_run_configurations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sdk = tmp.path().join("flutter");
+    let run = |command: &str| RunConfig {
+        id: "dart:pub get".into(),
+        name: "pub get".into(),
+        kind: "dart-command".into(),
+        command: command.into(),
+        args: vec!["pub".into(), "get".into()],
+        cwd: None,
+        env: BTreeMap::new(),
+        detected: true,
+        is_test: false,
+        debug_adapter: None,
+        allow_parallel: false,
+        extras: Default::default(),
+    };
+    // No setting: the names stay for the search path.
+    let mut s = Settings::default();
+    let mut plain = run("flutter");
+    apply_to_run_configs(std::slice::from_mut(&mut plain), tmp.path(), &s);
+    assert_eq!(plain.command, "flutter");
+    assert_eq!(crate::apply::tool_command(tmp.path(), &s, "dart"), None);
+
+    // A project-relative SDK: `bin/flutter`, and `bin/dart` until the Dart SDK is unpacked.
+    s.languages.flutter.sdk = "flutter".into();
+    let flutter = sdk.join("bin").join(if cfg!(windows) { "flutter.bat" } else { "flutter" });
+    let wrapper = sdk.join("bin").join(if cfg!(windows) { "dart.bat" } else { "dart" });
+    assert_eq!(crate::apply::tool_command(tmp.path(), &s, "dart"), Some(wrapper));
+    let dart = sdk.join("bin/cache/dart-sdk/bin").join(exe("dart"));
+    std::fs::create_dir_all(dart.parent().unwrap()).unwrap();
+    std::fs::write(&dart, "").unwrap();
+    let mut cfg = server("dart");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(Path::new(&cfg.command), dart);
+
+    let mut configs = [run("flutter"), run("dart"), run("/usr/bin/flutter")];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(Path::new(&configs[0].command), flutter);
+    assert_eq!(Path::new(&configs[1].command), dart);
+    assert_eq!(configs[2].command, "/usr/bin/flutter");
+    // Saved configurations keep the bare name.
+    assert_eq!(crate::apply::without_derived(&configs[0], tmp.path(), &s).command, "flutter");
+    // An explicit tool path still wins.
+    s.tools.insert("dart".into(), ide_core::settings::ToolSettings { path: "/opt/dart/bin/dart".into() });
+    assert_eq!(crate::apply::tool_command(tmp.path(), &s, "dart"), Some(PathBuf::from("/opt/dart/bin/dart")));
 }
 
 #[test]

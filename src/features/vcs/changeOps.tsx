@@ -35,7 +35,7 @@ import { commitTestSelection } from "./commitTests";
 import { commitTodoRules } from "./commitTodo";
 import { controlLabel, controlOperation } from "./operations";
 import { FileChecklist } from "./shelf";
-import { currentRepo, loadStashes, refreshNow, repoName, useVcs } from "./store";
+import { currentRepo, loadStashes, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
 import rollbackStyles from "./RollbackDialog.module.css";
 import unstashStyles from "./UnstashDialog.module.css";
@@ -385,6 +385,7 @@ async function prepareAndCommit(
         const root = repo.root || null;
         const checkRoot = root ?? useVcs.getState().root;
         const replaced = amend && checkRoot ? (useVcs.getState().heads[checkRoot]?.headCommit ?? null) : null;
+        // oxlint-disable-next-line no-await-in-loop -- commits are ordered per repository: each reads its head just before committing, and results are collected in order
         const id = await call(commands.vcsCommit(root, message.trim(), repo.options));
         commits.push({ repo: root, id });
         if (postpone && checkRoot && projectIsOpen()) {
@@ -403,8 +404,10 @@ async function prepareAndCommit(
           if (!modification) continue;
           const { path, workingBefore, workingEdits } = modification;
           try {
+            // oxlint-disable-next-line no-await-in-loop -- the committed text must be read from this repository's new commit before its edits can be synced; a mismatch skips the file
             const committedText = await call(commands.vcsFileAt(path, id));
             if (committedText?.replace(/\r\n?/g, "\n") !== file.prepared.text) continue;
+            // oxlint-disable-next-line no-await-in-loop -- workspace edits are applied one file at a time with a project-change check
             await syncCommitEdits(path, workingBefore, workingEdits, projectIsOpen);
           } catch (error) {
             logConsole("info", `Before-commit edits skipped for ${baseName(path)}: ${errorMessage(error)}`);
@@ -492,6 +495,7 @@ export async function deleteFiles(paths: readonly string[]) {
   if (!ok) return;
   await runOp("Delete", async () => {
     for (const path of paths) {
+      // oxlint-disable-next-line no-await-in-loop -- deletes and their notifications are issued per path so the UI reports them in selection order
       await call(commands.fsDelete(path));
       notifyFileOperation({ kind: "deleted", paths: [path] });
     }
@@ -620,8 +624,10 @@ function RollbackDialog({
             }
           }
           for (const path of savePaths) {
+            // oxlint-disable-next-line no-await-in-loop -- each document is attached, saved and released in sequence to keep editor state consistent before rollback
             const document = await attachDocument(path).catch(() => null);
             try {
+              // oxlint-disable-next-line no-await-in-loop -- dirty documents are saved one at a time before the rollback reads them
               if (document?.dirty()) await document.save({ exact: true });
             } finally {
               document?.release();
@@ -749,9 +755,23 @@ export async function addToVcs(paths: readonly string[]) {
     });
     return;
   }
-  await runOp(targets.length === 1 ? tx("Add 1 file to Git") : tx`Add ${targets.length} files to Git`, () =>
-    call(commands.vcsStage(targets.map(stripSlash))),
-  );
+  const project = useProject.getState().project;
+  const byRepo = new Map<string | null, string[]>();
+  for (const path of targets) {
+    const repo = repoOf(path);
+    const group = byRepo.get(repo);
+    if (group) group.push(path);
+    else byRepo.set(repo, [path]);
+  }
+  // A locked index in one repository must not skip the remaining repositories.
+  for (const [repo, files] of byRepo) {
+    if (useProject.getState().project !== project) return;
+    const action = files.length === 1 ? tx("Add 1 file to Git") : tx`Add ${files.length} files to Git`;
+    const title = repo && byRepo.size > 1 ? `${repoName(repo)}: ${action}` : action;
+    // oxlint-disable-next-line no-await-in-loop -- staging runs per repository with a project-change check so a locked index in one does not skip the others
+    await runOp(title, () => call(commands.vcsStage(files)), { refresh: false });
+  }
+  void refreshNow();
 }
 
 export async function stageWithoutContent(paths: readonly string[]) {
@@ -781,6 +801,7 @@ export async function stashSilently() {
     for (const root of stashableRoots(status, useVcs.getState().roots)) {
       if (useProject.getState().project !== project) return;
       const name = repoName(root);
+      // oxlint-disable-next-line no-await-in-loop -- stashes are pushed one repository at a time with a project-change check; the stashed list is accumulated in order
       const result = await runOp(
         tx`Stash changes in ${name}`,
         () => call(commands.vcsStashPush(root, null, false, false, null)),

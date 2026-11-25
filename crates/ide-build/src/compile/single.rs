@@ -1,4 +1,4 @@
-//! Single-file Java compilation with `javac` for the Compile File action (#2476).
+//! Single-file Java compilation with `javac` for the Recompile action (#2476).
 //!
 //! A module build (`-pl … -am`) still walks every upstream module, and packaging
 //! walks the whole reactor; compiling one file only needs that file's module
@@ -6,12 +6,93 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::process::Command as ProcCommand;
 
 /// Output file of the `dependency:build-classpath` probe, relative to each module.
 const CP_FILE: &str = "target/ide-compile-cp.txt";
 // Older records include undeclared reactor test outputs even in runtime classpaths.
 const CLASSPATH_CACHE_VERSION: u32 = 1;
+const GRADLE_COMPILE_CP_INIT_SCRIPT: &str = include_str!("../gradle-compile-cp.init.gradle");
+
+pub(super) fn is_java_file(file: &Path) -> IdeResult<String> {
+    if file.extension().is_none_or(|ext| !ext.eq_ignore_ascii_case("java")) {
+        return Err(IdeError::invalid("only Java sources can be compiled as a single file"));
+    }
+    if !file.is_file() {
+        return Err(IdeError::not_found("no Java source found for single-file compilation"));
+    }
+    Ok(file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+pub(super) fn is_test_source(rel: &str) -> bool {
+    let parts: Vec<&str> = rel.split(['/', '\\']).collect();
+    parts.windows(2).any(|w| w == ["src", "test"])
+}
+
+pub(super) fn java_home_major(env: &BTreeMap<String, String>) -> Option<u32> {
+    let home = env.get("JAVA_HOME").filter(|h| !h.trim().is_empty())?;
+    let release = fs::read_to_string(Path::new(home).join("release")).ok()?;
+    let value = release.lines().find_map(|l| l.trim().strip_prefix("JAVA_VERSION="))?;
+    let value = value.trim().trim_matches(['"', '\'']);
+    language_release(value)
+}
+
+/// `--release N` from JDK 9 on; older compilers only know `-source` / `-target`.
+pub(super) fn release_args(level: Option<u32>, jdk_major: Option<u32>) -> Vec<String> {
+    let Some(level) = level else { return Vec::new() };
+    if jdk_major.is_none_or(|m| m >= 9) {
+        vec!["--release".into(), level.to_string()]
+    } else {
+        vec!["-source".into(), format!("1.{level}"), "-target".into(), format!("1.{level}")]
+    }
+}
+
+pub(super) fn join_classpath(entries: impl IntoIterator<Item = String>) -> String {
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for entry in entries {
+        if !entry.is_empty() && seen.insert(entry.clone()) {
+            out.push(entry);
+        }
+    }
+    out.join(separator)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_javac_step(
+    javac: &str,
+    cwd: &Path,
+    out_dir: &Path,
+    classpath: &str,
+    sources: &[PathBuf],
+    release: Vec<String>,
+    file: &Path,
+    env: BTreeMap<String, String>,
+) -> IdeResult<BuildStep> {
+    fs::create_dir_all(out_dir)
+        .map_err(|e| IdeError::internal(format!("cannot create {} ({e})", out_dir.display())))?;
+    // Raw `javac` prints `path:line: error: …`, the same form Gradle forwards.
+    let mut step = BuildStep::new(javac, &[], cwd, Format::Gradle);
+    step.args.extend(["-encoding".into(), "UTF-8".into(), "-g".into()]);
+    step.args.extend(["-d".into(), out_dir.to_string_lossy().into_owned()]);
+    if !classpath.is_empty() {
+        step.args.extend(["-cp".into(), classpath.to_owned()]);
+    }
+    // Classes of the module that were never built (or are older than their source) are read
+    // from its sources; only `file` is written, so a test compile never puts main classes
+    // into test-classes.
+    if !sources.is_empty() {
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        step.args.push("-sourcepath".into());
+        step.args.push(sources.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(separator));
+        step.args.push("-implicit:none".into());
+    }
+    step.args.extend(release);
+    step.args.push(file.to_string_lossy().into_owned());
+    step.env = env;
+    step.mkdirs = vec![out_dir.to_path_buf()];
+    Ok(step)
+}
 
 /// The resolved dependency classpath for one module and scope, tied to the same
 /// inputs as its launch build so POM, JDK, settings and profile changes invalidate it.
@@ -41,12 +122,7 @@ pub struct SingleFileTarget {
 
 /// Locates the linked Maven module owning a `.java` source file.
 pub fn single_file_target(root: &Path, model: &BuildModel, file: &Path) -> IdeResult<SingleFileTarget> {
-    if file.extension().is_none_or(|ext| ext != "java") {
-        return Err(IdeError::invalid("only Java sources can be compiled as a single file"));
-    }
-    if !file.is_file() {
-        return Err(IdeError::not_found("no Java source found for single-file compilation"));
-    }
+    is_java_file(file)?;
     let Some(m) = &model.maven else {
         return Err(IdeError::not_found("no linked Maven project found for module"));
     };
@@ -70,8 +146,7 @@ pub fn single_file_target(root: &Path, model: &BuildModel, file: &Path) -> IdeRe
     let top_dir = subdir(root, &top.dir);
     let pl = module.strip_prefix(&top_dir).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
     // Test sources see the test classpath and compile into test classes.
-    let parts: Vec<&str> = rel.split('/').collect();
-    let test = parts.windows(2).any(|w| w == ["src", "test"]);
+    let test = is_test_source(&rel);
     let out_dir = module.join("target").join(if test { "test-classes" } else { "classes" });
     Ok(SingleFileTarget { module, test, out_dir, top: top.clone(), pl, java_version: project.java_version })
 }
@@ -112,7 +187,17 @@ pub fn find_javac(env: &BTreeMap<String, String>) -> String {
 /// `mvn dependency:build-classpath` (which resolves without compiling anything,
 /// so `-am` stays cheap). Entries are platform-separated (`;` on Windows).
 pub fn single_file_classpath(root: &Path, model: &BuildModel, target: &SingleFileTarget) -> IdeResult<String> {
-    classpath(root, model, target, "test", false)
+    single_file_classpath_cancellable(root, model, target, &CancellationToken::new())
+}
+
+fn single_file_classpath_cancellable(
+    root: &Path,
+    model: &BuildModel,
+    target: &SingleFileTarget,
+    cancel: &CancellationToken,
+) -> IdeResult<String> {
+    let scope = if target.test { "test" } else { "compile" };
+    classpath(root, model, target, scope, false, cancel)
 }
 
 /// Runtime (or test) dependency classpath for a launch module.
@@ -172,10 +257,12 @@ pub fn module_classpaths(
     }
     let scope = if test { "test" } else { "runtime" };
     let targets: Vec<&SingleFileTarget> = probes.iter().map(|p| &p.0).collect();
-    let classpaths = match classpaths(root, model, &targets, scope, true) {
+    let classpaths = match classpaths(root, model, &targets, scope, true, cancel) {
         Ok(classpaths) => classpaths,
         // Another module's failure must not cost this launch its own probe.
-        Err(_) if targets.len() > 1 && !cancel.is_cancelled() => classpaths(root, model, &targets[..1], scope, true)?,
+        Err(_) if targets.len() > 1 && !cancel.is_cancelled() => {
+            classpaths(root, model, &targets[..1], scope, true, cancel)?
+        }
         Err(e) => return Err(e),
     };
     if cancel.is_cancelled() {
@@ -236,8 +323,9 @@ fn classpath(
     target: &SingleFileTarget,
     scope: &str,
     compile_first: bool,
+    cancel: &CancellationToken,
 ) -> IdeResult<String> {
-    Ok(classpaths(root, model, &[target], scope, compile_first)?.pop().unwrap())
+    Ok(classpaths(root, model, &[target], scope, compile_first, cancel)?.pop().unwrap())
 }
 
 /// The classpath of each of `targets` (modules of one reactor) from one Maven probe.
@@ -247,6 +335,7 @@ fn classpaths(
     targets: &[&SingleFileTarget],
     scope: &str,
     compile_first: bool,
+    cancel: &CancellationToken,
 ) -> IdeResult<Vec<String>> {
     let top = &targets[0].top;
     let probe = CP_FILE;
@@ -272,18 +361,21 @@ fn classpaths(
     if compile_first {
         args.push("compile");
     }
-    args.extend(["dependency:build-classpath", output_arg.as_str(), scope_arg.as_str(), "-q"]);
+    let build_classpath =
+        maven::plugin_goal("dependency:build-classpath", maven::local_repository_for(&top.options).as_deref());
+    args.extend([build_classpath.as_str(), output_arg.as_str(), scope_arg.as_str(), "-q"]);
     let top_dir = subdir(root, &top.dir);
-    let mut command = ProcCommand::new(&top.command);
-    command.args(&args).envs(&top.env).current_dir(&top_dir);
-    let status = ide_core::process::prepare(&mut command)
-        .output()
-        .map_err(|e| IdeError::internal(format!("cannot resolve the compile classpath: {e}")))?;
-    if !status.status.success() {
-        let stdout = String::from_utf8_lossy(&status.stdout);
-        let stderr = String::from_utf8_lossy(&status.stderr);
+    let owned_args: Vec<String> = args.into_iter().map(str::to_owned).collect();
+    let out = process::run_bounded(&top.command, &owned_args, &top_dir, &top.env, cancel, |_, _| {}).map_err(|e| {
+        if e.kind == ide_core::error::ErrorKind::Cancelled {
+            e
+        } else {
+            IdeError::internal(format!("cannot resolve the compile classpath: {}", e.message))
+        }
+    })?;
+    if !out.success {
         // Maven reports reactor/dependency failures on stdout, not only stderr.
-        let tail: Vec<&str> = stdout.lines().chain(stderr.lines()).filter(|l| !l.trim().is_empty()).collect();
+        let tail: Vec<&str> = out.text.lines().filter(|l| !l.trim().is_empty()).collect();
         let tail = tail.iter().rev().take(5).rev().cloned().collect::<Vec<_>>().join("\n");
         return Err(IdeError::internal(format!("cannot resolve the compile classpath:\n{tail}")));
     }
@@ -325,39 +417,14 @@ fn target_classpath(root: &Path, model: &BuildModel, target: &SingleFileTarget) 
     })?;
     let separator = if cfg!(windows) { ';' } else { ':' };
     entries.extend(content.split([separator, '\n', '\r']).map(str::trim).filter(|e| !e.is_empty()).map(str::to_owned));
-    entries.dedup();
-    Ok(entries.join(&separator.to_string()))
+    Ok(join_classpath(entries))
 }
 
 /// The `javac` step compiling `file` into `target`'s output directory.
 pub fn javac_step(target: &SingleFileTarget, file: &Path, classpath: &str, javac: &str) -> IdeResult<BuildStep> {
-    fs::create_dir_all(&target.out_dir)
-        .map_err(|e| IdeError::internal(format!("cannot create {} ({e})", target.out_dir.display())))?;
-    let mut step = BuildStep::new(javac, &[], &target.module, Format::Gradle);
-    // Raw `javac` prints `path:line: error: …`, the same form Gradle forwards.
-    step.args.push("-encoding".into());
-    step.args.push("UTF-8".into());
-    step.args.push("-d".into());
-    step.args.push(target.out_dir.to_string_lossy().into_owned());
-    step.args.push("-cp".into());
-    step.args.push(classpath.to_owned());
-    // Classes of the module that were never built (or are older than their source) are read
-    // from its sources; only `file` is written, so a test compile never puts main classes
-    // into test-classes.
     let sources = source_roots(target);
-    if !sources.is_empty() {
-        let separator = if cfg!(windows) { ";" } else { ":" };
-        step.args.push("-sourcepath".into());
-        step.args.push(sources.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(separator));
-        step.args.push("-implicit:none".into());
-    }
-    if let Some(version) = target.java_version {
-        step.args.push("--release".into());
-        step.args.push(version.to_string());
-    }
-    step.args.push(file.to_string_lossy().into_owned());
-    step.env = target.top.env.clone();
-    Ok(step)
+    let release = release_args(target.java_version, java_home_major(&target.top.env));
+    build_javac_step(javac, &target.module, &target.out_dir, classpath, &sources, release, file, target.top.env.clone())
 }
 
 /// The module's Java source folders that exist, generated ones included; test sources see
@@ -383,8 +450,18 @@ fn source_roots(target: &SingleFileTarget) -> Vec<PathBuf> {
 
 /// Resolves the classpath and plans the `javac` invocation for one Java source.
 pub fn compile_file_plan(root: &Path, model: &BuildModel, file: &Path) -> IdeResult<BuildPlan> {
+    compile_file_plan_cancellable(root, model, file, &CancellationToken::new())
+}
+
+/// Cancellable [`compile_file_plan`].
+pub fn compile_file_plan_cancellable(
+    root: &Path,
+    model: &BuildModel,
+    file: &Path,
+    cancel: &CancellationToken,
+) -> IdeResult<BuildPlan> {
     let target = single_file_target(root, model, file)?;
-    let classpath = single_file_classpath(root, model, &target)?;
+    let classpath = single_file_classpath_cancellable(root, model, &target, cancel)?;
     let javac = find_javac(&target.top.env);
     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     Ok(BuildPlan {
@@ -392,6 +469,140 @@ pub fn compile_file_plan(root: &Path, model: &BuildModel, file: &Path) -> IdeRes
         title: format!("Compile {name}"),
         steps: vec![javac_step(&target, file, &classpath, &javac)?],
     })
+}
+
+fn gradle_for_file<'a>(
+    root: &Path,
+    model: &'a BuildModel,
+    file: &Path,
+) -> Option<(&'a crate::GradleModel, &'a crate::GradleProject, PathBuf)> {
+    let file = normalize(file);
+    let file_ref = &file;
+    model
+        .gradle
+        .iter()
+        .flat_map(|g| {
+            let g_dir = normalize(&subdir(root, &g.dir));
+            let g_depth = g_dir.components().count();
+            g.projects.iter().filter_map(move |p| {
+                let p_dir = normalize(&subdir(root, &p.dir));
+                file_ref.starts_with(&p_dir).then_some((g, p, p_dir, g_depth))
+            })
+        })
+        .max_by_key(|(_, _, p_dir, g_depth)| (p_dir.components().count(), *g_depth))
+        .map(|(g, p, p_dir, _)| (g, p, p_dir))
+}
+
+/// Whether `file` lies inside a linked Gradle project of `model`.
+pub fn has_gradle_file_target(root: &Path, model: &BuildModel, file: &Path) -> bool {
+    gradle_for_file(root, model, file).is_some()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GradleCompileCp {
+    out_dir: Option<String>,
+    #[serde(default)]
+    classpath: Vec<String>,
+    #[serde(default)]
+    src_dirs: Vec<String>,
+    release: Option<u32>,
+}
+
+/// Resolves the compile classpath from Gradle and plans a single-file `javac` step.
+pub fn gradle_compile_file_plan(
+    root: &Path,
+    model: &BuildModel,
+    file: &Path,
+    cache: &Path,
+    cancel: &CancellationToken,
+) -> IdeResult<BuildPlan> {
+    let name = is_java_file(file)?;
+    let (gradle, project, module_dir) = gradle_for_file(root, model, file)
+        .ok_or_else(|| IdeError::not_found("no linked Gradle project found for file"))?;
+    let rel = rel_str(&module_dir, file);
+    let test = is_test_source(&rel);
+    let scope = if test { "test" } else { "main" };
+
+    fs::create_dir_all(cache)?;
+    let init_script = cache.join("gradle-compile-cp.init.gradle");
+    fs::write(&init_script, GRADLE_COMPILE_CP_INIT_SCRIPT)?;
+    let args = vec![
+        "--console=plain".into(),
+        "-q".into(),
+        "-Dorg.gradle.configuration-cache=false".into(),
+        "--init-script".into(),
+        init_script.to_string_lossy().into_owned(),
+        format!("-Popenidea.target={}", project.path),
+        format!("-Popenidea.scope={scope}"),
+        "help".into(),
+    ];
+    let gradle_dir = subdir(root, &gradle.dir);
+    let mut reported: Option<String> = None;
+    let out = process::run_bounded(&gradle.command, &args, &gradle_dir, &gradle.env, cancel, |_, line| {
+        if let Some(json) = line.strip_prefix("@openidea-compile-cp\t") {
+            reported = Some(json.to_owned());
+        }
+    })
+    .map_err(|e| {
+        if e.kind == ide_core::error::ErrorKind::Cancelled {
+            e
+        } else {
+            IdeError::internal(format!("cannot resolve the compile classpath: {}", e.message))
+        }
+    })?;
+    if !out.success {
+        let tail: Vec<&str> = out.text.lines().filter(|l| !l.trim().is_empty()).collect();
+        let tail = tail.iter().rev().take(5).rev().cloned().collect::<Vec<_>>().join("\n");
+        return Err(IdeError::internal(format!("cannot resolve the compile classpath:\n{tail}")));
+    }
+    let json = reported.ok_or_else(|| {
+        IdeError::internal(format!(
+            "cannot resolve the compile classpath: Gradle did not report source set '{scope}' for {}",
+            project.path
+        ))
+    })?;
+    let cp: GradleCompileCp = serde_json::from_str(&json)
+        .map_err(|e| IdeError::internal(format!("cannot parse Gradle compile classpath: {e}")))?;
+
+    let out_dir = cp
+        .out_dir
+        .filter(|d| !d.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| module_dir.join("build/classes/java").join(scope));
+    let mut cp_entries: Vec<String> = Vec::new();
+    if out_dir.is_dir() {
+        cp_entries.push(out_dir.to_string_lossy().into_owned());
+    }
+    if test {
+        let main_out = module_dir.join("build/classes/java/main");
+        if main_out.is_dir() {
+            cp_entries.push(main_out.to_string_lossy().into_owned());
+        }
+    }
+    for sibling in &gradle.projects {
+        let sibling_dir = subdir(root, &sibling.dir);
+        if sibling_dir == module_dir {
+            continue;
+        }
+        let classes = sibling_dir.join("build/classes/java/main");
+        if classes.is_dir() {
+            cp_entries.push(classes.to_string_lossy().into_owned());
+        }
+    }
+    cp_entries.extend(cp.classpath);
+    let classpath = join_classpath(cp_entries);
+
+    let mut sources: Vec<PathBuf> = cp.src_dirs.into_iter().map(PathBuf::from).filter(|p| p.is_dir()).collect();
+    if sources.is_empty() {
+        let fallback: &[&str] = if test { &["src/test/java", "src/main/java"] } else { &["src/main/java"] };
+        sources.extend(fallback.iter().map(|s| module_dir.join(s)).filter(|p| p.is_dir()));
+    }
+    let javac = find_javac(&gradle.env);
+    let release = release_args(cp.release.or(gradle.java_version), java_home_major(&gradle.env));
+    let step =
+        build_javac_step(&javac, &module_dir, &out_dir, &classpath, &sources, release, file, gradle.env.clone())?;
+    Ok(BuildPlan { system: BuildSystem::Gradle, title: format!("Compile {name}"), steps: vec![step] })
 }
 
 #[cfg(test)]
@@ -439,7 +650,8 @@ mod tests {
     #[test]
     fn target_finds_the_owning_module_and_the_test_scope() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        let root_buf = dunce::canonicalize(dir.path()).unwrap();
+        let root = root_buf.as_path();
         let model = fixture(root);
         let main = single_file_target(root, &model, &root.join("app/src/main/java/demo/Main.java")).unwrap();
         assert_eq!(main.module, root.join("app"));
@@ -453,7 +665,8 @@ mod tests {
     #[test]
     fn target_rejects_non_java_missing_and_unlinked_files() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        let root_buf = dunce::canonicalize(dir.path()).unwrap();
+        let root = root_buf.as_path();
         let model = fixture(root);
         write(root, "app/pom.xml", "<project/>");
         assert!(single_file_target(root, &model, &root.join("app/pom.xml")).is_err());
@@ -465,7 +678,8 @@ mod tests {
     #[test]
     fn javac_prefers_the_module_jdk_and_scopes_test_sources() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        let root_buf = dunce::canonicalize(dir.path()).unwrap();
+        let root = root_buf.as_path();
         let model = fixture(root);
         let file = root.join("app/src/test/java/demo/MainTest.java");
         let target = single_file_target(root, &model, &file).unwrap();
@@ -501,7 +715,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        let root_buf = dunce::canonicalize(dir.path()).unwrap();
+        let root = root_buf.as_path();
         fixture(root);
         let script = root.join("mvnw");
         fs::write(
@@ -532,6 +747,7 @@ mod tests {
         assert!(cp.split(separator).count() >= 3, "{cp}");
         let args = fs::read_to_string(root.join("args.txt")).unwrap();
         assert!(!args.lines().any(|a| a == "compile" || a == "package"), "{args}");
+        assert!(args.lines().any(|a| a == "-Dmdep.includeScope=compile"), "{args}");
         fs::create_dir_all(root.join("app/target/test-classes")).unwrap();
         let target = single_file_target(root, &model, &root.join("app/src/test/java/demo/MainTest.java")).unwrap();
         let cp = single_file_classpath(root, &model, &target).unwrap();
@@ -539,6 +755,8 @@ mod tests {
         assert_eq!(paths[0], root.join("app/target/test-classes"));
         assert!(paths.contains(&root.join("app/target/classes")), "{cp}");
         assert!(!paths.contains(&root.join("lib/target/test-classes")), "{cp}");
+        let args = fs::read_to_string(root.join("args.txt")).unwrap();
+        assert!(args.lines().any(|a| a == "-Dmdep.includeScope=test"), "{args}");
     }
 
     /// Launches request Maven's matching scope without adding reactor test outputs.
@@ -548,7 +766,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        let root_buf = dunce::canonicalize(dir.path()).unwrap();
+        let root = root_buf.as_path();
         fixture(root);
         let script = root.join("mvnw");
         fs::write(
@@ -605,7 +824,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        let root_buf = dunce::canonicalize(dir.path()).unwrap();
+        let root = root_buf.as_path();
         fixture(root);
         write(root, "lib/src/main/java/demo/Lib.java", "class Lib {}");
         let script = root.join("mvnw");
@@ -646,7 +866,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        let root_buf = dunce::canonicalize(dir.path()).unwrap();
+        let root = root_buf.as_path();
         fixture(root);
         let script = root.join("mvnw");
         // `dependency:build-classpath` reports reactor outputs as absolute paths. Keep
@@ -711,5 +932,80 @@ mod tests {
         assert!(!switched.contains("jdk21/classpath/jdk.jar"), "{switched}");
         calls.push('x');
         assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap(), calls);
+    }
+
+    #[test]
+    fn javac_step_omits_empty_classpath_and_uses_source_target_on_jdk_8() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_buf = dunce::canonicalize(dir.path()).unwrap();
+        let root = root_buf.as_path();
+        let mut model = fixture(root);
+        let file = root.join("app/src/main/java/demo/Main.java");
+        let jdk8 = root.join("jdk8");
+        fs::create_dir_all(jdk8.join("bin")).unwrap();
+        fs::write(jdk8.join("release"), "JAVA_VERSION=\"1.8.0_372\"\n").unwrap();
+        let project = model.maven.as_mut().unwrap().projects.iter_mut().find(|p| p.dir == "app").unwrap();
+        project.java_version = Some(8);
+        let mut target = single_file_target(root, &model, &file).unwrap();
+        target.top.env.insert("JAVA_HOME".into(), jdk8.to_string_lossy().into_owned());
+        let step = javac_step(&target, &file, "", "javac").unwrap();
+        assert!(!step.args.iter().any(|a| a == "-cp"), "{:?}", step.args);
+        assert!(step.args.iter().any(|a| a == "-g"), "{:?}", step.args);
+        assert!(step.args.windows(4).any(|w| w == ["-source", "1.8", "-target", "1.8"]), "{:?}", step.args);
+        assert!(!step.args.iter().any(|a| a == "--release"), "{:?}", step.args);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_single_file_compiles_with_source_set_classpath_and_siblings() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root_buf = dunce::canonicalize(dir.path()).unwrap();
+        let root = root_buf.as_path();
+        write(root, "settings.gradle", "include ':lib', ':app'");
+        write(root, "lib/build.gradle", "plugins { id 'java' }");
+        write(root, "app/build.gradle", "plugins { id 'java' }");
+        write(root, "app/src/main/java/demo/App.java", "package demo; class App {}");
+        write(root, "app/src/test/java/demo/AppTest.java", "package demo; class AppTest {}");
+        fs::create_dir_all(root.join("lib/build/classes/java/main")).unwrap();
+        fs::create_dir_all(root.join("app/build/classes/java/main")).unwrap();
+        let wrapper = root.join("gradlew");
+        fs::write(
+            &wrapper,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > gradle_args.txt\nscope='main'\nfor a in \"$@\"; do\ncase \"$a\" in -Popenidea.scope=*) scope=\"${a#-Popenidea.scope=}\" ;; esac\ndone\nprintf '@openidea-compile-cp\\t{\"outDir\":\"%s/app/build/classes/java/%s\",\"classpath\":[\"%s/deps/guava.jar\"],\"srcDirs\":[\"%s/app/src/%s/java\"],\"release\":17}\\n' \"$PWD\" \"$scope\" \"$PWD\" \"$PWD\" \"$scope\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let model = crate::load(root, &root.join("cache"), None);
+        let cache = root.join("cache");
+        let cancel = CancellationToken::new();
+
+        let main_file = root.join("app/src/main/java/demo/App.java");
+        let main_plan = gradle_compile_file_plan(root, &model, &main_file, &cache, &cancel).unwrap();
+        assert_eq!(main_plan.system, BuildSystem::Gradle);
+        assert_eq!(main_plan.title, "Compile App.java");
+        let step = &main_plan.steps[0];
+        let args = fs::read_to_string(root.join("gradle_args.txt")).unwrap();
+        assert!(args.lines().any(|a| a == "-Popenidea.target=:app"), "{args}");
+        assert!(args.lines().any(|a| a == "-Popenidea.scope=main"), "{args}");
+        let cp = &step.args[step.args.iter().position(|a| a == "-cp").unwrap() + 1];
+        let paths: Vec<_> = std::env::split_paths(cp).collect();
+        assert!(paths.contains(&root.join("app/build/classes/java/main")), "{cp}");
+        assert!(paths.contains(&root.join("lib/build/classes/java/main")), "{cp}");
+        assert!(paths.contains(&root.join("deps/guava.jar")), "{cp}");
+        assert!(step.args.windows(2).any(|w| w == ["--release", "17"]), "{:?}", step.args);
+        assert!(step.args.iter().any(|a| a == "-implicit:none"), "{:?}", step.args);
+
+        let test_file = root.join("app/src/test/java/demo/AppTest.java");
+        let test_plan = gradle_compile_file_plan(root, &model, &test_file, &cache, &cancel).unwrap();
+        assert_eq!(test_plan.title, "Compile AppTest.java");
+        let test_step = &test_plan.steps[0];
+        let args = fs::read_to_string(root.join("gradle_args.txt")).unwrap();
+        assert!(args.lines().any(|a| a == "-Popenidea.scope=test"), "{args}");
+        assert!(
+            test_step.args.windows(2).any(|w| w == ["-d", &root.join("app/build/classes/java/test").to_string_lossy()])
+        );
     }
 }

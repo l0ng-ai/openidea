@@ -568,12 +568,13 @@ function isTextTarget(target: EventTarget | null): boolean {
  */
 export function isAltGrTyping(
   e: Pick<KeyboardEvent, "key" | "code" | "target" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey"> & {
+    composedPath?: KeyboardEvent["composedPath"];
     getModifierState?: (key: string) => boolean;
   },
 ): boolean {
   if (isMacHost() || !e.getModifierState?.("AltGraph")) return false;
   if (e.key !== "Dead" && e.key.length !== 1) return false;
-  if (!isTextTarget(e.target)) return false;
+  if (!isTextTarget(e.composedPath?.()[0] ?? e.target)) return false;
   // Ctrl+Alt+L on a layout with no AltGr character there still reports `l`: that is a shortcut.
   const key = strokeOf(e)?.split("+").pop();
   return e.key === "Dead" || e.key.toUpperCase() !== key;
@@ -665,6 +666,7 @@ export const FORWARDABLE_ACTIONS: ReadonlySet<string> = new Set([
   "toolwindow.debug",
   "toolwindow.hideActive",
   "toolwindow.hideAll",
+  "toolwindow.hideSide",
   "toolwindow.jumpToLast",
   "toolwindow.focusEditor",
   "toolwindow.maximize",
@@ -747,9 +749,10 @@ export function installKeyboardDispatcher(
     if (!chord) {
       if (isAltGrTyping(e)) return;
       const hasCommandMod = e.metaKey || e.ctrlKey || e.altKey;
-      if (isPlainTextField(e.target)) {
+      const target = e.composedPath()[0] ?? e.target;
+      if (isPlainTextField(target)) {
         // Native deletion stays in the field; Shift bindings and terminal keys keep their own routing.
-        if ((e.key === "Backspace" || e.key === "Delete") && !e.shiftKey && !(e.target as Element).closest?.(".xterm"))
+        if ((e.key === "Backspace" || e.key === "Delete") && !e.shiftKey && !(target as Element).closest?.(".xterm"))
           return;
         if (!hasCommandMod && !/^(Shift\+)?(F\d{1,2}|Escape)$/.test(stroke)) return;
       }

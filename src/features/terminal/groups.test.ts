@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  adoptTab,
   closeAll,
   closeTab,
+  detachTab,
   getSession,
   groupDropIndex,
   groupTabs,
@@ -25,6 +27,7 @@ vi.mock("./session", () => ({
       this.key = opts.key;
       this.state = { cwd: opts.cwd };
     }
+    rebind() {}
     dispose() {}
   },
 }));
@@ -36,6 +39,23 @@ const strip = (group: string) => groupTabs(state().tabs, group).map((t) => t.id)
 beforeEach(() => closeAll());
 
 describe("terminal tab groups", () => {
+  it("publishes one consistent tab and session change when opening or closing", () => {
+    const changed = vi.fn();
+    const off = useTerminals.subscribe(changed);
+    try {
+      const opened = newTab("/p");
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(changed.mock.lastCall![0].sessions[opened.session]).toEqual({ cwd: "/p" });
+      expect(changed.mock.lastCall![0].tabs).toEqual([opened]);
+      closeTab(opened.id);
+      expect(changed).toHaveBeenCalledTimes(2);
+      expect(changed.mock.lastCall![0].sessions).toEqual({});
+      expect(changed.mock.lastCall![0].tabs).toEqual([]);
+    } finally {
+      off();
+    }
+  });
+
   it("splits right into a new group with a session in the tab's directory", () => {
     const a = newTab("/repo/app");
     const b = splitTab(a.id, "horizontal")!;
@@ -143,6 +163,31 @@ describe("terminal tab groups", () => {
     expect(moveTabToSplit(b, K, "right")).toBe(true);
     expect(groups()).toEqual([K, tab(b).group, A]);
     expect(strip(K)).toEqual([c.id]);
+  });
+
+  it("adopts a detached editor session into an empty window, a strip slot, or a new split", () => {
+    const first = newTab("/repo");
+    const detached = detachTab(first.id)!;
+    expect(state().tabs).toEqual([]);
+
+    // Into an empty window, an edge target falls back to the sole group.
+    const back = adoptTab(detached, { name: "Local", customName: "Tests" }, { edge: "right" });
+    expect(state().tabs).toHaveLength(1);
+    expect(back).toMatchObject({ name: "Local", customName: "Tests", session: detached.key });
+    expect(getSession(detached.key)).toBe(detached);
+
+    // Into a specific strip index of an existing group.
+    const second = newTab("/repo");
+    const movedSecond = detachTab(second.id)!;
+    const atStart = adoptTab(movedSecond, { name: "Local (2)" }, { group: back.group, index: 0 });
+    expect(strip(back.group)).toEqual([atStart.id, back.id]);
+    expect(state().activeTab).toBe(atStart.id);
+
+    // Onto an edge of a populated group splits off a new group.
+    const again = detachTab(atStart.id)!;
+    const split = adoptTab(again, { name: "Local (2)" }, { group: back.group, edge: "bottom" });
+    expect(split.group).not.toBe(back.group);
+    expect(state().layout).toMatchObject({ orientation: "vertical", children: [back.group, split.group] });
   });
 });
 

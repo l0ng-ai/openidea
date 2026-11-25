@@ -2,7 +2,7 @@ import type { AgentTask } from "@/bindings";
 import { useTx } from "@/platform/i18n";
 import { Icon } from "@/ui";
 import clsx from "clsx";
-import { createContext, memo, useContext, useLayoutEffect, useRef, type ReactNode } from "react";
+import { createContext, memo, useContext, type ReactNode } from "react";
 import { formatDuration } from "../conversation";
 import styles from "../Session.module.css";
 import { summarizeWork, workParts, type WorkSummary } from "../timeline";
@@ -128,13 +128,6 @@ export const ProcessRun = memo(function ProcessRun({
     : working && last.type === "thought"
       ? tx("Thinking")
       : null;
-  // While the run grows, its open body follows the latest call unless scrolled up.
-  const body = useRef<HTMLDivElement>(null);
-  const following = useRef(true);
-  useLayoutEffect(() => {
-    const el = body.current;
-    if (el && working && following.current) el.scrollTop = el.scrollHeight;
-  });
   return (
     <Fold
       id={`run:${row.index}`}
@@ -142,21 +135,16 @@ export const ProcessRun = memo(function ProcessRun({
       summary={
         <summary className={styles.processSummary}>
           <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          <span className={clsx(styles.processParts, (working || live) && styles.shimmer)}>{parts.join(" · ")}</span>
+          <span className={clsx(styles.processParts, (working || live) && !current && styles.shimmer)}>
+            {parts.join(" · ")}
+          </span>
           {added > 0 && <span className={styles.added}>+{added}</span>}
           {removed > 0 && <span className={styles.removed}>−{removed}</span>}
           {current && <span className={clsx(styles.processCurrent, styles.shimmer)}>{current}</span>}
         </summary>
       }
     >
-      <div
-        ref={body}
-        className={styles.processBody}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-        }}
-      >
+      <div className={styles.processBody}>
         {row.entries.map(({ index, entry }) =>
           entry.type === "tool" ? (
             <ToolEntry key={index} task={task} entry={entry} />

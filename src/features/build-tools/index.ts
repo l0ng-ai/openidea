@@ -317,11 +317,11 @@ export function activate(): () => void {
         id: "maven.importExternal",
         title: "Import Module from Existing Sources",
         description:
-          "Choose a module directory outside the opened project. If it contains pom.xml, that Maven project is attached. The opened folder stays the project root, and neither POM is edited.",
+          "Choose a module directory. A pom.xml is linked as a Maven project and a Gradle settings or build script as a Gradle build; a folder with neither is attached as another root. The opened folder stays the project root, and no build file is edited.",
         category: "Maven",
         icon: "plus",
         when: "projectOpen && !workspaceOpen",
-        keywords: ["import", "module", "existing", "sources", "external", "maven", "pom"],
+        keywords: ["import", "module", "existing", "sources", "external", "maven", "pom", "gradle"],
         run: () => importModuleFromExistingSources(),
       },
       {

@@ -217,7 +217,15 @@ async function renderOne(source: string, key: string): Promise<Result> {
 
 /** Resolves `null` when the pass was superseded before its turn came. */
 function enqueue(source: string, key: string, live: () => boolean): Promise<Result | null> {
-  const p = queue.then(() => (live() ? renderOne(source, key) : null));
+  const k = `${key}\n${source}`;
+  const p = queue.then(async () => {
+    if (!live()) return null;
+    const cached = cache.get(k);
+    if (cached) return cached;
+    const result = await renderOne(source, key);
+    remember(k, result);
+    return result;
+  });
   queue = p.catch(() => undefined);
   return p;
 }
@@ -289,6 +297,7 @@ export function renderMermaidIn(root: HTMLElement, previous: Node[] = []): Merma
   if (!blocks.length) return { async: false, done: Promise.resolve(), cancel: () => {} };
   const key = themeKey();
   const pending: Promise<void>[] = [];
+  const rendering = new Map<string, Promise<Result | null>>();
   blocks.forEach((block, i) => {
     const source = (block.querySelector("code")?.textContent ?? "").replace(/\n+$/, "");
     const k = `${key}\n${source}`;
@@ -310,11 +319,14 @@ export function renderMermaidIn(root: HTMLElement, previous: Node[] = []): Merma
     }
     drawn.delete(block);
     show(block, null, previous[i]);
+    let result = rendering.get(k);
+    if (!result) {
+      result = enqueue(source, key, () => live);
+      rendering.set(k, result);
+    }
     pending.push(
-      enqueue(source, key, () => live).then((r) => {
-        if (!r) return;
-        remember(k, r);
-        if (!live) return;
+      result.then((r) => {
+        if (!live || !r) return;
         show(block, r);
         drawn.set(block, k);
         keep();

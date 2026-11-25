@@ -8,7 +8,7 @@ describe("agent chat settings", () => {
       showWorkTime: true,
       showUsageLimits: true,
       showCost: false,
-      foldTurns: true,
+      foldTurns: false,
       smoothText: true,
       fitWindowWidth: false,
       thinking: "auto",

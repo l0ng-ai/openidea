@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfigOption } from "@/bindings";
-import { ConfigPickers, configPickerOptions } from "./ConfigPickers";
+import { ConfigPickers, computeOverflowLayout, configPickerOptions } from "./ConfigPickers";
 import { useAgents } from "./store";
 
 beforeEach(() => {
@@ -95,7 +95,7 @@ describe("configPickerOptions", () => {
   });
 });
 
-it("shows Cursor approvals separately from its execution mode and sends the choice", () => {
+it("tucks Cursor approvals into the mode popup as a switch and sends the choice", () => {
   const option = (id: string, category: string, values: string[]): AgentConfigOption => ({
     id,
     category,
@@ -110,19 +110,19 @@ it("shows Cursor approvals separately from its execution mode and sends the choi
     })),
   });
   const onChange = vi.fn();
-  render(
-    <ConfigPickers
-      config={[
-        option("mode", "mode", ["Agent", "Plan", "Ask"]),
-        option("openidea.cursor.approval", "approval", ["ask", "bypass"]),
-      ]}
-      onChange={onChange}
-    />,
-  );
-  expect(screen.getByText("Agent")).toBeVisible();
-  fireEvent.click(screen.getByLabelText("Approvals"));
-  fireEvent.click(screen.getByRole("option", { name: "Bypass approvals" }));
+  const cfg = [
+    option("mode", "mode", ["Agent", "Plan", "Ask"]),
+    option("openidea.cursor.approval", "approval", ["ask", "bypass"]),
+  ];
+  const { rerender } = render(<ConfigPickers config={cfg} onChange={onChange} />);
+  expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("Agent");
+  expect(screen.queryByRole("button", { name: "Approvals" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Mode" }));
+  fireEvent.click(screen.getByRole("switch", { name: "Bypass approvals" }));
   expect(onChange).toHaveBeenCalledWith("openidea.cursor.approval", "bypass");
+
+  rerender(<ConfigPickers config={cfg} values={{ "openidea.cursor.approval": "bypass" }} onChange={onChange} />);
+  expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("AgentBypass");
 });
 
 it("shows Allow All as a switch and sends on/off values", () => {
@@ -344,13 +344,15 @@ describe("model settings", () => {
     expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("AgentAllow All");
     fireEvent.click(settings);
     const dialog = screen.getByRole("dialog", { name: "Model settings" });
-    const effort = within(dialog).getByRole("radiogroup", { name: "Effort Level" });
-    expect(within(effort).getByRole("radio", { name: "medium" })).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(within(effort).getByRole("radio", { name: "XHigh" }));
+    const effort = within(dialog).getByRole("listbox", { name: "Effort Level" });
+    expect(within(effort).getByRole("option", { name: "medium" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(effort).getByRole("option", { name: "XHigh" }));
     expect(onChange).toHaveBeenCalledExactlyOnceWith("reasoning_effort", "xhigh");
+    // The only setting: choosing it closes the popup.
+    expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
   });
 
-  it("lists more effort levels than fit the segmented control, one click away", () => {
+  it("renders effort levels consistently as a vertical list regardless of option count", () => {
     const onChange = vi.fn();
     const config = copilotConfig().map((o) =>
       o.category === "thought_level"
@@ -366,11 +368,18 @@ describe("model settings", () => {
     render(<ConfigPickers config={config} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "Model settings: Max" }));
     const dialog = screen.getByRole("dialog", { name: "Model settings" });
-    expect(within(dialog).queryByRole("radiogroup", { name: "Effort Level" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("radiogroup")).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: /Reasoning Effort/ })).not.toBeInTheDocument();
     const levels = within(dialog).getByRole("listbox", { name: "Effort Level" });
     expect(within(levels).getByRole("option", { name: /Max/ })).toHaveAttribute("aria-selected", "true");
-    fireEvent.click(within(levels).getByRole("option", { name: /Extra high/ }));
+    // Clicking the already-selected value in a single-setting popup closes it without emitting a redundant change.
+    fireEvent.click(within(levels).getByRole("option", { name: /Max/ }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Model settings: Max" }));
+    const reopened = screen.getByRole("dialog", { name: "Model settings" });
+    fireEvent.click(within(reopened).getByRole("option", { name: /Extra high/ }));
     expect(onChange).toHaveBeenCalledExactlyOnceWith("reasoning_effort", "extra-high");
     // The only setting: choosing it is done.
     expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
@@ -442,11 +451,11 @@ describe("model settings", () => {
     fireEvent.click(settings);
     const dialog = screen.getByRole("dialog", { name: "Model settings" });
     expect(within(dialog).queryByRole("button", { name: "Back to models" })).not.toBeInTheDocument();
-    const effortGroup = within(dialog).getByRole("radiogroup", { name: "Effort Level" });
-    expect(within(effortGroup).getByRole("radio", { name: "medium" })).toHaveAttribute("aria-checked", "true");
-    const contextGroup = within(dialog).getByRole("radiogroup", { name: "Context Size" });
-    expect(within(contextGroup).getByRole("radio", { name: "1M" })).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(within(contextGroup).getByRole("radio", { name: "200K" }));
+    const effortList = within(dialog).getByRole("listbox", { name: "Effort Level" });
+    expect(within(effortList).getByRole("option", { name: "medium" })).toHaveAttribute("aria-selected", "true");
+    const contextList = within(dialog).getByRole("listbox", { name: "Context Size" });
+    expect(within(contextList).getByRole("option", { name: "1M" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(contextList).getByRole("option", { name: "200K" }));
     expect(onChange).toHaveBeenCalledExactlyOnceWith("contextTier", "default");
     // Several settings: the popup stays for the next one.
     expect(screen.getByRole("dialog", { name: "Model settings" })).toBeInTheDocument();
@@ -465,8 +474,118 @@ describe("model settings", () => {
     expect(onChange).toHaveBeenLastCalledWith("model", "gpt-6-sol");
   });
 
+  it("treats Cursor context option id as Context Size in chip summary and popup", () => {
+    const onChange = vi.fn();
+    const cfg = copilotConfig();
+    cfg.push({
+      id: "context",
+      name: "Context",
+      category: "model_config",
+      description: null,
+      current: "1m",
+      defaultValue: "300k",
+      via: "option",
+      values: [value("300k", "300K"), value("1m", "1M")],
+    });
+    render(<ConfigPickers config={cfg} onChange={onChange} />);
+    const settings = screen.getByRole("button", { name: /^Model settings:/ });
+    expect(settings).toHaveTextContent("medium · 1M");
+    fireEvent.click(settings);
+    const dialog = screen.getByRole("dialog", { name: "Model settings" });
+    const contextList = within(dialog).getByRole("listbox", { name: "Context Size" });
+    fireEvent.click(within(contextList).getByRole("option", { name: "300K" }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("context", "300k");
+  });
+
   it("keeps a plain model picker when the agent has no effort option", () => {
     render(<ConfigPickers config={copilotConfig(null)} onChange={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Model" })).toHaveAttribute("aria-haspopup", "listbox");
+  });
+
+  it("omits off switches from multi-setting summaries and shows them concisely when on", () => {
+    const cfg = copilotConfig();
+    cfg.push(
+      {
+        id: "context",
+        name: "Context",
+        category: "model_config",
+        description: null,
+        current: "500k",
+        via: "option",
+        values: [value("500k", "500K")],
+      },
+      {
+        id: "fast",
+        name: "Fast",
+        category: "model_config",
+        description: null,
+        current: "false",
+        via: "option",
+        values: [value("false", "Off"), value("true", "Fast")],
+      },
+    );
+    const { rerender } = render(<ConfigPickers config={cfg} onChange={vi.fn()} />);
+    const settings = screen.getByRole("button", { name: /^Model settings:/ });
+    expect(settings).toHaveTextContent("medium · 500K");
+    expect(settings).toHaveAttribute("title", expect.stringContaining("Fast: Off"));
+
+    rerender(<ConfigPickers config={cfg} values={{ fast: "true" }} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("medium · 500K · Fast");
+  });
+});
+
+describe("computeOverflowLayout", () => {
+  const base = {
+    gap: 2,
+    fixedWidths: [38, 220], // agent icon + model/settings
+    secondaryWidths: [120, 90], // mode (with detail) + collaboration mode
+    detailWidth: 45,
+    detailIndex: 0,
+    menuWidth: 24,
+  };
+
+  it("keeps everything visible when the toolbar fits", () => {
+    // 38 + 220 + 120 + 90 + 3*2 = 474
+    expect(computeOverflowLayout({ ...base, available: 500 })).toEqual({
+      compactDetail: false,
+      collapsedCount: 0,
+    });
+  });
+
+  it("hides chip detail before collapsing any secondary picker", () => {
+    // 474 - 45 = 429
+    expect(computeOverflowLayout({ ...base, available: 440 })).toEqual({
+      compactDetail: true,
+      collapsedCount: 0,
+    });
+  });
+
+  it("collapses trailing secondary pickers one by one as space shrinks", () => {
+    // Keep mode (full 120) + menu (24): 38 + 220 + 120 + 24 + 3*2 = 408
+    expect(computeOverflowLayout({ ...base, available: 410 })).toEqual({
+      compactDetail: false,
+      collapsedCount: 1,
+    });
+    // Keep mode (compact 75) + menu (24): 38 + 220 + 75 + 24 + 3*2 = 363
+    expect(computeOverflowLayout({ ...base, available: 370 })).toEqual({
+      compactDetail: true,
+      collapsedCount: 1,
+    });
+    // Collapse all secondary pickers into the menu:
+    expect(computeOverflowLayout({ ...base, available: 320 })).toEqual({
+      compactDetail: false,
+      collapsedCount: 2,
+    });
+  });
+
+  it("does nothing when unmeasured (available <= 0) or when there are no secondary items", () => {
+    expect(computeOverflowLayout({ ...base, available: 0 })).toEqual({
+      compactDetail: false,
+      collapsedCount: 0,
+    });
+    expect(computeOverflowLayout({ ...base, available: 100, secondaryWidths: [] })).toEqual({
+      compactDetail: false,
+      collapsedCount: 0,
+    });
   });
 });

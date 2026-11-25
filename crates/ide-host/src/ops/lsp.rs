@@ -1,4 +1,4 @@
-use super::doc::blocking;
+use super::blocking;
 use crate::Host;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use ide_command::command;
@@ -70,25 +70,119 @@ pub async fn lsp_completion(
     pos: Pos,
     trigger: Option<String>,
 ) -> IdeResult<CompletionList> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
+    // Typing on in a word whose list only some plugins marked incomplete: ask those plugins
+    // again and keep the rest (the language server's list, the other plugins' items).
+    let word = project.documents.snapshot(doc).ok().and_then(|snap| CompletionWord::at(&snap.text, pos));
+    let resumed = match (&word, trigger.is_none()) {
+        (Some(word), true) => project
+            .completion_session
+            .lock()
+            .as_ref()
+            .filter(|s| s.resumes(doc, word))
+            .map(|s| (s.kept.clone(), s.incomplete.clone())),
+        _ => None,
+    };
+    if let Some((kept, only)) = resumed {
+        let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else {
+            *project.completion_session.lock() = None;
+            return Ok(CompletionList { is_incomplete: false, items: kept });
+        };
+        let asked = only.clone();
+        let answer = plugin_call(move || plugins.provide_completion_for_editor(&d, pos, None, Some(&asked)))
+            .await
+            .unwrap_or_default();
+        let mut items = kept;
+        items.extend(answer.items.into_iter().map(|(_, item)| plugin_completion(item)));
+        let mut session = project.completion_session.lock();
+        if let Some(s) = session.as_mut().filter(|s| s.incomplete == only) {
+            s.incomplete = answer.incomplete.clone();
+        }
+        return Ok(CompletionList { is_incomplete: !answer.incomplete.is_empty(), items });
+    }
+    *project.completion_session.lock() = None;
+
+    let lsp = project.lsp.clone();
     let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
     let result = lsp.completion(target, pos, trigger.clone(), cancel).await;
     host.end_request(request);
     // Plugin providers (`[[contributes.providers]]`) add theirs.
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
-    let (covered, items) = plugin_call(move || plugins.provide_completion_for_editor(&d, pos, trigger.as_deref()))
+    let answer = plugin_call(move || plugins.provide_completion_for_editor(&d, pos, trigger.as_deref(), None))
         .await
         .unwrap_or_default();
-    if items.is_empty() {
-        return if covered {
+    if answer.items.is_empty() && answer.incomplete.is_empty() {
+        return if answer.covered {
             Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }))
         } else {
             result
         };
     }
     let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
-    list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
+    let server_complete = !list.is_incomplete;
+    let mut fresh = Vec::new();
+    for (id, item) in answer.items {
+        let item = plugin_completion(item);
+        if answer.incomplete.contains(&id) { fresh.push(item) } else { list.items.push(item) }
+    }
+    if !answer.incomplete.is_empty() {
+        // Only a complete server list can be kept; else typing on asks everyone, as before.
+        if let (true, Some(word)) = (server_complete, word) {
+            *project.completion_session.lock() =
+                Some(CompletionSession { doc, word, kept: list.items.clone(), incomplete: answer.incomplete });
+        }
+        list.is_incomplete = true;
+    }
+    list.items.extend(fresh);
     Ok(list)
+}
+
+/// The word completion is asked in: its line and the line's text before the word.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CompletionWord {
+    line: u32,
+    before: String,
+}
+
+impl CompletionWord {
+    /// The identifier ending at `pos` in `text` (possibly empty, right after a `.`).
+    fn at(text: &str, pos: Pos) -> Option<Self> {
+        let line = text.split('\n').nth(pos.line as usize)?.trim_end_matches('\r');
+        let mut col = 0u32;
+        let mut end = line.len();
+        for (i, c) in line.char_indices() {
+            if col >= pos.col {
+                end = i;
+                break;
+            }
+            col += c.len_utf16() as u32;
+        }
+        if col < pos.col {
+            return None;
+        }
+        let head = &line[..end];
+        let word_len: usize =
+            head.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').map(char::len_utf8).sum();
+        let before = &head[..head.len() - word_len];
+        Some(Self { line: pos.line, before: before.to_owned() })
+    }
+}
+
+/// A completion whose list some plugins marked incomplete (API 1.16): while the user types on in
+/// the same word, only those plugins are asked again.
+pub(crate) struct CompletionSession {
+    doc: DocId,
+    word: CompletionWord,
+    /// The language server's list (complete) and the other plugins' items.
+    kept: Vec<CompletionItem>,
+    /// The plugins asked again.
+    incomplete: std::collections::BTreeSet<String>,
+}
+
+impl CompletionSession {
+    fn resumes(&self, doc: DocId, word: &CompletionWord) -> bool {
+        self.doc == doc && &self.word == word && !self.incomplete.is_empty()
+    }
 }
 
 /// The plugin host and the document, when some plugin provides `kind`.
@@ -319,6 +413,31 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
     }
 }
 
+/// The Flutter Property Editor's arguments of the call at `pos`.
+#[command(trust = trusted)]
+pub async fn lsp_editable_arguments(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<EditableArguments>> {
+    host.project(window)?.lsp.editable_arguments(doc, pos).await
+}
+
+/// Sets an argument of the call at `pos`; the edit reaches the document as the server's
+/// `workspace/applyEdit`, undoable like any other.
+#[command(trust = trusted)]
+pub async fn lsp_edit_argument(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+    name: String,
+    value: Option<ArgumentValue>,
+) -> IdeResult<()> {
+    host.project(window)?.lsp.edit_argument(doc, pos, name, value).await
+}
+
 #[command(trust = trusted)]
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
     let target = position_document(host, window, doc, pos).await?;
@@ -499,6 +618,25 @@ pub async fn plugin_line_markers(
             target: m.target.map(|l| Location { path: l.path.into(), range: l.range, uri: None }),
         })
         .collect())
+}
+
+/// Where other files import the document's file (Find Usages on a file, a Vue component's
+/// usages). Cancel with `cancel_request(request)`.
+#[command(trust = trusted)]
+pub async fn lsp_file_references(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+) -> IdeResult<Vec<Location>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let cancel = host.begin_request(request);
+    let result = tokio::select! {
+        result = lsp.file_references(doc, cancel.clone()) => result,
+        _ = cancel.cancelled() => Err(ide_core::IdeError::cancelled()),
+    };
+    host.end_request(request);
+    result
 }
 
 /// Implementations of the symbols at `positions`, one list per position (the
@@ -2224,6 +2362,25 @@ pub fn plugin_formatters() -> IdeResult<Vec<crate::plugins::language_features::F
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_completion_word_is_its_line_and_what_precedes_it() {
+        use super::*;
+        let word = |text: &str, line: u32, col: u32| CompletionWord::at(text, Pos::new(line, col));
+        let before = |text: &str, line: u32, col: u32| word(text, line, col).map(|w| w.before);
+        assert_eq!(before("Book.findByTitle", 0, 16).as_deref(), Some("Book."));
+        // Typing on in the word, or deleting back into it, is the same word.
+        assert_eq!(word("Book.findByTitleA", 0, 17), word("Book.findBy", 0, 11));
+        assert_eq!(word("Book.findBy", 0, 5), word("Book.findBy", 0, 11));
+        // Another line, or a change before the word, is another one.
+        assert_ne!(word("a\nBook.find", 1, 9), word("Book.find\na", 0, 9));
+        assert_ne!(word("Book.find", 0, 9), word("Look.find", 0, 9));
+        // Columns count UTF-16 units; CRLF line ends don't count.
+        assert_eq!(before("😀 x.ab", 0, 7).as_deref(), Some("😀 x."));
+        assert_eq!(before("x.ab\r\nnext", 0, 4).as_deref(), Some("x."));
+        assert_eq!(word("short", 0, 9), None);
+        assert_eq!(word("short", 3, 0), None);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn python_optimize_imports_without_a_server_runs_ruff_on_the_unsaved_text() {
@@ -3068,6 +3225,8 @@ ide_command::domain!(
     lsp_completion,
     lsp_document_colors,
     lsp_document_highlights,
+    lsp_edit_argument,
+    lsp_editable_arguments,
     lsp_document_links,
     lsp_exception_class_at,
     lsp_execute_code_action,
@@ -3084,6 +3243,7 @@ ide_command::domain!(
     lsp_hierarchy_refactor,
     lsp_hover,
     lsp_implementation_locations,
+    lsp_file_references,
     lsp_implementations,
     lsp_inlay_hints,
     lsp_inline_completion,

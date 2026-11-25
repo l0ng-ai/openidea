@@ -40,6 +40,7 @@ async fn find(host: &Host, paths: Vec<PathBuf>, pattern: &str) -> Vec<ide_search
             max_matches: 0,
             context: Default::default(),
             include_excluded: false,
+            skip_large_files: false,
         },
         ide_host::ops::Channel::new(move |event| {
             if let search::SearchEvent::File { file } = event {
@@ -161,6 +162,7 @@ async fn properties_search_git_and_document_coordinates_agree() {
         max_matches: 0,
         context: Default::default(),
         include_excluded: false,
+        skip_large_files: false,
     };
     search::replace_in_files(
         &host,

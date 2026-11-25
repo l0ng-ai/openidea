@@ -26,13 +26,14 @@ async fn invoke(peer: &Peer, window: &str, cmd: &str, args: Value) -> Result<Val
 
 const NO_SESSION: i64 = 4242;
 
-fn calls() -> [(&'static str, Value); 4] {
+fn calls() -> [(&'static str, Value); 5] {
     let object = json!({"generation": 1, "id": 7});
     [
         ("debug_jvm_memory_classes", json!({"session": NO_SESSION})),
         ("debug_jvm_memory_instances", json!({"session": NO_SESSION, "className": "java.lang.String", "limit": 10})),
         ("debug_jvm_memory_fields", json!({"session": NO_SESSION, "object": object})),
         ("debug_jvm_memory_referrers", json!({"session": NO_SESSION, "object": object, "limit": 10})),
+        ("debug_jvm_thread_dump", json!({"session": NO_SESSION})),
     ]
 }
 
@@ -78,5 +79,16 @@ async fn class_table_is_refused_in_restricted_mode() {
     let (host, _tmp) = host(false);
     let session = ide_core::DebugSessionId(NO_SESSION as u32);
     let error = ide_host::ops::debug::debug_jvm_memory_classes(&host, "main", session).await.unwrap_err();
+    assert!(error.message.contains("Restricted Mode"), "{error:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thread_dumps_are_refused_in_restricted_mode() {
+    let (host, _tmp) = host(false);
+    let session = ide_core::DebugSessionId(NO_SESSION as u32);
+    let error = ide_host::ops::debug::debug_jvm_thread_dump(&host, "main", session).await.unwrap_err();
+    assert!(error.message.contains("Restricted Mode"), "{error:?}");
+    let error =
+        ide_host::ops::thread_dump::run_jvm_thread_dump(&host, "main", ide_core::RunId(1), None).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"), "{error:?}");
 }

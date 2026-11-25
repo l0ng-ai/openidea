@@ -316,6 +316,7 @@ impl ClickhousePool {
                 has_more,
                 elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
                 execution_ms,
+                truncated: Vec::new(),
             })
         };
         let result = tokio::select! {

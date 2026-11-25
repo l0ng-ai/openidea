@@ -68,6 +68,7 @@ import type { MergeData } from "./mergeKind";
 import { readClipboardPlainText } from "@/platform/clipboard";
 export { MERGE_KIND, mergeInput, type MergeData } from "./mergeKind";
 
+/** Until the result is built: nothing to step through, and no "all processed" notice yet. */
 const NOTHING_LEFT: MergeSummary = {
   pending: 0,
   conflicts: 0,
@@ -643,6 +644,16 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   return (
     <div ref={rootRef} className={styles.root} {...focusProps}>
       <MergeToolbar summary={summary} step={goto} run={(c) => void runAction(c)} />
+      {state && lang !== null && summary !== NOTHING_LEFT && !summary.pending && (
+        <div className={styles.processed} role="status">
+          <span className={styles.processedText}>
+            <T>All changes have been processed.</T>
+          </span>
+          <button type="button" className={styles.processedLink} onClick={() => void runAction("apply")}>
+            <T>Save changes and finish merging</T>
+          </button>
+        </div>
+      )}
       {!state || lang === null ? (
         <div className={styles.message}>
           <Spinner size={14} />

@@ -1,11 +1,10 @@
 /**
  * Live Markdown source for the preview: an editor contribution on Markdown
- * files publishes the document text (debounced while typing), the first
- * visible line of the editor (for scroll sync) and caret moves (so a Preview
- * only preview follows navigation in its hidden editor), per path.
+ * files publishes the text, scroll position, and caret moves per path.
+ * Preview Only follows navigation in the hidden editor.
  */
-import { StateEffect, type EditorState } from "@codemirror/state";
-import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
+import { StateEffect, Text, type EditorState } from "@codemirror/state";
+import { Decoration, Direction, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { SearchCursor, getSearchQuery } from "@codemirror/search";
 import { create } from "zustand";
 import { registerEditorContribution, useEditorRegistry } from "@/editor/api";
@@ -26,9 +25,11 @@ export interface LiveMarkdownFind {
 }
 
 export interface LiveMarkdown {
-  text: string;
-  /** 0-based first visible source line of the editor that scrolled last. */
+  text: Text;
+  /** 0-based source line at the top of the editor, including progress through the line. */
   topLine: number;
+  /** Whether the scrolling editor has reached its bottom. */
+  sourceAtEnd: boolean;
   /** Bumped when the editor scrolls, so equal lines still resync. */
   scrollSeq: number;
   /** The editor's font zoom in px; the preview scales its text by the same amount. */
@@ -56,8 +57,9 @@ const previewSelectionMark = Decoration.mark({ class: "cm-selectionMatch" });
 function publish(path: string, patch: Partial<LiveMarkdown>) {
   useLiveMarkdown.setState((s) => {
     const prev = s[path] ?? {
-      text: "",
+      text: Text.empty,
       topLine: 0,
+      sourceAtEnd: false,
       scrollSeq: 0,
       fontZoom: 0,
       caretLine: 0,
@@ -152,9 +154,93 @@ function previewSelectionDecorations(view: EditorView, query: string): Decoratio
   return Decoration.set(ranges);
 }
 
-function topLineOf(view: EditorView): number {
-  const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
-  return view.state.doc.lineAt(block.from).number - 1;
+function sourcePositionOf(view: EditorView) {
+  const scroller = view.scrollDOM;
+  if (!view.inView || !scroller.clientHeight) return null;
+  const y = Math.max(0, sourceViewportTop(view));
+  const block = view.lineBlockAtHeight(y);
+  const line = view.state.doc.lineAt(block.from);
+  let fraction = block.height > 0 ? Math.max(0, Math.min(1, (y - block.top) / block.height)) : 0;
+  const rowHeight = view.defaultLineHeight;
+  if (
+    view.lineWrapping &&
+    rowHeight > 0 &&
+    block.height > rowHeight * 1.5 &&
+    block.from === line.from &&
+    block.to === line.to
+  ) {
+    // Interpolate between the source offsets of the visible wrapped row and the following row.
+    const row = Math.floor((y - block.top) / rowHeight);
+    const rowTop = block.top + row * rowHeight;
+    const rect = view.contentDOM.getBoundingClientRect();
+    const x = view.textDirectionAt(line.from) === Direction.LTR ? rect.left + 1 : rect.right - 1;
+    const middle = view.documentTop + rowTop + rowHeight / 2;
+    const start = view.posAtCoords({ x, y: middle });
+    const next =
+      rowTop + rowHeight >= block.bottom - 0.5 ? line.to + 1 : view.posAtCoords({ x, y: middle + rowHeight });
+    if (start !== null && next !== null && start >= line.from && next >= start && next <= line.to + 1) {
+      const withinRow = Math.max(0, Math.min(1, (y - rowTop) / rowHeight));
+      const span = line.length + Number(line.number < view.state.doc.lines);
+      if (span) fraction = Math.min(1, (start - line.from + withinRow * (next - start)) / span);
+    }
+  }
+  const topLine = line.number - 1 + fraction;
+  const sourceAtEnd = scroller.scrollTop > 0 && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1;
+  return { topLine, sourceAtEnd };
+}
+
+/** Redraws the split source before paint when a wheel jump passes its rendered lines. */
+export function installMarkdownSourceScroll(root: HTMLElement): () => void {
+  const onWheel = (event: WheelEvent) => {
+    if (
+      event.defaultPrevented ||
+      !event.cancelable ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      event.altKey ||
+      event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL ||
+      !event.deltaY ||
+      Math.abs(event.deltaX) > Math.abs(event.deltaY) ||
+      !(event.target instanceof Element)
+    )
+      return;
+
+    const scroller = event.target.closest<HTMLElement>(".cm-scroller");
+    const view = scroller && EditorView.findFromDOM(scroller);
+    if (!scroller || !view) return;
+
+    const current = scroller.scrollTop;
+    const height = scroller.clientHeight;
+    const max = scroller.scrollHeight - height;
+    const target = Math.min(max, Math.max(0, current + event.deltaY));
+    if (max <= 0 || target === current) return;
+
+    const scale = view.scaleY;
+    const nextTop = sourceViewportTop(view) + (target - current) * scale;
+    const blocks = view.viewportLineBlocks;
+    const first = blocks[0];
+    const last = blocks.at(-1);
+    if (!first || !last) return;
+    if (
+      (view.viewport.from === 0 || nextTop >= first.top) &&
+      (view.viewport.to === view.state.doc.length || nextTop + height * scale <= last.bottom)
+    )
+      return;
+
+    // A native jump can expose a virtual gap before CodeMirror redraws. Move and measure together.
+    event.preventDefault();
+    scroller.scrollBy(event.deltaX, target - current);
+    view.requestMeasure();
+    view.lineBlockAtHeight(nextTop);
+  };
+  root.addEventListener("wheel", onWheel, { passive: false });
+  return () => root.removeEventListener("wheel", onWheel);
+}
+
+function sourceViewportTop(view: EditorView): number {
+  const scroller = view.scrollDOM;
+  return scroller.getBoundingClientRect().top + scroller.clientTop * view.scaleY - view.documentTop;
 }
 
 function livePlugin(path: string) {
@@ -162,16 +248,25 @@ function livePlugin(path: string) {
     class {
       decorations: DecorationSet = Decoration.none;
       private timer: ReturnType<typeof setTimeout> | undefined;
-      private frame = 0;
+      private scrolled = false;
+      private destroyed = false;
       private previewSel = "";
       private unsubscribe: () => void;
+      private readonly measureSource = {
+        read: sourcePositionOf,
+        write: (position: ReturnType<typeof sourcePositionOf>) => {
+          const scrolled = this.scrolled;
+          this.scrolled = false;
+          if (this.destroyed || !position) return;
+          const prev = useLiveMarkdown.getState()[path];
+          if (scrolled || position.topLine !== prev?.topLine || position.sourceAtEnd !== prev?.sourceAtEnd) {
+            publish(path, { ...position, scrollSeq: (prev?.scrollSeq ?? 0) + Number(scrolled) });
+          }
+        },
+      };
       private readonly onScroll = () => {
-        if (this.frame) return;
-        this.frame = requestAnimationFrame(() => {
-          this.frame = 0;
-          const seq = (useLiveMarkdown.getState()[path]?.scrollSeq ?? 0) + 1;
-          publish(path, { topLine: topLineOf(this.view), scrollSeq: seq });
-        });
+        this.scrolled = true;
+        this.view.requestMeasure(this.measureSource);
       };
 
       constructor(private view: EditorView) {
@@ -179,7 +274,7 @@ function livePlugin(path: string) {
         this.previewSel = current?.previewSelection ?? "";
         this.decorations = previewSelectionDecorations(view, this.previewSel);
         publish(path, {
-          text: view.state.doc.toString(),
+          text: view.state.doc,
           fontZoom: view.state.field(fontZoom, false) ?? 0,
           find: findStateOf(view.state),
           editorSelection: editorSelectionOf(view.state),
@@ -235,30 +330,22 @@ function livePlugin(path: string) {
           this.decorations = previewSelectionDecorations(u.view, this.previewSel);
         }
 
+        if (u.geometryChanged) u.view.requestMeasure(this.measureSource);
         if (!u.docChanged) {
-          if (u.geometryChanged && u.view.scrollDOM.scrollTop > 0) {
-            u.view.requestMeasure({
-              key: this,
-              read: topLineOf,
-              write: (topLine) => {
-                if (topLine !== useLiveMarkdown.getState()[path]?.topLine) publish(path, { topLine });
-              },
-            });
-          }
           if (u.selectionSet) this.publishCaret();
           return;
         }
         clearTimeout(this.timer);
-        this.timer = setTimeout(() => publish(path, { text: this.view.state.doc.toString() }), TEXT_DELAY);
+        this.timer = setTimeout(() => publish(path, { text: this.view.state.doc }), TEXT_DELAY);
       }
 
       destroy() {
+        this.destroyed = true;
         clearTimeout(this.timer);
-        cancelAnimationFrame(this.frame);
         this.unsubscribe();
         this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
         // Flush the latest edit for a preview that outlives this view.
-        publish(path, { text: this.view.state.doc.toString() });
+        publish(path, { text: this.view.state.doc });
       }
     },
     { decorations: (v) => v.decorations },

@@ -12,6 +12,7 @@ import {
   registerEditorKind,
   registerMenuGroup,
   registerOverlay,
+  registerStatusItem,
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
@@ -32,7 +33,13 @@ import { controlLabel, controlOperation, inProgress, installOperationNoticeExpir
 import { annotationsShown, blameSlot } from "./blame";
 import { activateRevisionAnnotations } from "./annotateRevisionProvider";
 import { inlineBlame } from "./inlineBlame";
-import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
+import {
+  BranchWidget,
+  BranchesPopupHost,
+  STATUS_BRANCH_WIDGET,
+  StatusBranchWidget,
+  useBranchesPopup,
+} from "./BranchWidget";
 import { SyncCommitsPopupHost } from "./SyncCommitsPopup";
 import { clearUnstashConflictNotices, showConflictsDialog } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
@@ -109,13 +116,17 @@ function trackTitleItem(): () => void {
   let dispose: (() => void) | null = null;
   const sync = (available: boolean) => {
     if (available && !dispose) {
-      dispose = registerTitleItem({
-        id: "vcs.branch",
-        title: "VCS Widget",
-        align: "left",
-        priority: 10,
-        component: BranchWidget,
-      });
+      const disposers = [
+        registerTitleItem({
+          id: "vcs.branch",
+          title: "VCS Widget",
+          align: "left",
+          priority: 10,
+          component: BranchWidget,
+        }),
+        registerStatusItem({ ...STATUS_BRANCH_WIDGET, align: "right", priority: 60, component: StatusBranchWidget }),
+      ];
+      dispose = () => disposers.forEach((d) => d());
     } else if (!available && dispose) {
       dispose();
       dispose = null;
