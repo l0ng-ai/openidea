@@ -7,16 +7,20 @@
  */
 import { createElement } from "react";
 import { create } from "zustand";
-import { editorService, toolWindowService, type EditorInput } from "@/workbench/contributions";
+import { editorService, toolWindowService, type EditorDropTarget, type EditorInput } from "@/workbench/contributions";
 import { useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { Badge } from "@/ui";
 import { loadTerminalRuntime } from "./loader";
 import type { SessionSnapshot } from "./session";
 
 /** Editor kind of a terminal session tab. */
 export const CLI_KIND = "cli";
+
+/** Drag type of terminal tabs: reorders within the tool window, or drops onto the editor area. */
+export const TERMINAL_TAB_MIME = "application/x-openidea-terminal-tab";
 
 /** `data` of a terminal editor tab: its title and where it started. */
 export interface CliData {
@@ -91,7 +95,7 @@ function trackCliTerminalId(input: EditorInput) {
  * Move to Editor: tab `id` of the Terminal tool window (the active one when omitted)
  * leaves the tool window and opens as an editor tab, its session still running.
  */
-export async function moveTerminalToEditor(id?: string) {
+export async function moveTerminalToEditor(id?: string, target?: EditorDropTarget) {
   const rt = await loadTerminalRuntime();
   const state = rt.useTerminals.getState();
   const tab = state.tabs.find((t) => t.id === (id ?? state.activeTab));
@@ -104,7 +108,37 @@ export async function moveTerminalToEditor(id?: string) {
   rt.adoptCli(input.key, session);
   trackCliTerminalId(input);
   if (rt.useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
-  await editorService().openInput(input, { focus: true });
+  await editorService().openInput(input, {
+    focus: true,
+    ...(target
+      ? {
+          pane: target.paneId,
+          ...(target.zone !== "center" ? { edge: target.zone } : {}),
+          ...(target.index !== undefined ? { index: target.index } : {}),
+          ...(target.pinned !== undefined ? { pinned: target.pinned } : {}),
+        }
+      : {}),
+  });
+}
+
+/** Splits a terminal editor tab into a new shell session in the same directory. */
+export async function splitCliTab(input: EditorInput): Promise<EditorInput | null> {
+  const root = useProject.getState().project?.root;
+  if (!root) return null;
+  const rt = await loadTerminalRuntime();
+  const cwd = rt.cliSession(input.key)?.state.cwd || cliData(input)?.cwd || rt.startDirectory(root);
+  const openNames =
+    editorService()
+      .openTabs?.()
+      .flatMap((t) => (t.input.kind === CLI_KIND ? [cliData(t.input)?.name ?? t.title] : [])) ?? [];
+  const name = rt.nextTabName(
+    [...rt.useTerminals.getState().tabs.map((t) => t.name), ...openNames],
+    workflowSettings().terminal.tabName,
+  );
+  const fresh = cliInput(name, "", cwd);
+  rt.startCli(fresh.key, cwd, "", root);
+  trackCliTerminalId(fresh);
+  return fresh;
 }
 
 /** Starts the session of a restored tab: its Start button. */

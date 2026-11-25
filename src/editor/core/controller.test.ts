@@ -804,6 +804,50 @@ describe("EditorController", () => {
       offWrapper();
     }
   });
+
+  it("opens inputs at explicit strip indices or split edges and never clones singleton kinds", async () => {
+    let seq = 1;
+    const dispose = registerEditorKind({
+      kind: "singleton-term",
+      component: () => null,
+      title: (i) => i.key,
+      singleton: true,
+      splitInput: () => ({ kind: "singleton-term", key: `singleton-term:${++seq}` }),
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a", "/p/b.ts": "b" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      await ctrl.openFile("/p/b.ts", { focus: false });
+      const p1 = useTabs.getState().activePane;
+
+      // Explicit strip index inserts between a.ts and b.ts.
+      const term1 = { kind: "singleton-term", key: "singleton-term:1" };
+      await ctrl.openInput(term1, { pane: p1, index: 1, focus: false });
+      expect(useTabs.getState().panes[p1]!.tabs.map((t) => t.input.key)).toEqual([
+        "file:/p/a.ts",
+        "singleton-term:1",
+        "file:/p/b.ts",
+      ]);
+
+      // Splitting a singleton tab opens `splitInput` in the new pane instead of duplicating the key.
+      ctrl.activate(p1, useTabs.getState().panes[p1]!.tabs[1]!.id, false);
+      ctrl.split(p1, "row");
+      await vi.waitFor(() => expect(Object.keys(useTabs.getState().panes)).toHaveLength(2));
+      const p2 = Object.keys(useTabs.getState().panes).find((id) => id !== p1)!;
+      expect(useTabs.getState().panes[p1]!.tabs.map((t) => t.input.key)).toContain("singleton-term:1");
+      expect(useTabs.getState().panes[p2]!.tabs.map((t) => t.input.key)).toEqual(["singleton-term:2"]);
+
+      // Re-opening an already open singleton at an edge moves it into the new split instead of duplicating it.
+      await ctrl.openInput(term1, { pane: p2, edge: "bottom", focus: false });
+      const allTerm1 = Object.values(useTabs.getState().panes).flatMap((p) =>
+        p.tabs.filter((t) => t.input.key === "singleton-term:1"),
+      );
+      expect(allTerm1).toHaveLength(1);
+    } finally {
+      dispose();
+    }
+  });
 });
 
 describe("editor action when clauses", () => {

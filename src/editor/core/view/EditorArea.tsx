@@ -27,6 +27,7 @@ import {
   EDITOR_TAB_MIME,
   acceptsEditorDrop,
   dropOnEditor,
+  editorDropAllowsSplit,
   getFileDecoration,
   prepareMenuGroups,
   textEditorWrapperFor,
@@ -107,7 +108,7 @@ function EmptyEditorArea() {
     const el = ref.current;
     if (!el) return;
     return registerDropTarget(el, {
-      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
+      accepts: (type, data) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type, data),
       over: (data) => setOver(data.type !== FILES_DRAG || droppedFiles(data.payload).length > 0),
       leave: () => setOver(false),
       drop: (data) => {
@@ -119,7 +120,7 @@ function EmptyEditorArea() {
           return;
         }
         if (data.type !== EDITOR_TAB_MIME) {
-          dropOnEditor(data);
+          dropOnEditor(data, { paneId, zone: "center", index: 0 });
           return;
         }
         const p = parseTabPayload(data.payload);
@@ -301,9 +302,13 @@ function PaneView({ paneId }: { paneId: string }) {
     const strip = (offset: number, pin?: boolean): TabsDnd => ({
       type: EDITOR_TAB_MIME,
       payload: (tabId) => JSON.stringify({ paneId, tabId }),
+      accepts: (data) => acceptsEditorDrop(data.type, data),
       onDrop: (raw, index) => {
         const p = parseTabPayload(raw);
         if (p) ctrl.moveTab(p.paneId, p.tabId, paneId, index + offset, pin);
+      },
+      onExternalDrop: (data, index) => {
+        dropOnEditor(data, { paneId, zone: "center", index: index + offset, pinned: pin });
       },
       onDropOutside: dropOutside,
     });
@@ -318,10 +323,13 @@ function PaneView({ paneId }: { paneId: string }) {
     if (!el) return;
     const zoneAt = (x: number, y: number) => dropZoneAt(x, y, el.getBoundingClientRect());
     return registerDropTarget(el, {
-      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
+      accepts: (type, data) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type, data),
       over: (data, x, y) => {
         if (data.type === FILES_DRAG) setDropZone(droppedFiles(data.payload).length ? zoneAt(x, y) : null);
-        else setDropZone(data.type === EDITOR_TAB_MIME ? zoneAt(x, y) : "center");
+        else
+          setDropZone(
+            data.type === EDITOR_TAB_MIME || editorDropAllowsSplit(data.type, data) ? zoneAt(x, y) : "center",
+          );
       },
       leave: () => setDropZone(null),
       drop: (data, x, y) => {
@@ -332,7 +340,8 @@ function PaneView({ paneId }: { paneId: string }) {
           return;
         }
         if (data.type !== EDITOR_TAB_MIME) {
-          dropOnEditor(data);
+          const target = useTabs.getState().panes[paneId];
+          dropOnEditor(data, { paneId, zone, ...(zone === "center" ? { index: target?.tabs.length ?? 0 } : {}) });
           return;
         }
         const p = parseTabPayload(data.payload);
