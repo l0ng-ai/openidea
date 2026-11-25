@@ -518,6 +518,13 @@ export function isToolWindowVisible(id: string): boolean {
 /** Last shown or focused tool window, kept after it is hidden (Jump to Last Tool Window). */
 let lastUsed: string | null = null;
 
+/**
+ * `seq` of the last focus request that reached its window or was dropped with it. A window with a
+ * newer request does not hide as unpinned: a menu that ran the action returns focus to the editor
+ * before the window takes it.
+ */
+let servedFocusSeq = 0;
+
 export function lastUsedToolWindow(): string | null {
   return lastUsed && anchorOf(lastUsed) ? lastUsed : null;
 }
@@ -551,6 +558,7 @@ export function hideToolWindow(id: string) {
   const slot = slotOfId(id);
   const s = useToolWindowLayout.getState();
   if (!slot || s.visible[slot] !== id) return;
+  if (s.focusRequest?.id === id) servedFocusSeq = s.focusRequest.seq;
   const hadFocus = s.focused === id || isFocusWithinToolWindow(id);
   const nextVisible = { ...s.visible, [slot]: null };
   // The side stays maximized while its other area still shows a registered window.
@@ -792,6 +800,8 @@ export function restoreMaximizedToolWindow() {
  */
 export function setFocusedToolWindow(id: string | null, editor = false) {
   const s = useToolWindowLayout.getState();
+  const request = s.focusRequest;
+  if (id && request?.id === id) servedFocusSeq = request.seq;
   if (s.focused !== id) {
     if (id) lastUsed = id;
     useToolWindowLayout.setState({ focused: id, lastActive: id ?? s.lastActive });
@@ -801,7 +811,8 @@ export function setFocusedToolWindow(id: string | null, editor = false) {
   if (!id && !editor) return;
   for (const slot of SLOTS) {
     const shown = useToolWindowLayout.getState().visible[slot];
-    if (shown && shown !== id && viewModeOf(shown) !== "dockPinned") hideToolWindow(shown);
+    const pending = request?.id === shown && request.seq !== servedFocusSeq;
+    if (shown && shown !== id && !pending && viewModeOf(shown) !== "dockPinned") hideToolWindow(shown);
   }
 }
 

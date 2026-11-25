@@ -616,6 +616,18 @@ describe("view modes", () => {
     expect(isToolWindowVisible("terminal")).toBe(false);
   });
 
+  it("an undocked window activated from a menu survives the menu returning focus to the editor", () => {
+    setToolWindowViewMode("terminal", "undock");
+    showToolWindow("terminal", true);
+    // The closing menu restores focus to the editor before the window takes it.
+    setFocusedToolWindow(null, true);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+
+    setFocusedToolWindow("terminal");
+    setFocusedToolWindow(null, true);
+    expect(isToolWindowVisible("terminal")).toBe(false);
+  });
+
   it("stay when focus goes to a popup or dialog; pinned windows never hide on focus", () => {
     setToolWindowViewMode("project", "dockUnpinned");
     showToolWindow("terminal");
