@@ -110,6 +110,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Toggle Breakpoint Enabled, which has no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="ToggleBreakpointEnabled"><keyboard-shortcut first-keystroke="alt meta F8"/></action></keymap>`,
+    );
+    expect(k.overrides["debug.toggleBreakpointEnabled"]).toEqual([normalizeBinding("Alt+Meta+F8")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps the Active Tool Window actions", () => {
     const k = parseIdeaKeymap(
       `<keymap name="M" parent="$default"><action id="HideSideWindows"><keyboard-shortcut first-keystroke="control alt shift F12"/></action><action id="HideActiveWindow"><keyboard-shortcut first-keystroke="alt ESCAPE"/></action><action id="MaximizeToolWindow"><keyboard-shortcut first-keystroke="control alt M"/></action><action id="JumpToLastWindow"><keyboard-shortcut first-keystroke="alt F12"/></action><action id="ResizeToolWindowLeft"><keyboard-shortcut first-keystroke="control alt LEFT"/></action><action id="ResizeToolWindowRight"><keyboard-shortcut first-keystroke="control alt RIGHT"/></action><action id="ResizeToolWindowUp"><keyboard-shortcut first-keystroke="control alt UP"/></action><action id="ResizeToolWindowDown"><keyboard-shortcut first-keystroke="control alt DOWN"/></action></keymap>`,

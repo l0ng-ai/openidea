@@ -247,6 +247,8 @@ export interface LanguagesValid {
       downloadSources: boolean;
       /** Always update snapshots: `-U` on Maven runs, `java.maven.updateSnapshots` for jdtls. */
       updateSnapshots: boolean;
+      /** Who runs the gutter's JUnit 5 tests: OpenIDEA's runner or Surefire. */
+      runTestsUsing: "ide" | "maven";
     };
   };
   markdown: {
@@ -348,6 +350,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       delegateBuild: false,
       downloadSources: false,
       updateSnapshots: false,
+      runTestsUsing: "ide",
     },
   },
   markdown: { previewLayout: "sideBySide", previewFontSize: null, runCommands: true, commandDirectory: null },
@@ -536,6 +539,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         delegateBuild: bool(maven.delegateBuild, d.java.maven.delegateBuild),
         downloadSources: bool(maven.downloadSources, d.java.maven.downloadSources),
         updateSnapshots: bool(maven.updateSnapshots, d.java.maven.updateSnapshots),
+        runTestsUsing: oneOf(maven.runTestsUsing, ["ide", "maven"] as const, d.java.maven.runTestsUsing),
       },
     },
     markdown: {

@@ -10,6 +10,7 @@ mod angular;
 mod arduino;
 mod caps;
 mod clang_tidy;
+mod closing_labels;
 mod compose;
 mod convert;
 mod external_project;
@@ -150,6 +151,14 @@ struct DocState {
     /// When the servers last got new text (open or change): diagnostics published before are stale.
     changed: std::time::Instant,
     flutter_outline: Option<FlutterOutline>,
+    /// The Dart server's closing labels for the current text; dropped on the next change.
+    closing_labels: Option<ClosingLabels>,
+}
+
+struct ClosingLabels {
+    server: ide_core::ServerId,
+    generation: u64,
+    hints: Vec<InlayHint>,
 }
 
 /// The widget tree last published for a document, valid while that server instance runs.
@@ -1303,6 +1312,7 @@ impl LspManager {
             notebook: None,
             changed: std::time::Instant::now(),
             flutter_outline: None,
+            closing_labels: None,
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1351,6 +1361,7 @@ impl LspManager {
         let Some(d) = docs.get_mut(&doc) else { return };
         d.version = version as i32;
         d.changed = std::time::Instant::now();
+        d.closing_labels = None;
 
         // Servers that have this document open on their current instance.
         let targets: Vec<(Arc<Server>, Running, SyncKind, Encoding)> = d
@@ -2453,6 +2464,37 @@ impl LspManager {
         changed
     }
 
+    /// Records published closing labels; whether what the open documents of `path` show changed.
+    fn set_closing_labels(
+        &self,
+        path: &Path,
+        server: &Server,
+        generation: u64,
+        enc: Encoding,
+        labels: Vec<closing_labels::Label>,
+    ) -> bool {
+        let mut changed = false;
+        for d in self.docs.lock().values_mut().filter(|d| d.path == path && d.notebook.is_none()) {
+            // Not `self.conv`: it would lock `docs` again for a UTF-8 server's text.
+            let text = d.text.clone();
+            let conv = Conv::new(enc, move |_: &Path| Some(text.clone()));
+            let hints = closing_labels::hints(&conv, path, &d.text, labels.clone());
+            changed |= !hints.is_empty() || d.closing_labels.as_ref().is_some_and(|c| !c.hints.is_empty());
+            d.closing_labels = Some(ClosingLabels { server: server.id, generation, hints });
+        }
+        changed
+    }
+
+    fn closing_label_hints(&self, doc: DocId, range: Range) -> Vec<InlayHint> {
+        let docs = self.docs.lock();
+        let Some(d) = docs.get(&doc) else { return Vec::new() };
+        let Some(c) = d.closing_labels.as_ref() else { return Vec::new() };
+        if !d.servers.iter().any(|a| a.server.id == c.server && a.server.is_live(c.generation)) {
+            return Vec::new();
+        }
+        c.hints.iter().filter(|h| range.start <= h.position && h.position <= range.end).cloned().collect()
+    }
+
     pub async fn workspace_symbols(&self, query: &str, cancel: CancellationToken) -> IdeResult<Vec<WorkspaceSymbol>> {
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         let targets = self.ready_targets(&servers, |c| c.has("workspaceSymbolProvider")).await;
@@ -3315,6 +3357,7 @@ impl LspManager {
             }
         }
         let mut v = out.finish(Vec::new())?;
+        v.extend(self.closing_label_hints(doc, range));
         v.sort_by_key(|h| h.position);
         Ok(v)
     }
