@@ -301,6 +301,7 @@ export const intellijWindows: Record<string, string[]> = {
   "run.chooseDebugConfig": ["Alt+Shift+F9"],
   "run.editConfigs": [],
   "debug.toggleBreakpoint": ["Ctrl+F8"],
+  "debug.toggleBreakpointEnabled": [],
   "debug.viewBreakpoints": ["Ctrl+Shift+F8"],
   "debug.removeAllBreakpoints": [],
   "debug.removeAllBreakpointsInFile": [],

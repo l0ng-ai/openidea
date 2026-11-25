@@ -85,6 +85,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   ToggleLineBreakpoint: "debug.toggleBreakpoint",
   "Debugger.RemoveAllBreakpoints": "debug.removeAllBreakpoints",
   "Debugger.RemoveAllBreakpointsInFile": "debug.removeAllBreakpointsInFile",
+  ToggleBreakpointEnabled: "debug.toggleBreakpointEnabled",
   SaveAll: "file.save",
   ShowSettings: "file.settings",
   NewScratchFile: "file.newScratchFile",

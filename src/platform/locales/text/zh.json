@@ -3638,6 +3638,7 @@
   "Toggle Field Watchpoint": "切换字段监视点",
   "Toggle Light/Dark Theme": "切换浅色/深色主题",
   "Toggle Line Breakpoint": "切换行断点",
+  "Toggle Breakpoint Enabled": "切换断点启用状态",
   "Toggle Method Breakpoint": "切换方法断点",
   "Toggle Offline Mode": "切换离线模式",
   "Toggle Performance Overlay (Dev)": "切换性能浮层（开发）",
