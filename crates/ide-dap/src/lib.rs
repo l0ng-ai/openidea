@@ -450,6 +450,21 @@ fn no_session(s: DebugSessionId) -> IdeError {
     IdeError::not_found(format!("no debug session {}", s.0))
 }
 
+/// debugpy hands a subprocess (`subProcess: true`, forked or spawned) over as an `attach` whose
+/// `connect` is its own client listener: the child session is another connection to the running
+/// adapter, as VS Code makes it, not a new adapter that would take that port for a debug server.
+fn subprocess_connection(configuration: &Value, spec: &AdapterSpec) -> Option<(AdapterSpec, u16)> {
+    configuration.get("subProcessId")?;
+    let connect = configuration.get("connect")?;
+    let port = u16::try_from(connect.get("port")?.as_u64()?).ok()?;
+    let mut spec = spec.clone();
+    if let Some(host) = connect.get("host").and_then(Value::as_str) {
+        let loopback = host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+        spec.server_host = (!loopback).then(|| host.to_owned());
+    }
+    Some((spec, port))
+}
+
 /// The name of a child session: the adapter's, or the parent's when it gives none. js-debug
 /// names a browser page's session after the page the browser starts on, before the URL
 /// loads (`about:blank`, or nothing in a new profile), which says nothing about what is debugged.
@@ -1032,6 +1047,13 @@ impl DebugManager {
         if let Some(obj) = configuration.as_object_mut() {
             obj.entry("request").or_insert_with(|| request.clone().into());
         }
+        let (spec, port) = match parent.port {
+            Some(port) => (parent.spec.clone(), Some(port)),
+            None => match subprocess_connection(&configuration, &parent.spec) {
+                Some((spec, port)) => (spec, Some(port)),
+                None => (parent.spec.clone(), None),
+            },
+        };
         self.start_session(
             DebugSessionId::next(),
             parent.owner.clone(),
@@ -1040,8 +1062,8 @@ impl DebugManager {
             Some(parent.id),
             request,
             configuration,
-            parent.spec.clone(),
-            parent.port,
+            spec,
+            port,
             None,
         )
         .await
