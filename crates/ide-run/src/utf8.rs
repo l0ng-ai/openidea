@@ -441,6 +441,23 @@ mod encoding_tests {
         assert_eq!(out, "한국어 OK\r\n中文 OK\r\n");
     }
 
+    /// A program that writes a fixed-size buffer filled only in part, the rest NUL: the UTF-16
+    /// line it looks like never ends, and what it writes after must not stay UTF-16LE.
+    #[test]
+    fn utf16_ends_at_the_text_after_a_line_that_never_ends() {
+        let mut d = mixed(936);
+        let mut out = String::new();
+        d.decode_into("[10:45:00] before 正常输出\n".as_bytes(), &mut out);
+        let mut buffer = b"abc".to_vec();
+        buffer.resize(1024, 0);
+        d.decode_into(&buffer, &mut out);
+        d.decode_into("after-0: hello 正常输出\n".as_bytes(), &mut out);
+        d.decode_into("after-1: hello 正常输出\n".as_bytes(), &mut out);
+        out.push_str(&d.finish());
+        assert!(out.starts_with("[10:45:00] before 正常输出\n"), "{out:?}");
+        assert!(out.ends_with("after-0: hello 正常输出\nafter-1: hello 正常输出\n"), "{out:?}");
+    }
+
     #[test]
     fn without_a_code_page_other_lines_are_lossy_utf8_and_utf16_still_reads() {
         let mut d = MixedDecoder::new(None);
