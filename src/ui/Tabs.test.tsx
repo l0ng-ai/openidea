@@ -169,18 +169,16 @@ describe("Tabs interactions", () => {
     expect(onClose).toHaveBeenCalledWith("b");
   });
 
-  it("keeps focus on click and cycles selection with arrows when onCycle is set", () => {
-    const onSelect = vi.fn();
-    const onCycle = vi.fn();
-    render(<Tabs items={items} activeId="b" onSelect={onSelect} onCycle={onCycle} />);
-    const tab = screen.getByRole("tab", { name: "C" });
-    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
-    tab.dispatchEvent(down);
-    expect(down.defaultPrevented).toBe(true);
-    fireEvent.keyDown(tab, { key: "ArrowRight" });
-    fireEvent.keyDown(tab, { key: "ArrowLeft" });
-    expect(onCycle.mock.calls).toEqual([[1], [-1]]);
-    expect(onSelect).not.toHaveBeenCalled();
+  it("leaves focus where it was on click only when the strip asks to", () => {
+    const { rerender } = render(<Tabs items={items} activeId="b" onSelect={() => {}} keepFocusOnClick />);
+    const down = () => {
+      const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      screen.getByRole("tab", { name: "C" }).dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(down()).toBe(true);
+    rerender(<Tabs items={items} activeId="b" onSelect={() => {}} />);
+    expect(down()).toBe(false);
   });
 
   it("keeps Shift+click selection where the strip does not opt in", () => {

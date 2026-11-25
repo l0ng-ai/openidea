@@ -159,12 +159,10 @@ export interface TabsProps {
   /** `vertical`: a column of tabs (editor tabs placed left / right); always scrolls, `layout` is ignored. */
   orientation?: "horizontal" | "vertical";
   /**
-   * Quick-search style tab strip (Search Everywhere / Find in Files scopes):
-   * clicking a tab keeps focus where it was (e.g. in a search field), and
-   * Left/Right/Tab cycle the selected tab through this callback instead of
-   * roving focus between tab buttons. Home/End still jump to the first/last tab.
+   * Clicking a tab leaves keyboard focus where it was (a scope strip under a search field, like the
+   * Find in Files scopes); keyboard navigation of a focused strip is unchanged.
    */
-  onCycle?: (dir: 1 | -1) => void;
+  keepFocusOnClick?: boolean;
 }
 
 export function Tabs({
@@ -187,7 +185,7 @@ export function Tabs({
   hiddenTabsOnly = false,
   closePosition = "right",
   orientation = "horizontal",
-  onCycle,
+  keepFocusOnClick = false,
   ...aria
 }: TabsProps) {
   const vertical = orientation === "vertical";
@@ -336,27 +334,21 @@ export function Tabs({
     onSelect(item.id);
     tabRefs.current.get(item.id)?.focus();
   };
-  const selectTab = (index: number) => {
-    const item = items[Math.max(0, Math.min(items.length - 1, index))];
-    if (item) onSelect(item.id);
-  };
 
   const onKeyDown = (e: KeyboardEvent, index: number, item: TabItem) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     switch (e.key) {
       case vertical ? "ArrowDown" : "ArrowRight":
-        if (onCycle) onCycle(1);
-        else focusTab(index + 1);
+        focusTab(index + 1);
         break;
       case vertical ? "ArrowUp" : "ArrowLeft":
-        if (onCycle) onCycle(-1);
-        else focusTab(index - 1);
+        focusTab(index - 1);
         break;
       case "Home":
-        selectTab(0);
+        focusTab(0);
         break;
       case "End":
-        selectTab(items.length - 1);
+        focusTab(items.length - 1);
         break;
       case "Delete":
       case "Backspace":
@@ -510,7 +502,7 @@ export function Tabs({
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
                 className={clsx(styles.tabButton, item.dimmed && styles.dimmed)}
                 style={item.color ? { color: item.color } : undefined}
-                onMouseDown={onCycle ? (e) => e.preventDefault() : undefined}
+                onMouseDown={keepFocusOnClick ? (e) => e.preventDefault() : undefined}
                 onClick={(e) => {
                   // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.
                   if (closeOnShiftClick && e.shiftKey && e.detail > 0 && closable) {
