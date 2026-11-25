@@ -1698,7 +1698,10 @@ impl Tools {
                 };
                 match out {
                     Some(out) => Ok(out.lines().map(str::trim).rfind(|l| !l.is_empty()).map(String::from)),
-                    None => Err(IdeError::unavailable(format!("cannot look up the latest {}", packages[0]))),
+                    None => Err(IdeError::unavailable(format!(
+                        "cannot look up the latest {} with npm (it uses the registry of the npm configuration: `npm config get registry`)",
+                        packages[0]
+                    ))),
                 }
             }
             _ => Ok(None),
@@ -1829,6 +1832,11 @@ fn fetch_verified(
             });
         }
         let attempt = http.download(&candidate.url, &archive, dl.size, cancel, emit);
+        if let Some(mirror) = &candidate.mirror
+            && attempt.as_ref().err().is_none_or(|e| e.kind != ErrorKind::Cancelled)
+        {
+            mirror::report(mirror, attempt.is_ok());
+        }
         match attempt {
             Ok(()) => match check_sha256(&archive, dl, expected.as_deref(), candidate.mirror.is_some(), emit) {
                 Ok(()) => {
