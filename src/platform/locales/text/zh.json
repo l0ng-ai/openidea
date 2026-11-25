@@ -7248,6 +7248,8 @@
   "Resolve Using Yours": "使用我的版本解决",
   "Resolve Using Theirs": "使用对方的版本解决",
   "All changes processed": "所有更改均已处理",
+  "All changes have been processed.": "所有更改都已处理。",
+  "Save changes and finish merging": "保存更改并完成合并",
   "{pending} change left": "剩余 {pending} 个更改",
   "{pending} changes left": "剩余 {pending} 个更改",
   "Compare Contents": "比较内容",

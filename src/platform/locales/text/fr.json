@@ -5630,6 +5630,8 @@
   "Exit without applying the changes made in the result?": "Quitter sans appliquer les modifications apportées au résultat ?",
   "Base": "Base",
   "All changes processed": "Toutes les modifications sont traitées",
+  "All changes have been processed.": "Toutes les modifications ont été traitées.",
+  "Save changes and finish merging": "Enregistrer les modifications et terminer la fusion",
   "{pending} change left": "{pending} modification restante",
   "{pending} changes left": "{pending} modifications restantes",
   "Show All Commits": "Afficher tous les commits",

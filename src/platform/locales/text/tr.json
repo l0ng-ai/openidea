@@ -8311,6 +8311,8 @@
   "Resolve Using Yours": "Sizin Sürümünüzle Çöz",
   "Resolve Using Theirs": "Karşı Tarafın Sürümüyle Çöz",
   "All changes processed": "Tüm değişiklikler işlendi",
+  "All changes have been processed.": "Tüm değişiklikler işlendi.",
+  "Save changes and finish merging": "Değişiklikleri kaydet ve birleştirmeyi bitir",
   "{pending} change left": "{pending} değişiklik kaldı",
   "{pending} changes left": "{pending} değişiklik kaldı",
   "Compare Contents": "İçerikleri Karşılaştır",

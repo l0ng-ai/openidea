@@ -6664,6 +6664,8 @@
   "Resolve Using Yours": "使用我的版本解決",
   "Resolve Using Theirs": "使用對方的版本解決",
   "All changes processed": "所有更改均已處理",
+  "All changes have been processed.": "所有變更都已處理。",
+  "Save changes and finish merging": "儲存變更並完成合併",
   "{pending} change left": "剩餘 {pending} 個更改",
   "{pending} changes left": "剩餘 {pending} 個更改",
   "Compare Contents": "比較內容",
