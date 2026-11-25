@@ -646,9 +646,16 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted,
-            flutter: ide_flutter::FlutterDaemon::new(root.clone(), sink.clone()),
-            devtools: ide_flutter::ToolServer::devtools(root.clone()),
-            widget_preview: ide_flutter::ToolServer::widget_preview(root.clone()),
+            flutter: ide_flutter::FlutterDaemon::new(
+                root.clone(),
+                sink.clone(),
+                flutter_tool(&root, &settings, "flutter"),
+            ),
+            devtools: ide_flutter::ToolServer::devtools(root.clone(), flutter_tool(&root, &settings, "dart")),
+            widget_preview: ide_flutter::ToolServer::widget_preview(
+                root.clone(),
+                flutter_tool(&root, &settings, "flutter"),
+            ),
             root,
             sink,
             languages,
@@ -898,9 +905,16 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
-            flutter: ide_flutter::FlutterDaemon::new(dir.clone(), sink.clone()),
-            devtools: ide_flutter::ToolServer::devtools(dir.clone()),
-            widget_preview: ide_flutter::ToolServer::widget_preview(dir.clone()),
+            flutter: ide_flutter::FlutterDaemon::new(
+                dir.clone(),
+                sink.clone(),
+                flutter_tool(&dir, &settings, "flutter"),
+            ),
+            devtools: ide_flutter::ToolServer::devtools(dir.clone(), flutter_tool(&dir, &settings, "dart")),
+            widget_preview: ide_flutter::ToolServer::widget_preview(
+                dir.clone(),
+                flutter_tool(&dir, &settings, "flutter"),
+            ),
             sink,
             languages,
             settings,
@@ -1026,6 +1040,12 @@ fn light_watcher(
         }),
         ide_vfs::WatchMode::Flat,
     )
+}
+
+/// `flutter` / `dart` as Settings › Flutter chooses them, read each time the daemon or DevTools starts.
+fn flutter_tool(root: &Path, settings: &Arc<SettingsStore>, command: &'static str) -> ide_flutter::Configured {
+    let (root, settings) = (root.to_path_buf(), settings.clone());
+    Box::new(move || ide_sdk::apply::tool_command(&root, &settings.effective(), command))
 }
 
 /// Looks for repositories nested below the project (and the one containing it);

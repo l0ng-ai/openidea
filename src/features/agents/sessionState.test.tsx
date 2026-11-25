@@ -2301,14 +2301,12 @@ describe("meters in the task header", () => {
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
     const usage = screen.getByLabelText(/^Context /);
-    // The bar and percent show; the counts are in its label and tooltip.
+    // The ring and percent show; the counts are in its label and tooltip.
     expect(usage).toHaveTextContent("12%");
     expect(usage).toHaveAccessibleName(/24k\/200k \(12%\)/);
-    expect(usage.querySelector(`.${styles.usageBar} span`)).toHaveStyle({
-      width: "12%",
-    });
-    expect(screen.getByText("5h 19%")).toBeInTheDocument();
-    expect(screen.getByText("7d 9%")).toBeInTheDocument();
+    expect(usage.querySelector(`.${styles.usageRingArc}`)).toHaveAttribute("data-percent", "12");
+    expect(screen.getByLabelText("5-hour limit: 19% used")).toHaveTextContent("5h 19%");
+    expect(screen.getByLabelText("Weekly limit: 9% used")).toHaveTextContent("7d 9%");
     expect(screen.queryByText("$0.42")).toBeNull();
     act(() =>
       useProject.setState({
@@ -2322,8 +2320,40 @@ describe("meters in the task header", () => {
       }),
     );
     expect(screen.queryByText("24k/200k (12%)")).toBeNull();
-    expect(screen.queryByText("5h 19%")).toBeNull();
+    expect(screen.queryByLabelText("5-hour limit: 19% used")).toBeNull();
     expect(screen.getByText("$0.42")).toBeInTheDocument();
+  });
+
+  it("colors meters at warning/danger thresholds and opens usage-limit details on click", async () => {
+    const reported: AgentTask = {
+      ...task("A"),
+      usage: { used: 164_000, size: 200_000, cost: null },
+    };
+    const limits = [
+      { window: "five_hour", usedPercent: 82, resetsMs: Date.now() + 2 * 3_600_000 },
+      { window: "seven_day", usedPercent: 95, resetsMs: null },
+    ];
+    useAgents.setState({
+      tasks: new Map([["A", reported]]),
+      limits: new Map([["codex", limits]]),
+    });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+
+    expect(screen.getByLabelText(/^Context /)).toHaveAttribute("data-tone", "warning");
+    const fiveHour = screen.getByLabelText(/^5-hour limit: 82% used/);
+    const sevenDay = screen.getByLabelText("Weekly limit: 95% used");
+    expect(fiveHour).toHaveTextContent("5h 82%");
+    expect(fiveHour).toHaveAttribute("data-tone", "warning");
+    expect(sevenDay).toHaveTextContent("7d 95%");
+    expect(sevenDay).toHaveAttribute("data-tone", "danger");
+
+    fireEvent.click(screen.getByRole("button", { name: "Usage limits" }));
+    expect(await screen.findByRole("dialog", { name: "Usage limits" })).toBeInTheDocument();
+    expect(screen.getByText("5-hour limit")).toBeInTheDocument();
+    expect(screen.getByText("Weekly limit")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Usage limits" })).toBeNull();
   });
 
   it("toggles fitWidth on the session root and remeasures off-screen rows from settings.agents.fitWindowWidth", async () => {

@@ -23,8 +23,9 @@ pub(crate) static DEVTOOLS: Spec = Spec {
 };
 
 impl ToolServer {
-    pub fn devtools(root: PathBuf) -> Self {
-        Self::new(root, &DEVTOOLS)
+    /// `dart` is the configured one, else the one of the `flutter` on the search path.
+    pub fn devtools(root: PathBuf, dart: crate::Configured) -> Self {
+        Self::new(root, &DEVTOOLS, dart)
     }
 }
 
@@ -80,7 +81,7 @@ mod tests {
             let path = dir.join("dart");
             std::fs::write(&path, format!("#!/bin/sh\necho run >> runs\n{script}")).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            ToolServer::with_executable(dir.to_owned(), &DEVTOOLS, Some(path), timeout)
+            ToolServer::with_executable(dir.to_owned(), &DEVTOOLS, Box::new(move || Some(path.clone())), timeout)
         }
 
         fn runs(dir: &Path) -> usize {

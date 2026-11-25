@@ -897,6 +897,21 @@ impl DebugManager {
         if config.adapter == "rdbg" {
             rdbg_command_line(&mut spec, &config, &cwd)?;
         }
+        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
+        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
+        // is Flutter-only). Plain Dart projects keep the configured `dart`. Before
+        // `custom_command`, which picks the Flutter SDK setting's `flutter`.
+        if config.adapter == "dart" {
+            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
+            if force_flutter || is_flutter_project(&cwd, program) {
+                if spec.command == "dart" {
+                    spec.command = "flutter".into();
+                }
+                if let Some(device) = flutter_device {
+                    add_flutter_device(&mut arguments, device);
+                }
+            }
+        }
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
@@ -910,20 +925,6 @@ impl DebugManager {
             };
             if let Some(python) = python {
                 spec.command = python;
-            }
-        }
-        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
-        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
-        // is Flutter-only). Plain Dart projects keep the configured `dart`.
-        if config.adapter == "dart" {
-            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
-            if force_flutter || is_flutter_project(&cwd, program) {
-                if spec.command == "dart" {
-                    spec.command = "flutter".into();
-                }
-                if let Some(device) = flutter_device {
-                    add_flutter_device(&mut arguments, device);
-                }
             }
         }
         let id = DebugSessionId::next();

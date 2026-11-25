@@ -191,8 +191,7 @@ impl State {
 struct Shared {
     root: PathBuf,
     sink: SharedSink,
-    /// Replaces the lookup on the search path (tests).
-    executable: Option<PathBuf>,
+    executable: Configured,
     state: Mutex<State>,
 }
 
@@ -202,16 +201,21 @@ impl Shared {
     }
 }
 
+/// The configured `flutter` / `dart` (the Flutter SDK setting), asked at each start; `None`
+/// looks it up on the search path.
+pub type Configured = Box<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+
 /// One project window's `flutter daemon`, started on first use.
 pub struct FlutterDaemon(Arc<Shared>);
 
 impl FlutterDaemon {
-    pub fn new(root: PathBuf, sink: SharedSink) -> Self {
-        Self::with_executable(root, sink, None)
+    pub fn new(root: PathBuf, sink: SharedSink, executable: Configured) -> Self {
+        Self(Arc::new(Shared { root, sink, executable, state: Mutex::default() }))
     }
 
+    #[cfg(test)]
     fn with_executable(root: PathBuf, sink: SharedSink, executable: Option<PathBuf>) -> Self {
-        Self(Arc::new(Shared { root, sink, executable, state: Mutex::default() }))
+        Self::new(root, sink, Box::new(move || executable.clone()))
     }
 
     /// The current list; starts the daemon unless it already ran. Never blocks on the process.
@@ -270,6 +274,15 @@ impl FlutterDaemon {
             Ok(result) => result,
             Err(mpsc::RecvTimeoutError::Timeout) => Err("the Flutter daemon did not answer".into()),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err("the Flutter daemon exited".into()),
+        }
+    }
+
+    /// Starts a running daemon again, with the SDK the settings now choose.
+    pub fn sdk_changed(&self) {
+        let mut state = self.0.state.lock();
+        if state.status != FlutterDaemonStatus::Stopped {
+            state.shut_down();
+            start(&self.0, &mut state);
         }
     }
 
@@ -394,7 +407,7 @@ fn flutter_executable(root: &Path) -> Option<PathBuf> {
 
 /// One daemon's whole life, on its own thread.
 fn run(shared: &Arc<Shared>, generation: u64) {
-    let executable = shared.executable.clone().or_else(|| flutter_executable(&shared.root));
+    let executable = (shared.executable)().or_else(|| flutter_executable(&shared.root));
     let Some(executable) = executable else {
         return finish(shared, generation, FlutterDaemonStatus::NotInstalled);
     };

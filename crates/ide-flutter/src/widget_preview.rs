@@ -26,8 +26,9 @@ static WIDGET_PREVIEW: Spec = Spec {
 };
 
 impl ToolServer {
-    pub fn widget_preview(root: PathBuf) -> Self {
-        Self::new(root, &WIDGET_PREVIEW)
+    /// `flutter` is the configured one, else the one on the search path.
+    pub fn widget_preview(root: PathBuf, flutter: crate::Configured) -> Self {
+        Self::new(root, &WIDGET_PREVIEW, flutter)
     }
 }
 

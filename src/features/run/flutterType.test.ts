@@ -101,15 +101,17 @@ describe("Flutter run configurations", () => {
     ]);
   });
 
-  it("runs on the toolbar's device", async () => {
+  it("runs on the toolbar's device, with --machine", async () => {
     const launch = await flutterType.prepareLaunch!(config([]));
-    expect(launch.args.slice(-2)).toEqual(["-d", "macos"]);
+    expect(launch.args.slice(-3)).toEqual(["-d", "macos", "--machine"]);
     expect(notify).not.toHaveBeenCalled();
   });
 
   it("keeps a pinned device and warns when it is not connected", async () => {
     const pinned = config(["-d", "X1"]);
-    expect((await flutterType.prepareLaunch!(pinned)).args).toEqual(pinned.args);
+    expect((await flutterType.prepareLaunch!(pinned)).args).toEqual([...pinned.args, "--machine"]);
+    const machine = config(["-d", "X1", "--machine"]);
+    expect((await flutterType.prepareLaunch!(machine)).args).toEqual(machine.args);
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "warning", key: "flutter.pinnedDevice" }));
   });
 

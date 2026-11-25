@@ -27,6 +27,7 @@ import { getContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { useContributions } from "@/workbench/contributions";
 import { useFlutterDevices } from "@/workbench/flutterDevices";
+import { useFlutterRunApps, type FlutterRunApp } from "@/workbench/flutterRunApps";
 import {
   DEVTOOLS_WINDOWS,
   devToolsUrl,
@@ -56,6 +57,7 @@ const uriOf = (f: HTMLIFrameElement) => new URL(f.src).searchParams.get("uri");
 
 describe("Flutter DevTools windows", () => {
   beforeEach(() => {
+    useFlutterRunApps.setState({}, true);
     devtoolsUrl.mockReset();
     devtoolsUrl.mockResolvedValue({ status: "ok", data: server });
     previewUrl.mockReset();
@@ -168,6 +170,43 @@ describe("Flutter DevTools windows", () => {
       session(2, { vmServiceUri: "ws://two", status: "terminated" } as never),
     );
     await waitFor(() => expect(uriOf(frames()[0]!)).toBe("ws://two"));
+  });
+
+  it("connects to the apps of Run tabs too, in the order they started", async () => {
+    const runApp = (session: string, extra: Partial<FlutterRunApp>): FlutterRunApp => ({
+      session,
+      name: session,
+      appId: "A",
+      device: "sim",
+      started: true,
+      supportsRestart: true,
+      live: true,
+      startedAt: 2,
+      ...extra,
+    });
+    render(
+      <>
+        <FlutterDevToolsTabs />
+        <FlutterDevToolsView id="flutter-inspector" />
+      </>,
+    );
+    setSessions(session(1, { vmServiceUri: "ws://debug", startedAt: 1 }));
+    act(() =>
+      useFlutterRunApps.setState({
+        r1: runApp("r1", { vmServiceUri: "ws://run" }),
+        r2: runApp("r2", { startedAt: 3 }),
+      }),
+    );
+    await waitFor(() => expect(frames().map(uriOf)).toEqual(["ws://debug", "ws://run"]));
+    expect(frames().map((f) => f.hidden)).toEqual([true, false]);
+    expect(screen.getByText("sim")).toBeTruthy();
+
+    act(() => useFlutterRunApps.setState({ r1: runApp("r1", { vmServiceUri: "ws://run", live: false }) }));
+    await waitFor(() => expect(frames().map(uriOf)).toEqual(["ws://debug"]));
+    cleanup();
+    // The other pages stay on the latest app, ended or not.
+    render(<FlutterDevToolsView id="flutter-devtools" />);
+    await waitFor(() => expect(uriOf(frames()[0]!)).toBe("ws://run"));
   });
 
   it("shows why the server is missing and asks again only on Refresh", async () => {

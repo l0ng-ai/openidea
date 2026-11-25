@@ -63,8 +63,8 @@ impl State {
 struct Shared {
     root: PathBuf,
     spec: &'static Spec,
-    /// Replaces the lookup on the search path (tests).
-    executable: Option<PathBuf>,
+    /// The configured executable; the spec's lookup on the search path without one.
+    executable: crate::Configured,
     timeout: Duration,
     state: Mutex<State>,
     changed: Condvar,
@@ -86,14 +86,14 @@ impl Shared {
 pub struct ToolServer(Arc<Shared>);
 
 impl ToolServer {
-    pub(crate) fn new(root: PathBuf, spec: &'static Spec) -> Self {
-        Self::with_executable(root, spec, None, spec.timeout)
+    pub(crate) fn new(root: PathBuf, spec: &'static Spec, executable: crate::Configured) -> Self {
+        Self::with_executable(root, spec, executable, spec.timeout)
     }
 
     pub(crate) fn with_executable(
         root: PathBuf,
         spec: &'static Spec,
-        executable: Option<PathBuf>,
+        executable: crate::Configured,
         timeout: Duration,
     ) -> Self {
         Self(Arc::new(Shared { root, spec, executable, timeout, state: Mutex::default(), changed: Condvar::new() }))
@@ -158,7 +158,7 @@ fn run(shared: &Arc<Shared>, generation: u64, extra: &[String]) {
     let fail = |message: String| {
         shared.set(generation, Status::Failed(message));
     };
-    let Some(executable) = shared.executable.clone().or_else(|| (spec.executable)(&shared.root)) else {
+    let Some(executable) = (shared.executable)().or_else(|| (spec.executable)(&shared.root)) else {
         return fail(spec.not_found.into());
     };
     let args: Vec<&str> = spec.args.iter().copied().chain(extra.iter().map(String::as_str)).collect();

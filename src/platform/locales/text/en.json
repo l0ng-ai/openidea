@@ -4043,5 +4043,17 @@
   "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.",
   "The files the agent changed since go back to how they were before this message was sent.": "The files the agent changed since go back to how they were before this message was sent.",
   "Changes: {task}": "Changes: {task}",
-  "Resize changed files": "Resize changed files"
+  "Resize changed files": "Resize changed files",
+  "Flutter": "Flutter",
+  "Flutter SDK path": "Flutter SDK path",
+  "flutter on PATH": "flutter on PATH",
+  "Select Flutter SDK Directory": "Select Flutter SDK Directory",
+  "The Flutter SDK used by the Dart language server, debugger, run configurations, pub commands, the device list and Build. Empty uses flutter and dart on PATH.": "The Flutter SDK used by the Dart language server, debugger, run configurations, pub commands, the device list and Build. Empty uses flutter and dart on PATH.",
+  "Checking the Flutter SDK…": "Checking the Flutter SDK…",
+  "Not a Flutter SDK: this folder has no bin/flutter.": "Not a Flutter SDK: this folder has no bin/flutter.",
+  "flutter was not found on PATH.": "flutter was not found on PATH.",
+  "flutter --version did not answer in {root}.": "flutter --version did not answer in {root}.",
+  "Flutter {framework}": "Flutter {framework}",
+  "channel {channel}": "channel {channel}",
+  "Dart {dart}": "Dart {dart}"
 }
