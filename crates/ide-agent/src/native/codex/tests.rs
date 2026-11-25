@@ -474,6 +474,39 @@ fn history_replays_turns() {
 }
 
 #[test]
+fn viewed_generated_and_attached_images_carry_their_pixels() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("shot.png");
+    std::fs::write(&png, b"\x89PNG\r\n").unwrap();
+    let png_path = png.to_str().unwrap();
+    let encoded = "iVBORw0K";
+    let view = json!({"id": "v", "type": "imageView", "path": png_path});
+    assert!(tool_call(&view, false, None, None).unwrap().get("content").is_none());
+    let image = &tool_call(&view, true, None, None).unwrap()["content"][0]["content"];
+    assert_eq!((image["type"].as_str(), image["data"].as_str()), (Some("image"), Some(encoded)));
+    let missing = json!({"id": "v", "type": "imageView", "path": dir.path().join("gone.png")});
+    assert!(tool_call(&missing, true, None, None).unwrap().get("content").is_none());
+    let inline = json!({"id": "g", "type": "imageGeneration", "status": "completed", "result": encoded});
+    let image = &tool_call(&inline, true, None, None).unwrap()["content"][0]["content"];
+    assert_eq!((image["mimeType"].as_str(), image["data"].as_str()), (Some("image/png"), Some(encoded)));
+    let saved =
+        json!({"id": "g", "type": "imageGeneration", "status": "completed", "fileId": "f", "savedPath": png_path});
+    assert_eq!(tool_call(&saved, true, None, None).unwrap()["content"][0]["content"]["data"], encoded);
+
+    let thread = json!({"turns": [{"items": [{"type": "userMessage", "id": "u", "content": [
+        {"type": "image", "url": "data:image/jpeg;base64,/9j/"},
+        {"type": "image", "url": "https://example.com/a.png"},
+        {"type": "localImage", "path": png_path},
+        {"type": "localImage", "path": "/gone.png"}
+    ]}]}]});
+    let contents: Vec<Value> = history(&thread, None).into_iter().map(|u| u["content"].clone()).collect();
+    assert_eq!(contents[0], json!({"type": "image", "mimeType": "image/jpeg", "data": "/9j/"}));
+    assert_eq!(contents[1]["type"], "resource_link");
+    assert_eq!(contents[2], json!({"type": "image", "mimeType": "image/png", "data": encoded}));
+    assert_eq!(contents[3], json!({"type": "text", "text": "/gone.png"}));
+}
+
+#[test]
 fn history_preserves_async_questions_with_stable_answer_ids() {
     let updates = history(
         &json!({"turns": [{"items": [{
