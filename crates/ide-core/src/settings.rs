@@ -1218,6 +1218,7 @@ pub struct LanguagesSettings {
     pub markdown: MarkdownSettings,
     pub arduino: ArduinoSettings,
     pub zig: ZigSettings,
+    pub flutter: FlutterSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -1249,6 +1250,7 @@ impl Default for LanguagesSettings {
             markdown: MarkdownSettings::default(),
             arduino: ArduinoSettings::default(),
             zig: ZigSettings::default(),
+            flutter: FlutterSettings::default(),
         }
     }
 }
@@ -1513,6 +1515,15 @@ impl Default for RustSettings {
 pub struct ZigSettings {
     /// Directory holding the `zig` executable; empty = the one on `PATH`.
     pub zig: String,
+}
+
+/// The Flutter plugin's "Flutter SDK path".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FlutterSettings {
+    /// Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+    /// `PATH`. Empty = `PATH`.
+    pub sdk: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
