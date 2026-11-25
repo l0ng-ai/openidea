@@ -773,10 +773,13 @@ impl Documents {
                 let disk_failed =
                     text_path(&state.path).is_ok_and(|path| failed_paths.iter().any(|failed| path.starts_with(failed)));
                 let dirty = disk_failed || (before.dirty && differs_from_disk(state)?);
+                let disk_conflict = state.disk_conflict;
                 state.synced(mtime);
                 if dirty {
-                    // The restored buffer differs from the file; no text of it is known to be clean.
+                    // The restored buffer differs from the file: no text of it is known to be clean,
+                    // and a warned external change must still stop autosave.
                     state.clean_text = None;
+                    state.disk_conflict = disk_conflict;
                 }
                 self.set_dirty(*id, state, dirty);
                 Ok(())
