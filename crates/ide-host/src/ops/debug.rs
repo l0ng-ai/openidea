@@ -114,7 +114,7 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         extra["__adapterJavaHome"] = serde_json::json!(runtime.home);
         config.extra_json = Some(extra.to_string());
     }
-    if config.adapter == "java-debug"
+    if finds_java_sources(&config)
         && let Ok(project) = host.project(window)
     {
         let roots = host.blocking(move || Ok(java_source_roots(&project))).await?;
@@ -327,11 +327,17 @@ fn java_source_roots(project: &crate::project::Project) -> Vec<PathBuf> {
         .collect()
 }
 
-/// java-debug finds a frame's source through jdtls, then in `sourcePaths`. When jdtls has not
-/// imported the class's project (a failed Maven sync), only `sourcePaths` gives the frame a file,
-/// and without one the editor cannot follow the execution point. The user's own list wins.
+/// Debuggers that look a frame's source up in `sourcePaths` when their own model has no file:
+/// java-debug after jdtls (which has not imported a project whose Maven sync failed), and
+/// java-analyzer after the module it debugs (whose sibling modules it does not load).
+fn finds_java_sources(config: &LaunchConfig) -> bool {
+    matches!(config.adapter.as_str(), "java-debug" | ide_dap::adapter::JAVA_ANALYZER)
+}
+
+/// Without a file for the stopped frame the editor cannot follow the execution point, so Java
+/// sessions get every source root of the project. The user's own list wins.
 fn add_java_source_paths(mut config: LaunchConfig, roots: &[PathBuf]) -> LaunchConfig {
-    if config.adapter != "java-debug" || roots.is_empty() {
+    if !finds_java_sources(&config) || roots.is_empty() {
         return config;
     }
     let mut extra = match config.extra_json.as_deref().map(serde_json::from_str) {
@@ -784,10 +790,11 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()["sourcePaths"]
                 .clone()
         };
-        for request in ["launch", "attach"] {
-            let config =
-                add_java_source_paths(launch("java-debug", request, serde_json::json!({"port": 5005})), &roots);
-            assert_eq!(source_paths(&config), serde_json::json!(["/p/src/main/java", "/p/src/test/java"]));
+        for adapter in ["java-debug", ide_dap::adapter::JAVA_ANALYZER] {
+            for request in ["launch", "attach"] {
+                let config = add_java_source_paths(launch(adapter, request, serde_json::json!({"port": 5005})), &roots);
+                assert_eq!(source_paths(&config), serde_json::json!(["/p/src/main/java", "/p/src/test/java"]));
+            }
         }
         let mut bare = launch("java-debug", "attach", serde_json::json!({}));
         bare.extra_json = None;
