@@ -10,6 +10,7 @@ import {
   IpcError,
   type BuildPolicy,
   type JavaLaunchInfo,
+  type JunitLaunch,
   type RunConfig,
   type RequestId,
 } from "@/platform/ipc";
@@ -20,6 +21,8 @@ import { isRemoteWindow } from "@/platform/remote";
 
 export const CLASSPATH = "${classpath}";
 export const TEST_CLASSPATH = "${testClasspath}";
+/** OpenIDEA's JUnit Platform runner (`java/junit-runner`): its jar and the launcher join the test classpath. */
+export const JUNIT_RUNNER_MAIN = "ai.openidea.junit.Runner";
 /** Run configuration kinds launched as a JVM main class. */
 export const JVM_APPLICATION_KINDS = ["application", "spring-boot"];
 
@@ -260,7 +263,8 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   signal.throwIfAborted();
   const parsed = parseJavaArgs(config.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${config.name}'`);
-  report?.(tx`Building and resolving the classpath of ${parsed.mainClass}…` + "\n");
+  const target = parsed.mainClass === JUNIT_RUNNER_MAIN ? config.name : parsed.mainClass;
+  report?.(tx`Building and resolving the classpath of ${target}…` + "\n");
   const started = performance.now();
   const module = await prepareJavaModule(config, preparation.saveAll, signal);
   const moduleMs = performance.now() - started;
@@ -300,7 +304,21 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   }
   if (parsed.classpath && !info.classPaths.length)
     throw new Error(tx("The classpath is empty: is the module imported by the Java language server?"));
+  let junit: JunitLaunch | null = null;
+  if (parsed.mainClass === JUNIT_RUNNER_MAIN) {
+    junit = await call(commands.javaJunitRunner(module, info.classPaths));
+    signal.throwIfAborted();
+    info.classPaths = junit.classPaths;
+    const list = junit.surefire.join(", ");
+    if (list) report?.(tx`Applying the Surefire configuration: ${list}` + "\n");
+  }
   const resolved = resolveJavaCommand({ ...config, module }, info);
+  // As IDEA's MavenJUnitPatcher: the JVM gets what Surefire would give its fork; the configuration's own settings win.
+  if (junit) {
+    resolved.args = [...junit.vmArgs, ...resolved.args];
+    resolved.env = { ...junit.env, ...resolved.env };
+    if (junit.workingDirectory) resolved.cwd = junit.workingDirectory;
+  }
   const project = useProject.getState().project;
   if (resolved.cwd == null && project?.workspace) {
     const path = /^(?:[A-Za-z]:)?\//.test(module) ? module : `${project.root}/${module}`;

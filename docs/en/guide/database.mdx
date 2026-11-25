@@ -107,8 +107,11 @@ Double-click a table to edit its data, a data source to open its console, and a 
 | Duplicate (data source)                    | `⌘D`             | `Ctrl+D`           |
 | Generate DDL to Clipboard                  | `⌘⌥⇧G`           | `Ctrl+Alt+Shift+G` |
 | Generate DDL to Query Console              | `⌘⌥⇧B`           | `Ctrl+Alt+Shift+B` |
+| Diagrams › Show Diagram                    | `⌘⌥⇧U`           | `Ctrl+Alt+Shift+U` |
 
 These keys work while the Database tree has focus. The context menu also has **Truncate…**, **Run SQL Script…** (runs every statement of a `.sql` file), **Import Data from File…**, **Go to Referenced Table** (on foreign keys), SQL templates (select, insert, update, delete) and **Remove Data Source…**.
+
+**Diagrams › Show Diagram** opens a read-only ER diagram of the selected tables, or of every table of a selected schema (up to 50), in an editor tab: columns with `PK` / `FK` markers and the foreign keys between the shown tables. Select several tables with `⌘`/`Ctrl`-click or `Shift`-click. Zoom with `⌘`/`Ctrl`+wheel; the diagram's buttons show it full screen or save it as an image.
 
 **Modify Table…** and **New › Table** open a dialog to add, drop or change columns (name, data type, not null, primary key, default) with a live SQL preview. SQLite can only rename or drop existing columns. ClickHouse tables can't be modified this way.
 

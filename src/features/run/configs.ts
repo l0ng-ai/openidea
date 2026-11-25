@@ -184,6 +184,8 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "phpunit":
     case "composer":
       return "file-php";
+    case "dart-command":
+      return "file-dart";
     default:
       return useRunConfigTypes.getState().types.get(config.kind)?.icon ?? "terminal";
   }

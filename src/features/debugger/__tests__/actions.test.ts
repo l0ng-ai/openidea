@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { createElement } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -84,7 +84,7 @@ import type { DebugCapabilities, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { provideNotificationService } from "@/workbench/contributions";
 import { registerDebugActions } from "../actions";
-import { breakpointsOf, loadBreakpoints, toggleBreakpoint } from "../breakpoints/store";
+import { breakpointsOf, loadBreakpoints, toggleBreakpoint, updateBreakpoint } from "../breakpoints/store";
 import {
   addFieldWatchpoint,
   addMethodBreakpoint,
@@ -518,6 +518,78 @@ describe("debugger actions (IDEA parity)", () => {
     await executeAction("debug.removeAllBreakpointsInFile");
     expect(breakpointsOf("/p/b.py")).toHaveLength(1);
     expect(useSpecialBreakpoints.getState().methods).toHaveLength(1);
+  });
+
+  it("Toggle Breakpoint Enabled flips each breakpoint on the caret and selection lines", async () => {
+    const doc = "x = 1\ndef run():\n  pass\ny = 2\nz = 3\nw = 4";
+    for (const line of [0, 2, 3, 5]) toggleBreakpoint("/p/a.py", line);
+    toggleBreakpoint("/p/b.py", 2);
+    const first = breakpointsOf("/p/a.py")[0]!;
+    updateBreakpoint("/p/a.py", breakpointsOf("/p/a.py")[1]!.id, { enabled: false });
+    addMethodBreakpoint("run", { path: "/p/a.py", line: 1 });
+    addMethodBreakpoint("main");
+    // A selection over lines 1–2 and a second caret on line 5; lines 0 and 3 are outside.
+    const state = EditorState.create({
+      doc,
+      selection: EditorSelection.create([EditorSelection.range(8, 19), EditorSelection.cursor(doc.length)]),
+      extensions: EditorState.allowMultipleSelections.of(true),
+    });
+    editor.current = { ctx: { path: "/p/a.py", language: "python" }, view: { state } };
+    const action = getAction("debug.toggleBreakpointEnabled")!;
+    expect(isActionEnabled(action)).toBe(true);
+
+    await executeAction("debug.toggleBreakpointEnabled");
+    const enabled = () => breakpointsOf("/p/a.py").map((b) => [b.line, b.enabled]);
+    expect(enabled()).toEqual([
+      [0, true],
+      [2, true],
+      [3, true],
+      [5, false],
+    ]);
+    expect(breakpointsOf("/p/a.py")[0]).toBe(first);
+    expect(breakpointsOf("/p/b.py")[0]!.enabled).toBe(true);
+    expect(useSpecialBreakpoints.getState().methods.map((m) => [m.name, m.enabled])).toEqual([
+      ["run", false],
+      ["main", true],
+    ]);
+
+    await executeAction("debug.toggleBreakpointEnabled");
+    expect(enabled()).toEqual([
+      [0, true],
+      [2, false],
+      [3, true],
+      [5, true],
+    ]);
+    expect(useSpecialBreakpoints.getState().methods[0]!.enabled).toBe(true);
+
+    // Nothing on the caret line, or no editor: the action is unavailable and changes nothing.
+    caret("/p/a.py", "python", doc, 4);
+    expect(isActionEnabled(action)).toBe(false);
+    await executeAction("debug.toggleBreakpointEnabled");
+    editor.current = null;
+    expect(isActionEnabled(action)).toBe(false);
+    await executeAction("debug.toggleBreakpointEnabled");
+    expect(enabled()).toEqual([
+      [0, true],
+      [2, false],
+      [3, true],
+      [5, true],
+    ]);
+
+    // As in IDEA, a selection ending at the start of a line covers that line; watchpoints flip too.
+    addFieldWatchpoint({ dataId: "a.A#count", label: "count" }, { path: "/p/a.py", line: 4 });
+    editor.current = {
+      ctx: { path: "/p/a.py", language: "python" },
+      view: { state: EditorState.create({ doc, selection: { anchor: 24, head: 30 } }) },
+    };
+    await executeAction("debug.toggleBreakpointEnabled");
+    expect(enabled()).toEqual([
+      [0, true],
+      [2, false],
+      [3, false],
+      [5, true],
+    ]);
+    expect(useSpecialBreakpoints.getState().fields[0]!.enabled).toBe(false);
   });
 
   it("Attach to Process opens the popup and loads the process list", async () => {

@@ -48,6 +48,7 @@ import {
   removeSource,
 } from "./store";
 import { tableInput } from "./tableInput";
+import { DIAGRAM_TABLE_LIMIT, MERMAID_MAX_TEXT, diagramInput, erDiagram, type DiagramTable } from "./erDiagram";
 import { dumpScope, mysqlDumpScope } from "./dumpTools";
 import { tx } from "@/platform/i18n";
 import { chooseItem } from "@/workbench/inputDialogs";
@@ -103,6 +104,62 @@ async function tablesIn(id: string, schema: string): Promise<DbTableInfo[]> {
   if (useDatabase.getState().tables[tablesKey(id, schema)]?.status !== "ok") await loadTables(id, schema);
   const l = useDatabase.getState().tables[tablesKey(id, schema)];
   return l?.status === "ok" ? l.value : [];
+}
+
+/** The nodes an action on `arg` runs on: the tree's selection when `arg` is part of it. */
+function nodesFrom(arg: unknown): DbNode[] {
+  const { selectedNodes } = useDatabase.getState();
+  if (!isNode(arg)) return selectedNodes;
+  return selectedNodes.some((n) => n.key === arg.key) ? selectedNodes : [arg];
+}
+
+/**
+ * Diagrams › Show Diagram: the selected tables and views, and the tables of
+ * selected schemas and table folders, in an ER diagram tab.
+ */
+async function showDiagram(nodes: DbNode[]): Promise<void> {
+  const refs = new Map<string, { id: string; schema: string; name: string }>();
+  const add = (id: string, schema: string, name: string) =>
+    refs.set(detailsKey(id, schema, name), { id, schema, name });
+  for (const n of nodes) {
+    if (n.kind === "table") add(n.id, n.schema, n.table.name);
+    else if (
+      n.kind === "schema" ||
+      (n.kind === "folder" && ["tables", "views", "materializedViews"].includes(n.folder))
+    )
+      // oxlint-disable-next-line no-await-in-loop -- one schema at a time: its tables load over the same connection
+      for (const t of await tablesIn(n.id, n.schema))
+        if (n.kind === "schema" ? t.kind === "table" : tableFolder(t.kind) === n.folder) add(n.id, n.schema, t.name);
+  }
+  const all = [...refs.values()];
+  if (!all.length) return;
+  const shown = all.slice(0, DIAGRAM_TABLE_LIMIT);
+  const missing = shown.filter(
+    (t) => useDatabase.getState().details[detailsKey(t.id, t.schema, t.name)]?.status !== "ok",
+  );
+  await Promise.all(missing.map((t) => loadDetails(t.id, t.schema, t.name)));
+  const { details } = useDatabase.getState();
+  const tables = shown.flatMap((t): DiagramTable[] => {
+    const d = details[detailsKey(t.id, t.schema, t.name)];
+    return d?.status === "ok" ? [{ ...t, details: d.value }] : [];
+  });
+  if (!tables.length) return;
+  // Mermaid draws only an error for a source over its size limit: wide tables leave fewer in the diagram.
+  let source = erDiagram(tables);
+  while (source.length > MERMAID_MAX_TEXT && tables.length > 1) {
+    tables.pop();
+    source = erDiagram(tables);
+  }
+  const [limit, total] = [tables.length, all.length];
+  if (total > limit)
+    notifications().notify({
+      level: "info",
+      title: tx`Showing the first ${limit} of ${total} tables in the diagram`,
+      key: "db-diagram-limit",
+    });
+  const one = nodes.length === 1 ? nodes[0]! : null;
+  const title = one?.kind === "table" ? one.table.name : one && "schema" in one ? one.schema : tx("Diagram");
+  void editorService().openInput(diagramInput({ title, source }), { focus: true });
 }
 
 /**
@@ -607,6 +664,14 @@ export function registerDatabaseTreeActions(): () => void {
         const n = nodeFrom(arg);
         if (n?.kind === "foreignKey") void revealInTree(n.id, n.fk.refSchema, n.fk.refTable, "table");
       },
+    }),
+    tree({
+      id: "db.showDiagram",
+      title: "Show Diagram",
+      description: "Show the selected tables, or the tables of a schema, as an ER diagram linked by foreign keys",
+      icon: "db-table",
+      keywords: ["er diagram", "uml", "visualization", "foreign keys", "relationships"],
+      run: ({ arg }) => showDiagram(nodesFrom(arg)),
     }),
     tree({
       id: "db.new",

@@ -135,7 +135,9 @@ export const ProcessRun = memo(function ProcessRun({
       summary={
         <summary className={styles.processSummary}>
           <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          <span className={clsx(styles.processParts, (working || live) && styles.shimmer)}>{parts.join(" · ")}</span>
+          <span className={clsx(styles.processParts, (working || live) && !current && styles.shimmer)}>
+            {parts.join(" · ")}
+          </span>
           {added > 0 && <span className={styles.added}>+{added}</span>}
           {removed > 0 && <span className={styles.removed}>−{removed}</span>}
           {current && <span className={clsx(styles.processCurrent, styles.shimmer)}>{current}</span>}
