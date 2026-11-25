@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 static INDEX_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     rayon::ThreadPoolBuilder::new()
         .thread_name(|i| format!("openidea-index-{i}"))
+        .stack_size(crate::INDEX_STACK)
         .build()
         .expect("cannot build index thread pool")
 });

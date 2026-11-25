@@ -26,6 +26,12 @@ pub use filter::walk_skips;
 pub use worker::MAX_SYMBOL_FILE;
 use worker::{Job, MAX_RECENT, Shared};
 
+/// Stack of the indexing threads. Parsing and outlining a deeply nested file (generated
+/// code, a big JSON or minified script) recurse as deep as the file nests; the 2 MiB a Rust
+/// thread gets by default overflowed on Windows and took the whole IDE down (#5739). Only
+/// what a thread touches is committed, so the reservation costs address space, not memory.
+const INDEX_STACK: usize = 32 * 1024 * 1024;
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct FileMatch {
@@ -150,6 +156,7 @@ impl ProjectIndex {
             let shared = shared.clone();
             std::thread::Builder::new()
                 .name("openidea-index".into())
+                .stack_size(INDEX_STACK)
                 .spawn(move || shared.run(scan))
                 .map_err(|e| ide_core::IdeError::internal(format!("cannot start indexer: {e}")))?
         };
