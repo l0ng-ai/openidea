@@ -38,6 +38,10 @@ OpenIDEA 通过 SSH 连接；在 Windows 上也可以直接连入 WSL 发行版�
 保存的密码和密码短语存放在 macOS 钥匙串、Windows 凭据管理器或 Linux 的 Secret Service 中，不会写进设置文件。列表上方的
 **+**、**−** 和复制按钮用于添加、移除和复制配置。
 
+旧版本会在 `ssh-passwords.json` 中明文保存凭据。OpenIDEA 会在启动时将它们迁移到系统凭据库。
+如果文件中仍有密码，可以解锁凭据库后选择**重试迁移**，也可以选择**移除明文副本**，并在下次使用时重新输入未迁移的凭据。
+无法保存的新凭据仅在当前会话中有效。迁移不会更改旧备份；如果备份中的密码已泄露，请更换密码。
+
 ### `~/.ssh/config` 支持
 
 OpenIDEA 自带 SSH 客户端，自行读取 `~/.ssh/config`，支持 `Host`、`Match`、`Include`、`HostName`、`User`、`Port`、
