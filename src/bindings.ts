@@ -10124,6 +10124,8 @@ export type MenuConfig = {
 	dynamic?: { [key in string]: DynamicItem[] },
 	/**  Ids of the toggle actions currently on. */
 	checked?: string[],
+	/**  Whether the focused editor owns its undo history. */
+	editorOwnsHistory?: boolean,
 };
 
 /**
@@ -13987,10 +13989,10 @@ export type ToolCallDisplay =
 "each";
 
 /**
- *  Tools › Download sources: a mirror the installer tries when `github.com` is slow or
- *  unreachable.
+ *  Tools › Download sources: mirrors the installer tries, in order, when `github.com` is slow
+ *  or unreachable.
  * 
- *  The mirror is a proxy prefix: the official URL is appended to it unchanged
+ *  A mirror is a proxy prefix: the official URL is appended to it unchanged
  *  (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
  *  public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
  *  hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
@@ -13998,8 +14000,9 @@ export type ToolCallDisplay =
  */
 export type ToolDownloadSettings = {
 	/**
-	 *  Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
-	 *  every download on its official host.
+	 *  Proxy prefixes prepended to `https://github.com/…` archive addresses only, separated by
+	 *  commas or whitespace and tried in order before the official host; empty keeps every
+	 *  download on its official host.
 	 */
 	githubMirror?: string,
 };

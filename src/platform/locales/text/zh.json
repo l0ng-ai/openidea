@@ -2113,6 +2113,11 @@
   "Ignore Whitespaces": "忽略空白",
   "Detect Movements Within File": "检测文件内的行移动",
   "Detect Movements Across Files": "检测跨文件的行移动",
+  "Names": "姓名",
+  "Initials": "首字母缩写",
+  "Last Name": "姓",
+  "First Name": "名",
+  "Full Name": "全名",
   "Ignored": "已忽略",
   "Ignored Files and Folders": "忽略的文件和文件夹",
   "Ignored names": "忽略的名称",
@@ -8967,6 +8972,8 @@
   "Moves a terminal tab, with its running session, into the editor area (arg: tab id).": "把终端标签连同正在运行的会话移到编辑器区域（参数：标签 id）。",
   "Move to Terminal": "移至终端",
   "Moves a terminal editor tab, with its running session, back to the Terminal tool window (arg: input key).": "把编辑器中的终端标签连同正在运行的会话移回终端工具窗口（参数：输入 key）。",
+  "New Terminal Tab in Editor": "在编辑器中新建终端标签页",
+  "Opens a new terminal session as a tab in the editor area.": "在编辑器区域中打开一个新的终端会话标签页。",
   "Starts a login shell where the session was.": "在会话原来的目录启动登录 shell。",
   "Also used for {others}; settings apply to all of them.": "也用于 {others}；这里的设置对它们全部生效。",
   "{name} tools": "{name} 工具",
@@ -9168,6 +9175,7 @@
   "Previous Failed Test": "上一个失败的测试",
   "Next Failed Test": "下一个失败的测试",
   "Show Test Durations": "显示测试耗时",
+  "Select First Failed Test When Finished": "完成后选中第一个失败的测试",
   "Test Runner Options": "测试运行器选项",
   "Run '{name}' with Fuzzing": "使用模糊测试运行 '{name}'",
   "Reading…": "正在读取…",
@@ -10389,5 +10397,6 @@
   "Granted": "已授予",
   "Granted with grant option": "已授予（可转授）",
   "No privileges are granted on this table.": "此表未授予任何权限。",
-  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授权者可以将该权限再授予他人。"
+  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授权者可以将该权限再授予他人。",
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "多个前缀用逗号分隔：按顺序尝试，最后回退到官方源。"
 }

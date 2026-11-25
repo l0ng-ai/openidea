@@ -120,6 +120,7 @@ const ALLOWED_ACTION_IDS = new Set([
   "navigate.switcher",
   "navigate.switcherBack",
   "terminal.new",
+  "terminal.newInEditor",
   "terminal.find",
   "terminal.clear",
   "terminal.closeSession",
@@ -128,8 +129,14 @@ const ALLOWED_ACTION_IDS = new Set([
 ]);
 
 /** Whether `stroke` starts a binding of an allowed action. */
-export function isAllowedIdeShortcut(stroke: string, bindings: ReadonlyArray<readonly [string, string]>): boolean {
+export function isAllowedIdeShortcut(
+  stroke: string,
+  bindings: ReadonlyArray<readonly [string, string]>,
+  inEditorTab = false,
+): boolean {
   return bindings.some(([binding, id]) => {
+    if (id === "terminal.newInEditor" && !inEditorTab) return false;
+    if (id === "terminal.new" && inEditorTab) return false;
     if (!ALLOWED_ACTION_IDS.has(id) || (binding !== stroke && !binding.startsWith(`${stroke} `))) return false;
     // Ctrl+E stays with the shell (end of line), as in IDEA.
     return !(id === "navigate.recentFiles" && stroke === "Ctrl+E");
@@ -160,6 +167,7 @@ export function installTerminalKeys(target: Window = window): () => void {
     const session =
       rt.sessionFromElement(e.target as Element | null) ?? rt.cliSessionFromElement(e.target as Element | null);
     if (!session) return;
+    const inEditorTab = rt.isCliSession(session);
     const action = terminalKeyAction(e, session.hasSelection);
     // "Override IDE shortcuts" off: Ctrl+key and Escape reach the IDE keymap first;
     // keys it doesn't bind still get to xterm through its own key handling.
@@ -167,12 +175,11 @@ export function installTerminalKeys(target: Window = window): () => void {
     if (action.kind === "send" && (e.ctrlKey || e.key === "Escape") && !t.overrideIdeShortcuts) return;
     if (action.kind === "send" && (e.ctrlKey || e.key === "Escape")) {
       const stroke = strokeOf(e);
-      if (stroke && isAllowedIdeShortcut(stroke, effectiveBindings())) return;
+      if (stroke && isAllowedIdeShortcut(stroke, effectiveBindings(), inEditorTab)) return;
     }
     // "Move focus to the Editor with Escape": the IDE keymap's Escape (Focus Editor) runs instead.
     if (action.kind === "send" && e.key === "Escape" && t.escapeToEditor) return;
     // An editor tab's session: its Close and Find go back to the IDE keymap.
-    const inEditorTab = rt.isCliSession(session);
     switch (action.kind) {
       case "pass":
         return;

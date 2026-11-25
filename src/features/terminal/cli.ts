@@ -15,7 +15,7 @@ import {
   type EditorInput,
 } from "@/workbench/contributions";
 import { useTx } from "@/platform/i18n";
-import { useProject } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { Badge } from "@/ui";
@@ -143,20 +143,38 @@ export async function moveTerminalToEditor(id?: string, target?: EditorDropTarge
   });
 }
 
+function nextCliTabName(rt: Awaited<ReturnType<typeof loadTerminalRuntime>>, base?: string): string {
+  const openNames =
+    maybeEditorService()
+      ?.openTabs?.()
+      .flatMap((t) => (t.input.kind === CLI_KIND ? [cliData(t.input)?.name ?? t.title] : [])) ?? [];
+  return rt.nextTabName(
+    [...rt.useTerminals.getState().tabs.map((t) => t.name), ...openNames],
+    base ?? workflowSettings().terminal.tabName,
+  );
+}
+
+/** Opens a fresh terminal session as a tab in the active editor pane. */
+export async function openNewTerminalInEditor(dir?: string): Promise<void> {
+  const root = useProject.getState().project?.root;
+  const fallbackRoot = root ?? dir;
+  if (!fallbackRoot) return;
+  const rt = await loadTerminalRuntime();
+  const cwd = dir || rt.startDirectory(fallbackRoot);
+  const name = nextCliTabName(rt, dir ? basename(dir) || undefined : undefined);
+  const fresh = cliInput(name, "", cwd);
+  rt.startCli(fresh.key, cwd, "", fallbackRoot);
+  trackCliTerminalId(fresh);
+  await editorService().openInput(fresh, { focus: true });
+}
+
 /** Splits a terminal editor tab into a new shell session in the same directory. */
 export async function splitCliTab(input: EditorInput): Promise<EditorInput | null> {
   const root = useProject.getState().project?.root;
   if (!root) return null;
   const rt = await loadTerminalRuntime();
   const cwd = rt.cliSession(input.key)?.state.cwd || cliData(input)?.cwd || rt.startDirectory(root);
-  const openNames =
-    editorService()
-      .openTabs?.()
-      .flatMap((t) => (t.input.kind === CLI_KIND ? [cliData(t.input)?.name ?? t.title] : [])) ?? [];
-  const name = rt.nextTabName(
-    [...rt.useTerminals.getState().tabs.map((t) => t.name), ...openNames],
-    workflowSettings().terminal.tabName,
-  );
+  const name = nextCliTabName(rt);
   const fresh = cliInput(name, "", cwd);
   rt.startCli(fresh.key, cwd, "", root);
   trackCliTerminalId(fresh);
