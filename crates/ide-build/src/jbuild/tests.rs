@@ -34,6 +34,8 @@ struct Fixture {
     root: PathBuf,
     cache: PathBuf,
     model: BuildModel,
+    /// Where the build keeps its state under the cache (`Reactor::key`).
+    key: &'static str,
     service: JavaBuildService,
     events: StdMutex<Vec<BuildEvent>>,
 }
@@ -62,6 +64,52 @@ impl Fixture {
             root,
             cache,
             model,
+            key: "",
+            service: JavaBuildService::default(),
+            events: StdMutex::default(),
+        })
+    }
+
+    /// The same `lib` ← `app` build with Gradle (`OPENIDEA_TEST_GRADLE`, else `gradle` on the
+    /// search path).
+    fn gradle(files: &[(&str, &str)]) -> Option<Self> {
+        let home = std::env::var_os("JAVA_HOME").map(PathBuf::from).filter(|h| h.join("bin").is_dir());
+        let gradle = std::env::var_os("OPENIDEA_TEST_GRADLE")
+            .map(PathBuf::from)
+            .or_else(|| ide_core::process::find_executable("gradle", &ide_core::tool_path::search_path()));
+        let (Some(home), Some(gradle)) = (home, gradle) else {
+            eprintln!("skipped: needs JAVA_HOME and gradle (OPENIDEA_TEST_GRADLE)");
+            return None;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let build = [
+            ("settings.gradle", "rootProject.name = 'root'\ninclude 'lib', 'app'\n"),
+            (
+                "build.gradle",
+                "subprojects {\n  apply plugin: 'java'\n  group = 't'\n  tasks.withType(JavaCompile).configureEach { options.release = 11; options.encoding = 'UTF-8' }\n}\n",
+            ),
+            ("lib/build.gradle", ""),
+            (
+                "app/build.gradle",
+                "dependencies { implementation project(':lib') }\nprocessResources { filesMatching('*.properties') { expand(version: '1') } }\n",
+            ),
+        ];
+        for (rel, text) in build.iter().chain(files) {
+            write(&root, rel, text);
+        }
+        let cache = root.join(".cache");
+        let mut model = crate::load(&root, &cache, None);
+        assert_eq!(model.gradle.len(), 1, "{model:?}");
+        let g = &mut model.gradle[0];
+        g.command = gradle.to_string_lossy().into_owned();
+        g.env.insert("JAVA_HOME".into(), home.to_string_lossy().into_owned());
+        Some(Fixture {
+            _tmp: tmp,
+            root,
+            cache,
+            model,
+            key: "_gradle",
             service: JavaBuildService::default(),
             events: StdMutex::default(),
         })
@@ -72,7 +120,7 @@ impl Fixture {
     }
 
     fn out(&self, rel: &str) -> PathBuf {
-        model::output_root(&self.cache, "").join(rel)
+        model::output_root(&self.cache, self.key).join(rel)
     }
 
     /// Builds the launch of `app` (its tests when `test`).
@@ -150,7 +198,7 @@ fn builds_maven_modules_with_javac_and_only_what_changed() {
     assert_eq!(fs::read_to_string(f.out("t.app/classes/app.properties")).unwrap(), "version=1\n");
     let steps = f.steps();
     assert!(steps[0].contains("process-resources"), "{steps:?}");
-    assert_eq!(steps[1..], ["javac lib (main, 1 files)", "javac app (main, 1 files)"]);
+    assert_eq!(steps[1..], ["javac lib (main, 1 file)", "javac app (main, 1 file)"]);
 
     // Nothing changed: no Maven, no javac.
     assert_eq!(f.steps_of_launch(), Vec::<String>::new());
@@ -160,7 +208,7 @@ fn builds_maven_modules_with_javac_and_only_what_changed() {
         "lib/src/main/java/l/L.java",
         "package l;\npublic class L { public static String name() { return \"lib 2\"; } }\n",
     );
-    assert_eq!(f.steps_of_launch(), ["javac lib (main, 1 files)"]);
+    assert_eq!(f.steps_of_launch(), ["javac lib (main, 1 file)"]);
 
     // A resource change is processed by Maven (it filters), and compiles nothing.
     f.write("app/src/main/resources/app.properties", "version=${project.version}\nmore=1\n");
@@ -188,7 +236,7 @@ fn builds_maven_modules_with_javac_and_only_what_changed() {
     // It compiles again next time, even unchanged.
     f.steps();
     assert!(f.launch(false).failure.is_some());
-    assert_eq!(f.steps(), ["javac app (main, 1 files)"]);
+    assert_eq!(f.steps(), ["javac app (main, 1 file)"]);
 
     // A test launch compiles the module's tests after its main classes.
     f.write(
@@ -204,11 +252,11 @@ fn builds_maven_modules_with_javac_and_only_what_changed() {
     f.steps();
     let file = f.root.join("app/src/main/java/a/A.java");
     assert_eq!(f.build(Target::File(&file)).failure, None);
-    assert_eq!(f.steps(), ["javac app (main, 1 files)"]);
+    assert_eq!(f.steps(), ["javac app (main, 1 file)"]);
     // Build Project builds every module's main and test classes.
     f.write("lib/src/test/java/l/LTest.java", "package l;\nclass LTest { String s = L.name(); }\n");
     assert_eq!(f.build(Target::Project).failure, None);
-    assert_eq!(f.steps(), ["javac lib (tests, 1 files)"]);
+    assert_eq!(f.steps(), ["javac lib (tests, 1 file)"]);
     assert!(f.out("t.lib/test-classes/l/LTest.class").is_file());
 }
 
@@ -365,4 +413,96 @@ fn javac_options_follow_the_compiler_configuration() {
     // JDK 8 has no --release: source and target instead.
     let old = javac_options(&set, &[], Path::new("/gen"), Some(8)).join(" ");
     assert!(old.contains("-source 1.8") && !old.contains("--release"), "{old}");
+}
+
+#[test]
+fn builds_gradle_projects_with_javac_and_only_what_changed() {
+    let Some(f) = Fixture::gradle(&[
+        (
+            "lib/src/main/java/l/L.java",
+            "package l;\npublic class L { public static String name() { return \"lib\"; } }\n",
+        ),
+        (
+            "app/src/main/java/a/A.java",
+            "package a;\npublic class A { public static void main(String[] args) { System.out.println(l.L.name()); } }\n",
+        ),
+        ("app/src/main/resources/app.properties", "version=${version}\n"),
+        ("app/src/test/java/a/ATest.java", "package a;\npublic class ATest { String s = l.L.name(); }\n"),
+    ]) else {
+        return;
+    };
+    let steps = f.steps_of_launch();
+    assert_eq!(steps.len(), 3, "{steps:?}");
+    assert!(steps[0].contains("openideaBuildModel"), "{steps:?}");
+    assert!(steps[1].starts_with("javac lib (main"), "{steps:?}");
+    assert!(steps[2].starts_with("javac app (main"), "{steps:?}");
+    assert!(f.out("t.lib/classes/l/L.class").is_file());
+    assert!(f.out("t.app/classes/a/A.class").is_file());
+    assert_eq!(fs::read_to_string(f.out("t.app/classes/app.properties")).unwrap(), "version=1\n");
+    // Gradle's own outputs stay untouched.
+    assert!(!f.root.join("app/build/classes").exists());
+
+    let built = f.launch(false);
+    assert!(built.class_paths.iter().any(|p| p.ends_with("t.lib/classes")), "{:?}", built.class_paths);
+    assert!(!built.class_paths.iter().any(|p| p.extension().is_some_and(|e| e == "jar")), "{:?}", built.class_paths);
+    assert_eq!(f.steps(), Vec::<String>::new(), "nothing changed");
+
+    f.write(
+        "app/src/main/java/a/A.java",
+        "package a;\npublic class A { public static void main(String[] args) { System.out.println(l.L.name() + 1); } }\n",
+    );
+    let steps = f.steps_of_launch();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(steps[0].starts_with("javac app (main"), "{steps:?}");
+
+    f.write("app/src/main/resources/app.properties", "version=${version}\nname=app\n");
+    let steps = f.steps_of_launch();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(steps[0].contains(":app:processResources"), "{steps:?}");
+    assert_eq!(fs::read_to_string(f.out("t.app/classes/app.properties")).unwrap(), "version=1\nname=app\n");
+
+    // Tests compile against the main classes.
+    f.steps();
+    let built = f.launch(true);
+    assert_eq!(built.failure, None, "{:?}", built.messages);
+    assert!(f.out("t.app/test-classes/a/ATest.class").is_file());
+
+    // A changed build script prepares again.
+    f.write("lib/build.gradle", "// changed\n");
+    let steps = f.steps_of_launch();
+    assert!(steps[0].contains("openideaBuildModel"), "{steps:?}");
+
+    // An error is a javac diagnostic on the source.
+    f.write("lib/src/main/java/l/L.java", "package l;\npublic class L { public static String name() { return 1; } }\n");
+    let built = f.launch(false);
+    assert!(built.failure.is_some());
+    let error = built.messages.iter().find(|m| m.severity == Severity::Error).expect("an error");
+    assert_eq!(error.path.as_deref(), Some(f.root.join("lib/src/main/java/l/L.java").as_path()));
+}
+
+#[test]
+fn leaves_gradle_projects_with_other_compilers_to_gradle() {
+    let Some(f) = Fixture::gradle(&[
+        ("app/build.gradle", "apply plugin: 'groovy'\ndependencies { implementation project(':lib') }\n"),
+        ("app/src/main/java/a/A.java", "package a;\npublic class A {}\n"),
+    ]) else {
+        return;
+    };
+    let jdk = |_: Option<u32>| None;
+    let build = JavaBuild {
+        root: &f.root,
+        model: &f.model,
+        cache: &f.cache,
+        jar: Path::new(JAR),
+        jar_version: "test",
+        local_repo: None,
+        service: &f.service,
+        jdk: &jdk,
+    };
+    let target = Target::Launch { module: &f.root.join("app"), test: false };
+    match build.build(target, BuildKind::Build, &CancellationToken::new(), &|_| {}) {
+        Ok(Built::Unsupported(reason)) => assert!(reason.contains("GroovyCompile"), "{reason}"),
+        Ok(Built::Done(outputs)) => panic!("built: {outputs:?}"),
+        Err(e) => panic!("{e:?}"),
+    }
 }

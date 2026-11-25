@@ -850,6 +850,10 @@ pub(crate) fn maven_build_step(program: &str, args: &[&str], cwd: &Path) -> Buil
     BuildStep::new(program, args, cwd, Format::Maven)
 }
 
+pub(crate) fn gradle_build_step(program: &str, args: &[&str], cwd: &Path) -> BuildStep {
+    BuildStep::new(program, args, cwd, Format::Gradle)
+}
+
 /// The linked reactor root building the project at `module` (project-relative).
 pub(crate) fn maven_reactor_dir<'a>(m: &'a maven::MavenModel, module: &str) -> Option<&'a maven::MavenProject> {
     maven_reactor(m, module)

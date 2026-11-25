@@ -1,19 +1,22 @@
-//! The IDE's own Java build of Maven modules (#4078): javac compiles the modules a launch
-//! needs, in a resident process, with the configuration Maven itself gives the compiler.
+//! The IDE's own Java build of Maven and Gradle modules (#4078): javac compiles the modules a
+//! launch or build needs, in a resident process, with the configuration the build tool itself
+//! gives the compiler.
 //!
-//! - **Model.** A prepare run (`mvn process-resources resources:testResources` with the
-//!   `java/java-build` extension) generates sources, processes resources and records each
-//!   project's source roots, classpaths, compiler configuration and annotation processor path.
-//!   It runs only when what the model is built from changes ([`model::prepare_fingerprint`]):
-//!   the POMs, settings, the Maven launcher, generator inputs, or a missing generated root.
-//! - **Outputs.** The extension redirects every project's output into the IDE's cache, so
-//!   neither the language server nor a terminal `mvn` writes the classes a launch runs, and
-//!   reactor projects resolve to those folders, never to jars.
-//! - **Compile.** Projects compile in dependency order with javac (`jbuild::javac`). A source
-//!   set compiles again when its sources, options, processor path or classpath changed; a
-//!   reactor dependency counts as changed when it compiled again.
-//! - **Fallback.** Projects Maven compiles with more than javac (Kotlin, AspectJ, enhancers,
-//!   another compiler id), multi-release jars and Java modules are left to the Maven launch build.
+//! - **Model.** A prepare run generates sources, processes resources and records each
+//!   project's source roots, classpaths, compiler configuration and annotation processor path:
+//!   `mvn process-resources resources:testResources` with the `java/java-build` extension, or
+//!   Gradle's `openideaBuildModel` task from `gradle-build.init.gradle`. It runs only when what
+//!   the model is built from changes ([`model::prepare_fingerprint`],
+//!   [`model::gradle_prepare_fingerprint`]): build scripts, settings, the launcher, generator
+//!   inputs, or a missing generated root.
+//! - **Outputs.** The prepare run redirects every project's output into the IDE's cache, so
+//!   neither the language server nor a terminal build writes the classes a launch runs, and
+//!   projects of the build resolve to those folders, never to jars.
+//! - **Compile.** Projects compile in dependency order with javac (`jbuild::javac`), class by
+//!   class ([`incremental`]): the changed sources, then those an API change reaches.
+//! - **Fallback.** Projects the build compiles with more than javac (Kotlin, Groovy, AspectJ,
+//!   enhancers, another compiler id), multi-release jars and Java modules are left to the build
+//!   tool's own build.
 mod classfile;
 mod incremental;
 mod javac;
@@ -27,8 +30,8 @@ pub use model::{CompilerConfig, ProjectModel, ReactorModel, ResourceRoot, Source
 
 use crate::compile::fingerprint;
 use crate::compile::{
-    BuildEvent, BuildKind, BuildMessage, BuildPlan, BuildStep, BuildSystem, LaunchFingerprint, maven_build_step,
-    maven_reactor_dir, reactor_projects_of,
+    BuildEvent, BuildKind, BuildMessage, BuildPlan, BuildStep, BuildSystem, LaunchFingerprint, gradle_build_step,
+    maven_build_step, maven_reactor_dir, reactor_projects_of,
 };
 use crate::process;
 use crate::{BuildModel, maven};
@@ -71,10 +74,57 @@ pub struct JavaBuild<'a> {
     pub jdk: &'a (dyn Fn(Option<u32>) -> Option<PathBuf> + Sync),
 }
 
+/// A build the service compiles: a Maven reactor (its top project) or a Gradle build.
+#[derive(Clone, Copy)]
+enum Reactor<'a> {
+    Maven(&'a maven::MavenProject),
+    Gradle(&'a crate::GradleModel),
+}
+
+impl Reactor<'_> {
+    /// Project-relative folder of the reactor.
+    fn rel_dir(&self) -> &str {
+        match self {
+            Reactor::Maven(top) => &top.dir,
+            Reactor::Gradle(g) => &g.dir,
+        }
+    }
+
+    /// Where its state and outputs live under the cache (`java-build/<key>`).
+    fn key(&self) -> String {
+        match self {
+            Reactor::Maven(top) => top.dir.clone(),
+            Reactor::Gradle(g) if g.dir.is_empty() => "_gradle".into(),
+            Reactor::Gradle(g) => format!("{}/_gradle", g.dir),
+        }
+    }
+
+    fn env(&self) -> &BTreeMap<String, String> {
+        match self {
+            Reactor::Maven(top) => &top.env,
+            Reactor::Gradle(g) => &g.env,
+        }
+    }
+
+    fn system(&self) -> BuildSystem {
+        match self {
+            Reactor::Maven(_) => BuildSystem::Maven,
+            Reactor::Gradle(_) => BuildSystem::Gradle,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Reactor::Maven(_) => "Maven",
+            Reactor::Gradle(_) => "Gradle",
+        }
+    }
+}
+
 /// One source set to compile, and where its reactor's build keeps its state.
 #[derive(Clone, Copy)]
 struct SetBuild<'a> {
-    top: &'a maven::MavenProject,
+    top: Reactor<'a>,
     dir: &'a Path,
     project: &'a ProjectModel,
     test: bool,
@@ -276,7 +326,10 @@ fn javac_options(set: &SourceSet, classpath: &[PathBuf], generated: &Path, jdk_m
 }
 
 /// `.mvn/jvm.config` of the reactor: the options Maven's JVM (and so its in-process javac) runs with.
-fn jvm_config(top_dir: &Path) -> Vec<String> {
+fn jvm_config(top: Reactor, top_dir: &Path) -> Vec<String> {
+    if matches!(top, Reactor::Gradle(_)) {
+        return Vec::new();
+    }
     let Ok(text) = std::fs::read_to_string(top_dir.join(".mvn/jvm.config")) else { return Vec::new() };
     text.lines()
         .filter(|l| !l.trim_start().starts_with('#'))
@@ -361,13 +414,31 @@ impl JavaBuild<'_> {
         self.build(Target::Launch { module, test }, kind, cancel, on_event)
     }
 
+    /// The Maven reactor or Gradle build of the module holding `path`, and the module's folder.
+    fn reactor_and_module(&self, path: &Path) -> Option<(Reactor<'_>, PathBuf)> {
+        let rel = |dir: &Path| dir.strip_prefix(self.root).unwrap_or(dir).to_string_lossy().replace('\\', "/");
+        // The deepest project folder holding it, of either build tool.
+        let maven = self.model.maven.iter().flat_map(|m| m.projects.iter().map(|p| subdir(self.root, &p.dir)));
+        let gradle = self.model.gradle.iter().flat_map(|g| g.projects.iter().map(|p| subdir(self.root, &p.dir)));
+        let dir = maven.chain(gradle).filter(|dir| path.starts_with(dir)).max_by_key(|dir| dir.components().count())?;
+        if let Some(m) = &self.model.maven
+            && let Some(top) = maven_reactor_dir(m, &rel(&dir))
+        {
+            return Some((Reactor::Maven(top), dir));
+        }
+        let g = self.model.gradle_for_module(self.root, &dir)?;
+        Some((Reactor::Gradle(g), dir))
+    }
+
+    fn reactor_of(&self, module: &Path) -> Option<Reactor<'_>> {
+        self.reactor_and_module(module).map(|(top, _)| top)
+    }
+
     /// The classpath a launch of `module` runs with when it doesn't build (Before launch: no
     /// build): the outputs of the last build, `None` when the module was never built here.
     pub fn recorded_launch(&self, module: &Path, test: bool) -> Option<Vec<PathBuf>> {
-        let m = self.model.maven.as_ref()?;
-        let rel = module.strip_prefix(self.root).unwrap_or(module).to_string_lossy().replace('\\', "/");
-        let top = maven_reactor_dir(m, &rel)?;
-        let record = model::load_record(&model::reactor_dir(self.cache, &top.dir))?;
+        let top = self.reactor_of(module)?;
+        let record = model::load_record(&model::reactor_dir(self.cache, &top.key()))?;
         let project = record.model.projects.iter().find(|p| p.dir == module)?;
         let paths = class_paths(project, test);
         paths.first().is_some_and(|p| p.is_dir()).then_some(paths)
@@ -381,28 +452,18 @@ impl JavaBuild<'_> {
         cancel: &CancellationToken,
         on_event: &(dyn Fn(BuildEvent) + Sync),
     ) -> IdeResult<Built> {
-        let Some(m) = &self.model.maven else { return Ok(Built::Unsupported("not a Maven project".into())) };
         let rel = |path: &Path| path.strip_prefix(self.root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        // The module a path belongs to: the deepest project folder holding it.
-        let owner = |path: &Path| {
-            m.projects
-                .iter()
-                .map(|p| subdir(self.root, &p.dir))
-                .filter(|dir| path.starts_with(dir))
-                .max_by_key(|dir| dir.components().count())
-        };
         let (tops, title) = match target {
             Target::Project => {
-                let tops: Vec<&maven::MavenProject> = m.projects.iter().filter(|p| !p.aggregated).collect();
+                let maven = self.model.maven.iter().flat_map(|m| m.projects.iter().filter(|p| !p.aggregated));
+                let tops: Vec<Reactor> =
+                    maven.map(Reactor::Maven).chain(self.model.gradle.iter().map(Reactor::Gradle)).collect();
                 let name = self.root.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                 (tops, format!("Build '{name}'"))
             }
             Target::Launch { module, .. } | Target::Module(module) | Target::File(module) => {
-                let Some(dir) = owner(module) else {
-                    return Ok(Built::Unsupported("the file belongs to no Maven module".into()));
-                };
-                let Some(top) = maven_reactor_dir(m, &rel(&dir)) else {
-                    return Ok(Built::Unsupported("the module belongs to no linked Maven reactor".into()));
+                let Some((top, dir)) = self.reactor_and_module(module) else {
+                    return Ok(Built::Unsupported("the file belongs to no Maven or Gradle module".into()));
                 };
                 let name = match target {
                     Target::File(file) => file.file_name(),
@@ -413,10 +474,10 @@ impl JavaBuild<'_> {
             }
         };
         if tops.is_empty() {
-            return Ok(Built::Unsupported("no Maven reactor to build".into()));
+            return Ok(Built::Unsupported("no Maven or Gradle build".into()));
         }
         on_event(BuildEvent::Started { system: BuildSystem::Javac, title });
-        // Nested Maven runs report into the same build.
+        // Nested Maven and Gradle runs report into the same build.
         let nested = |event: BuildEvent| {
             if !matches!(event, BuildEvent::Started { .. }) {
                 on_event(event);
@@ -425,12 +486,13 @@ impl JavaBuild<'_> {
         let mut messages = Vec::new();
         let mut class_path = Vec::new();
         for top in tops {
-            let dir = model::reactor_dir(self.cache, &top.dir);
+            let dir = model::reactor_dir(self.cache, &top.key());
             let lock = self.service.lock(&dir);
             let _guard = lock.lock().unwrap();
-            let Some(reactor_model) = self.prepared(m, top, &dir, kind, cancel, &nested)? else {
-                // Maven's own build reports why (a POM error, an older Maven the extension doesn't load in).
-                return Ok(Built::Unsupported("Maven could not prepare the build".into()));
+            let Some(reactor_model) = self.prepared(top, &dir, kind, cancel, &nested)? else {
+                // The build tool's own build reports why (a build script error, a version the
+                // extension doesn't load in).
+                return Ok(Built::Unsupported(format!("{} could not prepare the build", top.name())));
             };
             let project_at = |path: &Path| {
                 reactor_model
@@ -444,7 +506,7 @@ impl JavaBuild<'_> {
                 Target::Launch { module, test } => {
                     let Some(project) = reactor_model.projects.iter().find(|p| p.dir == module) else {
                         return Ok(Built::Unsupported(format!(
-                            "Maven's build of the reactor has no project at {}",
+                            "the build has no Java project at {}",
                             module.display()
                         )));
                     };
@@ -453,13 +515,13 @@ impl JavaBuild<'_> {
                 }
                 Target::Module(path) => {
                     let Some(project) = project_at(path) else {
-                        return Ok(Built::Unsupported(format!("no Maven project holds {}", path.display())));
+                        return Ok(Built::Unsupported(format!("no Java project holds {}", path.display())));
                     };
                     launch_projects(&reactor_model, project, true)
                 }
                 Target::File(file) => {
                     let Some(project) = project_at(file) else {
-                        return Ok(Built::Unsupported(format!("no Maven project holds {}", file.display())));
+                        return Ok(Built::Unsupported(format!("no Java project holds {}", file.display())));
                     };
                     let test = project.test.source_roots.iter().any(|r| file.starts_with(r));
                     force.insert(file.to_path_buf());
@@ -530,20 +592,38 @@ impl JavaBuild<'_> {
     /// `None` when the prepare run failed.
     fn prepared(
         &self,
-        m: &maven::MavenModel,
-        top: &maven::MavenProject,
+        top: Reactor,
         dir: &Path,
         kind: BuildKind,
         cancel: &CancellationToken,
         on_event: &(dyn Fn(BuildEvent) + Sync),
     ) -> IdeResult<Option<ReactorModel>> {
-        let reactor = reactor_projects_of(m, top);
-        let out = model::output_root(self.cache, &top.dir);
+        let out = model::output_root(self.cache, &top.key());
         let model_file = dir.join("model.json");
-        let goals = ["process-resources".to_owned(), "resources:testResources".to_owned()];
-        let step = model::maven_step(self.root, top, self.jar, &out, Some(&model_file), &goals);
-        let fingerprint =
-            model::prepare_fingerprint(self.root, &reactor, &step, self.local_repo.clone(), self.jar_version, cancel)?;
+        let (step, fingerprint) = match top {
+            Reactor::Maven(top) => {
+                let m = self.model.maven.as_ref().expect("a Maven reactor");
+                let reactor = reactor_projects_of(m, top);
+                let goals = ["process-resources".to_owned(), "resources:testResources".to_owned()];
+                let step = model::maven_step(self.root, top, self.jar, &out, Some(&model_file), &goals);
+                let fingerprint = model::prepare_fingerprint(
+                    self.root,
+                    &reactor,
+                    &step,
+                    self.local_repo.clone(),
+                    self.jar_version,
+                    cancel,
+                )?;
+                (step, fingerprint)
+            }
+            Reactor::Gradle(g) => {
+                let init = model::gradle_init_script(dir)?;
+                let tasks = ["openideaBuildModel".to_owned()];
+                let step = model::gradle_step(self.root, g, &init, &out, Some(&model_file), &tasks);
+                let fingerprint = model::gradle_prepare_fingerprint(self.root, g, &step, self.jar_version, cancel)?;
+                (step, Some(fingerprint))
+            }
+        };
         if kind != BuildKind::Rebuild
             && let (Some(current), Some(record)) = (&fingerprint, model::load_record(dir))
             && record.fingerprint == *current
@@ -552,11 +632,11 @@ impl JavaBuild<'_> {
             return Ok(Some(record.model));
         }
         on_event(BuildEvent::Progress {
-            message: "Generating sources and reading the Maven build".into(),
+            message: format!("Generating sources and reading the {} build", top.name()),
             fraction: None,
         });
         let _ = std::fs::remove_file(&model_file);
-        let plan = BuildPlan { system: BuildSystem::Maven, title: String::new(), steps: vec![step] };
+        let plan = BuildPlan { system: top.system(), title: String::new(), steps: vec![step] };
         let result = crate::compile::run(self.root, &plan, cancel, on_event)?;
         if !result.success {
             return Ok(None);
@@ -575,11 +655,11 @@ impl JavaBuild<'_> {
         Ok(Some(reactor_model))
     }
 
-    /// Processes the resources that changed since they were last processed, with Maven
-    /// (filtering, includes, target paths), into the IDE's outputs. `Some` on failure.
+    /// Processes the resources that changed since they were last processed, with the build
+    /// tool (filtering, includes, target paths), into the IDE's outputs. `Some` on failure.
     fn resources(
         &self,
-        top: &maven::MavenProject,
+        top: Reactor,
         dir: &Path,
         projects: &[(&ProjectModel, bool)],
         cancel: &CancellationToken,
@@ -599,30 +679,44 @@ impl JavaBuild<'_> {
         if changed.is_empty() {
             return Ok(None);
         }
-        let top_dir = subdir(self.root, &top.dir);
-        let mut selection: Vec<String> = changed
-            .iter()
-            .map(|(p, _, _)| {
-                let rel = p.dir.strip_prefix(&top_dir).unwrap_or(&p.dir).to_string_lossy().replace('\\', "/");
-                if rel.is_empty() { ".".to_owned() } else { rel }
-            })
-            .collect();
-        selection.sort();
-        selection.dedup();
-        let mut extra = vec!["-q".to_owned(), "-pl".to_owned(), selection.join(",")];
-        extra.push("resources:resources".into());
-        if changed.iter().any(|(_, test, _)| *test) {
-            extra.push("resources:testResources".into());
-        }
         on_event(BuildEvent::Progress { message: "Processing resources".into(), fraction: None });
-        let out = model::output_root(self.cache, &top.dir);
-        let step = model::maven_step(self.root, top, self.jar, &out, None, &extra);
-        let plan = BuildPlan { system: BuildSystem::Maven, title: String::new(), steps: vec![step] };
+        let out = model::output_root(self.cache, &top.key());
+        let step = match top {
+            Reactor::Maven(top) => {
+                let top_dir = subdir(self.root, &top.dir);
+                let mut selection: Vec<String> = changed
+                    .iter()
+                    .map(|(p, _, _)| {
+                        let rel = p.dir.strip_prefix(&top_dir).unwrap_or(&p.dir).to_string_lossy().replace('\\', "/");
+                        if rel.is_empty() { ".".to_owned() } else { rel }
+                    })
+                    .collect();
+                selection.sort();
+                selection.dedup();
+                let mut extra = vec!["-q".to_owned(), "-pl".to_owned(), selection.join(",")];
+                extra.push("resources:resources".into());
+                if changed.iter().any(|(_, test, _)| *test) {
+                    extra.push("resources:testResources".into());
+                }
+                model::maven_step(self.root, top, self.jar, &out, None, &extra)
+            }
+            Reactor::Gradle(g) => {
+                let mut tasks = vec!["-q".to_owned()];
+                for (project, test, _) in &changed {
+                    let path = project.gradle_path.as_deref().unwrap_or(":");
+                    let prefix = if path == ":" { String::new() } else { format!("{path}:") };
+                    tasks.push(format!("{prefix}{}", if *test { "processTestResources" } else { "processResources" }));
+                }
+                let init = model::gradle_init_script(dir)?;
+                model::gradle_step(self.root, g, &init, &out, None, &tasks)
+            }
+        };
+        let plan = BuildPlan { system: top.system(), title: String::new(), steps: vec![step] };
         let result = crate::compile::run(self.root, &plan, cancel, on_event)?;
         if !result.success {
             return Ok(Some(LaunchOutputs {
                 class_paths: Vec::new(),
-                failure: Some("Maven could not process the resources".into()),
+                failure: Some(format!("{} could not process the resources", top.name())),
                 messages: result.messages,
             }));
         }
@@ -791,18 +885,21 @@ impl JavaBuild<'_> {
                 state.classes.remove(name);
             }
             let files: Vec<PathBuf> = batch.iter().cloned().collect();
+            let noun = if total == 1 { "file" } else { "files" };
             let count = if files.len() == total {
-                format!("{total} files")
+                format!("{total} {noun}")
             } else {
-                format!("{} of {total} files", files.len())
+                format!("{} of {total} {noun}", files.len())
             };
             on_event(BuildEvent::Step {
                 command: format!("javac {} ({set_name}, {count})", project.artifact_id),
                 cwd: project.dir.clone().into(),
             });
             if server.is_none() {
-                let key =
-                    ServerKey { java_home: java_home.clone(), jvm_args: jvm_config(&subdir(self.root, &top.dir)) };
+                let key = ServerKey {
+                    java_home: java_home.clone(),
+                    jvm_args: jvm_config(top, &subdir(self.root, top.rel_dir())),
+                };
                 server = Some(self.service.servers.server(self.jar, &key)?);
             }
             let mut written: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
@@ -892,19 +989,14 @@ impl JavaBuild<'_> {
 
     /// The JDK compiling a source set: the compiler plugin's forked `executable`, else Maven's
     /// `JAVA_HOME`, else one for the release.
-    fn java_home(
-        &self,
-        top: &maven::MavenProject,
-        config: &CompilerConfig,
-        release: Option<u32>,
-    ) -> IdeResult<PathBuf> {
+    fn java_home(&self, top: Reactor, config: &CompilerConfig, release: Option<u32>) -> IdeResult<PathBuf> {
         if config.fork == Some(true)
             && let Some(home) = config.executable.as_deref().map(Path::new).and_then(|e| e.parent()?.parent())
             && home.join("bin").is_dir()
         {
             return Ok(home.to_path_buf());
         }
-        if let Some(home) = top.env.get("JAVA_HOME").map(PathBuf::from).filter(|h| h.join("bin").is_dir()) {
+        if let Some(home) = top.env().get("JAVA_HOME").map(PathBuf::from).filter(|h| h.join("bin").is_dir()) {
             return Ok(home);
         }
         (self.jdk)(release).ok_or_else(|| {

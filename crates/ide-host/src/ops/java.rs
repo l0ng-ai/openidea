@@ -85,7 +85,7 @@ pub(crate) async fn resolve_launch(
     let build = policy != BuildPolicy::NoBuild;
     let full = policy == BuildPolicy::Rebuild;
     let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-    let (model, external, mut delegated, is_maven, non_java) = {
+    let (model, external, mut delegated, is_maven, non_java, served) = {
         let scope = scope.clone();
         let launches = launches.clone();
         let module = module.clone();
@@ -95,6 +95,7 @@ pub(crate) async fn resolve_launch(
             let model = load_launch_model(&scope);
             let non_java = build && compile::launch_has_non_java_sources(root, &model, &module, test);
             let is_maven = is_maven_module(root, &model, &module);
+            let served = served_by_service(root, &model, &scope.settings, &module);
             let delegated = build
                 && delegates_to_external_build(
                     is_maven,
@@ -104,16 +105,16 @@ pub(crate) async fn resolve_launch(
                     prefer_maven,
                 );
             let external = non_java || delegated;
-            (std::sync::Arc::new(model), external, delegated, is_maven, non_java)
+            (std::sync::Arc::new(model), external, delegated, is_maven, non_java, served)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
     };
-    // A Maven module is built by the IDE's Java build, unless Settings › Maven › Delegate IDE
-    // build/run actions to Maven asks for Maven, or the launch debugs with java-debug, whose
-    // HotSwap reloads what jdtls compiles (ecj's classes differ from javac's: lambda names).
-    // jdtls keeps building for its diagnostics either way.
-    if is_maven && !prefer_maven && !non_java && !debug {
+    // A Maven or Gradle module is built by the IDE's Java build ([`served_by_service`]), unless
+    // the launch debugs with java-debug, whose HotSwap reloads what jdtls compiles (ecj's
+    // classes differ from javac's: lambda names). jdtls keeps building for its diagnostics
+    // either way.
+    if served && !non_java && !debug {
         let built = {
             let (service, data_dir, scope, model, module, cancel, events) = (
                 host.java_build.clone(),
@@ -340,7 +341,7 @@ impl ServiceBuild<'_> {
         Some(f(&build))
     }
 
-    /// Builds `target`; `None` when Maven has to (the service doesn't build it, or failed).
+    /// Builds `target`; `None` when the build tool has to (the service doesn't build it, or failed).
     pub fn build(
         &self,
         target: Target,
@@ -358,14 +359,14 @@ impl ServiceBuild<'_> {
         match built {
             Ok(Built::Done(outputs)) => Ok(Some(outputs)),
             Ok(Built::Unsupported(reason)) => {
-                tracing::info!(module = %module.display(), reason, "Building with Maven");
+                tracing::info!(module = %module.display(), reason, "Building with the build tool");
                 Ok(None)
             }
             Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
             Err(e) => {
                 tracing::warn!(module = %module.display(), "The IDE's Java build failed: {}", e.message);
                 on_event(BuildEvent::Output {
-                    text: format!("The IDE's Java build failed, so Maven builds the module: {}\n", e.message),
+                    text: format!("The IDE's Java build failed, so the build tool builds it: {}\n", e.message),
                     stderr: true,
                 });
                 Ok(None)
@@ -380,6 +381,39 @@ fn load_launch_model(scope: &workspace::Scope) -> BuildModel {
 
 fn is_maven_module(root: &Path, model: &BuildModel, module: &Path) -> bool {
     model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| root.join(&p.dir) == module))
+}
+
+/// Whether the IDE's Java build builds the module holding `path` (#4078): a Maven module unless
+/// Settings › Maven › Delegate IDE build/run actions to Maven asks for Maven; a Gradle module
+/// when Settings › Gradle › Build and run using asks for the IDE.
+pub(crate) fn served_by_service(root: &Path, model: &BuildModel, settings: &Settings, path: &Path) -> bool {
+    let maven = model.maven.iter().flat_map(|m| m.projects.iter().map(|p| (root.join(&p.dir), true)));
+    let gradle = model.gradle.iter().flat_map(|g| g.projects.iter().map(|p| (root.join(&p.dir), false)));
+    // The deepest module holding it; Maven's when both build the folder.
+    let module = maven
+        .chain(gradle)
+        .filter(|(dir, _)| path.starts_with(dir))
+        .max_by_key(|(dir, maven)| (dir.components().count(), *maven));
+    match module {
+        Some((_, true)) => !settings.languages.java.maven.delegate_build,
+        Some((_, false)) => gradle_served(settings),
+        None => false,
+    }
+}
+
+/// Whether the IDE's Java build builds the whole project: it has Maven or Gradle builds, and
+/// builds them all.
+pub(crate) fn project_served_by_service(model: &BuildModel, settings: &Settings) -> bool {
+    let maven = model.maven.as_ref().map(|_| !settings.languages.java.maven.delegate_build);
+    let gradle = (!model.gradle.is_empty()).then(|| gradle_served(settings));
+    match (maven, gradle) {
+        (None, None) => false,
+        (maven, gradle) => maven.unwrap_or(true) && gradle.unwrap_or(true),
+    }
+}
+
+fn gradle_served(settings: &Settings) -> bool {
+    settings.languages.java.gradle.run_using == ide_core::settings::GradleRunUsing::Ide
 }
 
 /// A launch of a module jdtls doesn't serve (another Java language server, or none): the
@@ -411,8 +445,7 @@ async fn resolve_launch_without_jdtls(
             if policy == BuildPolicy::NoBuild {
                 return (model, None, false);
             }
-            if is_maven_module(&scope.root, &model, &module)
-                && !scope.settings.languages.java.maven.delegate_build
+            if served_by_service(&scope.root, &model, &scope.settings, &module)
                 && !compile::launch_has_non_java_sources(&scope.root, &model, &module, test)
             {
                 match build_with_service(

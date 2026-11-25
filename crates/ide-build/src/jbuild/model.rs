@@ -1,5 +1,5 @@
-//! The build model of a Maven reactor as Maven itself configures it, recorded by the
-//! prepare run's extension (`java/java-build`, `BuildModel`), and when that run is due.
+//! The build model of a Maven reactor or Gradle build as the build tool itself configures it,
+//! recorded by the prepare run (`java/java-build` `BuildModel`, `gradle-build.init.gradle`), and when that run is due.
 use super::*;
 use std::fs;
 
@@ -30,6 +30,9 @@ pub struct ProjectModel {
     pub test_generators: Vec<String>,
     #[serde(default)]
     pub problems: Vec<String>,
+    /// The Gradle project path (`:`, `:app`); `None` for Maven.
+    #[serde(default)]
+    pub gradle_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -103,6 +106,10 @@ impl ProjectModel {
 
     /// Why the IDE can't compile this project with javac itself, if it can't.
     pub fn unsupported(&self, test: bool) -> Option<String> {
+        // What the build tool couldn't resolve or read: the model would be incomplete.
+        if let Some(problem) = self.problems.first() {
+            return Some(format!("{}: {problem}", self.artifact_id));
+        }
         if !self.other_compilers.is_empty() {
             return Some(format!("{} also compiles with {}", self.artifact_id, self.other_compilers.join(", ")));
         }
@@ -252,7 +259,84 @@ pub(super) fn maven_step(
     step
 }
 
+/// The init script that gives a Gradle build the IDE's outputs and writes its model.
+const GRADLE_INIT_SCRIPT: &str = include_str!("gradle-build.init.gradle");
+
+/// Writes the init script into the build's state folder, and returns its path.
+pub(super) fn gradle_init_script(dir: &Path) -> IdeResult<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let path = dir.join("openidea-build.init.gradle");
+    if fs::read_to_string(&path).ok().as_deref() != Some(GRADLE_INIT_SCRIPT) {
+        fs::write(&path, GRADLE_INIT_SCRIPT)?;
+    }
+    Ok(path)
+}
+
+/// A Gradle step at the build's root running `tasks` with the IDE's init script.
+pub(super) fn gradle_step(
+    root: &Path,
+    g: &crate::GradleModel,
+    init: &Path,
+    output_root: &Path,
+    model_file: Option<&Path>,
+    tasks: &[String],
+) -> BuildStep {
+    let mut step = gradle_build_step(
+        &g.command,
+        // The init script configures the evaluated projects, which a configuration cache skips.
+        &["--console=plain", "--no-configuration-cache"],
+        &subdir(root, &g.dir),
+    );
+    step.args.extend(["--init-script".to_owned(), init.to_string_lossy().into_owned()]);
+    step.args.push(format!("-Popenidea.build.output={}", output_root.display()));
+    if let Some(file) = model_file {
+        step.args.push(format!("-Popenidea.build.model={}", file.display()));
+    }
+    step.args.extend(tasks.iter().cloned());
+    step.env = g.env.clone();
+    step
+}
+
+/// Files a Gradle build's model depends on: settings and build scripts (with what they apply),
+/// properties, the wrapper and catalogs, `buildSrc`, and generator inputs.
+pub(super) fn gradle_prepare_fingerprint(
+    root: &Path,
+    g: &crate::GradleModel,
+    step: &BuildStep,
+    jar_version: &str,
+    cancel: &CancellationToken,
+) -> IdeResult<LaunchFingerprint> {
+    let mut inputs = crate::gradle::build_files(root, g);
+    let dir = subdir(root, &g.dir);
+    inputs.extend([dir.join("buildSrc"), dir.join("gradle"), dir.join("gradlew"), dir.join("gradlew.bat")]);
+    for project in &g.projects {
+        let src = subdir(root, &project.dir).join("src");
+        for set in fs::read_dir(&src).into_iter().flatten().flatten() {
+            for generator in fs::read_dir(set.path()).into_iter().flatten().flatten() {
+                let name = generator.file_name();
+                if generator.path().is_dir() && !matches!(name.to_str(), Some("java" | "resources")) {
+                    inputs.push(generator.path());
+                }
+            }
+        }
+    }
+    inputs.push(process::program_path(&step.program, &step.env, &step.cwd));
+    if let Some(home) = dirs::home_dir() {
+        inputs.push(home.join(".gradle/gradle.properties"));
+        inputs.push(home.join(".gradle/init.d"));
+    }
+    if let Some(home) = step.env.get("JAVA_HOME") {
+        inputs.push(Path::new(home).join("release"));
+    }
+    inputs.sort();
+    inputs.dedup();
+    let parameters =
+        serde_json::to_string(&(MODEL_VERSION, jar_version, GRADLE_INIT_SCRIPT, &step.program, &step.args, &step.env))
+            .map_err(|e| IdeError::internal(e.to_string()))?;
+    Ok(LaunchFingerprint::new(parameters, fingerprint::scan_all(root, inputs, cancel)?))
+}
+
 pub(super) fn read_model(path: &Path) -> IdeResult<ReactorModel> {
-    let bytes = fs::read(path).map_err(|e| IdeError::internal(format!("Maven wrote no build model ({e})")))?;
+    let bytes = fs::read(path).map_err(|e| IdeError::internal(format!("The build wrote no model ({e})")))?;
     serde_json::from_slice(&bytes).map_err(|e| IdeError::internal(format!("Unreadable build model: {e}")))
 }

@@ -979,11 +979,15 @@ pub async fn build_run(
     let (service, data_dir) = (host.java_build.clone(), host.local_data_dir.clone());
     let result = blocking(move || {
         let single = cmake.is_none() && ide_workspace::workspace::Workspace::load(&root)?.is_none();
-        // A Maven project builds with the IDE's Java build (#4078), unless Settings › Maven ›
-        // Delegate IDE build/run actions to Maven asks for Maven, or it can't.
-        if single && !settings.languages.java.maven.delegate_build {
+        // A Maven or Gradle project builds with the IDE's Java build (#4078), unless its
+        // settings ask for the build tool, or it can't.
+        if single {
             let model = with_profiles(load(&root, &cache, &settings), &cache);
-            if model.maven.is_some() {
+            let served = match file.as_deref() {
+                Some(module) => super::java::served_by_service(&root, &model, &settings, module),
+                None => super::java::project_served_by_service(&model, &settings),
+            };
+            if served {
                 let service = super::java::ServiceBuild {
                     service: &service,
                     data_dir: &data_dir,
@@ -1239,9 +1243,9 @@ pub async fn build_compile_file(
     let token = host.begin_project_request(window, request);
     let (service, data_dir) = (host.java_build.clone(), host.local_data_dir.clone());
     let result = blocking(move || {
-        if !scope.settings.languages.java.maven.delegate_build {
+        {
             let model = with_profiles(load(&scope.root, &scope.cache, &scope.settings), &scope.cache);
-            if model.maven.is_some() {
+            if super::java::served_by_service(&scope.root, &model, &scope.settings, &file) {
                 let service = super::java::ServiceBuild {
                     service: &service,
                     data_dir: &data_dir,

@@ -1,6 +1,6 @@
 # Java build
 
-The IDE's own build of Maven modules (`ide_build::jbuild`). The jar holds two parts:
+The IDE's own build of Maven and Gradle modules (`ide_build::jbuild`). The jar holds two parts:
 
 - `ai.openidea.javac.Server` (`src/`): a resident javac. OpenIDEA starts one per JDK (and
   `.mvn/jvm.config`) as `java -cp openidea-java-build.jar ai.openidea.javac.Server` and keeps it
@@ -25,6 +25,11 @@ The IDE's own build of Maven modules (`ide_build::jbuild`). The jar holds two pa
 
 OpenIDEA runs `mvn process-resources resources:testResources` with the extension when the POMs,
 settings or generator inputs change, then compiles the launch's modules with the server.
+
+Gradle builds get the same model from an init script instead
+(`crates/ide-build/src/jbuild/gradle-build.init.gradle`, task `openideaBuildModel`, with
+`-Popenidea.build.output` and `-Popenidea.build.model`), when Settings › Gradle › Build and run
+using is set to the IDE.
 
 The jar is committed and embedded by `ide-sdk` (`java_build_jar`). It is built with `--release 8`
 against Maven 3.9.11, whose files `build-dependencies.sha256` pins. Rebuild it after changing
