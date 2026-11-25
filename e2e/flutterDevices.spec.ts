@@ -63,7 +63,14 @@ test("the chosen device is used for Run, and replaced while it is disconnected",
   await page.keyboard.press("Control+r");
   await expect.poll(async () => (await ipcCalls(page, "run_start")).length).toBe(1);
   const [started] = await ipcCalls(page, "run_start");
-  expect((started!.config as { args: string[] }).args).toEqual(["run", "-t", "lib/main.dart", "-d", "chrome"]);
+  expect((started!.config as { args: string[] }).args).toEqual([
+    "run",
+    "-t",
+    "lib/main.dart",
+    "-d",
+    "chrome",
+    "--machine",
+  ]);
 
   const emit = (devices: unknown[]) =>
     page.evaluate(
