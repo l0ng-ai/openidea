@@ -290,7 +290,7 @@ describe("application configurations", () => {
   });
 });
 
-describe("JUnit 5 through OpenIDEA's runner (Maven › Run tests using)", () => {
+describe("JUnit through OpenIDEA's runner (Maven › Run tests using)", () => {
   const rel = "shop/src/test/java/a/OrderTest.java";
   const jupiter = `package a;
 import org.junit.jupiter.api.Test;
@@ -299,6 +299,7 @@ class OrderTest {
   void adds() {}
 }`;
   const junit4 = jupiter.replace("org.junit.jupiter.api.Test", "org.junit.Test");
+  const testng = jupiter.replace("org.junit.jupiter.api.Test", "org.testng.annotations.Test");
   const maven = [cfg({ id: "maven:test", kind: "maven", args: ["test"], cwd: "shop", isTest: true })];
   const gradle = [cfg({ id: "gradle:test", kind: "gradle", args: ["test"], cwd: "shop", isTest: true })];
   const target = (src: string, name: string) =>
@@ -324,11 +325,19 @@ class OrderTest {
     expect(targetConfig(target(jupiter, "OrderTest"), rel, maven, jupiter)!.args.at(-1)).toBe("a.OrderTest");
   });
 
-  it("keeps Surefire for the Maven setting, JUnit 4 and Gradle", () => {
+  it("runs JUnit 4 tests with the runner too", () => {
+    expect(targetConfig(target(junit4, "adds"), rel, maven, junit4)).toMatchObject({
+      kind: "application",
+      args: ["-ea", "-cp", "${testClasspath}", "ai.openidea.junit.Runner", "a.OrderTest#adds"],
+    });
+  });
+
+  it("keeps Surefire for the Maven setting, TestNG and Gradle", () => {
     useTests("maven");
     expect(targetConfig(target(jupiter, "adds"), rel, maven, jupiter)!.kind).toBe("maven");
-    useTests("ide");
     expect(targetConfig(target(junit4, "adds"), rel, maven, junit4)!.kind).toBe("maven");
+    useTests("ide");
+    expect(targetConfig(target(testng, "adds"), rel, maven, testng)!.kind).toBe("maven");
     expect(targetConfig(target(jupiter, "adds"), rel, gradle, jupiter)!.kind).toBe("gradle");
   });
 

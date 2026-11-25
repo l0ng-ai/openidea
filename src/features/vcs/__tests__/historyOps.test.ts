@@ -135,6 +135,17 @@ describe("Git Log commit actions", () => {
     expect(commitMenu(c).some((i) => "action" in i && i.action === "vcs.log.showFileAtRevision")).toBe(false);
   });
 
+  it("offers Show in Git Log in a File History commit menu, after Compare with Local (IDEA)", () => {
+    const c = commit("Rename file");
+    const order = menuOrder(commitMenu(c, [c], "/repo/new.txt"));
+    expect(
+      order.slice(order.indexOf("vcs.log.compareWithLocal"), order.indexOf("vcs.log.compareWithLocal") + 2),
+    ).toEqual(["vcs.log.compareWithLocal", "vcs.showCommit"]);
+    const item = commitMenu(c, [c], "/repo/new.txt").find((i) => "action" in i && i.action === "vcs.showCommit");
+    expect(item).toMatchObject({ label: "Show in Git Log", arg: c, disabled: false });
+    expect(commitMenu(c).some((i) => "action" in i && i.action === "vcs.showCommit")).toBe(false);
+  });
+
   it("offers history rewriting for pushed commits too (IDEA allows it; the run confirms)", () => {
     const local = commit("Local", "1".repeat(40));
     const pushed = commit("Pushed", "2".repeat(40));

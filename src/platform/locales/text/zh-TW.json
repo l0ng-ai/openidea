@@ -930,6 +930,7 @@
   "Compile File": "編譯檔案",
   "Compiles the current Java file with javac, without building its module": "使用 javac 僅編譯目前 Java 檔案，不建置其模組",
   "Build Project": "建置專案",
+  "Build '{targetName}'": "建置 '{targetName}'",
   "Build failed": "建置失敗",
   "Build files changed since the last reload": "自上次重新載入以來建置檔案已更改",
   "Build output": "建置輸出",
