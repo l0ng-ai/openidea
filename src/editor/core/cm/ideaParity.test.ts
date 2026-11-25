@@ -403,6 +403,27 @@ describe("overwrite mode", () => {
 describe("smooth caret", () => {
   const caret = (appearance: object) => caretExtension(validateEditorExtras({ appearance }));
 
+  /** A view with smooth movement on a 100px screen: jsdom has no layout, so every caret is on screen. */
+  const smoothCaret = (text = "ab|c") => {
+    const v = make(text, caret({ smoothCaretMovement: true }));
+    v.coordsAtPos = () => ({ left: 0, right: 0, top: 0, bottom: 10 });
+    v.scrollDOM.getBoundingClientRect = () => new DOMRect(0, 0, 100, 100);
+    return v;
+  };
+  const measure = (v: EditorView) => (v as unknown as { measure(): void }).measure();
+  const glides = (v: EditorView) =>
+    v.scrollDOM.querySelector(".cm-cursorLayer")!.classList.contains("cm-openidea-caretGlide");
+  const pointer = (v: EditorView) => {
+    const win = v.dom.ownerDocument.defaultView!;
+    return {
+      press: (x = 0, y = 0) =>
+        v.dom.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y })),
+      move: (x: number, y = 0) =>
+        win.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y })),
+      release: () => win.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })),
+    };
+  };
+
   it("marks the editor for smooth blinking and the chosen movement curve", () => {
     const v = make(
       "ab|c",
@@ -415,56 +436,65 @@ describe("smooth caret", () => {
   });
 
   it("glides selection-only moves and puts the caret in place at once when typing", () => {
-    const v = make("ab|c", caret({ smoothCaretMovement: true }));
-    const layer = v.scrollDOM.querySelector(".cm-cursorLayer")!;
-    const flush = () => (v as unknown as { measure(): void }).measure();
-    // jsdom has no layout: every caret is on screen.
-    v.coordsAtPos = () => ({ left: 0, right: 0, top: 0, bottom: 10 });
-    v.scrollDOM.getBoundingClientRect = () => new DOMRect(0, 0, 100, 100);
+    const v = smoothCaret();
     v.dispatch({ selection: { anchor: 1 } });
-    flush();
-    expect(layer.classList.contains("cm-openidea-caretGlide")).toBe(true);
+    measure(v);
+    expect(glides(v)).toBe(true);
     v.dispatch({ changes: { from: 1, insert: "x" }, selection: { anchor: 2 } });
-    expect(layer.classList.contains("cm-openidea-caretGlide")).toBe(false);
+    expect(glides(v)).toBe(false);
   });
 
-  it("glides pointer clicks but keeps the caret with the pointer during a drag", () => {
-    const v = make("ab|c", caret({ smoothCaretMovement: true }));
-    const layer = v.scrollDOM.querySelector(".cm-cursorLayer")!;
-    const flush = () => (v as unknown as { measure(): void }).measure();
-    v.coordsAtPos = () => ({ left: 0, right: 0, top: 0, bottom: 10 });
-    v.scrollDOM.getBoundingClientRect = () => new DOMRect(0, 0, 100, 100);
-    const glides = () => layer.classList.contains("cm-openidea-caretGlide");
-    const win = v.dom.ownerDocument.defaultView!;
-    const press = (x = 0, y = 0) =>
-      v.dom.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
-    const move = (x: number, y = 0) =>
-      win.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
-    const release = () => win.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  it("glides a pointer selection that picks a range but not a drag", () => {
+    const v = smoothCaret();
+    const p = pointer(v);
 
-    // Double-click / Shift+click: a click picks a range at once and the caret glides to it.
-    press();
+    p.press();
     v.dispatch({ selection: { anchor: 0, head: 2 }, userEvent: "select.pointer" });
-    flush();
-    expect(glides()).toBe(true);
-    release();
+    measure(v);
+    expect(glides(v)).toBe(true);
+    p.release();
 
-    // A drag moves the selection end with the pointer: the caret follows it instead of gliding.
-    press();
-    move(40);
+    p.press();
+    p.move(40);
     v.dispatch({ selection: { anchor: 0, head: 2 }, userEvent: "select.pointer" });
-    flush();
-    expect(glides()).toBe(false);
-    // Dragging back onto the anchor empties the selection; the caret must still follow the pointer.
+    measure(v);
+    expect(glides(v)).toBe(false);
+    p.release();
+
+    p.press();
+    p.release();
     v.dispatch({ selection: { anchor: 1 }, userEvent: "select.pointer" });
-    flush();
-    expect(v.state.selection.main.empty).toBe(true);
-    expect(glides()).toBe(false);
-    release();
+    measure(v);
+    expect(glides(v)).toBe(true);
+  });
 
-    // The next keyboard move glides again.
-    v.dispatch({ selection: { anchor: 2 } });
-    flush();
-    expect(glides()).toBe(true);
+  it("keeps the caret with the pointer when a drag empties the selection or selects zero-width lines", () => {
+    const v = smoothCaret();
+    const p = pointer(v);
+    p.press();
+    p.move(40);
+    v.dispatch({ selection: { anchor: 0, head: 2 }, userEvent: "select.pointer" });
+    v.dispatch({ selection: { anchor: 1 }, userEvent: "select.pointer" });
+    measure(v);
+    expect(v.state.selection.main.empty).toBe(true);
+    expect(glides(v)).toBe(false);
+    p.release();
+
+    // Two empty ranges: the range count stays the same, so only the drag can stop the glide.
+    const block = smoothCaret("|a|bc");
+    const q = pointer(block);
+    block.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(1), EditorSelection.cursor(2)], 0) });
+    measure(block);
+    expect(glides(block)).toBe(true);
+    q.press();
+    q.move(40);
+    block.dispatch({
+      selection: EditorSelection.create([EditorSelection.cursor(2), EditorSelection.cursor(3)], 0),
+      userEvent: "select.pointer",
+    });
+    measure(block);
+    expect(block.state.selection.ranges.every((r) => r.empty)).toBe(true);
+    expect(glides(block)).toBe(false);
+    q.release();
   });
 });

@@ -602,11 +602,10 @@ const POINTER_DRAG_SLOP = 4;
  * Use smooth caret movement. The cursor layer reuses its caret elements, so a
  * CSS transition on their position animates a move (VS Code's
  * `cursorSmoothCaretAnimation: "explicit"`). Only moves of the selection
- * alone glide; typing, edits, a changed number of carets, layout changes and
- * moves that scroll the editor put the caret in place at once. A pointer drag
- * puts the caret in place too: every mousemove moves the selection end, so a
- * transition would leave the caret trailing behind the selection edge until
- * the drag stops. Clicks, double-clicks and Shift+clicks still glide.
+ * alone glide; typing, edits, a changed number of carets, layout changes,
+ * scrolling and pointer drags put the caret in place at once (a drag moves the
+ * selection end on every mousemove, so a transition would leave it trailing).
+ * Clicks, double-clicks and Shift+clicks still glide.
  */
 const caretGlide = ViewPlugin.fromClass(
   class {
