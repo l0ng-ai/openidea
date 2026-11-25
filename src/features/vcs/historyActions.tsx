@@ -407,6 +407,15 @@ export function registerHistoryActions(): () => void {
       run: withCommits((cs) => writeClipboardText(cs.map((c) => c.id).join(" ")), { allowReadOnly: true }),
     },
     {
+      id: "vcs.log.copyCommitSubject",
+      title: "Copy Commit Subject",
+      category: "Git Log",
+      icon: "copy",
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_GIT_LOG,
+      run: withCommits((cs) => writeClipboardText(cs.map((c) => c.summary).join("\n")), { allowReadOnly: true }),
+    },
+    {
       id: "vcs.log.createPatch",
       title: "Create Patch…",
       category: "Git Log",

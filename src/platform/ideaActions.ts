@@ -133,4 +133,5 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   "Compare.SameVersion": "vcs.showDiff",
   "ChangesView.ShelveSilently": "vcs.shelveSilently",
   "ChangesView.UnshelveSilently": "vcs.unshelveSilently",
+  "Vcs.CopyCommitSubjectAction": "vcs.log.copyCommitSubject",
 };
