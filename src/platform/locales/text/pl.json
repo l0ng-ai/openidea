@@ -896,6 +896,8 @@
   "Font": "Czcionka",
   "Font preview": "Podgląd czcionki",
   "For protanopia and deuteranopia.": "Dla protanopii i deuteranopii.",
+  "Reduce motion": "Ogranicz ruch",
+  "Turns off animations and transitions, such as spinners and popup fades. Always on when the system asks for reduced motion.": "Wyłącza animacje i przejścia, takie jak wskaźniki ładowania i zanikanie okien podręcznych. Zawsze włączone, gdy system prosi o ograniczenie ruchu.",
   "For symbols not supported by the main font": "Dla symboli nieobsługiwanych przez czcionkę główną",
   "Force": "Wymuś",
   "Force (with lease)": "Wymuś (z ograniczeniem/with lease)",

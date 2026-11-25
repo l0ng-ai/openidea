@@ -896,6 +896,8 @@
   "Font": "Fonte",
   "Font preview": "Pré-visualização da fonte",
   "For protanopia and deuteranopia.": "Para protanopia e deuteranopia.",
+  "Reduce motion": "Reduzir movimento",
+  "Turns off animations and transitions, such as spinners and popup fades. Always on when the system asks for reduced motion.": "Desativa animações e transições, como indicadores de carregamento e esmaecimento de pop-ups. Sempre ativo quando o sistema solicita movimento reduzido.",
   "For symbols not supported by the main font": "Para símbolos não suportados pela fonte principal",
   "Force": "Forçar",
   "Force (with lease)": "Forçar (com lease)",

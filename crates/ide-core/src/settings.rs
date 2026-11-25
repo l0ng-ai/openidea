@@ -823,6 +823,8 @@ pub struct AppearanceSettings {
     pub contrast_scrollbars: bool,
     /// Adjust colours for red-green vision deficiency.
     pub red_green_vision: bool,
+    /// Turn off animations and transitions (also on when the OS asks for reduced motion).
+    pub reduce_motion: bool,
     pub different_tool_window_background: bool,
     pub compact_mode: bool,
     /// IDEA "Use smaller indents in trees": tool window trees indent less per level.
@@ -963,6 +965,7 @@ impl Default for AppearanceSettings {
             ui_font_fallback: String::new(),
             contrast_scrollbars: false,
             red_green_vision: false,
+            reduce_motion: false,
             different_tool_window_background: false,
             compact_mode: false,
             small_tree_indents: false,

@@ -940,6 +940,8 @@
   "Font": "글꼴",
   "Font preview": "글꼴 미리 보기",
   "For protanopia and deuteranopia.": "적색맹 및 녹색맹용입니다.",
+  "Reduce motion": "동작 줄이기",
+  "Turns off animations and transitions, such as spinners and popup fades. Always on when the system asks for reduced motion.": "로딩 스피너와 팝업 페이드 같은 애니메이션과 전환 효과를 끕니다. 시스템에서 동작 줄이기를 요청하면 항상 켜집니다.",
   "For symbols not supported by the main font": "기본 글꼴에서 지원하지 않는 기호용",
   "Force": "강제 실행",
   "Force (with lease)": "강제(with lease)",

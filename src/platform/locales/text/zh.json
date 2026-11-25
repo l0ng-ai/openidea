@@ -1985,6 +1985,8 @@
   "Font": "字体",
   "Font preview": "字体预览",
   "For protanopia and deuteranopia.": "适用于红色盲和绿色盲。",
+  "Reduce motion": "减少动画",
+  "Turns off animations and transitions, such as spinners and popup fades. Always on when the system asks for reduced motion.": "关闭动画和过渡效果，例如加载旋转图标和弹出层淡入淡出。系统要求减少动态效果时始终开启。",
   "For symbols not supported by the main font": "用于主字体不支持的符号",
   "Force": "强制",
   "Force (with lease)": "强制 (with lease)",
