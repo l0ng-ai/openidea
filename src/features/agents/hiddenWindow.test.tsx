@@ -113,7 +113,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("a kept-alive session tab that stays hidden", () => {
+// Each test renders a long conversation twice and waits up to 10 s for it (`settle`, Find); on a
+// loaded CI runner that can pass the default 5 s test timeout before the wait itself gives up.
+describe("a kept-alive session tab that stays hidden", { timeout: 30_000 }, () => {
   it("keeps an unsent edit to an earlier message even after returning to the end", async () => {
     const view = render(session(true));
     await settle("Reply 59");
