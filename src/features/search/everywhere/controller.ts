@@ -34,6 +34,7 @@ import {
   mergeActionResults,
   mergeSymbols,
   sectionsFor,
+  splitSymbolQuery,
   textItems,
   type OutsideFile,
   type SeItem,
@@ -432,7 +433,8 @@ export class SeController {
     };
     const lspPromise = this.deps.workspaceSymbols
       ? this.deps
-          .workspaceSymbols(this.track(id), text)
+          // Servers match names, not `Class::method`: ask for the name and filter by container.
+          .workspaceSymbols(this.track(id), splitSymbolQuery(text).name || text)
           .then((r) => {
             lsp = r;
           })
