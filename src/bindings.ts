@@ -120,12 +120,15 @@ export const commands = {
 	agentRename: (task: string, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rename", { task, title })),
 	/**  Answers a permission request; `option: null` cancels it. */
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
-	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
-	agentRollback: (task: string, turns: number) => typedError<{
+	/**
+	 *  Drops the task's turns after its first `turns`; returns the message of the first dropped one.
+	 *  With `files`, the files those turns changed go back as they were before them.
+	 */
+	agentRollback: (task: string, turns: number, files: boolean) => typedError<{
 	text: string,
 	files: IpcPath[],
 	images: AgentImage[],
-} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns })),
+} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns, files })),
 	/**  Rollback: the task's changed files among `paths` (all without) back as `view` compares them. */
 	agentRollbackChanges: (task: string, paths: string[] | null, view: 
 /**  Everything since the commit the task started from. */

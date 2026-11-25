@@ -1458,7 +1458,7 @@
   "Couldn't rename the task": "Couldn't rename the task",
   "Start a Fresh Agent Session": "Start a Fresh Agent Session",
   "Start Fresh": "Start Fresh",
-  "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.",
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.",
   "Copy Path From Source Root": "Copy Path From Source Root",
   "Copy Path From Repository Root": "Copy Path From Repository Root",
   "Escape text on paste in string literals": "Escape text on paste in string literals",
@@ -1497,9 +1497,6 @@
   "Ask": "Ask",
   "You": "You",
   "Jump to Latest": "Jump to Latest",
-  "Retract Message": "Retract Message",
-  "Retract": "Retract",
-  "Couldn't retract the message": "Couldn't retract the message",
   "The agent is still stopping. Try again once it has stopped.": "The agent is still stopping. Try again once it has stopped.",
   "Uninstall incomplete; retry Uninstall to finish cleanup.": "Uninstall incomplete; retry Uninstall to finish cleanup.",
   "refusing symlink in plugin cleanup path": "refusing symlink in plugin cleanup path",
@@ -3966,5 +3963,10 @@
   "Resize hover card from the right": "Resize hover card from the right",
   "Resize hover card from the bottom": "Resize hover card from the bottom",
   "Resize hover card from the left": "Resize hover card from the left",
-  "Resize hover card from the corner": "Resize hover card from the corner"
+  "Resize hover card from the corner": "Resize hover card from the corner",
+  "Roll Back to Here": "Roll Back to Here",
+  "Couldn't roll back": "Couldn't roll back",
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.",
+  "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.",
+  "The files the agent changed since go back to how they were before this message was sent.": "The files the agent changed since go back to how they were before this message was sent."
 }
