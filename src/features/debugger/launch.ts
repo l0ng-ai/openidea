@@ -96,6 +96,31 @@ function pythonFor(rc: RunConfig, cwd: string): string {
 /** Project managers whose `run` executes in the project's environment (`uv run python …`). */
 const PYTHON_RUNNERS = new Set(["uv", "poetry", "pdm", "pipenv", "hatch", "rye"]);
 
+/** `uv run` / `poetry run` / `pdm run` options that take a separate value. */
+const RUNNER_VALUE_OPTIONS = new Set([
+  "--with",
+  "--with-editable",
+  "--with-requirements",
+  "--project",
+  "--directory",
+  "--python",
+  "--package",
+  "--extra",
+  "--group",
+  "--env-file",
+  "--index",
+  "--index-url",
+  "--extra-index-url",
+]);
+
+/** Index of what `run` runs, past the manager's own options (`run --with rich --no-sync app.py`). */
+function runnerOptionsEnd(args: readonly string[]): number {
+  let i = 1;
+  while (i < args.length && args[i]!.startsWith("-") && args[i] !== "-m" && args[i] !== "--module")
+    i += RUNNER_VALUE_OPTIONS.has(args[i]!) ? 2 : 1;
+  return Math.min(i, args.length);
+}
+
 function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const out = base(rc, "debugpy", cwd);
   const dbg = workflowSettings().debugger;
@@ -111,14 +136,19 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const name = commandName(rc.command);
   let args = rc.args;
   let tool: string | null = PYTHON_NAME.test(name) ? null : name;
-  if (PYTHON_RUNNERS.has(name) && args[0] === "run" && args[1]) {
-    // The debuggee runs through the manager (`uv run python <debugpy> …`) to get the project's
-    // environment; the adapter and its launcher need a plain interpreter.
-    const python = PYTHON_NAME.test(args[1]) ? args[1] : "python";
-    extra.python = [resolveCommand(rc.command, cwd), "run", python];
+  const at = PYTHON_RUNNERS.has(name) && args[0] === "run" ? runnerOptionsEnd(args) : 0;
+  if (at && args[at]) {
+    // The debuggee runs through the manager (`uv run [options] python <debugpy> …`) to get the
+    // project's environment; the adapter and its launcher need a plain interpreter. The
+    // manager's own options (`--with rich`, `--no-sync`, `--project member`) stay with it (#5874).
+    const named = PYTHON_NAME.test(args[at]!);
+    extra.python = [resolveCommand(rc.command, cwd), ...args.slice(0, at), named ? args[at]! : "python"];
     extra.debugLauncherPython = systemPython();
-    tool = PYTHON_NAME.test(args[1]) ? null : args[1];
-    args = args.slice(2);
+    args = args.slice(named ? at + 1 : at);
+    if (args[0] === "--module") args = ["-m", ...args.slice(1)];
+    // `uv run app.py` / `uv run -m app` run Python directly; anything else is a console script.
+    tool = named || args[0] === "-m" || args[0]!.endsWith(".py") ? null : args[0]!;
+    if (tool) args = args.slice(1);
   }
   if (tool) {
     // A console script (`pytest`, `uvicorn`, …): run it as a module.
