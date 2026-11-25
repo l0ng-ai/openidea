@@ -1568,6 +1568,8 @@ async fn property_editor_lists_the_dart_servers_arguments_and_applies_its_edit()
             arg("data", json!({ "type": "string", "value": "x", "hasArgument": true, "isRequired": true, "isNullable": false })),
             arg("textAlign", json!({ "type": "enum", "options": ["TextAlign.left", "TextAlign.center"] })),
             arg("maxLines", json!({ "type": "int", "value": 2, "hasArgument": true })),
+            // An older SDK leaves out flags it doesn't know yet.
+            json!({ "name": "softWrap", "type": "bool", "hasArgument": false }),
         ]}),
     );
     let args = h.mgr.editable_arguments(doc, Pos::new(0, 2)).await.unwrap().unwrap();
@@ -1578,6 +1580,7 @@ async fn property_editor_lists_the_dart_servers_arguments_and_applies_its_edit()
     );
     assert_eq!(args.arguments[1].options.as_ref().unwrap()[1], "TextAlign.center");
     assert_eq!(args.arguments[1].value, None);
+    assert!(args.arguments[3].is_editable && !args.arguments[3].is_deprecated && !args.arguments[3].is_required);
     assert_eq!(args.arguments[2].value, Some(ArgumentValue::Int(2)));
     let asked = s.requested("dart/textDocument/editableArguments");
     assert_eq!(asked[0]["position"], json!({"line":0,"character":2}));

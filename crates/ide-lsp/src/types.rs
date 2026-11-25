@@ -676,16 +676,27 @@ pub struct EditableArgument {
     pub kind: String,
     /// The literal value in the code (only while `has_argument`); an expression has `display_value`.
     pub value: Option<ArgumentValue>,
+    #[serde(default)]
     pub has_argument: bool,
     pub default_value: Option<ArgumentValue>,
     pub display_value: Option<String>,
+    // Absent from older Dart SDKs (`isDeprecated` came later): read as false rather than
+    // failing the whole list.
+    #[serde(default)]
     pub is_required: bool,
+    #[serde(default)]
     pub is_nullable: bool,
+    #[serde(default)]
     pub is_deprecated: bool,
+    #[serde(default = "editable_by_default")]
     pub is_editable: bool,
     pub not_editable_reason: Option<String>,
     /// An enum's values, as `EnumName.value`.
     pub options: Option<Vec<String>>,
+}
+
+fn editable_by_default() -> bool {
+    true
 }
 
 /// A literal argument value. Ints stay ints: the server rejects `1.0` for an `int` parameter.

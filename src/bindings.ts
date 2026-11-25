@@ -6463,13 +6463,13 @@ export type EditableArgument = {
 	type: string,
 	/**  The literal value in the code (only while `has_argument`); an expression has `display_value`. */
 	value: ArgumentValue | null,
-	hasArgument: boolean,
+	hasArgument?: boolean,
 	defaultValue: ArgumentValue | null,
 	displayValue: string | null,
-	isRequired: boolean,
-	isNullable: boolean,
-	isDeprecated: boolean,
-	isEditable: boolean,
+	isRequired?: boolean,
+	isNullable?: boolean,
+	isDeprecated?: boolean,
+	isEditable?: boolean,
 	notEditableReason: string | null,
 	/**  An enum's values, as `EnumName.value`. */
 	options: string[] | null,
