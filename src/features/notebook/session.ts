@@ -64,6 +64,13 @@ export interface CellReveal {
   seq: number;
 }
 
+/** The caret of a cell editor as a reveal position: 0-based line and UTF-16 column. */
+function caretOf(state: EditorState): { line: number; col: number } {
+  const head = state.selection.main.head;
+  const line = state.doc.lineAt(head);
+  return { line: line.number - 1, col: head - line.from };
+}
+
 /** One session/queue per file; tabs and mounted React views do not own its lifetime. */
 export class NotebookSession {
   private state: NotebookViewState = {
@@ -106,6 +113,8 @@ export class NotebookSession {
   /** Code cells whose outputs alone are folded. */
   readonly hiddenOutputs = new Set<string>();
   selectedCell: string | null = null;
+  /** The cell whose editor holds DOM focus, tracked so history can put its caret back. */
+  focusedCell: string | null = null;
   scrollTop = 0;
   /** The last `reveal` request a cell editor carried out. */
   revealed = 0;
@@ -375,10 +384,21 @@ export class NotebookSession {
     if (this.state.running || this.state.frozen || this.disposed) throw new Error("Notebook is busy or closing.");
     // History is a queue barrier: later typing must commit AFTER undo/redo, not
     // race it and get overwritten by the history response.
+    // The response re-accepts a full snapshot and the cell views re-render, which
+    // drops the caret; put it back where the change happened once it is authoritative.
+    const focused = this.focusedCell;
+    const state = focused ? this.editors.get(focused) : null;
+    const caret = state ? caretOf(state) : null;
     this.pending.push({ edit: { type: direction }, committed: false });
     this.publish();
     this.blocked = false;
     await this.pump();
+    if (focused && caret && this.showsEditor(focused)) this.reveal(focused, caret, "auto");
+  }
+  /** Whether the cell shows a CodeMirror editor the reveal can move the caret into. */
+  private showsEditor(cell: string): boolean {
+    const found = this.state.snapshot?.cells.find((c) => c.id === cell);
+    return !!found && (found.cellType === "code" || this.markdownEditing.has(cell));
   }
   undo = () => this.history("undo");
   redo = () => this.history("redo");
