@@ -8312,6 +8312,8 @@ export type InlayHintsSettings = {
 	parameters?: boolean,
 	/**  Hints of other kinds (chaining, closing labels…). */
 	other?: boolean,
+	/**  The Dart server's closing labels (`// Column` after a widget's closing bracket). */
+	closingLabels?: boolean,
 	disabledLanguages?: string[],
 	/**  Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on. */
 	codeVision?: boolean,
@@ -8327,7 +8329,9 @@ export type InlayHintsSettings = {
 	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
-export type InlayKind = "type" | "parameter" | "other";
+export type InlayKind = "type" | "parameter" | "other" | 
+/**  What a closing bracket ends, at the end of its line (the Dart server's closing labels). */
+"closingLabel";
 
 /**  One part of an inlay hint label, e.g. a type name that navigates to its declaration. */
 export type InlayLabelPart = {
