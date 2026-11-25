@@ -735,3 +735,47 @@ async fn external_startup_does_not_block_another_source_and_disconnect_cancels_i
     assert!(matches!(result, Err(error) if error.kind == ide_core::error::ErrorKind::Cancelled));
     Ok(())
 }
+
+#[tokio::test]
+async fn table_grants_expand_the_acl_per_grantee() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    for stmt in [
+        "DROP SCHEMA IF EXISTS oi_grants CASCADE",
+        "DROP ROLE IF EXISTS oi_grant_reader",
+        "DROP ROLE IF EXISTS oi_grant_writer",
+        "CREATE ROLE oi_grant_reader",
+        "CREATE ROLE oi_grant_writer",
+        "CREATE SCHEMA oi_grants",
+        "CREATE TABLE oi_grants.shared (id INT)",
+        "CREATE TABLE oi_grants.private (id INT)",
+        "GRANT SELECT ON oi_grants.shared TO oi_grant_reader, PUBLIC",
+        "GRANT INSERT, UPDATE ON oi_grants.shared TO oi_grant_writer WITH GRANT OPTION",
+    ] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+    let owner = db.execute("p", "SELECT current_user", 1, &c).await?.rows[0][0].clone().unwrap();
+    let grants = db.table_grants("p", "oi_grants", "shared").await?;
+    let of = |grantee: &str| {
+        let mut v: Vec<_> = grants
+            .iter()
+            .filter(|g| g.grantee == grantee)
+            .map(|g| (g.privilege.as_str(), g.grantable, g.grantor.as_deref() == Some(owner.as_str())))
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(of("oi_grant_reader"), [("SELECT", false, true)], "{grants:?}");
+    assert_eq!(of("PUBLIC"), [("SELECT", false, true)], "{grants:?}");
+    assert_eq!(of("oi_grant_writer"), [("INSERT", true, true), ("UPDATE", true, true)], "{grants:?}");
+    assert!(of(&owner).contains(&("TRUNCATE", false, true)), "{grants:?}");
+    // No ACL yet: the owner's implicit privileges.
+    let private = db.table_grants("p", "oi_grants", "private").await?;
+    assert!(private.iter().all(|g| g.grantee == owner), "{private:?}");
+    assert!(private.iter().any(|g| g.privilege == "SELECT"), "{private:?}");
+    for stmt in ["DROP SCHEMA oi_grants CASCADE", "DROP ROLE oi_grant_reader", "DROP ROLE oi_grant_writer"] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+    Ok(())
+}

@@ -29,7 +29,7 @@ import {
   toggleCase,
   unselectOccurrence,
 } from "./cm/editing";
-import { cutToLineEnd, deleteToLogicalLineEnd, deleteToLogicalLineStart } from "./cm/lineDeletion";
+import { cutToLineEnd, deleteToLogicalLineEnd, deleteToLogicalLineStart, hungryBackspace } from "./cm/lineDeletion";
 import {
   emptyStack,
   extendSelection,
@@ -903,6 +903,10 @@ export function registerEditorActions(): () => void {
       keyWhen: "editorTextFocus || diffEditorFocus",
     }),
     edit("code.cutLineEnd", "Cut up to Line End", (v) => cutToLineEnd(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
+    edit("code.hungryBackspace", "Hungry Backspace", (v) => hungryBackspace(v), {
       category: "Editor Actions",
       keyWhen: "editorTextFocus || diffEditorFocus",
     }),

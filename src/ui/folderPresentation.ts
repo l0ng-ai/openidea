@@ -13,8 +13,8 @@ const ROLE_KIND: Record<FolderRole, FolderKind> = {
   excluded: "excluded",
 };
 
-// `Gradle` marks the source sets a Gradle sync reported (ide-host `with_gradle_roots`).
-const JVM_BUILD = /^Gradle$|(^|\/)(pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
+// `Gradle` / `<module>/Gradle` marks the source sets a Gradle sync reported (ide-host `with_gradle_roots`).
+const JVM_BUILD = /(^|\/)(Gradle|pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
 const JVM_DIR = /(^|\/)(java|kotlin|scala|groovy)$/;
 
 const isAbsolute = (path: string) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);

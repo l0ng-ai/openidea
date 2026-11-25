@@ -807,12 +807,13 @@ mod tests {
             Some(gradle::ProcessedResources { task: "processResources".into(), dir: "/p/build/resources/main".into() })
         );
         let src = |p: &str| PathBuf::from(core_src(p));
+        let core = PathBuf::from(format!("{b}/modules/core"));
         assert_eq!(
             gradle::reported_source_roots(&projects),
             [
-                (src("main/java"), gradle::ReportedRoot::Source),
-                (src("main/resources"), gradle::ReportedRoot::Resources),
-                (src("test/java"), gradle::ReportedRoot::Test),
+                (src("main/java"), gradle::ReportedRoot::Source, core.clone()),
+                (src("main/resources"), gradle::ReportedRoot::Resources, core.clone()),
+                (src("test/java"), gradle::ReportedRoot::Test, core),
             ]
         );
         let mut model = gradle::load(&root).unwrap();

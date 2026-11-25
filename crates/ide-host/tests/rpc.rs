@@ -407,6 +407,7 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_schemas",
         "db_tables",
         "db_table_details",
+        "db_table_grants",
         "db_ddl",
         "db_schema_objects",
         "db_object_ddl",

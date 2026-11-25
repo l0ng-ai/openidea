@@ -54,6 +54,10 @@ test("Git annotations align dates and full author names at UI text size", async 
     const contextModule = "/src/platform/context.ts";
     const { setContext } = await import(/* @vite-ignore */ contextModule);
     setContext("vcsAvailable", true);
+    // Options › Names › Full Name: the default (Last Name) would hide what is measured here.
+    const blameModule = "/src/features/vcs/blame.ts";
+    const { useAnnotateNames } = await import(/* @vite-ignore */ blameModule);
+    useAnnotateNames.setState({ names: "fullName" });
     const actionsModule = "/src/platform/actions.ts";
     const { executeAction } = await import(/* @vite-ignore */ actionsModule);
     await executeAction("vcs.annotate", file);

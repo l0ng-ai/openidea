@@ -40,6 +40,7 @@ interface TestFilters {
   showPassed: boolean;
   showIgnored: boolean;
   showDurations: boolean;
+  selectFirstFailed: boolean;
   sortAlphabetically: boolean;
   sortByDuration: boolean;
 }
@@ -52,6 +53,7 @@ export function loadTestFilters(): TestFilters {
       showPassed: v.showPassed === true,
       showIgnored: v.showIgnored !== false,
       showDurations: v.showDurations !== false,
+      selectFirstFailed: v.selectFirstFailed === true,
       sortAlphabetically: v.sortAlphabetically === true && v.sortByDuration !== true,
       sortByDuration: v.sortByDuration === true,
     };
@@ -60,6 +62,7 @@ export function loadTestFilters(): TestFilters {
       showPassed: false,
       showIgnored: true,
       showDurations: true,
+      selectFirstFailed: false,
       sortAlphabetically: false,
       sortByDuration: false,
     };
@@ -202,7 +205,7 @@ export function TestTreeView({
   canRunTests,
 }: TestTreeViewProps) {
   const [filters, setFilters] = useState(loadTestFilters);
-  const { showPassed, showIgnored, showDurations, sortAlphabetically, sortByDuration } = filters;
+  const { showPassed, showIgnored, showDurations, selectFirstFailed, sortAlphabetically, sortByDuration } = filters;
   const toggle = (key: keyof TestFilters) =>
     setFilters((f) => {
       const next = { ...f, [key]: !f[key] };
@@ -330,14 +333,35 @@ export function TestTreeView({
     testTree.exportResults = canExport ? () => setExporting(true) : null;
     testTree.showDurations = showDurations;
     testTree.toggleDurations = () => toggle("showDurations");
+    testTree.selectFirstFailed = selectFirstFailed;
+    testTree.toggleSelectFirstFailed = () => toggle("selectFirstFailed");
     return () => {
       testTree.expandAll = null;
       testTree.collapseAll = null;
       testTree.exportResults = null;
       testTree.showDurations = null;
       testTree.toggleDurations = null;
+      testTree.selectFirstFailed = null;
+      testTree.toggleSelectFirstFailed = null;
     };
   });
+
+  // Select First Failed Test When Finished: when a run ends, select its first failure in tree order, as IDEA does.
+  const [wasRunning, setWasRunning] = useState(running);
+  const [firstFailed, setFirstFailed] = useState<{ key: string } | null>(null);
+  if (wasRunning !== running) {
+    setWasRunning(running);
+    const first = !running && selectFirstFailed ? findOccurrence(roots, null, 1, treeModel) : null;
+    if (first) {
+      // Failed suites are open by default; pin the expansion only when the failure is under a collapsed one.
+      if (first.ancestors.some((a) => !effectiveExpanded.has(a.id)))
+        setExpanded(new Set([...effectiveExpanded, ...first.ancestors.map((a) => a.id)]));
+      setFirstFailed({ key: first.node.id });
+    }
+  }
+  useEffect(() => {
+    if (firstFailed) tree.current?.reveal(firstFailed.key);
+  }, [firstFailed]);
   const hasSuites = roots.some((n) => n.children.length > 0);
 
   // Previous / Next Failed Test (⌘⌥↑ / ⌘⌥↓): like IDEA, stops at the first / last failure instead of wrapping.
@@ -448,7 +472,10 @@ export function TestTreeView({
             {
               label: "Test Runner Options",
               icon: "settings",
-              submenu: [{ kind: "action", action: "run.toggleTestDurations" }],
+              submenu: [
+                { kind: "action", action: "run.toggleTestDurations" },
+                { kind: "action", action: "run.toggleSelectFirstFailedTest" },
+              ],
             },
           ]}
         />

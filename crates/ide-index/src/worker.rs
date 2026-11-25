@@ -29,6 +29,8 @@ static INDEX_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
 
 /// Files larger than this are listed but not parsed for symbols.
 pub const MAX_SYMBOL_FILE: u64 = 2 * 1024 * 1024;
+/// Leading bytes checked for NUL to tell a binary file from text.
+const BINARY_SNIFF: usize = 8192;
 const CHUNK: usize = 512;
 /// Insert/persist batch of the initial scan's streaming pass.
 const SCAN_BATCH: usize = 2048;
@@ -180,7 +182,7 @@ impl Shared {
             let snapshot_started = Instant::now();
             let fast = self.try_fast_start();
             let snapshot_elapsed = snapshot_started.elapsed();
-            if !fast {
+            if let Err(reason) = fast {
                 let snapshot_guard = SystemTime::now();
                 let walk_started = Instant::now();
                 let found = self.walk_roots(None);
@@ -192,6 +194,7 @@ impl Shared {
                 if !self.is_cancelled() {
                     tracing::info!(
                         mode = "fallback",
+                        reason,
                         snapshot_attempt_ms = snapshot_elapsed.as_millis() as u64,
                         walk_ms = walk_elapsed.as_millis() as u64,
                         hydration_ms = hydration_elapsed.as_millis() as u64,
@@ -259,25 +262,26 @@ impl Shared {
 
     /// Warm start: validate the snapshot's flat directory/file manifest and hydrate
     /// without walking the tree. A changed scope, symlink, directory mtime, file
-    /// mtime or file size falls back to the full walk.
-    fn try_fast_start(&self) -> bool {
+    /// mtime or file size falls back to the full walk; the error says which, for
+    /// the start-up log.
+    fn try_fast_start(&self) -> Result<(), &'static str> {
         let started = Instant::now();
-        let Some(store) = &self.store else { return false };
+        let Some(store) = &self.store else { return Err("no cache") };
         let load_started = Instant::now();
-        let Some(snapshot) = store.load_snapshot() else { return false };
+        let Some(snapshot) = store.load_snapshot() else { return Err("no snapshot for this build") };
         let loaded = load_started.elapsed();
         let filter = self.filter();
         if filter.has_extra_roots() || snapshot.filter() != filter.stamp() {
-            return false;
+            return Err("index scope changed");
         }
         let root = filter.root();
         let validation_started = Instant::now();
         for i in 0..snapshot.dirs_len() {
             let rel = snapshot.dir(i);
             let path = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
-            let Ok(meta) = std::fs::symlink_metadata(&path) else { return false };
+            let Ok(meta) = std::fs::symlink_metadata(&path) else { return Err("directory changed") };
             if !meta.is_dir() || mtime_of(&meta) != snapshot.dir_mtime(i) {
-                return false;
+                return Err("directory changed");
             }
         }
         let external = crate::store::external_ignore_candidates(root);
@@ -288,19 +292,19 @@ impl Shared {
         if external.len() != saved_external.len()
             || external.iter().zip(&saved_external).any(|(path, saved)| path.to_string_lossy() != **saved)
         {
-            return false;
+            return Err("ignore files changed");
         }
         for i in 0..snapshot.ignore_len() {
             let path = Path::new(snapshot.ignore_path(i));
             let meta = std::fs::metadata(path).ok();
             let present = meta.is_some();
             if present != snapshot.ignore_present(i) {
-                return false;
+                return Err("ignore files changed");
             }
             if let Some(meta) = meta
                 && (mtime_of(&meta) != snapshot.ignore_mtime(i) || meta.len() != snapshot.ignore_size(i))
             {
-                return false;
+                return Err("ignore files changed");
             }
         }
         let validation_elapsed = validation_started.elapsed();
@@ -320,7 +324,7 @@ impl Shared {
         });
         let built = build_started.elapsed();
         if entries.iter().any(Option::is_none) {
-            return false;
+            return Err("file changed");
         }
         let validated = entries;
         let mut entries = Vec::with_capacity(validated.len());
@@ -372,7 +376,7 @@ impl Shared {
             }
         }
         r.truncate(MAX_RECENT);
-        true
+        Ok(())
     }
 
     fn load_recent(&self, store: &Store, root: &Path) {
@@ -902,22 +906,32 @@ impl Shared {
         if f.size > MAX_SYMBOL_FILE {
             return Extracted::New(rec, Extraction::Oversized);
         }
+        // Sniff the head first: a binary file is classified from its first
+        // `BINARY_SNIFF` bytes alone, so it is never read whole or hashed.
         let mut bytes = Vec::with_capacity(f.size as usize);
-        match std::fs::File::open(&f.path).and_then(|mut file| file.read_to_end(&mut bytes)) {
-            Ok(_) => {}
+        let read = std::fs::File::open(&f.path).and_then(|mut file| {
+            (&mut file).take(BINARY_SNIFF as u64).read_to_end(&mut bytes)?;
+            if bytes.contains(&0) {
+                return Ok(true);
+            }
+            file.read_to_end(&mut bytes).map(|_| false)
+        });
+        let binary = match read {
+            Ok(binary) => binary,
             Err(e) => {
                 tracing::debug!("index: cannot read {}: {e}", f.path.display());
                 return Extracted::New(rec, Extraction::ReadFailed);
             }
+        };
+        if binary {
+            self.parsed.fetch_add(1, Ordering::Relaxed);
+            return Extracted::New(rec, Extraction::Binary);
         }
         rec.hash = *blake3::hash(&bytes).as_bytes();
         if prev_hash == Some(rec.hash) {
             return Extracted::Unchanged;
         }
         self.parsed.fetch_add(1, Ordering::Relaxed);
-        if bytes[..bytes.len().min(8192)].contains(&0) {
-            return Extracted::New(rec, Extraction::Binary);
-        }
         let text = String::from_utf8_lossy(&bytes);
         let lang = self.languages.detect(&f.path, Some(first_line(&text)));
         if self.syntax.has_symbols(&lang) {
@@ -1462,7 +1476,7 @@ mod metric_tests {
         }
         let mut index = shared(&root);
         index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
-        assert!(index.try_fast_start());
+        assert_eq!(index.try_fast_start(), Ok(()));
         assert_eq!(index.parsed.load(Ordering::Relaxed), 0);
         assert_eq!(index.data.read().file_count, 1);
         assert_eq!(index.data.read().symbol_count, 1);

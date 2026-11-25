@@ -183,7 +183,10 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const data = input.data as CombinedDiffData;
   // A partially staged file is listed twice (staged and unstaged), so blocks go by diff, not path.
   const entries = useMemo(() => data.items.map((item) => ({ key: diffInput(item).key, data: item })), [data.items]);
-  const reveal = data.reveal ? entries.find((e) => e.data.path === data.reveal)?.key : undefined;
+  // The diff opened (`revealKey`) picks the staged or the unstaged block of a partially staged file.
+  const reveal =
+    entries.find((e) => e.key === data.revealKey)?.key ??
+    (data.reveal ? entries.find((e) => e.data.path === data.reveal)?.key : undefined);
   return (
     <CombinedDiffView
       items={entries}

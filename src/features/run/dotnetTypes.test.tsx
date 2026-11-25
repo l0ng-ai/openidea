@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { commands } from "@/platform/ipc";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { dotnetProjectFile, dotnetProjectType, dotnetTestType } from "./dotnetTypes";
+import { dotnetProjectFile, dotnetProjectProduction, dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { ConfigForm } from "./ConfigForm";
 import { validateConfig } from "./configs";
 import { formParams, newConfigOfType, registerBuiltinTypes, withParams } from "./types";
@@ -97,6 +97,28 @@ describe(".NET configurations", () => {
     // Options the form has no field for keep the command editor.
     expect(formParams({ ...typed, args: ["run", "--project", "A", "--no-build"] }, dotnetProjectType)).toBeNull();
     expect(formParams({ ...typed, args: ["build", "A"] }, dotnetProjectType)).toBeNull();
+  });
+
+  it("produces a context run configuration for a project file (#5635)", () => {
+    const p = dotnetProjectProduction("src/App/App.csproj");
+    expect(p).toMatchObject({
+      id: "context:dotnet:src/App/App.csproj",
+      name: "App",
+      kind: "dotnet",
+      command: "dotnet",
+      args: ["run", "--project", "src/App/App.csproj", "--no-launch-profile"],
+      debugAdapter: "netcoredbg",
+      detected: true,
+      isTest: false,
+      params: { project: "src/App/App.csproj" },
+    });
+    // Like a configuration from the form, it builds before launching so Debug works unbuilt.
+    expect(p.beforeLaunch).toEqual([{ kind: "dotnetBuild", target: "" }]);
+    // F#, Visual Basic and a project file at the root get the same shape.
+    expect(dotnetProjectProduction("lib/Worker.vbproj").name).toBe("Worker");
+    expect(dotnetProjectProduction("App.fsproj").name).toBe("App");
+    // The form can show it back ("Modify Run Configuration…").
+    expect(formParams(p, dotnetProjectType)).toEqual({ project: "src/App/App.csproj" });
   });
 
   it("builds the edited project from the open root instead of a profile cwd", () => {
