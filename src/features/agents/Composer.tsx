@@ -72,7 +72,8 @@ import {
 import { referenceExtensions, setReferences } from "./composerEditor";
 import { referenceHover } from "./ReferenceChip";
 import { composerDraft, provideIdeContext, setIdeContext, updateComposer, useAgents } from "./store";
-import { ImagePreview, imageSrc } from "./ImagePreview";
+import { ImagePreview } from "./ImagePreview";
+import { imageSrc } from "./imageActions";
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";

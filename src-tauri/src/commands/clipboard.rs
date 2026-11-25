@@ -24,6 +24,28 @@ pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: S
     with_clipboard(app, move || ide_clipboard::set_text(&text, owner).map_err(ide_core::IdeError::from)).await
 }
 
+/// Copies image pixels to this computer's clipboard, including from remote project windows.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_write_image(app: AppHandle, window: WebviewWindow, png: String) -> IdeResult<()> {
+    use base64::Engine;
+    if png.len() > 90 * 1024 * 1024 {
+        return Err(ide_core::IdeError::invalid("Clipboard image is too large"));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(png)
+        .map_err(|_| ide_core::IdeError::invalid("Invalid clipboard image"))?;
+    #[cfg(windows)]
+    let owner = window.hwnd().map_err(|error| ide_core::IdeError::internal(error.to_string()))?.0 as usize;
+    #[cfg(not(windows))]
+    let owner = {
+        let _ = window;
+        0
+    };
+    with_clipboard(app, move || ide_clipboard::set_png(&bytes, owner).map_err(ide_core::IdeError::from)).await
+}
+
 /// The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 /// from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
 /// text there (#3041). None on Windows, where the WebView's clipboard is used.
@@ -160,4 +182,5 @@ ide_command::desktop_domain!(
     clipboard_set_file_list,
     clipboard_text,
     clipboard_write_text,
+    clipboard_write_image,
 );

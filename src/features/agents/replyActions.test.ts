@@ -112,7 +112,9 @@ it("regenerates using the original prompt and its images", async () => {
   const image = { mimeType: "image/png", data: "AAA", name: "shot.png" };
   backend.entries.set(task.id, [{ ...prompt, attachments: [image.name], images: [image] }, entries[1]!]);
   await run("regenerateReply");
-  expect(backend.rerunFrom).toHaveBeenCalledWith(task.id, 0, prompt.text, [image]);
+  expect(backend.rerunFrom).toHaveBeenCalledWith(task.id, 0, prompt.text, [image], {
+    title: "Regenerate Response",
+  });
 });
 
 it.each(["files", "steered", "earlier", "busy", "unsupported", "subagent"])(

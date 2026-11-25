@@ -1,10 +1,24 @@
 import { call, commands, isTauri } from "./ipc";
 import { ipcPath } from "./paths";
+import { toBase64 } from "./base64";
 
 /** Native menu actions and async work can outlive WebKit's user activation. */
 export async function writeClipboardText(text: string): Promise<void> {
   if (isTauri()) await call(commands.clipboardWriteText(text));
   else await navigator.clipboard.writeText(text);
+}
+
+/** Start the browser write before awaiting image conversion, preserving Safari user activation. */
+export async function writeClipboardPng(png: Promise<Blob>): Promise<void> {
+  void png.catch(() => {});
+  if (isTauri()) {
+    const bytes = new Uint8Array(await (await png).arrayBuffer());
+    await call(commands.clipboardWriteImage(toBase64(bytes)));
+  } else {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined")
+      throw new Error("Image clipboard is unavailable");
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+  }
 }
 
 /**

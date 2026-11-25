@@ -49,6 +49,7 @@ import {
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
+import { copyImageAction } from "./imageActions";
 import { activateTaskWindows, moveTaskToWindow, prepareTaskWindowInput, taskTabClosed } from "./taskWindows";
 import { auxiliaryWindow } from "@/platform/auxWindow";
 
@@ -233,6 +234,7 @@ export function activate(): () => void {
       },
       ...taskActions,
       ...replyActions,
+      copyImageAction,
       {
         id: "agents.findInConversation",
         title: "Find in Conversation",

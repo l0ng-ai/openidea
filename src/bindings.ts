@@ -120,12 +120,15 @@ export const commands = {
 	agentRename: (task: string, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rename", { task, title })),
 	/**  Answers a permission request; `option: null` cancels it. */
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
-	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
-	agentRollback: (task: string, turns: number) => typedError<{
+	/**
+	 *  Drops the task's turns after its first `turns`; returns the message of the first dropped one.
+	 *  With `files`, the files those turns changed go back as they were before them.
+	 */
+	agentRollback: (task: string, turns: number, files: boolean) => typedError<{
 	text: string,
 	files: IpcPath[],
 	images: AgentImage[],
-} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns })),
+} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns, files })),
 	/**  Rollback: the task's changed files among `paths` (all without) back as `view` compares them. */
 	agentRollbackChanges: (task: string, paths: string[] | null, view: 
 /**  Everything since the commit the task started from. */
@@ -305,6 +308,8 @@ export const commands = {
 	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
+	/**  Copies image pixels to this computer's clipboard, including from remote project windows. */
+	clipboardWriteImage: (png: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_image", { png })),
 	/**  Writes text locally, without WebView user-activation requirements. */
 	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
@@ -828,6 +833,13 @@ export const commands = {
 	javaDebugAdapter: (module: string) => typedError<string, IdeError>(__TAURI_INVOKE("java_debug_adapter", { module })),
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
+	/**
+	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
+	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
+	 *  classpath has one; from the engine's repository, else downloaded once from Maven Central), and,
+	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
+	 */
+	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
 	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds according to `policy`, then resolves the runtime (or test)
@@ -8312,6 +8324,8 @@ export type InlayHintsSettings = {
 	parameters?: boolean,
 	/**  Hints of other kinds (chaining, closing labels…). */
 	other?: boolean,
+	/**  The Dart server's closing labels (`// Column` after a widget's closing bracket). */
+	closingLabels?: boolean,
 	disabledLanguages?: string[],
 	/**  Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on. */
 	codeVision?: boolean,
@@ -8327,7 +8341,9 @@ export type InlayHintsSettings = {
 	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
-export type InlayKind = "type" | "parameter" | "other";
+export type InlayKind = "type" | "parameter" | "other" | 
+/**  What a closing bracket ends, at the end of its line (the Dart server's closing labels). */
+"closingLabel";
 
 /**  One part of an inlay hint label, e.g. a type name that navigates to its declaration. */
 export type InlayLabelPart = {
@@ -8713,6 +8729,17 @@ export type JsResponseRule = {
 	status: number,
 	contentType: string,
 	body: string,
+};
+
+/**  The test JVM of OpenIDEA's JUnit runner. */
+export type JunitLaunch = {
+	classPaths: string[],
+	/**  Surefire's `argLine`, then its system properties as `-Dkey=value`. */
+	vmArgs: string[],
+	env: { [key in string]: string },
+	workingDirectory: string | null,
+	/**  The Surefire settings that were applied (`argLine`, `systemPropertyVariables`…), for the console. */
+	surefire: string[],
 };
 
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
@@ -9553,6 +9580,16 @@ export type MavenProject = {
 	env: { [key in string]: string },
 };
 
+/**
+ *  Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+ *  and run actions are delegated to Maven.
+ */
+export type MavenRunTestsUsing = 
+/**  OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`). */
+"ide" | 
+/**  Surefire (`mvn test -Dtest=…`). */
+"maven";
+
 /**  Build Tools › Maven. */
 export type MavenSettings = {
 	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
@@ -9603,6 +9640,8 @@ export type MavenSettings = {
 	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
 	 */
 	updateSnapshots?: boolean,
+	/**  Who runs the JUnit 5 tests of the gutter's Run / Debug. */
+	runTestsUsing?: MavenRunTestsUsing,
 };
 
 /**  What keeps an idle background project loaded. */
