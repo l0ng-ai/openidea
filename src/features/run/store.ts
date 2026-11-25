@@ -706,7 +706,7 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
     // rAF pauses in background tabs; a timeout keeps consuming output so it doesn't
     // pile up until the console is shown again (issue #319: the console "kept
     // scrolling" the previous run's backlog after switching back to it).
-    const wait = FLUSH_INTERVAL - (performance.now() - rt.flushedAt);
+    const wait = flushInterval() - (performance.now() - rt.flushedAt);
     rt.flushHandle = document.hidden
       ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
       : wait > 0
@@ -726,6 +726,12 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
  * typing elsewhere from fitting in a frame (35% missed while 12k lines/s stream).
  */
 const FLUSH_INTERVAL = 50;
+
+/** `FLUSH_INTERVAL`, or longer when Settings › Tools › Terminal › Max FPS asks for fewer frames (#5897). */
+function flushInterval(): number {
+  const fps = Number(workflowSettings().terminal.maxFps);
+  return fps > 0 ? Math.max(FLUSH_INTERVAL, Math.round(1000 / fps)) : FLUSH_INTERVAL;
+}
 
 function cancelFlush(rt: SessionRuntime) {
   if (rt.flushHandle === null) return;

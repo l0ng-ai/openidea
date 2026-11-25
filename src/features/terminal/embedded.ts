@@ -20,6 +20,7 @@ import { terminalKeyAction } from "./keys";
 import { useProject } from "@/platform/project";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { OutputGate } from "./outputGate";
 import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPtyOptions } from "./windowsPty";
 import { findTerminalLinks } from "./links";
@@ -148,12 +149,24 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   // The owner learns the initial size even when it matches xterm's default.
   queueMicrotask(() => opts.onResize(term.cols, term.rows));
 
-  return {
+  // Max FPS paces Run console output too (#5897), and a hidden window paints slowly.
+  const gate = new OutputGate({
+    maxFps: () => workflowSettings().terminal.maxFps,
+    hidden: () => typeof document !== "undefined" && document.hidden,
     write: (data) => term.write(data),
-    clear: () => term.reset(),
+  });
+
+  return {
+    write: (data) => gate.push(data),
+    clear: () => {
+      gate.clear();
+      term.reset();
+    },
     focus: () => term.focus(),
     fit: () => fitter.flush(),
     dispose: () => {
+      gate.clear();
+      gate.dispose();
       fitter.cancel();
       processResize.cancel();
       observer.disconnect();

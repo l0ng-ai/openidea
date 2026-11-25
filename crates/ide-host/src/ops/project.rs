@@ -122,6 +122,9 @@ pub fn settings_set(
     if key == "mcpServer" || key.starts_with("mcpServer.") {
         host.mcp.apply(host);
     }
+    if key == "terminal" || key.starts_with("terminal.") {
+        super::term::apply_output_rate(host, window);
+    }
     let sink = host.window_sink(window);
     sink.emit(IdeEvent::SettingsChanged { key });
     if let Some(root) = applied.roots_changed {
