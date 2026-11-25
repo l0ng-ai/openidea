@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { codeFolding, foldEffect, foldService, foldedRanges, indentService, indentUnit } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
@@ -486,6 +486,19 @@ describe("smooth caret", () => {
     expect(cancelled).toEqual(["move"]);
     expect(glides(v)).toBe(false);
     p.release();
+  });
+
+  it("clears the glide when the caret extension is reconfigured away", () => {
+    const slot = new Compartment();
+    const v = make("ab|c", slot.of(caret({ smoothCaretMovement: true })));
+    v.coordsAtPos = () => ({ left: 0, right: 0, top: 0, bottom: 10 });
+    v.scrollDOM.getBoundingClientRect = () => new DOMRect(0, 0, 100, 100);
+    const layer = v.scrollDOM.querySelector(".cm-cursorLayer")!;
+    v.dispatch({ selection: { anchor: 1 } });
+    measure(v);
+    expect(glides(v)).toBe(true);
+    v.dispatch({ effects: slot.reconfigure([]) });
+    expect(layer.classList.contains("cm-openidea-caretGlide")).toBe(false);
   });
 
   it("keeps the caret in place when a drag starts before the click's measure runs", () => {

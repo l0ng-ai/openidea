@@ -640,6 +640,10 @@ const caretGlide = ViewPlugin.fromClass(
       this.pointerDragged = false;
     };
     destroy() {
+      // The cursor layer outlives the plugin (e.g. when the setting is reconfigured).
+      this.measureId++;
+      this.cancelMoves();
+      this.view.scrollDOM.querySelector(":scope > .cm-cursorLayer")?.classList.remove("cm-openidea-caretGlide");
       this.view.dom.removeEventListener("mousedown", this.onMouseDown, true);
       this.win.removeEventListener("mousemove", this.onMouseMove, true);
       this.win.removeEventListener("mouseup", this.onMouseUp, true);
@@ -652,7 +656,7 @@ const caretGlide = ViewPlugin.fromClass(
         this.pointerDown && this.pointerDragged && u.transactions.some((tr) => tr.isUserEvent("select.pointer"));
       if (!u.selectionSet || u.docChanged || u.geometryChanged || from.ranges.length !== to.ranges.length || dragging) {
         // A drag can start before the click's measure runs; its write must not turn the
-        // transition back on after the caret has moved.
+        // transition back on after the caret has moved (#5928).
         this.measureId++;
         this.set(false);
         return;
@@ -670,7 +674,7 @@ const caretGlide = ViewPlugin.fromClass(
     /**
      * WebKit keeps a caret's CSS transition running after the class that declares it is
      * removed, so a drag that starts mid-move would keep the caret travelling to the
-     * click. Cancelling the running animations lands it at once.
+     * click. Cancelling the running animations lands it at once (#5928).
      */
     private cancelMoves() {
       const layer = this.view.scrollDOM.querySelector(":scope > .cm-cursorLayer");
