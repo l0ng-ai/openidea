@@ -108,8 +108,9 @@ async fn dropping_startup_stops_the_helper_before_it_listens() {
     assert!(!startup.is_finished());
     startup.abort();
     assert!(startup.await.err().unwrap().is_cancelled());
-    let result = tokio::time::timeout(Duration::from_secs(5), helper_socket.read_u8()).await.unwrap();
-    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    let error = tokio::time::timeout(Duration::from_secs(5), helper_socket.read_u8()).await.unwrap().unwrap_err();
+    // Terminating the helper can reset its observer socket on Windows.
+    assert!(matches!(error.kind(), io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset), "{error}");
 }
 
 #[tokio::test]
