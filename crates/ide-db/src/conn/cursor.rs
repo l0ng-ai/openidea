@@ -95,6 +95,7 @@ impl Cursors {
         skip: usize,
         max: usize,
         cancel: &CancellationToken,
+        protected: bool,
     ) -> Option<IdeResult<Fetched>> {
         let (id, reads) = {
             let mut registry = self.registry.lock();
@@ -110,7 +111,7 @@ impl Cursors {
                 self.finish(id, &fetched);
                 Some(Ok(fetched))
             }
-            Some(Err(e)) if e.kind == ErrorKind::Cancelled => {
+            Some(Err(e)) if protected || e.kind == ErrorKind::Cancelled => {
                 self.close(id);
                 Some(Err(e))
             }
@@ -196,6 +197,19 @@ impl Cursors {
 /// nobody asks for [`IDLE`], or it is released (its channel closes).
 async fn serve(mut held: Held, pool: Arc<Pool>, sql: String, mut reads: mpsc::Receiver<Read>) {
     let Some(first) = reads.recv().await else { return held.discard().await };
+    let prepare = async {
+        let owned = held.begin_read_only().await?;
+        held.check_protected_statement(&sql).await?;
+        Ok(owned)
+    }
+    .await;
+    let owned = match prepare {
+        Ok(owned) => owned,
+        Err(error) => {
+            let _ = first.reply.send(Err(error));
+            return;
+        }
+    };
     // `$id`: the query naming the server process, `$kill`: how another connection stops it.
     // Evaluates to whether the connection can go back to its pool (the stream was read to
     // its end); otherwise it is closed rather than left to be drained.
@@ -217,7 +231,7 @@ async fn serve(mut held: Held, pool: Arc<Pool>, sql: String, mut reads: mpsc::Re
                 };
                 if cancel.is_cancelled() {
                     if let Some(b) = backend {
-                        let _ = pool.rows(&$kill(b), 1).await;
+                        pool.cancel_query($kill(b)).await;
                     }
                     let _ = reply.send(Err(IdeError::cancelled()));
                     break;
@@ -236,13 +250,13 @@ async fn serve(mut held: Held, pool: Arc<Pool>, sql: String, mut reads: mpsc::Re
                     }
                     Err(e) => {
                         let _ = reply.send(Err(e));
-                        reusable = true;
+                        reusable = !owned;
                         break;
                     }
                 }
             }
             drop(stream);
-            if let Some((reply, mut fetched)) = last {
+            if let Some((_, fetched)) = &mut last {
                 if fetched.0.is_empty() && looks_like_query(&sql) {
                     fetched.0 = (&mut **$conn)
                         .prepare(sqlx::AssertSqlSafe(sql.clone()).into_sql_str())
@@ -250,12 +264,11 @@ async fn serve(mut held: Held, pool: Arc<Pool>, sql: String, mut reads: mpsc::Re
                         .map(|s| statement_columns(&s))
                         .unwrap_or_default();
                 }
-                let _ = reply.send(Ok(fetched));
             }
-            reusable
+            (reusable, last)
         }};
     }
-    let reusable = match &mut held {
+    let (reusable, last) = match &mut held {
         Held::Sqlite(c) => serve!(c, None::<&str>, |_: String| String::new()),
         Held::Postgres(c) => {
             serve!(&mut ***c, Some("SELECT pg_backend_pid()"), |b: String| format!("SELECT pg_cancel_backend({b})"))
@@ -263,7 +276,9 @@ async fn serve(mut held: Held, pool: Arc<Pool>, sql: String, mut reads: mpsc::Re
         Held::Mysql(c) => serve!(&mut ***c, Some("SELECT CONNECTION_ID()"), |b: String| format!("KILL QUERY {b}")),
         _ => unreachable!("only the sqlx drivers keep cursors"),
     };
-    if !reusable {
+    if let Some((reply, fetched)) = last {
+        let _ = reply.send(held.finish_read_only(owned, Ok(fetched)).await);
+    } else if !reusable {
         held.discard().await;
     }
 }
@@ -452,7 +467,7 @@ mod tests {
         });
         let resumed = tokio::spawn({
             let (cursors, key) = (cursors.clone(), key.clone());
-            async move { cursors.resume(&key, 1, 1, &CancellationToken::new()).await.is_some() }
+            async move { cursors.resume(&key, 1, 1, &CancellationToken::new(), false).await.is_some() }
         });
         in_read.notified().await;
         cursors.release(&key);

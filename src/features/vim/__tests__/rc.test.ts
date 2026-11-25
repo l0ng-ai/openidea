@@ -201,6 +201,7 @@ describe(":action ids", () => {
       "editor.unsplit",
       "editor.splitDown",
       "vcs.update",
+      "vcs.copyBranchName",
     ]);
     const missing = Object.entries(IDEA_ACTIONS).filter(([, id]) => !known.has(id));
     expect(missing).toEqual([]);

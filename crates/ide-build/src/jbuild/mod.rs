@@ -517,7 +517,15 @@ impl JavaBuild<'_> {
                     let Some(project) = project_at(path) else {
                         return Ok(Built::Unsupported(format!("no Java project holds {}", path.display())));
                     };
-                    launch_projects(&reactor_model, project, true)
+                    let mut all: Vec<(&ProjectModel, bool)> = Vec::new();
+                    for member in reactor_model.projects.iter().filter(|p| p.dir.starts_with(&project.dir)) {
+                        for set in launch_projects(&reactor_model, member, true) {
+                            if !all.iter().any(|(p, t)| p.dir == set.0.dir && *t == set.1) {
+                                all.push(set);
+                            }
+                        }
+                    }
+                    all
                 }
                 Target::File(file) => {
                     let Some(project) = project_at(file) else {

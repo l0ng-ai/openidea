@@ -36,6 +36,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "find.popup.openResult": ["F3"],
   "editor.codeBlockEnd": ["Ctrl+]", "Shift+Ctrl+P"],
   "code.deleteLine": ["Meta+D"],
+  "code.deleteToLineEnd": ["Shift+Meta+Delete"],
   "code.duplicateLine": [],
   "code.extendSelection": ["Shift+Ctrl+Up"],
   "code.toggleCase": ["Shift+Meta+X", "Shift+Meta+Y"],

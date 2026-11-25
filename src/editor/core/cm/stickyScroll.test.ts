@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { Decoration, EditorView } from "@codemirror/view";
 import { codeFolding, foldEffect, unfoldEffect } from "@codemirror/language";
 import { javascript } from "@codemirror/lang-javascript";
 import { languages } from "@codemirror/language-data";
 import { completedSyntaxState } from "@/test/syntax";
 import { BracketScanner, DEFAULT_RAINBOW_OPTIONS } from "./rainbowBrackets";
-import { renderLineContent } from "./renderLineContent";
+import { previewHighlights, renderLineContent } from "./renderLineContent";
 import { selectedSpans, stickyMaxLines, stickyScroll, stickyScrollMargin, stickyTopMargin } from "./stickyScroll";
 
 describe("selectedSpans", () => {
@@ -85,6 +85,37 @@ describe("sticky line content", () => {
     expect(el.textContent).toBe("  f('(', () => {");
     // The `(` in the string is not a bracket.
     expect(brackets(el)).toEqual(["(2", "(3", ")3", "{3"]);
+  });
+});
+
+describe("semantic marks in sticky lines", () => {
+  it("paints the editor's semantic marks inside the syntax spans", async () => {
+    const js = await languages.find((l) => l.name === "JavaScript")!.load();
+    const doc = "function aaaa(request) {\n  f(request);\n}";
+    const at = doc.indexOf("request");
+    const marks = Decoration.set([Decoration.mark({ class: "tok-param" }).range(at, at + "request".length)]);
+    const state = completedSyntaxState(
+      EditorState.create({ doc, extensions: [js, previewHighlights.of(() => marks)] }),
+    );
+    const el = document.createElement("span");
+    renderLineContent(state, 1, el);
+    expect(el.textContent).toBe("function aaaa(request) {");
+    const param = el.querySelector(".tok-param")!;
+    expect(param.textContent).toBe("request");
+    // As in the editor: the syntax span outside, the semantic mark inside it.
+    expect(param.parentElement!.className).toMatch(/\S/);
+    expect(param.parentElement).not.toBe(el);
+  });
+
+  it("splits a token where a mark starts and ends", () => {
+    const state = EditorState.create({
+      doc: "abcdef",
+      extensions: previewHighlights.of(() => Decoration.set([Decoration.mark({ class: "m" }).range(2, 4)])),
+    });
+    const el = document.createElement("span");
+    renderLineContent(state, 1, el);
+    expect(el.textContent).toBe("abcdef");
+    expect([...el.querySelectorAll(".m")].map((e) => e.textContent)).toEqual(["cd"]);
   });
 });
 

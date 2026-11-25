@@ -3,6 +3,7 @@ import clsx from "clsx";
 import type { AgentContextUsage, AgentTask, AgentUsage } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { useTx } from "@/platform/i18n";
+import { reducedMotion } from "@/platform/motion";
 import { Button, Popup, T, tooltipAttrs } from "@/ui";
 import { meterTone, usageLabel } from "../composerModel";
 import { isBusy } from "../model";
@@ -35,7 +36,7 @@ export function ContextMeter({ task, usage }: { task: AgentTask; usage: AgentUsa
   const anchor = useRef<HTMLButtonElement>(null);
   const [phase, setPhase] = useState<"closed" | "open" | "closing">("closed");
   const open = phase === "open";
-  const close = () => setPhase(window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "closed" : "closing");
+  const close = () => setPhase(reducedMotion() ? "closed" : "closing");
   useEffect(() => {
     if (phase !== "closing") return;
     const timer = window.setTimeout(() => setPhase("closed"), 100);

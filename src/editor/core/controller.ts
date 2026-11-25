@@ -2450,14 +2450,22 @@ export class EditorController implements SlotHost {
         shortcut: shortcutLabel("editor.splitRight"),
         run: activateThen(() => this.split(paneId, "row")),
       },
-      { label: "Split and Move Right", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "right") },
+      {
+        label: "Split and Move Right",
+        shortcut: shortcutLabel("editor.splitAndMoveRight"),
+        run: () => this.moveTabToSplit(paneId, tab.id, paneId, "right"),
+      },
       {
         label: "Split Down",
         icon: "split-horizontal",
         shortcut: shortcutLabel("editor.splitDown"),
         run: activateThen(() => this.split(paneId, "column")),
       },
-      { label: "Split and Move Down", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "bottom") },
+      {
+        label: "Split and Move Down",
+        shortcut: shortcutLabel("editor.splitAndMoveDown"),
+        run: () => this.moveTabToSplit(paneId, tab.id, paneId, "bottom"),
+      },
       ...(split
         ? ([
             { label: "Move to Opposite Group", run: () => this.moveToOpposite(paneId, tab.id) },

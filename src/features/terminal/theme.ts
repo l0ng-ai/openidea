@@ -8,6 +8,7 @@ import type { ITheme, Terminal } from "@xterm/xterm";
 import { fontWeightOf } from "@/platform/editorSettings";
 import {
   CJK_FALLBACK_FACES,
+  LATIN_MONO_FALLBACK_FACES,
   fontsLoaded,
   monoStack,
   nerdFontFaces,
@@ -186,13 +187,16 @@ export interface TerminalFont {
 }
 
 /**
- * Nerd Fonts before the generic family, so per-glyph fallback finds prompt icons, then the CJK
- * faces: a wide character xterm only finds through the webview's own fallback measures one way and
- * draws another (see `CJK_FALLBACK_FACES`), which drifts any row that mixes CJK with a background.
+ * Nerd Fonts before the generic family, so per-glyph fallback finds prompt icons, then common
+ * Latin monospace faces (the CJK faces' Latin glyphs are proportional, see
+ * `LATIN_MONO_FALLBACK_FACES`), then the CJK faces: a wide character xterm only finds through the
+ * webview's own fallback measures one way and draws another (see `CJK_FALLBACK_FACES`), which
+ * drifts any row that mixes CJK with a background.
  */
 function withNerdFonts(family: string): string {
+  const latin = LATIN_MONO_FALLBACK_FACES.map(quoteFontFamily).join(", ");
   const cjk = CJK_FALLBACK_FACES.map(quoteFontFamily).join(", ");
-  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${nerdFontFaces().join(", ")}, ${cjk}, monospace`;
+  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${nerdFontFaces().join(", ")}, ${latin}, ${cjk}, monospace`;
 }
 
 /**

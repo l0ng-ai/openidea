@@ -261,6 +261,29 @@ export function symbolItem(m: SymbolMatch): SymbolItem {
 
 const isExact = (name: string, query: string) => name.toLowerCase() === query.trim().toLowerCase();
 
+/**
+ * A qualified symbol query, as the symbol index reads it: `Foo.bar`, `Foo::bar`, `Foo#bar`
+ * (container `Foo`, name `bar`). Whitespace is ignored; a longer qualifier keeps its last part.
+ */
+export function splitSymbolQuery(query: string): { container: string | null; name: string } {
+  const q = query.replace(/\s+/g, "");
+  for (const sep of ["::", "#", "."]) {
+    const at = q.lastIndexOf(sep);
+    if (at > 0) {
+      const container = q.slice(0, at);
+      return { container: container.split(/[.:#]/).filter(Boolean).pop() ?? container, name: q.slice(at + sep.length) };
+    }
+  }
+  return { container: null, name: query };
+}
+
+/** The last segment of a language server's container name (`App\Models\Category` -> `Category`). */
+const containerTail = (container: string) =>
+  container
+    .split(/[\\/.:#]/)
+    .filter(Boolean)
+    .pop() ?? container;
+
 const dedupeKey = (path: string, line: number, name: string) => `${path}\u0000${line}\u0000${name}`;
 
 /**
@@ -285,6 +308,7 @@ export function mergeSymbols(
     // Backend order is authoritative within each tier (exact name / other).
     scored.push({ item: symbolItem(m), score: (isExact(m.name, query) ? 4000 : 3000) - i });
   });
+  const qualified = splitSymbolQuery(query);
   for (const s of lsp) {
     if (!keep(s.kind)) continue;
     const path = s.location.path;
@@ -293,8 +317,9 @@ export function mergeSymbols(
     const line = s.location.range.start.line;
     const k = dedupeKey(path, line, s.name);
     if (seen.has(k)) continue;
-    const hit = matchText(s.name, query);
+    const hit = matchText(s.name, qualified.name);
     if (!hit) continue;
+    if (qualified.container && !(s.container && matchText(containerTail(s.container), qualified.container))) continue;
     seen.add(k);
     const rel = opts.root && inProject ? path.slice(opts.root.length + 1) : path;
     scored.push({
@@ -313,7 +338,7 @@ export function mergeSymbols(
         lsp: true,
       },
       // Exact LSP hits follow exact index hits but beat fuzzy ones.
-      score: isExact(s.name, query) ? 3500 : hit.score,
+      score: isExact(s.name, qualified.name) ? 3500 : hit.score,
     });
   }
   const sorted = byScore(scored).map((s) => s.item);

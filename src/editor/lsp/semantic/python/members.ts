@@ -373,6 +373,7 @@ async function ancestors(view: EditorView, header: number): Promise<PythonBase[]
     for (const base of classBases(cls.lines, cls.header)) {
       const pos = { line: base.line, col: base.col };
       const goto = (id: number) => lspRequest(() => commands.lspGoto(id, pos, "definition"));
+      // oxlint-disable-next-line no-await-in-loop -- bases resolve breadth-first into shared found/parents MRO state
       const [loc] = cls.path ? await withDocument(cls.path, goto) : await goto(doc.doc);
       if (!loc) continue;
       const key = `${loc.path}:${loc.range.start.line}`;
@@ -380,6 +381,7 @@ async function ancestors(view: EditorView, header: number): Promise<PythonBase[]
         direct.push(key);
         continue;
       }
+      // oxlint-disable-next-line no-await-in-loop -- read the resolved base's lines before updating found and queue
       const lines = await readFileLines(loc.path);
       const target = lines && enclosingClass(lines, loc.range.start.line + 1, true);
       if (!lines || !target) continue;

@@ -177,6 +177,7 @@ const defaultDeps: CloseDeps = {
   runningProcesses: async () => (await liveProcesses()).map((p) => p.name),
   terminate: (kill) => stopRunningProcesses(kill),
   waitForProcesses: async () => {
+    // oxlint-disable-next-line no-await-in-loop -- polling must finish one interval before checking processes again
     while ((await liveProcesses()).length > 0) await new Promise((r) => setTimeout(r, 100));
   },
   onSaveFailed: (e) =>

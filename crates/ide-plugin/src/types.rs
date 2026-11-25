@@ -1023,6 +1023,15 @@ pub struct Decoration {
     /// Markdown rendered in the editor's hover card (API 1.16); `hover` is the
     /// plain-text fallback shown when this is absent.
     pub markdown_hover: Option<String>,
+    /// The item's own colors (API 1.17 `set-styled`), validated `#rrggbb` / `#rrggbbaa`.
+    #[serde(default)]
+    pub colors: Option<DecorationColors>,
+}
+/// Colors of a styled editor decoration (API 1.17).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+pub struct DecorationColors {
+    pub foreground: Option<String>,
+    pub background: Option<String>,
 }
 /// A tree decoration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

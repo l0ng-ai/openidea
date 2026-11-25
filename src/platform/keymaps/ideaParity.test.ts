@@ -40,6 +40,8 @@ describe("IDEA keymap parity", () => {
     ["run.collapseAllTests", ["Meta+-"], ["Ctrl+-"]],
     ["navigate.searchText", ["Meta+Alt+Shift+E"], ["Ctrl+Alt+Shift+E"]],
     ["db.showDiagram", ["Meta+Alt+Shift+U"], ["Ctrl+Alt+Shift+U"]],
+    // ShowUmlDiagramPopup shares Unshelve Silently's shortcut, which needs the Shelf to have focus.
+    ["db.showDiagramPopup", ["Meta+Alt+U"], ["Ctrl+Alt+U"]],
     ["python.console.executeSelection", ["Alt+Shift+E"], ["Alt+Shift+E"]],
     ["window.next", ["Meta+Alt+`"], ["Ctrl+Alt+]"]],
     ["window.previous", ["Meta+Alt+Shift+`"], ["Ctrl+Alt+["]],
@@ -68,6 +70,10 @@ describe("IDEA keymap parity", () => {
     ["editor.moveToPageTopWithSelection", ["Meta+Shift+PageUp"], ["Ctrl+Shift+PageUp"]],
     ["editor.moveToPageBottomWithSelection", ["Meta+Shift+PageDown"], ["Ctrl+Shift+PageDown"]],
     ["editor.toggleInsertState", ["Insert"], ["Insert"]],
+    // EditorCutLineEnd: only `Mac OS X 10.5+` binds it; EditorDeleteToLineStart / End have no shortcut.
+    ["code.cutLineEnd", ["Ctrl+K"], []],
+    ["code.deleteToLineStart", [], []],
+    ["code.deleteToLineEnd", [], []],
     ["navigate.nextOccurrence", ["Meta+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["navigate.prevOccurrence", ["Meta+Alt+Up"], ["Ctrl+Alt+Up"]],
     // Rerun in the Find / Find Usages tool windows uses the Rerun shortcut.

@@ -788,7 +788,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
     framework === "go"
       ? new GoTestOutput(feed)
       : framework === "phpunit" || framework === "jvm"
-        ? new TeamcityOutput(feed)
+        ? new TeamcityOutput(feed, framework === "jvm")
         : framework === "ruby" && config.kind !== "rspec"
           ? new RubyTestOutput(feed)
           : framework === "node-test" || framework === "mocha"

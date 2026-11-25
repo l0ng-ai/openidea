@@ -2958,6 +2958,7 @@ describe("changes refresh", () => {
     for (let i = 0; i < 6; i++) {
       revision++;
       scheduleChanges("A");
+      // oxlint-disable-next-line no-await-in-loop -- fake timers advance in fixed steps so each burst is observed in order
       await vi.advanceTimersByTimeAsync(500);
     }
     await vi.runAllTimersAsync();

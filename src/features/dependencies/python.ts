@@ -81,6 +81,7 @@ export async function installRequirements(python: string, requirements: readonly
       channel.onmessage = (line) => line.trim() && progress(line.trim());
       current = nextRequestId();
       try {
+        // oxlint-disable-next-line no-await-in-loop -- installs are one at a time with a shared cancellable request and progress
         await call(commands.sdkPythonPip(python, requirement, false, false, current, channel));
       } catch (e) {
         if (!cancelled) failures.push(`${requirement}: ${e instanceof Error ? e.message : String(e)}`);

@@ -379,6 +379,37 @@ describe("Search Everywhere multi-selection", () => {
     expect(screen.getByRole("listbox", { name: "Results" })).toHaveAttribute("aria-multiselectable", "true");
   });
 
+  it.each(["macos", "windows", "linux"] as const)(
+    "moves with Ctrl+N / Ctrl+P like the arrows on macOS only (%s)",
+    async (os) => {
+      const previous = usePlatform.getState().os;
+      usePlatform.setState({ os });
+      try {
+        const input = await showDuplicateFiles();
+        const ctrl = (key: string) => fireEvent.keyDown(input, { key, ctrlKey: true });
+        const at = () => resultOptions().indexOf(selectedOptions()[0]!);
+        expect(at()).toBe(0);
+        ctrl("n");
+        ctrl("n");
+        expect(at()).toBe(os === "macos" ? 2 : 0);
+        if (os !== "macos") return;
+        // At the end it wraps around, as ↓ does; the query and focus stay put.
+        ctrl("n");
+        expect(at()).toBe(0);
+        ctrl("p");
+        expect(at()).toBe(2);
+        expect(input).toHaveValue("index");
+        expect(input).toHaveFocus();
+        // Cmd+N or Ctrl+Shift+N are other keys.
+        fireEvent.keyDown(input, { key: "n", ctrlKey: true, metaKey: true });
+        fireEvent.keyDown(input, { key: "N", ctrlKey: true, shiftKey: true });
+        expect(at()).toBe(2);
+      } finally {
+        usePlatform.setState({ os: previous });
+      }
+    },
+  );
+
   it("Shift-click selects a range without opening; an ordinary click opens just that file", async () => {
     await showDuplicateFiles();
     clickOption(2, { shiftKey: true });

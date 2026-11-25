@@ -109,6 +109,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
       ? [{ kind: "action" as const, action: "vcs.log.compareVersions", arg: compareArg, icon: null }]
       : []),
     single("vcs.log.compareWithLocal", { arg: actionCommit }),
+    ...(fileHistoryTarget ? [single("vcs.showCommit", { label: "Show in Git Log" })] : []),
     { kind: "separator" },
     single("vcs.log.resetToHere", { icon: "revert" }),
     { kind: "action", action: "vcs.log.revert", arg: many ? selection : c, icon: null, disabled: cannotApply },
