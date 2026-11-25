@@ -11,6 +11,8 @@ import type { ThreadDumpTab } from "../store";
 import { threadsUnavailableText } from "../unavailableText";
 import jdk25Sync from "../__fixtures__/jdk25-sync.txt?raw";
 import jdk25None from "../__fixtures__/jdk25-none.txt?raw";
+import jdk25Vjuc from "../__fixtures__/jdk25-vjuc.json?raw";
+import jdk25Vsync from "../__fixtures__/jdk25-vsync.json?raw";
 
 const notify = vi.hoisted(() => vi.fn());
 const showToolWindow = vi.hoisted(() => vi.fn());
@@ -53,10 +55,20 @@ function start(c: RunConfig, status: SessionStatus = "running") {
   useRun.setState({ sessions: [session], activeSession: session.id });
 }
 
-const ready = (text: string): JvmThreadsResult => ({
+const ready = (text: string, virtualJson: string | null = null): JvmThreadsResult => ({
   status: "ready",
-  dump: { text, pid: 42, javaVersion: "25", takenWhileSuspended: false, elapsedMs: 80 },
+  dump: {
+    text,
+    pid: 42,
+    javaVersion: "25",
+    takenWhileSuspended: false,
+    elapsedMs: 80,
+    virtualJson,
+    virtualNote: null,
+  },
 });
+const virtualNames = (tab: ThreadDumpTab) =>
+  tab.dump.threads.filter((t) => t.container !== undefined).map((t) => t.name);
 const unavailable = (reason: JvmThreadsUnavailable): JvmThreadsResult => ({ status: "unavailable", reason });
 const answer = (result: JvmThreadsResult) => ({ status: "ok" as const, data: result });
 
@@ -161,6 +173,19 @@ describe("run.dumpThreads", () => {
     dump.mockResolvedValue(answer(unavailable({ kind: "jvm", reason: { kind: "programExited" } })));
     await expect(onlyTab().refresh!()).rejects.toThrow("The program has exited.");
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("brings the virtual threads into the tab, and the next dump's on refresh", async () => {
+    start(config("application"));
+    const dump = vi.spyOn(commands, "runJvmThreadDump").mockResolvedValue(answer(ready(jdk25None, jdk25Vsync)));
+    await executeAction("run.dumpThreads");
+    expect(virtualNames(onlyTab())).toEqual(["v-sync-1", "v-sync-2"]);
+    expect(onlyTab().dump.deadlocks).toHaveLength(1);
+
+    dump.mockResolvedValue(answer(ready(jdk25None, jdk25Vjuc)));
+    await onlyTab().refresh!();
+    expect(virtualNames(onlyTab())).toEqual(["v-juc-1", "v-juc-2"]);
+    expect(onlyTab().dump.deadlocks).toEqual([]);
   });
 });
 

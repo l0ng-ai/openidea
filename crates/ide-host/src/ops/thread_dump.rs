@@ -3,6 +3,7 @@ use ide_command::command;
 use ide_core::{IdeResult, RunId};
 use ide_dap::{JvmMemoryUnavailable, JvmThreadsResult, JvmThreadsUnavailable};
 use ide_jvm_attach::{ProcEntry, is_hotspot, process_table, select_run_jvm};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// A `Thread.print -l` of the JVM a run started: the deepest HotSpot JVM of the run's process
@@ -22,13 +23,43 @@ pub async fn run_jvm_thread_dump(
         Ok(pid) => pid,
         Err(refused) => return Ok(refused),
     };
+    let heap_root = host.heap.root().to_path_buf();
+    let dir = host.blocking(move || Ok(json_dir(&heap_root))).await?;
     // A debugger attached to this run or JVM (Debug of a build tool's run, Attach to Process)
     // may hold it suspended, which only its session knows.
-    if let Some(dump) = host.debugger.debugged_jvm_thread_dump(id, pid).await {
-        return dump;
+    let result = match host.debugger.debugged_jvm_thread_dump(id, pid, dir.clone()).await {
+        Some(dump) => dump,
+        None => {
+            let json = dir.clone();
+            // The attach handshake blocks for seconds.
+            host.blocking(move || Ok(ide_dap::run_jvm_thread_dump(pid, json.as_deref()))).await
+        }
+    };
+    let _ = host
+        .blocking(move || {
+            discard_json_dir(dir);
+            Ok(())
+        })
+        .await;
+    result
+}
+
+/// A fresh owner-only directory for the JVM's JSON dump under the heap snapshot root, whose
+/// stale-directory sweep also removes a file a JVM writes after its request timed out. `None`
+/// when it cannot be created: the dump then goes without virtual threads.
+pub(crate) fn json_dir(heap_root: &Path) -> Option<PathBuf> {
+    ide_heap::create_snapshot_dir(heap_root)
+        .inspect_err(|e| tracing::warn!("no directory for the JSON thread dump under {}: {e}", heap_root.display()))
+        .ok()
+}
+
+pub(crate) fn discard_json_dir(dir: Option<PathBuf>) {
+    if let Some(dir) = dir
+        && let Err(e) = std::fs::remove_dir_all(&dir)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("could not delete thread dump directory {}: {e}", dir.display());
     }
-    // The attach handshake blocks for seconds.
-    host.blocking(move || Ok(ide_dap::run_jvm_thread_dump(pid))).await
 }
 
 fn unavailable(reason: JvmThreadsUnavailable) -> JvmThreadsResult {
@@ -98,6 +129,30 @@ mod tests {
     fn finds_the_jvm_below_the_run() {
         let table = || vec![proc(10, 1, "sh -c run"), proc(11, 10, "java -jar app.jar")];
         assert_eq!(run_jvm(false, Some(10), None, table, |pid| pid == 11), Ok(11));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_dir_is_private_and_removed_afterwards() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let heap_root = root.path().join("heap-snapshots");
+        let dir = json_dir(&heap_root).expect("a directory");
+        assert_eq!(dir.parent(), Some(heap_root.as_path()));
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        // A file the JVM wrote after its request timed out goes with the directory.
+        std::fs::write(dir.join("threads-1-2.json"), "{}").unwrap();
+        discard_json_dir(Some(dir.clone()));
+        assert!(!dir.exists());
+        discard_json_dir(None);
+    }
+
+    #[test]
+    fn json_dir_is_none_when_it_cannot_be_created() {
+        let root = tempfile::tempdir().unwrap();
+        let blocked = root.path().join("file");
+        std::fs::write(&blocked, "").unwrap();
+        assert_eq!(json_dir(&blocked), None);
     }
 
     #[cfg(not(unix))]

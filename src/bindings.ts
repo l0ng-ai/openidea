@@ -464,7 +464,10 @@ export const commands = {
 	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
 	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
 	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
-	/**  A `Thread.print -l` of the debuggee JVM, or why it cannot be taken. */
+	/**
+	 *  A `Thread.print -l` of the debuggee JVM (with the JSON dump on JDK 21+), or why it cannot be
+	 *  taken.
+	 */
 	debugJvmThreadDump: (session: DebugSessionId) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("debug_jvm_thread_dump", { session })),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
@@ -8878,6 +8881,10 @@ export type JvmThreadDump = {
 	takenWhileSuspended: boolean,
 	/**  Wall time of the `Thread.print` request. */
 	elapsedMs: number,
+	/**  `Thread.dump_to_file -format=json`, which also lists virtual threads; JDK 21+ only. */
+	virtualJson: string | null,
+	/**  Why `virtual_json` is missing from a JDK 21+ dump; none below 21. */
+	virtualNote: VirtualThreadsNote | null,
 };
 
 export type JvmThreadsResult = { status: "ready"; dump: JvmThreadDump } | { status: "unavailable"; reason: JvmThreadsUnavailable };
@@ -14271,6 +14278,12 @@ export type VirtualDocument = {
 	 */
 	canReloadEncoding: boolean,
 };
+
+export type VirtualThreadsNote = 
+/**  A debugger holds the VM, which would hang the JSON request until it resumes. */
+"whileSuspended" | 
+/**  Over the attach reply limit (64 MiB). */
+"tooLarge" | "failed";
 
 /**  Declared (or conventional) visibility of an outline symbol. */
 export type Visibility = "public" | "protected" | 
