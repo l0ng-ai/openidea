@@ -278,6 +278,7 @@ flutter_devices                              trusted            project_host bin
 flutter_devices_refresh                      trusted            project_host bindings sync
 flutter_devtools_url                         trusted            project_host bindings async
 flutter_emulator_launch                      trusted            project_host bindings async
+flutter_widget_preview_url                   trusted            project_host bindings async
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async

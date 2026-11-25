@@ -12,6 +12,8 @@ import {
   DEVTOOLS_WINDOWS,
   devToolsUrl,
   useDevToolsRefresh,
+  WIDGET_PREVIEW_WINDOW,
+  widgetPreviewUrl,
   type DevToolsWindow,
 } from "../flutter/devTools";
 import { isLive, useDebug, type DebugSession } from "../state";
@@ -36,20 +38,20 @@ function shownApp(apps: DebugSession[], chosen: DebugSessionId | null) {
 type Server = { url: string } | { error: string };
 
 /** The server's address; asks again on Refresh and when the project's trust changes. */
-function useDevToolsServer(refresh: number): Server | null {
+function useServer(start: typeof commands.flutterDevtoolsUrl, refresh: number): Server | null {
   const trusted = useProject((s) => s.project?.trusted);
   const request = `${refresh}/${trusted}`;
   const [answer, setAnswer] = useState<{ request: string; server: Server } | null>(null);
   useEffect(() => {
     let live = true;
-    call(commands.flutterDevtoolsUrl()).then(
+    call(start()).then(
       (url) => live && setAnswer({ request, server: { url } }),
       (e: unknown) => live && setAnswer({ request, server: { error: e instanceof Error ? e.message : String(e) } }),
     );
     return () => {
       live = false;
     };
-  }, [request]);
+  }, [start, request]);
   return answer?.request === request ? answer.server : null;
 }
 
@@ -110,7 +112,7 @@ function LocalView({ id }: { id: string }) {
   const tx = useTx();
   const window = DEVTOOLS_WINDOWS.find((w) => w.id === id)!;
   const refresh = useDevToolsRefresh((s) => s[id] ?? 0);
-  const server = useDevToolsServer(refresh);
+  const server = useServer(commands.flutterDevtoolsUrl, refresh);
   if (!server) return <div className={styles.message}>{tx("Loading Flutter DevTools…")}</div>;
   if ("error" in server)
     return (
@@ -154,6 +156,54 @@ export function FlutterDevToolsRefresh({ id }: { id: string }) {
       action="debug.refreshDevTools"
       actionArg={id}
       title="Refresh Flutter DevTools"
+    />
+  );
+}
+
+/** The `@Preview` widgets of the project, from its `flutter widget-preview` server. */
+export function FlutterWidgetPreviewView() {
+  const tx = useTx();
+  // Like DevTools, the server would start on the remote machine, out of reach.
+  const content = isRemoteWindow() ? (
+    <div className={styles.message}>{tx("Flutter Widget Preview isn't available in a remote project yet")}</div>
+  ) : (
+    <WidgetPreview />
+  );
+  return <div className={styles.pane}>{content}</div>;
+}
+
+function WidgetPreview() {
+  const tx = useTx();
+  const refresh = useDevToolsRefresh((s) => s[WIDGET_PREVIEW_WINDOW] ?? 0);
+  const server = useServer(commands.flutterWidgetPreviewUrl, refresh);
+  const [look] = useState(() => currentDevToolsLook());
+  // The first start compiles the preview environment, which can take a minute.
+  if (!server) return <div className={styles.message}>{tx("Starting Flutter Widget Preview…")}</div>;
+  if ("error" in server)
+    return (
+      <div className={styles.message}>
+        {tx("Flutter Widget Preview start-up failed")}: {server.error}
+      </div>
+    );
+  return (
+    <iframe
+      key={refresh}
+      className={styles.frame}
+      title={tx("Flutter Widget Preview")}
+      src={widgetPreviewUrl(server.url, look)}
+      sandbox={SANDBOX}
+    />
+  );
+}
+
+export function FlutterWidgetPreviewRefresh() {
+  return (
+    <IconButton
+      icon="refresh"
+      size="small"
+      iconSize={16}
+      action="debug.refreshWidgetPreview"
+      title="Refresh Flutter Widget Preview"
     />
   );
 }
