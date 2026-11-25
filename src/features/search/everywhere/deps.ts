@@ -65,6 +65,7 @@ async function listScratchFiles(): Promise<OutsideFile[]> {
       if (out.length >= MAX_OUTSIDE_FILES) return;
       const path = e.path;
       if (e.kind === "dir") {
+        // oxlint-disable-next-line no-await-in-loop -- recursive walk shares `out` and the MAX_OUTSIDE_FILES cap; parallel recursion would overshoot it
         if (depth < MAX_OUTSIDE_DEPTH) await walk(path, `${rel}/${e.name}`, depth + 1);
       } else out.push({ path, relPath: `${rel}/${e.name}` });
     }

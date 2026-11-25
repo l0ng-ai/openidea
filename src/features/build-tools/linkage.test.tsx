@@ -124,6 +124,7 @@ it("re-reads the build model when an applied Groovy or Kotlin script changes", a
   try {
     for (const path of ["/p/gradle/dependencies.gradle", "/p/gradle/dependencies.gradle.kts"]) {
       const calls = mocks.model.mock.calls.length;
+      // oxlint-disable-next-line no-await-in-loop -- fake-timer steps and call-count assertions stay in path order
       await act(async () => {
         emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [path], removed: [] });
         await vi.advanceTimersByTimeAsync(300);

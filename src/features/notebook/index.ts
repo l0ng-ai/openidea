@@ -96,6 +96,7 @@ export function activate(): () => void {
         for (const session of notebookSessions()) {
           const cell = session.cellOfUri(uri);
           if (!cell) continue;
+          // oxlint-disable-next-line no-await-in-loop -- the first matching session opens once and returns; opening every match would open unrelated editors.
           await editorService().openFile(session.path, options);
           session.reveal(cell, selection && { line: selection.line, col: selection.col });
           return;

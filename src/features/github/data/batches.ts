@@ -42,6 +42,7 @@ export function createBatchesLoader<T, C>(
       let cursor: C | null = first;
       try {
         while (cursor !== null) {
+          // oxlint-disable-next-line no-await-in-loop -- cursor pagination: pages are appended in order and the generation is checked after each fetch.
           const r: { items: T[]; next: C | null } = await page(cursor);
           if (!alive()) return store.getState().items;
           store.setState((s) => ({ items: [...s.items, ...r.items] }));

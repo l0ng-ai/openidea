@@ -47,6 +47,7 @@ function subscribe(listener: () => void): () => void {
 
 async function load(root: string, darkTheme: boolean, key: string) {
   for (const path of projectIconCandidates(root, darkTheme)) {
+    // oxlint-disable-next-line no-await-in-loop -- candidates are ordered by preference; the first readable icon wins
     const url = await call(commands.fsReadImage(path)).catch(() => null);
     if (url) {
       icons.set(key, { url, path });
@@ -88,8 +89,11 @@ export async function setProjectIcon(root: string, file: string | null): Promise
   const ext = file?.toLowerCase().split(".").pop();
   if (file && !PROJECT_ICON_EXTENSIONS.includes(ext as (typeof PROJECT_ICON_EXTENSIONS)[number]))
     throw new Error("A project icon is an SVG or PNG image");
-  for (const name of PROJECT_ICON_EXTENSIONS.flatMap((e) => [`icon.${e}`, `icon_dark.${e}`]))
-    await call(commands.fsDelete(childPath(root, ".openidea", name))).catch(() => undefined);
+  await Promise.all(
+    PROJECT_ICON_EXTENSIONS.flatMap((e) => [`icon.${e}`, `icon_dark.${e}`]).map((name) =>
+      call(commands.fsDelete(childPath(root, ".openidea", name))).catch(() => undefined),
+    ),
+  );
   if (file) await call(commands.fsCopy(file, childPath(root, ".openidea", `icon.${ext}`)));
   for (const key of [...icons.keys()]) if (key.startsWith(`${root}|`)) icons.delete(key);
   emit();

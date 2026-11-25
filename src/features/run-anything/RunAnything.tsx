@@ -29,6 +29,7 @@ export async function runCommandLine(line: string): Promise<void> {
   pushHistory(root, text);
   for (const p of runAnythingProviderList()) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- providers are tried in order; the first that claims the line wins and later providers must not run.
       if (p.execute && (await p.execute(text))) return;
     } catch (e) {
       console.error(`run anything provider ${p.id} failed`, e);
