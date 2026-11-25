@@ -3,11 +3,11 @@ title: "UI guidelines"
 description: "Rules for frontend UI code: design tokens, CSS Modules, icons, the UI primitives, accessibility and WebKit compatibility."
 ---
 
-The visual style is dark, low-contrast greys and one cool accent. Consistency comes from a small set of rules that apply to every component.
+The visual style is the JetBrains new UI in its Islands form: rounded content islands on a grey frame, low-contrast greys and one cool accent. Islands Light is the default theme, and Islands Dark, High Contrast and the Solarized themes set the same tokens. Consistency comes from a small set of rules that apply to every component.
 
 ## Design tokens
 
-[`src/styles/tokens.css`](https://github.com/l0ng-ai/openidea/blob/main/src/styles/tokens.css) is the source of truth for colours and metrics (spacing, sizes, radii, font weights). `:root` holds the dark theme; `[data-theme="light"]` and `[data-theme="dark-hc"]` (high contrast) override it. Themes from plugins and colour-scheme settings set the same variables at runtime.
+[`src/styles/tokens.css`](https://github.com/l0ng-ai/openidea/blob/main/src/styles/tokens.css) is the source of truth for colours and metrics (spacing, sizes, radii, font weights). `:root` holds the dark theme; `[data-theme="light"]` (the default) and `[data-theme="dark-hc"]` (high contrast) override it. Themes from plugins and colour-scheme settings set the same variables at runtime.
 
 - **Use only tokens in components.** No hex, `rgb()` or named colour literals in a component's CSS or inline styles: `color: var(--fg-muted)`, not `color: #8c8c8c`.
 - **Need a new colour or metric?** Add a token to `tokens.css` for every theme variant, with a name that says what it is for, not what it looks like.
