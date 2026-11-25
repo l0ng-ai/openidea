@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import type {
   AgentConfigOption,
+  AgentModelCatalog,
   AgentProvider,
   AgentRegistry,
   CustomAgentInput,
@@ -22,8 +23,9 @@ import { Button, Dialog, Icon, IconButton, Input, List, ProgressBar, SearchField
 import { useSettingsForm } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { LocalCliUpdate } from "./LocalCliUpdate";
-import { isPerModelOption } from "./composerModel";
+import { approvalDefaults, cursorModelDefaults, isPerModelOption } from "./composerModel";
 import { providerIcon, slugifyId } from "./model";
+import { useAgents } from "./store";
 import {
   DISTRIBUTION_LABEL,
   afterInstall,
@@ -866,7 +868,7 @@ function ProviderSettings({
         </Section>
       )}
       <Section title="New Tasks">
-        <AgentDefaults agent={agent} />
+        <AgentDefaults agent={agent} backend={backend} />
       </Section>
       <Section title="Launch">
         <div className={styles.form}>
@@ -1014,29 +1016,117 @@ function ExternalLink({ url, label }: { url: string; label: string }) {
   );
 }
 
-/** The options a new task of `agent` starts with: each the agent's own default unless chosen. */
-export function defaultOptions(agent: AgentProvider, chosen: Record<string, string>): AgentConfigOption[] {
-  const base = agent.config.filter((o) => !isPerModelOption(o) && o.values.length > 1);
+/** The options a new task of `agent` starts with: each its effective default unless chosen. */
+export function defaultOptions(
+  agent: AgentProvider,
+  chosen: Record<string, string>,
+  newTaskApprovals: "bypass" | "ask" = "bypass",
+): AgentConfigOption[] {
+  const baseRaw = agent.config.filter((o) => !isPerModelOption(o) && o.values.length > 1);
+  const approvals = approvalDefaults(baseRaw, newTaskApprovals);
+  const base = baseRaw.map((o) => {
+    const policy = approvals[o.id];
+    return {
+      ...o,
+      defaultValue: o.defaultValue ?? o.current,
+      current: policy !== undefined && o.values.some((v) => v.value === policy) ? policy : o.current,
+    };
+  });
   const modelOption = base.find((o) => o.category === "model");
   const model = (modelOption && chosen[modelOption.id]) || modelOption?.current;
-  const levels = (model && agent.thoughtLevels?.[model]) || [];
-  return [...base, ...levels.filter((o) => o.values.length > 1)];
+  const rawLevels = (model && agent.thoughtLevels?.[model]) || [];
+  const modelDefaults = cursorModelDefaults(agent.id, rawLevels);
+  const levels = rawLevels
+    .filter((o) => o.values.length > 1)
+    .map((o) => {
+      const policy = modelDefaults[o.id];
+      return {
+        ...o,
+        defaultValue: o.defaultValue ?? o.current,
+        current: policy !== undefined && o.values.some((v) => v.value === policy) ? policy : o.current,
+      };
+    });
+  return [...base, ...levels];
 }
 
-function AgentDefaults({ agent }: { agent: AgentProvider }) {
+const MODEL_SETTINGS_POLL_MS = 600;
+
+function AgentDefaults({ agent, backend }: { agent: AgentProvider; backend: CommandsBackend }) {
   const form = useSettingsForm();
   const all = (form.useValue("agents.defaults") ?? {}) as Record<string, Record<string, string>>;
+  const newTaskApprovals = (form.useValue("agents.newTaskApprovals") as "bypass" | "ask" | undefined) ?? "bypass";
   const chosen = all[agent.id] ?? {};
-  const options = defaultOptions(agent, chosen);
+  const storeCatalog = useAgents((s) => s.modelCatalogs.get(agent.id));
+  const [fetchedCatalog, setFetchedCatalog] = useState<AgentModelCatalog | null>(null);
+  const catalog = fetchedCatalog?.provider === agent.id ? fetchedCatalog : storeCatalog;
+  const effectiveAgent = useMemo<AgentProvider>(() => {
+    if (!catalog) return agent;
+    return {
+      ...agent,
+      config: catalog.config.length ? catalog.config : agent.config,
+      thoughtLevels: { ...agent.thoughtLevels, ...catalog.thoughtLevels },
+    };
+  }, [agent, catalog]);
+  const options = defaultOptions(effectiveAgent, chosen, newTaskApprovals);
+  const modelOption = options.find((o) => o.category === "model");
+  const selectedModel = (modelOption && chosen[modelOption.id]) || modelOption?.current || null;
+  const unknownModelSettings =
+    !!selectedModel &&
+    !!modelOption?.values.some((v) => v.value === selectedModel) &&
+    !Object.hasOwn(effectiveAgent.thoughtLevels ?? {}, selectedModel);
+  const refreshModels = backend.refreshModels;
+  const fetchKey =
+    agent.installed && refreshModels && selectedModel && unknownModelSettings ? `${agent.id}:${selectedModel}` : null;
+  const [settledKey, setSettledKey] = useState<string | null>(null);
+  const loadingModel = fetchKey !== null && settledKey !== fetchKey;
+
+  useEffect(() => {
+    if (!fetchKey || !refreshModels || !selectedModel) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const next = await refreshModels(agent.id, selectedModel);
+        if (!live) return;
+        setFetchedCatalog(next);
+        if (next.refreshing && !Object.hasOwn(next.thoughtLevels ?? {}, selectedModel)) {
+          timer = setTimeout(() => void poll(), MODEL_SETTINGS_POLL_MS);
+        } else {
+          setSettledKey(fetchKey);
+        }
+      } catch {
+        if (live) setSettledKey(fetchKey);
+      }
+    };
+    void poll();
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [agent.id, fetchKey, refreshModels, selectedModel]);
+
   if (!options.length)
     return (
       <p className={styles.text}>
         <T>The agent's models and modes can be chosen here after its first session.</T>
       </p>
     );
+  const baseIds = new Set(effectiveAgent.config.filter((o) => !isPerModelOption(o)).map((o) => o.id));
   const choose = (id: string, value: string) => {
     const { [id]: _, ...rest } = chosen;
-    const next = value ? { ...rest, [id]: value } : rest;
+    const next: Record<string, string> = value ? { ...rest, [id]: value } : { ...rest };
+    // Prune stale per-model defaults when switching to a model whose options are already known.
+    if (modelOption && id === modelOption.id) {
+      const nextModel = value || modelOption.current;
+      const nextLevels = nextModel ? effectiveAgent.thoughtLevels?.[nextModel] : undefined;
+      if (nextLevels) {
+        for (const key of Object.keys(next)) {
+          if (baseIds.has(key)) continue;
+          const matching = nextLevels.find((o) => o.id === key);
+          if (!matching || !matching.values.some((v) => v.value === next[key])) delete next[key];
+        }
+      }
+    }
     const { [agent.id]: __, ...others } = all;
     form.set("agents.defaults", Object.keys(next).length ? { ...others, [agent.id]: next } : others);
   };
@@ -1044,14 +1134,26 @@ function AgentDefaults({ agent }: { agent: AgentProvider }) {
     <div className={styles.form}>
       {options.map((o) => {
         const fallback = o.values.find((v) => v.value === o.current)?.name;
+        const agentDefault = o.defaultValue ?? o.current;
+        const defaultLabel = fallback
+          ? o.current !== agentDefault
+            ? tx`Default (${fallback})`
+            : tx`Agent's default (${fallback})`
+          : tx("Agent's default");
+        const currentChoice = chosen[o.id] ?? "";
+        const unavailableChoice =
+          currentChoice && !o.values.some((v) => v.value === currentChoice)
+            ? [{ value: currentChoice, label: tx`${currentChoice} (unavailable)`, verbatim: true, disabled: true }]
+            : [];
         return (
           <Row key={o.id} label={o.name} htmlFor={`agent-default-${agent.id}-${o.id}`}>
             <div className={styles.select}>
               <Select
                 id={`agent-default-${agent.id}-${o.id}`}
-                value={chosen[o.id] ?? ""}
+                value={currentChoice}
                 options={[
-                  { value: "", label: fallback ? tx`Agent's default (${fallback})` : tx("Agent's default") },
+                  { value: "", label: defaultLabel },
+                  ...unavailableChoice,
                   ...o.values.map((v) => ({
                     value: v.value,
                     label: v.name,
@@ -1065,6 +1167,11 @@ function AgentDefaults({ agent }: { agent: AgentProvider }) {
           </Row>
         );
       })}
+      {loadingModel && (
+        <p className={styles.rowHint}>
+          <T>Loading model settings…</T>
+        </p>
+      )}
       <p className={styles.rowHint}>
         <T>What you pick on the New Task page wins; these apply until then and after switching agents.</T>
       </p>

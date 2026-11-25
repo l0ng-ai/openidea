@@ -344,13 +344,15 @@ describe("model settings", () => {
     expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("AgentAllow All");
     fireEvent.click(settings);
     const dialog = screen.getByRole("dialog", { name: "Model settings" });
-    const effort = within(dialog).getByRole("radiogroup", { name: "Effort Level" });
-    expect(within(effort).getByRole("radio", { name: "medium" })).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(within(effort).getByRole("radio", { name: "XHigh" }));
+    const effort = within(dialog).getByRole("listbox", { name: "Effort Level" });
+    expect(within(effort).getByRole("option", { name: "medium" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(effort).getByRole("option", { name: "XHigh" }));
     expect(onChange).toHaveBeenCalledExactlyOnceWith("reasoning_effort", "xhigh");
+    // The only setting: choosing it closes the popup.
+    expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
   });
 
-  it("lists more effort levels than fit the segmented control, one click away", () => {
+  it("renders effort levels consistently as a vertical list regardless of option count", () => {
     const onChange = vi.fn();
     const config = copilotConfig().map((o) =>
       o.category === "thought_level"
@@ -366,11 +368,18 @@ describe("model settings", () => {
     render(<ConfigPickers config={config} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "Model settings: Max" }));
     const dialog = screen.getByRole("dialog", { name: "Model settings" });
-    expect(within(dialog).queryByRole("radiogroup", { name: "Effort Level" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("radiogroup")).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: /Reasoning Effort/ })).not.toBeInTheDocument();
     const levels = within(dialog).getByRole("listbox", { name: "Effort Level" });
     expect(within(levels).getByRole("option", { name: /Max/ })).toHaveAttribute("aria-selected", "true");
-    fireEvent.click(within(levels).getByRole("option", { name: /Extra high/ }));
+    // Clicking the already-selected value in a single-setting popup closes it without emitting a redundant change.
+    fireEvent.click(within(levels).getByRole("option", { name: /Max/ }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Model settings: Max" }));
+    const reopened = screen.getByRole("dialog", { name: "Model settings" });
+    fireEvent.click(within(reopened).getByRole("option", { name: /Extra high/ }));
     expect(onChange).toHaveBeenCalledExactlyOnceWith("reasoning_effort", "extra-high");
     // The only setting: choosing it is done.
     expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
@@ -442,11 +451,11 @@ describe("model settings", () => {
     fireEvent.click(settings);
     const dialog = screen.getByRole("dialog", { name: "Model settings" });
     expect(within(dialog).queryByRole("button", { name: "Back to models" })).not.toBeInTheDocument();
-    const effortGroup = within(dialog).getByRole("radiogroup", { name: "Effort Level" });
-    expect(within(effortGroup).getByRole("radio", { name: "medium" })).toHaveAttribute("aria-checked", "true");
-    const contextGroup = within(dialog).getByRole("radiogroup", { name: "Context Size" });
-    expect(within(contextGroup).getByRole("radio", { name: "1M" })).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(within(contextGroup).getByRole("radio", { name: "200K" }));
+    const effortList = within(dialog).getByRole("listbox", { name: "Effort Level" });
+    expect(within(effortList).getByRole("option", { name: "medium" })).toHaveAttribute("aria-selected", "true");
+    const contextList = within(dialog).getByRole("listbox", { name: "Context Size" });
+    expect(within(contextList).getByRole("option", { name: "1M" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(contextList).getByRole("option", { name: "200K" }));
     expect(onChange).toHaveBeenCalledExactlyOnceWith("contextTier", "default");
     // Several settings: the popup stays for the next one.
     expect(screen.getByRole("dialog", { name: "Model settings" })).toBeInTheDocument();
@@ -463,6 +472,29 @@ describe("model settings", () => {
     fireEvent.keyDown(search, { key: "ArrowDown" });
     fireEvent.keyDown(search, { key: "Enter" });
     expect(onChange).toHaveBeenLastCalledWith("model", "gpt-6-sol");
+  });
+
+  it("treats Cursor context option id as Context Size in chip summary and popup", () => {
+    const onChange = vi.fn();
+    const cfg = copilotConfig();
+    cfg.push({
+      id: "context",
+      name: "Context",
+      category: "model_config",
+      description: null,
+      current: "1m",
+      defaultValue: "300k",
+      via: "option",
+      values: [value("300k", "300K"), value("1m", "1M")],
+    });
+    render(<ConfigPickers config={cfg} onChange={onChange} />);
+    const settings = screen.getByRole("button", { name: /^Model settings:/ });
+    expect(settings).toHaveTextContent("medium · 1M");
+    fireEvent.click(settings);
+    const dialog = screen.getByRole("dialog", { name: "Model settings" });
+    const contextList = within(dialog).getByRole("listbox", { name: "Context Size" });
+    fireEvent.click(within(contextList).getByRole("option", { name: "300K" }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("context", "300k");
   });
 
   it("keeps a plain model picker when the agent has no effort option", () => {
