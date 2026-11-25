@@ -70,6 +70,9 @@ export function dotnetProjectFile(config: RunConfig): string | null {
   return root ? `${root}/${project}` : null;
 }
 
+/** An MSBuild project file of C#, F# or Visual Basic (not its `.csproj.user`). */
+export const isDotnetProjectFile = (path: string) => /\.(?:cs|fs|vb)proj$/i.test(path);
+
 /**
  * "Run '<name>'" on a project file in the project view (Rider's project node): `dotnet run
  * --project` without launch profiles — those are the launchSettings.json gutter's entries.
