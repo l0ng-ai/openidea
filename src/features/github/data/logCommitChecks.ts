@@ -84,6 +84,7 @@ async function flush() {
     for (const target of await targets(first.root)) {
       const remaining = batch.filter((r) => r.listeners.size && !results.has(r.revision));
       if (!remaining.length) break;
+      // oxlint-disable-next-line no-await-in-loop -- targets are tried in priority order; results from an earlier target decide which revisions the next query needs.
       const states = await queryBatch(
         target,
         remaining.map((r) => r.revision),

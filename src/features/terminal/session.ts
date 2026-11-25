@@ -215,9 +215,11 @@ export async function openFileLink(link: Extract<TerminalLink, { kind: "file" }>
   // for a basename match only when the link names no directory.
   for (const q of rel === name ? [name] : [rel, name]) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- the full path is tried before the basename; a hit here stops the search
       const hits = await call(commands.findFiles(q, 5));
       const hit = hits.find((h) => h.relPath === q || h.relPath.endsWith(`/${q}`));
       if (hit) {
+        // oxlint-disable-next-line no-await-in-loop -- opens the first matching hit, then stops; later candidates are not searched
         await editorService().openFile(hit.path, { selection, focus: true });
         return;
       }

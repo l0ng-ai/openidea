@@ -21,6 +21,7 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { debounce, docOf, isUnavailable, lspRequest } from "../lsp";
 import { featureBackoff, onLspRefresh } from "../availability";
 import { languageSemantics, type SemanticRange } from "./languages";
+import { previewHighlights } from "@/editor/core/cm/renderLineContent";
 
 // Language folders register their semantics by importing this module; lookups
 // elsewhere go through the re-exported `languageSemantics`.
@@ -338,5 +339,10 @@ export function semanticExtension(): Extension {
   // `Prec.high`, and at equal precedence the later source ends up outside —
   // its inner span then re-set the colour (a field's `variableName` grey hid
   // `cm-sem-property`).
-  return [semanticField, semanticPlugin, Prec.highest(EditorView.decorations.from(semanticField))];
+  return [
+    semanticField,
+    semanticPlugin,
+    Prec.highest(EditorView.decorations.from(semanticField)),
+    previewHighlights.of(semanticHighlights),
+  ];
 }

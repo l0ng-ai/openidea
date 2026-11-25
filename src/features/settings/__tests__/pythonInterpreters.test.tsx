@@ -218,7 +218,9 @@ describe("Python interpreters page", () => {
     for (const picked of ["/shared/lib", "/shared/lib/", "/usr/lib/python3.12"]) {
       mocks.choosePath.mockResolvedValueOnce(picked);
       fireEvent.click(screen.getByRole("button", { name: "Add Path…" }));
+      // oxlint-disable-next-line no-await-in-loop -- each pick must finish before the next; the folder is only added once
       await waitFor(() => expect(mocks.choosePath).toHaveReturnedTimes(mocks.choosePath.mock.calls.length));
+      // oxlint-disable-next-line no-await-in-loop -- wait for the new row before the next pick asserts dedupe against it
       await within(paths).findByRole("option", { name: /\/shared\/lib/ });
     }
     expect(within(paths).getAllByRole("option")).toHaveLength(4);

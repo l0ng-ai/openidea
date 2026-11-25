@@ -173,6 +173,7 @@ export function TooltipHost() {
             ? ["top-end", "bottom-end", "top-start", "bottom-start", "top", "bottom"]
             : ["top", "top-end", "top-start", "left", "right"];
           for (const placement of candidates) {
+            // oxlint-disable-next-line no-await-in-loop -- placements are tried in order; the first clear one wins
             const next = await computePosition(anchor, tip, {
               placement,
               strategy: "fixed",

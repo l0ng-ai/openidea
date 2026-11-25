@@ -54,6 +54,7 @@ import {
   collapseBlock,
   expandToLevelEffects,
   foldAtCaret,
+  foldRegions,
   foldSelection,
   unfoldAtCaret,
 } from "./cm/folding";
@@ -89,7 +90,7 @@ import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOf
 import { selectedLineContext, selectedLines } from "./selectedLines";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
-import { useDocMeta, useOutline } from "./model/document";
+import { docCommentFolds, useDocMeta, useOutline } from "./model/document";
 import { resetAllEditorsFontZoom, resetConfiguredEditorsFontZoom, stepConfiguredEditorsFontZoom } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
@@ -499,6 +500,10 @@ function foldLevel(view: EditorView, level: number, all: boolean) {
     .filter((r) => r.from < head && head < r.to)
     .sort((a, b) => a.from - b.from)[0];
   view.dispatch({ effects, selection: hiding ? { anchor: hiding.from } : undefined });
+}
+
+function foldDocComments(view: EditorView, slot: EditorSlot, collapse: boolean) {
+  return foldRegions(view, docCommentFolds(view.state, slot.model.info), collapse);
 }
 
 // --- cyclic expand word / copy reference ------------------------------------------------
@@ -941,6 +946,14 @@ export function registerEditorActions(): () => void {
     }),
     text("code.foldAll", "Collapse All", (v) => collapseAll(v), { category: "Folding", icon: "collapse-all" }),
     text("code.unfoldAll", "Expand All", (v) => expandAll(v), { category: "Folding", icon: "expand-all" }),
+    text("code.expandDocComments", "Expand Doc Comments", (v, slot) => foldDocComments(v, slot, false), {
+      category: "Folding",
+      keywords: ["unfold", "documentation comments", "javadoc"],
+    }),
+    text("code.collapseDocComments", "Collapse Doc Comments", (v, slot) => foldDocComments(v, slot, true), {
+      category: "Folding",
+      keywords: ["fold", "documentation comments", "javadoc"],
+    }),
     text("code.collapseRecursively", "Collapse Recursively", (v) => collapseRecursively(v), {
       category: "Folding",
       keywords: ["fold"],

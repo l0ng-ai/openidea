@@ -119,6 +119,8 @@ export const intellijWindows: Record<string, string[]> = {
   "code.unfoldAll": ["Ctrl+Shift+="],
   "code.collapseRecursively": ["Ctrl+Alt+-"],
   "code.expandRecursively": ["Ctrl+Alt+="],
+  "code.expandDocComments": [],
+  "code.collapseDocComments": [],
   "code.addCaretNextOccurrence": ["Alt+J"],
   "code.selectAllOccurrences": ["Ctrl+Alt+Shift+J"],
   "code.unselectOccurrence": ["Alt+Shift+J"],
