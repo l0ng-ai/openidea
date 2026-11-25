@@ -43,6 +43,7 @@ const FACTS: PythonFacts = {
           abstractMethod: false,
           overrideDecorated: true,
           body: { kind: "empty" },
+          unusedReceiver: null,
         },
       ],
     },

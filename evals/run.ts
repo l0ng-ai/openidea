@@ -188,6 +188,7 @@ async function runScenario(
       const trace = args.trace && last ? join(OUT, "traces", `${scenario.id}@${condition}.json`) : null;
       phase = condition === "warm" && i < warmup ? "warmup" : "measured";
       index = phase === "warmup" ? i + 1 : condition === "cold" ? 1 : i - warmup + 1;
+      // oxlint-disable-next-line no-await-in-loop -- trials share one timed Session: warmup and samples must run in order
       const r = await withDeadline(measureOnce(s, scenario, trace, browser), 5 * 60_000, `${scenario.id} trial`);
       const golden = readGolden(goldenFile(scenario.id));
       const comparison = golden && r.results ? compare(r.results, golden.groups) : undefined;
@@ -308,21 +309,26 @@ async function main() {
     );
     for (const fixture of [...new Set(warm.map((s) => s.fixture))]) {
       const scenarios = warm.filter((s) => s.fixture === fixture);
+      // oxlint-disable-next-line no-await-in-loop -- fixtures run one at a time; concurrent sessions would skew timings and outcome order
       const s = await Session.start(browser, serving.url, ROOT, {
         fixture,
         workDir: join(OUT, "warm"),
         keepHome: false,
       });
       try {
+        // oxlint-disable-next-line no-await-in-loop -- the fixture must be set up before it is settled and its scenarios timed
         await withDeadline(scenarios[0]!.setup(s), 5 * 60_000, "warm fixture setup");
+        // oxlint-disable-next-line no-await-in-loop -- wait for the server to be ready before timing any scenario
         await s.settle(scenarios[0]!.server);
         for (const scenario of scenarios) {
+          // oxlint-disable-next-line no-await-in-loop -- scenarios share this Session and stop at the first error
           const outcome = await runScenario(s, scenario, "warm", browser, tools, progress);
           outcomes.push(outcome);
           progress();
           if (outcome.error) break;
         }
       } finally {
+        // oxlint-disable-next-line no-await-in-loop -- close this fixture's session before the next fixture starts
         await s.close();
       }
     }
@@ -331,18 +337,23 @@ async function main() {
     );
     for (const scenario of cold) {
       const started = Date.now();
+      // oxlint-disable-next-line no-await-in-loop -- cold sessions start one at a time to keep startup timings isolated
       const s = await Session.start(browser, serving.url, ROOT, {
         fixture: scenario.fixture,
         workDir: join(OUT, "cold"),
         keepHome: false,
       });
       try {
+        // oxlint-disable-next-line no-await-in-loop -- setup must finish before settling and timing this cold run
         await withDeadline(scenario.setup(s), 5 * 60_000, "cold fixture setup");
+        // oxlint-disable-next-line no-await-in-loop -- readyMs is measured only after the server has settled
         await s.settle(scenario.server);
         const readyMs = Date.now() - started - 2000;
+        // oxlint-disable-next-line no-await-in-loop -- this cold scenario must finish on this session before it is closed
         outcomes.push(await runScenario(s, scenario, "cold", browser, tools, progress, { readyMs }));
         progress();
       } finally {
+        // oxlint-disable-next-line no-await-in-loop -- close this cold session before the next scenario starts
         await s.close();
       }
     }

@@ -49,6 +49,12 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 
 **Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones.
 
+**Duplicate Entire Lines** copies every line touched by a caret or selection below itself, even when only part of a line is selected, and keeps the selection on the copy. It has no default shortcut; run it from **Find Action** or assign one in **Settings › Keymap**.
+
+**Fill Paragraph** re-wraps the paragraph at the caret to the hard wrap column (**Settings › Editor › Code Style**): a run of line comments, the `*` lines of a documentation comment up to the next blank line or `@` tag, or the lines between blank lines of a plain text file. In code it does nothing. It has no default shortcut.
+
+**Convert Indents to Spaces** and **Convert Indents to Tabs** rewrite the leading whitespace of the selected lines (the whole file without a selection) using the editor's tab size; when converting to tabs, indentation that does not reach the next tab stop stays as spaces. They have no default shortcut; run them from **Find Action** or assign one in **Settings › Keymap**.
+
 Brackets and quotes are paired as you type, and typing a quote or bracket over a selection surrounds it. These and other typing aids (smart Home, Tab out of a closing bracket, a `;` typed before a closing `)` moving to the end of the statement, smart indent on Enter, documentation comment stubs, what Backspace does with indentation, reformat on paste) are under **Settings › Editor › General › Smart Keys**.
 
 ## Clipboard
@@ -126,10 +132,15 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 | **Increase Font Size** | `⌥⇧.` | `Alt+Shift+.`   |
 | **Decrease Font Size** | `⌥⇧,` | `Alt+Shift+,`   |
 | **Scroll to Center**   | `⌃L`  | `Ctrl+M`        |
+| **Scroll Up**          | —     | `Ctrl+Up`       |
+| **Scroll Down**        | —     | `Ctrl+Down`     |
+
+**Scroll Up** and **Scroll Down** move the view by one line and leave the caret where it is, even when it scrolls out of sight.
 
 - **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
 - **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.
 - **View › Appearance › Enter Distraction Free Mode** hides tool windows, tabs, the status bar and the gutter and centres the text. Run the same command again to leave.
+- **Show Line Numbers**, **Show Indent Guides**, **Show Sticky Lines** and **Show Whitespaces** turn these on or off in every editor. Run them from Find Action, or right-click the gutter and open **Appearance**.
 - Line numbers, whitespace, indent guides, caret style and the intention bulb are in **Settings › Editor › General › Appearance**. Breadcrumbs and sticky lines (the enclosing declarations pinned at the top while you scroll) have their own pages under **Settings › Editor › General**.
 
 ## Saving

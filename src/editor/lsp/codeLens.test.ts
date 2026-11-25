@@ -131,6 +131,30 @@ describe("author hint", () => {
   });
 });
 
+describe("Vue component usages", () => {
+  const vue = { doc: 8, path: "/p/Hello.vue", language: "vue", uiMode: "Vue", readOnly: false };
+
+  it("offers Show component usages above a .vue file, and nothing extra elsewhere", async () => {
+    ipc.docOutline.mockResolvedValue(ok([]));
+    const view = editor(1, undefined, vue);
+    await settle();
+    const lens = view.state.facet(codeLenses).find((l) => l.title === "Show component usages");
+    expect(lens).toMatchObject({ pos: 0, kind: "usages" });
+    const rust = editor();
+    await settle();
+    expect(titles(rust)).not.toContain("Show component usages");
+  });
+
+  it("is hidden with the usages hints", async () => {
+    useProject.setState({
+      settings: { editor: { inlay: { codeVisionUsages: false, codeVisionAuthor: false } } } as never,
+    });
+    const view = editor(1, undefined, vue);
+    await settle();
+    expect(titles(view)).toEqual([]);
+  });
+});
+
 describe("Code Vision switch", () => {
   it("hides usages and author while off and brings back the kinds still chosen", async () => {
     ipc.vcsBlame.mockResolvedValue(ok([{ commit: "c1", author: "Ann", timeMs: 1, summary: "init" }]));
@@ -274,7 +298,10 @@ describe("background usage counts", () => {
   it("stops asking again while the server keeps saying it is indexing, until it settles", async () => {
     ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
     const view = editor();
-    for (let i = 0; i < 10; i++) await settle();
+    for (let i = 0; i < 10; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- each settle advances fake timers one retry step at a time
+      await settle();
+    }
     expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
     expect(titles(view)).toEqual([]);
     ipc.lspReferences.mockResolvedValue(refs(2));
@@ -517,6 +544,7 @@ describe("file changes on disk", () => {
     const first = await settledEditors(n);
     for (let i = 0; i < 10; i++) {
       fsChanged(["/p/logo.png"]);
+      // oxlint-disable-next-line no-await-in-loop -- fake timers must advance one debounce window per file event
       await vi.advanceTimersByTimeAsync(1000);
     }
     fsChanged([], ["/p"]);

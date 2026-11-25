@@ -941,6 +941,8 @@ pub struct FileIconThemeOptions {
 #[serde(default, rename_all = "camelCase")]
 pub struct MainToolbarSettings {
     pub left: Vec<String>,
+    /// Centred in the toolbar (between the other two groups when they leave too little room).
+    pub center: Vec<String>,
     pub right: Vec<String>,
     /// Widgets the user removed.
     pub hidden: Vec<String>,

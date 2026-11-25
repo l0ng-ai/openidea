@@ -146,7 +146,12 @@ export class ModifiedRanges {
 
   map(changes: ChangeSet) {
     if (this.all) return;
-    this.ranges = this.ranges.map(([a, b]): [number, number] => [changes.mapPos(a, -1), changes.mapPos(b, 1)]);
+    // A range past the end belongs to another version of the text; mapping it would throw out of the
+    // edit (before the document is marked dirty, so the edit would never be saved). Drop it instead.
+    const kept = this.ranges.filter(([, b]) => b <= changes.length);
+    if (kept.length < this.ranges.length)
+      console.warn(`modified ranges past the end (${changes.length}) dropped`, this.ranges.length - kept.length);
+    this.ranges = kept.map(([a, b]): [number, number] => [changes.mapPos(a, -1), changes.mapPos(b, 1)]);
   }
 
   add(changes: ChangeSet) {
@@ -551,7 +556,7 @@ export class DocModel {
     const effects = [
       compartments.indent.reconfigure(indentExtension(indent, this.formatIndent())),
       compartments.wrap.reconfigure(wrapExtension(editor, this.path, this.softWrapOverride)),
-      compartments.sticky.reconfigure(stickyExtension(editor)),
+      compartments.sticky.reconfigure(stickyExtension(editor, this.meta.language)),
       compartments.font.reconfigure(fontExtension(editor)),
       compartments.comments.reconfigure(commentTokens(this.info, this.meta.language)),
       compartments.lineNumbers.reconfigure(lineNumbersExtension(editor)),
@@ -701,6 +706,7 @@ export class DocModel {
       if (reason === "explicit") {
         for (const p of _saveParticipants()) {
           try {
+            // oxlint-disable-next-line no-await-in-loop -- participants run in priority order and may edit the document; each must see earlier edits
             await p.beforeSave(this.ctx(), slot?.handle ?? null, "explicit");
           } catch (e) {
             console.warn(`save participant ${p.id} failed`, e);

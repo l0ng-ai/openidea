@@ -226,6 +226,10 @@ export function removeAllBreakpoints() {
   for (const path of Object.keys(useBreakpoints.getState().byFile)) setFile(path, []);
 }
 
+export function removeFileBreakpoints(path: string) {
+  setFile(path, []);
+}
+
 /** Replaces a file's list after its lines moved with an edit (from the editor gutter). */
 export function setFileBreakpoints(path: string, list: BreakpointEntry[]) {
   setFile(path, list);

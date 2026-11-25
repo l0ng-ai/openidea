@@ -115,6 +115,7 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
     host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(project_host)))));
     // The official plugins (published with each release) are listed until the user picks another index.
     host.set_default_market_url(Some(ide_host::plugins::OFFICIAL_MARKET_INDEX.into()));
+    host.set_downloads(project_host.global_settings.effective().tool_downloads);
     #[cfg(target_os = "macos")]
     host.set_secret_store(Arc::new(KeychainSecrets));
     ide_host::plugins::set_editor_providers(Some(&host));

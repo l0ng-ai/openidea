@@ -236,8 +236,10 @@ async function open(c: Case): Promise<string> {
   c.setup?.(root);
   server = await Server.start(join(base, "home"));
   disconnect = connectDesktop(server);
-  for (const [key, value] of Object.entries(c.settings ?? {}))
+  for (const [key, value] of Object.entries(c.settings ?? {})) {
+    // oxlint-disable-next-line no-await-in-loop -- global settings are written one key at a time; ordering keeps the validated layer stack and SettingsChanged events correct
     await call(commands.settingsSet("global", key, JSON.stringify(value)));
+  }
   await openProject(root);
   const trusted = await commands.projectTrustSet(root, true, false);
   if (trusted.status !== "ok") throw new Error(trusted.error.message);
@@ -288,6 +290,7 @@ async function until<T>(what: string, value: () => T | null | undefined | false,
     const v = value();
     if (v) return v;
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}\n${shown()}`);
+    // oxlint-disable-next-line no-await-in-loop -- deliberate polling delay before re-reading the shared UI/store state.
     await new Promise((r) => setTimeout(r, 200));
   }
 }
@@ -295,6 +298,7 @@ async function until<T>(what: string, value: () => T | null | undefined | false,
 /** Requests `url` once the debugged server accepts connections (the response waits for Resume). */
 async function requestWhenListening(url: string) {
   for (let i = 0; i < 600; i++) {
+    // oxlint-disable-next-line no-await-in-loop -- the loop returns on the first successful probe; parallel probes would open duplicate connections to the debugged server
     const connected = await new Promise<boolean>((resolve) => {
       const req = get(url, (res) => {
         res.resume();
@@ -304,6 +308,7 @@ async function requestWhenListening(url: string) {
       req.on("error", () => resolve(false));
     });
     if (connected) return;
+    // oxlint-disable-next-line no-await-in-loop -- deliberate 500 ms backoff before the next probe
     await new Promise((r) => setTimeout(r, 500));
   }
 }
@@ -326,7 +331,9 @@ async function smoke(language: string) {
   const root = await open(c);
   // GDB ships with the toolchain (14+ for its DAP interpreter); the IDE does not install it.
   if (c.system) execFileSync(c.adapter, ["--version"], { stdio: "pipe" });
-  for (const tool of c.tools) await install(tool);
+  for (const tool of c.tools)
+    // oxlint-disable-next-line no-await-in-loop -- installs share the tools directory and reconfigure language servers; keep them ordered.
+    await install(tool);
 
   const path = join(root, c.file);
   const content = readFileSync(path, "utf8");
@@ -368,12 +375,15 @@ async function smoke(language: string) {
       if (Date.now() - since > 10_000) throw new Error(`${c.variable} stayed ${JSON.stringify(last)}\n${shown()}`);
       const now = useDebug.getState().variablesEpoch;
       if (now === epoch) {
+        // oxlint-disable-next-line no-await-in-loop -- deliberate delay before rechecking the Variables pane's invalidation epoch.
         await new Promise((r) => setTimeout(r, 100));
         continue;
       }
       // What the Variables pane does on each `invalidated`: pull the frame's locals again.
       epoch = now;
+      // oxlint-disable-next-line no-await-in-loop -- the DAP scopes request must finish before the variables request that uses its reference.
       const again = await call(commands.debugScopes(s.id, top.id));
+      // oxlint-disable-next-line no-await-in-loop -- the DAP variables request depends on the scopes response and feeds this loop's exit condition.
       locals = await call(commands.debugVariables(s.id, again.find((sc) => !sc.expensive)!.variablesReference));
       last = locals.find((v) => v.name === c.variable)?.value;
     }
@@ -486,7 +496,9 @@ async function smoke(language: string) {
       for (let retry = 0; c.retryTimedOut && retry < 5; retry++) {
         if (r.status !== "unavailable" || r.reason.kind !== "timedOut") break;
         timedOutRetries++;
+        // oxlint-disable-next-line no-await-in-loop -- retry delay: the adapter needs time to become responsive before being asked again.
         await new Promise((resolve) => setTimeout(resolve, 500));
+        // oxlint-disable-next-line no-await-in-loop -- the next answer is only meaningful after the delay; this retry loop depends on the prior response.
         r = await ask();
       }
       expect(r.status, `${what}: ${JSON.stringify(r)}\n${shown()}`).toBe("ready");
@@ -513,7 +525,9 @@ async function smoke(language: string) {
   // (and its breakpoint) again.
   for (let step = 0; step < 3 && paused()!.frames[0]!.line === line; step++) {
     const stops = useDebug.getState().stopSeq;
+    // oxlint-disable-next-line no-await-in-loop -- Step Over is a DAP action; the next step must not be sent before this one is acknowledged.
     await executeAction("debug.stepOver");
+    // oxlint-disable-next-line no-await-in-loop -- wait for this Step Over's stop before deciding whether to step again.
     await until("Step Over", () => useDebug.getState().stopSeq > stops && paused());
   }
   const after = paused()!;

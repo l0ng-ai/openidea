@@ -1,9 +1,31 @@
 /* Remote Host tool window */
 .view {
+  position: relative;
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.dropTarget {
+  outline: 1px dashed var(--focus-ring);
+  outline-offset: -1px;
+  background: var(--bg-selected);
+}
+.uploadHint {
+  position: absolute;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  left: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--focus-ring);
+  border-radius: var(--radius-small);
+  background: var(--bg-popup);
+  color: var(--fg-strong);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
 .toolbar {
   height: 32px;

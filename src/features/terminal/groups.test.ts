@@ -36,6 +36,23 @@ const strip = (group: string) => groupTabs(state().tabs, group).map((t) => t.id)
 beforeEach(() => closeAll());
 
 describe("terminal tab groups", () => {
+  it("publishes one consistent tab and session change when opening or closing", () => {
+    const changed = vi.fn();
+    const off = useTerminals.subscribe(changed);
+    try {
+      const opened = newTab("/p");
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(changed.mock.lastCall![0].sessions[opened.session]).toEqual({ cwd: "/p" });
+      expect(changed.mock.lastCall![0].tabs).toEqual([opened]);
+      closeTab(opened.id);
+      expect(changed).toHaveBeenCalledTimes(2);
+      expect(changed.mock.lastCall![0].sessions).toEqual({});
+      expect(changed.mock.lastCall![0].tabs).toEqual([]);
+    } finally {
+      off();
+    }
+  });
+
   it("splits right into a new group with a session in the tab's directory", () => {
     const a = newTab("/repo/app");
     const b = splitTab(a.id, "horizontal")!;

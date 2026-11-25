@@ -473,6 +473,27 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     }),
     language: JS,
   },
+  // WebStorm's Instance / Static member function: a method's declaration and its calls.
+  ...(
+    [
+      ["instanceMethod", "Identifiers › Instance method", "javascript-instance-method"],
+      ["staticMethod", "Identifiers › Static method", "javascript-static-method"],
+    ] as const
+  ).map(([id, name, token]) => ({
+    ...syn(`javascript.${id}`, name, [JS], token, { inherit: "function", defaultItalic: id === "staticMethod" }),
+    language: JS,
+  })),
+  // WebStorm's TypeScript kinds of type: unset, they keep the class name's colour.
+  ...(
+    [
+      ["interface", "Classes › Interface name", "javascript-interface"],
+      ["typeAlias", "Classes › Type alias", "javascript-type-alias"],
+      ["typeParameter", "Classes › Type parameter", "javascript-type-parameter"],
+    ] as const
+  ).map(([id, name, token]) => ({
+    ...syn(`javascript.${id}`, name, [JS], token, { inherit: "type" }),
+    language: JS,
+  })),
   // IntelliJ's Kotlin page: calls of top-level functions, and enum entries (IntelliJ falls back to
   // static method and static field, which are a function call and a constant here).
   ...(

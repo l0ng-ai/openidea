@@ -3516,6 +3516,7 @@ impl PluginWorkspace for HostWorkspace {
             max_matches: limit.min(10_000).saturating_add(1),
             context: Default::default(),
             include_excluded: false,
+            skip_large_files: false,
         };
         query.exclude.extend(project.search_excludes());
         let files = Mutex::new(Vec::new());
@@ -5009,6 +5010,7 @@ mod workbench_tests {
             style: style.into(),
             hover: None,
             after: Some("after".into()),
+            markdown_hover: None,
         };
         api.decorations(Some(&path), "set", vec![item("highlight"), item("unknown")]).unwrap();
         assert_eq!(api.shared.decoration_sets()["test"][0].items.len(), 1);

@@ -122,8 +122,10 @@ db_history                                   trusted            project_host bin
 db_jdbc_driver_classes                       trusted            project_host bindings async
 db_jdbc_drivers                              trusted            project_host bindings sync
 db_object_ddl                                trusted            project_host bindings async
+db_release_result                            trusted            project_host bindings sync
 db_remove_history                            trusted            project_host bindings async
 db_remove_jdbc_driver                        trusted            project_host bindings sync
+db_result_row                                trusted            project_host bindings async
 db_retain_catalog                            trusted            project_host bindings async
 db_run_tool                                  trusted            desktop      bindings async
 db_save_jdbc_driver                          trusted            project_host bindings sync
@@ -178,6 +180,7 @@ debug_jvm_memory_classes                     trusted            project_host bin
 debug_jvm_memory_fields                      trusted            project_host bindings async
 debug_jvm_memory_instances                   trusted            project_host bindings async
 debug_jvm_memory_referrers                   trusted            project_host bindings async
+debug_jvm_thread_dump                        trusted            project_host bindings async
 debug_listen_for_jvm                         trusted            project_host bindings async
 debug_pause                                  trusted            project_host bindings async
 debug_redefine_classes                       trusted            project_host bindings async
@@ -359,6 +362,7 @@ lsp_execute_code_action                      trusted            project_host bin
 lsp_execute_command                          trusted            project_host bindings async
 lsp_extract_interface                        trusted            project_host bindings async
 lsp_extract_interface_info                   trusted            project_host bindings async
+lsp_file_references                          trusted            project_host bindings async
 lsp_format                                   trusted            project_host bindings async
 lsp_format_text                              trusted            project_host bindings async
 lsp_goto                                     trusted            project_host bindings async
@@ -524,6 +528,7 @@ project_workspace_member_set                 always             project_host bin
 project_workspace_members                    always             project_host bindings spawn
 proxy_check_connection                       always             desktop      bindings async
 pypi_package                                 outside_restricted project_host bindings async
+pypi_search                                  outside_restricted project_host bindings async
 python_requirements                          trusted            project_host bindings async
 recent_files                                 always             project_host bindings sync
 recent_project_groups                        always             desktop      bindings sync
@@ -555,6 +560,7 @@ remote_stop_backend                          always             desktop      bin
 remote_stop_forwarding                       trusted            desktop      bindings async
 remote_trust_set                             always             desktop      bindings sync
 remote_trust_status                          always             desktop      bindings sync
+remote_upload_into                           trusted            project_host bindings async
 remove_recent                                always             project_host bindings sync
 remove_recent_project                        always             desktop      bindings sync
 replace_in_files                             trusted            project_host bindings async
@@ -571,6 +577,7 @@ run_gradle_init_script                       trusted            project_host bin
 run_gradle_jvm_args_script                   always             project_host bindings async
 run_import_configs                           trusted            project_host bindings async
 run_import_sources                           trusted            project_host bindings async
+run_jvm_thread_dump                          trusted            project_host bindings async
 run_list                                     always             project_host bindings sync
 run_resize                                   trusted            project_host bindings sync
 run_save_configs                             trusted            project_host bindings async

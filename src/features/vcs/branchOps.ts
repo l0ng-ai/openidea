@@ -161,6 +161,7 @@ async function reviewCheckout<T>(
   let options: CheckoutOptions = { mode: "normal", diverged: null };
   for (;;) {
     const opts = options;
+    // oxlint-disable-next-line no-await-in-loop -- each retry uses the options decided by the previous outcome
     const response = await runOp(title, () => attempt(opts), { refresh: false });
     if (!response) {
       void refreshNow();
@@ -168,7 +169,10 @@ async function reviewCheckout<T>(
     }
     const { checkout: outcome, result } = response;
     // `success` may name the branch now checked out.
-    if (outcome.kind === "done" || outcome.kind === "conflicts" || outcome.kind === "restoreFailed") await refreshNow();
+    if (outcome.kind === "done" || outcome.kind === "conflicts" || outcome.kind === "restoreFailed") {
+      // oxlint-disable-next-line no-await-in-loop -- refresh state before dispatching this outcome
+      await refreshNow();
+    }
     switch (outcome.kind) {
       case "done":
         if (reportSuccess) notifications().notify({ group: "vcs", level: "info", title: success() });
@@ -200,6 +204,7 @@ async function reviewCheckout<T>(
             ...(shelved ? [{ label: "Show Shelf", run: () => void executeAction("vcs.showShelf") }] : []),
           ],
         });
+        // oxlint-disable-next-line no-await-in-loop -- refresh and open the conflicts dialog before leaving the retry loop
         await openConflictsInstead();
         return result;
       }
@@ -220,6 +225,7 @@ async function reviewCheckout<T>(
         return undefined;
       }
       case "localChanges": {
+        // oxlint-disable-next-line no-await-in-loop -- the Smart Checkout choice is a confirmation that feeds the next attempt
         const mode = await choose(root, outcome.files, opts.mode === "normal");
         if (!mode) return undefined;
         options = { ...options, mode };
@@ -227,6 +233,7 @@ async function reviewCheckout<T>(
       }
       case "localBranchAhead": {
         const { local, remote } = outcome;
+        // oxlint-disable-next-line no-await-in-loop -- rebase/drop is a user confirmation that decides the next attempt
         const r = await ask({
           title: tx`Checkout ${remote}`,
           body: tx`Local branch '${local}' has commits that do not exist in '${remote}'. Rebase '${local}' onto '${remote}', or drop local commits?`,
@@ -241,6 +248,7 @@ async function reviewCheckout<T>(
       }
       case "checkedOutInWorktree": {
         const { branch, path } = outcome;
+        // oxlint-disable-next-line no-await-in-loop -- the worktree-conflict answer decides whether to retry or return
         const r = await ask({
           title: "Worktree Conflict",
           body: tx`Branch '${branch}' is already checked out in a worktree at:\n${path}`,
@@ -254,7 +262,10 @@ async function reviewCheckout<T>(
           options = { ...options, ignoreOtherWorktrees: true };
           continue;
         }
-        if (r.button === "open") await openWorktree(path);
+        if (r.button === "open") {
+          // oxlint-disable-next-line no-await-in-loop -- open the existing worktree before returning from this retry loop
+          await openWorktree(path);
+        }
         return undefined;
       }
     }
@@ -423,6 +434,7 @@ async function createBranch(roots: readonly (string | null)[], from?: BranchSour
           const tip = existing.commit;
           if (!tip) throw new Error(tx`Could not find the tip of branch '${r.value}'`);
           expectedTips.set(repo, tip);
+          // oxlint-disable-next-line no-await-in-loop -- each base accumulates into the shared overwrite plan before confirmation
           const base = await call(commands.vcsMergeBase(repo, tip, start ?? "HEAD"));
           if (base !== tip) affected.push(repo);
         }
@@ -625,12 +637,14 @@ async function performMerge(ref: string, title: string, repo: string | null, bat
   const choose = batch?.choose ?? localChangesChoices("merge", ref, [root]);
   let smart = false;
   for (;;) {
+    // oxlint-disable-next-line no-await-in-loop -- merge retries carry the smart flag and batch id decided by earlier attempts
     const outcome = await runOp(title, () => call(commands.vcsMerge(repo, ref, batch?.id ?? null, smart)), {
       refresh: false,
       errorActions: conflictActions,
       onError: batch ? undefined : openConflictsInstead,
     });
     if (!outcome || outcome.kind !== "localChanges") return outcome?.kind;
+    // oxlint-disable-next-line no-await-in-loop -- the local-changes confirmation decides whether the merge is retried
     const mode = await choose(root, outcome.files, !smart);
     if (!mode) return undefined;
     smart = mode === "smart";
@@ -676,6 +690,7 @@ function notifyMergeSuccess(title: string, name: string, cleanup: MergedBranchCl
     const deleted: BranchDeletion[] = [];
     for (const { root, tip } of cleanup.targets) {
       if (!isCurrentProject()) return;
+      // oxlint-disable-next-line no-await-in-loop -- check the project before each deletion; results are collected for the follow-up notification
       const branch = await runOp(
         tx`Delete branch ${name} (${repoName(root)})`,
         () => call(commands.vcsDeleteMergedBranch(root, name, tip)),
@@ -869,6 +884,7 @@ async function notifyBranchDeletion(
     try {
       for (const entry of pending) {
         if (!isCurrentProject()) return;
+        // oxlint-disable-next-line no-await-in-loop -- restoring one branch at a time updates the shared pending set and checks cancellation
         const ok = await runOp(
           tx`Restore branch ${name}`,
           async () => {
@@ -1189,11 +1205,13 @@ async function deleteRemoteBranches(
     for (const { repo, ref, tip } of targets) {
       if (!isCurrentProject()) return;
       if (failedRefs.has(ref)) continue;
+      // oxlint-disable-next-line no-await-in-loop -- tracking deletions accumulate results and check project/failed refs each time
       const branch = await runOp(tx`Delete branch ${name}`, () =>
         call(commands.vcsDeleteTrackingBranch(repo, name, tip, ref)),
       );
       if (branch) deleted.push({ repo, branch });
     }
+    // oxlint-disable-next-line no-await-in-loop -- each group notifies separately after its own deletions finish
     await notifyBranchDeletion(name, deleted, project, targets.length);
   }
 }
@@ -1229,8 +1247,15 @@ export async function deleteBranches(targets: readonly BranchDeleteTarget[]) {
   for (const [name, repos] of local) {
     if (useProject.getState().project !== project) return;
     const roots = [...repos].filter((repo) => repo !== null);
-    if (roots.length > 1 && roots.length === repos.size) await deleteInRepos(name, roots);
-    else for (const repo of repos) await deleteBranch(name, repo);
+    if (roots.length > 1 && roots.length === repos.size) {
+      // oxlint-disable-next-line no-await-in-loop -- deletion across repositories is ordered and updates shared VCS state
+      await deleteInRepos(name, roots);
+    } else {
+      for (const repo of repos) {
+        // oxlint-disable-next-line no-await-in-loop -- branches are deleted one at a time so shared store state stays consistent
+        await deleteBranch(name, repo);
+      }
+    }
   }
   if (remote.length) await deleteRemoteBranches(remote, tracking, project);
 }
@@ -1486,6 +1511,7 @@ async function eachRepo<T>(
   let restoreError: string | null;
   try {
     for (const root of roots) {
+      // oxlint-disable-next-line no-await-in-loop -- the HEAD snapshot is read before each step and gates the early exit
       const before = await runOp(tx("Read repository HEAD"), () => call(commands.vcsBranchInfo(root)), {
         refresh: false,
       });
@@ -1493,6 +1519,7 @@ async function eachRepo<T>(
         failed = root;
         break;
       }
+      // oxlint-disable-next-line no-await-in-loop -- steps run in repository order with early exit and shared batch/rollback state
       const result = await step(root, batch.id);
       if (result === skippedRepo) continue;
       if (result === undefined) {
@@ -1524,6 +1551,7 @@ async function eachRepo<T>(
       let remaining = done.length;
       for (const d of changed.reverse()) {
         const repo = repoName(d.root);
+        // oxlint-disable-next-line no-await-in-loop -- rollback replays repositories in reverse order and decrements the surviving count
         const undone = await runOp(
           tx`Rollback (${repo})`,
           async () => {
@@ -1717,6 +1745,7 @@ export async function renameInRepos(name: string, roots: readonly string[], upst
       if (unsetUpstream) {
         for (const { root } of done) {
           if (useProject.getState().project !== project) return;
+          // oxlint-disable-next-line no-await-in-loop -- tracking is unset only after the user keeps the renames, one repository at a time
           await runOp(tx`Unset upstream of ${to} (${repoName(root)})`, () =>
             call(commands.vcsRenameBranch(root, to, to, true)),
           );

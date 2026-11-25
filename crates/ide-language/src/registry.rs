@@ -12,6 +12,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("arduino", include_str!("../../../languages/arduino.toml")),
     ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
     ("astro", include_str!("../../../languages/astro.toml")),
+    ("axaml", include_str!("../../../languages/axaml.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
@@ -28,6 +29,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("elixir", include_str!("../../../languages/elixir.toml")),
     ("erb", include_str!("../../../languages/erb.toml")),
     ("erlang", include_str!("../../../languages/erlang.toml")),
+    ("freemarker", include_str!("../../../languages/freemarker.toml")),
     ("fsharp", include_str!("../../../languages/fsharp.toml")),
     ("gitattributes", include_str!("../../../languages/gitattributes.toml")),
     ("gdscript", include_str!("../../../languages/gdscript.toml")),
@@ -646,6 +648,7 @@ mod tests {
         "Thymeleaf",
         "ERB",
         "JSP",
+        "FreeMarker",
         "Astro",
         "GoMod",
     ];
@@ -883,10 +886,16 @@ mod tests {
         let cfg = reg.get(&LanguageId::new("php")).unwrap();
         let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
         // After the fallback: hover, rename and symbols stay with Intelephense.
-        assert_eq!(names, ["intelephense", "phpactor", "phoxite", "laravel-lsp"]);
+        assert_eq!(names, ["intelephense", "phpactor", "phoxite", "devsense-php-ls", "laravel-lsp"]);
         // Phoxite answers the Laravel strings itself.
         let phoxite = cfg.language_servers.iter().find(|s| s.name == "phoxite").unwrap();
         assert!(phoxite.fallback && phoxite.replaces == ["laravel-lsp"]);
+        // DEVSENSE runs without Node or PHP of its own (the npm launcher needs Node) and
+        // answers the Laravel strings itself. https://docs.devsense.com/other/lsp/docs/
+        let devsense = cfg.language_servers.iter().find(|s| s.name == "devsense-php-ls").unwrap();
+        assert!(devsense.fallback && devsense.replaces == ["laravel-lsp"]);
+        assert_eq!(devsense.command.as_str(), "devsense-php-ls");
+        assert_eq!(devsense.install_hint.as_deref(), Some("npm i -g devsense-php-ls"));
         let lsp = cfg.language_servers.iter().find(|s| s.name == "laravel-lsp").unwrap();
         assert_eq!(lsp.command.as_str(), "laravel-lsp");
         // Its `lsp` command takes no options and speaks over stdio; `--stdio` stops it at startup.
@@ -1233,6 +1242,8 @@ mod tests {
             ("a.rb", "ruby"),
             ("Gemfile", "ruby"),
             ("show.html.erb", "erb"),
+            ("index.ftl", "freemarker"),
+            ("page.ftlh", "freemarker"),
             ("index.php", "php"),
             ("init.lua", "lua"),
             ("main.dart", "dart"),
@@ -1267,6 +1278,8 @@ mod tests {
             ("Cargo.toml", "toml"),
             ("Cargo.lock", "toml"),
             ("pom.xml", "xml"),
+            ("Views/MainWindow.axaml", "axaml"),
+            ("MainWindow.xaml", "xml"),
             ("README.md", "markdown"),
             ("Dockerfile", "dockerfile"),
             ("Dockerfile.dev", "dockerfile"),
@@ -1302,6 +1315,16 @@ mod tests {
         for (path, id) in cases {
             assert_eq!(detect(&reg, path), id, "{path}");
         }
+    }
+
+    #[test]
+    fn avalonia_xaml_is_xml_with_its_own_server() {
+        let reg = reg();
+        let axaml = reg.get(&LanguageId::new("axaml")).unwrap();
+        assert_eq!(axaml.tree_sitter.as_deref(), Some("xml"));
+        assert_eq!(axaml.ui_mode.as_deref(), Some("XML"));
+        let servers: Vec<_> = axaml.language_servers.iter().map(|s| (s.name.as_str(), s.fallback)).collect();
+        assert_eq!(servers, [("axsg-lsp", false), ("lemminx", true)]);
     }
 
     #[test]

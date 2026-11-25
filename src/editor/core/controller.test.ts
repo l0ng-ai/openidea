@@ -668,7 +668,7 @@ describe("EditorController", () => {
           "vcs.compareWithRevision",
           "vcs.showHistory",
           "vcs.showCurrentRevision",
-          "vcs.showHistoryForSelection",
+          ...(menu === "editor" ? ["vcs.showHistoryForSelection"] : []),
           "vcs.rollback",
         ],
         ["vcs.push", "vcs.pull", "vcs.fetch"],
@@ -683,9 +683,9 @@ describe("EditorController", () => {
         "github.checkoutPullRequest",
         "github.openInBrowser",
       ];
-      const ids = [...groups.flat().filter((id) => id !== "GitHub"), ...github];
+      const ids = new Set([...groups.flat().filter((id) => id !== "GitHub"), ...github, "vcs.showHistoryForSelection"]);
       const dispose = registerActions(
-        ids.map((id) => ({
+        [...ids].map((id) => ({
           id,
           title: id,
           when: id === "vcs.clone" ? undefined : id.startsWith("github.") ? "projectOpen" : "vcsAvailable",
@@ -726,7 +726,8 @@ describe("EditorController", () => {
         expect(gitItems()).toContainEqual({
           kind: "action",
           action: "vcs.compareWithBranch",
-          arg: { path: "/p/a.ts" },
+          arg: "/p/a.ts",
+          label: "Compare with Branch…",
         });
 
         setContext("vcsAvailable", false);
@@ -749,6 +750,42 @@ describe("EditorController", () => {
       }
     },
   );
+
+  it("scopes the tab menu's Git entries to its file, like the project view does", async () => {
+    useProject.setState({
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
+      settings: {} as never,
+    });
+    const dispose = registerActions(
+      ["vcs.commit", "vcs.ignoreShared", "vcs.ignoreLocal"].map((id) => ({ id, title: id, run: () => undefined })),
+    );
+    try {
+      setContext("vcsAvailable", true);
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const state = useTabs.getState();
+      const pane = state.panes[state.activePane]!;
+      const git = () => resolveMenuItems(ctrl!.tabMenu(pane.id, pane.tabs[0]!)).find((i) => i.label === "Git")!;
+      expect(git().submenu).toContainEqual({
+        kind: "action",
+        action: "vcs.commit",
+        arg: "/p/a.ts",
+        label: "Commit File…",
+      });
+      const gitMenu = git().submenu!;
+      expect(
+        resolveMenuItems(gitMenu)
+          .filter((i) => i.kind === "item")
+          .some((i) => i.label === "Add to .gitignore" && i.submenu?.length === 2),
+      ).toBe(true);
+      setContext("vcsAvailable", false);
+    } finally {
+      dispose();
+      useProject.setState({ project: null, settings: null });
+      setContext("vcsAvailable", false);
+    }
+  });
 
   it("switches an open image tab to a text tab when a matching text editor wrapper registers", async () => {
     ctrl = new EditorController(createMemoryBackend({ "/p/arch.diagram.svg": "<svg/>" }));

@@ -367,6 +367,7 @@ async function unshelveFiles(entry: ShelvedChangeList, paths: readonly string[],
   if (paths.length === entry.files.length) return call(commands.vcsUnshelve(entry.id, remove, null));
   const outcome: ApplyOutcome = { applied: [], conflicts: [] };
   for (const path of paths) {
+    // oxlint-disable-next-line no-await-in-loop -- results accumulate in path order and each unshelve mutates the same shelf and worktree
     const one = await call(commands.vcsUnshelve(entry.id, remove, path));
     outcome.applied.push(...one.applied);
     outcome.conflicts.push(...one.conflicts);
@@ -584,6 +585,7 @@ export async function importShelfPatches(paths?: string[]) {
   const picked =
     paths ?? (await choosePaths({ directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }));
   for (const path of picked) {
+    // oxlint-disable-next-line no-await-in-loop -- each patch is its own operation with shared progress and notification state
     await runOp(
       tx("Import patches"),
       async () => call(commands.vcsShelfImport(repo, baseName(path), await call(commands.fsReadText(path)))),

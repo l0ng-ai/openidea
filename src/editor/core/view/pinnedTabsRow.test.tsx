@@ -77,7 +77,9 @@ describe("pinned tabs in a separate row", () => {
   it("middle click closes an editor tab", () => {
     seed([false, false, false], { placement: "top" });
     render(<EditorAreaView />);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: /f2/ }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: /f2/ });
+    fireEvent.mouseDown(tab, { button: 1 });
+    fireEvent.mouseUp(tab, { button: 1 });
     expect(closeTab).toHaveBeenCalledWith("p1", "t2");
   });
 
@@ -88,7 +90,9 @@ describe("pinned tabs in a separate row", () => {
     seed([false, false, false], { placement: "top", showCloseButton: false });
     render(<EditorAreaView />);
     expect(screen.queryByRole("button", { name: "Close Tab" })).toBeNull();
-    fireEvent.mouseDown(screen.getByRole("tab", { name: /f2/ }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: /f2/ });
+    fireEvent.mouseDown(tab, { button: 1 });
+    fireEvent.mouseUp(tab, { button: 1 });
     expect(closeTab).toHaveBeenCalledWith("p1", "t2");
   });
 });

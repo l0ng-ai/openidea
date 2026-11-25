@@ -435,7 +435,9 @@ function scriptConfigFor(
   if (/\.ts$/.test(relPath)) return { ...base, command: "npx", args: ["tsx", relPath], debugAdapter: "js-debug" };
   if (/\.(sh|bash|zsh)$/.test(relPath)) {
     const shell = relPath.endsWith(".zsh") ? "zsh" : relPath.endsWith(".bash") ? "bash" : "sh";
-    return { ...base, command: shell, args: [relPath] };
+    // IDEA's Shell Script "Execute in the terminal" (on by default): scripts read keys and use the
+    // terminal (menus, `tput`, prompts), locally and on an SSH target alike.
+    return { ...base, command: shell, args: [relPath], emulateTerminal: true };
   }
   if (windows && /\.(bat|cmd)$/i.test(relPath)) {
     const file = relPath.split("/").pop() ?? relPath;

@@ -218,6 +218,7 @@ async function resolveFew(
   const worker = async () => {
     while (next < items.length && !aborted()) {
       const i = next++;
+      // oxlint-disable-next-line no-await-in-loop -- each worker resolves one item at a time and re-checks `aborted()` before taking the next
       out[i] = await resolve(items[i]!).catch(() => items[i]);
     }
   };

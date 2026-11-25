@@ -4,7 +4,7 @@ import { EditorView } from "@codemirror/view";
 import { indentService, type LanguageSupport } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { addCursorAbove, insertBlankLine, selectLine, toggleTabFocusMode } from "@codemirror/commands";
-import { codeBlockEnd, codeBlockStart, splitLine } from "./caretCommands";
+import { codeBlockEnd, codeBlockStart, scrollDown, scrollUp, splitLine } from "./caretCommands";
 import { editorBaseKeymap } from "./baseKeymap";
 
 const views: EditorView[] = [];
@@ -55,6 +55,42 @@ describe("Split Line", () => {
     const multi = make("a|b\nc|d");
     splitLine(multi);
     expect(show(multi)).toBe("a|\nb\nc|\nd");
+  });
+});
+
+describe("Scroll Up / Scroll Down", () => {
+  /** jsdom has no layout: record what the command asks the scroller for. */
+  function scroller(view: EditorView, start: number) {
+    let top = start;
+    Object.defineProperty(view.scrollDOM, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => (top = v),
+    });
+    return () => top;
+  }
+
+  it("moves the viewport one line at a time", () => {
+    const view = make("a\nb|\nc");
+    const top = scroller(view, 100);
+    const line = view.defaultLineHeight;
+    expect(line).toBeGreaterThan(0);
+    expect(scrollDown(view)).toBe(true);
+    expect(top()).toBe(100 + line);
+    expect(scrollUp(view)).toBe(true);
+    expect(scrollUp(view)).toBe(true);
+    expect(top()).toBe(100 - line);
+  });
+
+  it("leaves the carets and the selection where they are", () => {
+    const view = make("|a\nb\nc");
+    view.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, 3), EditorSelection.cursor(5)], 1) });
+    const before = view.state.selection;
+    scroller(view, 50);
+    scrollDown(view);
+    scrollUp(view);
+    expect(view.state.selection.eq(before)).toBe(true);
+    expect(view.state.doc.toString()).toBe("a\nb\nc");
   });
 });
 

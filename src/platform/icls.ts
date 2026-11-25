@@ -10,6 +10,7 @@ import {
 } from "./colorScheme";
 import { isBuiltinTheme, themeKind } from "./themes";
 import type { CustomColorScheme, CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
+import { iclsColor } from "./iclsColor";
 import { DARCULA_ATTRIBUTES } from "./iclsDarcula";
 
 // Many language keys share the editor's language-default tokens.
@@ -222,13 +223,13 @@ const SCRIPT_KEYS: Record<string, string> = {
   GLOBAL_FUNCTION: "globalFunction",
   LOCAL_FUNCTION: "functionDeclaration",
   EXPORTED_FUNCTION: "functionDeclaration",
-  INSTANCE_MEMBER_FUNCTION: "functionDeclaration",
-  STATIC_MEMBER_FUNCTION: "functionDeclaration",
+  INSTANCE_MEMBER_FUNCTION: "instanceMethod",
+  STATIC_MEMBER_FUNCTION: "staticMethod",
   CLASS: "className",
   EXPORTED_CLASS: "className",
-  INTERFACE: "className",
-  "TYPE.ALIAS": "className",
-  TYPE_PARAMETER: "className",
+  INTERFACE: "interface",
+  "TYPE.ALIAS": "typeAlias",
+  TYPE_PARAMETER: "typeParameter",
   DECORATOR: "decorator",
   OPERATION_SIGN: "operator",
 };
@@ -324,8 +325,11 @@ const EFFECT_CODES: Partial<Record<NonNullable<TextAttributesOverride["effect"]>
   strikeout: "3",
 };
 const children = (el: Element, tag: string) => Array.from(el.children).filter((e) => e.tagName === tag);
-const color = (v: string | null): string | undefined =>
-  v && /^[0-9a-f]{1,6}$/i.test(v) ? `#${v.padStart(6, "0").toLowerCase()}` : undefined;
+// Schemes here have no alpha: an RRGGBBAA value is left out, as before.
+const color = (v: string | null): string | undefined => {
+  const c = iclsColor(v);
+  return c?.length === 7 ? c : undefined;
+};
 
 function attributeEntries(section: Element): Element[] {
   const entries = children(section, "option");

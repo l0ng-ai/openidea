@@ -165,6 +165,7 @@ export async function startWithRemedies<T>(
   const used = new Set<StartRemedy>();
   for (;;) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- retry loop: an attempt must finish before its failure can be classified and one remedy applied; `used` tracks tried remedies across iterations
       return await start();
     } catch (e) {
       if (!config.target || !(e instanceof IpcError)) throw e;
@@ -173,12 +174,16 @@ export async function startWithRemedies<T>(
       if (!remedy || used.has(remedy) || !sshConfig) throw e;
       used.add(remedy);
       if (remedy === "trustHost") {
+        // oxlint-disable-next-line no-await-in-loop -- do not trust the host until the user confirms; a declined prompt rethrows the original start error
         if (!(await deps.confirmTrust(e.message))) throw e;
+        // oxlint-disable-next-line no-await-in-loop -- the host must be trusted before the next `start` attempt
         await deps.trustHost(sshConfig);
       } else {
         const saved = deps.sshConfigs().find((c) => c.id === sshConfig)?.saveSecret ?? false;
+        // oxlint-disable-next-line no-await-in-loop -- the saved flag is read before prompting, and the answer is needed before a secret can be stored
         const answer = await deps.askSecret(e.message, saved);
         if (!answer) throw e;
+        // oxlint-disable-next-line no-await-in-loop -- the secret must be stored before the next `start` attempt
         await deps.setSecret(sshConfig, answer.secret, answer.save);
       }
     }

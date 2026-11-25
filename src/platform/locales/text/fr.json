@@ -67,6 +67,7 @@
   "Clone Caret Below": "Dupliquer le curseur en dessous",
   "Join Lines": "Joindre les lignes",
   "Toggle Case": "Changer la casse",
+  "Cycle Identifier Case": "Alterner la casse de l'identifiant",
   "Add Carets to Ends of Selected Lines": "Ajouter des curseurs à la fin des lignes sélectionnées",
   "Unselect Occurrence": "Désélectionner l'occurrence",
   "Paste from History…": "Coller depuis l'historique…",

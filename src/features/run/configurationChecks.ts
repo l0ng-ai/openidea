@@ -113,6 +113,7 @@ export async function runConfigurationToCompletion(
     return [{ name: config.name, status: "notStarted" }];
   const results: RunConfigurationCheckResult[] = [];
   for (const child of children) {
+    // oxlint-disable-next-line no-await-in-loop -- compound children start in order and cancellation is checked between them
     results.push(await runSingle(child, signal, [...chain, config.id]));
     signal.throwIfAborted();
   }

@@ -10,8 +10,11 @@ const supports: Record<string, LanguageSupport> = {};
 
 beforeAll(async () => {
   // Embedded modes load lazily; load them up front so one parse covers the literals.
-  for (const name of ["CSS", "GraphQL", "SQL", "HTML", "JavaScript", "TypeScript", "TSX", "Angular TypeScript"])
-    supports[name] = (await loadSupport(findLanguageDescription(name, "")!))!;
+  await Promise.all(
+    ["CSS", "GraphQL", "SQL", "HTML", "JavaScript", "TypeScript", "TSX", "Angular TypeScript"].map(async (name) => {
+      supports[name] = (await loadSupport(findLanguageDescription(name, "")!))!;
+    }),
+  );
 });
 
 function tokens(mode: string, doc: string): { text: string; cls: string }[] {

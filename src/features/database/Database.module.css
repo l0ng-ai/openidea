@@ -70,6 +70,10 @@
   cursor: col-resize;
 }
 .rowNumber {
+  /* Frozen at the left edge: only vertical scrolling moves the numbers. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -79,6 +83,9 @@
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   user-select: none;
+}
+.rowNumberSelected {
+  color: var(--fg-line-number-current);
 }
 .cell {
   display: flex;
@@ -107,6 +114,23 @@
 .null {
   color: var(--fg-muted);
   font-style: italic;
+}
+/* A value the page carries only the start of: tagged before its text, which a column clips on the right. */
+.cellCutMark {
+  flex: none;
+  margin-right: var(--space-1-5);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-muted);
+  font-size: 0.85em;
+}
+.cutNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--fg-muted);
 }
 .lineBreak {
   color: var(--fg-muted);
@@ -727,6 +751,13 @@
 /* Console run feedback: timing after a statement, gutter check / error, error banner. */
 :global(.cm-openidea-db-executing) {
   background: var(--accent-soft);
+}
+/* The range the console's next run would submit (DataGrip's current-statement border). */
+:global(.cm-openidea-db-preview) {
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
 }
 :global(.cm-openidea-db-elapsed) {
   font-variant-numeric: tabular-nums;

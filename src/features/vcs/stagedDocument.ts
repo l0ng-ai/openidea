@@ -361,11 +361,14 @@ export function stagedDocumentLifecycle(
     isDirty: (input) => owned(input).some(({ doc }) => doc.dirty),
     flush: async () => {},
     save: async (input) => {
+      // oxlint-disable-next-line no-await-in-loop -- staged documents are saved in order; one document can be owned under several keys and has its own write queue
       for (const { doc } of owned(input)) await doc.save();
     },
     prepareClose: async (input) => {
       for (const { key, doc } of owned(input)) {
+        // oxlint-disable-next-line no-await-in-loop -- each owner is detached from its document before that document is saved
         await doc.prepareClose(key);
+        // oxlint-disable-next-line no-await-in-loop -- saving follows detach for the same document and must finish before the next owner
         if (inDiff) await doc.save();
       }
     },

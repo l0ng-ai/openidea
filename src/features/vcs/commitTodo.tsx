@@ -87,6 +87,7 @@ export async function todosForCommit(
   const results: TodoCheckFiles = { files: [], skipped: [] };
   if (!hasPatterns(rules)) return results;
   for (const file of commitFiles(files, selection)) {
+    // oxlint-disable-next-line no-await-in-loop -- the selected snapshot must be read before deciding whether to skip this file; findings are collected in order
     const read = await readCommitFile(file, selection.amend);
     if (read.kind === "nonText") continue;
     if (read.kind !== "ready") {
@@ -103,6 +104,7 @@ export async function todosForCommit(
     const { before, content, text } = snapshot;
     const candidates = scanCommitTodos(file.path, text, rules);
     if (!candidates.length) continue;
+    // oxlint-disable-next-line no-await-in-loop -- diff hunks depend on this file's selected text and are appended to the ordered findings
     const items = await todosInChangedLines(file.path, before, text, candidates);
     if (!Array.isArray(items)) {
       results.skipped.push(items);
@@ -110,9 +112,11 @@ export async function todosForCommit(
     }
     if (!items.length) continue;
 
+    // oxlint-disable-next-line no-await-in-loop -- worktree text is read only after TODOs are confirmed in the selected text
     const working = file.source === "staged" ? await workingText(file.path) : content;
     const worktreeLines = new Map<number, number>();
     if (working !== null) {
+      // oxlint-disable-next-line no-await-in-loop -- the worktree diff is derived from this file's selected text and working text, then stored for its line mapping
       const mapping = working === text ? [] : await commands.vcsDiffHunks(text, working).catch(() => null);
       if (mapping) {
         for (const { line } of items) {

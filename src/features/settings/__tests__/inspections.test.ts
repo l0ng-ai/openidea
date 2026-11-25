@@ -126,6 +126,7 @@ describe("inspections tree", () => {
       "builtin:python-override",
       "builtin:python-abstract-method",
       "builtin:python-redundant-override",
+      "builtin:python-method-may-be-static",
     ]);
     expect(python.children[1]!.children.map((n) => n.id)).toEqual(["lsp:ruff:E501", "lsp:ruff:F401"]);
     expect(find(tree, "Python/lsp:ruff:F401")!.description).toContain("imported but unused");

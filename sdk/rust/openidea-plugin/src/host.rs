@@ -232,6 +232,16 @@ mod imp {
         wit::ui::pick(title, &pick_items(items)).map_err(error)
     }
 
+    pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+        let filters = dialog
+            .filters
+            .iter()
+            .map(|f| wit::ui::FileFilter { name: f.name.clone(), extensions: f.extensions.clone() })
+            .collect();
+        wit::ui::pick_file(title, &wit::ui::FileDialog { save: dialog.save, name: dialog.name.clone(), filters })
+            .map_err(error)
+    }
+
     pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
         wit::ui::pick_directory(title, initial).map_err(error)
     }
@@ -443,6 +453,19 @@ mod imp {
             })
             .collect::<Vec<_>>();
         wit::decorations::set(path, set, &items).map_err(error)
+    }
+    pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::MarkdownDecoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+                markdown_hover: d.markdown_hover.clone(),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set_markdown(path, set, &items).map_err(error)
     }
     pub fn clear_decorations(set: &str) -> Result<(), Error> {
         wit::decorations::clear(set).map_err(error)
@@ -1908,6 +1931,12 @@ pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<Strin
     imp::pick_directory(title, initial)
 }
 
+/// Choose a file in the invoking window. Returns its absolute host path or `None` on cancellation.
+/// The choice grants no filesystem access and requires an interactive call.
+pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+    imp::pick_file(title, dialog)
+}
+
 /// Requests the normal File > Open flow, including project trust, in the
 /// invoking window (`false`) or a new window (`true`). No capability.
 /// Only commands/events of a window can request this; errors opening the
@@ -2045,6 +2074,11 @@ pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
 /// Replace a file's editor decorations. Requires project.read; 10,000 items/file, 50 sets.
 pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
     imp::set_decorations(path, set, items)
+}
+/// Replace a file's editor decorations with Markdown hover cards (API 1.16).
+/// Requires project.read; the same limits and set ids as [`set_decorations`].
+pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+    imp::set_markdown_decorations(path, set, items)
 }
 /// Clear this plugin's editor decoration set in all projects. Requires project.read.
 pub fn clear_decorations(set: &str) -> Result<(), Error> {

@@ -124,6 +124,7 @@
   min-width: 0;
 }
 .statusChip {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
@@ -154,6 +155,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The label's count alone, shown instead of it in a narrow session (the tooltip has the label). */
+.statusChipCount {
+  display: none;
 }
 .muted {
   color: var(--fg-subtle);
@@ -361,10 +366,31 @@
     --session-card-width: 96%;
   }
 }
-/* A narrow docked session: where it works gives way first, the changes and meters stay readable. */
+/* A narrower session: the provider shows its icon, the changes their count. */
+@container (max-width: 560px) {
+  .providerName {
+    display: none;
+  }
+  /* Out of sight, still the chip's accessible name. */
+  .statusChipLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .statusChipCount {
+    display: inline;
+  }
+}
+/* A narrow docked session: where it works gives way first, the changes and meters stay readable;
+   what the IDE shows elsewhere (the project's branch, a running task's state) is left out. */
 @container (max-width: 420px) {
   .where {
     flex-shrink: 2;
+  }
+  .shownElsewhere {
+    display: none;
   }
   .processBody,
   .turnBody {
@@ -931,8 +957,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-0-5);
-  max-height: calc(var(--h-row) * 16);
-  overflow-y: auto;
   margin: 2px 0 0 10px;
   padding-left: var(--space-3);
   border-left: 1px solid var(--border);

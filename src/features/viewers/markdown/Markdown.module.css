@@ -8,12 +8,6 @@
 .group {
   flex: 1;
 }
-.group:has(> :global([data-separator="active"][aria-orientation="vertical"])) * {
-  cursor: col-resize !important;
-}
-.group:has(> :global([data-separator="active"][aria-orientation="horizontal"])) * {
-  cursor: row-resize !important;
-}
 .editor {
   flex: 1;
   min-height: 0;
@@ -27,6 +21,10 @@
   .editor
   :global(.cm-openidea-overviewThumb) {
   right: 5px;
+}
+/* Only the scrollbar lane runs alongside every wrapped source line. */
+.mode-split .editor :global(.cm-lineWrapping .cm-line) {
+  padding-right: var(--cm-overview-width, 0px);
 }
 .mode-preview > :global([data-group]) > :global([data-panel]:first-child) {
   display: none !important;
@@ -44,7 +42,15 @@
   height: var(--h-floating-toolbar-button);
 }
 
+.previewPane {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
 .preview {
+  contain: strict;
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -64,6 +70,13 @@
   font-size: calc(var(--markdown-preview-font-size, 14px) + var(--markdown-font-zoom, 0px));
   line-height: 1.6;
   overflow-wrap: break-word;
+}
+/* Offscreen blocks keep their last settled width between resize events. Their SVGs stay painted. */
+.preview > :global([data-preview-blocks]) > :global([data-line]:not([data-in-viewport])) {
+  width: var(--markdown-block-width, auto);
+}
+.preview[data-constrain-blocks] > :global([data-preview-blocks]) {
+  overflow-x: clip;
 }
 .preview :global(h1),
 .preview :global(h2) {
@@ -99,7 +112,7 @@
 .preview :global(h3) {
   font-size: 1.25em;
 }
-.preview > :global(div:first-child) > :first-child {
+.preview > :global([data-preview-blocks]) > :global(div:first-child) > :first-child {
   margin-top: 0;
 }
 .preview :global(p),
