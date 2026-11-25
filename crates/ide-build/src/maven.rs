@@ -517,6 +517,59 @@ pub fn local_repository_of(settings: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(repo.replace("${user.home}", &home)))
 }
 
+/// The local repository a Maven run with these options resolves into: `-Dmaven.repo.local=`
+/// first, then `<localRepository>` of the `-s` settings, then the user's default.
+pub fn local_repository_for(options: &[String]) -> Option<PathBuf> {
+    if let Some(repo) = options.iter().find_map(|a| a.strip_prefix("-Dmaven.repo.local=")) {
+        return Some(PathBuf::from(repo));
+    }
+    let mut args = options.iter();
+    while let Some(arg) = args.next() {
+        let path = match arg.as_str() {
+            "-s" | "--settings" => args.next().map(String::as_str),
+            _ => arg.strip_prefix("-s=").or_else(|| arg.strip_prefix("--settings=")),
+        };
+        if let Some(path) = path {
+            return local_repository_of(Path::new(path)).or_else(default_local_repo);
+        }
+    }
+    default_local_repo()
+}
+
+/// A goal of the IDE's own (`help:evaluate`, `dependency:build-classpath`, …) by its plugin's
+/// coordinates rather than its prefix: offline, Maven resolves a prefix only from group metadata
+/// in the local repository, which a repository filled from a private mirror often lacks even when
+/// the plugin itself is there. Uses the newest 3.x version already in `repo`, so nothing is
+/// downloaded, else a pinned one.
+pub fn plugin_goal(goal: &str, repo: Option<&Path>) -> String {
+    let (prefix, goal) = goal.split_once(':').expect("prefix:goal");
+    let (artifact, pinned) = match prefix {
+        "help" => ("maven-help-plugin", "3.5.1"),
+        "dependency" => ("maven-dependency-plugin", "3.8.1"),
+        _ => unreachable!("not a goal of the IDE's own: {prefix}"),
+    };
+    let version = repo.and_then(|repo| newest_local_plugin(repo, artifact, 3)).unwrap_or_else(|| pinned.to_owned());
+    format!("org.apache.maven.plugins:{artifact}:{version}:{goal}")
+}
+
+/// The newest release of `org.apache.maven.plugins:<artifact>` whose jar is in `repo`,
+/// from major version `min_major` up.
+pub(crate) fn newest_local_plugin(repo: &Path, artifact: &str, min_major: u64) -> Option<String> {
+    let dir = repo.join("org/apache/maven/plugins").join(artifact);
+    let parse = |v: &str| v.split('.').map(|n| n.parse::<u64>().ok()).collect::<Option<Vec<u64>>>();
+    std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|v| parse(&v).map(|n| (n, v)))
+        .filter(|(n, v)| {
+            n.first().is_some_and(|&major| major >= min_major)
+                && dir.join(v).join(format!("{artifact}-{v}.jar")).is_file()
+        })
+        .max()
+        .map(|(_, v)| v)
+}
+
 impl Resolver {
     fn new(local_repo: Option<PathBuf>, profiles: &[String]) -> Self {
         Self::new_with_jdk(local_repo, profiles, None)
@@ -2555,6 +2608,24 @@ mod tests {
         std::fs::write(&plain, "<settings><offline>true</offline></settings>").unwrap();
         assert!(local_repository_of(&plain).is_none());
         assert!(local_repository_of(&tmp.path().join("missing.xml")).is_none());
+    }
+
+    #[test]
+    fn ide_goals_resolve_from_the_repository_the_run_uses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join("settings.xml");
+        std::fs::write(&settings, "<settings><localRepository>/srv/m2</localRepository></settings>").unwrap();
+        let s = settings.to_string_lossy().into_owned();
+        let opts = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(local_repository_for(&opts(&["-s", &s])), Some(PathBuf::from("/srv/m2")));
+        assert_eq!(local_repository_for(&opts(&[&format!("--settings={s}")])), Some(PathBuf::from("/srv/m2")));
+        let explicit = opts(&["-s", &s, "-Dmaven.repo.local=/tmp/r"]);
+        assert_eq!(local_repository_for(&explicit), Some(PathBuf::from("/tmp/r")));
+        // No repository known: a pinned version, still by coordinates.
+        assert_eq!(
+            plugin_goal("dependency:build-classpath", None),
+            "org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath"
+        );
     }
 
     #[test]
