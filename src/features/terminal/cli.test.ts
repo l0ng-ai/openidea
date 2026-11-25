@@ -11,6 +11,7 @@ import {
   cliInput,
   moveEditorToTerminal,
   moveTerminalToEditor,
+  openNewTerminalInEditor,
   splitCliTab,
   startTab,
 } from "./cli";
@@ -163,6 +164,44 @@ describe("Move to Editor", () => {
     });
     expect(fresh?.key).not.toBe(existing.key);
     expect(runtime.startCli).toHaveBeenCalledExactlyOnceWith(fresh!.key, "/repo/sub", "", "/repo");
+  });
+});
+
+describe("New Terminal Tab in Editor", () => {
+  it("starts a fresh shell session in the start directory and opens it focused in the editor", async () => {
+    tabs.state.tabs = [{ id: "t1", name: "Local", session: "s1" }];
+    const existing = cliInput("Local (2)", "", "/repo");
+    editor.openTabs.mockReturnValueOnce([{ input: existing, title: "Local (2)" }]);
+    runtime.startDirectory.mockReturnValueOnce("/repo/work");
+    runtime.nextTabName.mockReturnValueOnce("Local (3)");
+
+    await openNewTerminalInEditor();
+
+    expect(runtime.nextTabName).toHaveBeenCalledWith(["Local", "Local (2)"], "Local");
+    const input = editor.openInput.mock.calls[0]?.[0] as EditorInput;
+    expect(input).toMatchObject({
+      kind: CLI_KIND,
+      data: { name: "Local (3)", command: "", cwd: "/repo/work" },
+    });
+    expect(runtime.startCli).toHaveBeenCalledExactlyOnceWith(input.key, "/repo/work", "", "/repo");
+    expect(runtime.startCli.mock.invocationCallOrder[0]).toBeLessThan(editor.openInput.mock.invocationCallOrder[0]!);
+    expect(editor.openInput).toHaveBeenCalledExactlyOnceWith(input, { focus: true });
+    expect(toolWindows.show).not.toHaveBeenCalled();
+  });
+
+  it("uses an explicit directory when passed and does nothing without a project or directory", async () => {
+    await openNewTerminalInEditor("/repo/packages/api");
+    expect(runtime.nextTabName).toHaveBeenCalledWith([], "api");
+    expect(editor.openInput).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: CLI_KIND, data: { name: "api", command: "", cwd: "/repo/packages/api" } }),
+      { focus: true },
+    );
+
+    vi.clearAllMocks();
+    useProject.setState({ project: null });
+    await openNewTerminalInEditor();
+    expect(runtime.startCli).not.toHaveBeenCalled();
+    expect(editor.openInput).not.toHaveBeenCalled();
   });
 });
 

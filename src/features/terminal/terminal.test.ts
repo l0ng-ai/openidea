@@ -268,12 +268,19 @@ describe("terminal keys", () => {
       ["Ctrl+Shift+K", "vcs.push"],
       ["Shift+Escape", "toolwindow.hideActive"],
       ["Ctrl+W Ctrl+F", "terminal.find"],
+      ["Ctrl+T", "terminal.newInEditor"],
+      ["Ctrl+N", "terminal.new"],
     ];
     expect(isAllowedIdeShortcut("Ctrl+Shift+A", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+N", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+Shift+K", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Shift+Escape", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+W", bindings)).toBe(true);
+    // terminal.newInEditor only escapes in an editor terminal tab, and terminal.new only in the tool window.
+    expect(isAllowedIdeShortcut("Ctrl+T", bindings, false)).toBe(false);
+    expect(isAllowedIdeShortcut("Ctrl+T", bindings, true)).toBe(true);
+    expect(isAllowedIdeShortcut("Ctrl+N", [["Ctrl+N", "terminal.new"]], false)).toBe(true);
+    expect(isAllowedIdeShortcut("Ctrl+N", [["Ctrl+N", "terminal.new"]], true)).toBe(false);
     // Ctrl+E (end of line) and actions outside the list stay with the shell.
     expect(isAllowedIdeShortcut("Ctrl+E", bindings)).toBe(false);
     expect(isAllowedIdeShortcut("Ctrl+K", bindings)).toBe(false);

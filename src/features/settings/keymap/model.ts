@@ -153,21 +153,30 @@ export interface Conflict {
   kind: "same" | "prefix";
 }
 
-/** Other actions whose bindings clash with `binding` in an overlapping `when` context. */
+/** Combines an action's `when` and shortcut-only `keyWhen` into the context where its binding can fire. */
+function effectiveKeyWhen(action: Pick<Action, "when" | "keyWhen"> | undefined): string | undefined {
+  const when = action?.when?.trim();
+  const keyWhen = action?.keyWhen?.trim();
+  if (when && keyWhen) return `(${when}) && (${keyWhen})`;
+  return when || keyWhen || undefined;
+}
+
+/** Other actions whose bindings clash with `binding` in an overlapping `when` / `keyWhen` context. */
 export function findConflicts(
   draft: KeymapDraft,
   binding: string,
   actionId: string,
-  actions: readonly Pick<Action, "id" | "title" | "category" | "when">[],
+  actions: readonly Pick<Action, "id" | "title" | "category" | "when" | "keyWhen">[],
 ): Conflict[] {
   const b = normalizeBinding(binding);
   const self = actions.find((x) => x.id === actionId);
+  const selfWhen = effectiveKeyWhen(self);
   const out: Conflict[] = [];
   for (const other of actions) {
     if (other.id === actionId) continue;
     for (const ob of resolveBindings(draft, other.id)) {
       const kind = ob === b ? "same" : ob.startsWith(b + " ") || b.startsWith(ob + " ") ? "prefix" : null;
-      if (!kind || !whensOverlap(self?.when, other.when)) continue;
+      if (!kind || !whensOverlap(selfWhen, effectiveKeyWhen(other))) continue;
       out.push({ actionId: other.id, title: other.title, category: other.category, binding: ob, kind });
     }
   }
