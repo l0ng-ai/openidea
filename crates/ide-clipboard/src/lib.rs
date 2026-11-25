@@ -25,6 +25,29 @@
 
 use std::path::PathBuf;
 
+#[cfg(any(windows, test))]
+mod image;
+
+/// Writes a PNG as a native image, independently of WebView clipboard permissions.
+/// Call on the main thread on macOS and Linux; `owner` is a window handle on Windows.
+pub fn set_png(png: &[u8], owner: usize) -> std::io::Result<()> {
+    if png.get(..8) != Some(b"\x89PNG\r\n\x1a\n") || png.get(12..16) != Some(b"IHDR") || png.len() < 24 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid clipboard image"));
+    }
+    let width = u32::from_be_bytes(png[16..20].try_into().unwrap()) as usize;
+    let height = u32::from_be_bytes(png[20..24].try_into().unwrap()) as usize;
+    if width == 0
+        || height == 0
+        || !width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .is_some_and(|size| size <= 64 * 1024 * 1024)
+    {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Clipboard image is too large"));
+    }
+    imp::set_png(png, owner)
+}
+
 /// Replaces every clipboard flavor with plain text. `owner` is the calling window
 /// handle on Windows, ignored elsewhere. Call on the main thread on macOS and Linux.
 pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
@@ -240,6 +263,7 @@ mod imp {
     /// `CF_DIB`: Windows synthesizes it from `CF_BITMAP` and `CF_DIBV5`, so every
     /// bitmap on the clipboard reads as one.
     const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
 
     /// The `PNG` format browsers and the Snipping Tool add beside the bitmap; it
     /// keeps transparency, so it is read first.
@@ -422,6 +446,48 @@ mod imp {
         }
     }
 
+    pub fn set_png(png: &[u8], owner: usize) -> std::io::Result<()> {
+        let dib = super::image::png_to_dib(png)?;
+        let format = png_format();
+        if format == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let formats = [(format, png), (CF_DIBV5, dib.as_slice())];
+        // SAFETY: allocations remain ours until SetClipboardData accepts them. Prepare both
+        // before replacing the clipboard; free only allocations the OS did not take.
+        unsafe {
+            let mut blocks: Vec<_> = formats.iter().map(|(_, bytes)| global_bytes(bytes)).collect();
+            if blocks.iter().any(|memory| memory.is_null()) || !open_for(owner as Handle) {
+                let error = std::io::Error::last_os_error();
+                for memory in blocks {
+                    if !memory.is_null() {
+                        GlobalFree(memory);
+                    }
+                }
+                return Err(error);
+            }
+            let mut result = Ok(());
+            if EmptyClipboard() == 0 {
+                result = Err(std::io::Error::last_os_error());
+            } else {
+                for ((format, _), memory) in formats.iter().zip(&mut blocks) {
+                    if SetClipboardData(*format, *memory).is_null() {
+                        result = Err(std::io::Error::last_os_error());
+                        break;
+                    }
+                    *memory = ptr::null_mut();
+                }
+            }
+            CloseClipboard();
+            for memory in blocks {
+                if !memory.is_null() {
+                    GlobalFree(memory);
+                }
+            }
+            result
+        }
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         let bytes = encode(paths);
         if bytes.len() <= HEADER {
@@ -489,7 +555,7 @@ mod imp {
         NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypePNG,
         NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
     };
-    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
+    use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber, NSString, NSURL};
     use std::path::PathBuf;
 
     use super::names_text;
@@ -587,6 +653,23 @@ mod imp {
         })
     }
 
+    pub fn set_png(png: &[u8], _owner: usize) -> std::io::Result<()> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let data = NSData::with_bytes(png);
+            if NSBitmapImageRep::imageRepWithData(&data).is_none() {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid clipboard image"));
+            }
+            let board = NSPasteboard::generalPasteboard();
+            board.clearContents();
+            if board.setData_forType(Some(&data), unsafe { NSPasteboardTypePNG }) {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("Cannot write clipboard image"))
+            }
+        })
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
@@ -616,6 +699,21 @@ mod imp {
 #[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use std::path::PathBuf;
+
+    pub fn set_png(png: &[u8], _owner: usize) -> std::io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let image = gtk::gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(png.to_vec()))
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_image(&image);
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = png;
+            Err(std::io::Error::other("Clipboard images are unavailable on this platform"))
+        }
+    }
 
     pub fn set_text(text: &str, _owner: usize) -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
@@ -657,6 +755,15 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_or_oversized_images_are_rejected_before_accessing_the_clipboard() {
+        assert!(set_png(b"not a PNG", 0).is_err());
+        let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        header.extend_from_slice(&100_000u32.to_be_bytes());
+        header.extend_from_slice(&100_000u32.to_be_bytes());
+        assert!(set_png(&header, 0).is_err());
+    }
 
     fn paths(list: &[&str]) -> Vec<PathBuf> {
         list.iter().map(PathBuf::from).collect()
