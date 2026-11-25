@@ -510,13 +510,17 @@ impl TerminalManager {
         }
     }
 
+    /// Detaches every terminal opened by `key` so it can be terminated on a background thread
+    /// without blocking the caller or racing a new project opened in the same window.
+    pub fn detach_key(&self, key: &str) -> DetachedTerminals {
+        let mut sessions = self.sessions.lock();
+        let ids: Vec<TerminalId> = sessions.iter().filter(|(_, s)| s.key == key).map(|(id, _)| *id).collect();
+        DetachedTerminals(ids.into_iter().filter_map(|id| sessions.remove(&id)).collect())
+    }
+
     /// Closes the terminals `key` opened: the project of that window is closing.
     pub fn kill_key(&self, key: &str) {
-        let ids: Vec<TerminalId> =
-            self.sessions.lock().iter().filter(|(_, s)| s.key == key).map(|(id, _)| *id).collect();
-        for id in ids {
-            let _ = self.kill(id);
-        }
+        self.detach_key(key).terminate();
     }
 
     pub fn kill(&self, id: TerminalId) -> IdeResult<()> {
@@ -729,6 +733,17 @@ mod win {
             }
             CloseHandle(snapshot);
             found
+        }
+    }
+}
+
+/// Terminal sessions detached from [`TerminalManager`] to be terminated off the caller's thread.
+pub struct DetachedTerminals(Vec<Arc<Session>>);
+
+impl DetachedTerminals {
+    pub fn terminate(self) {
+        for session in self.0 {
+            terminate(&session);
         }
     }
 }

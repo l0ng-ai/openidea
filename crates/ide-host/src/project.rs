@@ -125,8 +125,8 @@ impl Host {
         // A window takes the root over from the MCP server's background project, whose
         // shutdown the wait below sits out; none opens until this open is over.
         let _claim = (!crate::mcp::BackgroundProjects::is_key(window)).then(|| self.mcp_background.claim(self, &root));
-        self.close_project(window);
-        self.wait_detached_closes();
+        self.close_project_detached(window);
+        self.wait_detached_closes_for(&root);
         let sink: SharedSink = (self.sink_for)(window);
         // Before anything the project starts: its children get the project's environment.
         let trusted = Arc::new(AtomicBool::new(self.trust.window_trusted(&root)?));
@@ -867,8 +867,10 @@ impl Host {
             }
             return Ok(current);
         }
-        self.close_project(window);
-        self.wait_detached_closes();
+        self.close_project_detached(window);
+        if let Some(dir) = watch_dir.as_deref() {
+            self.wait_detached_closes_for(dir);
+        }
         let sink: SharedSink = (self.sink_for)(window);
         let settings = Arc::new(SettingsStore::load(&self.config_dir, None));
         let effective = settings.effective();
