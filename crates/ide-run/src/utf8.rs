@@ -468,6 +468,20 @@ mod encoding_tests {
         assert!(out.ends_with("after-0: hello 正常输出\nafter-1: hello 正常输出\n"), "{out:?}");
     }
 
+    /// `水` is `34 6C` in UTF-16LE, which reads as `4l` in UTF-8: a read that short is not
+    /// taken for text again.
+    #[test]
+    fn a_short_read_that_is_a_utf16_character_stays_utf16() {
+        let mut d = mixed(936);
+        let mut out = String::new();
+        d.decode_into(&utf16("OK "), &mut out);
+        d.decode_into(&[0x34, 0x6C], &mut out);
+        d.decode_into(&utf16("\r\n"), &mut out);
+        d.decode_into("done ✓\n".as_bytes(), &mut out);
+        out.push_str(&d.finish());
+        assert_eq!(out, "OK 水\r\ndone ✓\n");
+    }
+
     #[test]
     fn without_a_code_page_other_lines_are_lossy_utf8_and_utf16_still_reads() {
         let mut d = MixedDecoder::new(None);
