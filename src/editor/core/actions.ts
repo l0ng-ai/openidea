@@ -37,6 +37,7 @@ import {
   type SimpleRange,
 } from "./model/selectionStack";
 import type { EditorSlot } from "./model/slot";
+import type { Tab } from "./model/tabs";
 import {
   findAgain,
   findPanelTarget,
@@ -791,6 +792,32 @@ export function registerEditorActions(): () => void {
     const pane = s.panes[s.activePane];
     return pane?.active ? { paneId: pane.id, tabId: pane.active } : null;
   };
+  /**
+   * A tab menu close item as a Window action on the active tab of the active group; `canClose`
+   * mirrors when the menu disables or hides the item.
+   */
+  const closeTabs = (
+    id: string,
+    title: string,
+    close: (paneId: string, tabId: string) => Promise<boolean>,
+    canClose: (tabs: Tab[], index: number) => boolean = () => true,
+  ): Action => ({
+    id,
+    title,
+    category: "Window",
+    when: TABS_WHEN,
+    enabled: () => {
+      const s = useTabs.getState();
+      const pane = s.panes[s.activePane];
+      const tabs = pane?.tabs ?? [];
+      const index = tabs.findIndex((t) => t.id === pane?.active);
+      return index >= 0 && canClose(tabs, index);
+    },
+    run: async () => {
+      const t = activePaneTab();
+      if (t) await close(t.paneId, t.tabId);
+    },
+  });
   const occurrence = (id: string, title: string, run: (view: EditorView) => unknown): Action => ({
     id,
     title,
@@ -1263,6 +1290,32 @@ export function registerEditorActions(): () => void {
         await ctrl.closeEverything();
       },
     },
+    closeTabs("editor.closeUnmodifiedTabs", "Close Unmodified Tabs", (pane) => ctrl.closeUnmodified(pane)),
+    // Without a pinned tab this would be Close All; IDEA disables it, the tab menu hides it.
+    closeTabs(
+      "editor.closeAllButPinned",
+      "Close All but Pinned",
+      (pane) => ctrl.closeAll(pane, true),
+      (tabs) => tabs.some((t) => t.pinned),
+    ),
+    closeTabs(
+      "editor.closeTabsToLeft",
+      "Close Tabs to the Left",
+      (pane, tab) => ctrl.closeToLeft(pane, tab),
+      (_tabs, index) => index > 0,
+    ),
+    closeTabs(
+      "editor.closeTabsToRight",
+      "Close Tabs to the Right",
+      (pane, tab) => ctrl.closeToRight(pane, tab),
+      (tabs, index) => index < tabs.length - 1,
+    ),
+    closeTabs(
+      "editor.closeReadOnlyTabs",
+      "Close All Read-Only Tabs",
+      (pane) => ctrl.closeReadOnly(pane),
+      (tabs) => tabs.some((t) => !t.pinned && !!t.input.path && useDocMeta.getState()[t.input.path]?.readOnly),
+    ),
     {
       id: "editor.pinTab",
       title: "Pin / Unpin Tab",
