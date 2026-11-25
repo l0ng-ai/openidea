@@ -3,11 +3,11 @@
  * Start flow of a restored tab through the terminal runtime.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cliData, cliInput, moveTerminalToEditor, startTab } from "./cli";
+import { CLI_KIND, cliData, cliInput, moveTerminalToEditor, splitCliTab, startTab } from "./cli";
 
 const tabs = vi.hoisted(() => ({
   state: {
-    tabs: [] as { id: string; session: string }[],
+    tabs: [] as { id: string; name?: string; session: string }[],
     activeTab: null as string | null,
     sessions: {} as Record<string, unknown>,
   },
@@ -16,12 +16,16 @@ const runtime = vi.hoisted(() => ({
   loaded: false,
   startCli: vi.fn(),
   adoptCli: vi.fn(),
+  cliSession: vi.fn(),
   detachTab: vi.fn(),
+  nextTabName: vi.fn((existing: readonly string[], base = "Local") => (existing.includes(base) ? `${base} (2)` : base)),
+  startDirectory: vi.fn((root: string) => root),
   tabTitle: vi.fn((_tab: unknown, _sessions: unknown) => "Local (2)"),
   useTerminals: { getState: () => tabs.state },
 }));
 const editor = vi.hoisted(() => ({
   openInput: vi.fn(async (_input?: unknown, _options?: unknown) => undefined),
+  openTabs: vi.fn(() => [] as { input: { kind: string; key: string; data?: unknown }; title: string }[]),
 }));
 const toolWindows = vi.hoisted(() => ({ hide: vi.fn() }));
 
@@ -105,6 +109,42 @@ describe("Move to Editor", () => {
     await moveTerminalToEditor("missing");
     expect(runtime.detachTab).not.toHaveBeenCalled();
     expect(editor.openInput).not.toHaveBeenCalled();
+  });
+
+  it("forwards pane, split edge, insertion index and pin state for editor drops", async () => {
+    tabs.state.tabs = [{ id: "t1", session: "s1" }];
+    runtime.detachTab.mockImplementationOnce(() => session);
+    await moveTerminalToEditor("t1", { paneId: "pane-2", zone: "bottom" });
+    expect(editor.openInput).toHaveBeenLastCalledWith(expect.objectContaining({ kind: CLI_KIND }), {
+      focus: true,
+      pane: "pane-2",
+      edge: "bottom",
+    });
+
+    runtime.detachTab.mockImplementationOnce(() => session);
+    await moveTerminalToEditor("t1", { paneId: "pane-1", zone: "center", index: 1, pinned: true });
+    expect(editor.openInput).toHaveBeenLastCalledWith(expect.objectContaining({ kind: CLI_KIND }), {
+      focus: true,
+      pane: "pane-1",
+      index: 1,
+      pinned: true,
+    });
+  });
+
+  it("splits an editor terminal tab into a fresh session in its working directory", async () => {
+    tabs.state.tabs = [{ id: "t1", name: "Local", session: "s1" }];
+    const existing = cliInput("Local (2)", "", "/repo");
+    editor.openTabs.mockReturnValueOnce([{ input: existing, title: "Local (2)" }]);
+    runtime.cliSession.mockReturnValueOnce({ state: { cwd: "/repo/sub" } });
+    runtime.nextTabName.mockReturnValueOnce("Local (3)");
+
+    const fresh = await splitCliTab(existing);
+    expect(fresh).toMatchObject({
+      kind: CLI_KIND,
+      data: { name: "Local (3)", command: "", cwd: "/repo/sub" },
+    });
+    expect(fresh?.key).not.toBe(existing.key);
+    expect(runtime.startCli).toHaveBeenCalledExactlyOnceWith(fresh!.key, "/repo/sub", "", "/repo");
   });
 });
 

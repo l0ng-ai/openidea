@@ -233,6 +233,22 @@ describe("log controls", () => {
     expect(useLogOptions.getState().columnWidths.hash).toBe(42); // 72 - 30
   });
 
+  it("dragging the first column's divider resizes the Repository column", async () => {
+    useVcs.setState({ roots: ["/repo", "/other"] });
+    useLogOptions.setState({ showColumnHeaders: true, showRepository: true });
+    render(<LogView />);
+    // Commit is first by default; with Repository on its left its divider is live.
+    const handle = await screen.findByRole("separator", { name: "Resize Commit column" });
+    handle.setPointerCapture = vi.fn();
+    handle.hasPointerCapture = () => true;
+    handle.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100 });
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 140 });
+    fireEvent.pointerUp(handle, { pointerId: 7, clientX: 140 });
+    expect(useLogOptions.getState().columnWidths.repository).toBe(140); // 100 + 40
+    expect(screen.getByText("Repository").style.width).toBe("140px");
+  });
+
   it("hides column dividers by default and shows them via the option", async () => {
     useLogOptions.setState({ showColumnHeaders: true, showColumnDividers: false });
     const { rerender } = render(<LogView />);
@@ -260,6 +276,28 @@ describe("log controls", () => {
     fireEvent.contextMenu(author, { bubbles: true, clientX: 10, clientY: 10 });
     fireEvent.click(await screen.findByRole("menuitem", { name: "Hide Column" }));
     expect(useLogOptions.getState().showAuthor).toBe(false);
+  });
+
+  it.each([
+    ["first column", ["author", "subject", "date"]],
+    ["first shown column, after a hidden one", ["hash", "author", "subject", "date"]],
+  ])("without headers, a row strip of the %s resizes the Repository column", async (_, columnOrder) => {
+    useVcs.setState({ roots: ["/repo", "/other"] });
+    const tip = { ...c("tip"), repo: "/repo" };
+    api.commits = [tip];
+    useLogOptions.setState({ showRepository: true, showHash: false, columnOrder });
+    render(<LogView />);
+    const rows = await within(screen.getByRole("listbox", { name: "Commits" })).findAllByRole("option");
+    const strip = rows[0]!.querySelector<HTMLElement>('[class*="columnResize"]')!;
+    strip.setPointerCapture = vi.fn();
+    strip.hasPointerCapture = () => true;
+    strip.releasePointerCapture = vi.fn();
+    // Author is first and Repository is on its left: the pair trades width.
+    fireEvent.pointerDown(strip, { button: 0, pointerId: 9, clientX: 100 });
+    fireEvent.pointerMove(strip, { pointerId: 9, clientX: 130 });
+    fireEvent.pointerUp(strip, { pointerId: 9, clientX: 130 });
+    expect(useLogOptions.getState().columnWidths.repository).toBe(130);
+    expect(rows[0]!.querySelector<HTMLElement>('[class*="colRepository"]')!.style.width).toBe("130px");
   });
 
   it("exposes a full-height column divider on data rows", async () => {

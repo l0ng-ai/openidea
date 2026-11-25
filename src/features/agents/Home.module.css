@@ -8,13 +8,13 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 24px 24px 12vh;
+  justify-content: flex-start;
+  padding: var(--space-4);
   background: var(--bg-editor);
   color: var(--fg);
 }
 .inner {
-  /* A compact block in the middle of the page: narrower than a session's conversation. */
+  /* A compact block at the top of the editor: narrower than a session's conversation. */
   width: min(680px, 100%);
   display: flex;
   flex-direction: column;
@@ -24,13 +24,12 @@
   width: 100%;
 }
 .heading {
-  margin: 0 0 14px;
-  font-size: calc(22px + var(--agent-font-zoom, 0px));
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  text-align: center;
+  margin: 0;
+  padding: 0 4px;
+  font-size: var(--agent-fs-ui);
+  font-weight: 600;
+  line-height: 1.4;
   color: var(--fg-strong);
-  text-wrap: balance;
 }
 
 /* A box to write in, not a search bar: room for a few lines before it grows. */
@@ -93,21 +92,19 @@
 
 .docked {
   justify-content: flex-end;
-  padding: 16px 12px 12px;
+  padding: var(--space-3);
 }
+/* The tool window keeps its box at the bottom, as a session does; the question is a hint line above it. */
 .dockedIntro {
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-end;
   width: 100%;
   min-height: 0;
-  padding-bottom: 8vh;
+  padding-bottom: var(--space-2);
 }
 .docked .heading {
-  margin: 0;
-  font-size: calc(15px + var(--agent-font-zoom, 0px));
-  font-weight: 500;
+  font-weight: 400;
   color: var(--fg-muted);
 }
 

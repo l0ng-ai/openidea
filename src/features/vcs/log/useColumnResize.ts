@@ -24,14 +24,23 @@ export type ResizeTarget = {
   leftOnly?: boolean;
 };
 
-/** Resolve the column immediately left of `id` in the visible order. */
+/** Default width of the Repository column, which stays left of the reorderable columns. */
+export const REPOSITORY_WIDTH = 100;
+
+/**
+ * Resolve the column immediately left of `id` in the visible order. With `repository`, the
+ * Repository column is shown before `ids`, so the first column's left divider resizes it.
+ */
 export function columnPrev(
   ids: string[],
   id: string,
   options: LogOptions,
   columns: LogColumn[],
+  repository = false,
 ): { prevId: string | null; prevWidth: number } {
   const index = ids.indexOf(id);
+  if (index === 0 && repository)
+    return { prevId: "repository", prevWidth: options.columnWidths.repository ?? REPOSITORY_WIDTH };
   const prevId = index > 0 ? ids[index - 1] : null;
   // The Commit column is flex:1 and absorbs space on its own — never store a width for it.
   // (When *we are* the Commit column the caller handles the left neighbour via leftOnly,

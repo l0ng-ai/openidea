@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getContext } from "@/platform/context";
+import { getContext, setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { actionToggled, executeAction, getAction } from "@/platform/actions";
 import { registerToolWindow } from "../contributions";
@@ -14,6 +14,7 @@ import {
   restoreSidesAfterNarrowWindow,
   hideActiveToolWindow,
   hideAllToolWindows,
+  hideSideToolWindows,
   hideToolWindow,
   hasStripeButton,
   removeFromStripe,
@@ -106,6 +107,58 @@ describe("tool window semantics", () => {
     hideActiveToolWindow();
     expect(isToolWindowVisible("terminal")).toBe(false);
     expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("hide side hides every window docked on the active window's side", () => {
+    moveToolWindow("structure", "left-split");
+    showToolWindow("structure");
+    showToolWindow("terminal");
+    setFocusedToolWindow("structure");
+    hideSideToolWindows();
+    expect(useToolWindowLayout.getState().visible).toMatchObject({
+      left: null,
+      "left-split": null,
+      bottom: "terminal",
+    });
+    expect(useToolWindowLayout.getState().lastActive).toBeNull();
+    // Again with the side empty and nothing active: nothing else is hidden.
+    hideSideToolWindows();
+    expect(isToolWindowVisible("terminal")).toBe(true);
+  });
+
+  it("hide side falls back to the last active window, and does nothing when it is hidden", () => {
+    showToolWindow("terminal");
+    showToolWindow("project");
+    setFocusedToolWindow(null);
+    expect(useToolWindowLayout.getState().lastActive).toBe("project");
+    hideSideToolWindows();
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+    showToolWindow("structure");
+    hideToolWindow("structure");
+    useToolWindowLayout.setState({ lastActive: "structure" });
+    hideSideToolWindows();
+    expect(isToolWindowVisible("terminal")).toBe(true);
+  });
+
+  it("hide side restores a maximized side and leaves another maximized side alone", () => {
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    setFocusedToolWindow("terminal");
+    hideSideToolWindows();
+    expect(useToolWindowLayout.getState()).toMatchObject({
+      maximized: null,
+      visible: { bottom: null, left: "project" },
+    });
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    // The left side is covered by the maximized bottom: its window is not the one shown.
+    useToolWindowLayout.setState({ focused: null, lastActive: "project" });
+    hideSideToolWindows();
+    expect(useToolWindowLayout.getState()).toMatchObject({
+      maximized: "bottom",
+      visible: { bottom: "terminal", left: "project" },
+    });
   });
 
   it("restores the maximized side through the shared Hide All toggle", () => {
@@ -244,6 +297,22 @@ describe("tool window persistence", () => {
 });
 
 describe("tool window actions", () => {
+  it("runs Hide Side Tool Windows on the active window", async () => {
+    const dispose = installToolWindowActions();
+    try {
+      setContext("projectOpen", true);
+      showToolWindow("terminal");
+      setFocusedToolWindow("project");
+      expect(getAction("toolwindow.hideSide")?.title).toBe("Hide Side Tool Windows");
+      await executeAction("toolwindow.hideSide");
+      expect(isToolWindowVisible("project")).toBe(false);
+      expect(isToolWindowVisible("terminal")).toBe(true);
+    } finally {
+      setContext("projectOpen", false);
+      dispose();
+    }
+  });
+
   it("titles Hide All Tool Windows 'Restore Tool Windows' while it would restore them", async () => {
     const dispose = installToolWindowActions();
     try {

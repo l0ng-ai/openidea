@@ -8,10 +8,10 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
-import { useContributions, type EditorInput } from "@/workbench/contributions";
+import { dropOnEditor, editorDropAllowsSplit, useContributions, type EditorInput } from "@/workbench/contributions";
 import { initialTabsState, openTab, paneIds, type TabsState } from "@/editor/core/model/tabs";
 import { parseSession, restoreTabsState, serializeSession } from "@/editor/core/model/session";
-import { CLI_KIND, cliInput, useClis } from "./cli";
+import { CLI_KIND, TERMINAL_TAB_MIME, cliInput, useClis } from "./cli";
 import { CliEditor } from "./CliEditor";
 import { activate } from "./index";
 
@@ -71,7 +71,9 @@ describe("terminal editor kind", () => {
     const deactivate = activate();
     try {
       const kind = useContributions.getState().editorKinds.get("cli");
-      expect(kind).toMatchObject({ restorable: true, keepAlive: true });
+      expect(kind).toMatchObject({ restorable: true, keepAlive: true, singleton: true });
+      expect(editorDropAllowsSplit(TERMINAL_TAB_MIME)).toBe(true);
+      expect(dropOnEditor({ type: TERMINAL_TAB_MIME, payload: "t9" }, { paneId: "p1", zone: "right" })).toBe(true);
       expect(kind?.isBusy?.(cliInputOf())).toBe(false);
       expect(kind?.title?.(cliInputOf())).toBe("Claude Code");
       expect(kind?.title?.({ kind: "cli", key: "cli:r9", data: {} })).toBe("Terminal");
@@ -79,6 +81,7 @@ describe("terminal editor kind", () => {
       deactivate();
     }
     expect(useContributions.getState().editorKinds.has("cli")).toBe(false);
+    expect(editorDropAllowsSplit(TERMINAL_TAB_MIME)).toBe(false);
   });
 
   it("asks the runtime about busy tabs and ends their sessions on close", () => {

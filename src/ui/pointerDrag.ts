@@ -19,7 +19,7 @@ export const FILES_DRAG = "application/x-openidea-files";
 export const REMOTE_FILES_DRAG = "application/x-openidea-remote-files";
 
 export interface DropTarget {
-  accepts(type: string): boolean;
+  accepts(type: string, data: DragData): boolean;
   /** The pointer moved over the target. */
   over(data: DragData, x: number, y: number): void;
   /** The pointer left the target, or the drag ended elsewhere / was cancelled. */
@@ -36,11 +36,11 @@ export function registerDropTarget(el: Element, target: DropTarget): () => void 
   };
 }
 
-/** The innermost registered target under (x, y) accepting `type`. */
-function targetAt(type: string, x: number, y: number): DropTarget | null {
+/** The innermost registered target under (x, y) accepting `data`. */
+function targetAt(data: DragData, x: number, y: number): DropTarget | null {
   for (let el = document.elementFromPoint(x, y); el; el = el.parentElement) {
     const t = targets.get(el);
-    if (t?.accepts(type)) return t;
+    if (t?.accepts(data.type, data)) return t;
   }
   return null;
 }
@@ -98,12 +98,12 @@ export function dragSession(data: DragData): DragSession {
   };
   return {
     move(x, y) {
-      enter(targetAt(data.type, x, y));
+      enter(targetAt(data, x, y));
       current?.over(data, x, y);
       return !!current;
     },
     drop(x, y) {
-      const t = targetAt(data.type, x, y);
+      const t = targetAt(data, x, y);
       enter(null);
       t?.drop(data, x, y);
       return !!t;

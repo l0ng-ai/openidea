@@ -507,13 +507,7 @@ function CostBadge({ category }: { category: string | null | undefined }) {
     ) : null;
   if (!label) return null;
   return (
-    <span
-      className={clsx(
-        styles.costBadge,
-        (category === "free" || category === "low") && styles.costBadgeLow,
-        (category === "high" || category === "very_high") && styles.costBadgeHigh,
-      )}
-    >
+    <span className={clsx(styles.costBadge, (category === "high" || category === "very_high") && styles.costBadgeHigh)}>
       {label}
     </span>
   );

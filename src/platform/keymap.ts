@@ -666,6 +666,7 @@ export const FORWARDABLE_ACTIONS: ReadonlySet<string> = new Set([
   "toolwindow.debug",
   "toolwindow.hideActive",
   "toolwindow.hideAll",
+  "toolwindow.hideSide",
   "toolwindow.jumpToLast",
   "toolwindow.focusEditor",
   "toolwindow.maximize",
