@@ -594,6 +594,7 @@ export async function connect(): Promise<void> {
       task &&
       !useAgents.getState().tasks.has(task)
     )
+      // oxlint-disable-next-line no-await-in-loop -- closeInput takes a tabs-state snapshot and may await guarded/busy closes; parallel closes could stack prompts/evictions
       await editors.closeInput?.(t.input.key);
   }
 }
@@ -1408,6 +1409,7 @@ export async function importExternalSessions(
       break;
     }
     try {
+      // oxlint-disable-next-line no-await-in-loop -- imports are documented sequential: abort, generation and progress are checked between sessions
       await importOne(s.provider, s.sessionId, batch.length === 1);
     } catch (e) {
       failures.push(`${s.title}: ${e instanceof Error ? e.message : String(e)}`);
