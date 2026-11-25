@@ -178,3 +178,10 @@ jobs:
     uses: ./.github/workflows/cnb-mirror.yml
     with: { tag: "${{ github.event.inputs.tag || github.ref_name }}" }
     secrets: inherit
+
+  # The cask in l0ng-ai/homebrew-tap; skipped for prereleases and without HOMEBREW_TAP_TOKEN.
+  homebrew:
+    needs: publish
+    uses: ./.github/workflows/homebrew.yml
+    with: { tag: "${{ github.event.inputs.tag || github.ref_name }}" }
+    secrets: inherit
