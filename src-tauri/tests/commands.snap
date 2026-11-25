@@ -144,6 +144,7 @@ db_set_ssh_secret                            trusted            project_host bin
 db_sources                                   trusted            project_host bindings sync
 db_statements                                trusted            project_host bindings sync
 db_table_details                             trusted            project_host bindings async
+db_table_grants                              trusted            project_host bindings async
 db_table_page                                trusted            project_host bindings async
 db_tables                                    trusted            project_host bindings async
 db_test                                      trusted            project_host bindings async

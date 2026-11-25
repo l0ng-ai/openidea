@@ -391,6 +391,7 @@ export const commands = {
 	dbSources: () => typedError<DataSource_Serialize[], IdeError>(__TAURI_INVOKE("db_sources")),
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
+	dbTableGrants: (id: string, schema: string, table: string) => typedError<DbTableGrant[], IdeError>(__TAURI_INVOKE("db_table_grants", { id, schema, table })),
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
@@ -5611,6 +5612,17 @@ export type DbTableDetails = {
 	indexes: DbIndexInfo[],
 	foreignKeys: DbForeignKey[],
 	triggers: DbTriggerInfo[],
+};
+
+/**
+ *  One object privilege on a table: `grantee` may run `privilege` (`SELECT`, …), granted
+ *  by `grantor` (unknown on MySQL), and may grant it on when `grantable`.
+ */
+export type DbTableGrant = {
+	grantee: string,
+	grantor: string | null,
+	privilege: string,
+	grantable: boolean,
 };
 
 export type DbTableInfo = {

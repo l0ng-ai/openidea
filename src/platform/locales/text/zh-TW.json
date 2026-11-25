@@ -9314,5 +9314,13 @@
   "Search NuGet packages": "搜尋 NuGet 包",
   "Install / Update": "安裝 / 更新",
   "Versions": "版本",
-  "Transitive": "間接依賴"
+  "Transitive": "間接依賴",
+  "Table properties": "資料表屬性",
+  "Grants": "授權",
+  "Grantee": "被授權者",
+  "Grantor": "授權者",
+  "Granted": "已授予",
+  "Granted with grant option": "已授予（可轉授）",
+  "No privileges are granted on this table.": "此資料表未授予任何權限。",
+  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授權者可以將該權限再授予他人。"
 }

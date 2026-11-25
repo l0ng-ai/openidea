@@ -10124,5 +10124,13 @@
   "Search NuGet packages": "Поиск пакетов NuGet",
   "Install / Update": "Установить / Обновить",
   "Versions": "Версии",
-  "Transitive": "Транзитивные"
+  "Transitive": "Транзитивные",
+  "Table properties": "Свойства таблицы",
+  "Grants": "Привилегии",
+  "Grantee": "Получатель",
+  "Grantor": "Кем выдано",
+  "Granted": "Выдано",
+  "Granted with grant option": "Выдано с правом передачи",
+  "No privileges are granted on this table.": "На эту таблицу не выдано привилегий.",
+  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION: получатель может передавать привилегию другим."
 }
