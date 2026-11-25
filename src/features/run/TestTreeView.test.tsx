@@ -507,3 +507,137 @@ describe("Sorting Options", () => {
     expect(screen.getByRole("treeitem", { selected: true }).textContent).toBe("a()");
   });
 });
+
+describe("Select First Failed Test When Finished", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    onSelect.mockClear();
+  });
+  afterEach(() => localStorage.clear());
+
+  /** Run order: a passing suite, then a failure nested two suites deep, then a later one. */
+  function run() {
+    const r = new TestResults();
+    r.apply([
+      { type: "result", path: ["ApiTest", "lists()"], status: "passed" },
+      { type: "result", path: ["ApiTest", "Auth", "Tokens", "refreshes()"], status: "failed" },
+      { type: "result", path: ["DbTest", "reads()"], status: "failed" },
+    ]);
+    return r;
+  }
+  const onSelect = vi.fn();
+  function Host({ results, running }: { results: TestResults; running: boolean }) {
+    const [selected, setSelected] = useState<string | null>(null);
+    return (
+      <TestTreeView
+        results={results}
+        version={1}
+        cwd="/p"
+        selected={selected}
+        onSelect={(id) => {
+          onSelect(id);
+          setSelected(id);
+        }}
+        running={running}
+      />
+    );
+  }
+  const selectedRows = () =>
+    screen.queryAllByRole("treeitem", { selected: true }).map((r) => r.textContent!.replace(/[\d.]+ m?s$/, ""));
+  const enable = (on = true) =>
+    localStorage.setItem("openidea.run.testFilters", JSON.stringify({ showPassed: true, selectFirstFailed: on }));
+
+  it("selects the first failure in tree order when the run finishes, opening its collapsed suites", () => {
+    enable();
+    const results = run();
+    const { rerender } = render(<Host results={results} running />);
+    act(() => testTree.collapseAll!());
+    expect(screen.queryByText("refreshes()")).toBeNull();
+    expect(selectedRows()).toEqual([]);
+    results.finish(1);
+    rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual(["refreshes()"]);
+    expect(results.get(onSelect.mock.lastCall![0])!.name).toBe("refreshes()");
+  });
+
+  it("follows the sort order", () => {
+    localStorage.setItem(
+      "openidea.run.testFilters",
+      JSON.stringify({ showPassed: true, selectFirstFailed: true, sortAlphabetically: true }),
+    );
+    const results = new TestResults();
+    results.apply([
+      { type: "result", path: ["beta", "zeta()"], status: "failed" },
+      { type: "result", path: ["Alpha", "omega()"], status: "failed" },
+    ]);
+    const { rerender } = render(<Host results={results} running />);
+    results.finish(1);
+    rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual(["omega()"]);
+  });
+
+  it("follows Sort by Duration, which applies in the render where the run finishes", () => {
+    localStorage.setItem(
+      "openidea.run.testFilters",
+      JSON.stringify({ showPassed: true, selectFirstFailed: true, sortByDuration: true }),
+    );
+    const results = new TestResults();
+    results.apply([
+      { type: "result", path: ["fast()"], status: "failed", durationMs: 5 },
+      { type: "result", path: ["slow()"], status: "failed", durationMs: 50 },
+    ]);
+    const { rerender } = render(<Host results={results} running />);
+    results.finish(1);
+    rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual(["slow()"]);
+  });
+
+  it("keeps opening failed suites by default on the next run when the failure was already in view", () => {
+    enable();
+    const first = run();
+    const { rerender } = render(<Host results={first} running />);
+    first.finish(1);
+    rerender(<Host results={first} running={false} />);
+    expect(selectedRows()).toEqual(["refreshes()"]);
+    const second = new TestResults();
+    second.apply([{ type: "result", path: ["DbTest", "Pool", "reuses()"], status: "failed" }]);
+    rerender(<Host results={second} running />);
+    expect(screen.getByText("reuses()")).toBeVisible();
+  });
+
+  it("is off by default, and selects nothing for a passing run or results that were already finished", () => {
+    let results = run();
+    const { rerender, unmount } = render(<Host results={results} running />);
+    results.finish(1);
+    rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual([]);
+    unmount();
+
+    enable();
+    results = new TestResults();
+    results.apply([{ type: "result", path: ["ApiTest", "lists()"], status: "passed" }]);
+    const passing = render(<Host results={results} running />);
+    results.finish(0);
+    passing.rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual([]);
+    passing.unmount();
+
+    results = run();
+    results.finish(1);
+    render(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual([]);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("the Test Runner Options toggle is remembered across sessions", () => {
+    const view = <Host results={run()} running={false} />;
+    const { unmount } = render(view);
+    expect(testTree.selectFirstFailed).toBe(false);
+    act(() => testTree.toggleSelectFirstFailed!());
+    expect(testTree.selectFirstFailed).toBe(true);
+    unmount();
+    expect(testTree.toggleSelectFirstFailed).toBeNull();
+    render(view);
+    expect(testTree.selectFirstFailed).toBe(true);
+  });
+});

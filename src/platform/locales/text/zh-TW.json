@@ -8322,6 +8322,8 @@
   "No matching tasks": "沒有符合的任務",
   "Move to Editor": "移至編輯器",
   "Moves a terminal tab, with its running session, into the editor area (arg: tab id).": "把終端機標籤連同正在執行的工作階段移到編輯器區域（引數：標籤 id）。",
+  "New Terminal Tab in Editor": "在編輯器中新增終端機分頁",
+  "Opens a new terminal session as a tab in the editor area.": "在編輯器區域中開啟一個新的終端機工作階段分頁。",
   "Starts a login shell where the session was.": "在工作階段原來的目錄啟動登入 shell。",
   "Also used for {others}; settings apply to all of them.": "也用於 {others}；這裡的設定對它們全部生效。",
   "{name} tools": "{name} 工具",
@@ -8511,6 +8513,7 @@
   "Show Changes": "顯示更改",
   "Previous Failed Test": "上一個失敗的測試",
   "Next Failed Test": "下一個失敗的測試",
+  "Select First Failed Test When Finished": "完成後選取第一個失敗的測試",
   "Run '{name}' with Fuzzing": "使用模糊測試執行 '{name}'",
   "Reading…": "正在讀取…",
   "Editing…": "正在編輯…",
@@ -9322,5 +9325,6 @@
   "Granted": "已授予",
   "Granted with grant option": "已授予（可轉授）",
   "No privileges are granted on this table.": "此資料表未授予任何權限。",
-  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授權者可以將該權限再授予他人。"
+  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授權者可以將該權限再授予他人。",
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "多個前綴以逗號分隔：依序嘗試，最後回退到官方來源。"
 }

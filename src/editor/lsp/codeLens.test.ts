@@ -33,6 +33,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 }));
 
 const { lensTargets, usagesLensExtension } = await import("./codeLens");
+const { navigationStarted } = await import("./foreground");
 const { lspDoc } = await import("./lsp");
 const { useProject } = await import("@/platform/project");
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
@@ -406,6 +407,33 @@ describe("background usage counts", () => {
     pending.resolve(refs(1));
     await settle();
     expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
+  });
+
+  it("gives way to Go to Declaration: cancels in-flight counts and asks again once it is done", async () => {
+    const pending = deferred<ReturnType<typeof refs>>();
+    ipc.lspReferences.mockReturnValueOnce(pending.promise);
+    const view = editor();
+    await settle();
+    const request = ipc.lspReferences.mock.calls[0]![0];
+    const done = navigationStarted();
+    expect(ipc.cancelRequest).toHaveBeenCalledWith(request);
+    pending.resolve(refs(99));
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(1);
+    done();
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("starts no counts while a navigation runs", async () => {
+    const done = navigationStarted();
+    const view = editor();
+    await settle();
+    expect(ipc.lspReferences).not.toHaveBeenCalled();
+    done();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
   });
 
   it("cancels pending counts when the feature is disabled", async () => {

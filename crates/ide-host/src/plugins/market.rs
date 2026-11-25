@@ -385,6 +385,9 @@ impl PluginHost {
                 }
             );
             let fetched = self.fetch_market_package(&candidate.url, &entry, &archive);
+            if let Some(mirror) = &candidate.mirror {
+                mirror::report(mirror, fetched.is_ok());
+            }
             if let Err(e) = &fetched {
                 tracing::warn!("plugins: {} from {} failed: {}", entry.id, candidate.url, e.message);
             }

@@ -9052,6 +9052,7 @@
   "Previous Failed Test": "Предыдущий непройденный тест",
   "Next Failed Test": "Следующий непройденный тест",
   "Show Test Durations": "Показать длительность тестов",
+  "Select First Failed Test When Finished": "Выбирать первый непройденный тест по завершении",
   "Test Runner Options": "Параметры запуска тестов",
   "Run '{name}' with Fuzzing": "Запустить '{name}' с фаззингом",
   "Reading…": "Чтение…",
@@ -10132,5 +10133,6 @@
   "Granted": "Выдано",
   "Granted with grant option": "Выдано с правом передачи",
   "No privileges are granted on this table.": "На эту таблицу не выдано привилегий.",
-  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION: получатель может передавать привилегию другим."
+  "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION: получатель может передавать привилегию другим.",
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "Несколько префиксов разделяйте запятыми: они пробуются по порядку, затем официальный источник."
 }

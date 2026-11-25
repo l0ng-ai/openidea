@@ -202,7 +202,7 @@ export function diffTitle(data: DiffData): string {
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
   const combined = auxiliaryWindow()?.kind === "diff" ? null : combinedOf(data);
-  const input = combined ? combinedDiffInput(combined) : diffInput(data);
+  const input = combined ? combinedDiffInput({ ...combined, revealKey: diffKey(data) }) : diffInput(data);
   await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
 }
 

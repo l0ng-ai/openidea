@@ -80,3 +80,34 @@ test("Git Branch status bar widget is off by default and opens Git Branches abov
   await expect(page.locator('[data-branches-widget="toolbar"]')).toHaveAttribute("aria-expanded", "false");
   await page.screenshot({ path: "test-results/status-bar-git-branch.png", animations: "disabled" });
 });
+
+test("Git Branch status bar widget shows a long branch name whole", async ({ workbench: page }) => {
+  const long = "feature/JIRA-12345-show-the-whole-branch-name-in-the-status-bar";
+  await page.evaluate(
+    async ({ root, long }) => {
+      const h = window.__ipc.handlers;
+      h.vcs_roots = () => [{ root, operation: null, head: long, headCommit: "1111111" }];
+      h.vcs_branch_info = () => ({
+        head: long,
+        headCommit: "1111111",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        operation: null,
+      });
+      const vcsModule = "/src/features/vcs/store.ts";
+      const { refreshNow } = await import(/* @vite-ignore */ vcsModule);
+      await refreshNow();
+    },
+    { root: ROOT, long },
+  );
+  const bar = page.getByRole("contentinfo", { name: "Status bar" });
+  const barBox = (await bar.boundingBox())!;
+  await page.mouse.click(barBox.x + barBox.width / 2, barBox.y + barBox.height / 2, { button: "right" });
+  await page.getByRole("menu").getByRole("menuitemcheckbox", { name: "Git Branch", checked: false }).click();
+  const widget = page.locator('[data-status-item="vcs.statusBranch"]').getByRole("button");
+  await expect(widget).toContainText(long);
+  const name = widget.locator("span", { hasText: long });
+  // The whole name fits: the widget is no longer capped at a few characters past "feature/".
+  await expect.poll(() => name.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+});

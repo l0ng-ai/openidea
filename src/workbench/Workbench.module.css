@@ -104,11 +104,12 @@
     animation: none;
   }
 }
-/* Islands frame; the project colour washes in from the top-left corner (IDEA project gradient). */
+/* Islands frame; the project colour washes in from the Project widget's icon (IDEA project gradient),
+   or from the top-left corner while the toolbar has no Project widget (`projectGradient.ts`). */
 .framed {
   background:
     radial-gradient(
-      600px 300px at 0 0,
+      600px 300px at var(--project-gradient-x, 0) 0,
       color-mix(in srgb, var(--project-color) var(--project-gradient-strength, 22%), transparent),
       transparent
     ),
