@@ -376,7 +376,6 @@ export function SessionComposer({
       />
       <SessionStatus
         task={task}
-        entries={entries}
         head={head}
         changes={changes}
         commits={commits}

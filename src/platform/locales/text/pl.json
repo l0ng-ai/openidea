@@ -4384,7 +4384,6 @@
   "Find in Conversation": "Znajdź w rozmowie",
   "Find in conversation": "Znajdź w rozmowie",
   "0 results": "0 wyników",
-  "Time the agent spent on this task": "Czas spędzony przez agenta nad tym zadaniem",
   "Send Again": "Wyślij ponownie",
   "Customize IDE appearance and behavior: change themes and font size, configure system settings and notifications.": "Dostosuj wygląd i zachowanie IDE: zmieniaj motywy i rozmiary czcionek, konfiguruj ustawienia systemowe i powiadomienia.",
   "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.": "Konfiguruj edycję kodu: automatyczne uzupełnianie, zwijanie kodu, karty, czcionki, kolory, styl kodu oraz inspekcje.",
@@ -5606,7 +5605,6 @@
   "Chat": "Czat",
   "Shown in the Task Header": "Pokazywane w nagłówku zadania",
   "Context window usage": "Wykorzystanie okna kontekstu",
-  "Time spent on the task": "Czas poświęcony na zadanie",
   "Usage limits": "Limity użycia",
   "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)": "Limity 5-godzinne oraz tygodniowe konta zgłaszane przez agenta (Claude Code)",
   "Session cost": "Koszt sesji",
@@ -5918,5 +5916,6 @@
   "Roll Back to Here": "Wycofaj do tego miejsca",
   "Couldn't roll back": "Nie udało się wycofać",
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Ta wiadomość i kolejne zostaną usunięte, a pliki zmienione od tego czasu przez agenta wrócą do stanu sprzed jej wysłania. Wiadomość wróci do pola tekstowego.",
-  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "To wyczyści całą rozmowę, przywróci pliki zmienione przez agenta do stanu z początku zadania i rozpocznie nową sesję agenta z tą wiadomością."
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "To wyczyści całą rozmowę, przywróci pliki zmienione przez agenta do stanu z początku zadania i rozpocznie nową sesję agenta z tą wiadomością.",
+  "Resets in {resetIn}": "Resetuje się za {resetIn}"
 }
