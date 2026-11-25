@@ -4379,6 +4379,7 @@
   "What should the agent do?": "讓 agent 做點什麼？",
   "New worktree": "新 worktree",
   "Building and resolving the classpath of {name}…": "正在建置並解析 {name} 的類路徑…",
+  "Build before launch: {name}": "啟動前建置：{name}",
   "The classpath is empty: is the module imported by the Java language server?": "類路徑為空：Java 語言伺服器是否已匯入此模組？",
   "Launch cancelled.": "啟動已取消。",
   "Starting debugger for {name}…": "正在啟動 {name} 的偵錯工具…",

@@ -847,8 +847,10 @@ export const commands = {
 	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+	 *  The build streams its console, messages and progress on `on_event` while it runs; a launch
+	 *  whose build another launch's build joins receives that build's events.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request })),
+	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request, onEvent })),
 	/**
 	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable

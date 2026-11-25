@@ -15,6 +15,12 @@ const ipc = vi.hoisted(() => ({
   debugStop: vi.fn(async () => ({ status: "ok", data: null })),
   fsReadDir: vi.fn(async () => ({ status: "ok", data: [] })),
 }));
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage = null;
+  },
+}));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };

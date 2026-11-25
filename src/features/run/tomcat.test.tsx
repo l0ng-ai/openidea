@@ -16,6 +16,12 @@ import { typeRows } from "./AddConfigPopup";
 import { commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage = null;
+  },
+}));
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
   commands: {
@@ -286,7 +292,7 @@ describe("updating a running Tomcat deployment", () => {
   it("compiles the selected WAR module and copies its outputs instead of rebuilding the WAR", async () => {
     const c = config({ deployment: "artifact", artifact: "maven:web/pom.xml" });
     expect(await syncTomcatOutputs(c, false)).toBe(true);
-    expect(commands.javaResolveLaunch).toHaveBeenCalledWith("web", false, "make", expect.anything());
+    expect(commands.javaResolveLaunch).toHaveBeenCalledWith("web", false, "make", expect.anything(), expect.anything());
     expect(commands.runTomcatSync).toHaveBeenCalledWith(c, "web", ["/p/web/target/classes", "/m2/lib.jar"], false);
   });
 

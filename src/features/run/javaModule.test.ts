@@ -84,7 +84,7 @@ afterEach(() => {
 it.each(["sibling", "/outside/modules"])("runs from %s using the stored module's classpath", async (cwd) => {
   const session = await startRun({ ...config, module: "app", cwd });
   expect(session?.status).toBe("running");
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number), expect.anything());
   expect(ipc.runStart).toHaveBeenCalledWith(
     expect.objectContaining({ cwd, args: ["-cp", "/p/app/target/classes", "a.Main"] }),
     expect.anything(),
@@ -108,13 +108,13 @@ const launchInfo = (build: "succeeded" | "failed" | "withErrors") => ({
 
 it.each(["noBuild", "rebuild"] as const)("passes the %s build policy to the resolver", async (buildPolicy) => {
   await startRun({ ...config, module: "app", buildPolicy });
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, buildPolicy, expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, buildPolicy, expect.any(Number), expect.anything());
 });
 
 it("always applies the launch policy after a Before launch Build Project", async () => {
   useProject.setState({ project: { root: "/p" } as never });
   await startRun({ ...config, module: "app" });
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number), expect.anything());
   useProject.setState({ project: null });
 });
 
@@ -145,7 +145,7 @@ it.each([undefined, "automatic", "make", "rebuild"] as const)(
 it("finds the source module for an old saved configuration without a module", async () => {
   await startRun({ ...config, cwd: "/outside/modules" });
   expect(ipc.findFiles).toHaveBeenCalledWith("Main.java", 1000);
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number), expect.anything());
   expect(ipc.runStart).toHaveBeenCalledWith(
     expect.objectContaining({ cwd: "/outside/modules" }),
     expect.anything(),
@@ -166,7 +166,7 @@ it.each([null, "/elsewhere"])("recovers an attached module from its indexed path
   });
   const session = await startRun({ ...config, cwd });
   expect(session?.status).toBe("running");
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(module, false, "automatic", expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(module, false, "automatic", expect.any(Number), expect.anything());
   expect(ipc.runStart).toHaveBeenCalledWith(
     expect.objectContaining({ cwd: cwd ?? module, module }),
     expect.anything(),
@@ -184,7 +184,7 @@ it.each([["-cp", "lib/*"], []])("colours Spring Boot runs without classpath reso
     expect.anything(),
     expect.any(Number),
   );
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number), expect.anything());
   expect(boot.args).toBe(args);
   expect(args).not.toContain("-Dspring.output.ansi.enabled=always");
 });
@@ -193,14 +193,14 @@ it.each(["never", "detect", "always"])("preserves an explicit Spring Boot consol
   const args = [`-Dspring.output.ansi.enabled=${value}`, "-cp", "lib/*", "a.Main"];
   await startRun({ ...config, kind: "spring-boot", args });
   expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ args }), expect.anything(), expect.any(Number));
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number), expect.anything());
 });
 
 it("keeps plain Java runs with an explicit classpath free of Spring Boot options", async () => {
   const args = ["-cp", "lib/*", "a.Main"];
   await startRun({ ...config, args });
   expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ args }), expect.anything(), expect.any(Number));
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number), expect.anything());
 });
 
 it("adds the Spring Boot console option once when resolving the module classpath", async () => {

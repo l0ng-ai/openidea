@@ -1,4 +1,7 @@
 import { call, commands, nextRequestId, type RunConfig } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
+import { resolveJavaLaunch } from "@/platform/javaLaunch";
+import { followLaunchBuild } from "@/features/build/store";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
 import { updatePolicyDefaults, updatePolicyFields } from "./updatePolicies";
 import { runUpdateBuild, updateBuildError } from "./buildUpdate";
@@ -258,10 +261,15 @@ export async function syncTomcatOutputs(
     const p = deployment.params ?? {};
     const artifact = p.artifact ? artifacts.find((a) => a.id === p.artifact) : artifacts[0];
     if (!artifact) return false;
+    const request = nextRequestId();
     // oxlint-disable-next-line no-await-in-loop -- deployments compile and copy in turn
-    const info = await call(commands.javaResolveLaunch(artifact.module, false, buildPolicy, nextRequestId())).catch(
-      () => null,
-    );
+    const info = await resolveJavaLaunch(
+      artifact.module,
+      false,
+      buildPolicy,
+      request,
+      followLaunchBuild(request, tx`Build before launch: ${config.name}`),
+    ).catch(() => null);
     if (!info) return false;
     if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
       throw updateBuildError(info);
