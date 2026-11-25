@@ -106,6 +106,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.deleteToLineEnd": [],
   "code.cutLineEnd": ["Ctrl+K"],
   "code.hungryBackspace": [],
+  "editor.swapSelectionBoundaries": [],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
   "code.moveStatementUp": ["Meta+Shift+Up"],

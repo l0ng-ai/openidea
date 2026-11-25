@@ -1004,6 +1004,7 @@
   "Delete to Line End": "删除到行尾",
   "Cut up to Line End": "剪切到行尾",
   "Hungry Backspace": "贪婪退格",
+  "Swap Selection Boundaries": "交换选区边界",
   "Move Line Up": "上移行",
   "Move Line Down": "下移行",
   "Move Statement Up": "上移语句",

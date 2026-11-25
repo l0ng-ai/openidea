@@ -1124,6 +1124,21 @@ export const addCaretsToLineEnds: Command = (view) => {
   return true;
 };
 
+/** Swap Selection Boundaries: moves each selection's caret to its other end, keeping the selection. */
+export const swapSelectionBoundaries: Command = (view) => {
+  const { selection } = view.state;
+  if (selection.ranges.every((r) => r.empty)) return false;
+  view.dispatch({
+    selection: EditorSelection.create(
+      selection.ranges.map((r) => EditorSelection.range(r.head, r.anchor)),
+      selection.mainIndex,
+    ),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+};
+
 /** ⌃⇧G: Unselect Occurrence — drops the most recently added selection; a single one collapses to its caret. */
 export const unselectOccurrence: Command = (view) => {
   const { state } = view;
