@@ -465,6 +465,7 @@ const ICONS = {
   "toolwindow-flutter-devtools": "flutter/devTools",
   "toolwindow-flutter-deep-links": "flutter/deepLinks",
   "toolwindow-flutter-extensions": "flutter/extensions",
+  "toolwindow-flutter-property-editor": "flutter/propertyEditor",
   "gutter-navigate": "general/autoscrollToSource",
   "gutter-run": "gutter/run",
   "gutter-run-all": "actions/runAll",

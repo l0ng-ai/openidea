@@ -1550,6 +1550,82 @@ async fn flutter_outline_follows_the_document_and_the_server_instance() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn property_editor_lists_the_dart_servers_arguments_and_applies_its_edit() {
+    let h = harness(&[("dart", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("dart", ServerStatus::Ready).await;
+    let s = h.launcher.state("dart");
+    let arg = |name: &str, extra: Value| {
+        let mut a = json!({ "name": name, "hasArgument": false, "isRequired": false, "isNullable": true,
+            "isDeprecated": false, "isEditable": true });
+        a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        a
+    };
+    let at = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":9}});
+    s.respond(
+        "dart/textDocument/editableArguments",
+        json!({ "textDocument": { "uri": uri_of(&path), "version": 1 }, "name": "Text", "range": at, "arguments": [
+            arg("data", json!({ "type": "string", "value": "x", "hasArgument": true, "isRequired": true, "isNullable": false })),
+            arg("textAlign", json!({ "type": "enum", "options": ["TextAlign.left", "TextAlign.center"] })),
+            arg("maxLines", json!({ "type": "int", "value": 2, "hasArgument": true })),
+        ]}),
+    );
+    let args = h.mgr.editable_arguments(doc, Pos::new(0, 2)).await.unwrap().unwrap();
+    assert_eq!(args.name.as_deref(), Some("Text"));
+    assert_eq!(
+        (args.arguments[0].kind.as_str(), args.arguments[0].value.clone()),
+        ("string", Some(ArgumentValue::Text("x".into())))
+    );
+    assert_eq!(args.arguments[1].options.as_ref().unwrap()[1], "TextAlign.center");
+    assert_eq!(args.arguments[1].value, None);
+    assert_eq!(args.arguments[2].value, Some(ArgumentValue::Int(2)));
+    let asked = s.requested("dart/textDocument/editableArguments");
+    assert_eq!(asked[0]["position"], json!({"line":0,"character":2}));
+
+    // The server answers editArgument with null and sends the edit as workspace/applyEdit.
+    let applied: Arc<Mutex<Vec<WorkspaceEdit>>> = Arc::default();
+    let received = applied.clone();
+    h.mgr.set_apply_edit_hook(Box::new(move |e| {
+        received.lock().push(e);
+        true
+    }));
+    let uri = uri_of(&path);
+    *s.responder.lock() = Some(Arc::new(move |s, method, _| {
+        (method == "dart/textDocument/editArgument").then(|| {
+            let edit = json!({ "changes": { uri.clone(): [{ "range":
+                {"start":{"line":0,"character":5},"end":{"line":0,"character":8}}, "newText": "'y'" }] } });
+            let reply: Value = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(s.peer().request(
+                    "workspace/applyEdit",
+                    json!({ "edit": edit }),
+                    None,
+                ))
+            })
+            .unwrap();
+            assert_eq!(reply, json!({"applied": true}));
+            Value::Null
+        })
+    }));
+    h.mgr.edit_argument(doc, Pos::new(0, 2), "data".into(), Some(ArgumentValue::Text("y".into()))).await.unwrap();
+    let sent = s.requested("dart/textDocument/editArgument");
+    assert_eq!(sent[0]["edit"], json!({ "name": "data", "newValue": "y" }));
+    assert_eq!(sent[0]["position"], json!({"line":0,"character":2}));
+    let edits = applied.lock().clone();
+    assert!(
+        matches!(&edits[..], [e] if matches!(&e.files[0], FileEdit::Edit { edits, .. } if edits[0].new_text == "'y'"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn property_editor_has_nothing_without_a_dart_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(h.mgr.editable_arguments(doc, Pos::new(0, 2)).await.unwrap().is_none());
+    assert!(h.launcher.state("mock").requested("dart/textDocument/editableArguments").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn closing_labels_join_the_inlay_hints_until_the_next_edit() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "Center(\n  child: Text('x'))\n");

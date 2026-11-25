@@ -8,6 +8,7 @@ import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { lazyComponent } from "@/ui";
 import { registerToolWindow } from "@/workbench/contributions";
+import { trackPropertyEditorCaret } from "./propertyEditor";
 
 export interface DevToolsWindow {
   id: string;
@@ -97,7 +98,10 @@ const view = (name: "FlutterDevToolsView" | "FlutterDevToolsTabs" | "FlutterDevT
 /** A Flutter project's `pubspec.yaml`, by the rule the run and debug backends use. */
 export const isFlutterPubspec = (text: string) => text.includes("sdk: flutter");
 
-/** Keeps the tool windows registered while the project's root `pubspec.yaml` depends on Flutter. */
+/**
+ * Keeps the tool windows, the Property Editor's too, registered while the project's root
+ * `pubspec.yaml` depends on Flutter.
+ */
 export function registerDevToolsWindows(): () => void {
   let dispose: (() => void)[] | null = null;
   const sync = (flutter: boolean) => {
@@ -107,20 +111,32 @@ export function registerDevToolsWindows(): () => void {
       dispose = null;
       return;
     }
-    dispose ??= DEVTOOLS_WINDOWS.map((w, i) =>
+    dispose ??= [
+      ...DEVTOOLS_WINDOWS.map((w, i) =>
+        registerToolWindow({
+          id: w.id,
+          title: w.title,
+          icon: w.icon,
+          anchor: "right",
+          order: 40 + i,
+          // Only the Inspector is on the stripe until the others are first opened.
+          ...(w.id === "flutter-inspector" ? {} : { stripe: "onUse" as const }),
+          component: view("FlutterDevToolsView"),
+          headerActions: view("FlutterDevToolsRefresh"),
+          ...(w.app === "each" ? { headerContent: view("FlutterDevToolsTabs") } : {}),
+        }),
+      ),
       registerToolWindow({
-        id: w.id,
-        title: w.title,
-        icon: w.icon,
+        id: "flutter-property-editor",
+        title: "Flutter Property Editor",
+        icon: "toolwindow-flutter-property-editor",
         anchor: "right",
-        order: 40 + i,
-        // Only the Inspector is on the stripe until the others are first opened.
-        ...(w.id === "flutter-inspector" ? {} : { stripe: "onUse" as const }),
-        component: view("FlutterDevToolsView"),
-        headerActions: view("FlutterDevToolsRefresh"),
-        ...(w.app === "each" ? { headerContent: view("FlutterDevToolsTabs") } : {}),
+        order: 40 + DEVTOOLS_WINDOWS.length,
+        stripe: "onUse",
+        component: lazyComponent(() => import("../ui/FlutterPropertyEditor").then((m) => m.FlutterPropertyEditorView)),
       }),
-    );
+      trackPropertyEditorCaret(),
+    ];
   };
   let pubspec: string | null = null;
   let check = 0;

@@ -362,6 +362,8 @@ lsp_completion                               trusted            project_host bin
 lsp_document_colors                          trusted            project_host bindings async
 lsp_document_highlights                      trusted            project_host bindings async
 lsp_document_links                           trusted            project_host bindings async
+lsp_edit_argument                            trusted            project_host bindings async
+lsp_editable_arguments                       trusted            project_host bindings async
 lsp_exception_class_at                       trusted            project_host bindings async
 lsp_execute_code_action                      trusted            project_host bindings async
 lsp_execute_command                          trusted            project_host bindings async
