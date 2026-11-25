@@ -94,7 +94,7 @@ function semanticAttributes(token: string, fallback: string) {
     color: `var(--syn-${token}, var(--syn-${fallback}))`,
     fontWeight: `var(--syn-${token}-bold, inherit)`,
     fontStyle: `var(--syn-${token}-italic, inherit)`,
-    "--openidea-token-bg": `var(--syn-${token}-bg)`,
+    "--openidea-token-bg": `var(--syn-${token}-bg, initial)`,
     textDecoration: `var(--syn-${token}-effect, none)`,
     WebkitTextDecoration: `var(--syn-${token}-effect, none)`,
   };
@@ -657,7 +657,7 @@ export const lspTheme = EditorView.theme({
     color: "var(--syn-static-property, var(--syn-property))",
     fontStyle: "var(--syn-static-property-italic, var(--syn-static-italic, italic))",
     fontWeight: "var(--syn-static-property-bold, var(--syn-property-bold, inherit))",
-    "--openidea-token-bg": "var(--syn-static-property-bg)",
+    "--openidea-token-bg": "var(--syn-static-property-bg, initial)",
     textDecoration: "var(--syn-static-property-effect, none)",
     WebkitTextDecoration: "var(--syn-static-property-effect, none)",
   },
