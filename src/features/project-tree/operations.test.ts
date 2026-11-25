@@ -21,6 +21,12 @@ import { MemoryFs, setProjectFsForTests } from "./fs";
 import { initProjectTree, loadDir, setClipboard, setSelection, useProjectTree } from "./store";
 import { setOsClipboardForTests } from "./clipboard";
 
+const askMock = vi.hoisted(() => vi.fn());
+vi.mock("@/workbench/messages", async (original) => ({
+  ...(await original<typeof import("@/workbench/messages")>()),
+  ask: askMock,
+}));
+
 let fs: MemoryFs;
 const notify = vi.fn();
 
@@ -134,6 +140,8 @@ describe("OS file imports", () => {
     });
     provideNotificationService({ notify });
     notify.mockClear();
+    askMock.mockReset();
+    askMock.mockResolvedValue({ button: "copy", checked: false });
   });
 
   afterEach(() => {
@@ -174,6 +182,48 @@ describe("OS file imports", () => {
       expect(notify).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    ["overwrite", "/p/target/local.txt", 1],
+    ["skip", "/p/target/local.txt", 0],
+    ["copy", "/p/target/local copy.txt", 1],
+  ])("asks before importing over an existing file: %s", async (button, to, imports) => {
+    await fs.createFileBytes("/p/target/local.txt", new Uint8Array(3));
+    await loadDir("/p/target");
+    const imported = vi.spyOn(fs, "importLocal");
+    const deleted = vi.spyOn(fs, "delete");
+    askMock.mockResolvedValueOnce({ button, checked: false });
+    await importExternal(["/p/local.txt"], "/p/target");
+    expect(askMock).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "File Already Exists", checkbox: undefined }),
+    );
+    expect(imported.mock.calls).toEqual(imports ? [["/p/local.txt", to, expect.anything()]] : []);
+    expect(deleted).toHaveBeenCalledTimes(button === "overwrite" ? 1 : 0);
+    expect(fs.nodes.get("/p/target/local.txt")).toEqual({ kind: "file", size: button === "overwrite" ? 6 : 3 });
+  });
+
+  it("applies one answer to the remaining conflicts and never overwrites a folder", async () => {
+    await fs.createFileBytes("/p/target/local.txt", new Uint8Array(3));
+    await fs.createDir("/p/target/dir");
+    await fs.createDir("/p/dir");
+    await loadDir("/p/target");
+    const imported = vi.spyOn(fs, "importLocal");
+    askMock.mockResolvedValueOnce({ button: "overwrite", checked: true });
+    await importExternal(["/p/local.txt", "/p/dir"], "/p/target");
+    expect(askMock).toHaveBeenCalledTimes(1);
+    expect(askMock).toHaveBeenCalledWith(expect.objectContaining({ checkbox: "Do this for the other conflicts" }));
+    expect(imported.mock.calls.map((c) => c[1])).toEqual(["/p/target/local.txt", "/p/target/dir copy"]);
+  });
+
+  it("stops the import when the conflict question is cancelled", async () => {
+    await fs.createFileBytes("/p/target/local.txt", new Uint8Array(3));
+    await loadDir("/p/target");
+    const imported = vi.spyOn(fs, "importLocal");
+    askMock.mockResolvedValueOnce({ button: "cancel", checked: false });
+    await importExternal(["/p/local.txt"], "/p/target");
+    expect(imported).not.toHaveBeenCalled();
+    expect(fs.nodes.get("/p/target/local.txt")).toEqual({ kind: "file", size: 3 });
+  });
 
   it("reports upload failure and continues with the next file", async () => {
     const imported = vi.spyOn(fs, "importLocal").mockRejectedValueOnce(new Error("SSH disconnected"));
