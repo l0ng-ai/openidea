@@ -225,6 +225,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "editor.nextTab": ["Meta+Alt+Right", "Meta+Shift+]"],
   "editor.prevTab": ["Meta+Alt+Left", "Meta+Shift+["],
   "editor.splitRight": ["Meta+\\"],
+  "editor.splitAndMoveRight": [],
+  "editor.splitAndMoveDown": [],
   "editor.toggleZen": ["Meta+K Z"],
   "editor.toggleLineNumbers": [],
   "editor.toggleIndentGuides": [],

@@ -213,6 +213,8 @@ export const intellijWindows: Record<string, string[]> = {
   "editor.nextTab": ["Alt+Right"],
   "editor.prevTab": ["Alt+Left"],
   "editor.splitRight": [],
+  "editor.splitAndMoveRight": [],
+  "editor.splitAndMoveDown": [],
   "editor.nextSplitter": ["Alt+Tab"],
   "editor.prevSplitter": ["Alt+Shift+Tab"],
   "window.toggleFullScreen": [],

@@ -104,6 +104,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   PreviousTab: "editor.prevTab",
   SplitVertically: "editor.splitRight",
   SplitHorizontally: "editor.splitDown",
+  MoveTabRight: "editor.splitAndMoveRight",
+  MoveTabDown: "editor.splitAndMoveDown",
   Unsplit: "editor.unsplit",
   ToggleDistractionFreeMode: "editor.toggleZen",
   EditorScrollUp: "editor.scrollUp",
