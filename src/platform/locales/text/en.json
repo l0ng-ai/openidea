@@ -2529,6 +2529,8 @@
   "Moves a terminal tab, with its running session, into the editor area (arg: tab id).": "Moves a terminal tab, with its running session, into the editor area (arg: tab id).",
   "Move to Terminal": "Move to Terminal",
   "Moves a terminal editor tab, with its running session, back to the Terminal tool window (arg: input key).": "Moves a terminal editor tab, with its running session, back to the Terminal tool window (arg: input key).",
+  "New Terminal Tab in Editor": "New Terminal Tab in Editor",
+  "Opens a new terminal session as a tab in the editor area.": "Opens a new terminal session as a tab in the editor area.",
   "Starts a login shell where the session was.": "Starts a login shell where the session was.",
   "Also used for {others}; settings apply to all of them.": "Also used for {others}; settings apply to all of them.",
   "{name} tools": "{name} tools",
@@ -4070,5 +4072,14 @@
   "Transitive": "Transitive",
   "Version": "Version",
   "Search": "Search",
-  ".NET project": ".NET project"
+  ".NET project": ".NET project",
+  "Table properties": "Table properties",
+  "Grants": "Grants",
+  "Grantee": "Grantee",
+  "Grantor": "Grantor",
+  "Granted": "Granted",
+  "Granted with grant option": "Granted with grant option",
+  "No privileges are granted on this table.": "No privileges are granted on this table.",
+  "* With grant option: the grantee may grant the privilege to others.": "* With grant option: the grantee may grant the privilege to others.",
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "Separate several prefixes with commas: they are tried in order, then the official source."
 }

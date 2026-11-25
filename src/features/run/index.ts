@@ -819,6 +819,15 @@ export function activate(): () => void {
         run: () => testTree.toggleDurations?.(),
       },
       {
+        id: "run.toggleSelectFirstFailedTest",
+        title: "Select First Failed Test When Finished",
+        category: "Run",
+        when: "projectOpen",
+        enabled: () => testTree.toggleSelectFirstFailed !== null,
+        toggled: () => testTree.selectFirstFailed === true,
+        run: () => testTree.toggleSelectFirstFailed?.(),
+      },
+      {
         id: "run.reloadConfigs",
         title: "Reload Run Configurations",
         category: "Run",

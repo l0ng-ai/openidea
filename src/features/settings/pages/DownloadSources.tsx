@@ -1,6 +1,7 @@
 /**
  * Tools › Download sources › Mirror prefix: a plain text field with an info hint, so it is
- * clear that only GitHub downloads go through it (issue #3295).
+ * clear that only GitHub downloads go through it (issue #3295). Several prefixes, separated by
+ * commas, are tried in order.
  */
 import { useId } from "react";
 import { Icon, Input, T } from "@/ui";
@@ -25,7 +26,8 @@ export function MirrorPrefixRow() {
             Only downloads from github.com (most language servers, debuggers and plugin packages) are accelerated.
             Eclipse JDT LS, Open VSX and Maven Central are not affected — reach them through System Settings › HTTP
             Proxy instead. A public proxy such as https://gh-proxy.com/ works as the prefix.
-          </T>
+          </T>{" "}
+          <T>Separate several prefixes with commas: they are tried in order, then the official source.</T>
         </span>
       }
     >

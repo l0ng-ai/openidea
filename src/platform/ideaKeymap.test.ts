@@ -92,6 +92,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Copy as Plain Text / Copy as Rich Text", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="Mac OS X 10.5+"><action id="CopyAsPlainText"><keyboard-shortcut first-keystroke="control alt C"/></action><action id="CopyAsRichText"><keyboard-shortcut first-keystroke="control alt shift C"/></action></keymap>`,
+    );
+    expect(k.overrides["code.copyAsPlainText"]).toEqual([normalizeBinding("Ctrl+Alt+C")]);
+    expect(k.overrides["code.copyAsRichText"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+C")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Delete to Line Start / End and Cut up to Line End", () => {
     const k = parseIdeaKeymap(
       `<keymap name="E" parent="Mac OS X 10.5+"><action id="EditorDeleteToLineStart"><keyboard-shortcut first-keystroke="meta BACK_SPACE"/></action><action id="EditorDeleteToLineEnd"><keyboard-shortcut first-keystroke="shift meta DELETE"/></action><action id="EditorCutLineEnd"><keyboard-shortcut first-keystroke="control alt K"/></action></keymap>`,

@@ -382,25 +382,43 @@ export function richTextHtml(view: EditorView, from: number, to: number): string
   return `<pre style="font-family:${cs.fontFamily.replace(/"/g, "'")};font-size:${cs.fontSize};color:${cs.color};background:${bg}">${html}</pre>`;
 }
 
-const richCopy = EditorView.domEventHandlers({
-  copy(e, view) {
-    const sel = view.state.selection;
-    if (sel.ranges.length !== 1 || sel.main.empty || !e.clipboardData) return false;
-    const { from, to } = sel.main;
-    const text = view.state.sliceDoc(from, to);
-    if (filterCopiedText(view.state, text) !== text) return false;
-    try {
-      const html = richTextHtml(view, from, to);
-      e.clipboardData.clearData();
-      e.clipboardData.setData("text/plain", view.state.sliceDoc(from, to));
-      e.clipboardData.setData("text/html", html);
-      e.preventDefault();
-      return true;
-    } catch {
-      return false;
-    }
-  },
-});
+/** The format Copy as Plain Text / Copy as Rich Text forces on the copy in progress. */
+let forcedCopyFormat: "plain" | "rich" | null = null;
+
+/** Edit › Copy as Plain Text / Copy as Rich Text: one copy in `format`, whatever Rich-Text Copy is set to. */
+export function copyAs(view: EditorView, format: "plain" | "rich"): void {
+  forcedCopyFormat = format;
+  try {
+    view.focus();
+    document.execCommand("copy");
+  } finally {
+    forcedCopyFormat = null;
+  }
+}
+
+const richCopy = (byDefault: boolean) =>
+  EditorView.domEventHandlers({
+    copy(e, view) {
+      if ((forcedCopyFormat ?? (byDefault ? "rich" : "plain")) === "plain") return false;
+      const sel = view.state.selection;
+      if (sel.ranges.length !== 1 || sel.main.empty || !e.clipboardData) return false;
+      const { from, to } = sel.main;
+      const text = view.state.sliceDoc(from, to);
+      if (filterCopiedText(view.state, text) !== text) return false;
+      try {
+        const html = richTextHtml(view, from, to);
+        e.clipboardData.clearData();
+        e.clipboardData.setData("text/plain", view.state.sliceDoc(from, to));
+        e.clipboardData.setData("text/html", html);
+        e.preventDefault();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
+const richCopyByDefault = richCopy(true);
+const plainCopyByDefault = richCopy(false);
 
 // --- caret / scrolling / mouse ----------------------------------------------
 
@@ -770,7 +788,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (g.wheelZoom) out.push(wheelZoom);
   out.push(g.dragAndDrop ? textDrag : noTextDrag);
   if (g.caretScroll === "center") out.push(centerCaret);
-  if (g.richTextCopy) out.push(richCopy);
+  out.push(g.richTextCopy ? richCopyByDefault : plainCopyByDefault);
   if (k.escapeOnPaste) out.push(stringClipboard(o.language));
   if (!o.readOnly && (k.reformatOnPaste === "indentBlock" || k.reformatOnPaste === "indentEachLine"))
     out.push(pasteReindentFilter(k.reformatOnPaste));

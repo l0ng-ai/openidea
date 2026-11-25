@@ -995,6 +995,57 @@
   text-align: left;
   overflow-wrap: anywhere;
 }
+.grantsPanel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+.grantsScroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.grantsTable {
+  border-collapse: collapse;
+  min-width: 100%;
+  white-space: nowrap;
+}
+.grantsTable th {
+  position: sticky;
+  top: 0;
+  padding: 4px 8px;
+  text-align: left;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: var(--bg-dialog);
+  border-bottom: 1px solid var(--border);
+}
+.grantsTable td {
+  height: 24px;
+  padding: 0 8px;
+}
+.grantsTable tbody tr:hover {
+  background: var(--bg-hover);
+}
+.grantsTable .grantsFlag {
+  text-align: center;
+}
+.grantsNone {
+  color: var(--fg-muted);
+}
+.grantsMark {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+.grantsOption {
+  font-weight: 600;
+  color: var(--accent);
+}
 .quickDoc {
   width: 460px;
   max-width: calc(100vw - 32px);

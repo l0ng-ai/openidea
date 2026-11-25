@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EditorSelection } from "@codemirror/state";
 import { EditorController, openFilePaths, useEditorStatus, useTabErrors, useTabs } from "./controller";
 import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
@@ -573,6 +574,46 @@ describe("EditorController", () => {
         });
       }
     } finally {
+      hideContextMenu();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
+  it("offers the copy format Rich-Text Copy doesn't give in Copy / Paste Special", async () => {
+    const path = "/p/a.ts";
+    ctrl = new EditorController(createMemoryBackend({ [path]: "first\nsecond\nthird\n" }));
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    const settings = useProject.getState().settings;
+    const special = (richTextCopy: boolean, selection: EditorSelection) => {
+      useProject.setState({ settings: { editor: { general: { richTextCopy } } } as never });
+      view.dispatch({ selection });
+      ctrl!.onContextMenu(slot, new MouseEvent("contextmenu"));
+      const menu = useContextMenuStore
+        .getState()
+        .menu!.items.find((item) => "label" in item && item.label === "Copy / Paste Special");
+      return (menu as { submenu: { action?: string }[] }).submenu
+        .map((item) => item.action)
+        .filter((id) => id?.startsWith("code."));
+    };
+    try {
+      const one = EditorSelection.single(0, 5);
+      const two = EditorSelection.create([EditorSelection.range(0, 5), EditorSelection.range(6, 12)]);
+      expect(special(true, one)).toEqual(["code.copyAsPlainText", "code.pasteAsPlainText", "code.pasteFromHistory"]);
+      expect(special(false, one)).toEqual(["code.copyAsRichText", "code.pasteAsPlainText", "code.pasteFromHistory"]);
+      expect(special(true, two)[0]).toBe("code.copyAsPlainText");
+      // Rich text is copied from one selection only.
+      expect(special(false, two)[0]).toBe("code.pasteAsPlainText");
+      expect(special(true, EditorSelection.single(3))[0]).toBe("code.pasteAsPlainText");
+      expect(special(false, EditorSelection.single(3))[0]).toBe("code.pasteAsPlainText");
+    } finally {
+      useProject.setState({ settings });
       hideContextMenu();
       slot.unmount();
       host.remove();

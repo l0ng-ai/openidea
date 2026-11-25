@@ -28,8 +28,8 @@ import { useTx } from "@/platform/i18n";
 import { usePlatform } from "@/platform/platformInfo";
 
 export interface RecordShortcutDialogProps {
-  action: Pick<Action, "id" | "title" | "category" | "when">;
-  actions: readonly Pick<Action, "id" | "title" | "category" | "when">[];
+  action: Pick<Action, "id" | "title" | "category" | "when" | "keyWhen">;
+  actions: readonly Pick<Action, "id" | "title" | "category" | "when" | "keyWhen">[];
   draft: KeymapDraft;
   onCancel: () => void;
   /** `removeConflicts`: also unbind the conflicting assignments. */

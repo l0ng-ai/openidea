@@ -178,6 +178,18 @@ pub struct TableDetails {
     pub triggers: Vec<TriggerInfo>,
 }
 
+/// One object privilege on a table: `grantee` may run `privilege` (`SELECT`, …), granted
+/// by `grantor` (unknown on MySQL), and may grant it on when `grantable`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbTableGrant")]
+pub struct TableGrant {
+    pub grantee: String,
+    pub grantor: Option<String>,
+    pub privilege: String,
+    pub grantable: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbCompletionColumn")]
@@ -1162,6 +1174,28 @@ impl DbManager {
             })
             .collect();
         Ok(TableDetails { columns, indexes, foreign_keys, triggers })
+    }
+
+    /// The object privileges granted on `table`; empty, without a query, on the engines
+    /// [`sql::table_grants`] doesn't cover.
+    pub async fn table_grants(&self, id: &str, schema: &str, table: &str) -> IdeResult<Vec<TableGrant>> {
+        let pool = self.pool(id).await?;
+        let Some(q) = sql::table_grants(pool.driver(), schema, table) else {
+            return Ok(Vec::new());
+        };
+        Ok(pool
+            .rows(&q, MAX_META_ROWS)
+            .await?
+            .into_iter()
+            .filter_map(|r| {
+                let mut it = r.into_iter();
+                let grantee = it.next().flatten()?;
+                let grantor = it.next().flatten().filter(|g| !g.is_empty());
+                let privilege = it.next().flatten()?.to_ascii_uppercase();
+                let grantable = flag(&it.next().flatten());
+                Some(TableGrant { grantee, grantor, privilege, grantable })
+            })
+            .collect())
     }
 
     /// The routines and sequences of `schema`.
