@@ -4,7 +4,12 @@
 
 pub mod catalog;
 mod clickhouse;
+mod external_tunnel;
+pub use external_tunnel::stop_external_tunnels_on_exit;
 mod jdbc;
+mod local_settings;
+mod route;
+mod tunnel_approval;
 pub use jdbc::{DbJdbcDriver, jdbc_driver_classes};
 pub mod conn;
 pub mod history;
@@ -25,8 +30,8 @@ pub use conn::{Held, Pool, QueryResult, ResultColumn, TruncatedCell};
 pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
 pub use source::{
-    DataSource, DbColor, DbDriver, DbIntrospection, DbOptions, DbProperty, DbSchemaSelection, DbSnowflake,
-    DbSnowflakeAuth, DbSsh, DbSshAuth, DbSslMode, DbTxMode, DbVisibilityChange,
+    DataSource, DbColor, DbDriver, DbExternalTunnel, DbIntrospection, DbOptions, DbProperty, DbSchemaSelection,
+    DbSnowflake, DbSnowflakeAuth, DbSsh, DbSshAuth, DbSslMode, DbTxMode, DbVisibilityChange,
 };
 pub use sql::{CellValue, DbRowEdit, SortKey};
 
@@ -252,17 +257,14 @@ pub struct Databases {
 /// Connections of one project's data sources, keyed by connection target (see [`split_target`]).
 pub struct DbManager {
     root: PathBuf,
-    pools: Mutex<HashMap<String, Arc<Pool>>>,
-    /// SSH tunnels by data source id, shared by the pools of its databases
-    /// (closed with the last of them).
-    tunnels: Mutex<HashMap<String, Arc<Tunnel>>>,
-    /// Serialises opening tunnels so concurrent connects share one.
-    tunnel_open: tokio::sync::Mutex<()>,
+    pools: Mutex<HashMap<String, Arc<route::ConnectionSlot>>>,
+    routes: route::Routes,
+    local_external_tunnels: bool,
     /// App-wide SSH connections and host-key trust.
     ssh: Arc<SshManager>,
-    saved_passwords: SecretStore,
+    saved_passwords: Arc<SecretStore>,
     /// Directory of the global data sources and their saved passwords ([`DbManager::with_global_sources`]).
-    global: Option<(PathBuf, SecretStore)>,
+    global: Option<(PathBuf, Arc<SecretStore>)>,
     history: Arc<HistoryStore>,
     /// What introspection read of each data source, kept between runs.
     catalogs: catalog::CatalogStore,
@@ -421,15 +423,15 @@ impl DbManager {
             }
         }
         Self {
-            saved_passwords: SecretStore::new(passwords, &root),
+            saved_passwords: Arc::new(SecretStore::new(passwords, &root)),
             global: None,
             history,
             catalogs,
             recorder,
             root,
             pools: Mutex::default(),
-            tunnels: Mutex::default(),
-            tunnel_open: tokio::sync::Mutex::new(()),
+            routes: Mutex::default(),
+            local_external_tunnels: false,
             ssh,
             session_passwords: Mutex::default(),
             on_disk: Mutex::default(),
@@ -441,7 +443,7 @@ impl DbManager {
     /// Also lists the global data sources stored in `dir` (the app data directory).
     pub fn with_global_sources(mut self, dir: PathBuf) -> Self {
         let passwords = self.saved_passwords.scoped(&dir);
-        self.global = Some((dir, passwords));
+        self.global = Some((dir, Arc::new(passwords)));
         self
     }
 
@@ -471,7 +473,7 @@ impl DbManager {
         }
     }
 
-    fn store_of(&self, source: &DataSource) -> &SecretStore {
+    fn store_of(&self, source: &DataSource) -> &Arc<SecretStore> {
         match &self.global {
             Some((_, store)) if source.global => store,
             _ => &self.saved_passwords,
@@ -511,13 +513,7 @@ impl DbManager {
             .find(|s| s.id == id)
             .ok_or_else(|| IdeError::not_found(format!("no data source {id}")))?
             .resolved()?;
-        if let Some(db) = database {
-            // The configured schema belongs to the configured database.
-            if source.driver == DbDriver::Snowflake && !source.database.eq_ignore_ascii_case(db) {
-                source.options.default_schema.clear();
-            }
-            source.database = db.to_owned();
-        }
+        source.select_database(database);
         Ok(source)
     }
 
@@ -698,7 +694,10 @@ impl DbManager {
         if !saved {
             return None;
         }
-        self.store_of(source).get(&key)
+        // The OS may wait for the user to unlock the credential store. A cancelled connection
+        // must be able to stop waiting without starting its helper when the prompt is answered.
+        let store = Arc::clone(self.store_of(source));
+        tokio::task::spawn_blocking(move || store.get(&key)).await.ok().flatten()
     }
 
     async fn password(&self, source: &DataSource) -> Option<String> {
@@ -734,36 +733,6 @@ impl DbManager {
             Ok(c) if !ssh.config.trim().is_empty() => c.label(),
             _ => ssh.host.clone(),
         }
-    }
-
-    /// Opens the SSH tunnel of `source` when it has one, returning the settings to
-    /// connect with (the tunnel's local end instead of the database host).
-    /// `shared` reuses (or registers) the data source's tunnel for its pools; Test
-    /// Connection opens a private one.
-    async fn endpoint(
-        &self,
-        source: &DataSource,
-        ssh_secret: Option<String>,
-        shared: bool,
-    ) -> IdeResult<(DataSource, Option<Arc<Tunnel>>)> {
-        let Some(ssh) = source.ssh.as_ref().filter(|s| s.enabled && tunneled(source.driver)) else {
-            return Ok((source.clone(), None));
-        };
-        let local = |t: &Tunnel| DataSource { host: "127.0.0.1".into(), port: Some(t.port()), ..source.clone() };
-        let _opening = if shared { Some(self.tunnel_open.lock().await) } else { None };
-        if shared {
-            let existing = self.tunnels.lock().get(&source.id).filter(|t| !t.is_closed()).cloned();
-            if let Some(t) = existing {
-                return Ok((local(&t), Some(t)));
-            }
-        }
-        let session = self.ssh_session(source, ssh, ssh_secret).await?;
-        let (target_host, target_port) = tunnel_target(source);
-        let t = Arc::new(Tunnel::open(session, target_host, target_port).await?);
-        if shared {
-            self.tunnels.lock().insert(source.id.clone(), t.clone());
-        }
-        Ok((local(&t), Some(t)))
     }
 
     /// The SSH session the tunnel of `source` goes through: its shared SSH configuration's, or one
@@ -819,22 +788,34 @@ impl DbManager {
         password: Option<String>,
         ssh_secret: Option<String>,
     ) -> IdeResult<String> {
+        if source.external_tunnel.is_some() {
+            return Err(IdeError::invalid("Review the external tunnel in the local Test Connection dialog"));
+        }
+        self.test_connection(source, password, ssh_secret, route::RouteUse::Test).await
+    }
+
+    pub async fn test_external_tunnel(&self, source: &DataSource, password: Option<String>) -> IdeResult<String> {
+        self.external_config(source)?;
+        self.test_connection(source, password, None, route::RouteUse::ReviewedExternalTest).await
+    }
+
+    async fn test_connection(
+        &self,
+        source: &DataSource,
+        password: Option<String>,
+        ssh_secret: Option<String>,
+        purpose: route::RouteUse,
+    ) -> IdeResult<String> {
         let source = &source.resolved()?;
         let password = match password {
             Some(p) => Some(p),
             None => self.password(source).await,
         };
-        let (target, tunnel) = self.endpoint(source, ssh_secret, false).await?;
+        let (target, _tunnel) = self.endpoint(source, ssh_secret, purpose).await?;
         self.restore_sso(source).await;
         let connected = self.open_pool(&target, password.as_deref(), true).await;
         self.keep_sso(source).await;
-        let pool = connected.map_err(|e| {
-            through_tunnel(
-                e,
-                source,
-                tunnel.is_some().then(|| self.ssh_label(source.ssh.as_ref().expect("tunneled"))).as_deref(),
-            )
-        })?;
+        let pool = connected.map_err(|e| self.connection_error(e, source))?;
         if let Pool::Jdbc(p) = &pool {
             let version = p.version.clone();
             pool.close().await;
@@ -855,7 +836,8 @@ impl DbManager {
             _ => pool.rows(version, 1).await,
         };
         pool.close().await;
-        let strict = matches!(source.driver, DbDriver::Clickhouse | DbDriver::Snowflake);
+        let strict =
+            source.external_tunnel.is_some() || matches!(source.driver, DbDriver::Clickhouse | DbDriver::Snowflake);
         let rows = if strict { result? } else { result.unwrap_or_default() };
         let v = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten());
         Ok(v.unwrap_or_else(|| "Connected".into()))
@@ -881,11 +863,15 @@ impl DbManager {
         if source.driver != tool.driver() {
             return Err(IdeError::invalid(format!("{} cannot connect to {}", tool.program(), source.name)));
         }
-        self.pool(id).await?;
+        // Keep the same route as the connected pool for the entire tool invocation.
+        let connection = self.connection(id).await?;
+        let target = connection.target(&source);
         let password = self.password(&source).await;
-        // Holding the tunnel keeps it open while the tool runs, even if the tree disconnects.
-        let (target, _tunnel) = self.endpoint(&source, None, true).await?;
-        let prepared = tools::prepare(job, executable, &target, password.as_deref())?;
+        let mut prepared = tools::prepare(job, executable, &target, password.as_deref())?;
+        if source.external_tunnel.is_some() {
+            // libpq gives PGHOSTADDR precedence over --host when choosing the TCP peer.
+            prepared.env.push(("PGHOSTADDR".into(), target.host.clone()));
+        }
         tools::run(executable, &prepared.args, &prepared.env, prepared.input.as_deref(), cancel, on_output).await
     }
 
@@ -909,90 +895,6 @@ impl DbManager {
             .and_then(|r| r.into_iter().next().flatten())
             .and_then(|v| v.trim().parse().ok())
             .ok_or_else(|| IdeError::internal("no server version"))
-    }
-
-    pub fn is_connected(&self, id: &str) -> bool {
-        self.pools.lock().get(id).is_some_and(|p| !p.is_closed())
-    }
-
-    /// Connected targets (data source ids, `<id>:<database>`).
-    pub fn connected(&self) -> Vec<String> {
-        self.pools.lock().iter().filter(|(_, p)| !p.is_closed()).map(|(id, _)| id.clone()).collect()
-    }
-
-    /// The pool of target `id`, connecting first if needed.
-    pub async fn pool(&self, id: &str) -> IdeResult<Arc<Pool>> {
-        let (source_id, _) = split_target(id);
-        // A dropped SSH session leaves every pool through it unusable: start over.
-        if self.tunnels.lock().get(source_id).is_some_and(|t| t.is_closed()) {
-            self.disconnect_source(source_id).await;
-        }
-        let cached = self.pools.lock().get(id).cloned();
-        if let Some(p) = cached {
-            if !p.is_closed() {
-                return Ok(p);
-            }
-            // The connection broke (a custom JDBC session whose TCP connection was dropped): reconnect.
-            self.disconnect(id).await;
-        }
-        let source = self.source(id)?;
-        let password = self.password(&source).await;
-        let (target, tunnel) = self.endpoint(&source, None, true).await?;
-        self.restore_sso(&source).await;
-        let connected = self.open_pool(&target, password.as_deref(), false).await;
-        self.keep_sso(&source).await;
-        let pool = match connected {
-            Ok(p) => Arc::new(p),
-            Err(e) => {
-                self.drop_unused_tunnel(source_id);
-                return Err(through_tunnel(
-                    e,
-                    &source,
-                    tunnel.is_some().then(|| self.ssh_label(source.ssh.as_ref().expect("tunneled"))).as_deref(),
-                ));
-            }
-        };
-        // Another caller may have connected meanwhile; keep theirs.
-        let kept = self.pools.lock().entry(id.to_owned()).or_insert_with(|| pool.clone()).clone();
-        if !Arc::ptr_eq(&kept, &pool) {
-            // Ours lost the race: close it rather than leave its session open on the server.
-            pool.close().await;
-        } else if let Some(secs) = source.options.keep_alive_secs.filter(|s| *s > 0) {
-            keep_alive(&pool, Duration::from_secs(secs.into()));
-        }
-        Ok(kept)
-    }
-
-    /// Closes the tunnel of `source_id` once none of its targets is connected.
-    fn drop_unused_tunnel(&self, source_id: &str) {
-        let in_use = self.pools.lock().keys().any(|k| split_target(k).0 == source_id);
-        if !in_use {
-            self.tunnels.lock().remove(source_id);
-        }
-    }
-
-    /// Disconnects target `id` (one database of a data source).
-    pub async fn disconnect(&self, id: &str) {
-        // A held connection would keep the pool from closing; manual mode stays on.
-        let session = self.sessions.lock().get(id).cloned();
-        if let Some(s) = session {
-            end_session(&s).await;
-        }
-        self.cursors.release_target(id);
-        let pool = self.pools.lock().remove(id);
-        if let Some(p) = pool {
-            p.close().await;
-        }
-        self.drop_unused_tunnel(split_target(id).0);
-    }
-
-    /// Disconnects every database of data source `id`.
-    pub async fn disconnect_source(&self, id: &str) {
-        let targets: Vec<String> = self.pools.lock().keys().filter(|t| split_target(t).0 == id).cloned().collect();
-        for t in targets {
-            self.disconnect(&t).await;
-        }
-        self.tunnels.lock().remove(id);
     }
 
     /// Creates a database on the server of data source `id` by running `statement` on the data
@@ -1863,6 +1765,83 @@ mod tests {
         let data = dir.join("data");
         let ssh = Arc::new(SshManager::new(data.join("ssh-passwords.json")));
         DbManager::new(dir.join("project"), data.join("db-passwords.json"), data.join("db-history.json"), ssh)
+    }
+
+    #[tokio::test]
+    async fn external_tunnel_approval_binds_the_command_destination_and_local_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let name = "forward.exe";
+        #[cfg(not(windows))]
+        let name = "forward";
+        let program = tmp.path().join(name);
+        std::fs::write(&program, b"fixture version 1").unwrap();
+        let app = tmp.path().join("app");
+        let desktop = |root: &Path| manager(root).with_global_sources(app.clone()).with_local_external_tunnels(true);
+        let db = desktop(tmp.path());
+        let other = desktop(&tmp.path().join("other"));
+        let mut source = DataSource {
+            id: "pg".into(),
+            name: "Example PostgreSQL".into(),
+            driver: DbDriver::Postgres,
+            host: "db.example".into(),
+            external_tunnel: Some(DbExternalTunnel {
+                executable: program.to_str().unwrap().into(),
+                arguments: vec!["--listen={localPort}".into(), "{host}:{port}".into()],
+            }),
+            ..Default::default()
+        };
+        assert!(db.check_external_approval(&source).await.is_err());
+        db.approve_external_tunnel(&source).await.unwrap();
+        db.save_sources(vec![source.clone()]).await.unwrap();
+        db.check_external_approval(&db.source("pg").unwrap()).await.unwrap();
+        db.check_external_approval(&source).await.unwrap();
+        assert!(other.check_external_approval(&source).await.is_err());
+        for changed in [
+            DataSource { host: "other.example".into(), ..source.clone() },
+            DataSource { user: "other".into(), ..source.clone() },
+            DataSource { ssl: DbSslMode::Require, ..source.clone() },
+        ] {
+            assert!(db.check_external_approval(&changed).await.is_err());
+        }
+        let mut changed = source.clone();
+        changed.external_tunnel.as_mut().unwrap().arguments.push("--changed".into());
+        assert!(db.check_external_approval(&changed).await.is_err());
+        source.global = true;
+        assert!(db.check_external_approval(&source).await.is_err());
+        db.approve_external_tunnel(&source).await.unwrap();
+        db.save_sources(vec![source.clone()]).await.unwrap();
+        db.check_external_approval(&db.source("pg").unwrap()).await.unwrap();
+        other.check_external_approval(&source).await.unwrap();
+        std::fs::write(&program, b"fixture version 2").unwrap();
+        assert!(db.check_external_approval(&source).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn external_tunnel_rejects_incompatible_modes_and_implicit_test() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = DataSource {
+            id: "pg".into(),
+            driver: DbDriver::Postgres,
+            external_tunnel: Some(DbExternalTunnel {
+                executable: std::env::current_exe().unwrap().to_str().unwrap().into(),
+                arguments: vec!["{localPort}".into()],
+            }),
+            ..Default::default()
+        };
+        let remote = manager(tmp.path()).with_global_sources(tmp.path().join("app"));
+        assert!(remote.test_external_tunnel(&source, None).await.is_err());
+        let db = remote.with_local_external_tunnels(true);
+        assert!(db.test(&source, None, None).await.is_err());
+        for bad in [
+            DataSource { ssl: DbSslMode::VerifyFull, ..source.clone() },
+            DataSource { url_only: true, ..source.clone() },
+            DataSource { plugin_owner: Some("sample".into()), ..source.clone() },
+            DataSource { driver: DbDriver::Jdbc, ..source.clone() },
+            DataSource { ssh: Some(DbSsh { enabled: true, ..Default::default() }), ..source.clone() },
+        ] {
+            assert!(db.approve_external_tunnel(&bad).await.is_err());
+        }
     }
 
     #[tokio::test]

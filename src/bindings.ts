@@ -323,6 +323,8 @@ export const commands = {
 	/**  Cucumber feature files and step definition files, for step navigation. */
 	cucumberSources: () => typedError<StepSource[], IdeError>(__TAURI_INVOKE("cucumber_sources")),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
+	/**  Records the exact helper and destination reviewed in the local data-source dialog. */
+	dbApproveExternalTunnel: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_external_tunnel", { source })),
 	dbApproveJdbcSource: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_jdbc_source", { source })),
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
@@ -334,7 +336,7 @@ export const commands = {
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
-	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
+	dbDisconnect: (id: string, wholeSource: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id, wholeSource })),
 	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
@@ -387,6 +389,8 @@ export const commands = {
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	/**  Tests the reviewed helper once, without persisting approval for subsequent connections. */
+	dbTestExternalTunnel: (request: RequestId, source: DataSource_Deserialize, password: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_external_tunnel", { request, source, password })),
 	/**  Data Source › SSH/SSL › Test SSH Tunnel. */
 	dbTestTunnel: (source: DataSource_Deserialize, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_tunnel", { source, sshSecret })),
 	/**  Installed copies of `tool`, newest first. */
@@ -4958,6 +4962,7 @@ export type DataSource_Deserialize = {
 	readOnly?: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh?: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor?: string,
 	color?: DbColor | null,
@@ -5004,6 +5009,7 @@ export type DataSource_Serialize = {
 	readOnly: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor: string,
 	color: DbColor | null,
@@ -5152,6 +5158,12 @@ export type DbDumpKind =
 "mysqlSql" | "unknown";
 
 export type DbDumpStatements = "copy" | "inserts" | "columnInserts";
+
+/**  A foreground program that forwards an IDE-assigned loopback port to the database. */
+export type DbExternalTunnel = {
+	executable: string,
+	arguments: string[],
+};
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {

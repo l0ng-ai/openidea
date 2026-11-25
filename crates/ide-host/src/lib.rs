@@ -82,6 +82,7 @@ impl HostConfig {
 }
 
 pub struct Host {
+    local_database_tunnels: bool,
     pub(crate) mcp_executable: Arc<RwLock<Option<PathBuf>>>,
     pub mcp: mcp::McpService,
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
@@ -166,6 +167,12 @@ impl Host {
         windows
     }
 
+    /// Enables user-approved database helper processes on the local desktop.
+    pub fn with_local_database_tunnels(mut self) -> Self {
+        self.local_database_tunnels = true;
+        self
+    }
+
     pub fn new(config: HostConfig) -> Self {
         let HostConfig {
             config_dir,
@@ -186,6 +193,7 @@ impl Host {
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),
+            local_database_tunnels: false,
             mcp_executable: Arc::default(),
             mcp: Default::default(),
             diagnostics,

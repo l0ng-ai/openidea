@@ -425,3 +425,150 @@ async fn cancelling_a_later_page_stops_its_statement_on_the_server() -> IdeResul
     assert_eq!(running, 0, "the cancelled statement still runs on the server");
     Ok(())
 }
+
+// The same test executable serves as a foreground TCP forwarder for the managed-route test.
+#[test]
+fn postgres_tunnel_fixture() {
+    use std::io::{Write, copy};
+    use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
+    let flag = |prefix: &str| std::env::args().find_map(|s| s.strip_prefix(prefix).map(String::from));
+    let Some(port) = flag("listen=") else { return };
+    if let Some(file) = flag("waiting=") {
+        std::fs::write(file, port.as_bytes()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        return;
+    }
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port.parse::<u16>().unwrap())).unwrap();
+    let log = flag("start-log=").unwrap();
+    let mut file = std::fs::OpenOptions::new().append(true).create(true).open(log).unwrap();
+    writeln!(file, "{port}").unwrap();
+    let destination = flag("forward=").unwrap();
+    for stream in listener.incoming() {
+        let mut client = stream.unwrap();
+        let dest = destination.clone();
+        std::thread::spawn(move || {
+            let mut remote = TcpStream::connect(dest).unwrap();
+            let mut input = client.try_clone().unwrap();
+            let mut output = remote.try_clone().unwrap();
+            std::thread::spawn(move || {
+                let _ = copy(&mut input, &mut output);
+                let _ = output.shutdown(Shutdown::Write);
+            });
+            let _ = copy(&mut remote, &mut client);
+            let _ = client.shutdown(Shutdown::Write);
+        });
+    }
+}
+
+#[tokio::test]
+async fn managed_tunnel_shares_the_forwarder_and_closes_it_after_the_last_target() -> IdeResult<()> {
+    let Some((host, port, user, password)) = server() else { return Ok(()) };
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path();
+    let log = root.join("starts");
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(root.join("ssh-secrets")));
+    let db = DbManager::new(root.into(), root.join("passwords.json"), root.join("history.json"), ssh)
+        .with_global_sources(root.join("app"))
+        .with_local_external_tunnels(true);
+    let source = DataSource {
+        id: "tunnel".into(),
+        name: "Tunnel fixture".into(),
+        driver: DbDriver::Postgres,
+        host,
+        port: Some(port),
+        user,
+        database: "postgres".into(),
+        read_only: true,
+        external_tunnel: Some(ide_db::DbExternalTunnel {
+            executable: std::env::current_exe()?.to_string_lossy().into_owned(),
+            arguments: vec![
+                "--exact".into(),
+                "postgres_tunnel_fixture".into(),
+                "--skip".into(),
+                "listen={localPort}".into(),
+                "--skip".into(),
+                "forward={host}:{port}".into(),
+                "--skip".into(),
+                format!("start-log={}", log.display()),
+            ],
+        }),
+        ..Default::default()
+    };
+    db.save_sources(vec![source.clone()]).await?;
+    db.set_password("tunnel", Some(password), false).await?;
+    assert!(db.pool("tunnel").await.is_err());
+    assert!(!log.exists());
+    assert!(db.test_external_tunnel(&source, None).await?.contains("PostgreSQL"));
+    assert!(db.pool("tunnel").await.is_err(), "Test must not persist launch approval");
+    db.approve_external_tunnel(&source).await?;
+    let (a, b) = tokio::try_join!(db.pool("tunnel"), db.pool("tunnel:postgres"))?;
+    assert_eq!(std::fs::read_to_string(&log)?.lines().count(), 2, "one test helper and one pooled helper");
+    assert!(db.is_connected("tunnel") && db.is_connected("tunnel:postgres"));
+    drop((a, b));
+    db.disconnect("tunnel").await;
+    let result = db.execute("tunnel:postgres", "SELECT 1", 1, &CancellationToken::new()).await?;
+    assert_eq!(result.rows, vec![vec![Some("1".to_owned())]]);
+    db.disconnect_source("tunnel").await;
+    let ports: Vec<u16> = std::fs::read_to_string(log)?.lines().map(|p| p.parse().unwrap()).collect();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        for port in ports {
+            while tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+    })
+    .await
+    .expect("both helpers must stop");
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_startup_does_not_block_another_source_and_disconnect_cancels_it() -> IdeResult<()> {
+    let tmp = tempfile::tempdir()?;
+    let dir = tmp.path();
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(dir.join("ssh-secrets")));
+    let db = DbManager::new(dir.into(), dir.join("passwords.json"), dir.join("history.json"), ssh)
+        .with_global_sources(dir.join("app"))
+        .with_local_external_tunnels(true);
+    let waiting = dir.join("starting");
+    let pending = DataSource {
+        id: "pending".into(),
+        name: "Starting helper".into(),
+        driver: DbDriver::Postgres,
+        host: "db.example".into(),
+        external_tunnel: Some(ide_db::DbExternalTunnel {
+            executable: std::env::current_exe()?.to_string_lossy().into_owned(),
+            arguments: vec![
+                "--exact".into(),
+                "postgres_tunnel_fixture".into(),
+                "--skip".into(),
+                "listen={localPort}".into(),
+                "--skip".into(),
+                format!("waiting={}", waiting.display()),
+            ],
+        }),
+        ..Default::default()
+    };
+    let file = dir.join("local.db");
+    std::fs::File::create(&file)?;
+    let sqlite =
+        DataSource { id: "local".into(), name: "SQLite fixture".into(), file: Some(file.into()), ..Default::default() };
+    db.approve_external_tunnel(&pending).await?;
+    db.save_sources(vec![pending, sqlite]).await?;
+    let connect = db.pool("pending");
+    let edit = async {
+        while !waiting.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        db.pool("local").await?;
+        assert!(db.is_connected("local"));
+        db.disconnect_source("pending").await;
+        Ok::<_, ide_core::IdeError>(())
+    };
+    let (result, edit) = tokio::time::timeout(std::time::Duration::from_secs(8), async { tokio::join!(connect, edit) })
+        .await
+        .expect("the pending PostgreSQL helper must not block SQLite or disconnect");
+    edit?;
+    assert!(matches!(result, Err(error) if error.kind == ide_core::error::ErrorKind::Cancelled));
+    Ok(())
+}
