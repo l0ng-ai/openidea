@@ -127,7 +127,9 @@ export const replyActions: Action[] = [
       if (!resolved?.operations.regenerate) return;
       const { task, reply } = resolved;
       return runReplyOperation(task.id, "Couldn't regenerate the response", () =>
-        rerunFrom(task.id, reply.turn, reply.prompt.text, reply.prompt.images ?? []),
+        rerunFrom(task.id, reply.turn, reply.prompt.text, reply.prompt.images ?? [], {
+          title: "Regenerate Response",
+        }),
       );
     },
   },

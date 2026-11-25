@@ -4754,6 +4754,69 @@ async fn a_message_sent_before_turns_were_recorded_cannot_take_the_files_back() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn rolling_back_to_first_message_without_turn_record_checks_before_changing_anything() {
+    let repo = Checkout::new(Eol::Lf);
+    repo.write("a.txt", "base\n");
+    repo.write("b.txt", "base\n");
+    repo.commit("init");
+    repo.write("a.txt", "user edit\n");
+    let mgr = manager(&repo.dir, Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask { prompt: text("Hello"), provider: "claude".into(), ..Default::default() })
+        .await
+        .unwrap();
+    one_turn(&mgr, &task.id, None, || {
+        repo.write("a.txt", "agent edit\n");
+        repo.write("b.txt", "agent edit\n");
+    })
+    .await;
+    {
+        let handle = mgr.task(&task.id).unwrap();
+        let mut s = handle.state.lock();
+        s.turns[0] = None;
+        s.saved = None;
+    }
+    assert!(mgr.rollback(&task.id, 0, true).await.is_err());
+    assert_eq!(turn_starts(&mgr.entries(&task.id, None).unwrap()).len(), 1, "conversation stays intact");
+    assert!(mgr.task(&task.id).unwrap().state.lock().session_id.is_some(), "session stays intact");
+    assert_eq!(repo.read("a.txt"), "agent edit\n");
+    assert_eq!(repo.read("b.txt"), "agent edit\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_turn_rollback_keeps_user_edits_to_other_turns_files_and_reverts_committed_files() {
+    let repo = Checkout::new(Eol::Lf);
+    repo.write("turn1.txt", "base\n");
+    repo.write("turn2.txt", "base\n");
+    repo.commit("init");
+    let mgr = manager(&repo.dir, Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("Hello"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    one_turn(&mgr, &task.id, None, || repo.write("turn1.txt", "turn 1\n")).await;
+    one_turn(&mgr, &task.id, Some("more"), || {
+        repo.write("turn2.txt", "turn 2\n");
+        repo.write("committed.txt", "from turn 2\n");
+        repo.git(&["add", "committed.txt"]);
+        repo.git(&["commit", "-q", "-m", "turn 2 commit"]);
+    })
+    .await;
+    // User edits a file from turn 1 after turn 2 finishes.
+    repo.write("turn1.txt", "turn 1 + user edit\n");
+
+    mgr.rollback(&task.id, 1, true).await.unwrap();
+    assert_eq!(repo.read("turn1.txt"), "turn 1 + user edit\n");
+    assert_eq!(repo.read("turn2.txt"), "base\n");
+    assert!(!repo.dir.join("committed.txt").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rolling_back_the_whole_task_leaves_the_last_turn_nothing_to_list() {
     let repo = Checkout::new(Eol::Lf);
     repo.write("a.txt", "base\n");

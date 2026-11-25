@@ -319,7 +319,12 @@ function UserMessage({
               title={inPlace ? "Run Again From Here" : "Send Again"}
               onClick={() =>
                 void (
-                  inPlace ? rerunFrom(task.id, turn, entry.text, images) : resendMessage(task.id, entry.text)
+                  inPlace
+                    ? rerunFrom(task.id, turn, entry.text, images, {
+                        title: "Run Again From Here",
+                        later: turn < turnCount - 1,
+                      })
+                    : resendMessage(task.id, entry.text)
                 ).catch(fail)
               }
             />

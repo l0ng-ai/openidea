@@ -1555,18 +1555,37 @@ async function stopForEdit(task: string) {
  * put back, then `text` is sent.
  * Whatever fails, the message is kept in the composer so it can be sent again.
  */
-export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<boolean> {
-  if (
-    turn === 0 &&
+export async function rerunFrom(
+  task: string,
+  turn: number,
+  text: string,
+  images: AgentImage[] = [],
+  confirmRewind?: { title: string; later?: boolean },
+): Promise<boolean> {
+  if (turn === 0) {
+    if (
+      !(await confirm({
+        title: "Start a Fresh Agent Session",
+        message:
+          "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.",
+        ok: "Start Fresh",
+        icon: "warning",
+      }))
+    )
+      return false;
+  } else if (
+    confirmRewind &&
     !(await confirm({
-      title: "Start a Fresh Agent Session",
-      message:
-        "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.",
-      ok: "Start Fresh",
+      title: confirmRewind.title,
+      message: confirmRewind.later
+        ? "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent."
+        : "The files the agent changed since go back to how they were before this message was sent.",
+      ok: "Roll Back",
       icon: "warning",
     }))
-  )
+  ) {
     return false;
+  }
   try {
     await stopForEdit(task);
     await call(commands.agentRollback(task, turn, true));

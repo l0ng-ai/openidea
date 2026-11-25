@@ -697,12 +697,24 @@ pub(crate) fn snapshot(cwd: &Path) -> IdeResult<BTreeMap<String, Stamp>> {
                 if let Some(rel) = nested_rel(&base, repo, &roots, &s.path) {
                     out.insert(rel, stamp(&s.path));
                 }
+                if let Some(old) = &s.renamed_from
+                    && let Some(rel) = nested_rel(&base, repo, &roots, &repo.root().join(old))
+                {
+                    out.entry(rel).or_insert(None);
+                }
             }
         }
         return Ok(out);
     }
     let Some(repo) = Repo::discover(cwd)? else { return Ok(BTreeMap::new()) };
-    Ok(repo.status()?.into_iter().map(|s| (s.rel_path, stamp(&s.path))).collect())
+    let mut out = BTreeMap::new();
+    for s in repo.status()? {
+        out.insert(s.rel_path, stamp(&s.path));
+        if let Some(old) = s.renamed_from {
+            out.entry(old).or_insert(None);
+        }
+    }
+    Ok(out)
 }
 
 /// The files whose state changed between two snapshots of a checkout: edited, new, deleted,
@@ -763,6 +775,36 @@ pub(crate) fn save_before(cwd: &Path, before: &BTreeMap<String, Stamp>, dir: &Pa
     Ok(saved)
 }
 
+fn restore_content(
+    cwd: &Path,
+    rev: Option<&str>,
+    change: &AgentChange,
+    before: &BTreeMap<String, Stamp>,
+    saved: Option<&Path>,
+) -> IdeResult<Option<Vec<u8>>> {
+    match before.get(&change.rel_path) {
+        Some(None) => Ok(None),
+        Some(Some(_)) => {
+            let copy =
+                saved.map(|d| d.join(saved_name(&change.rel_path))).filter(|p| p.is_file()).ok_or_else(|| {
+                    IdeError::invalid(format!(
+                        "{} had changes of yours when the task started that weren't saved; roll it back in Git instead",
+                        change.rel_path
+                    ))
+                })?;
+            Ok(Some(std::fs::read(copy)?))
+        }
+        None => match rev {
+            Some(rev) => {
+                let at = change.repo.as_ref().map_or(cwd, |r| r.0.as_path());
+                let repo = Repo::discover(at)?.ok_or_else(|| IdeError::invalid("not in a git repository"))?;
+                repo.file_bytes_at(&change.path.0, Some(rev))
+            }
+            None => Ok(None),
+        },
+    }
+}
+
 /// Rolls `change` back: to the copy saved when the task started when the file had changes
 /// then (`before`, `saved` holding the copies), otherwise to `rev` (removed when `rev` lacks
 /// it, or when there is no `rev`: the repository had no commits).
@@ -773,28 +815,35 @@ pub(crate) fn restore(
     before: &BTreeMap<String, Stamp>,
     saved: Option<&Path>,
 ) -> IdeResult<()> {
-    let content = match before.get(&change.rel_path) {
-        Some(None) => None,
-        Some(Some(_)) => {
-            let copy =
-                saved.map(|d| d.join(saved_name(&change.rel_path))).filter(|p| p.is_file()).ok_or_else(|| {
-                    IdeError::invalid(format!(
-                        "{} had changes of yours when the task started that weren't saved; roll it back in Git instead",
-                        change.rel_path
-                    ))
-                })?;
-            Some(std::fs::read(copy)?)
-        }
-        None => match rev {
-            Some(rev) => {
-                let at = change.repo.as_ref().map_or(cwd, |r| r.0.as_path());
-                let repo = Repo::discover(at)?.ok_or_else(|| IdeError::invalid("not in a git repository"))?;
-                repo.file_bytes_at(&change.path.0, Some(rev))?
-            }
-            None => None,
-        },
+    put(&change.path.0, restore_content(cwd, rev, change, before, saved)?)
+}
+
+/// The files the task changed since it started, with what to put back. Fails, changing
+/// nothing, when one can't be put back.
+pub(crate) fn plan_restore(
+    at: &TaskBase,
+    before: &BTreeMap<String, Stamp>,
+    saved: Option<&Path>,
+    touched: Option<&BTreeSet<String>>,
+) -> IdeResult<Vec<PutBack>> {
+    let changes = made_by_task(at.changes(before, None)?, touched);
+    let rev = at.rev()?;
+    let sources = match rev.as_deref() {
+        Some(rev) => rename_sources(at.cwd(), rev)?,
+        None => Default::default(),
     };
-    put(&change.path.0, content)
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for change in &changes {
+        for change in std::iter::once(change).chain(sources.get(&change.rel_path)) {
+            if !seen.insert(change.rel_path.clone()) {
+                continue;
+            }
+            let content = restore_content(at.cwd(), rev.as_deref(), change, before, saved)?;
+            out.push(PutBack { rel: change.rel_path.clone(), path: change.path.0.clone(), content });
+        }
+    }
+    Ok(out)
 }
 
 /// Writes `content` to `path`, or removes the file when there is none.
@@ -852,11 +901,16 @@ fn is_false(b: &bool) -> bool {
 
 /// The name of the copy of `rel` as stamped `stamp`: the same while the file is unchanged.
 fn turn_copy_name(rel: &str, stamp: &Stamp) -> String {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut hash = DefaultHasher::new();
-    rel.hash(&mut hash);
-    stamp.hash(&mut hash);
-    format!("t{:016x}", hash.finish())
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(rel.as_bytes());
+    hasher.update(&[0]);
+    if let Some((len, modified)) = stamp {
+        hasher.update(&[1]);
+        hasher.update(&len.to_le_bytes());
+        hasher.update(&modified.to_le_bytes());
+    }
+    let hex = hasher.finalize().to_hex();
+    format!("t{}", &hex[..16])
 }
 
 impl TurnStart {
@@ -930,6 +984,10 @@ pub(crate) struct PutBack {
 /// to put back. Fails, changing nothing, when one can't be put back.
 pub(crate) fn rewind(cwd: &Path, start: &TurnStart, dir: &Path, rels: &BTreeSet<String>) -> IdeResult<Vec<PutBack>> {
     let Some(at) = TurnRepos::of(cwd)? else { return Ok(Vec::new()) };
+    let mut lower_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for rel in rels {
+        *lower_counts.entry(rel.to_lowercase()).or_default() += 1;
+    }
     let mut out = Vec::new();
     for rel in rels {
         let path = at.base.join(rel);
@@ -938,7 +996,10 @@ pub(crate) fn rewind(cwd: &Path, start: &TurnStart, dir: &Path, rels: &BTreeSet<
             continue;
         }
         let then = at_turn_start(&at, rel, start, dir)?;
-        if existing(&path).is_some_and(|now| now == then) {
+        // On a case-insensitive disk, `existing(&path)` can read a case-only rename's new name;
+        // keep the write so `put_back` deletes the new name and recreates the old one.
+        let case_collision = lower_counts.get(&rel.to_lowercase()).is_some_and(|&n| n > 1);
+        if !case_collision && existing(&path).is_some_and(|now| now == then) {
             continue;
         }
         out.push(PutBack { rel: rel.clone(), path, content: then });
@@ -946,12 +1007,28 @@ pub(crate) fn rewind(cwd: &Path, start: &TurnStart, dir: &Path, rels: &BTreeSet<
     Ok(out)
 }
 
-/// Writes what `rewind` planned.
-pub(crate) fn put_back(planned: Vec<PutBack>) -> IdeResult<()> {
+/// Writes what `rewind` or `plan_restore` planned, returning the files back to their saved
+/// pre-task copy so `before` can be restamped.
+pub(crate) fn put_back(
+    mut planned: Vec<PutBack>,
+    before: &BTreeMap<String, Stamp>,
+    saved: Option<&Path>,
+) -> IdeResult<Vec<(String, Stamp)>> {
+    // Removals first so a case-only rename on a case-insensitive disk ends at its old name.
+    planned.sort_by_key(|f| f.content.is_some());
+    let mut restamped = Vec::new();
     for file in planned {
+        let should_restamp = matches!(before.get(&file.rel), Some(Some(_)))
+            && file
+                .content
+                .as_deref()
+                .is_some_and(|bytes| saved.and_then(|d| saved_copy(d, &file.rel)).as_deref() == Some(bytes));
         put(&file.path, file.content)?;
+        if should_restamp {
+            restamped.push((file.rel, stamp(&file.path)));
+        }
     }
-    Ok(())
+    Ok(restamped)
 }
 
 /// The files that changed in `cwd` since the turn `start` began: in the working tree (as
@@ -1410,6 +1487,33 @@ mod tests {
         prune_turn_copies(&dir, [&third]);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         assert_eq!(copy(&third, "b.txt").as_deref(), Some(&b"kept\n"[..]));
+    }
+
+    #[test]
+    fn put_back_removes_new_name_before_writing_old_name_for_case_only_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("A.txt"), "upper\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+
+        let dir = tmp.path().join("turn");
+        let start = start_turn(&repo, &dir).unwrap();
+        git(&repo, &["mv", "A.txt", "a.txt"]);
+        let changed = changed_in_turn(&repo, &start).unwrap().1;
+        let planned = rewind(&repo, &start, &dir, &changed).unwrap();
+        put_back(planned, &BTreeMap::new(), None).unwrap();
+
+        assert_eq!(std::fs::read_to_string(repo.join("A.txt")).unwrap(), "upper\n");
+        let entries: Vec<String> = std::fs::read_dir(&repo)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != ".git")
+            .collect();
+        assert_eq!(entries, ["A.txt"]);
     }
 
     #[cfg(unix)]

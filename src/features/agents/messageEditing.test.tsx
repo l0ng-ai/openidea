@@ -107,6 +107,19 @@ it("keeps the transcript and running session when a fresh-session rerun is cance
   expect(useAgents.getState().entries.get(task.id)).toEqual(entries);
 });
 
+it("confirms before rerunning a later turn when confirmRewind is requested", async () => {
+  ipc.confirm.mockResolvedValue(false);
+  expect(await rerunFrom(task.id, 1, "Follow up", [], { title: "Run Again From Here", later: true })).toBe(false);
+  expect(ipc.confirm).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: "Run Again From Here",
+      message: expect.stringContaining("files the agent changed since"),
+    }),
+  );
+  expect(ipc.rollback).not.toHaveBeenCalled();
+  expect(ipc.prompt).not.toHaveBeenCalled();
+});
+
 describe("rolling back to a message", () => {
   it.each([0, 1])("stops before rollback and restores text/images without sending (turn %s)", async (turn) => {
     const image = { mimeType: "image/png", data: "AAA", name: "shot.png" };

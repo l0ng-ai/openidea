@@ -459,14 +459,14 @@ impl PendingModel {
 /// The changed files of a checkout, stamped.
 type Snapshot = BTreeMap<String, worktree::Stamp>;
 
-/// What rolling back to an earlier message does to the files.
-enum Rewind {
-    /// They stay as they are.
-    None,
-    /// Back as they were when the task started.
-    TaskStart,
-    /// These files back as they were.
-    Files(Vec<worktree::PutBack>),
+/// Holds `TaskState::busy` for the duration of an operation so concurrent prompts or rollbacks
+/// wait until it finishes.
+struct BusyGuard(Arc<Task>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.state.lock().busy = false;
+    }
 }
 
 struct TaskState {
@@ -1518,19 +1518,26 @@ impl AgentManager {
     /// started; otherwise they stay as they are.
     pub async fn rollback(&self, id: &str, turns: u32, files: bool) -> IdeResult<Option<AgentPrompt>> {
         let task = self.task(id)?;
-        if task.state.lock().busy {
-            return Err(IdeError::invalid("wait until the agent is done"));
-        }
-        let starts = turn_starts(&task.state.lock().conversation.main.entries);
-        let Some(&cut) = starts.get(turns as usize) else { return Ok(None) };
+        let (starts, cut) = {
+            let mut s = task.state.lock();
+            if s.busy {
+                return Err(IdeError::invalid("wait until the agent is done"));
+            }
+            let starts = turn_starts(&s.conversation.main.entries);
+            let Some(&cut) = starts.get(turns as usize) else { return Ok(None) };
+            s.busy = true;
+            (starts, cut)
+        };
+        let guard = BusyGuard(task.clone());
         // Read and checked before anything changes: a file that can't go back stops it all.
-        let rewind = if files { self.plan_rewind(&task, turns as usize).await? } else { Rewind::None };
+        let planned = if files { self.plan_rewind(&task, turns as usize, starts.len()).await? } else { Vec::new() };
         // Dropping every turn starts the conversation over, which needs no agent-side
         // rewind — and some agents cannot rewind past their first turn (a resumed
         // Claude Code session). A fresh session avoids both.
         if turns == 0 {
             task.kill();
-            let first = {
+            let restamped = self.write_rewind(&task, planned).await?;
+            let (first, dir, kept) = {
                 let mut s = task.state.lock();
                 let first = match s.conversation.main.entries.get(cut) {
                     Some(AgentEntry::User { text, .. }) => {
@@ -1547,26 +1554,29 @@ impl AgentManager {
                 s.task.usage = None;
                 s.pending_rollback = 0;
                 s.task.updated_ms = now_ms();
-                first
+                Self::finish_rewind(&mut s, 0, restamped);
+                (first, task.turn_dir(), s.turns.clone())
             };
+            drop(guard);
             task.streamed.lock().clear();
             task.persist();
             self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: 0 });
             task.emit_task();
-            self.put_back(&task, rewind, 0).await?;
+            self.prune_turn_copies(dir, kept).await;
             return Ok(first);
         }
         let live = task.ensure_session().await.map_err(IdeError::internal)?;
         if !live.capabilities.rollback {
             return Err(IdeError::invalid("this agent can't undo turns"));
         }
-        let drop = (starts.len() - turns as usize) as u32;
+        let drop_turns = (starts.len() - turns as usize) as u32;
         let _: Value = live
             .peer
-            .request("_openidea/rollback", json!({ "sessionId": live.session, "turns": drop }), None)
+            .request("_openidea/rollback", json!({ "sessionId": live.session, "turns": drop_turns }), None)
             .await
             .map_err(|e| IdeError::internal(task.describe(e)))?;
-        let first = {
+        let restamped = self.write_rewind(&task, planned).await?;
+        let (first, dir, kept) = {
             let mut s = task.state.lock();
             let first = match s.conversation.main.entries.get(cut) {
                 Some(AgentEntry::User { text, .. }) => Some(AgentPrompt { text: text.clone(), ..Default::default() }),
@@ -1574,13 +1584,15 @@ impl AgentManager {
             };
             s.conversation.truncate(cut);
             s.task.updated_ms = now_ms();
-            first
+            Self::finish_rewind(&mut s, turns as usize, restamped);
+            (first, task.turn_dir(), s.turns.clone())
         };
+        drop(guard);
         task.streamed.lock().clear();
         task.persist();
         self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: cut as u32 });
-        self.put_back(&task, rewind, turns as usize).await?;
         task.emit_task();
+        self.prune_turn_copies(dir, kept).await;
         // Undoing may have started the agent: it stops again once idle.
         task.release_when_idle();
         Ok(first)
@@ -1939,75 +1951,95 @@ impl AgentManager {
     }
 
     /// What rolling the task's files back to the start of its turn `turn` writes.
-    async fn plan_rewind(&self, task: &Arc<Task>, turn: usize) -> IdeResult<Rewind> {
-        let (cwd, start, touched) = {
+    async fn plan_rewind(
+        &self,
+        task: &Arc<Task>,
+        turn: usize,
+        total_turns: usize,
+    ) -> IdeResult<Vec<worktree::PutBack>> {
+        let (cwd, start, before, saved, touched, dropped_changed) = {
             let s = task.state.lock();
-            (s.task.cwd.0.clone(), s.turns.get(turn).cloned().flatten(), s.touched.clone())
+            let start = s.turns.get(turn).cloned().flatten();
+            let dropped = s.turns.get(turn..).unwrap_or(&[]);
+            let dropped_changed = (dropped.len() == total_turns - turn
+                && dropped.iter().all(|t| t.as_ref().is_some_and(|t| t.changed.is_some())))
+            .then(|| {
+                dropped
+                    .iter()
+                    .flatten()
+                    .filter_map(|t| t.changed.as_ref())
+                    .flatten()
+                    .cloned()
+                    .collect::<BTreeSet<String>>()
+            });
+            (
+                s.task.cwd.0.clone(),
+                start,
+                s.before.clone(),
+                s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)),
+                s.touched.clone(),
+                dropped_changed,
+            )
         };
         let Some(start) = start else {
             // The task's own start is the first turn's.
             if turn == 0 {
-                return Ok(Rewind::TaskStart);
+                let at = task.base();
+                return vcs(&self.shared, move || {
+                    worktree::plan_restore(&at, &before, saved.as_deref(), touched.as_deref())
+                })
+                .await;
             }
             return Err(IdeError::invalid(
                 "the files weren't recorded as this message was sent: roll them back in the Changes view instead",
             ));
         };
         let dir = task.turn_dir();
-        let planned = vcs(&self.shared, move || {
+        vcs(&self.shared, move || {
             let mut changed = worktree::changed_in_turn(&cwd, &start)?.1;
-            // In the project's own checkout, the files the user changed are theirs.
+            // In the project's own checkout, only files the rolled-back turns changed are put back.
             if let Some(touched) = &touched {
-                changed.retain(|rel| touched.contains(rel));
+                let scope = dropped_changed.as_ref().unwrap_or(touched);
+                changed.retain(|rel| scope.contains(rel));
             }
             worktree::rewind(&cwd, &start, &dir, &changed)
         })
-        .await?;
-        Ok(Rewind::Files(planned))
+        .await
     }
 
-    /// Writes what `plan_rewind` read, and drops the records of the turns from `turn` on.
-    async fn put_back(&self, task: &Arc<Task>, rewind: Rewind, turn: usize) -> IdeResult<()> {
-        let written = match rewind {
-            Rewind::None => Vec::new(),
-            Rewind::TaskStart => {
-                self.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await?;
-                Vec::new()
-            }
-            Rewind::Files(planned) => {
-                let written: Vec<(String, PathBuf)> = planned.iter().map(|f| (f.rel.clone(), f.path.clone())).collect();
-                vcs(&self.shared, move || worktree::put_back(planned)).await?;
-                written
-            }
+    /// Writes what `plan_rewind` planned on the blocking VCS pool and computes any `before`
+    /// restamps off-lock.
+    async fn write_rewind(
+        &self,
+        task: &Arc<Task>,
+        planned: Vec<worktree::PutBack>,
+    ) -> IdeResult<Vec<(String, worktree::Stamp)>> {
+        if planned.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (before, saved) = {
+            let s = task.state.lock();
+            (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
         };
-        let (dir, kept) = {
-            let mut s = task.state.lock();
-            s.turns.truncate(turn);
-            // Back to the user's own edits from before the task: not a change of the task.
-            let saved = s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name));
+        vcs(&self.shared, move || worktree::put_back(planned, &before, saved.as_deref())).await
+    }
+
+    /// Drops the records of the turns from `turn` on and applies any restamps to `before`.
+    fn finish_rewind(s: &mut TaskState, turn: usize, restamped: Vec<(String, worktree::Stamp)>) {
+        s.turns.truncate(turn);
+        if !restamped.is_empty() {
             let mut before = (*s.before).clone();
-            let mut restamped = false;
-            for (rel, path) in &written {
-                if let Some(Some(_)) = before.get(rel)
-                    && let Some(copy) = saved.as_deref().and_then(|d| worktree::saved_copy(d, rel))
-                    && std::fs::read(path).is_ok_and(|now| now == copy)
-                {
-                    before.insert(rel.clone(), worktree::stamp(path));
-                    restamped = true;
-                }
-            }
-            if restamped {
-                s.before = Arc::new(before);
-            }
-            (task.turn_dir(), s.turns.clone())
-        };
-        task.persist();
+            before.extend(restamped);
+            s.before = Arc::new(before);
+        }
+    }
+
+    async fn prune_turn_copies(&self, dir: PathBuf, kept: Vec<Option<Arc<worktree::TurnStart>>>) {
         let _ = vcs(&self.shared, move || {
             worktree::prune_turn_copies(&dir, kept.iter().flatten().map(|t| &**t));
             Ok(())
         })
         .await;
-        Ok(())
     }
 
     /// Rollback: puts the task's changed files among `rel_paths` (all with `None`) back as
