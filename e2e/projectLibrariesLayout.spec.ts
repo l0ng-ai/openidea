@@ -45,7 +45,9 @@ test("Project Libraries groups attachments below one toolbar and saves the selec
     const panel = el.parentElement!;
     const notes = panel.nextElementSibling as HTMLElement;
     for (const line of notes.children) line.textContent = "Short note.";
-    const [p, n, row] = [panel, notes, panel.parentElement!].map((e) => e.getBoundingClientRect());
+    const p = panel.getBoundingClientRect();
+    const n = notes.getBoundingClientRect();
+    const row = panel.parentElement!.getBoundingClientRect();
     return { panelWidth: p.width, rowWidth: row.width, notesBelow: n.top >= p.bottom };
   });
   expect(layout.notesBelow).toBe(true);
