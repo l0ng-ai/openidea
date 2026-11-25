@@ -1,6 +1,9 @@
-//! System page gestures belong to the IDE keymap, not the webview's history.
-use objc2::{MainThreadMarker, Message, rc::Retained, runtime::AnyObject};
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventPhase, NSEventSwipeTrackingOptions, NSEventType, NSView};
+//! AppKit input routed to the workbench webview: Command shortcuts and page gestures.
+use objc2::{ClassType, MainThreadMarker, Message, msg_send, rc::Retained, runtime::AnyObject};
+use objc2_app_kit::{
+    NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSEventSwipeTrackingOptions, NSEventType, NSWindow,
+};
+use objc2_web_kit::WKWebView;
 use std::{cell::RefCell, collections::HashMap, ptr::NonNull};
 use tauri::{Listener, WebviewWindow};
 
@@ -34,16 +37,24 @@ fn stroke(window: &WebviewWindow, right: bool) {
 pub fn install(window: &WebviewWindow) {
     let target = window.clone();
     let _ = window.with_webview(move |webview| {
-        let view = unsafe { Retained::retain(webview.inner().cast::<NSView>()).unwrap() };
+        let view = unsafe { Retained::retain(webview.inner().cast::<WKWebView>()).unwrap() };
         let native = webview.ns_window() as usize;
         let window = target.clone();
         let block = block2::RcBlock::new(move |event: NonNull<NSEvent>| {
             let event = unsafe { event.as_ref() };
-            if event
-                .window(MainThreadMarker::new().expect("event monitor on main thread"))
-                .is_none_or(|w| Retained::as_ptr(&w) as usize != native)
-            {
-                return event as *const NSEvent as *mut NSEvent;
+            let pass = std::ptr::from_ref(event).cast_mut();
+            let key_down = event.r#type() == NSEventType::KeyDown;
+            if key_down && !event.modifierFlags().contains(NSEventModifierFlags::Command) {
+                return pass;
+            }
+            let Some(owner) = event.window(MainThreadMarker::new().expect("event monitor on main thread")) else {
+                return pass;
+            };
+            if Retained::as_ptr(&owner) as usize != native {
+                return pass;
+            }
+            if key_down {
+                return if workbench_key_equivalent(&view, &owner, event) { std::ptr::null_mut() } else { pass };
             }
             if event.r#type() == NSEventType::Swipe {
                 if event.deltaX() != 0.0 && event.deltaY() == 0.0 {
@@ -91,10 +102,13 @@ pub fn install(window: &WebviewWindow) {
                     notify(&window, "ide:page-swipe-candidate", candidate);
                 }
             }
-            event as *const NSEvent as *mut NSEvent
+            pass
         });
         let monitor = unsafe {
-            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::Swipe | NSEventMask::ScrollWheel, &block)
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::KeyDown | NSEventMask::Swipe | NSEventMask::ScrollWheel,
+                &block,
+            )
         };
         let Some(monitor) = monitor else {
             return;
@@ -114,6 +128,20 @@ pub fn install(window: &WebviewWindow) {
             )
         });
     });
+}
+
+fn workbench_key_equivalent(view: &WKWebView, owner: &NSWindow, event: &NSEvent) -> bool {
+    if !owner.isKeyWindow() || owner.attachedSheet().is_some() {
+        return false;
+    }
+    let Some(responder) = owner.firstResponder() else { return false };
+    if !std::ptr::eq(Retained::as_ptr(&responder).cast::<WKWebView>(), view) {
+        return false;
+    }
+    // Wry's child view declines every key equivalent. Restore WebKit's page-first dispatch
+    // for the focused workbench; WebKit declines a resent event so AppKit can try its menu.
+    // SAFETY: Tauri supplied a WKWebView subclass and the monitor runs on the AppKit thread.
+    unsafe { msg_send![super(view, WKWebView::class()), performKeyEquivalent: event] }
 }
 
 fn track(window: &WebviewWindow, id: u64) {

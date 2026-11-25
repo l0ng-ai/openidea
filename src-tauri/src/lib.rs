@@ -21,9 +21,9 @@ mod linux_window_state;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
-mod menu;
 #[cfg(target_os = "macos")]
-mod page_swipe;
+mod macos_webview_input;
+mod menu;
 mod plugin_web;
 #[cfg(target_os = "macos")]
 mod relaunch;
@@ -315,7 +315,7 @@ pub fn run() {
             window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
             {
-                page_swipe::forget(window.label());
+                macos_webview_input::forget(window.label());
                 titlebar::forget(window);
             }
             if windows::auxiliary_parent(window.label()).is_none() {
