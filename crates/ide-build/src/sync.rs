@@ -95,6 +95,8 @@ const DEPENDENCY_TREE_JAR: &str =
 /// The goals that read the effective POM into `effective` and the verbose dependency trees;
 /// `repo` is the local repository the build resolves from. Both goals name their plugin by
 /// coordinates: offline, a prefix resolves only from group metadata the repository may lack.
+/// Offline without a cached 3.x `maven-help-plugin`, `effective-pom` is skipped so `mvn -o`
+/// still resolves the dependency tree instead of failing to download the help plugin.
 fn maven_sync_goals(effective: &Path, offline: bool, repo: Option<&Path>) -> Vec<String> {
     let pinned = !offline || repo.is_some_and(|repo| repo.join(DEPENDENCY_TREE_JAR).is_file());
     let tree = if pinned {
@@ -105,12 +107,16 @@ fn maven_sync_goals(effective: &Path, offline: bool, repo: Option<&Path>) -> Vec
             |v| format!("org.apache.maven.plugins:maven-dependency-plugin:{v}:tree"),
         )
     };
-    vec![
-        maven::plugin_goal("help:effective-pom", repo),
-        format!("-Doutput={}", effective.to_string_lossy()),
-        tree,
-        "-Dverbose".into(),
-    ]
+    let has_help =
+        !offline || repo.is_some_and(|repo| maven::newest_local_plugin(repo, "maven-help-plugin", 3).is_some());
+    let mut goals = Vec::with_capacity(4);
+    if has_help {
+        goals.push(maven::plugin_goal("help:effective-pom", repo));
+        goals.push(format!("-Doutput={}", effective.to_string_lossy()));
+    }
+    goals.push(tree);
+    goals.push("-Dverbose".into());
+    goals
 }
 
 /// The settings' Maven options for the sync runs: the thread count (`-T`, also
@@ -947,19 +953,24 @@ mod tests {
         let help = "org.apache.maven.plugins:maven-help-plugin:3.5.1:effective-pom";
         let online = maven_sync_goals(Path::new("e.xml"), false, Some(tmp.path()));
         assert_eq!(online, [help, "-Doutput=e.xml", DEPENDENCY_TREE, "-Dverbose"]);
-        // Offline with neither plugin cached: the tree falls back to the project's own version.
+        // Offline with neither plugin cached: `effective-pom` is skipped so `mvn -o` does not fail
+        // on an uncached `maven-help-plugin`, and the tree falls back to the project's own version.
         let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
-        assert_eq!(offline, [help, "-Doutput=e.xml", "dependency:tree", "-Dverbose"]);
-        // #5757: offline, plugins in the local repository are named by their coordinates, since
-        // the prefix needs group metadata a repository filled from a private mirror may lack.
-        for (artifact, version) in
-            [("maven-help-plugin", "3.4.0"), ("maven-help-plugin", "2.2"), ("maven-dependency-plugin", "3.6.1")]
-        {
+        assert_eq!(offline, ["dependency:tree", "-Dverbose"]);
+        // #5757 / #5844: offline, plugins in the local repository are named by their coordinates,
+        // since the prefix needs group metadata a repository filled from a private mirror may lack;
+        // a repository with `maven-dependency-plugin` but no 3.x `maven-help-plugin` runs only the tree.
+        for (artifact, version) in [("maven-help-plugin", "2.2"), ("maven-dependency-plugin", "3.6.1")] {
             let jar =
                 tmp.path().join(format!("org/apache/maven/plugins/{artifact}/{version}/{artifact}-{version}.jar"));
             std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
             std::fs::write(&jar, "").unwrap();
         }
+        let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
+        assert_eq!(offline, ["org.apache.maven.plugins:maven-dependency-plugin:3.6.1:tree", "-Dverbose"]);
+        let help_jar = tmp.path().join("org/apache/maven/plugins/maven-help-plugin/3.4.0/maven-help-plugin-3.4.0.jar");
+        std::fs::create_dir_all(help_jar.parent().unwrap()).unwrap();
+        std::fs::write(&help_jar, "").unwrap();
         // A version folder without its jar (only the POM was fetched) doesn't count.
         std::fs::create_dir_all(tmp.path().join("org/apache/maven/plugins/maven-help-plugin/3.10.0")).unwrap();
         let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
