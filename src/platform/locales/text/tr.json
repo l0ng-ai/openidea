@@ -3143,6 +3143,7 @@
   "Browse…": "Gözat…",
   "Build": "Derle",
   "Build Project": "Projeyi Derle",
+  "Build '{targetName}'": "'{targetName}' Derle",
   "Build failed": "Derleme başarısız oldu",
   "Build files changed since the last reload": "Derleme dosyaları son yeniden yüklemeden bu yana değişti",
   "Build output": "Derleme çıktısı",

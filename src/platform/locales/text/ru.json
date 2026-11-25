@@ -1239,6 +1239,7 @@
   "Compile File": "Скомпилировать файл",
   "Compiles the current Java file with javac, without building its module": "Компилирует текущий файл Java с помощью javac без сборки его модуля",
   "Build Project": "Собрать проект",
+  "Build '{targetName}'": "Собрать «{targetName}»",
   "Build failed": "Ошибка сборки",
   "Build files changed since the last reload": "Файлы сборки изменились с момента последней перезагрузки",
   "Build output": "Вывод сборки",
