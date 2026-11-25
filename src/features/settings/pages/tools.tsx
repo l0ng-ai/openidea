@@ -807,12 +807,6 @@ export const TOOLS_PAGES: PageSpec[] = [
         title: "Conversation",
         options: [
           {
-            kind: "toggle",
-            key: "agents.foldTurns",
-            label: "Fold a finished turn's work",
-            hint: "Reasoning and tool calls before the reply fold into one line under its message",
-          },
-          {
             kind: "select",
             key: "agents.toolCalls",
             label: "Tool calls",

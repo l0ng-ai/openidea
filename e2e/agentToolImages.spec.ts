@@ -72,9 +72,9 @@ const entries: AgentEntry[] = [
   { type: "agent", text: "Glad it helped." },
 ];
 
-async function showImages(page: Page, foldTurns = true) {
+async function showImages(page: Page) {
   await page.evaluate(
-    async ({ task, entries, foldTurns }) => {
+    async ({ task, entries }) => {
       const storePath = "/src/features/agents/store.ts";
       const projectPath = "/src/platform/project.ts";
       const ipcPath = "/src/platform/ipc.ts";
@@ -82,7 +82,7 @@ async function showImages(page: Page, foldTurns = true) {
       const { useProject } = await import(projectPath);
       const { commands } = await import(ipcPath);
       commands.agentEntries = async () => ({ status: "ok", data: entries });
-      useProject.setState({ settings: { agents: { foldTurns, toolCalls: "grouped" } } });
+      useProject.setState({ settings: { agents: { toolCalls: "grouped" } } });
       store.useAgents.setState({
         loaded: true,
         error: null,
@@ -92,39 +92,33 @@ async function showImages(page: Page, foldTurns = true) {
       });
       store.openTaskInEditorLocation(task.id);
     },
-    { task, entries, foldTurns },
+    { task, entries },
   );
 }
 
-for (const foldTurns of [true, false]) {
-  test(`tool images remain visible and open a full preview with turn folding=${foldTurns}`, async ({
-    workbench: page,
-  }) => {
-    if (!foldTurns) await page.setViewportSize({ width: 700, height: 750 });
-    await showImages(page, foldTurns);
-    await expect(page.getByText("The preview is ready: front, side and back.", { exact: true })).toBeVisible();
-    const preview = page.getByRole("img", { name: "Image", exact: true });
-    await expect(preview).toBeVisible();
-    await expect(preview).toHaveJSProperty("naturalWidth", 900);
-    expect(await preview.evaluate((img) => img.closest("details") === null)).toBe(true);
-    const box = (await preview.boundingBox())!;
-    expect(box.x).toBeGreaterThanOrEqual(0);
-    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
-    const fold = page.locator("details").first();
-    await expect(fold).not.toHaveAttribute("open");
-    if (foldTurns) await expect(fold.locator("summary").first()).toContainText("1s");
-    else await expect(fold.locator("summary").first()).not.toContainText("1s");
-    await preview.click();
-    const dialog = page.getByRole("dialog", { name: "Image", exact: true });
-    await expect(dialog.getByRole("img")).toHaveJSProperty("naturalWidth", 900);
-    await dialog.getByText("Close", { exact: true }).click();
-    await expect(dialog).toHaveCount(0);
-    await fold.locator("summary").first().click();
-    await expect(preview).toHaveCount(1);
-    await fold.locator("summary").first().click();
-    await expect(preview).toBeVisible();
-  });
-}
+test("tool images remain visible and open a full preview", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 700, height: 750 });
+  await showImages(page);
+  await expect(page.getByText("The preview is ready: front, side and back.", { exact: true })).toBeVisible();
+  const preview = page.getByRole("img", { name: "Image", exact: true });
+  await expect(preview).toBeVisible();
+  await expect(preview).toHaveJSProperty("naturalWidth", 900);
+  expect(await preview.evaluate((img) => img.closest("details") === null)).toBe(true);
+  const box = (await preview.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  const fold = page.locator("details").first();
+  await expect(fold).not.toHaveAttribute("open");
+  await preview.click();
+  const dialog = page.getByRole("dialog", { name: "Image", exact: true });
+  await expect(dialog.getByRole("img")).toHaveJSProperty("naturalWidth", 900);
+  await dialog.getByText("Close", { exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await fold.locator("summary").first().click();
+  await expect(preview).toHaveCount(1);
+  await fold.locator("summary").first().click();
+  await expect(preview).toBeVisible();
+});
 
 test("copies full-size PNG pixels from the thumbnail menu and the image preview", async ({
   workbench: page,
