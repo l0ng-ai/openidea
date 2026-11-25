@@ -281,7 +281,13 @@ mod tests {
     fn login_shell_gets_a_new_session() {
         let tmp = tempfile::tempdir().unwrap();
         let (shell, rc) = fake_shell(tmp.path());
-        std::fs::write(&rc, "export OPENIDEA_TEST_PID=$$\nexport OPENIDEA_TEST_SID=$(ps -o sid= -p $$)\n").unwrap();
+        // macOS `ps` has no session id column; a session leader also leads its own process group.
+        let column = if cfg!(target_os = "linux") { "sid" } else { "pgid" };
+        std::fs::write(
+            &rc,
+            format!("export OPENIDEA_TEST_PID=$$\nexport OPENIDEA_TEST_SID=$(ps -o {column}= -p $$)\n"),
+        )
+        .unwrap();
         let env = read_login_env(&shell, Duration::from_secs(10)).unwrap();
         let get = |k: &str| {
             env.iter()
@@ -291,7 +297,11 @@ mod tests {
         };
         let shell_pid = get("OPENIDEA_TEST_PID");
         let shell_sid = get("OPENIDEA_TEST_SID");
-        let test_sid = rustix::process::getsid(None).unwrap().as_raw_nonzero().get();
+        let test_sid = if cfg!(target_os = "linux") {
+            rustix::process::getsid(None).unwrap().as_raw_nonzero().get()
+        } else {
+            rustix::process::getpgrp().as_raw_nonzero().get()
+        };
 
         assert_eq!(shell_sid, shell_pid);
         assert_ne!(shell_sid, test_sid);
