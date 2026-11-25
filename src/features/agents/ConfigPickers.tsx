@@ -526,7 +526,7 @@ function ModelPicker({
         !unavailable && (
           <button
             type="button"
-            className={clsx(styles.chip, styles.modelDetail)}
+            className={styles.chip}
             aria-label={tx`Model settings: ${summary}`}
             title={
               fullSummary && fullSummary !== summary
