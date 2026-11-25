@@ -111,6 +111,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Hungry Backspace", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="H" parent="$default"><action id="EditorHungryBackSpace"><keyboard-shortcut first-keystroke="control alt BACK_SPACE"/></action></keymap>`,
+    );
+    expect(k.overrides["code.hungryBackspace"]).toEqual([normalizeBinding("Ctrl+Alt+Backspace")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Move Caret to Page Top / Bottom", () => {
     const k = parseIdeaKeymap(
       `<keymap name="W" parent="$default"><action id="EditorMoveToPageTop"><keyboard-shortcut first-keystroke="alt PAGE_UP"/></action><action id="EditorMoveToPageBottomWithSelection"><keyboard-shortcut first-keystroke="alt shift PAGE_DOWN"/></action></keymap>`,

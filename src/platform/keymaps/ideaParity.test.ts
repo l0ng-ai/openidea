@@ -70,10 +70,12 @@ describe("IDEA keymap parity", () => {
     ["editor.moveToPageTopWithSelection", ["Meta+Shift+PageUp"], ["Ctrl+Shift+PageUp"]],
     ["editor.moveToPageBottomWithSelection", ["Meta+Shift+PageDown"], ["Ctrl+Shift+PageDown"]],
     ["editor.toggleInsertState", ["Insert"], ["Insert"]],
-    // EditorCutLineEnd: only `Mac OS X 10.5+` binds it; EditorDeleteToLineStart / End have no shortcut.
+    // EditorCutLineEnd: only `Mac OS X 10.5+` binds it; EditorDeleteToLineStart / End and
+    // EditorHungryBackSpace have no shortcut.
     ["code.cutLineEnd", ["Ctrl+K"], []],
     ["code.deleteToLineStart", [], []],
     ["code.deleteToLineEnd", [], []],
+    ["code.hungryBackspace", [], []],
     // CopyAsPlainText / CopyAsRichText have no shortcut.
     ["code.copyAsPlainText", [], []],
     ["code.copyAsRichText", [], []],

@@ -3,7 +3,7 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { writeClipboardText } from "@/platform/clipboard";
 import { clearClipboardHistory, clipboardHistory, recordClipboard } from "../clipboardHistory";
-import { cutToLineEnd, deleteToLogicalLineEnd, deleteToLogicalLineStart } from "./lineDeletion";
+import { cutToLineEnd, deleteToLogicalLineEnd, deleteToLogicalLineStart, hungryBackspace } from "./lineDeletion";
 
 vi.mock("@/platform/clipboard", () => ({ writeClipboardText: vi.fn(async () => {}) }));
 
@@ -170,5 +170,30 @@ describe("Cut up to Line End", () => {
     expect(show(v)).toBe("a|b");
     expect(writeClipboardText).not.toHaveBeenCalled();
     expect(clipboardHistory()).toEqual([]);
+  });
+});
+
+describe("Hungry Backspace", () => {
+  it.each([
+    ["the spaces before the caret", "ab   |cd", "ab|cd"],
+    ["tabs, blank lines and line breaks too", "ab\n\t\n  |cd", "ab|cd"],
+    ["whitespace up to the start of the text", " \n\t|x", "|x"],
+    ["only before the caret", "a |  b", "a|  b"],
+    ["one character after anything else", "ab|cd", "a|cd"],
+    ["a whole surrogate pair", "a\u{1F600}|b", "a|b"],
+    ["an empty bracket pair, like Backspace", "f(|)", "f|"],
+    ["a selection as it is", "a[b ]c", "a|c"],
+    ["nothing at the start of the text", "|ab", "|ab"],
+    ["whitespace or a character at each caret", "a  |b|\n  |c", "a|c"],
+    ["one run shared by two carets", "a  |  |b", "a|b"],
+    ["a selection beside a caret after whitespace", "[ab]  |c", "|c"],
+  ])("deletes %s", (_, text, expected) => {
+    expect(run(hungryBackspace, text)).toBe(expected);
+  });
+
+  it("does nothing in a read-only editor", () => {
+    const v = make("ab  |cd", true);
+    expect(hungryBackspace(v)).toBe(false);
+    expect(show(v)).toBe("ab  |cd");
   });
 });
