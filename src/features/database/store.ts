@@ -58,6 +58,7 @@ import {
 import { tableFolder, type DbNode } from "./nodes";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, type TableRef } from "./tableInput";
+import type { DiagramData } from "./erDiagram";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
 import { formatted } from "./sql/format";
@@ -174,7 +175,9 @@ export type DialogState =
   /** Export with 'mysqldump' of a data source, database or table. */
   | { kind: "mysqlDump"; target: string; database: string; tables?: string }
   /** Restore with 'mysql' into a database. */
-  | { kind: "mysqlRestore"; target: string; database: string };
+  | { kind: "mysqlRestore"; target: string; database: string }
+  /** Diagrams › Show Diagram Popup. */
+  | { kind: "diagram"; data: DiagramData };
 
 /** The schemas and tables of a data source's databases, as far as introspection has read them. */
 export interface SourceCatalog {

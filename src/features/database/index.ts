@@ -152,7 +152,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: DIAGRAM_KIND,
-      component: lazyComponent(() => import("./DiagramEditor").then((m) => m.DiagramEditor)),
+      component: lazyComponent(() => import("./DiagramView").then((m) => m.DiagramEditor)),
       title: diagramTitle,
       icon: () => "db-table",
     }),

@@ -40,6 +40,8 @@ describe("IDEA keymap parity", () => {
     ["run.collapseAllTests", ["Meta+-"], ["Ctrl+-"]],
     ["navigate.searchText", ["Meta+Alt+Shift+E"], ["Ctrl+Alt+Shift+E"]],
     ["db.showDiagram", ["Meta+Alt+Shift+U"], ["Ctrl+Alt+Shift+U"]],
+    // ShowUmlDiagramPopup shares Unshelve Silently's shortcut, which needs the Shelf to have focus.
+    ["db.showDiagramPopup", ["Meta+Alt+U"], ["Ctrl+Alt+U"]],
     ["python.console.executeSelection", ["Alt+Shift+E"], ["Alt+Shift+E"]],
     ["window.next", ["Meta+Alt+`"], ["Ctrl+Alt+]"]],
     ["window.previous", ["Meta+Alt+Shift+`"], ["Ctrl+Alt+["]],

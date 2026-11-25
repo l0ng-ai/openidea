@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { DbColumnInfo, DbForeignKey } from "@/platform/ipc";
-import { erDiagram, type DiagramTable } from "./erDiagram";
+import type { DbColumnInfo, DbForeignKey, DbIndexInfo } from "@/platform/ipc";
+import { diagramInput, diagramKey, diagramModel, type DiagramTable } from "./erDiagram";
 
 const col = (name: string, dataType = "integer", extra: Partial<DbColumnInfo> = {}): DbColumnInfo => ({
   name,
@@ -24,7 +24,8 @@ const table = (
   foreignKeys: DbForeignKey[] = [],
   schema = "public",
   id = "pg",
-): DiagramTable => ({ id, schema, name, details: { columns, indexes: [], foreignKeys, triggers: [] } });
+  indexes: DbIndexInfo[] = [],
+): DiagramTable => ({ id, schema, name, details: { columns, indexes, foreignKeys, triggers: [] } });
 
 const users = table("users", [col("id", "integer", { primaryKey: true }), col("name", "text")]);
 const orders = table(
@@ -33,104 +34,118 @@ const orders = table(
   [fk("orders", ["user_id"], "users"), fk("orders", ["coupon_id"], "coupons")],
 );
 
-describe("erDiagram", () => {
-  it("lists the columns with PK / FK markers and links the selected tables by their foreign keys", () => {
-    expect(erDiagram([users, orders])).toBe(
-      [
-        "erDiagram",
-        '  t0["users"] {',
-        "    `integer` `id` PK",
-        "    `text` `name`",
-        "  }",
-        '  t1["orders"] {',
-        "    `integer` `id` PK",
-        "    `integer` `user#95;id` FK",
-        "    `integer` `coupon#95;id` FK",
-        "  }",
-        '  t0 ||--o{ t1 : "user#95;id"',
-      ].join("\n"),
+describe("diagramModel", () => {
+  it("marks primary and foreign key columns and links the given tables by their foreign keys", () => {
+    const { nodes, edges } = diagramModel([users, orders]);
+    expect(nodes.map((n) => n.label)).toEqual(["users", "orders"]);
+    expect(nodes[1]!.columns.map((c) => [c.name, c.type, c.primaryKey, c.foreignKey])).toEqual([
+      ["id", "integer", true, false],
+      ["user_id", "integer", false, true],
+      ["coupon_id", "integer", false, true],
+    ]);
+    expect(edges).toEqual([{ from: 1, fromColumns: ["user_id"], to: 0, toColumns: ["id"], optional: false }]);
+  });
+
+  it("draws no link to a table that is not shown", () => {
+    expect(diagramModel([orders]).edges).toEqual([]);
+  });
+
+  it("makes a link optional when a referencing column is nullable", () => {
+    const coupons = table("coupons", [col("id", "integer", { primaryKey: true })]);
+    expect(diagramModel([coupons, orders]).edges).toContainEqual(
+      expect.objectContaining({ from: 1, fromColumns: ["coupon_id"], to: 0, optional: true }),
     );
   });
 
-  it("draws no relationship to a table that is not selected", () => {
-    expect(erDiagram([orders])).not.toContain("--");
-  });
-
-  it("makes the parent optional when a referencing column is nullable", () => {
-    const coupons = table("coupons", [col("id", "integer", { primaryKey: true })]);
-    expect(erDiagram([coupons, orders])).toContain('t0 |o--o{ t1 : "coupon#95;id"');
-  });
-
-  it("draws one relationship per composite foreign key, and one to the table itself", () => {
+  it("draws one link per composite foreign key, and one to the table itself", () => {
     const lines = table(
       "lines",
       [col("order_id"), col("n")],
       [{ ...fk("lines", ["order_id", "n"], "lines"), refColumns: ["order_id", "n"] }],
     );
-    expect(
-      erDiagram([lines])
-        .split("\n")
-        .filter((l) => l.includes("--")),
-    ).toEqual(['  t0 ||--o{ t0 : "order#95;id#44; n"']);
+    expect(diagramModel([lines]).edges).toEqual([
+      { from: 0, fromColumns: ["order_id", "n"], to: 0, toColumns: ["order_id", "n"], optional: false },
+    ]);
   });
 
   it("matches a referenced table spelled in another case (SQLite keeps the DDL's spelling)", () => {
     const child = table("child", [col("p")], [fk("child", ["p"], "USERS")]);
-    expect(erDiagram([users, child])).toContain('t0 ||--o{ t1 : "p"');
+    expect(diagramModel([users, child]).edges).toEqual([expect.objectContaining({ from: 1, to: 0 })]);
   });
 
   it("keeps tables of different schemas or data sources apart and qualifies their names", () => {
     const archived = table("users", [col("id")], [], "archive");
     const other = table("users", [col("id")], [], "public", "mysql");
-    const diagram = erDiagram([users, archived, other]);
-    expect(diagram).toContain('t0["public#46;users"]');
-    expect(diagram).toContain('t1["archive#46;users"]');
-    expect(diagram).toContain('t2["public#46;users"]');
-    const child = table("child", [col("u")], [fk("child", ["u"], "users", "archive")]);
-    expect(erDiagram([users, archived, child])).toContain('t1 ||--o{ t2 : "u"');
-  });
-
-  it.each([
-    ["spaces", "order items", "order items"],
-    ["a double quote", 'say "hi"', "say #34;hi#34;"],
-    ["a backtick", "a`b", "a#96;b"],
-    ["percent and backslash", "50%\\off", "50#37;#92;off"],
-    ["an entity-like name", "a#35;b", "a#35;35#59;b"],
-    ["markdown and HTML", "*x* <b>_y_</b>", "#42;x#42; #60;b#62;#95;y#95;#60;#47;b#62;"],
-    ["braces and a newline", "a{b}\nc", "a#123;b#125;#10;c"],
-    ["non-ASCII letters", "Заказы_2024", "Заказы#95;2024"],
-  ])("escapes %s in table, column and type names", (_, name, escaped) => {
-    const diagram = erDiagram([table(name, [col(name, name)], [fk(name, [name], name)])]);
-    expect(diagram.split("\n")).toEqual([
-      "erDiagram",
-      `  t0["${escaped}"] {`,
-      `    \`${escaped}\` \`${escaped}\` FK`,
-      "  }",
-      `  t0 ||--o{ t0 : "${escaped}"`,
+    expect(diagramModel([users, archived, other]).nodes.map((n) => n.label)).toEqual([
+      "public.users",
+      "archive.users",
+      "public.users",
     ]);
+    const child = table("child", [col("u")], [fk("child", ["u"], "users", "archive")]);
+    expect(diagramModel([users, archived, child]).edges).toEqual([expect.objectContaining({ from: 2, to: 1 })]);
+    expect(diagramModel([users]).nodes[0]!.label).toBe("users");
   });
 
-  it("stays valid Mermaid whatever the names", async () => {
-    const mermaid = (await import("mermaid")).default;
-    const names = [
-      "order items",
-      'say "hi"',
-      "a`b",
-      "50%\\off",
-      "a#35;b",
-      "*x* <b>_y_</b>",
-      "a{b}\nc",
-      "numeric(10,2)",
-      "",
-    ];
-    const tables = names.map((name, i) =>
-      table(name || `t${i}`, [col(name || "c", name)], [fk(name, [name || "c"], names[0]!)]),
+  describe("unique keys and indexes", () => {
+    const index = (name: string, columns: string[], unique = false): DbIndexInfo => ({ name, unique, columns });
+    const marks = (t: DiagramTable) =>
+      Object.fromEntries(
+        diagramModel([t]).nodes[0]!.columns.map((c) => [
+          c.name,
+          [c.primaryKey && "PK", c.unique && "UK", c.indexed && "IX", ...c.indexes].filter(Boolean).join(" "),
+        ]),
+      );
+    const people = (indexes: DbIndexInfo[]) =>
+      table(
+        "people",
+        [col("id", "integer", { primaryKey: true }), col("email", "text"), col("org"), col("team"), col("note")],
+        [],
+        "public",
+        "pg",
+        indexes,
+      );
+
+    it("marks the members of unique keys and of other indexes, with their names", () => {
+      expect(
+        marks(
+          people([
+            index("people_email_key", ["email"], true),
+            index("people_org_team_key", ["org", "team"], true),
+            index("people_team_idx", ["team"]),
+          ]),
+        ),
+      ).toEqual({
+        id: "PK",
+        email: "UK people_email_key",
+        org: "UK people_org_team_key",
+        team: "UK IX people_org_team_key people_team_idx",
+        note: "",
+      });
+    });
+
+    it("leaves out the primary key's own index, but not another index on its columns", () => {
+      expect(marks(people([index("people_pkey", ["id"], true)])).id).toBe("PK");
+      expect(marks(people([index("people_id_idx", ["id"])])).id).toBe("PK IX people_id_idx");
+      expect(marks(people([index("people_id_email_key", ["id", "email"], true)]))).toMatchObject({
+        id: "PK UK people_id_email_key",
+        email: "UK people_id_email_key",
+      });
+    });
+
+    it("ignores index members that aren't columns (expressions)", () => {
+      expect(marks(people([index("people_lower_idx", ["lower(email)"])]))).toMatchObject({ email: "", note: "" });
+    });
+  });
+});
+
+describe("diagramKey", () => {
+  it("is the same set of tables in any order, and differs by data source or schema", () => {
+    expect(diagramKey([users, orders])).toBe(diagramKey([orders, users]));
+    expect(diagramInput({ title: "a", tables: [users, orders] }).key).toBe(
+      diagramInput({ title: "b", tables: [orders, users] }).key,
     );
-    await expect(mermaid.parse(erDiagram(tables))).resolves.toBeTruthy();
-  });
-
-  it("gives a column without a declared type (SQLite) a placeholder type, and an unnamed one a placeholder name", () => {
-    expect(erDiagram([table("t", [col("x", "")])])).toContain("    `#63;` `x`");
-    expect(erDiagram([table("t", [col("")])])).toContain("    `integer` `#63;`");
+    expect(diagramKey([users])).not.toBe(diagramKey([{ ...users, id: "mysql" }]));
+    expect(diagramKey([users])).not.toBe(diagramKey([{ ...users, schema: "archive" }]));
+    expect(diagramKey([users])).not.toBe(diagramKey([users, orders]));
   });
 });

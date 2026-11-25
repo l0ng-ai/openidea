@@ -201,3 +201,33 @@ describe("data source colour", () => {
     expect(tint("SQLite")).toBe("");
   });
 });
+
+describe("multi-selection", () => {
+  it("keeps every selected node in tree order, not only the lead, for Show Diagram", () => {
+    useDatabase.setState({
+      tables: {
+        [tablesKey("pg", "public")]: {
+          status: "ok",
+          value: ["users", "orders", "audit"].map((name) => ({ name, kind: "table" as const })),
+        },
+      },
+      treeExpanded: new Set(["pg", "pg/public", "pg/public/tables"]),
+    });
+    render(<DatabaseView />);
+    const tree = within(screen.getByRole("tree", { name: "Data sources" }));
+    const keys = () => useDatabase.getState().selectedNodes.map((n) => n.key);
+    const click = (name: string, init: MouseEventInit = {}) =>
+      fireEvent.mouseDown(tree.getByText(name), { button: 0, ...init });
+    click("audit");
+    click("users", { metaKey: true });
+    expect(keys()).toEqual(["pg/public/tables/users", "pg/public/tables/audit"]);
+    // ⌘-click on a selected row deselects it, yet it becomes the lead.
+    click("users", { metaKey: true });
+    expect(keys()).toEqual(["pg/public/tables/audit"]);
+    expect(useDatabase.getState().selectedNode?.key).toBe("pg/public/tables/users");
+    click("audit", { shiftKey: true });
+    expect(keys()).toEqual(["pg/public/tables/users", "pg/public/tables/orders", "pg/public/tables/audit"]);
+    click("public");
+    expect(keys()).toEqual(["pg/public"]);
+  });
+});
