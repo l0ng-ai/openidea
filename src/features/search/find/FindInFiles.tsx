@@ -479,6 +479,12 @@ function FindInFilesDialog() {
     } else set({ scopeTab: id });
   };
 
+  /** Quick-search style: cycle through the four scopes instead of moving focus between tabs. */
+  const cycleScope = (dir: 1 | -1) => {
+    const i = SCOPE_TABS.findIndex((t) => t.id === s.scopeTab);
+    selectScope(SCOPE_TABS[(i + dir + SCOPE_TABS.length) % SCOPE_TABS.length]!.id);
+  };
+
   /** IDEA's "Clear all options" (⇧⌥⌫): back to a plain search everywhere. */
   const clearOptions = () =>
     set({ caseSensitive: false, wholeWord: false, isRegex: false, maskEnabled: false, context: "any" });
@@ -502,6 +508,12 @@ function FindInFilesDialog() {
       return;
     }
     if (!inField) return;
+    if (e.key === "Tab") {
+      // Quick-search style: Tab cycles the scope tabs while the search field keeps focus.
+      e.preventDefault();
+      cycleScope(e.shiftKey ? -1 : 1);
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       if (e.metaKey || e.ctrlKey) pin();
@@ -778,6 +790,7 @@ function FindInFilesDialog() {
             }))}
             activeId={s.scopeTab}
             onSelect={(id) => selectScope(id as ScopeTab)}
+            onCycle={cycleScope}
           />
           <div className={styles.scopeDetail}>
             {s.scopeTab === "directory" && (

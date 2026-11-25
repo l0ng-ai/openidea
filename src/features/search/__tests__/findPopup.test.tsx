@@ -314,6 +314,31 @@ describe("Find in Files popup", () => {
     expect(screen.getByRole("button", { name: "Open in Find Window" })).toBeEnabled();
   });
 
+  it("Tab in the search field cycles the scope tabs without leaving the field", async () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "order" }));
+    await settle();
+    const field = screen.getByLabelText("Text to find");
+    // project → module → directory → scope → project.
+    for (const expected of ["Module", "Directory", "Scope", "In Project"]) {
+      field.focus();
+      fireEvent.keyDown(field, { key: "Tab" });
+      expect(useFindPopup.getState().scopeTab).toBe(
+        { Module: "module", Directory: "directory", Scope: "scope", "In Project": "project" }[expected]!,
+      );
+      expect(screen.getByRole("tab", { name: expected })).toHaveAttribute("aria-selected", "true");
+    }
+    // Shift+Tab cycles backwards.
+    field.focus();
+    fireEvent.keyDown(field, { key: "Tab", shiftKey: true });
+    expect(useFindPopup.getState().scopeTab).toBe("scope");
+    expect(document.activeElement).toBe(field);
+    // Clicking a scope tab keeps focus in the search field.
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    screen.getByRole("tab", { name: "In Project" }).dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+  });
+
   it("closing remembers the search text", async () => {
     render(<FindInFilesOverlay />);
     act(() => showFindPopup(false, { query: "order" }));

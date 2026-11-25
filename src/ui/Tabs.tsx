@@ -155,6 +155,13 @@ export interface TabsProps {
   closePosition?: "right" | "left";
   /** `vertical`: a column of tabs (editor tabs placed left / right); always scrolls, `layout` is ignored. */
   orientation?: "horizontal" | "vertical";
+  /**
+   * Quick-search style tab strip (Search Everywhere / Find in Files scopes):
+   * clicking a tab keeps focus where it was (e.g. in a search field), and
+   * Left/Right/Tab cycle the selected tab through this callback instead of
+   * roving focus between tab buttons. Home/End still jump to the first/last tab.
+   */
+  onCycle?: (dir: 1 | -1) => void;
 }
 
 export function Tabs({
@@ -177,6 +184,7 @@ export function Tabs({
   hiddenTabsOnly = false,
   closePosition = "right",
   orientation = "horizontal",
+  onCycle,
   ...aria
 }: TabsProps) {
   const vertical = orientation === "vertical";
@@ -321,21 +329,27 @@ export function Tabs({
     onSelect(item.id);
     tabRefs.current.get(item.id)?.focus();
   };
+  const selectTab = (index: number) => {
+    const item = items[Math.max(0, Math.min(items.length - 1, index))];
+    if (item) onSelect(item.id);
+  };
 
   const onKeyDown = (e: KeyboardEvent, index: number, item: TabItem) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     switch (e.key) {
       case vertical ? "ArrowDown" : "ArrowRight":
-        focusTab(index + 1);
+        if (onCycle) onCycle(1);
+        else focusTab(index + 1);
         break;
       case vertical ? "ArrowUp" : "ArrowLeft":
-        focusTab(index - 1);
+        if (onCycle) onCycle(-1);
+        else focusTab(index - 1);
         break;
       case "Home":
-        focusTab(0);
+        selectTab(0);
         break;
       case "End":
-        focusTab(items.length - 1);
+        selectTab(items.length - 1);
         break;
       case "Delete":
       case "Backspace":
@@ -479,6 +493,7 @@ export function Tabs({
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
                 className={clsx(styles.tabButton, item.dimmed && styles.dimmed)}
                 style={item.color ? { color: item.color } : undefined}
+                onMouseDown={onCycle ? (e) => e.preventDefault() : undefined}
                 onClick={(e) => {
                   // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.
                   if (closeOnShiftClick && e.shiftKey && e.detail > 0 && closable) {
