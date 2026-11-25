@@ -79,9 +79,23 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
+.note {
+  flex: none;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
 .list {
   flex: 1;
   min-height: 0;
+}
+.container {
+  min-width: 0;
+  padding-left: var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .name {
   min-width: 0;

@@ -17,7 +17,7 @@ const MACOS = device("macos", "macOS", "desktop");
 const CHROME = device("chrome", "Chrome", "web");
 const UNAUTHORIZED = device("R5C", "R5C", "mobile", "unauthorized");
 
-async function stubFlutter(page: Page, status: unknown = { kind: "ready" }) {
+async function stubFlutter(page: Page, status: unknown = { kind: "ready" }, emulators: unknown[] = []) {
   await stubDesktop(page);
   await page.evaluate(
     async ({ list }) => {
@@ -38,13 +38,14 @@ async function stubFlutter(page: Page, status: unknown = { kind: "ready" }) {
       h.run_apply_settings = (args) => args.configs;
       h.flutter_devices = () => list;
       h.flutter_devices_refresh = () => null;
+      h.flutter_emulator_launch = () => null;
       h.run_start = () => ({ id: 3, configId: config.id, name: config.name, pid: 42, running: true, pty: false });
       const runModule = "/src/features/run/store.ts";
       const { loadConfigs, selectConfig } = await import(/* @vite-ignore */ runModule);
       await loadConfigs();
       selectConfig(config.id);
     },
-    { list: { status, devices: [MACOS, CHROME, UNAUTHORIZED] } },
+    { list: { status, devices: [MACOS, CHROME, UNAUTHORIZED], emulators } },
   );
 }
 
@@ -62,7 +63,14 @@ test("the chosen device is used for Run, and replaced while it is disconnected",
   await page.keyboard.press("Control+r");
   await expect.poll(async () => (await ipcCalls(page, "run_start")).length).toBe(1);
   const [started] = await ipcCalls(page, "run_start");
-  expect((started!.config as { args: string[] }).args).toEqual(["run", "-t", "lib/main.dart", "-d", "chrome"]);
+  expect((started!.config as { args: string[] }).args).toEqual([
+    "run",
+    "-t",
+    "lib/main.dart",
+    "-d",
+    "chrome",
+    "--machine",
+  ]);
 
   const emit = (devices: unknown[]) =>
     page.evaluate(
@@ -78,4 +86,39 @@ test("the chosen device is used for Run, and replaced while it is disconnected",
 test("says when the Flutter SDK is missing", async ({ workbench: page }) => {
   await stubFlutter(page, { kind: "notInstalled" });
   await expect(chooser(page)).toContainText("Flutter SDK not found");
+});
+
+test("starts an emulator and selects its device once it connects", async ({ workbench: page }) => {
+  const pixel = { id: "Pixel_9", name: "Pixel 9", platformType: "android" };
+  const simulator = { id: "apple_ios_simulator", name: "iOS Simulator", platformType: "ios" };
+  await stubFlutter(page, { kind: "ready" }, [pixel, simulator]);
+  await chooser(page).click();
+  await expect(page.getByRole("menuitem", { name: "Open iOS Simulator" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Open Android Emulator: Pixel 9" }).click();
+  await expect.poll(async () => ipcCalls(page, "flutter_emulator_launch")).toEqual([{ id: "Pixel_9" }]);
+  await expect(chooser(page)).toContainText("Starting Pixel 9…");
+
+  const booted = { ...device("emulator-5554", "sdk gphone64 arm64", "mobile"), emulator: true, emulatorId: "Pixel_9" };
+  await page.evaluate((list) => window.__ipc.emit({ type: "flutterDevices", list }), {
+    status: { kind: "ready" },
+    devices: [MACOS, booted],
+    emulators: [simulator],
+  });
+  await expect(chooser(page)).toContainText("sdk gphone64 arm64");
+});
+
+test("says why an emulator could not start", async ({ workbench: page }) => {
+  await stubFlutter(page, { kind: "ready" }, [
+    { id: "apple_ios_simulator", name: "iOS Simulator", platformType: "ios" },
+  ]);
+  await page.evaluate(() => {
+    window.__ipc.handlers.flutter_emulator_launch = () => {
+      throw { kind: "unavailable", message: "Unable to find Xcode" };
+    };
+  });
+  await chooser(page).click();
+  await page.getByRole("menuitem", { name: "Open iOS Simulator" }).click();
+  await expect(page.getByText("Could not start iOS Simulator")).toBeVisible();
+  await expect(page.getByText("Unable to find Xcode")).toBeVisible();
+  await expect(chooser(page)).toContainText("macOS");
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Field } from "@/platform/ipc";
-import { effectiveValues, fieldError, isVisible, render } from "../newProjectTemplate";
+import { effectiveValues, fieldError, isVisible, projectFolder, render } from "../newProjectTemplate";
 
 const text = (id: string, defaultValue: string, pattern: string | null = null): Field => ({
   id,
@@ -45,5 +45,17 @@ describe("new project field templates", () => {
     const g = text("group", "", "^[a-z]+(\\.[a-z]+)*$");
     expect(fieldError(g, "com.example")).toBeNull();
     expect(fieldError(g, "com..example")).not.toBeNull();
+  });
+
+  it("names the project folder after a .NET solution only while one is created", () => {
+    const solution: Field = { ...text("solution", "true"), kind: { type: "checkbox" } };
+    const fields = [solution, { ...text("solution-name", "{{name}}"), visible: { solution: ["true"] } }];
+    const folder = (edited: Record<string, string>) => projectFolder("{{solution-name}}", fields, "Shop", edited);
+    expect(folder({})).toBe("Shop");
+    expect(folder({ "solution-name": "Store" })).toBe("Store");
+    // Unchecked, the hidden name isn't sent and the folder is the project's.
+    expect(folder({ "solution-name": "Store", solution: "false" })).toBe("Shop");
+    expect(folder({ "solution-name": "  " })).toBe("Shop");
+    expect(projectFolder(null, fields, " Shop ", { "solution-name": "Store" })).toBe("Shop");
   });
 });

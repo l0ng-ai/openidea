@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChangeSet, EditorState, StateEffect } from "@codemirror/state";
 import { showTooltip, type Tooltip } from "@codemirror/view";
-import { indentUnit, language as languageFacet } from "@codemirror/language";
+import { foldedRanges, indentUnit, language as languageFacet } from "@codemirror/language";
 import { HEAVY_LIMIT, onEditorEvent, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
 import { DocumentManager, ModifiedRanges, saveCleanupChanges, useDocMeta } from "./document";
 import { EditorSlot, type SlotHost } from "./slot";
 import { formatOptionsOf } from "@/editor/lsp/format";
+import { convertIndentsToSpacesSpec, convertIndentsToTabsSpec } from "../cm/lines";
 
 const host: SlotHost = {
   onFocus: () => {},
@@ -80,6 +81,55 @@ describe("DocumentManager + slots", () => {
       ]);
     } finally {
       off();
+      manager.stop();
+    }
+  });
+
+  it.each([
+    ["opening the file", {}, 0, false, [3, 9]],
+    ["opening a file that was already loaded", {}, 0, true, [3, 9]],
+    ["jumping into a short block", {}, 4, false, [9]],
+    ["disabling short Go block folding", { goShortBlocks: false }, 0, false, []],
+  ])("applies compact Go folding when %s", async (_reason, folding, caret, loadedFirst, expected) => {
+    const path = "/p/main.go";
+    const { backend, manager, frame } = setup(
+      {
+        [path]: [
+          "package main",
+          "func main() {",
+          "  if ok {",
+          "    return",
+          "  }",
+          `  if ${"longCondition".repeat(12)} {`,
+          "    return",
+          "  }",
+          "  if done {",
+          "    return",
+          "  }",
+          "}",
+        ].join("\n"),
+      },
+      { editor: { folding } },
+    );
+    vi.spyOn(backend, "folding").mockResolvedValue([
+      { start_line: 2, end_line: 4, kind: "compact" },
+      { start_line: 5, end_line: 7, kind: "compact" },
+      { start_line: 8, end_line: 10, kind: "compact" },
+    ]);
+    try {
+      const model = await manager.acquire(path);
+      if (loadedFirst) await frame();
+      const slot = new EditorSlot(model, "go", host);
+      if (caret) slot.dispatchLocal({ selection: { anchor: slot.state.doc.line(caret).from } });
+      await vi.waitFor(() => {
+        const lines: number[] = [];
+        foldedRanges(slot.state).between(0, slot.state.doc.length, (from) => {
+          lines.push(slot.state.doc.lineAt(from).number);
+        });
+        expect(lines).toEqual(expected);
+      });
+      slot.dispose();
+    } finally {
       manager.stop();
     }
   });
@@ -172,6 +222,37 @@ describe("DocumentManager + slots", () => {
       expect(slot.currentState().facet(indentUnit)).toBe("\t");
     }
     expect(useDocMeta.getState()["/p/A.java"]?.indent).toEqual({ tabSize: 1, insertSpaces: false });
+  });
+
+  it("converts indents to tabs with the Code Style tab size, not the detected indent (#5702)", async () => {
+    const settings = { editor: { codeStyle: { languages: {}, detectIndents: true, editorconfig: false } } };
+    const { manager } = setup({ "/p/A.java": "class A {\n  void f() {\n    g();\n  }\n}\n" }, settings);
+    const model = await manager.acquire("/p/A.java");
+    const slot = new EditorSlot(model, "t1", host);
+    // Editing follows the 2-space indent detected in the file; tabs are still 4 columns wide in Java's Code Style.
+    expect(slot.currentState().facet(indentUnit)).toBe("  ");
+    slot.dispatchLocal(convertIndentsToTabsSpec(slot.currentState())!);
+    expect(slot.currentState().doc.toString()).toBe("class A {\n  void f() {\n\tg();\n  }\n}\n");
+  });
+
+  it("detects the indents again after Convert Indents rewrote them (#5702)", async () => {
+    const settings = { editor: { codeStyle: { languages: {}, detectIndents: true, editorconfig: false } } };
+    const { manager } = setup(
+      { "/p/A.java": "class A {\n    int x;\n}\n", "/p/B.java": "class B {\n\tint x;\n}\n" },
+      settings,
+    );
+    const a = new EditorSlot(await manager.acquire("/p/A.java"), "t1", host);
+    a.dispatchLocal(convertIndentsToTabsSpec(a.currentState())!);
+    expect(a.currentState().doc.toString()).toBe("class A {\n\tint x;\n}\n");
+    // The next Enter indents with a tab, like the rest of the file now.
+    expect(a.currentState().facet(indentUnit)).toBe("\t");
+    expect(useDocMeta.getState()["/p/A.java"]?.indent).toEqual({ tabSize: 4, insertSpaces: false });
+
+    const b = new EditorSlot(await manager.acquire("/p/B.java"), "t2", host);
+    expect(b.currentState().facet(indentUnit)).toBe("\t");
+    b.dispatchLocal(convertIndentsToSpacesSpec(b.currentState())!);
+    expect(b.currentState().doc.toString()).toBe("class B {\n    int x;\n}\n");
+    expect(b.currentState().facet(indentUnit)).toBe("    ");
   });
 
   it("shares one document between split slots and syncs edits to the backend", async () => {

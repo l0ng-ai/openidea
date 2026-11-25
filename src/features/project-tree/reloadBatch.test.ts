@@ -1,7 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry } from "@/bindings";
 import { setProjectFsForTests, type ProjectFs } from "./fs";
-import { applyFsChange, initProjectTree, loadDir, selectModel, setSelection, useProjectTree } from "./store";
+import {
+  applyFsChange,
+  initProjectTree,
+  loadDir,
+  loadVisibleDirs,
+  selectModel,
+  setSelection,
+  useProjectTree,
+} from "./store";
 
 const ROOT = "/p";
 const FILES = 3;
@@ -101,6 +109,29 @@ afterEach(() => {
 });
 
 describe("applyFsChange reload of many folders", () => {
+  it("keeps an unfinished reload separate from newly visible listings", async () => {
+    const fs = new TreeFs(10);
+    loadedTree(fs);
+    const listings = new Map(listingsOf());
+    listings.delete(dirPath(6));
+    listings.delete(dirPath(7));
+    useProjectTree.setState({ listings });
+
+    let release!: () => void;
+    fs.gates.set(dirPath(9), new Promise<void>((resolve) => (release = resolve)));
+    const reload = applyFsChange(modify(fs, [1, 9]));
+    try {
+      loadVisibleDirs([dirPath(6), dirPath(7)]);
+      await vi.waitFor(() => expect(listingsOf().get(dirPath(7))).toEqual(fs.list(dirPath(7))));
+      expect(listingsOf().get(dirPath(1))).toBe(listings.get(dirPath(1)));
+    } finally {
+      release();
+      await reload;
+    }
+    expect(listingsOf().get(dirPath(1))).toEqual(fs.list(dirPath(1)));
+    expect(listingsOf().get(dirPath(9))).toEqual(fs.list(dirPath(9)));
+  });
+
   it("builds the model once and caps the concurrent reads, however many folders changed", async () => {
     const fs = new TreeFs(300);
     loadedTree(fs);
@@ -215,6 +246,7 @@ describe("applyFsChange reload of many folders", () => {
       applyFsChange({ created: [], modified: changed.map(filePath), removed: [] }).then(() => void fs),
     );
     const single = await run(async () => {
+      // oxlint-disable-next-line no-await-in-loop -- this is the sequential baseline the batched reload is compared against
       for (const k of changed) await loadDir(dirPath(k), true);
     });
 

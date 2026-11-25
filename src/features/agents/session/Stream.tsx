@@ -132,6 +132,14 @@ function useOffscreenRows(
     mark();
     const rows = new MutationObserver(mark);
     rows.observe(el, { childList: true });
+    // Earlier rows load in front of the first one shown, which then loses its author header while
+    // it may be off-screen: lay it out again, or it keeps the height it had with the header.
+    const authors = new MutationObserver((records) => {
+      for (const { target } of records)
+        if (target.parentNode === el) (target as Element).removeAttribute("data-measured");
+      mark();
+    });
+    authors.observe(el, { subtree: true, attributes: true, attributeFilter: ["data-author"] });
     const resize = new ResizeObserver(() => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
@@ -144,6 +152,7 @@ function useOffscreenRows(
       cancelAnimationFrame(frame);
       window.clearTimeout(timer);
       rows.disconnect();
+      authors.disconnect();
       resize.disconnect();
     };
   }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
@@ -506,8 +515,8 @@ export function Stream({
   const rows = useMemo(() => {
     if (!entries) return [];
     const rows = conversationRows(entries, start, toolCalls === "grouped");
-    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start, busy)) : rows;
-  }, [entries, start, busy, foldTurns, toolCalls, finding]);
+    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start)) : rows;
+  }, [entries, start, foldTurns, toolCalls, finding]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
     const byAgent = (row: ConversationRow) =>

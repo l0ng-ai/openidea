@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { registerAction } from "@/platform/actions";
 import { clearContext, getContext, setContext, type ContextKeys } from "@/platform/context";
+import { useProject } from "@/platform/project";
+import { projectKey } from "@/platform/search";
 import type { SeDeps } from "../everywhere/controller";
 
 const defaultFindFiles: SeDeps["findFiles"] = async (q) =>
@@ -168,7 +170,7 @@ describe("Search Everywhere dialog", () => {
   });
 
   it("⌥↑ / ⌥↓ browse the tab's search history and restore the draft", async () => {
-    localStorage.removeItem("openidea.search.everywhereHistory.v1");
+    localStorage.removeItem(projectKey("openidea.search.everywhereHistory.v1"));
     pushSearchHistory("all", "older");
     pushSearchHistory("all", "newer");
     pushSearchHistory("files", "other tab");
@@ -186,6 +188,21 @@ describe("Search Everywhere dialog", () => {
     key("ArrowDown");
     expect(useSearchEverywhere.getState().query).toBe("draft");
     expect(searchHistory("all")).toEqual(["newer", "older"]);
+  });
+
+  it("keeps each project's Search Everywhere history apart (#5758)", () => {
+    const before = useProject.getState().project;
+    const open = (root: string) => useProject.setState({ project: { root, name: "p", isGit: false } as never });
+    try {
+      open("/work/a");
+      pushSearchHistory("all", "FooService");
+      open("/work/b");
+      expect(searchHistory("all")).toEqual([]);
+      open("/work/a");
+      expect(searchHistory("all")).toEqual(["FooService"]);
+    } finally {
+      useProject.setState({ project: before });
+    }
   });
 
   it("⇥ cycles scopes and repeating the scope action toggles non-project items", async () => {

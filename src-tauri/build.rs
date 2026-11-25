@@ -15,6 +15,9 @@ fn main() {
         println!("cargo:rerun-if-changed={}", manifest.display());
         println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
         println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+        // Windows gives the main thread a 1 MB stack by default (macOS and Linux: 8 MB), which
+        // unoptimized debug frames overflow (STATUS_STACK_OVERFLOW). Match the 8 MB elsewhere.
+        println!("cargo:rustc-link-arg=/STACK:8388608");
     }
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows)).expect("tauri build");
 }

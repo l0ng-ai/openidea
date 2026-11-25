@@ -93,6 +93,7 @@ clipboard_has_image                          always             desktop      bin
 clipboard_image                              always             desktop      bindings async
 clipboard_set_file_list                      always             desktop      bindings async
 clipboard_text                               trusted            desktop      bindings async
+clipboard_write_image                        always             desktop      bindings async
 clipboard_write_text                         always             desktop      bindings async
 close_project                                always             project_host bindings spawn
 coverage_collect                             trusted            project_host bindings async
@@ -276,6 +277,8 @@ flutter_daemon_restart                       trusted            project_host bin
 flutter_devices                              trusted            project_host bindings sync
 flutter_devices_refresh                      trusted            project_host bindings sync
 flutter_devtools_url                         trusted            project_host bindings async
+flutter_emulator_launch                      trusted            project_host bindings async
+flutter_widget_preview_url                   trusted            project_host bindings async
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async
@@ -336,6 +339,7 @@ inspect_code                                 trusted            project_host bin
 java_build_workspace                         trusted            project_host bindings async
 java_debug_adapter                           trusted            project_host bindings sync
 java_debug_server                            trusted            project_host bindings async
+java_junit_runner                            trusted            project_host bindings async
 java_resolve_launch                          trusted            project_host bindings async
 jdk_download                                 always             project_host bindings async
 jdk_download_location                        always             project_host bindings sync
@@ -359,6 +363,8 @@ lsp_completion                               trusted            project_host bin
 lsp_document_colors                          trusted            project_host bindings async
 lsp_document_highlights                      trusted            project_host bindings async
 lsp_document_links                           trusted            project_host bindings async
+lsp_edit_argument                            trusted            project_host bindings async
+lsp_editable_arguments                       trusted            project_host bindings async
 lsp_exception_class_at                       trusted            project_host bindings async
 lsp_execute_code_action                      trusted            project_host bindings async
 lsp_execute_command                          trusted            project_host bindings async
@@ -607,6 +613,7 @@ scope_files                                  always             project_host bin
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
 sdk_detect                                   outside_restricted project_host bindings async
+sdk_flutter_at                               trusted            project_host bindings async
 sdk_jdk_at                                   trusted            project_host bindings async
 sdk_locate_tools                             trusted            project_host bindings async
 sdk_php_composer_install                     trusted            project_host bindings async

@@ -240,7 +240,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     showWorkTime: true,
     showUsageLimits: true,
     showCost: false,
-    foldTurns: true,
+    foldTurns: false,
     smoothText: true,
     fitWindowWidth: false,
     thinking: "auto",

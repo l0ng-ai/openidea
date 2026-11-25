@@ -1,0 +1,45 @@
+.diagram {
+  height: 100%;
+  overflow: auto;
+  padding: 16px 28px;
+  background: var(--bg-editor);
+  color: var(--fg);
+}
+/* The source stays until the diagram is drawn, and next to an error. */
+.diagram :global([data-mermaid]) {
+  position: relative;
+}
+.diagram :global([data-mermaid-state="ok"] > pre) {
+  display: none;
+}
+.diagram :global([data-mermaid] > pre) {
+  margin: 0;
+}
+.diagram :global(.mermaid-output) {
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+.diagram :global([data-mermaid-state="ok"] > .mermaid-output) {
+  user-select: none;
+}
+.diagram :global(.mermaid-output svg[data-natural-width]) {
+  display: block;
+  margin: 0 auto;
+  width: min(var(--diagram-width), 100%);
+  height: auto;
+}
+.diagram :global(.mermaid-output[data-zoomed="true"]) {
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.diagram :global(.mermaid-output[data-dragging="true"]) {
+  cursor: grabbing;
+}
+.diagram :global([data-mermaid-state="error"] > .mermaid-output) {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  text-align: left;
+  white-space: pre-wrap;
+}

@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Read;
+use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::heap_dump::quoted_path;
 use crate::listener::is_hotspot;
-use crate::socket::{AttachError, jcmd};
+use crate::socket::{AttachError, MAX_OUTPUT, jcmd};
 
 /// Default budget for `thread_print`; a dump of a healthy JVM takes milliseconds, so this only
 /// bounds a JVM stuck at a safepoint.
@@ -28,6 +31,55 @@ const GRADLE_JVM_MARKERS: [&str; 5] = [
 /// reports need.
 pub fn thread_print(pid: u32, timeout: Duration) -> Result<String, AttachError> {
     jcmd(pid, "Thread.print -l", timeout)
+}
+
+/// `Thread.dump_to_file -format=json`, the only dump that lists virtual threads (JDK 21+). The
+/// JVM writes it into `dir`, an absolute directory; the file is read up to [`MAX_OUTPUT`] and
+/// deleted whatever the outcome. Never send it to a VM a debugger holds suspended: 21 and 25 hang
+/// the request, and every later attach request behind it, until the VM resumes.
+pub fn thread_dump_json(pid: u32, dir: &Path, timeout: Duration) -> Result<String, AttachError> {
+    dump_json_with(pid, dir, MAX_OUTPUT, |command| jcmd(pid, command, timeout))
+}
+
+fn dump_json_with(
+    pid: u32,
+    dir: &Path,
+    max: usize,
+    send: impl FnOnce(&str) -> Result<String, AttachError>,
+) -> Result<String, AttachError> {
+    // The JVM resolves a relative path against its own working directory.
+    if !dir.is_absolute() {
+        return Err(AttachError::Protocol(format!("thread dump directory {dir:?} is not absolute")));
+    }
+    // JDK 21 has no `-overwrite` and writes nothing when the file exists.
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_nanos());
+    let path = dir.join(format!("threads-{pid}-{nanos}.json"));
+    let command = format!("Thread.dump_to_file -format=json {}", quoted_path(&path, "thread dump")?);
+    let _delete = DeleteOnDrop(&path);
+    let reply = send(&command)?;
+    read_capped(&path, max).map_err(|e| match e {
+        AttachError::Io(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            AttachError::Protocol(format!("the JVM wrote no thread dump: {}", reply.trim()))
+        }
+        e => e,
+    })
+}
+
+fn read_capped(path: &Path, max: usize) -> Result<String, AttachError> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(max as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > max {
+        return Err(AttachError::TooLarge);
+    }
+    String::from_utf8(bytes).map_err(|_| AttachError::Protocol("the thread dump is not UTF-8".into()))
+}
+
+struct DeleteOnDrop<'a>(&'a Path);
+
+impl Drop for DeleteOnDrop<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +171,7 @@ fn deepest_jvm_in_tree(table: &[ProcEntry], root: u32, is_hotspot: &dyn Fn(u32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn entry(pid: u32, ppid: u32, command: &str) -> ProcEntry {
         ProcEntry { pid, ppid, command: command.to_string() }
@@ -237,6 +290,77 @@ mod tests {
     fn select_survives_a_parent_cycle() {
         let table = vec![entry(10, 11, "sh"), entry(11, 10, "java a")];
         assert_eq!(select_run_jvm(&table, 10, None, not_the_shell), Some(11));
+    }
+
+    /// The path the fake JVM is asked to write, from `Thread.dump_to_file … "<path>"`.
+    fn requested_path(command: &str) -> PathBuf {
+        PathBuf::from(command.split('"').nth(1).expect("quoted path"))
+    }
+
+    fn is_empty(dir: &Path) -> bool {
+        std::fs::read_dir(dir).unwrap().next().is_none()
+    }
+
+    /// `<tmp>/a b`: the space is what an unquoted path would break on.
+    fn dir_with_space() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("a b");
+        std::fs::create_dir(&dir).unwrap();
+        (root, dir)
+    }
+
+    #[test]
+    fn json_dump_reads_the_file_and_deletes_it() {
+        let (_root, dir) = dir_with_space();
+        let mut sent = String::new();
+        let json = dump_json_with(42, &dir, 1024, |command| {
+            sent = command.to_owned();
+            std::fs::write(requested_path(command), "{\"threadDump\":{}}").unwrap();
+            Ok(format!("Created {}\n", requested_path(command).display()))
+        })
+        .unwrap();
+        assert_eq!(json, "{\"threadDump\":{}}");
+        let prefix = format!("Thread.dump_to_file -format=json \"{}", dir.join("threads-42-").display());
+        assert!(sent.starts_with(&prefix) && sent.ends_with(".json\""), "{sent}");
+        assert!(is_empty(&dir));
+    }
+
+    #[test]
+    fn json_dump_file_is_deleted_when_it_is_too_large() {
+        let (_root, dir) = dir_with_space();
+        let result = dump_json_with(42, &dir, 1024, |command| {
+            std::fs::write(requested_path(command), vec![b' '; 1025]).unwrap();
+            Ok(String::new())
+        });
+        assert!(matches!(result, Err(AttachError::TooLarge)), "{result:?}");
+        assert!(is_empty(&dir));
+    }
+
+    #[test]
+    fn json_dump_file_is_deleted_when_the_request_fails() {
+        let (_root, dir) = dir_with_space();
+        let result = dump_json_with(42, &dir, 1024, |command| {
+            // The JVM wrote the file but the reply came too late.
+            std::fs::write(requested_path(command), "{}").unwrap();
+            Err(AttachError::Timeout)
+        });
+        assert!(matches!(result, Err(AttachError::Timeout)), "{result:?}");
+        assert!(is_empty(&dir));
+    }
+
+    #[test]
+    fn json_dump_without_a_file_reports_the_reply() {
+        let (_root, dir) = dir_with_space();
+        // JDK 21 answers result code 0 when it writes nothing.
+        let result = dump_json_with(42, &dir, 1024, |_| Ok("/x.json exists, use -overwrite to overwrite\n".into()));
+        let Err(AttachError::Protocol(message)) = result else { panic!("{result:?}") };
+        assert!(message.contains("exists"), "{message}");
+    }
+
+    #[test]
+    fn json_dump_refuses_a_relative_directory() {
+        let result = dump_json_with(42, Path::new("dumps"), 1024, |_| panic!("sent a relative path"));
+        assert!(matches!(result, Err(AttachError::Protocol(_))), "{result:?}");
     }
 
     #[test]

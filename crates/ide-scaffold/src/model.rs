@@ -30,6 +30,11 @@ pub(crate) struct Def {
     pub requires: Vec<RequireDef>,
     #[serde(default)]
     pub fields: Vec<FieldDef>,
+    /// The project folder's name, when it isn't the project name: a template over the fields
+    /// (.NET's solution name). Steps that create the folder themselves (`cwd = "parent"`) can't
+    /// use it.
+    #[serde(default)]
+    pub directory: Option<String>,
     #[serde(default)]
     pub service: Option<ServiceDef>,
     /// Generation runs: the service's zip, `steps`, `files`, then `after`.
@@ -280,6 +285,9 @@ pub struct GeneratorInfo {
     /// Offer "Create Git repository".
     pub git: bool,
     pub fields: Vec<Field>,
+    /// The project folder's name when it isn't the project name: a template over the fields
+    /// shown (a hidden field has its default), like [`Field::default`]; empty renders the name.
+    pub directory: Option<String>,
     /// More fields come from `scaffold_options` (a project service's metadata).
     pub dynamic: bool,
 }

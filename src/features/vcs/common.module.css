@@ -161,17 +161,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Checkable changes tree in the Shelve / Create Patch dialogs. */
+/* Checkable changes tree in the Shelve / Create Patch / Rollback dialogs. */
 .fileTree {
   display: flex;
+  flex-direction: column;
   height: 260px;
   margin: 0 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
+  overflow: hidden;
 }
 .fileTreeView {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  /* Override Tree's `height: 100%`: WebKit doesn't resolve percentage heights against a flex-basis height. */
+  height: auto;
 }
 .fileTreeRow {
   composes: fileRow;
@@ -243,6 +248,12 @@
   flex-wrap: wrap;
   max-width: 100%;
   font-size: var(--fs-ui);
+}
+/* A bare inline span puts its inline-flex checkbox child on the text baseline,
+   lifting it above the sibling controls; keep the tooltip wrapper centred. */
+.pushOptionWrap {
+  display: inline-flex;
+  align-items: center;
 }
 .pushTargetBar {
   display: flex;
@@ -911,12 +922,18 @@
 .comparisonTree {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  /* Stretch instead of Tree's `height: 100%`: WebKit doesn't resolve percentage heights against a flex-basis height. */
+  height: auto;
+  align-self: stretch;
   border: 1px solid var(--border);
 }
 .comparisonWithDiff .comparisonTree {
   flex: 0 0 30%;
 }
 .comparisonDiff {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-width: 0;
   min-height: 0;

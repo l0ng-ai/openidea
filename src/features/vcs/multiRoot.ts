@@ -13,6 +13,9 @@ export type RepoCommit = Commit & {
 };
 export const commitRepo = (c: Commit | undefined): string | null | undefined => (c as RepoCommit | undefined)?.repo;
 export const commitKey = (c: Pick<RepoCommit, "id" | "repo">): string => (c.repo ? `${c.repo}\0${c.id}` : c.id);
+/** Commits Cherry-Pick and Revert can apply: at least one, no merge commit, none from an external log. */
+export const canApplyCommits = (commits: readonly Commit[]): boolean =>
+  commits.length > 0 && !commits.some((c) => c.parents.length > 1 || (c as RepoCommit).readOnly);
 export const graphCommit = (c: Commit): Commit & GraphCommit => ({
   ...c,
   id: commitKey(c),

@@ -360,10 +360,17 @@ pub async fn agent_fork(host: &Host, window: &str, task: String, turns: Option<u
 }
 
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
+/// With `files`, the files those turns changed go back as they were before them.
 #[command(trust = trusted)]
-pub async fn agent_rollback(host: &Host, window: &str, task: String, turns: u32) -> IdeResult<Option<AgentPrompt>> {
+pub async fn agent_rollback(
+    host: &Host,
+    window: &str,
+    task: String,
+    turns: u32,
+    files: bool,
+) -> IdeResult<Option<AgentPrompt>> {
     host.require_trust(window)?;
-    host.project(window)?.agents.rollback(&task, turns).await
+    host.project(window)?.agents.rollback(&task, turns, files).await
 }
 
 /// Checks the selected installation without modifying it.

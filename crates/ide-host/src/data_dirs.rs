@@ -27,17 +27,21 @@ pub fn data_dir(identifier: &str) -> Result<PathBuf, String> {
 }
 
 /// `$OPENIDEA_LOG_DIR/<identifier>` when set, else `~/Library/Logs/<identifier>` on macOS and
-/// `<local data>/<identifier>/logs` elsewhere (Tauri's `app_log_dir`).
+/// `logs` in the local data directory elsewhere (Tauri's `app_log_dir`), so a custom location
+/// from Settings › System Settings › Caches moves the logs too.
 pub fn log_dir(identifier: &str) -> Result<PathBuf, String> {
-    let os = if cfg!(target_os = "macos") {
-        dirs::home_dir().map(|home| home.join("Library/Logs").join(identifier))
-    } else {
-        dirs::data_local_dir().map(|dir| dir.join(identifier).join("logs"))
-    };
-    match std::env::var_os(LOG_ENV).filter(|v| !v.is_empty()) {
-        Some(var) => resolve_env(LOG_ENV, Some(var), None, identifier),
-        None => os.ok_or_else(|| "cannot find the log directory".into()),
+    if let Some(var) = std::env::var_os(LOG_ENV).filter(|v| !v.is_empty()) {
+        return resolve_env(LOG_ENV, Some(var), None, identifier);
     }
+    if cfg!(target_os = "macos") {
+        return dirs::home_dir()
+            .map(|home| home.join("Library/Logs").join(identifier))
+            .ok_or_else(|| "cannot find the log directory".into());
+    }
+    startup_local_data_dir(identifier)
+        .or_else(|_| local_data_dir(identifier))
+        .map(|dir| dir.join("logs"))
+        .map_err(|_| "cannot find the log directory".into())
 }
 
 /// The directory under `$<env>` when set (absolute, not created here), else under the OS directory.
@@ -215,6 +219,74 @@ fn apply_custom_migration_in(path: &Path, local: &Path) {
     if !leftover {
         let _ = fs::remove_file(path);
     }
+}
+
+/// WebView2's profile (localStorage, IndexedDB, cookies) inside the directory the windows
+/// are given, which on Windows is the local data directory.
+pub const WEBVIEW_PROFILE: &str = "EBWebView";
+
+/// Browser caches in a WebView2 profile: rebuilt on demand, so not copied across volumes.
+const WEBVIEW_CACHES: [&str; 6] = ["Cache", "Code Cache", "GPUCache", "DawnCache", "GrShaderCache", "ShaderCache"];
+
+/// Brings WebView2's profile into `local` before the first window opens: from a scheduled
+/// move's source (Settings › System Settings › Caches), else from the default directory, where
+/// windows kept it before they followed a custom location. Runs synchronously, as a window
+/// started meanwhile would create an empty profile; a profile already in `local` is never
+/// merged into or replaced, and a failed move leaves the old one in place.
+pub fn adopt_webview_profile(identifier: &str, local: &Path) {
+    let scheduled = migration_path(identifier)
+        .and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<CustomMigration>(&bytes).ok())
+        .filter(|job| job.to == local)
+        .map(|job| job.from);
+    adopt_webview_profile_from(scheduled.into_iter().chain(local_data_dir(identifier).ok()), local);
+}
+
+fn adopt_webview_profile_from(sources: impl IntoIterator<Item = PathBuf>, local: &Path) {
+    let target = local.join(WEBVIEW_PROFILE);
+    if target.try_exists().unwrap_or(true) {
+        return;
+    }
+    let Some(source) = sources
+        .into_iter()
+        .filter(|dir| dir != local)
+        .map(|dir| dir.join(WEBVIEW_PROFILE))
+        .find(|profile| fs::symlink_metadata(profile).is_ok_and(|m| m.is_dir()))
+    else {
+        return;
+    };
+    let result = fs::create_dir_all(local).and_then(|()| match rename_missing(&source, &target) {
+        Err(error) if rename_failure(&error) == RenameFailure::Copy => {
+            let staging = local.join(format!(".migration-{}", uuid::Uuid::new_v4()));
+            let copied = copy_profile(&source, &staging).and_then(|()| rename_missing(&staging, &target));
+            if staging.exists() {
+                let _ = remove_entry(&staging);
+            }
+            copied.and_then(|()| remove_entry(&source))
+        }
+        other => other,
+    });
+    match result {
+        Ok(()) => tracing::info!(?source, ?target, "moved the WebView profile to the local data directory"),
+        Err(error) => tracing::warn!(?source, ?target, %error, "cannot move the WebView profile; starting a new one"),
+    }
+}
+
+/// [`copy_tree`] without the profile's browser caches.
+fn copy_profile(source: &Path, target: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if !metadata.is_dir() {
+        return copy_tree(source, target);
+    }
+    fs::create_dir(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if WEBVIEW_CACHES.iter().any(|name| entry.file_name() == *name) {
+            continue;
+        }
+        copy_profile(&entry.path(), &target.join(entry.file_name()))?;
+    }
+    Ok(())
 }
 
 /// Entries of a local-data tree that move to a newly chosen directory.
@@ -551,6 +623,46 @@ fn relative_wrapper(text: &str, source: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_webview_profile_moves_into_a_custom_local_directory_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (default, custom) = (tmp.path().join("default"), tmp.path().join("custom"));
+        let storage = default.join(WEBVIEW_PROFILE).join("Default/Local Storage");
+        fs::create_dir_all(&storage).unwrap();
+        fs::write(storage.join("leveldb"), "history").unwrap();
+        adopt_webview_profile_from([default.clone()], &custom);
+        let moved = custom.join(WEBVIEW_PROFILE).join("Default/Local Storage/leveldb");
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "history");
+        assert!(!default.join(WEBVIEW_PROFILE).exists());
+        // A profile already in place is never replaced by an older one.
+        fs::create_dir_all(default.join(WEBVIEW_PROFILE)).unwrap();
+        adopt_webview_profile_from([default.clone()], &custom);
+        assert!(default.join(WEBVIEW_PROFILE).exists());
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "history");
+    }
+
+    #[test]
+    fn the_default_directory_keeps_its_own_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = tmp.path().join(WEBVIEW_PROFILE);
+        fs::create_dir_all(&profile).unwrap();
+        adopt_webview_profile_from([tmp.path().to_path_buf()], tmp.path());
+        assert!(profile.is_dir());
+    }
+
+    #[test]
+    fn a_copied_profile_leaves_the_browser_caches_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        fs::create_dir_all(source.join("Default/Cache/Cache_Data")).unwrap();
+        fs::create_dir_all(source.join("Default/IndexedDB")).unwrap();
+        fs::write(source.join("Default/Cache/Cache_Data/f_1"), "x").unwrap();
+        fs::write(source.join("Default/IndexedDB/db"), "kept").unwrap();
+        copy_profile(&source, &tmp.path().join("copy")).unwrap();
+        assert_eq!(fs::read_to_string(tmp.path().join("copy/Default/IndexedDB/db")).unwrap(), "kept");
+        assert!(!tmp.path().join("copy/Default/Cache").exists());
+    }
 
     #[test]
     fn config_data_and_log_dirs_follow_the_os_unless_their_variable_is_set() {

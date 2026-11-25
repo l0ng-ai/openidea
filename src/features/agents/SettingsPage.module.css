@@ -109,7 +109,6 @@
   font: inherit;
   font-weight: 600;
   text-align: left;
-  cursor: pointer;
 }
 
 .chevron {
@@ -190,7 +189,6 @@
   color: inherit;
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 
 .cardMain {

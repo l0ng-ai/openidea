@@ -76,6 +76,10 @@ impl AppState {
         // Caches: the previous tree moves first, so a pending invalidation still
         // wipes what was just moved.
         let identifier = app.config().identifier.clone();
+        // Windows: the WebView2 profile follows the local data directory too, and must be in
+        // place before the first window opens (the scheduled move below runs before them too).
+        #[cfg(windows)]
+        ide_host::data_dirs::adopt_webview_profile(&identifier, &local_data_dir);
         ide_host::data_dirs::apply_custom_migration(&identifier, &local_data_dir);
         // File › Invalidate Caches… requested at the last run.
         let removed = ide_workspace::caches::apply_pending(&data_dir, &local_data_dir);

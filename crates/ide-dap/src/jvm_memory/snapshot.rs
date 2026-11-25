@@ -33,6 +33,7 @@ pub(crate) trait AttachProbe: Send + Sync {
     fn ensure_listener(&self, pid: u32) -> Result<(), AttachError>;
     /// Confirmed HotSpot and not one of Gradle's own JVMs; asks the JVM nothing.
     fn is_application_jvm(&self, pid: u32) -> bool;
+    fn thread_dump_json(&self, pid: u32, dir: &Path) -> Result<String, AttachError>;
 }
 
 pub(super) struct JdkProbe {
@@ -90,6 +91,10 @@ impl AttachProbe for JdkProbe {
 
     fn is_application_jvm(&self, pid: u32) -> bool {
         ide_jvm_attach::is_application_jvm(pid)
+    }
+
+    fn thread_dump_json(&self, pid: u32, dir: &Path) -> Result<String, AttachError> {
+        ide_jvm_attach::thread_dump_json(pid, dir, ide_jvm_attach::THREAD_DUMP_TIMEOUT)
     }
 }
 

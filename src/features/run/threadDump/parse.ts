@@ -17,6 +17,13 @@ export interface DumpThread {
   waitsOn: string | null;
   internal: boolean;
   deadlocked: boolean;
+  /** Thread container of a JSON dump (virtual threads only); absent in text dumps. */
+  container?: string;
+}
+
+/** A thread's name in the UI: virtual threads are unnamed by default, so they go by `#<tid>`. */
+export function threadLabel(t: Pick<DumpThread, "name" | "number">): string {
+  return t.name || (t.number === null ? "" : `#${t.number}`);
 }
 
 export interface DeadlockLink {

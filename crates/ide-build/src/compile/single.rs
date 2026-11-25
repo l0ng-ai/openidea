@@ -361,7 +361,9 @@ fn classpaths(
     if compile_first {
         args.push("compile");
     }
-    args.extend(["dependency:build-classpath", output_arg.as_str(), scope_arg.as_str(), "-q"]);
+    let build_classpath =
+        maven::plugin_goal("dependency:build-classpath", maven::local_repository_for(&top.options).as_deref());
+    args.extend([build_classpath.as_str(), output_arg.as_str(), scope_arg.as_str(), "-q"]);
     let top_dir = subdir(root, &top.dir);
     let owned_args: Vec<String> = args.into_iter().map(str::to_owned).collect();
     let out = process::run_bounded(&top.command, &owned_args, &top_dir, &top.env, cancel, |_, _| {}).map_err(|e| {

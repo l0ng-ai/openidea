@@ -515,6 +515,7 @@ async fn resolve_jvm_application(
         test == Some(true),
         policy,
         &cancel,
+        None,
     )
     .await?;
     use ide_lsp::jdtls::JavaBuildStatus;

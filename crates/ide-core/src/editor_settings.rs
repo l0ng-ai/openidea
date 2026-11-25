@@ -201,6 +201,7 @@ pub struct FoldingSettings {
     pub file_header: bool,
     pub imports: bool,
     pub doc_comments: bool,
+    pub go_short_blocks: bool,
 }
 
 impl Default for FoldingSettings {
@@ -211,6 +212,7 @@ impl Default for FoldingSettings {
             file_header: true,
             imports: true,
             doc_comments: false,
+            go_short_blocks: true,
         }
     }
 }
@@ -362,6 +364,8 @@ pub struct InlayHintsSettings {
     pub parameters: bool,
     /// Hints of other kinds (chaining, closing labels…).
     pub other: bool,
+    /// The Dart server's closing labels (`// Column` after a widget's closing bracket).
+    pub closing_labels: bool,
     pub disabled_languages: Vec<String>,
     /// Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on.
     pub code_vision: bool,
@@ -394,6 +398,7 @@ impl Default for InlayHintsSettings {
             types: true,
             parameters: true,
             other: true,
+            closing_labels: true,
             disabled_languages: Vec::new(),
             code_vision: true,
             code_vision_usages: true,

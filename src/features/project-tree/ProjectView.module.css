@@ -47,6 +47,9 @@
   gap: var(--space-1);
   min-width: 0;
   overflow: hidden;
+  /* Room for the error wavy underline below the line box without changing row layout height. */
+  padding-block: var(--space-1);
+  margin-block: calc(-1 * var(--space-1));
 }
 .labelGroup .label {
   flex: none;
@@ -67,7 +70,9 @@
   text-decoration-line: line-through;
 }
 .error {
-  padding-block: var(--space-0-5);
+  /* Room for the wave below the line box, which the ellipsis' overflow would clip. */
+  padding-block: var(--space-1);
+  margin-block: calc(-1 * var(--space-1));
   text-decoration-line: underline;
   text-decoration-style: wavy;
   text-decoration-color: var(--danger);

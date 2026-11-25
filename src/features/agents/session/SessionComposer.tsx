@@ -143,8 +143,7 @@ export function SessionComposer({
   head,
   changes,
   commits,
-  changesOpen,
-  onToggleChanges,
+  onOpenChanges,
   onOpenSubagent,
 }: {
   task: AgentTask;
@@ -154,8 +153,7 @@ export function SessionComposer({
   head: string | null;
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
-  changesOpen: boolean;
-  onToggleChanges: () => void;
+  onOpenChanges: () => void;
   onOpenSubagent: (id: string) => void;
 }) {
   const { sendWith, whileRunning } = useAgentSettings();
@@ -378,12 +376,10 @@ export function SessionComposer({
       />
       <SessionStatus
         task={task}
-        entries={entries}
         head={head}
         changes={changes}
         commits={commits}
-        changesOpen={changesOpen}
-        onToggleChanges={onToggleChanges}
+        onOpenChanges={onOpenChanges}
         effortAnnouncement={effortAnnouncement}
       />
     </div>

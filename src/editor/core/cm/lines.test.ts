@@ -8,6 +8,7 @@ import {
   reverseLinesSpec,
   sortLinesSpec,
 } from "./lines";
+import { formatIndentFacet } from "./setup";
 
 function apply(doc: string, sel: EditorSelection | undefined, fn: typeof sortLinesSpec, tabSize = 4) {
   const state = EditorState.create({
@@ -67,6 +68,15 @@ describe("Convert Indents", () => {
     expect(apply("\t  \tx", undefined, toSpaces, 2)).toBe("      x");
     expect(apply("\tx", undefined, toSpaces, 8)).toBe("        x");
     expect(apply("        x", undefined, toTabs, 8)).toBe("\tx");
+  });
+
+  it("measures with the Code Style tab size when a detected indent narrowed the editor's (#5702)", () => {
+    const state = EditorState.create({
+      doc: "  a\n    b\n\tc",
+      extensions: [EditorState.tabSize.of(2), formatIndentFacet.of({ tabSize: 4, insertSpaces: true })],
+    });
+    expect(state.update(toTabs(state)!).state.doc.toString()).toBe("  a\n\tb\n\tc");
+    expect(state.update(toSpaces(state)!).state.doc.toString()).toBe("  a\n    b\n    c");
   });
 
   it("keeps the columns past the last tab stop as spaces when converting to tabs", () => {
