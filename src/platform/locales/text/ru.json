@@ -8300,6 +8300,7 @@
   "{version} is available": "Доступна версия {version}",
   "The agent's models and modes can be chosen here after its first session.": "Модели и режимы агента можно будет выбрать здесь после его первой сессии.",
   "Agent's default ({fallback})": "По умолчанию для агента ({fallback})",
+  "Default ({fallback})": "По умолчанию ({fallback})",
   "Agent's default": "По умолчанию для агента",
   "What you pick on the New Task page wins; these apply until then and after switching agents.": "Выбор на странице новой задачи имеет приоритет; эти настройки действуют до этого момента и после смены агента.",
   "Queues the message for after the turn": "Ставит сообщение в очередь после хода",
