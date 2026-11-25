@@ -50,15 +50,12 @@ import {
   type GroupLayout,
   type TerminalTab,
 } from "./store";
+import { TERMINAL_TAB_MIME } from "./cli";
 import { openTerminalFind, TerminalFindBar } from "./FindBar";
 import styles from "./Terminal.module.css";
 
 const TAB_PREFIX = "openidea-terminal";
-/**
- * Drag type of terminal tabs: dragging one reorders its group's strip or moves
- * it to another group's, like IDEA's terminal tabs.
- */
-const TAB_MIME = "application/x-openidea-terminal-tab";
+const TAB_MIME = TERMINAL_TAB_MIME;
 
 /** Session title and working directory, even when available space trims the label. */
 function tabTooltip(tab: TerminalTab, sessions: Parameters<typeof tabTitle>[1]): string | undefined {

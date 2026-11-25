@@ -579,6 +579,7 @@ export function GradlePage() {
 
 export function MavenPage() {
   const [delegateBuild, setDelegateBuild] = useSetting<boolean>("languages.java.maven.delegateBuild");
+  const [runTestsUsing, setRunTestsUsing] = useSetting<string>("languages.java.maven.runTestsUsing");
   const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
   const [downloadSources, setDownloadSources] = useSetting<boolean>("languages.java.maven.downloadSources");
   const [updateSnapshots, setUpdateSnapshots] = useSetting<boolean>("languages.java.maven.updateSnapshots");
@@ -674,6 +675,20 @@ export function MavenPage() {
           onChange={setDelegateBuild}
           hint="Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server."
         />
+        <Row
+          label="Run tests using"
+          hint="OpenIDEA runs a JUnit 5 test from the gutter on the Java language server's test classpath, without starting Maven, with the POM's Surefire configuration (argLine, system properties, environment variables, working directory). Maven runs it through Surefire, with filtered test resources."
+        >
+          <Select
+            value={runTestsUsing || "ide"}
+            onChange={setRunTestsUsing}
+            aria-label="Run tests using"
+            options={[
+              { value: "ide", label: "OpenIDEA" },
+              { value: "maven", label: "Maven" },
+            ]}
+          />
+        </Row>
         <SdkRow
           k="languages.java.maven.runnerJre"
           label="JRE"

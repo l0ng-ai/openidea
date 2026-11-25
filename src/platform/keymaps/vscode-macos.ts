@@ -292,6 +292,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "toolwindow.maximize": [],
   "toolwindow.jumpToLast": [],
   "toolwindow.hideActive": ["Meta+J"],
+  "toolwindow.hideSide": [],
   "toolwindow.focusEditor": ["Escape"],
 
   // Build (Terminal › Run Build Task)

@@ -480,6 +480,7 @@
   "menu.layout.delete": "Удалить макет…",
   "menu.activeToolWindow": "Активное окно инструментов",
   "menu.toolwindow.hideActive": "Скрыть активное окно инструментов",
+  "menu.toolwindow.hideSide": "Скрыть боковые окна инструментов",
   "menu.toolwindow.maximize": "Развернуть окно инструментов",
   "menu.toolwindow.closeContent": "Закрыть активную вкладку",
   "menu.toolwindow.jumpToLast": "Перейти к последнему окну инструментов",

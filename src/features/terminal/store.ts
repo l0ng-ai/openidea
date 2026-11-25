@@ -315,6 +315,7 @@ export function detachTab(id: string): TerminalSession | undefined {
   const tab = useTerminals.getState().tabs.find((t) => t.id === id);
   const session = tab && sessions.get(tab.session);
   if (!tab || !session) return undefined;
+  if (document.activeElement && session.host?.contains(document.activeElement)) publishFocus(false);
   sessions.delete(tab.session);
   useTerminals.setState((s) => {
     const next = { ...s.sessions };

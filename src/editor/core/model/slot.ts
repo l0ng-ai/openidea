@@ -58,6 +58,10 @@ export interface Reveal {
   center?: boolean;
 }
 
+/** Reformat Code and Convert Indents rewrite the file's indents, which are then detected again. */
+const rewritesIndents = (tr: Transaction) =>
+  tr.docChanged && (tr.isUserEvent("format.reformat") || tr.isUserEvent("input.indent.convert"));
+
 /** Hidden views kept for showing again, least recently hidden first. */
 const KEPT_VIEWS = 8;
 const keptSlots: EditorSlot[] = [];
@@ -313,7 +317,7 @@ export class EditorSlot {
   private onTransactions(trs: readonly Transaction[], view: EditorView) {
     view.update(trs);
     let selection = false;
-    let reformatted = false;
+    let reindented = false;
     let navigatedFrom: { line: number; col: number } | undefined;
     for (const tr of trs) {
       if (!navigatedFrom && tr.selection && isNavigation(tr)) {
@@ -332,10 +336,10 @@ export class EditorSlot {
         )
           this.host.onUserEdit(this, tr);
       }
-      if (tr.docChanged && tr.isUserEvent("format.reformat")) reformatted = true;
+      if (rewritesIndents(tr)) reindented = true;
       if (tr.selection || tr.docChanged) selection = true;
     }
-    if (reformatted) this.model.redetectIndent();
+    if (reindented) this.model.redetectIndent();
     if (selection) this.host.onSelection(this, navigatedFrom);
   }
 
@@ -348,7 +352,7 @@ export class EditorSlot {
     const tr = "startState" in spec ? spec : this.stored.update(spec);
     this.stored = tr.state;
     if (tr.docChanged) this.model.onLocal(tr.changes, this);
-    if (tr.docChanged && tr.isUserEvent("format.reformat")) this.model.redetectIndent();
+    if (rewritesIndents(tr)) this.model.redetectIndent();
   }
 
   /** Applies changes that are already in the model (other slot / backend). */

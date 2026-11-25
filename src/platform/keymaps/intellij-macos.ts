@@ -268,6 +268,7 @@ export const intellijMacos: Record<string, string[]> = {
   "layout.restoreDefault": [],
   "toolwindow.jumpToLast": ["F12"],
   "toolwindow.hideActive": ["Shift+Escape"],
+  "toolwindow.hideSide": [],
   "toolwindow.focusEditor": ["Escape"],
   // View › Appearance › Enter / Exit Distraction Free Mode: unbound, as in IDEA
   // (ToggleDistractionFreeMode has no default). ⌃⌘D is macOS's system-wide

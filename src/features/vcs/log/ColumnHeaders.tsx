@@ -8,7 +8,7 @@ import { updateLogOptions } from "../logStore";
 import { useVcs } from "../store";
 import { ColumnResizeHandle } from "./ColumnResizeHandle";
 import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
-import { columnPrev, resetColumnWidth, type ResizeTarget } from "./useColumnResize";
+import { REPOSITORY_WIDTH, columnPrev, resetColumnWidth, type ResizeTarget } from "./useColumnResize";
 
 interface ColumnDrag {
   id: string;
@@ -38,10 +38,20 @@ export function ColumnHeaders({ columns, options }: { columns: LogColumn[]; opti
     updateLogOptions({ columnOrder: reordered });
   };
   const visibleIds = ids.filter((id) => id === SUBJECT_COLUMN.id || columns.some((column) => column.id === id));
+  const repository = options.showRepository && useVcs.getState().roots.length > 1;
   return (
     <div className={clsx(styles.row, styles.columnHeader, options.showColumnDividers && styles.showDividers)}>
-      {options.showRepository && useVcs.getState().roots.length > 1 && (
-        <span className={styles.colRepository}>{tx("Repository")}</span>
+      {repository && (
+        <span
+          className={styles.colRepository}
+          style={{ width: options.columnWidths.repository ?? REPOSITORY_WIDTH }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            showContextMenu(e, [{ label: "Reset Width", run: () => resetColumnWidth("repository") }]);
+          }}
+        >
+          {tx("Repository")}
+        </span>
       )}
       {ids.map((cid) => {
         const column = cid === SUBJECT_COLUMN.id ? SUBJECT_COLUMN : columns.find((c) => c.id === cid);
@@ -52,6 +62,7 @@ export function ColumnHeaders({ columns, options }: { columns: LogColumn[]; opti
             column={column}
             subject={cid === SUBJECT_COLUMN.id}
             ids={visibleIds}
+            repository={repository}
             options={options}
             columns={columns}
             drag={drag}
@@ -73,6 +84,7 @@ function LogColumnHeader({
   column,
   subject,
   ids,
+  repository,
   options,
   columns,
   drag,
@@ -83,6 +95,7 @@ function LogColumnHeader({
   column: LogColumn;
   subject?: boolean;
   ids: string[];
+  repository: boolean;
   options: LogOptions;
   columns: LogColumn[];
   drag: ColumnDrag | null;
@@ -123,12 +136,13 @@ function LogColumnHeader({
   const resizeTarget: ResizeTarget = {
     id: column.id,
     width,
-    ...columnPrev(ids, column.id, options, columns),
+    ...columnPrev(ids, column.id, options, columns, repository),
     // Commit is flex:1 — dragging its left divider only resizes the left neighbour.
     leftOnly: subject || undefined,
   };
   const index = ids.indexOf(column.id);
-  const isFirst = index === 0;
+  // The first column's left divider is the Repository column's right edge when it is shown.
+  const isFirst = index === 0 && !repository;
   const hitColumn = (x: number, y: number) => {
     const el = document.elementFromPoint(x, y)?.closest?.("[data-log-column]");
     if (!el || el.parentElement !== press.current?.element.parentElement) return null;
