@@ -154,6 +154,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
   it("lets java-debug shorten a classpath too long for the OS, as Run does", async () => {
     for (const how of ["jarmanifest", "argfile"]) {
       shortenCommandLine = how;
+      // oxlint-disable-next-line no-await-in-loop -- shortenCommandLine is shared module state set per iteration; the assertion must follow the launch that used it
       const l = await javaLaunchConfig(app, "/p");
       expect(JSON.parse(l.extraJson!).shortenCommandLine).toBe(how);
     }
@@ -229,6 +230,7 @@ it.each(["sibling", "/outside/modules"])("debugs from %s with the main class mod
   kotlinFiles = false;
   for (const module of ["api", undefined]) {
     invoked.length = 0;
+    // oxlint-disable-next-line no-await-in-loop -- invoked is a shared call log reset each iteration; the assertions must follow the matching launch
     const launch = await javaLaunchConfig({ ...app, module, cwd }, "/p");
     expect(invoked).toContainEqual(["javaResolveLaunch", ["api", false, "automatic", expect.any(Number)]]);
     expect(invoked).toContainEqual(["javaDebugServer", ["api"]]);
@@ -281,6 +283,7 @@ describe("the debugger for a build tool's JVMs", () => {
     try {
       for (const missing of [[], ["kotlin-debug-adapter"], ["kotlin-lsp"]]) {
         missingTools = missing;
+        // oxlint-disable-next-line no-await-in-loop -- missingTools is shared state changed per iteration; each assertion must check the matching configuration
         expect(await jvmAttachDebuggerReady("app", "/p", retry)).toBe(true);
       }
       missingTools = ["kotlin-debug-adapter", "kotlin-lsp"];

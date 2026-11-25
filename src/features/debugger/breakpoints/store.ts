@@ -125,6 +125,7 @@ async function drainBreakpoints() {
   while (paths.size) {
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
+    // oxlint-disable-next-line no-await-in-loop -- the debounce drain must repeat: syncing can schedule new timers, so the next batch is recomputed only after this one settles
     await Promise.all([...paths].map((path) => syncFile(path)));
     paths = new Set([...timers.keys(), ...inFlight.keys()]);
   }

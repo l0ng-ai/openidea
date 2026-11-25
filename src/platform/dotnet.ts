@@ -124,6 +124,7 @@ export function globalRunner(text: string): DotnetRunner {
 export async function runnerMode(dir: string): Promise<DotnetRunner> {
   for (let current = dir; current;) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- nearest global.json wins; the upward search stops at the first one
       return globalRunner(await call(commands.fsReadText(`${current}/global.json`)));
     } catch {
       /* No global.json at this level. */
@@ -209,6 +210,7 @@ export async function dotnetWorkspace(root: string, signal?: AbortSignal): Promi
   while (queue.length) {
     signal?.throwIfAborted();
     const dir = queue.shift()!;
+    // oxlint-disable-next-line no-await-in-loop -- BFS enumeration; cancellation and the growing queue make each read sequential
     for (const entry of await call(commands.fsReadDir(dir))) {
       if (
         entry.kind === "dir" &&
@@ -219,6 +221,7 @@ export async function dotnetWorkspace(root: string, signal?: AbortSignal): Promi
       else if (/\.(?:cs|fs|vb)proj$/i.test(entry.name)) paths.add(entry.path);
       else if (/\.slnx?$/i.test(entry.name)) {
         const projects = solutionPaths(
+          // oxlint-disable-next-line no-await-in-loop -- solution projects feed the shared `paths` set in traversal order
           await call(commands.fsReadText(entry.path)),
           entry.name.endsWith(".slnx"),
           dirname(entry.path),
@@ -232,6 +235,7 @@ export async function dotnetWorkspace(root: string, signal?: AbortSignal): Promi
   const errors: string[] = [];
   for (const path of paths) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- `paths` grows with discovered references; cancellation and error order stay intact
       const project = await evaluateProject(path, "Debug", "", signal);
       projects.push(project);
       project.references.forEach((reference) => paths.add(reference));
