@@ -143,6 +143,7 @@
   "Make configurations pinned by default": "Yapılandırmaları varsayılan olarak sabitle",
   "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.": "Tamamlanmış sabitlenmiş sekme açık kalır; sonraki çalıştırma bu sekmenin yerine yeni bir sekme açar.",
   "Cannot paste the image into {name}": "Görsel {name} içine yapıştırılamıyor",
+  "Cannot paste {name}": "{name} yapıştırılamıyor",
   "Worktree Conflict": "Çalışma Ağacı Çakışması",
   "Branch '{branch}' is already checked out in a worktree at:\n{path}": "'{branch}' dalı zaten şu konumdaki çalışma ağacında kullanılıyor:\n{path}",
   "Checkout Anyway": "Yine de Geçiş Yap",

@@ -2,7 +2,7 @@
  * File operations behind the project view's actions: new / rename / delete,
  * internal copy-cut-paste, drag & drop moves and OS file imports.
  */
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, writeClipboardText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
 import { askUsagesDetected, fileUsages, showFileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
@@ -14,13 +14,15 @@ import {
   revealInFileManager,
 } from "@/platform/fileManager";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
-import { ask, confirmChecked } from "@/workbench/messages";
+import { ask, confirm, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
 import { lastFileRefactoring, nextFileOperation, runFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
 import { beginLocalImport, projectFs } from "./fs";
 import { renameCopiedJavaType } from "./javaCopy";
-import { IpcError, isCancelled } from "@/platform/ipc";
+import { javaPackageAt, pastedJavaClass, withJavaPackage } from "./javaPaste";
+import { currentRoots } from "@/platform/projectRoots";
+import { IpcError, isCancelled, isTauri } from "@/platform/ipc";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
   isInside,
@@ -51,7 +53,7 @@ import { tx, txPart } from "@/platform/i18n";
 import { hostOs, isRemoteWindow } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { pathToCopy, type PathKind } from "@/platform/copyPath";
-import { projectFolder, useProject } from "@/platform/project";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 export type { PathKind } from "@/platform/copyPath";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
@@ -586,6 +588,8 @@ export function copySelection(cut: boolean) {
 /** Files or an image on the OS clipboard, cached: `canPaste` runs while a menu renders. */
 let osHasFiles = false;
 let osHasImage = false;
+/** The clipboard holds Java code, which Paste turns into a file. */
+let osHasJava = false;
 
 /** Keeps Paste enabled for what Explorer copied; called when the window gains focus. */
 export async function refreshOsClipboard() {
@@ -604,6 +608,10 @@ async function readOsClipboard(): Promise<string[] | null> {
   if (get().clipboard !== clipboard) return null;
   osHasFiles = external.length > 0;
   osHasImage = image;
+  // Only the desktop app reads the text without asking; in a browser Paste still tries. Checked on
+  // every window focus, so a huge clipboard is not parsed for the menu item.
+  const text = !osHasFiles && !image && isTauri() ? await readClipboardPlainText().catch(() => "") : "";
+  osHasJava = text.length <= 1_000_000 && !!pastedJavaClass(text);
   // Our remote text write removes file URLs, so any files were copied later.
   // A failed write leaves ownership uncertain; retain the remote copy then.
   if (handedOff && (clipboard?.remote ? external.length > 0 : !sameFiles(external, clipboard?.paths)))
@@ -612,7 +620,7 @@ async function readOsClipboard(): Promise<string[] | null> {
 }
 
 export function canPaste(): boolean {
-  return !!get().clipboard?.paths.length || osHasFiles || osHasImage;
+  return !!get().clipboard?.paths.length || osHasFiles || osHasImage || osHasJava;
 }
 
 /**
@@ -640,6 +648,7 @@ export async function paste(target = targetFolder()) {
     return pasteFromOsClipboard(external, target);
   if (!clipboard?.paths.length) {
     if (await pasteImage(target)) return;
+    if (await pasteJavaCode(target)) return;
     notifications().notify({ level: "info", title: "No files on the clipboard" });
     return;
   }
@@ -652,6 +661,45 @@ export async function paste(target = targetFolder()) {
   openMoveDialogFor(paths, target, single, () => {
     if (get().clipboard === clipboard) setClipboard(null);
   });
+}
+
+/**
+ * Java code on the clipboard becomes `<Class>.java` in `target`, declaring the folder's package
+ * inside a source root, and opens (IDEA's Java file paste). Asks before replacing a file of that
+ * name. False when the clipboard holds no Java type.
+ */
+async function pasteJavaCode(target: string): Promise<boolean> {
+  const text = (await readClipboardPlainText().catch(() => "")).replace(/\r\n?/g, "\n");
+  const className = pastedJavaClass(text);
+  if (!className) return false;
+  const name = `${className}.java`;
+  const root = get().root ?? target;
+  const pkg = javaPackageAt(target === root ? "" : relativePath(root, target), currentRoots());
+  const path = joinPath(target, name);
+  await loadDir(target);
+  const exists = (get().listings.get(target) ?? []).some((e) => e.name === name);
+  if (
+    exists &&
+    !(await confirm({
+      title: tx("Paste"),
+      message: tx`File '${name}' already exists. Do you want to overwrite it?`,
+      ok: "Overwrite",
+    }))
+  )
+    return true;
+  const fs = projectFs(root);
+  try {
+    // The replaced file goes to Local History, like any delete.
+    if (exists) await fs.delete(path);
+    await fs.createFileBytes(path, new TextEncoder().encode(pkg === null ? text : withJavaPackage(text, pkg)));
+  } catch (e) {
+    fail(tx`Cannot paste ${name}`, e);
+    return true;
+  }
+  await loadDir(target, true);
+  revealPath(path, true);
+  await maybeEditorService()?.openFile(path, { focus: true });
+  return true;
 }
 
 /**
