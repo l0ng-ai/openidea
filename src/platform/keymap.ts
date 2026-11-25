@@ -694,6 +694,19 @@ export const FORWARDABLE_ACTIONS: ReadonlySet<string> = new Set([
 
 const restrictedKeys = new WeakSet<Event>();
 
+function isForwardableAction(id: string, target: EventTarget | null): boolean {
+  if (FORWARDABLE_ACTIONS.has(id)) return true;
+  const el = target instanceof Element ? target : null;
+  // A frame rendered inside an already-open tool window may always toggle that enclosing pane,
+  // and a plugin frame may toggle its own contributed `toolwindow.plugin.<pluginId>.*` windows.
+  const hostToolWindow = el?.closest("[data-toolwindow]")?.getAttribute("data-toolwindow");
+  if (hostToolWindow && hostToolWindow !== "terminal" && id === `toolwindow.${hostToolWindow}`) {
+    return true;
+  }
+  const hostPlugin = el?.getAttribute("data-plugin-webview");
+  return !!hostPlugin && id.startsWith(`toolwindow.plugin.${hostPlugin}.`);
+}
+
 /**
  * Dispatches on `target` a shortcut that a plugin's sandboxed frame says was pressed in it and left
  * alone, for the keymap. The page can post one at any time, so unless the plugin may run any IDE
@@ -805,7 +818,7 @@ export function installKeyboardDispatcher(
     }
     for (const id of [...preferred, ...fallback]) {
       const action = getAction(id);
-      if (action && isActionKeyEnabled(action, ctx) && (!restricted || FORWARDABLE_ACTIONS.has(id))) {
+      if (action && isActionKeyEnabled(action, ctx) && (!restricted || isForwardableAction(id, e.target))) {
         e.preventDefault();
         e.stopPropagation();
         reset();
