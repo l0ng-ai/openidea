@@ -22,8 +22,8 @@ const usePubspecs = create<{ byPath: Map<string, Package> }>(() => ({ byPath: ne
 /** By package folder: when Pub get / upgrade last succeeded there. A get that changes nothing leaves the package config as it was. */
 const resolvedAt = new Map<string, number>();
 
-const isPubspec = (path: string) => /(^|\/)pubspec\.yaml$/.test(path);
-const dirOf = (path: string) => path.slice(0, path.lastIndexOf("/"));
+const isPubspec = (path: string) => /(^|[\\/])pubspec\.yaml$/.test(path);
+const dirOf = (path: string) => path.slice(0, Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")));
 
 /** Whether Pub get is due: no package config, or `pubspec.yaml` / `pubspec.lock` newer than it (pub's own check). */
 export function pubGetDue(mtimes: {
@@ -47,7 +47,7 @@ async function inspect(pubspec: string): Promise<Package> {
     mtimesIn(`${dir}/.dart_tool`),
   ]);
   const flutter = /^\s+sdk:\s*flutter\b/m.test(text);
-  // ponytail: a workspace member's package config sits at the workspace root; no prompt there.
+  // A workspace member's package config sits at the workspace root; no prompt there.
   if (/^resolution:\s*workspace\b/m.test(text)) return { flutter, pubGet: null };
   const at = (m: Map<string, number | null>, name: string) => m.get(name) ?? null;
   const config = at(tool, "package_config.json");
@@ -139,7 +139,8 @@ async function activePubspec(arg: unknown): Promise<string | null> {
   if (!root) return null;
   // Nearest first.
   const candidates: string[] = [];
-  for (let dir = dirOf(path); dir.startsWith(`${root}/`); dir = dirOf(dir)) candidates.push(`${dir}/pubspec.yaml`);
+  for (let dir = dirOf(path); dir.length > root.length && dir.startsWith(root); dir = dirOf(dir))
+    candidates.push(`${dir}/pubspec.yaml`);
   candidates.push(`${root}/pubspec.yaml`);
   const kinds = await Promise.all(candidates.map((p) => call(commands.fsEntryKind(p)).catch(() => null)));
   return candidates.find((_, i) => kinds[i] === "file") ?? null;
@@ -150,7 +151,7 @@ async function runForActive(arg: unknown, args: string[]) {
   if (pubspec) await runIn(dirOf(pubspec), (await inspect(pubspec)).flutter, args);
 }
 
-const WATCHED = /(^|\/)(pubspec\.yaml|pubspec\.lock|package_config\.json)$/;
+const WATCHED = /(^|[\\/])(pubspec\.yaml|pubspec\.lock|package_config\.json)$/;
 
 export function registerPubspecCommands(): () => void {
   const reset = () => {
