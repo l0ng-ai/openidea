@@ -24,8 +24,9 @@ use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::utils::config::{Color, WindowConfig};
 use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuilder};
@@ -320,15 +321,16 @@ pub struct WindowsState {
     cli: Mutex<cli::Queue>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
-    /// Set by Quit while windows close one by one.
+    /// Set by Quit while windows close in parallel.
     quitting: AtomicBool,
     /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
     #[cfg(target_os = "macos")]
     pub keep_alive: AtomicBool,
-    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
-    /// once, so its members ask together.
-    close_requests: Mutex<Vec<String>>,
-    /// Project tabs closing one by one (Close Other Tabs and friends).
+    /// Coordinates parallel window/tab-group closes so clean tabs hide together in one frame
+    /// and interactive prompts still run one at a time.
+    close: Mutex<CloseState>,
+    pub close_notify: Arc<tokio::sync::Notify>,
+    /// Project tabs closing in parallel (Close Other Tabs and friends).
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
     restart: AtomicBool,
@@ -355,20 +357,180 @@ pub(crate) struct AuxGeometry {
     pub maximized: bool,
 }
 
+#[derive(Default)]
+struct CloseState {
+    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
+    /// once, so its members ask together; Quit and Close Other Tabs also close members in parallel.
+    pending: Vec<String>,
+    /// Members that passed their close guard and are waiting at the batch barrier before destroying.
+    ready: HashSet<String>,
+    /// Members whose batch was cancelled while they waited; they stay open.
+    aborted: HashSet<String>,
+    /// Windows already hidden as part of their closing cohort so hiding only runs once per batch.
+    hidden: HashSet<String>,
+    /// Window currently showing an interactive close dialog (at most one across a batch).
+    prompt_holder: Option<String>,
+}
+
 impl WindowsState {
     pub fn close_requested(&self, label: &str) {
-        let mut requests = self.close_requests.lock();
-        if !requests.iter().any(|l| l == label) {
-            requests.push(label.to_owned());
+        let mut close = self.close.lock();
+        close.aborted.remove(label);
+        close.ready.remove(label);
+        close.hidden.remove(label);
+        if !close.pending.iter().any(|l| l == label) {
+            close.pending.push(label.to_owned());
         }
     }
 
     pub fn close_settled(&self, label: &str) {
-        self.close_requests.lock().retain(|l| l != label);
+        {
+            let mut close = self.close.lock();
+            close.pending.retain(|l| l != label);
+            close.ready.remove(label);
+            close.aborted.remove(label);
+            close.hidden.remove(label);
+            if close.prompt_holder.as_deref() == Some(label) {
+                close.prompt_holder = None;
+            }
+        }
+        self.close_notify.notify_waiters();
     }
 
     pub fn pending_closes(&self) -> Vec<String> {
-        self.close_requests.lock().clone()
+        self.close.lock().pending.clone()
+    }
+
+    pub fn is_closing(&self, label: &str) -> bool {
+        let in_close = {
+            let close = self.close.lock();
+            close.pending.iter().any(|l| l == label) || close.ready.contains(label)
+        };
+        in_close || self.in_tab_close_batch(label)
+    }
+
+    pub fn has_other_pending_closes(&self, exclude: &str) -> bool {
+        let other_pending = self.close.lock().pending.iter().any(|l| l != exclude);
+        other_pending || self.tab_closes.lock().as_ref().is_some_and(|b| b.has_other(exclude))
+    }
+
+    pub fn in_tab_close_batch(&self, label: &str) -> bool {
+        self.tab_closes.lock().as_ref().is_some_and(|b| b.contains(label))
+    }
+
+    /// Marks `label` ready to destroy. Returns `false` if its batch was already cancelled.
+    pub fn mark_ready(&self, label: &str) -> bool {
+        let ok = {
+            let mut close = self.close.lock();
+            if close.aborted.remove(label) {
+                close.pending.retain(|l| l != label);
+                close.ready.remove(label);
+                close.hidden.remove(label);
+                if close.prompt_holder.as_deref() == Some(label) {
+                    close.prompt_holder = None;
+                }
+                false
+            } else {
+                if close.prompt_holder.as_deref() == Some(label) {
+                    close.prompt_holder = None;
+                }
+                close.ready.insert(label.to_owned());
+                true
+            }
+        };
+        self.close_notify.notify_waiters();
+        ok
+    }
+
+    pub fn is_ready(&self, label: &str) -> bool {
+        self.close.lock().ready.contains(label)
+    }
+
+    pub fn take_aborted(&self, label: &str) -> bool {
+        let mut close = self.close.lock();
+        if close.aborted.remove(label) {
+            close.pending.retain(|l| l != label);
+            close.ready.remove(label);
+            close.hidden.remove(label);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Marks `labels` as hidden once and returns those newly claimed for hiding.
+    pub fn claim_hide(&self, labels: &[String]) -> Vec<String> {
+        let mut close = self.close.lock();
+        labels.iter().filter(|l| close.hidden.insert((*l).clone())).cloned().collect()
+    }
+
+    /// Marks `labels` as aborted so peers waiting at the close barrier or prompt turn stay open.
+    pub fn abort_batch(&self, labels: impl IntoIterator<Item = String>) {
+        {
+            let mut close = self.close.lock();
+            for label in labels {
+                close.ready.remove(&label);
+                close.hidden.remove(&label);
+                close.pending.retain(|l| l != &label);
+                close.aborted.insert(label);
+            }
+            close.prompt_holder = None;
+        }
+        self.close_notify.notify_waiters();
+    }
+
+    /// Aborts every in-flight close except `initiator` (used when cancelling Quit).
+    pub fn abort_all_closing(&self, initiator: Option<&str>) {
+        {
+            let mut close = self.close.lock();
+            let mut targets: Vec<String> = std::mem::take(&mut close.pending);
+            for label in close.ready.drain() {
+                if !targets.iter().any(|l| l == &label) {
+                    targets.push(label);
+                }
+            }
+            close.hidden.clear();
+            close.prompt_holder = None;
+            for label in targets {
+                if initiator != Some(label.as_str()) {
+                    close.aborted.insert(label);
+                }
+            }
+        }
+        self.close_notify.notify_waiters();
+    }
+
+    /// Tries to acquire the interactive prompt turn. `Err(())` means this close was aborted.
+    pub fn try_acquire_prompt(&self, label: &str) -> Result<bool, ()> {
+        let mut close = self.close.lock();
+        if close.aborted.contains(label) {
+            return Err(());
+        }
+        if close.prompt_holder.is_none() || close.prompt_holder.as_deref() == Some(label) {
+            close.prompt_holder = Some(label.to_owned());
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn release_prompt(&self, label: &str) {
+        let released = {
+            let mut close = self.close.lock();
+            if close.prompt_holder.as_deref() == Some(label) {
+                close.prompt_holder = None;
+                true
+            } else {
+                false
+            }
+        };
+        if released {
+            self.close_notify.notify_waiters();
+        }
+    }
+
+    pub fn has_prompt_holder(&self) -> bool {
+        self.close.lock().prompt_holder.is_some()
     }
 
     pub fn set_launch(&self, label: &str, launch: Launch) {
@@ -747,22 +909,68 @@ pub fn focus(window: &WebviewWindow) {
     let _ = window.set_focus();
 }
 
-/// Present one project's save prompt at a time, including hidden group members.
-pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
-    if !app.state::<WindowsState>().quitting() {
+pub fn hide_windows(windows: Vec<WebviewWindow>) {
+    #[cfg(target_os = "macos")]
+    crate::macos::hide_windows(windows);
+    #[cfg(not(target_os = "macos"))]
+    for window in windows {
+        let _ = window.hide();
+    }
+}
+
+/// Closes every project window in parallel without flipping focus across clean tabs.
+/// Windows that need user confirmation acquire the prompt turn one at a time via `begin_prompt`.
+pub fn start_quit(app: &AppHandle) {
+    let state = app.state::<WindowsState>();
+    let labels = project_window_labels(app);
+    if labels.is_empty() {
+        app.exit(0);
         return;
     }
-    let next = project_window_labels(app)
-        .into_iter()
-        .filter(|label| Some(label.as_str()) != closed)
-        .find_map(|label| app.get_webview_window(&label));
-    if let Some(window) = next {
-        focus(&window);
-        if window.close().is_err() {
-            app.state::<WindowsState>().set_quitting(false);
+    for label in &labels {
+        state.close_requested(label);
+    }
+    let mut any_sent = false;
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label)
+            && window.close().is_ok()
+        {
+            any_sent = true;
+            continue;
         }
-    } else {
+        state.close_settled(&label);
+    }
+    if !any_sent {
+        if project_window_labels(app).is_empty() {
+            app.exit(0);
+        } else {
+            state.set_quitting(false);
+        }
+    }
+}
+
+/// Exits once every project window has finished closing during Quit.
+pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
+    let state = app.state::<WindowsState>();
+    if !state.quitting() {
+        return;
+    }
+    let remaining: Vec<String> =
+        project_window_labels(app).into_iter().filter(|label| Some(label.as_str()) != closed).collect();
+    if remaining.is_empty() {
         app.exit(0);
+        return;
+    }
+    // Close any window that appeared after Quit began and was not yet asked to close.
+    for label in remaining {
+        if !state.is_closing(&label)
+            && let Some(window) = app.get_webview_window(&label)
+        {
+            state.close_requested(&label);
+            if window.close().is_err() {
+                state.close_settled(&label);
+            }
+        }
     }
 }
 
@@ -3105,5 +3313,39 @@ mod tests {
         assert_eq!(menu_settings_launch("main", false, false, "file.settings", None), None);
         assert_eq!(menu_settings_launch("main", true, true, "file.settings", None), None);
         assert_eq!(menu_settings_launch("main", false, true, "file.openProject", None), None);
+    }
+
+    #[test]
+    fn parallel_close_coordination_tracks_ready_prompt_and_abort() {
+        let st = WindowsState::default();
+        st.close_requested("main");
+        st.close_requested("project-1");
+        assert!(st.is_closing("main"));
+        assert!(st.has_other_pending_closes("main"));
+
+        // Prompt turn allows only one holder at a time.
+        assert_eq!(st.try_acquire_prompt("main"), Ok(true));
+        assert_eq!(st.try_acquire_prompt("project-1"), Ok(false));
+        assert!(st.has_prompt_holder());
+
+        // Marking ready releases the prompt turn.
+        assert!(st.mark_ready("main"));
+        assert!(!st.has_prompt_holder());
+        assert_eq!(st.try_acquire_prompt("project-1"), Ok(true));
+
+        // Cancelling the batch aborts waiting ready peers and clears the prompt holder.
+        st.abort_all_closing(Some("project-1"));
+        assert!(!st.has_prompt_holder());
+        assert!(st.take_aborted("main"));
+        assert!(!st.is_closing("main"));
+        assert!(!st.take_aborted("project-1"));
+
+        // A fresh close clears any stale aborted state and claims hide once per cohort.
+        st.close_requested("main");
+        assert_eq!(
+            st.claim_hide(&["main".into(), "project-1".into()]),
+            vec!["main".to_string(), "project-1".to_string()]
+        );
+        assert!(st.claim_hide(&["main".into(), "project-1".into()]).is_empty());
     }
 }
