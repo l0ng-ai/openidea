@@ -919,6 +919,18 @@ impl Documents {
     /// on disk after this buffer was edited, which only an explicit save may overwrite.
     pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
         self.with_doc(doc, |st| {
+            // The watcher event for an external write may not have arrived yet: check the stamp now.
+            if st.dirty
+                && !st.disk_conflict
+                && st.uri.is_none()
+                && let Ok(meta) = std::fs::metadata(&st.path)
+                && (ide_vfs::mtime_ms(&meta) != st.disk_mtime || meta.len() != st.disk_len)
+            {
+                st.disk_mtime = ide_vfs::mtime_ms(&meta);
+                st.disk_len = meta.len();
+                st.disk_conflict = true;
+                self.sink.emit(IdeEvent::DocDiskConflict { doc, path: st.path.to_string_lossy().into_owned() });
+            }
             if st.dirty && st.disk_conflict {
                 return Ok(false);
             }
