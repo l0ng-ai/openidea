@@ -784,10 +784,25 @@ impl EventFilter {
         }
     }
 
-    /// Relative to `.git/worktrees`: the first component is the worktree ID. Even read-only
-    /// Git queries create fsmonitor cookies; reporting those would schedule another query.
-    fn watch_worktree_entry(parts: &[&OsStr]) -> bool {
-        !matches!(parts, [_, name, ..] if *name == "fsmonitor--daemon" || *name == "fsmonitor--daemon.ipc")
+    /// Relative to `.git/worktrees`: the first component is the worktree ID. Like the main
+    /// gitdir, a linked worktree's gitdir only reports the files that describe its state; the
+    /// rest is Git's (and our own) scratch space. Even read-only queries write there
+    /// (fsmonitor cookies, temporary indexes, reflogs), and reporting those would schedule
+    /// another query.
+    fn worktree_metadata(parts: &[&OsStr]) -> bool {
+        match parts {
+            [] | [_] => true,
+            [_, name] => matches!(
+                name.to_str(),
+                Some("HEAD" | "index" | "config.worktree" | "gitdir" | "commondir" | "locked" | "refs")
+            ),
+            [_, first, ..] => *first == "refs",
+        }
+    }
+
+    /// Directories below `.git/worktrees` that need a watch: the worktree entries and their refs.
+    fn watch_worktree_dir(parts: &[&OsStr]) -> bool {
+        matches!(parts, [] | [_]) || matches!(parts, [_, first, ..] if *first == "refs")
     }
 
     /// `Some(true)` for interesting VCS metadata, `Some(false)` for other `.git`
@@ -815,7 +830,7 @@ impl EventFilter {
                 let metadata = *first == "refs"
                     // Linked-worktree gitdirs: a worktree added or removed below
                     // the project writes its HEAD here.
-                    || (*first == "worktrees" && Self::watch_worktree_entry(parts));
+                    || (*first == "worktrees" && Self::worktree_metadata(parts));
                 metadata && !rest.last().is_some_and(|l| l.to_string_lossy().ends_with(".lock"))
             }
             // The `.git` path itself: a linked worktree's `.git` is a plain
@@ -848,7 +863,7 @@ impl EventFilter {
             return match rest.as_slice() {
                 [] => true,
                 [first, ..] if *first == "refs" => true,
-                [first, parts @ ..] if *first == "worktrees" => Self::watch_worktree_entry(parts),
+                [first, parts @ ..] if *first == "worktrees" => Self::watch_worktree_dir(parts),
                 [only] => *only == "info",
                 _ => false,
             };
@@ -1502,6 +1517,13 @@ mod tests {
         // Linked-worktree gitdir metadata below the main repository.
         assert_eq!(g(".git/worktrees/wt/HEAD"), Some(true));
         assert_eq!(g(".git/worktrees/wt/index.lock"), Some(false));
+        for path in ["index", "config.worktree", "gitdir", "commondir", "locked", "refs", "refs/bisect/bad"] {
+            assert_eq!(g(&format!(".git/worktrees/wt/{path}")), Some(true), "{path}");
+        }
+        // Scratch files Git and the IDE write during read-only queries.
+        for path in ["openidea-index-1-2", "openidea-partial-index", "logs/HEAD", "ORIG_HEAD", "rebase-merge/done"] {
+            assert_eq!(g(&format!(".git/worktrees/wt/{path}")), Some(false), "{path}");
+        }
         // The depth-1 directories themselves: `git init` or the first
         // `git worktree add` creates them in an already-watched gitdir.
         assert_eq!(g(".git/refs"), Some(true));
@@ -1719,7 +1741,8 @@ mod tests {
         assert!(!w(".git/objects") && !w(".git/objects/ab") && !w(".git/logs"));
         // Linked-worktree gitdirs are watched so worktrees added below the
         // project while it is open are discovered.
-        assert!(w(".git/worktrees") && w(".git/worktrees/wt") && w(".git/worktrees/wt/rebase-merge"));
+        assert!(w(".git/worktrees") && w(".git/worktrees/wt") && w(".git/worktrees/wt/refs/bisect"));
+        assert!(!w(".git/worktrees/wt/rebase-merge") && !w(".git/worktrees/wt/logs"));
         assert!(!filter.should_watch_dir(Path::new("/elsewhere")));
         // Excludes are replaced in place (Watcher::set_excludes).
         *filter.excludes.write() = ExcludeMatcher::new(&["gen".into()]);
