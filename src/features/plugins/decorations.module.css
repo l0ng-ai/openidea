@@ -4,7 +4,7 @@
 .modified,
 .removed {
   background-color: var(--plugin-mark-bg);
-  background: linear-gradient(var(--plugin-mark-bg), var(--plugin-mark-bg)) center / 100% 1lh no-repeat;
+  background: linear-gradient(var(--plugin-mark-bg), var(--plugin-mark-bg)) center / 100% min(100%, 1lh) no-repeat;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
 }

@@ -1,13 +1,13 @@
 /**
- * Paints an inline mark's background capped at `1lh` so a font taller than the line height
- * does not bleed into the rows above and below. When the inline box is shorter than `1lh`,
- * its own border box clips the gradient. Safari before 16.4 has no `lh` and drops the
- * shorthand, keeping the plain colour before it.
+ * Paints an inline mark's background clamped to the smaller of the inline box and `1lh`:
+ * a font taller than the line height does not bleed into the rows above and below, and a
+ * line height above the font size fills the whole row, matching the selection height.
+ * Safari before 16.4 has no `lh` and drops the shorthand, keeping the plain colour before it.
  */
 export function inlineBackground(color: string) {
   return {
     backgroundColor: color,
-    background: `linear-gradient(${color}, ${color}) center / 100% 1lh no-repeat`,
+    background: `linear-gradient(${color}, ${color}) center / 100% min(100%, 1lh) no-repeat`,
     WebkitBoxDecorationBreak: "clone",
     boxDecorationBreak: "clone",
   };
