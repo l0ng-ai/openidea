@@ -45,6 +45,33 @@ async fn create_schemas(db: &DbManager) {
 }
 
 #[tokio::test]
+async fn postgres_read_only_is_checked_before_and_after_startup_sql() -> IdeResult<()> {
+    use ide_db::{DbProperty, Pool};
+    let Some((host, port, user, password)) = server() else { return Ok(()) };
+    let mut source =
+        DataSource { driver: DbDriver::Postgres, host, port: Some(port), user, read_only: true, ..Default::default() };
+    let pool = Pool::connect(&source, Some(&password), None).await?;
+    assert_eq!(pool.rows("SHOW transaction_read_only", 1).await?, [[Some("on".into())]]);
+    pool.close().await;
+
+    // Exercise the same server response as a pooler that ignored the startup option.
+    source.properties.push(DbProperty { name: "default_transaction_read_only".into(), value: "off".into() });
+    source.options.startup_script = "SELECT 1/0".into();
+    let err = Pool::connect(&source, Some(&password), None).await.err().expect("writable connection");
+    assert!(err.message.contains("did not enable the requested default_transaction_read_only"), "{}", err.message);
+    source.properties.clear();
+    source.options.startup_script = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE".into();
+    let err = Pool::connect(&source, Some(&password), None).await.err().expect("startup script disabled read-only");
+    assert!(err.message.contains("did not enable the requested default_transaction_read_only"), "{}", err.message);
+    source.options.startup_script = "BEGIN READ WRITE".into();
+    let err = Pool::connect(&source, Some(&password), None).await.err().expect("writable startup transaction");
+    assert!(err.message.contains("writable transaction"), "{}", err.message);
+    source.options.startup_script = "BEGIN READ ONLY".into();
+    Pool::connect(&source, Some(&password), None).await?.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn active_schema_context_drives_the_executing_connection() -> IdeResult<()> {
     let tmp = tempfile::tempdir().unwrap();
     let Some(db) = manager(&tmp).await else { return Ok(()) };
