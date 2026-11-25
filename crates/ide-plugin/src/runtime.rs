@@ -317,6 +317,8 @@ pub trait HostApi: Send + Sync {
     fn storage_keys(&self, prefix: &str) -> Result<Vec<String>, HostError>;
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError>;
     fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError>;
+    fn vcs_roots(&self, root: &Path) -> Result<Vec<String>, HostError>;
+    fn vcs_repository_at(&self, root: &Path, path: &str) -> Result<Option<crate::RepositoryInfo>, HostError>;
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError>;
     /// The commit being prepared in `client`'s window (`None`: no repository),
     /// waiting for the window until `cancel` fires.

@@ -542,6 +542,18 @@ pub struct RepositoryStatus {
     pub changed_files: u32,
 }
 
+/// Reference and credential-stripped remotes of the worktree owning a path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositoryInfo {
+    pub root: String,
+    pub relative_path: String,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub remotes: Vec<(String, String)>,
+}
+
 /// What a path inside a project is, as [`crate::host::Project::stat`] reports it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FileKind {

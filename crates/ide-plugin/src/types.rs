@@ -408,6 +408,18 @@ pub struct RepositoryStatus {
     pub changed_files: u32,
 }
 
+/// Reference and remotes of a path's mapped worktree (WIT `vcs.repository-info`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositoryInfo {
+    pub root: String,
+    pub relative_path: String,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub remotes: Vec<(String, String)>,
+}
+
 /// A file a pending commit changes (WIT `commit.commit-change`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

@@ -81,6 +81,10 @@ impl TestWorkspace {
 }
 
 impl PluginWorkspace for TestWorkspace {
+    fn repositories(&self, root: &Path) -> Result<ide_vcs::Repos, HostError> {
+        ide_vcs::Repos::discover(root, &|_| false).map_err(|e| HostError::Failed(e.message))
+    }
+
     fn run_configuration(&self, _client: &str, plugin: &str, id: &str) -> Result<ide_run::RunConfig, HostError> {
         if !(plugin == "execution" && matches!(id, "detected" | "dynamic") || plugin == "api14" && id == "tests") {
             return Err(HostError::NotFound(id.into()));
@@ -3607,6 +3611,36 @@ fn commands_see_the_paths_they_were_run_on() {
     let out = f.host.run_command("jobs", "selection", Some(&to_ipc(&a)), inv).unwrap();
     assert_eq!(out.as_deref(), Some(format!("{}\n{}", to_ipc(&a), to_ipc(&b)).as_str()));
     assert_eq!(f.run("jobs", "selection", None).unwrap().as_deref(), Some(""));
+}
+
+#[test]
+fn plugin_reads_the_repository_owning_the_path() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let lookup = |path: Option<&str>| f.run("jobs", "repository-at", path);
+    for name in ["alpha", "beta", "alpha/nested"] {
+        let dir = f.project.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-b", "work"]);
+        git(&dir, &["remote", "add", "origin", &format!("https://user:pass@example.org/{name}.git")]);
+        std::fs::write(dir.join("file.txt"), name).unwrap();
+    }
+    assert_eq!(lookup(None).unwrap().unwrap().lines().count(), 3);
+    for (path, repo, relative) in [
+        ("alpha/file.txt", "alpha", "file.txt"),
+        ("beta/file.txt", "beta", "file.txt"),
+        ("alpha/nested/file.txt", "alpha/nested", "file.txt"),
+        ("alpha/nested", "alpha/nested", ""),
+    ] {
+        let root = to_ipc(&f.project.join(repo));
+        let expected = format!("{root}|{relative}|work|[(\"origin\", \"https://example.org/{repo}.git\")]");
+        assert_eq!(lookup(Some(path)).unwrap().as_deref(), Some(expected.as_str()));
+    }
+    assert_eq!(lookup(Some(".")).unwrap(), None);
+    assert!(lookup(Some("..")).unwrap_err().contains("outside"));
+    f.host.set_capability("jobs", "vcs.read", false).unwrap();
+    assert!(lookup(None).unwrap_err().contains("vcs.read"));
+    assert!(lookup(Some("alpha/file.txt")).unwrap_err().contains("vcs.read"));
 }
 
 #[test]
