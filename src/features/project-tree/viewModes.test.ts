@@ -296,9 +296,26 @@ describe("project view modes", () => {
   });
 
   it("expands library folders in their own namespace", async () => {
-    await store.expandAll(pyKey("/p/.venv/lib/site-packages"));
+    const key = pyKey("/p/.venv/lib/site-packages");
+    store.setExpanded(new Set(["\u0000group:externalLibraries", "\u0000group:externalLibraries/< Python 3.12 >"]));
+    store.setSelection(new Set([key]), key);
+    await store.expandSelected();
     const expanded = useProjectTree.getState().expanded;
     expect(expanded.has(pyKey("/p/.venv/lib/site-packages/req"))).toBe(true);
     expect(expanded.has("/p/.venv/lib/site-packages/req")).toBe(false);
+  });
+
+  it("opens only selected file paths in a filtered pane, including overlapping folders", async () => {
+    setOpenFiles(["/p/src/nested/deep/app.ts", "/p/docs/notes/guide.md"]);
+    setViewMode("openFiles");
+    store.setExpanded(new Set(["/p", "/p/src"]));
+    store.setSelection(new Set(["/p/src", "/p/src/nested"]), "/p/src/nested");
+
+    await store.expandSelected();
+
+    expect(useProjectTree.getState().expanded).toEqual(
+      new Set(["/p", "/p/src", "/p/src/nested", "/p/src/nested/deep"]),
+    );
+    expect([...useProjectTree.getState().listings]).toEqual([]);
   });
 });

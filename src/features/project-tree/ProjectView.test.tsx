@@ -246,6 +246,111 @@ describe("ProjectView", () => {
     }
   });
 
+  it("reveals ready selected folders from the toolbar while a compacted sibling waits", async () => {
+    const blocked = `${ROOT}/slow/nested/leaf`;
+    fs = new MemoryFs(
+      {
+        [`${ROOT}/fast/pkg/leaf/Ready.ts`]: "ready",
+        [`${blocked}/Blocked.ts`]: "blocked",
+        [`${ROOT}/unselected/Skipped.ts`]: "",
+        [`${ROOT}/README.md`]: "",
+        "/outside/Linked.ts": "",
+      },
+      ROOT,
+      { [`${ROOT}/linked-parent/link`]: "/outside" },
+    );
+    setProjectFsForTests(fs, ROOT);
+    const gate = deferred<void>();
+    const done = deferred<void>();
+    const read = fs.readDir.bind(fs);
+    const spy = vi.spyOn(fs, "readDir").mockImplementation(async (path) => {
+      if (path === blocked) await gate.promise;
+      const entries = await read(path);
+      if (path === blocked) done.resolve();
+      return entries;
+    });
+    setContext("projectOpen", true);
+    render(<ProjectHeaderActions />);
+    const { rows, row, tree } = setup();
+    const button = screen.getByRole("button", { name: "Expand Selected" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("data-tooltip", "Expand Selected");
+    expect(getAction("project.expandSelected")?.title).toBe("Expand Selected");
+    expect(getAction("project.expandAll")?.title).toBe("Expand All");
+    expect(await executeAction("project.expandSelected")).toBe(false);
+    await waitFor(() => expect(rows()).toContain("fast"));
+
+    fireEvent.mouseDown(row("README.md"));
+    expect(button).toBeEnabled();
+    expect(await executeAction("project.expandSelected")).toBe(true);
+    expect(spy.mock.calls).toEqual([[ROOT]]);
+    fireEvent.mouseDown(row("fast"));
+    fireEvent.mouseDown(row("linked-parent"), { metaKey: true });
+    fireEvent.mouseDown(row("slow"), { metaKey: true });
+    const selection = useProjectTree.getState().selected;
+    expect(selection).toEqual(new Set([`${ROOT}/fast`, `${ROOT}/linked-parent`, `${ROOT}/slow`]));
+    tree.scrollTop = 18;
+    const scrollTop = tree.scrollTop;
+
+    try {
+      fireEvent.click(button);
+      await waitFor(() => expect(rows()).toContain("Ready.ts"));
+      expect(spy).toHaveBeenCalledWith(blocked);
+      expect(rows()).not.toContain("Blocked.ts");
+      expect(rows()).toContain("link");
+      expect(rows()).not.toContain("Linked.ts");
+      expect(spy).not.toHaveBeenCalledWith(`${ROOT}/linked-parent/link`);
+      expect(spy).not.toHaveBeenCalledWith(`${ROOT}/unselected`);
+      expect(useProjectTree.getState().selected).toBe(selection);
+      expect(tree.scrollTop).toBe(scrollTop);
+
+      fireEvent.mouseDown(row("Ready.ts"));
+      await act(async () => void (await executeAction("project.collapseAll")));
+      await act(async () => {
+        gate.resolve();
+        await done.promise;
+      });
+      const root = row("acme");
+      expect(root).toHaveAttribute("aria-expanded", "false");
+      expect(rows()).toEqual(["acme/w/acme"]);
+      expect(button).toBeDisabled();
+      expect(useProjectTree.getState().listings.has(blocked)).toBe(false);
+      const paths = spy.mock.calls.map(([path]) => path);
+      expect(paths).toHaveLength(new Set(paths).size);
+
+      fireEvent.mouseDown(root);
+      fireEvent.keyDown(tree, { key: "ArrowRight" });
+      expect(root).toHaveAttribute("aria-expanded", "true");
+      expect(rows()).toContain("README.md");
+      expect(rows()).not.toContain("Ready.ts");
+      expect(rows()).not.toContain("Blocked.ts");
+    } finally {
+      gate.resolve();
+    }
+  });
+
+  it("closes every workspace root and reopens only the chosen root", async () => {
+    fs = new MemoryFs({ "/left/Left.ts": "left", "/right/Right.ts": "right" });
+    setProjectFsForTests(fs, ROOT);
+    initProjectTree(ROOT, "Workspace", ["/left", "/right"]);
+    setContext("projectOpen", true);
+    render(<ProjectHeaderActions />);
+    const { rows, row, tree } = setup();
+    await waitFor(() => expect(rows()).toEqual(["left/left", "Left.ts", "right/right", "Right.ts"]));
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse All" }));
+
+    expect(rows()).toEqual(["left/left", "right/right"]);
+    expect(row("left")).toHaveAttribute("aria-expanded", "false");
+    expect(row("right")).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.mouseDown(row("right"));
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    expect(rows()).toEqual(["left/left", "right/right", "Right.ts"]);
+    expect(row("left")).toHaveAttribute("aria-expanded", "false");
+    expect(row("right")).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("opens the selected file in the right split with ⇧Enter; a folder still expands", async () => {
     dispatchViaKeymap();
     const { tree, row, rows } = setup();

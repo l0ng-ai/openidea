@@ -35,6 +35,7 @@ import {
   mergeListing,
   planRefresh,
   visibleEntries,
+  visibleInfo,
   unityPathVisible,
   type Placeholder,
   type ProjectNode,
@@ -327,10 +328,19 @@ export const currentModel = () => selectModel(get());
 // Lifecycle
 
 let generation = 0;
-const inflight = new Map<string, Promise<void>>();
+interface Expansion {
+  paths: Set<string>;
+  opened: Map<string, string | null>;
+  cancel: () => void;
+}
+let activeExpansion: Expansion | undefined;
+const inflight = new Map<string, { promise: Promise<void>; batch?: ListingBatch; expansion?: Expansion }>();
 type ListingBatch = "reload" | "visible";
 /** Listings read by a batch and not applied yet; `reload` marks folders that were loaded when read. */
-const pending = new Map<string, { entries: readonly FileEntry[]; reload: boolean; batch: ListingBatch }>();
+const pending = new Map<
+  string,
+  { entries: readonly FileEntry[]; reload: boolean; batch: ListingBatch; expansion?: Expansion }
+>();
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
 let visibleFlush: number | undefined;
 
@@ -341,6 +351,7 @@ export function initProjectTree(
   members: readonly string[] | null = null,
   unity: UnityProjectInfo | null = null,
 ) {
+  cancelExpansion();
   generation++;
   inflight.clear();
   pending.clear();
@@ -422,6 +433,7 @@ export function setViewMode(mode: ViewMode) {
   const s = get();
   if (mode === "unity" && !s.unity) return;
   if (s.mode === mode) return;
+  cancelExpansion();
   modeExpanded.set(s.mode, s.expanded);
   autoExpanded.clear();
   writeJson(MODE_KEY, mode);
@@ -478,6 +490,7 @@ export function setChangedFiles(paths: readonly string[]) {
 }
 
 export function setExpanded(expanded: ReadonlySet<string>) {
+  cancelExpansion();
   set({ expanded });
   persistExpanded();
 }
@@ -555,17 +568,31 @@ async function withReadSlot<T>(read: () => Promise<T>): Promise<T> {
 }
 
 function flushPending(batch: ListingBatch) {
-  const { listings } = get();
+  const { listings, expanded } = get();
   let next: Map<string, readonly FileEntry[]> | undefined;
   for (const [path, result] of pending) {
     if (result.batch !== batch) continue;
     pending.delete(path);
+    if (result.expansion && result.expansion !== activeExpansion) continue;
     // A folder dropped while the batch was reading stays dropped.
     if (result.reload && !listings.has(path)) continue;
     const merged = mergeListing(listings.get(path), result.entries);
     if (merged !== listings.get(path)) (next ??= new Map(listings)).set(path, merged);
   }
-  if (next) set({ listings: next });
+  let opened: Set<string> | undefined;
+  if (batch === "visible" && activeExpansion) {
+    for (const [key, path] of activeExpansion.opened) {
+      if (!expanded.has(key) && (path === null || (next ?? listings).has(path)))
+        (opened ??= new Set(expanded)).add(key);
+    }
+    activeExpansion.opened.clear();
+  }
+  if (next || opened) set({ listings: next ?? listings, expanded: opened ?? expanded });
+  if (opened) persistExpanded();
+}
+
+function scheduleVisibleListings() {
+  visibleFlush ??= requestAnimationFrame(flushVisibleListings);
 }
 
 function flushVisibleListings() {
@@ -583,54 +610,62 @@ export function loadDir(path: string, force = false): Promise<void> {
 /** Loads the expanded folders currently waiting for their children. */
 export function loadVisibleDirs(paths: readonly string[]) {
   const batch = paths.length > 1 ? "visible" : undefined;
-  for (const path of paths) void load(path, false, batch);
+  for (const path of paths) if (!activeExpansion?.paths.has(path)) void load(path, false, batch);
 }
 
-function load(path: string, force: boolean, batch?: ListingBatch): Promise<void> {
+function load(path: string, force: boolean, batch?: ListingBatch, expansion?: Expansion): Promise<void> {
   const { root, listings } = get();
   if (!root || isGroupKey(path)) return Promise.resolve();
   if (!force && listings.has(path)) return Promise.resolve();
   const gen = generation;
   const running = inflight.get(path);
   if (running) {
-    if (batch) return running;
-    return running.then(() => {
+    if (running.expansion) {
+      running.expansion = expansion;
+      running.batch = batch;
+    }
+    if (batch) return running.promise;
+    return running.promise.then(() => {
       if (gen === generation && pending.get(path)?.batch === "visible") flushVisibleListings();
     });
   }
-  if (!force && pending.has(path)) {
+  const buffered = pending.get(path);
+  if (!force && buffered && (!buffered.expansion || buffered.expansion === activeExpansion)) {
     if (batch) return Promise.resolve();
-    if (pending.get(path)?.batch === "visible") {
+    if (buffered.batch === "visible") {
+      buffered.expansion = undefined;
       flushVisibleListings();
       return Promise.resolve();
     }
   }
   const reload = listings.has(path);
-  const p = (async () => {
+  const request = { promise: Promise.resolve(), batch, expansion };
+  const isCurrent = () => gen === generation && (!request.expansion || request.expansion === activeExpansion);
+  request.promise = (async () => {
     try {
-      const read = () => projectFs(root).readDir(path);
-      const entries = await (batch === "reload" ? withReadSlot(read) : read());
-      if (gen !== generation) return;
-      if (batch) {
-        pending.set(path, { entries, reload, batch });
+      const read = () => (isCurrent() ? projectFs(root).readDir(path) : Promise.resolve(null));
+      const entries = await (batch === "reload" || expansion ? withReadSlot(read) : read());
+      if (!entries || !isCurrent()) return;
+      if (request.batch) {
+        pending.set(path, { entries, reload, batch: request.batch, expansion: request.expansion });
         // Restoring many expanded folders yields several replies in one frame
-        if (batch === "visible") visibleFlush ??= requestAnimationFrame(flushVisibleListings);
+        if (request.batch === "visible") scheduleVisibleListings();
       } else {
         pending.delete(path);
         putListing(path, entries);
       }
       // Compact Middle Packages needs to look one level down a single-folder chain.
       const s = get();
-      if (treeOptions(s).compact) {
+      if (!request.expansion && treeOptions(s).compact) {
         const visible = visibleEntries(entries, treeOptions(s));
         const only = visible.length === 1 ? visible[0]! : null;
-        if (only && isDirEntry(only) && !only.ignored && !s.listings.has(only.path)) {
-          const next = load(only.path, false, batch);
-          if (batch === "reload") await next;
+        if (only && isRecursiveFolder(only) && !s.listings.has(only.path) && !activeExpansion?.paths.has(only.path)) {
+          const next = load(only.path, false, request.batch);
+          if (request.batch === "reload") await next;
         }
       }
     } catch (e) {
-      if (gen !== generation) return;
+      if (!isCurrent()) return;
       pending.delete(path);
       const s = get();
       if (e instanceof IpcError && (e.kind === "notFound" || e.kind === "invalidInput")) {
@@ -647,8 +682,12 @@ function load(path: string, force: boolean, batch?: ListingBatch): Promise<void>
       if (gen === generation) inflight.delete(path);
     }
   })();
-  inflight.set(path, p);
-  return p;
+  inflight.set(path, request);
+  return request.promise;
+}
+
+function isRecursiveFolder(entry: FileEntry): boolean {
+  return entry.kind === "dir" && !entry.ignored && !entry.excluded;
 }
 
 /** Re-reads `paths` as one batch: bounded concurrent reads, one update of the listings. */
@@ -979,9 +1018,95 @@ export async function expandAll(from?: string, limit = 400) {
   setExpanded(toExpand);
 }
 
+export function hasVisibleSelection(state = get()): boolean {
+  if (!state.selected.size) return false;
+  const { visible } = visibleInfo(selectModel(state), state.expanded);
+  for (const key of state.selected) if (visible.has(key)) return true;
+  return false;
+}
+
+/** Opens the selected subtrees as their directory listings become available. */
+export function expandSelected(): Promise<void> {
+  const { expanded, mode, selected } = get();
+  const model = currentModel();
+  const { visible } = visibleInfo(model, expanded);
+  const roots = [...selected].filter((key) => visible.has(key) && isExpandableFolder(model.byKey.get(key)));
+  if (!roots.length) return Promise.resolve();
+  cancelExpansion();
+
+  if (isFilteredMode(mode)) {
+    const keys = new Set(roots);
+    for (const key of keys) for (const child of model.children.get(key) ?? []) if (child.dir) keys.add(child.key);
+    setExpanded(new Set([...expanded, ...keys]));
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const expansion: Expansion = { paths: new Set(), opened: new Map(), cancel: resolve };
+    activeExpansion = expansion;
+    const queue: string[] = [];
+    const visited = new Set<string>();
+    let cursor = 0;
+    let running = 0;
+
+    const enqueue = (key: string) => {
+      if (visited.has(key)) return;
+      visited.add(key);
+      queue.push(key);
+      if (!isGroupKey(key)) expansion.paths.add(pathOfKey(key));
+    };
+
+    const visit = async (key: string) => {
+      if (isGroupKey(key)) {
+        for (const child of model.children.get(key) ?? []) if (isExpandableFolder(child)) enqueue(child.key);
+        expansion.opened.set(key, null);
+      } else {
+        const path = pathOfKey(key);
+        await load(path, false, "visible", expansion);
+        if (activeExpansion !== expansion) return;
+        const state = get();
+        const entries = pending.get(path)?.entries ?? state.listings.get(path);
+        if (!entries) return;
+        for (const child of visibleEntries(entries, treeOptions(state)))
+          if (isRecursiveFolder(child)) enqueue(keyLike(key, child.path));
+        expansion.opened.set(key, path);
+      }
+      scheduleVisibleListings();
+    };
+
+    const pump = () => {
+      if (activeExpansion !== expansion) return;
+      while (running < READ_SLOTS && cursor < queue.length) {
+        running++;
+        void visit(queue[cursor++]!).finally(() => {
+          running--;
+          pump();
+        });
+      }
+      if (running) return;
+      flushVisibleListings();
+      if (activeExpansion === expansion) activeExpansion = undefined;
+      resolve();
+    };
+
+    for (const key of roots) enqueue(key);
+    pump();
+  });
+}
+
+function isExpandableFolder(node: ProjectNode | undefined): boolean {
+  return !!node?.dir && !node.placeholder && !node.ignored && !node.excluded && !node.symlink;
+}
+
+function cancelExpansion() {
+  const expansion = activeExpansion;
+  if (!expansion) return;
+  activeExpansion = undefined;
+  expansion.cancel();
+}
+
 export function collapseAll() {
-  const { root, mode } = get();
-  if (root) setExpanded(new Set(mode === "project" || mode === "projectFiles" ? [root] : []));
+  if (get().root) setExpanded(new Set());
 }
 
 // ---------------------------------------------------------------------------

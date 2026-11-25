@@ -6,7 +6,9 @@ import {
   reloadArchiveDirs,
   reloadLoadedDirs,
   currentModel,
+  collapseAll,
   expandAll,
+  expandSelected,
   explainHiddenPath,
   hidingOption,
   initProjectTree,
@@ -15,6 +17,7 @@ import {
   revealPath,
   setExpanded,
   setSelection,
+  setViewMode,
   setViewOption,
   toggleExpanded,
   useProjectTree,
@@ -323,10 +326,116 @@ describe("reveal and expand", () => {
   });
 
   it("expands everything below a folder", async () => {
-    await expandAll();
+    await loadDir(ROOT);
+    setSelection(new Set(["/p/src"]), "/p/src");
+    await expandSelected();
     const s = useProjectTree.getState();
     expect(s.expanded.has("/p/src/main/kotlin/com/acme")).toBe(true);
     expect(visibleInfo(currentModel(), s.expanded).visible.has("/p/src/main/kotlin/com/acme/App.kt")).toBe(true);
+    expect(s.listings.has("/p/docs")).toBe(false);
+  });
+});
+
+describe("Expand Selected", () => {
+  it("drops buffered selected listings on cancellation while publishing restored folders", async () => {
+    fs = new MemoryFs({ "/a/one.ts": "", "/b/two.ts": "", "/selected/file.ts": "", "/blocked/file.ts": "" }, ROOT);
+    setProjectFsForTests(fs, ROOT);
+    initProjectTree(ROOT, "workspace", ["/a", "/b", "/blocked", "/selected"]);
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const read = fs.readDir.bind(fs);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    vi.spyOn(fs, "readDir").mockImplementation(async (path) => {
+      if (path === "/blocked") await gate;
+      return read(path);
+    });
+    try {
+      setSelection(new Set(["/selected", "/blocked"]), "/blocked");
+      const expansion = expandSelected();
+      loadVisibleDirs(["/a", "/b"]);
+      await vi.waitFor(() => expect(frame).toHaveBeenCalledTimes(1));
+
+      collapseAll();
+      await expansion;
+      release();
+      frame.mock.calls[0]![0](0);
+
+      expect([...useProjectTree.getState().listings.keys()]).toEqual(["/a", "/b"]);
+      expect(useProjectTree.getState().expanded).toEqual(new Set());
+    } finally {
+      release();
+      frame.mockRestore();
+    }
+  });
+
+  it("opens selected workspace members past 400 directories while skipping excluded folders and links", async () => {
+    const files = Object.fromEntries(Array.from({ length: 405 }, (_, i) => [`/a/dir${i}/nested/file.ts`, ""]));
+    fs = new MemoryFs(
+      { ...files, "/a/excluded/file.ts": "", "/b/src/app.ts": "", "/c/skip.ts": "", "/outside/file.ts": "" },
+      ROOT,
+      { "/a/link": "/outside" },
+    );
+    fs.ignored.add("/a/excluded");
+    setProjectFsForTests(fs, ROOT);
+    initProjectTree(ROOT, "workspace", ["/a", "/b", "/c"]);
+    const read = vi.spyOn(fs, "readDir");
+    setSelection(new Set(["/a", "/b"]), "/b");
+
+    await expandSelected();
+
+    const state = useProjectTree.getState();
+    expect(state.expanded.has("/a/dir404/nested")).toBe(true);
+    expect(visibleInfo(currentModel(), state.expanded).visible.has("/b/src/app.ts")).toBe(true);
+    const paths = read.mock.calls.map(([path]) => path);
+    expect(paths).toHaveLength(813);
+    expect(new Set(paths).size).toBe(paths.length);
+    expect(paths).not.toContain("/c");
+    expect(paths).not.toContain("/a/excluded");
+    expect(paths).not.toContain("/a/link");
+  });
+
+  it.each([
+    { action: "Collapse All", interrupt: collapseAll, root: ROOT, expanded: [] },
+    {
+      action: "switching panes and back",
+      interrupt: () => {
+        setViewMode("projectFiles");
+        setViewMode("project");
+      },
+      root: ROOT,
+      expanded: [ROOT],
+    },
+    {
+      action: "opening another project",
+      interrupt: () => initProjectTree("/other", "Other"),
+      root: "/other",
+      expanded: ["/other"],
+    },
+  ])("cancels queued expansion work after $action", async ({ interrupt, root, expanded }) => {
+    fs = new MemoryFs(Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`/p/dir${i}/child/file.ts`, ""])), ROOT);
+    setProjectFsForTests(fs, ROOT);
+    await loadDir(ROOT);
+    const read = fs.readDir.bind(fs);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const spy = vi.spyOn(fs, "readDir").mockImplementation(async (path) => {
+      await gate;
+      return read(path);
+    });
+    setSelection(new Set([ROOT]), ROOT);
+
+    const expansion = expandSelected();
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(8));
+    const started = spy.mock.calls.slice();
+    interrupt();
+    await expansion;
+    release();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    expect(spy.mock.calls).toEqual(started);
+    const state = useProjectTree.getState();
+    expect(state.expanded).toEqual(new Set(expanded));
+    expect([...state.listings.keys()]).toEqual(root === ROOT ? [ROOT] : []);
   });
 });
 

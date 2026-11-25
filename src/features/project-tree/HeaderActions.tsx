@@ -5,6 +5,7 @@ import { userScopes } from "@/platform/scopes";
 import { useEditorPrefs } from "@/platform/editorSettings";
 import {
   VIEW_MODES,
+  hasVisibleSelection,
   previewTabEnabled,
   setPreviewTabEnabled,
   setScopeView,
@@ -83,10 +84,11 @@ const BEHAVIOR_OPTIONS: Array<[ToggleOption, string]> = [
 
 export const OPTION_LABELS = [...APPEARANCE_OPTIONS, FOLDERS_FIRST, ...BEHAVIOR_OPTIONS];
 
-/** Header controls of the Project tool window (IDEA: Locate, Expand/Collapse All). */
+/** Header controls of the Project tool window. */
 export function ProjectHeaderActions() {
   // IDEA hides Select Opened File while Always Select Opened File keeps the tree in sync.
   const alwaysSelect = useProjectTree((s) => s.options.autoscrollFromSource);
+  const hasSelection = useProjectTree(hasVisibleSelection);
   return (
     <>
       {!alwaysSelect && (
@@ -98,7 +100,13 @@ export function ProjectHeaderActions() {
           size="small"
         />
       )}
-      <IconButton icon="expand-all" action="project.expandAll" title="Expand All" size="small" />
+      <IconButton
+        icon="expand-all"
+        action="project.expandSelected"
+        title="Expand Selected"
+        size="small"
+        disabled={!hasSelection}
+      />
       <IconButton icon="collapse-all" action="project.collapseAll" title="Collapse All" size="small" />
     </>
   );
