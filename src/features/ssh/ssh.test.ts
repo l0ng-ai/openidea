@@ -1,7 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as ipc from "@/platform/ipc";
 import { DEFAULT_SSH_CONFIG, type SshConfigValid } from "@/platform/remoteSettings";
+import * as contributions from "@/workbench/contributions";
+import * as messages from "@/workbench/messages";
 import { answerAskpass, askpassAnswer, askpassTitle, dropAskpass, enqueueAskpass, useAskpass } from "./askpass";
+import { startPasswordMigrationNotice } from "./passwordMigration";
 import { type ConnectDeps, openSshTerminal, sessionItems, sshRemedy } from "./session";
+
+it("offers recovery for legacy plaintext but never removes it without confirmation", async () => {
+  vi.spyOn(ipc, "isTauri").mockReturnValue(true);
+  const migrate = vi.spyOn(ipc.commands, "sshLegacyPasswords").mockResolvedValue({ status: "ok", data: "locked" });
+  const confirm = vi.spyOn(messages, "confirm").mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  const notify = vi.fn<contributions.NotificationService["notify"]>();
+  vi.spyOn(contributions, "notifications").mockReturnValue({ notify });
+  const dispose = startPasswordMigrationNotice();
+  try {
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledOnce());
+    const actions = notify.mock.calls[0]![0].actions!;
+    actions.find((a) => a.label === "Remove plaintext copy")!.run();
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce());
+    expect(migrate.mock.calls).toEqual([["check"]]);
+    actions.find((a) => a.label === "Retry migration")!.run();
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(2));
+    migrate.mockResolvedValue({ status: "ok", data: null });
+    actions.find((a) => a.label === "Remove plaintext copy")!.run();
+    await vi.waitFor(() => expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ level: "info" })));
+    expect(migrate.mock.calls).toEqual([["check"], ["retry"], ["removePlaintext"]]);
+  } finally {
+    dispose();
+    vi.restoreAllMocks();
+  }
+});
 
 describe("askpass queue", () => {
   beforeEach(() => useAskpass.setState({ queue: [] }));

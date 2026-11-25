@@ -190,6 +190,8 @@ impl Host {
         let sink_for: SinkFactory = diagnostics_store::recording_sink_factory(diagnostics.clone(), sink_for);
         let global_settings = SettingsStore::load(&config_dir, None);
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
+        let migration = ssh.clone();
+        runtime.spawn_blocking(move || migration.start_password_migration());
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),

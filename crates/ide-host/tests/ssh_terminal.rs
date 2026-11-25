@@ -10,6 +10,30 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+#[tokio::test]
+async fn a_failed_credential_save_warns_the_window_but_keeps_the_session_password() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = common::host_config(tmp.path());
+    std::fs::create_dir_all(config.data_dir.join("ssh-passwords.json")).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let host = Host::new(HostConfig {
+        sink_for: Box::new(move |_| {
+            let tx = tx.clone();
+            Arc::new(move |e| tx.send(e).unwrap())
+        }),
+        ..config
+    });
+    ide_host::ops::ssh::ssh_set_secret(&host, "main", "box".into(), Some("test-value".into()), true);
+    let warning = rx.try_iter().find_map(|e| match e {
+        IdeEvent::Notify { level: ide_core::event::NotifyLevel::Warning, body, .. } => body,
+        _ => None,
+    });
+    let warning = warning.expect("the window should be told saving failed");
+    assert!(warning.contains("session only"));
+    assert!(!warning.contains("test-value"));
+    assert_eq!(host.ssh.password("box").as_deref(), Some("test-value"));
+}
+
 fn read_until(rx: &mpsc::Receiver<String>, needle: &str) -> String {
     let mut all = String::new();
     while !all.contains(needle) {
@@ -38,7 +62,8 @@ async fn host_with_ssh_box(tmp: &Path, exec: ide_ssh::testing::ExecFn) -> (Arc<H
         save_secret: true,
         ..Default::default()
     }]);
-    ssh.set_secret("box", Some("secret".into()), true);
+    ide_ssh::secrets::testing::use_memory_store();
+    ssh.set_secret("box", Some("secret".into()), true).unwrap();
     assert!(ssh.session("box").await.is_err(), "unknown host key first");
     ssh.trust_host("box").await.unwrap();
 
