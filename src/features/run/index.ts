@@ -27,6 +27,7 @@ import {
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
+import { useFlutterRunApps } from "@/workbench/flutterRunApps";
 import { restartFlutterDaemon, selectFlutterDevice, useFlutterDevices } from "@/workbench/flutterDevices";
 import { chooserJustClosed, ConfigChooserOverlay } from "./ConfigChooser";
 import {
@@ -46,6 +47,7 @@ import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { openImport } from "./importConfigs";
 import { registerComposerInstall } from "./composerInstall";
+import { registerPubspecCommands } from "./pubspec";
 import { registerGoActions } from "./goActions";
 import { registerRunTabActions } from "./runTabs";
 import { invalidateGoModules } from "./goModules";
@@ -76,7 +78,8 @@ import {
   showApplicationUpdate,
   updatableSessions,
 } from "./applicationUpdate";
-import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
+import { hotReload, hotReloadSession, hotRestart, syncFlutterRunApps } from "./flutterHotReload";
+import { registerFlutterBuildActions } from "./flutterBuild";
 import { npmGutter } from "./npmGutter";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
@@ -294,6 +297,22 @@ async function runCurrentFile(debug: boolean) {
   selectConfig(CURRENT_FILE);
 }
 
+/** Flutter Attach: `flutter attach` with the selected Flutter configuration, to an app started elsewhere. */
+async function flutterAttachSelected() {
+  await ensureConfigs();
+  const config = selectedConfig();
+  if (config?.kind !== "flutter") {
+    notifications().notify({
+      group: "run",
+      level: "info",
+      title: "Select a Flutter run configuration to attach with",
+      key: "run-flutter-attach",
+    });
+    return;
+  }
+  await executeAction("debug.startConfig", { ...config, params: { ...config.params, request: "attach" } });
+}
+
 function nothingToRun() {
   notifications().notify({
     group: "run",
@@ -449,8 +468,10 @@ export function activate(): () => void {
     registerBuiltinTypes(),
     registerRunConfigType(junitType),
     registerGoActions(),
+    registerFlutterBuildActions(),
     registerRunTabActions(),
     registerComposerInstall(),
+    registerPubspecCommands(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({
       id: "run.editConfigs",
@@ -626,6 +647,15 @@ export function activate(): () => void {
         category: "Run",
         when: "flutterProject",
         run: () => restartFlutterDaemon(),
+      },
+      {
+        id: "run.flutterAttach",
+        title: "Flutter Attach",
+        category: "Run",
+        icon: "debug",
+        description: "Attach the debugger to the app of the selected Flutter configuration, started elsewhere",
+        when: "flutterProject",
+        run: () => flutterAttachSelected(),
       },
       {
         id: "run.flutterHotReload",
@@ -914,8 +944,10 @@ export function activate(): () => void {
       const cmake = selected ?? s.configs.find((c) => c.kind === "cmake" && c.args[0] === "--build");
       setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
       setContext("run.updatableRunning", updatableSessions().length > 0);
+      syncFlutterRunApps(s.sessions);
       setContext("run.flutterHotReloadable", !!hotReloadSession());
     }),
+    useFlutterRunApps.subscribe(() => setContext("run.flutterHotReloadable", !!hotReloadSession())),
     // Agent tabs (`run_command`): the archive keeps at most Settings' number of them.
     useRun.subscribe((s, prev) => {
       if (s.sessions !== prev.sessions) trimAgentArchive();

@@ -72,7 +72,8 @@ import {
 import { referenceExtensions, setReferences } from "./composerEditor";
 import { referenceHover } from "./ReferenceChip";
 import { composerDraft, provideIdeContext, setIdeContext, updateComposer, useAgents } from "./store";
-import { ImagePreview, imageSrc } from "./ImagePreview";
+import { ImagePreview } from "./ImagePreview";
+import { imageSrc } from "./imageActions";
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
@@ -1322,7 +1323,9 @@ export function Composer(props: ComposerProps) {
       )}
       <div ref={hostRef} className={styles.field} />
       <div className={styles.bar} onMouseDown={(e) => e.stopPropagation()}>
-        <div className={styles.toolbar}>{props.toolbar}</div>
+        <div className={styles.toolbar} data-composer-toolbar="">
+          {props.toolbar}
+        </div>
         <div className={styles.actions}>
           <IconButton
             ref={addAnchor}

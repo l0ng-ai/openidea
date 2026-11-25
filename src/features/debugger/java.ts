@@ -73,6 +73,7 @@ export async function moduleHasKotlinSources(cwd: string): Promise<boolean> {
   const pending = [join(cwd, "src")];
   while (pending.length) {
     const path = pending.pop()!;
+    // oxlint-disable-next-line no-await-in-loop -- source-set traversal uses a shared pending stack and returns as soon as a .kt file is found
     const entries = await call(commands.fsReadDir(path)).catch(() => []);
     for (const entry of entries) {
       if (entry.excluded) continue;

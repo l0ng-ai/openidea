@@ -16,6 +16,16 @@ describe("vue language mode", () => {
     expect(tree).toMatch(/RuleSet\(ClassSelector.*RuleSet\(ClassSelector/s);
   });
 
+  it('highlights Less inside <style lang="less">', async () => {
+    const support = await loadSupport(findLanguageDescription("Vue", "/p/a.vue")!);
+    const src = `<template><div/></template>\n<style lang="less">\n@c: red;\n.a { .b { color: @c; } .m(); }\n</style>`;
+    const tree = support!.language.parser.parse(src).toString();
+    // Less-only syntax: a top-level @-variable declaration, a mixin call and a nested rule.
+    expect(tree).toContain("StyleSheet(Declaration(AtKeyword");
+    expect(tree).toContain("Inclusion(ClassSelector");
+    expect(tree).toMatch(/RuleSet\(ClassSelector.*RuleSet\(ClassSelector/s);
+  });
+
   it("still parses a plain <style> block as CSS", async () => {
     const support = await loadSupport(findLanguageDescription("Vue", "/p/a.vue")!);
     const tree = support!.language.parser

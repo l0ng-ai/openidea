@@ -145,7 +145,7 @@ impl Default for AgentSettings {
             show_work_time: true,
             show_usage_limits: true,
             show_cost: false,
-            fold_turns: true,
+            fold_turns: false,
             smooth_text: true,
             fit_window_width: false,
             thinking: ThinkingDisplay::Auto,
@@ -1218,6 +1218,7 @@ pub struct LanguagesSettings {
     pub markdown: MarkdownSettings,
     pub arduino: ArduinoSettings,
     pub zig: ZigSettings,
+    pub flutter: FlutterSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -1249,6 +1250,7 @@ impl Default for LanguagesSettings {
             markdown: MarkdownSettings::default(),
             arduino: ArduinoSettings::default(),
             zig: ZigSettings::default(),
+            flutter: FlutterSettings::default(),
         }
     }
 }
@@ -1515,6 +1517,15 @@ pub struct ZigSettings {
     pub zig: String,
 }
 
+/// The Flutter plugin's "Flutter SDK path".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FlutterSettings {
+    /// Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+    /// `PATH`. Empty = `PATH`.
+    pub sdk: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GoSettings {
@@ -1657,6 +1668,20 @@ pub struct MavenSettings {
     /// Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
     /// dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
     pub update_snapshots: bool,
+    /// Who runs the JUnit 5 tests of the gutter's Run / Debug.
+    pub run_tests_using: MavenRunTestsUsing,
+}
+
+/// Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+/// and run actions are delegated to Maven.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MavenRunTestsUsing {
+    /// OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`).
+    #[default]
+    Ide,
+    /// Surefire (`mvn test -Dtest=…`).
+    Maven,
 }
 
 impl MavenSettings {
@@ -2099,8 +2124,10 @@ mod tests {
         assert!(old.agents.show_cost);
         assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
         assert!(!old.agents.fit_window_width);
+        assert!(!old.agents.fold_turns);
         assert!(!Settings::default().agents.show_cost);
         assert!(!Settings::default().agents.fit_window_width);
+        assert!(!Settings::default().agents.fold_turns);
         let mut settings = Settings::default();
         settings.agents.show_usage_limits = false;
         settings.agents.fit_window_width = true;
@@ -2318,6 +2345,7 @@ mod maven_linkage_tests {
         let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
         assert!(old.runner_jre.is_empty());
         assert!(!old.delegate_build);
+        assert_eq!(old.run_tests_using, MavenRunTestsUsing::Ide);
         assert!(MavenSettings::default().runner_jre.is_empty());
         let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), delegate_build: true, ..old };
         let encoded = serde_json::to_string(&settings).unwrap();

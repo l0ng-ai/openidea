@@ -144,7 +144,11 @@ pub(super) fn folding(
         if !node.is_named() {
             return true;
         }
-        if let Some(close_row) = kinds.bracket_close_row(&node) {
+        if spec.name == "go"
+            && let Some(end) = go_compact_end(&node, text)
+        {
+            push(&mut out, start, end, FoldKind::Compact);
+        } else if let Some(close_row) = kinds.bracket_close_row(&node) {
             push(&mut out, start, close_row, FoldKind::Region);
         } else if kinds.has(&node, FOLD_NODE) {
             push(&mut out, start, last_content_row(&node, text), FoldKind::Region);
@@ -155,6 +159,71 @@ pub(super) fn folding(
     out.sort_by(|a, b| a.start_line.cmp(&b.start_line).then(b.end_line.cmp(&a.end_line)));
     out.dedup_by_key(|f| f.start_line);
     out
+}
+
+// Only join a single statement on the next line. Comments, blank lines and
+// nested multi-line statements must keep their own lines.
+fn go_compact_end(node: &Node, text: &str) -> Option<usize> {
+    let start = node.start_position().row;
+    let braced = match node.kind() {
+        "block" => {
+            let parent = node.parent()?;
+            if parent.kind() != "if_statement"
+                || parent.child_by_field_name("consequence") != Some(*node)
+                || !go_error_guard(parent.child_by_field_name("condition")?, text)
+            {
+                return None;
+            }
+            true
+        }
+        "expression_case" | "type_case" | "communication_case" | "default_case" => false,
+        _ => return None,
+    };
+    let body = node.named_child(node.named_child_count().checked_sub(1)?)?;
+    if body.kind() != "statement_list" || body.named_child_count() != 1 {
+        return None;
+    }
+    let header_end = body.prev_sibling()?;
+    if header_end.kind() != if braced { "{" } else { ":" } || header_end.end_position().row != start {
+        return None;
+    }
+    let statement = body.named_child(0)?;
+    let position = statement.start_position();
+    if statement.has_error()
+        || statement.is_extra()
+        || position.row != start + 1
+        || statement.end_position().row != position.row
+        || !own_line(text, statement.start_byte(), position.column)
+        || !text.get(header_end.end_byte()..statement.start_byte())?.trim().is_empty()
+    {
+        return None;
+    }
+    let tail = text.get(statement.end_byte()..)?.split('\n').next()?.trim();
+    if !matches!(tail, "" | ";") {
+        return None;
+    }
+    let end = start + if braced { 2 } else { 1 };
+    (!braced || node.end_position().row == end).then_some(end)
+}
+
+// Folding runs without Go type information. Recognize conventional error
+// guards and leave other nil checks alone.
+fn go_error_guard(condition: Node, text: &str) -> bool {
+    if condition.kind() != "binary_expression"
+        || !condition.child_by_field_name("operator").is_some_and(|op| op.kind() == "!=")
+    {
+        return false;
+    }
+    let (Some(left), Some(right)) = (condition.child_by_field_name("left"), condition.child_by_field_name("right"))
+    else {
+        return false;
+    };
+    let name = match (left.kind(), right.kind()) {
+        ("identifier", "nil") => left,
+        ("nil", "identifier") => right,
+        _ => return false,
+    };
+    name.utf8_text(text.as_bytes()).is_ok_and(|name| name == "err" || name.ends_with("Err"))
 }
 
 fn push(out: &mut Vec<FoldRange>, start: usize, end: usize, kind: FoldKind) {

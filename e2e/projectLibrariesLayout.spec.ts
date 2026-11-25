@@ -40,6 +40,18 @@ test("Project Libraries groups attachments below one toolbar and saves the selec
   await expect(tree.getByRole("treeitem", { name: "Sources", exact: true })).toHaveAttribute("aria-expanded", "true");
   await expect(tree.getByRole("treeitem", { name: "lib/report.jar", exact: true })).toBeVisible();
   await expect(tree.getByText("lib/report.jar", { exact: true })).toHaveCSS("font-size", "13px");
+  // The roots fill the row and the notes go below them, however short the notes are (#5771).
+  const layout = await toolbar.evaluate((el) => {
+    const panel = el.parentElement!;
+    const notes = panel.nextElementSibling as HTMLElement;
+    for (const line of notes.children) line.textContent = "Short note.";
+    const p = panel.getBoundingClientRect();
+    const n = notes.getBoundingClientRect();
+    const row = panel.parentElement!.getBoundingClientRect();
+    return { panelWidth: p.width, rowWidth: row.width, notesBelow: n.top >= p.bottom };
+  });
+  expect(layout.notesBelow).toBe(true);
+  expect(layout.panelWidth).toBeCloseTo(layout.rowWidth, 0);
   const remove = toolbar.getByRole("button", { name: "Remove Library Root", exact: true });
   await expect(remove).toBeDisabled();
 

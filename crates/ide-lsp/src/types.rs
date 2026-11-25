@@ -247,6 +247,8 @@ pub enum InlayKind {
     Type,
     Parameter,
     Other,
+    /// What a closing bracket ends, at the end of its line (the Dart server's closing labels).
+    ClosingLabel,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -651,4 +653,58 @@ pub struct ClassifiedReference {
     #[serde(default)]
     #[specta(optional)]
     pub text: Option<String>,
+}
+
+/// The arguments the Flutter Property Editor edits: those of the widget (or other) call at a
+/// position, as the Dart server's `dart/textDocument/editableArguments` reports them.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditableArguments {
+    /// The widget's (or callee's) name.
+    pub name: Option<String>,
+    pub documentation: Option<String>,
+    pub arguments: Vec<EditableArgument>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditableArgument {
+    pub name: String,
+    pub documentation: Option<String>,
+    /// How to edit it: `string`, `int`, `double`, `bool` or `enum`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The literal value in the code (only while `has_argument`); an expression has `display_value`.
+    pub value: Option<ArgumentValue>,
+    #[serde(default)]
+    pub has_argument: bool,
+    pub default_value: Option<ArgumentValue>,
+    pub display_value: Option<String>,
+    // Absent from older Dart SDKs (`isDeprecated` came later): read as false rather than
+    // failing the whole list.
+    #[serde(default)]
+    pub is_required: bool,
+    #[serde(default)]
+    pub is_nullable: bool,
+    #[serde(default)]
+    pub is_deprecated: bool,
+    #[serde(default = "editable_by_default")]
+    pub is_editable: bool,
+    pub not_editable_reason: Option<String>,
+    /// An enum's values, as `EnumName.value`.
+    pub options: Option<Vec<String>>,
+}
+
+fn editable_by_default() -> bool {
+    true
+}
+
+/// A literal argument value. Ints stay ints: the server rejects `1.0` for an `int` parameter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(untagged)]
+pub enum ArgumentValue {
+    Bool(bool),
+    Int(i64),
+    Double(f64),
+    Text(String),
 }

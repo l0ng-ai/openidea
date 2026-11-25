@@ -30,7 +30,7 @@ pub(crate) use inspect::{fields, instances, referrers, set_inspector, vm_target,
 pub(crate) use scan::watch_for_attached_jvm;
 pub(crate) use scan::{JvmFinder, attach_target, find_attached_jvm, find_local_jvm, local_jdwp_port};
 use snapshot::{AttachProbe, JdkProbe, take_snapshot};
-pub use threads::{JvmThreadDump, JvmThreadsResult, JvmThreadsUnavailable, run_jvm_thread_dump};
+pub use threads::{JvmThreadDump, JvmThreadsResult, JvmThreadsUnavailable, VirtualThreadsNote, run_jvm_thread_dump};
 pub(crate) use threads::{debugged_run_thread_dump, session_thread_dump};
 
 pub const JVM_MEMORY_ADAPTERS: &[&str] = &["java-debug", crate::kotlin::ADAPTER, crate::kotlin_lsp::ADAPTER];

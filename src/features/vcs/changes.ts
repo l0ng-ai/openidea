@@ -2,6 +2,7 @@
 import type { ChangelistState, FileStatus, StagingPatchEntry } from "@/bindings";
 import { baseName, dirName, effectiveKind, relTo, repoLabel, rootOf, stripSlash, type EffectiveKind } from "./model";
 import { tx } from "@/platform/i18n";
+import type { ChangeModule } from "./changeModules";
 import type { DiffData } from "./diffInput";
 import type { RepoHead } from "./store";
 
@@ -48,6 +49,8 @@ export interface ChangeNode {
   path?: string;
   /** Repository root of a repository grouping node. */
   repository?: string;
+  /** Module root path of a module grouping node. */
+  module?: string;
   /** Detail text: the relative directory (flat mode), the old name or a repository's branch. */
   detail?: string;
   /** Icon before the detail: a repository's branch, or its HEAD commit when detached. */
@@ -230,6 +233,69 @@ function headHint(head: RepoHead | undefined): Pick<ChangeNode, "detail" | "deta
   return {};
 }
 
+/** Innermost module holding `path`, or null when outside every known module. */
+export function moduleOf(path: string, modules: readonly ChangeModule[]): ChangeModule | null {
+  const p = stripSlash(path);
+  let best: ChangeModule | null = null;
+  for (const mod of modules) {
+    if ((p === mod.path || p.startsWith(`${mod.path}/`)) && (!best || mod.path.length > best.path.length)) best = mod;
+  }
+  return best;
+}
+
+/** With `Group By › Module`, a node per module holding its changes above the directory/file level. */
+function moduleNodes(
+  files: readonly FileStatus[],
+  baseRoot: string,
+  projectRoot: string,
+  group: GroupId,
+  groupByDir: boolean,
+  scope: string,
+  modules: readonly ChangeModule[],
+): ChangeNode[] {
+  if (!modules.length) return childNodes(files, baseRoot, group, groupByDir, scope);
+  const byMod = new Map<ChangeModule, FileStatus[]>();
+  const loose: FileStatus[] = [];
+  for (const f of files) {
+    const mod = moduleOf(f.path, modules);
+    if (!mod) {
+      loose.push(f);
+      continue;
+    }
+    let list = byMod.get(mod);
+    if (!list) byMod.set(mod, (list = []));
+    list.push(f);
+  }
+  const cleanProject = stripSlash(projectRoot);
+  const grouped = [...byMod]
+    .sort(([a], [b]) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path))
+    .map(([mod, own]): ChangeNode => {
+      const isRootModule = !!cleanProject && mod.path === cleanProject;
+      const rel = isRootModule ? "" : cleanProject ? relTo(cleanProject, mod.path) : mod.path;
+      const detail = isRootModule
+        ? mod.name !== baseName(mod.path)
+          ? baseName(mod.path)
+          : undefined
+        : rel && rel !== mod.name
+          ? rel === mod.path
+            ? dirName(mod.path) || undefined
+            : rel
+          : undefined;
+      return {
+        key: `${scope}:mod:${mod.path}`,
+        type: "dir",
+        label: mod.name,
+        group,
+        children: childNodes(own, mod.path, group, groupByDir, `${scope}@mod:${mod.path}`),
+        files: own,
+        path: mod.path,
+        module: mod.path,
+        ...(detail ? { detail } : {}),
+      };
+    });
+  return [...grouped, ...(loose.length ? childNodes(loose, baseRoot, group, groupByDir, scope) : [])];
+}
+
 /** With several repositories, a node per repository (IDEA's "Group by Repository") above the files. */
 function repoNodes(
   files: readonly FileStatus[],
@@ -239,8 +305,9 @@ function repoNodes(
   scope: string,
   repos: readonly string[],
   heads: Readonly<Record<string, RepoHead>>,
+  modules: readonly ChangeModule[],
 ): ChangeNode[] {
-  if (repos.length < 2) return childNodes(files, root, group, groupByDir, scope);
+  if (repos.length < 2) return moduleNodes(files, root, root, group, groupByDir, scope, modules);
   const byRepo = new Map<string, FileStatus[]>();
   for (const f of files) {
     const repo = rootOf(f.path, repos) ?? root;
@@ -256,7 +323,7 @@ function repoNodes(
       type: "dir" as const,
       label: repoLabel(repo, root),
       group,
-      children: childNodes(own, repo, group, groupByDir, `${scope}@${repo}`),
+      children: moduleNodes(own, repo, root, group, groupByDir, `${scope}@${repo}`, modules),
       files: own,
       path: repo,
       repository: repo,
@@ -293,8 +360,11 @@ export function buildChangeTree(
   byRepo = true,
   showUnversionedSeparately = true,
   ignored: FileStatus[] = [],
+  modules: readonly ChangeModule[] = [],
+  byModule = false,
 ): ChangeNode[] {
   const repoRoots = byRepo ? repos : [];
+  const moduleList = byModule ? modules : [];
   const byGroup = new Map<GroupId, FileStatus[]>();
   for (const fs of status) {
     const kind = groupOf(fs) ?? (byStaging && addedThenDeleted(fs) ? "changes" : null);
@@ -315,7 +385,7 @@ export function buildChangeTree(
       ];
       for (const [side, own] of sides) {
         if (!own.length) continue;
-        const children = repoNodes(own, root, side, groupByDir, side, repoRoots, heads);
+        const children = repoNodes(own, root, side, groupByDir, side, repoRoots, heads, moduleList);
         roots.push({
           key: `group:${side}`,
           type: "group",
@@ -343,7 +413,7 @@ export function buildChangeTree(
           type: "group",
           label: l.name,
           group: g,
-          children: tagList(repoNodes(own, root, g, groupByDir, scope, repoRoots, heads), l.id),
+          children: tagList(repoNodes(own, root, g, groupByDir, scope, repoRoots, heads, moduleList), l.id),
           files: own,
           changelist: l.id,
           active: l.id === lists.active,
@@ -353,7 +423,7 @@ export function buildChangeTree(
       continue;
     }
     if (!files.length) continue;
-    const children = repoNodes(files, root, g, groupByDir, g, repoRoots, heads);
+    const children = repoNodes(files, root, g, groupByDir, g, repoRoots, heads, moduleList);
     roots.push({ key: `group:${g}`, type: "group", label: GROUP_LABEL[g], group: g, children, files });
   }
   if (ignored.length) {
@@ -362,7 +432,7 @@ export function buildChangeTree(
       type: "group",
       label: GROUP_LABEL.ignored,
       group: "ignored",
-      children: repoNodes(ignored, root, "ignored", groupByDir, "ignored", repoRoots, heads),
+      children: repoNodes(ignored, root, "ignored", groupByDir, "ignored", repoRoots, heads, moduleList),
       files: ignored,
     });
   }
@@ -566,8 +636,15 @@ export function ignoreTargets(nodes: readonly ChangeNode[], repos: readonly stri
   const add = (n: ChangeNode) => {
     const untracked = n.files.filter((f) => f.unstaged === "untracked");
     if (!untracked.length) return;
-    // A repository node's path is the root itself, which cannot be ignored.
-    if (n.type === "dir" && n.path && n.files.length === untracked.length && !roots.has(stripSlash(n.path))) {
+    // A repository or module node's path is the root itself, which cannot be ignored.
+    if (
+      n.type === "dir" &&
+      !n.repository &&
+      !n.module &&
+      n.path &&
+      n.files.length === untracked.length &&
+      !roots.has(stripSlash(n.path))
+    ) {
       out.add(stripSlash(n.path));
       return;
     }

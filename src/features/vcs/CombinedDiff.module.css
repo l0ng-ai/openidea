@@ -33,6 +33,22 @@
 .grow {
   flex: 1;
 }
+/* A list of the files beside the diffs, under the shared toolbar. */
+.split {
+  flex: 1;
+  min-height: 0;
+}
+.files,
+.diffs {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.files > *,
+.diffs > .scroll {
+  flex: 1;
+  min-height: 0;
+}
 .scroll {
   flex: 1;
   min-height: 0;

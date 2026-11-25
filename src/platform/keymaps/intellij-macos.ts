@@ -268,6 +268,7 @@ export const intellijMacos: Record<string, string[]> = {
   "layout.restoreDefault": [],
   "toolwindow.jumpToLast": ["F12"],
   "toolwindow.hideActive": ["Shift+Escape"],
+  "toolwindow.hideSide": [],
   "toolwindow.focusEditor": ["Escape"],
   // View › Appearance › Enter / Exit Distraction Free Mode: unbound, as in IDEA
   // (ToggleDistractionFreeMode has no default). ⌃⌘D is macOS's system-wide
@@ -306,6 +307,7 @@ export const intellijMacos: Record<string, string[]> = {
   "run.chooseDebugConfig": ["Ctrl+Alt+D"],
   "run.editConfigs": ["Ctrl+Alt+Shift+R"],
   "debug.toggleBreakpoint": ["Meta+F8"],
+  "debug.toggleBreakpointEnabled": [],
   "debug.viewBreakpoints": ["Meta+Shift+F8"],
   "debug.removeAllBreakpoints": [],
   "debug.removeAllBreakpointsInFile": [],
@@ -355,6 +357,7 @@ export const intellijMacos: Record<string, string[]> = {
   "vcs.unshelveSilently": ["Meta+Alt+U"],
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Meta+Alt+Shift+C"],
+  "vcs.log.copyCommitSubject": [],
   "vcs.log.goToRef": ["Meta+F"],
   "vcs.log.editMessage": ["F2", "Shift+F6"],
   "vcs.log.newBranch": ["Meta+Alt+N"],
@@ -464,6 +467,7 @@ export const intellijMacos: Record<string, string[]> = {
   "db.runSqlScript": [],
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
+  "db.showDiagram": ["Meta+Alt+Shift+U"],
   "db.selectOpened": [],
   "db.expandAll": [],
   "db.collapseAll": [],

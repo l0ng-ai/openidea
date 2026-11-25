@@ -120,12 +120,15 @@ export const commands = {
 	agentRename: (task: string, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rename", { task, title })),
 	/**  Answers a permission request; `option: null` cancels it. */
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
-	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
-	agentRollback: (task: string, turns: number) => typedError<{
+	/**
+	 *  Drops the task's turns after its first `turns`; returns the message of the first dropped one.
+	 *  With `files`, the files those turns changed go back as they were before them.
+	 */
+	agentRollback: (task: string, turns: number, files: boolean) => typedError<{
 	text: string,
 	files: IpcPath[],
 	images: AgentImage[],
-} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns })),
+} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns, files })),
 	/**  Rollback: the task's changed files among `paths` (all without) back as `view` compares them. */
 	agentRollbackChanges: (task: string, paths: string[] | null, view: 
 /**  Everything since the commit the task started from. */
@@ -305,6 +308,8 @@ export const commands = {
 	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
+	/**  Copies image pixels to this computer's clipboard, including from remote project windows. */
+	clipboardWriteImage: (png: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_image", { png })),
 	/**  Writes text locally, without WebView user-activation requirements. */
 	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
@@ -459,7 +464,10 @@ export const commands = {
 	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
 	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
 	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
-	/**  A `Thread.print -l` of the debuggee JVM, or why it cannot be taken. */
+	/**
+	 *  A `Thread.print -l` of the debuggee JVM (with the JSON dump on JDK 21+), or why it cannot be
+	 *  taken.
+	 */
 	debugJvmThreadDump: (session: DebugSessionId) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("debug_jvm_thread_dump", { session })),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
@@ -690,6 +698,14 @@ export const commands = {
 	 *  exited is only started again by the next request.
 	 */
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
+	/**  Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`. */
+	flutterEmulatorLaunch: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("flutter_emulator_launch", { id })),
+	/**
+	 *  The address of the project's Widget Preview page, its server started on first use with the
+	 *  project's DevTools for its inspector. A server that failed or exited is only started again by
+	 *  the next request.
+	 */
+	flutterWidgetPreviewUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_widget_preview_url")),
 	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -829,12 +845,21 @@ export const commands = {
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**
+	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
+	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
+	 *  classpath has one; from the engine's repository, else downloaded once from Maven Central), and,
+	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
+	 */
+	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
+	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+	 *  The build streams its console, messages and progress on `on_event` while it runs; a launch
+	 *  whose build another launch's build joins receives that build's events.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request })),
+	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request, onEvent })),
 	/**
 	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
@@ -881,6 +906,18 @@ export const commands = {
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
+	/**
+	 *  Sets an argument of the call at `pos`; the edit reaches the document as the server's
+	 *  `workspace/applyEdit`, undoable like any other.
+	 */
+	lspEditArgument: (doc: DocId, pos: Pos, name: string, value: boolean | number | number | null | string | null) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_edit_argument", { doc, pos, name, value })),
+	/**  The Flutter Property Editor's arguments of the call at `pos`. */
+	lspEditableArguments: (doc: DocId, pos: Pos) => typedError<{
+	/**  The widget's (or callee's) name. */
+	name: string | null,
+	documentation: string | null,
+	arguments: EditableArgument[],
+} | null, IdeError>(__TAURI_INVOKE("lsp_editable_arguments", { doc, pos })),
 	/**  The Throwable class the caret at `pos` names, for the exception breakpoint intention. */
 	lspExceptionClassAt: (request: RequestId, doc: DocId, pos: Pos) => typedError<{
 	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
@@ -1676,6 +1713,17 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("sdk_container_python_refresh")),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	/**
+	 *  `flutter --version --machine` of the Flutter SDK at `path`, or of the `flutter` on the
+	 *  search path when `path` is empty; `None` when there is no Flutter SDK.
+	 */
+	sdkFlutterAt: (path: string) => typedError<{
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
+} | null, IdeError>(__TAURI_INVOKE("sdk_flutter_at", { path })),
 	/**  The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home. */
 	sdkJdkAt: (path: string) => typedError<{
 	/**
@@ -3600,6 +3648,9 @@ export type ArduinoSettings = {
 	cliConfig?: string,
 	fqbn?: string,
 };
+
+/**  A literal argument value. Ints stay ints: the server rejects `1.0` for an `int` parameter. */
+export type ArgumentValue = boolean | number | number | null | string;
 
 /**  Packaging artifact definition (Project Structure › Artifacts). */
 export type ArtifactConfig = {
@@ -6422,6 +6473,36 @@ export type DynamicItem = {
 	checked?: boolean | null,
 };
 
+export type EditableArgument = {
+	name: string,
+	documentation: string | null,
+	/**  How to edit it: `string`, `int`, `double`, `bool` or `enum`. */
+	type: string,
+	/**  The literal value in the code (only while `has_argument`); an expression has `display_value`. */
+	value: ArgumentValue | null,
+	hasArgument?: boolean,
+	defaultValue: ArgumentValue | null,
+	displayValue: string | null,
+	isRequired?: boolean,
+	isNullable?: boolean,
+	isDeprecated?: boolean,
+	isEditable?: boolean,
+	notEditableReason: string | null,
+	/**  An enum's values, as `EnumName.value`. */
+	options: string[] | null,
+};
+
+/**
+ *  The arguments the Flutter Property Editor edits: those of the widget (or other) call at a
+ *  position, as the Dart server's `dart/textDocument/editableArguments` reports them.
+ */
+export type EditableArguments = {
+	/**  The widget's (or callee's) name. */
+	name: string | null,
+	documentation: string | null,
+	arguments: EditableArgument[],
+};
+
 /**  Editor › General › Appearance. */
 export type EditorAppearanceSettings = {
 	caretBlinking?: boolean,
@@ -7208,12 +7289,42 @@ export type FlutterDevice = {
 	emulator: boolean,
 	/**  The adb state keeping it from being used (`unauthorized`, `offline`, …). */
 	unavailable: string | null,
+	/**  The [`FlutterEmulator`] it runs on: an AVD name, or `apple_ios_simulator`. */
+	emulatorId?: string | null,
 };
 
 /**  The project's Flutter devices, best default first. */
 export type FlutterDeviceList = {
 	status: FlutterDaemonStatus,
 	devices: FlutterDevice[],
+	/**  The emulators that no listed device runs on. */
+	emulators?: FlutterEmulator[],
+};
+
+/**  An Android emulator (AVD) or the iOS Simulator that `flutter emulators --launch` can start. */
+export type FlutterEmulator = {
+	id: string,
+	name: string,
+	/**  `android` or `ios`. */
+	platformType: string | null,
+};
+
+/**  The Flutter plugin's "Flutter SDK path". */
+export type FlutterSettings = {
+	/**
+	 *  Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+	 *  `PATH`. Empty = `PATH`.
+	 */
+	sdk?: string,
+};
+
+/**  What `flutter --version --machine` reports of an SDK. */
+export type FlutterVersion = {
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
 };
 
 export type FocusedEditor = {
@@ -7223,7 +7334,7 @@ export type FocusedEditor = {
 	selectedText: string,
 };
 
-export type FoldKind = "region" | "comment" | "imports";
+export type FoldKind = "region" | "comment" | "imports" | "compact";
 
 export type FoldRange = {
 	start_line: number,
@@ -7240,6 +7351,7 @@ export type FoldingSettings = {
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
+	goShortBlocks?: boolean,
 };
 
 /**
@@ -7371,6 +7483,11 @@ export type GeneratorInfo = {
 	/**  Offer "Create Git repository". */
 	git: boolean,
 	fields: Field[],
+	/**
+	 *  The project folder's name when it isn't the project name: a template over the fields
+	 *  shown (a hidden field has its default), like [`Field::default`]; empty renders the name.
+	 */
+	directory: string | null,
 	/**  More fields come from `scaffold_options` (a project service's metadata). */
 	dynamic: boolean,
 };
@@ -8312,6 +8429,8 @@ export type InlayHintsSettings = {
 	parameters?: boolean,
 	/**  Hints of other kinds (chaining, closing labels…). */
 	other?: boolean,
+	/**  The Dart server's closing labels (`// Column` after a widget's closing bracket). */
+	closingLabels?: boolean,
 	disabledLanguages?: string[],
 	/**  Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on. */
 	codeVision?: boolean,
@@ -8327,7 +8446,9 @@ export type InlayHintsSettings = {
 	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
-export type InlayKind = "type" | "parameter" | "other";
+export type InlayKind = "type" | "parameter" | "other" | 
+/**  What a closing bracket ends, at the end of its line (the Dart server's closing labels). */
+"closingLabel";
 
 /**  One part of an inlay hint label, e.g. a type name that navigates to its declaration. */
 export type InlayLabelPart = {
@@ -8715,6 +8836,17 @@ export type JsResponseRule = {
 	body: string,
 };
 
+/**  The test JVM of OpenIDEA's JUnit runner. */
+export type JunitLaunch = {
+	classPaths: string[],
+	/**  Surefire's `argLine`, then its system properties as `-Dkey=value`. */
+	vmArgs: string[],
+	env: { [key in string]: string },
+	workingDirectory: string | null,
+	/**  The Surefire settings that were applied (`argLine`, `systemPropertyVariables`…), for the console. */
+	surefire: string[],
+};
+
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
 export type JvmBackendState = { kind: "ready" } | 
 /**  Turned off for the rest of the session: the debug adapter lacks what it needs. */
@@ -8835,6 +8967,10 @@ export type JvmThreadDump = {
 	takenWhileSuspended: boolean,
 	/**  Wall time of the `Thread.print` request. */
 	elapsedMs: number,
+	/**  `Thread.dump_to_file -format=json`, which also lists virtual threads; JDK 21+ only. */
+	virtualJson: string | null,
+	/**  Why `virtual_json` is missing from a JDK 21+ dump; none below 21. */
+	virtualNote: VirtualThreadsNote | null,
 };
 
 export type JvmThreadsResult = { status: "ready"; dump: JvmThreadDump } | { status: "unavailable"; reason: JvmThreadsUnavailable };
@@ -9053,6 +9189,7 @@ export type LanguagesSettings = {
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
 	zig?: ZigSettings,
+	flutter?: FlutterSettings,
 };
 
 export type LargeCommitFile = {
@@ -9553,6 +9690,16 @@ export type MavenProject = {
 	env: { [key in string]: string },
 };
 
+/**
+ *  Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+ *  and run actions are delegated to Maven.
+ */
+export type MavenRunTestsUsing = 
+/**  OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`). */
+"ide" | 
+/**  Surefire (`mvn test -Dtest=…`). */
+"maven";
+
 /**  Build Tools › Maven. */
 export type MavenSettings = {
 	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
@@ -9603,6 +9750,8 @@ export type MavenSettings = {
 	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
 	 */
 	updateSnapshots?: boolean,
+	/**  Who runs the JUnit 5 tests of the gutter's Run / Debug. */
+	runTestsUsing?: MavenRunTestsUsing,
 };
 
 /**  What keeps an idle background project loaded. */
@@ -12527,7 +12676,9 @@ export type SdkKind = "python" | "node" |
 /**  Zig toolchain directories. */
 "zig" | 
 /**  .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins. */
-"dotnet";
+"dotnet" | 
+/**  Flutter SDK roots. */
+"flutter";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -14216,6 +14367,12 @@ export type VirtualDocument = {
 	 */
 	canReloadEncoding: boolean,
 };
+
+export type VirtualThreadsNote = 
+/**  A debugger holds the VM, which would hang the JSON request until it resumes. */
+"whileSuspended" | 
+/**  Over the attach reply limit (64 MiB). */
+"tooLarge" | "failed";
 
 /**  Declared (or conventional) visibility of an outline symbol. */
 export type Visibility = "public" | "protected" | 

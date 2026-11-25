@@ -1,6 +1,6 @@
 /**
  * PyCharm's top-level "Python" group (Interpreter) and
- * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript / Zig. Pages live in
+ * Languages & Frameworks › Flutter / Go / Java / Markdown / Node.js / PHP / Rust / TypeScript / Zig. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GO_BUILD_TAG_SECTIONS, GoBuildTagsPage } from "../languages/GoBuildTags";
@@ -35,6 +35,9 @@ const RubyPage = lazyPage("languages.ruby", () => import("../languages/LanguageP
 const RustPage = lazyPage("languages.rust", () => import("../languages/LanguagePages").then((m) => m.RustPage));
 const TypeScriptPage = lazyPage("languages.typescript", () =>
   import("../languages/LanguagePages").then((m) => m.TypeScriptPage),
+);
+const FlutterPage = lazyPage("languages.flutter", () =>
+  import("../languages/LanguagePages").then((m) => m.FlutterPage),
 );
 const ZigPage = lazyPage("languages.zig", () => import("../languages/LanguagePages").then((m) => m.ZigPage));
 
@@ -97,6 +100,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "uv",
     ],
     component: PythonInterpretersPage,
+  },
+  {
+    id: "languages.flutter",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Flutter",
+    group: LANGUAGES_GROUP,
+    order: 389,
+    keywords: ["flutter sdk path", "dart sdk", "flutter", "dart", "pub", "flutter daemon"],
+    component: FlutterPage,
   },
   {
     id: "languages.go",

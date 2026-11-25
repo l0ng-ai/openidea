@@ -284,6 +284,11 @@ describe("catalogs", () => {
   /** Product names intentionally kept as written in every locale. */
   const SAME_AS_ENGLISH = new Set([
     "Flutter DevTools",
+    // Pub / Flutter command names on the pubspec.yaml banner.
+    "Pub get",
+    "Pub upgrade",
+    "Pub outdated",
+    "Flutter doctor",
     "4096 MB",
     "6144 MB",
     "8192 MB",
@@ -303,6 +308,8 @@ describe("catalogs", () => {
     "Java",
     "Python",
     "Python {short}",
+    "Flutter {framework}",
+    "Dart {dart}",
     "C/C++",
     "C#",
     "Go",

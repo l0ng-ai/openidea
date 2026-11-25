@@ -316,6 +316,17 @@ describe("Find in Files popup", () => {
     expect(screen.getByRole("button", { name: "Open in Find Window" })).toBeEnabled();
   });
 
+  it("clicking a scope tab keeps focus in the search field", async () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "order" }));
+    await settle();
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    screen.getByRole("tab", { name: "Module" }).dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Module" }));
+    expect(useFindPopup.getState().scopeTab).toBe("module");
+  });
+
   it("closing remembers the search text", async () => {
     render(<FindInFilesOverlay />);
     act(() => showFindPopup(false, { query: "order" }));

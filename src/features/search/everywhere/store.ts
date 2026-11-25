@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getContext, type ContextKeys } from "@/platform/context";
+import { projectKey } from "@/platform/search";
 import { loadJson, saveJson } from "../common/open";
 import type { ProjectFileSet } from "@/platform/ipc";
 import type { SeTab } from "./model";
@@ -135,8 +136,9 @@ interface HistoryEntry {
   query: string;
 }
 
+/** The open project's history: it names the project's own symbols and files. */
 function loadHistory(): HistoryEntry[] {
-  const v = loadJson<unknown>(HISTORY_KEY, []);
+  const v = loadJson<unknown>(projectKey(HISTORY_KEY), []);
   return Array.isArray(v)
     ? v.filter((x): x is HistoryEntry => typeof x?.tab === "string" && typeof x?.query === "string")
     : [];
@@ -153,5 +155,5 @@ export function pushSearchHistory(tab: SeTab, query: string) {
   const q = query.trim();
   if (!q) return;
   const rest = loadHistory().filter((e) => e.tab !== tab || e.query !== q);
-  saveJson(HISTORY_KEY, [{ tab, query: q }, ...rest].slice(0, MAX_HISTORY));
+  saveJson(projectKey(HISTORY_KEY), [{ tab, query: q }, ...rest].slice(0, MAX_HISTORY));
 }

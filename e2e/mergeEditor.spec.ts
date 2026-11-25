@@ -476,3 +476,46 @@ test("difference navigation focuses and centres the merge result caret with sync
   await page.keyboard.press("Shift+F7");
   await check(101);
 });
+
+test("scrolling one pane sideways scrolls the other two to the same offset", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 600 });
+  const long = (tag: string) => `const ${tag} = "${"x".repeat(400)}";`;
+  await mountMerge(page, [
+    lines(long("base"), "a", "b"),
+    lines(long("ours"), "a", "b"),
+    lines(long("theirs"), "a", "b"),
+  ]);
+  const lefts = () =>
+    page
+      .locator("#merge-host .cm-scroller")
+      .evaluateAll((els) => els.map((el) => Math.round((el as HTMLElement).scrollLeft)));
+  for (const pane of ["Your version", "Result", "Their version"]) {
+    const offset = pane === "Result" ? 240 : pane === "Your version" ? 120 : 60;
+    await page
+      .getByRole("region", { name: pane })
+      .locator(".cm-scroller")
+      .evaluate((el, x) => (el.scrollLeft = x), offset);
+    await expect.poll(lefts).toEqual([offset, offset, offset]);
+  }
+});
+
+test("says when every change is processed and saves the result from the notice", async ({ page }) => {
+  await mountMerge(page);
+  await captureWrites(page);
+  const notice = page.locator("#merge-host").getByText("All changes have been processed.");
+  await expect(notice).toBeHidden();
+  await page.getByRole("button", { name: "Resolve Simple Conflicts" }).click();
+  await expect(status(page)).toHaveText("1 change left, 1 conflict");
+  await expect(notice).toBeHidden();
+  // The conflict left takes both sides.
+  await page.getByRole("region", { name: "Your version" }).locator(".cm-merge-accept").first().click();
+  await expect(notice).toBeHidden();
+  await page.getByRole("region", { name: "Their version" }).locator(".cm-merge-accept").first().click();
+  await expect(status(page)).toHaveText("All changes processed");
+  await expect(notice).toBeVisible();
+  await page.screenshot({ path: process.env.MERGE_SHOT, animations: "disabled" }).catch(() => undefined);
+  await page.getByRole("button", { name: "Save changes and finish merging" }).click();
+  // Nothing is left to confirm: the result is written and staged.
+  await expect.poll(async () => (await writes(page)).some((call) => call.command === "vcsStage")).toBe(true);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});

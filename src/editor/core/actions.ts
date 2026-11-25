@@ -1446,7 +1446,7 @@ export function registerEditorActions(): () => void {
       keyWhen: "editorFocus || !toolWindowFocus",
       run: () => {
         const p = ctrl.activePath();
-        if (p) copyEditorPath(p);
+        if (p) copyEditorPath(pathToCopy("absolute", p) ?? p);
       },
     },
     {

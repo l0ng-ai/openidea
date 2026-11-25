@@ -400,6 +400,7 @@
   "menu.layout.delete": "Usuń układ…",
   "menu.activeToolWindow": "Aktywne okno narzędziowe",
   "menu.toolwindow.hideActive": "Ukryj aktywne okno narzędziowe",
+  "menu.toolwindow.hideSide": "Ukryj boczne okna narzędziowe",
   "menu.toolwindow.maximize": "Maksymalizuj okno narzędziowe",
   "menu.toolwindow.closeContent": "Zamknij aktywną kartę",
   "menu.toolwindow.jumpToLast": "Przejdź do ostatniego okna narzędziowego",

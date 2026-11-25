@@ -43,6 +43,7 @@ export async function valueText(
       // A lazy child's reference holds its uncomputed value, not its contents.
       if (ref > 0 && !child.lazy && !path.has(ref)) {
         path.add(ref);
+        // oxlint-disable-next-line no-await-in-loop -- shared cycle-detection path and line order require children to be walked one at a time
         await walk(ref, depth + 1);
         path.delete(ref);
       }

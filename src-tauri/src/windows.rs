@@ -850,8 +850,18 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     }
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
+    // Windows opens a project window at the configured size (window-state restores only the
+    // maximized flag there), which Restore Down returns to.
+    #[cfg(windows)]
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let area = monitor.work_area().size.to_logical::<f64>(monitor.scale_factor());
+        let min = (config.min_width.unwrap_or(0.0), config.min_height.unwrap_or(0.0));
+        let (size, min) = fit_new_window((config.width, config.height), min, (area.width, area.height));
+        (config.width, config.height) = size;
+        (config.min_width, config.min_height) = (Some(min.0), Some(min.1));
+    }
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
+        .and_then(|b| dev_font_preferences(webview_profile(app, b)).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -1689,7 +1699,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     // display's Space, so macOS keeps it too.
     #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
-    let window = builder.and_then(|b| dev_font_preferences(b).build()).map_err(|e| {
+    let window = builder.and_then(|b| dev_font_preferences(webview_profile(app, b)).build()).map_err(|e| {
         windows.forget(&label);
         IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
     })?;
@@ -2104,6 +2114,18 @@ fn fit_over_parent(
     rx.recv_timeout(FIT_ON_MAIN_TIMEOUT).map_err(|_| tauri::Error::FailedToReceiveMessage)
 }
 
+/// A new window's size and minimum size (logical pixels) shrunk to fit `area`, the work area of
+/// the monitor it opens on: the default 1440×900 is taller than a 1920×1080 laptop screen at
+/// 150 % scaling once the taskbar is taken off.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn fit_new_window(size: (f64, f64), min: (f64, f64), area: (f64, f64)) -> ((f64, f64), (f64, f64)) {
+    if area.0 <= 0.0 || area.1 <= 0.0 {
+        return (size, min);
+    }
+    let size = (size.0.min(area.0), size.1.min(area.1));
+    (size, (min.0.min(size.0), min.1.min(size.1)))
+}
+
 /// Centres the settings window over its owner, inside the owner's monitor work area. The window
 /// may still be on another display with a different scale, so its size is converted with its own
 /// scale and its position is given in physical pixels.
@@ -2194,6 +2216,23 @@ fn open_popup_in_browser<R: tauri::Runtime>(
         tracing::warn!("cannot open {url}: {e}");
     }
     tauri::webview::NewWindowResponse::Deny
+}
+
+/// On Windows every window keeps WebView2's profile (localStorage, IndexedDB) in the local
+/// data directory, so a custom location from Settings › System Settings › Caches holds it too;
+/// Tauri would always use the default one. All windows share it: one WebView2 browser process
+/// serves a single profile folder.
+fn webview_profile<'a>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    #[cfg(windows)]
+    if let Some(state) = app.try_state::<AppState>() {
+        return builder.data_directory(state.host.local_data_dir.clone());
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    builder
 }
 
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
@@ -2924,6 +2963,19 @@ mod tests {
         ] {
             assert_eq!(menu_destination(label, action), expected, "{label} {action}");
         }
+    }
+
+    #[test]
+    fn a_new_window_fits_the_work_area() {
+        // 1920×1080 at 150 % with a 48-pixel taskbar (#5750).
+        let area = (1280.0, 1032.0 / 1.5);
+        assert_eq!(fit_new_window((1440.0, 900.0), (400.0, 500.0), area), ((1280.0, 688.0), (400.0, 500.0)));
+        // A minimum larger than the screen gives way too.
+        assert_eq!(fit_new_window((1440.0, 900.0), (400.0, 800.0), area).1, (400.0, 688.0));
+        // A large screen keeps the configured size; an unknown work area changes nothing.
+        let big = ((1440.0, 900.0), (400.0, 500.0));
+        assert_eq!(fit_new_window(big.0, big.1, (2560.0, 1400.0)), big);
+        assert_eq!(fit_new_window(big.0, big.1, (0.0, 0.0)), big);
     }
 
     #[test]

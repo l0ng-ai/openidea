@@ -13,6 +13,7 @@ import {
   type RunId,
 } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
+import { followLaunchBuild } from "@/features/build/store";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { openExternalUrl } from "@/platform/openUrl";
@@ -23,14 +24,23 @@ import { classFileBreakpointReason } from "@/platform/classFiles";
 import { lineHasCode } from "./breakpoints/codeLines";
 import { canPlaceBreakpoint } from "./breakpoints/languages";
 import {
+  breakpointsOf,
   removeAllBreakpoints,
   removeFileBreakpoints,
   setMuted,
   toggleBreakpoint,
   toggleTemporaryBreakpoint,
+  updateBreakpoint,
   useBreakpoints,
 } from "./breakpoints/store";
-import { removeAllSpecial, removeSpecialIn, specialAt, toggleFieldAt, toggleMethodAt } from "./breakpoints/special";
+import {
+  removeAllSpecial,
+  removeSpecialIn,
+  specialAt,
+  toggleFieldAt,
+  toggleMethodAt,
+  updateSpecial,
+} from "./breakpoints/special";
 import { removeAllExceptionClasses } from "./breakpoints/exceptionClasses";
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
@@ -52,7 +62,7 @@ import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
 import { warnPinnedFlutterDevice } from "@/workbench/flutterDevices";
-import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools } from "./flutter/devTools";
+import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools, WIDGET_PREVIEW_WINDOW } from "./flutter/devTools";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import { attachConfig } from "./attach";
 import {
@@ -213,6 +223,24 @@ function cursor(): { path: string; line: number; selection: string } | null {
   };
 }
 
+/** Toggle Breakpoint Enabled's subject, as in IDEA: the breakpoints on the lines each caret or selection spans. */
+function breakpointsOnCaretLines() {
+  const ed = activeEditor();
+  if (!ed) return null;
+  const { state } = ed.view;
+  const path = ed.ctx.path;
+  const spans = state.selection.ranges.map((r) => ({
+    from: state.doc.lineAt(r.from).number - 1,
+    to: state.doc.lineAt(r.to).number - 1,
+  }));
+  const on = (line: number) => spans.some((s) => line >= s.from && line <= s.to);
+  return {
+    path,
+    lines: breakpointsOf(path).filter((b) => on(b.line)),
+    special: specialAt(path).filter((b) => on(b.line!)),
+  };
+}
+
 /** Evaluate's initial text, as in IDEA: the selection, else the expression at the caret. */
 function evaluateSeed(view: EditorView | undefined = activeEditor()?.view, pos?: number): string {
   if (!view) return "";
@@ -356,6 +384,7 @@ async function startJavaConfig(config: RunConfig, root: string, origin: RunConfi
           request,
           signal,
           report,
+          build: followLaunchBuild(request, tx`Build before launch: ${config.name}`, report),
           saveAll: async () => {
             await maybeEditorService()?.saveAll();
           },
@@ -862,6 +891,15 @@ export function registerDebugActions(): () => void {
         for (const w of DEVTOOLS_WINDOWS) if (!id || id === w.id) refreshDevTools(w.id);
       },
     },
+    {
+      id: "debug.refreshWidgetPreview",
+      title: "Refresh Flutter Widget Preview",
+      category: "Debug",
+      icon: "refresh",
+      description: "Flutter: load the Widget Preview page again",
+      when: "flutterDevTools",
+      run: () => refreshDevTools(WIDGET_PREVIEW_WINDOW),
+    },
     step("debug.stepOver", "Step Over", "over", "step-over"),
     step("debug.stepInto", "Step Into", "into", "step-into"),
     step("debug.stepOut", "Step Out", "out", "step-out"),
@@ -1111,6 +1149,23 @@ export function registerDebugActions(): () => void {
           return;
         }
         toggleFieldAt(c.path, c.line, field ?? { dataId: "", label: "" });
+      },
+    },
+    {
+      id: "debug.toggleBreakpointEnabled",
+      title: "Toggle Breakpoint Enabled",
+      category: "Debug",
+      icon: "breakpoint",
+      keywords: ["enable", "disable"],
+      enabled: () => {
+        const at = breakpointsOnCaretLines();
+        return !!at && at.lines.length + at.special.length > 0;
+      },
+      run: () => {
+        const at = breakpointsOnCaretLines();
+        if (!at) return;
+        for (const b of at.lines) updateBreakpoint(at.path, b.id, { enabled: !b.enabled });
+        for (const b of at.special) updateSpecial(b.id, { enabled: !b.enabled });
       },
     },
     {

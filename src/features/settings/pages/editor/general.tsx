@@ -524,6 +524,7 @@ const FOLDING = editorPage({
         { t: "check", key: `${P}.folding.fileHeader`, label: "File header" },
         { t: "check", key: `${P}.folding.imports`, label: "Imports" },
         { t: "check", key: `${P}.folding.docComments`, label: "Documentation comments" },
+        { t: "check", key: `${P}.folding.goShortBlocks`, label: "Short Go error guards and case clauses" },
       ],
     },
   ],

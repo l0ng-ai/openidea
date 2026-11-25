@@ -390,6 +390,17 @@ export function windowActions(): Action[] {
       },
     },
     {
+      // Import Module from Existing Sources for a folder without a build file.
+      id: "project.attachFolder",
+      title: t("app.action.attachProject"),
+      category: t("app.category.file"),
+      hidden: true,
+      when: "projectLocal",
+      run: async ({ arg }) => {
+        if (typeof arg === "string" && !desktopOnly()) await attachProject(arg);
+      },
+    },
+    {
       id: "workspace.removeProject",
       title: "Remove from Workspace",
       category: t("app.category.file"),

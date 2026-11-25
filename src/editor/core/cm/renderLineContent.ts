@@ -1,5 +1,6 @@
-import { type EditorState } from "@codemirror/state";
+import type { EditorState, Text } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
+import type { Tree } from "@lezer/common";
 import { highlightTree } from "@lezer/highlight";
 import { openideaHighlightStyle } from "./highlight";
 import { bracketClass, DEFAULT_BRACKET_COLORS, type BracketMark } from "./rainbowBrackets";
@@ -20,13 +21,30 @@ export function renderLineContent(
   colors = DEFAULT_BRACKET_COLORS,
 ) {
   const line = state.doc.line(lineNo);
-  const text = line.text.slice(0, MAX_PREVIEW_LINE_LENGTH);
-  const end = line.from + text.length;
-  const tree = syntaxTree(state);
-  let pos = line.from;
+  renderSyntaxRange(
+    state.doc,
+    syntaxTree(state),
+    line.from,
+    Math.min(line.to, line.from + MAX_PREVIEW_LINE_LENGTH),
+    target,
+    brackets,
+    colors,
+  );
+}
+
+export function renderSyntaxRange(
+  doc: Text,
+  tree: Tree,
+  start: number,
+  end: number,
+  target: ParentNode,
+  brackets: readonly BracketMark[] = [],
+  colors = DEFAULT_BRACKET_COLORS,
+) {
+  let pos = start;
   let next = 0;
   const node = (to: number, cls: string): Node => {
-    const s = state.doc.sliceString(pos, to);
+    const s = doc.sliceString(pos, to);
     pos = to;
     if (!cls) return document.createTextNode(s);
     const span = document.createElement("span");
@@ -57,7 +75,7 @@ export function renderLineContent(
         push(Math.max(from, pos), "");
         push(Math.min(to, end), cls);
       },
-      line.from,
+      start,
       end,
     );
   }

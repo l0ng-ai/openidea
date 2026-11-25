@@ -6,6 +6,13 @@
 [Simple Icons](https://github.com/simple-icons/simple-icons), retrieved through
 Iconify (`simple-icons:angular`, `simple-icons:astro`, `simple-icons:cplusplus`, `simple-icons:dart`, `simple-icons:deepseek`, `simple-icons:django`, `simple-icons:dotnet`, `simple-icons:elixir`, `simple-icons:express`, `simple-icons:fastapi`, `simple-icons:flask`, `simple-icons:flutter`, `simple-icons:go`, `simple-icons:haskell`, `simple-icons:html5`, `simple-icons:kotlin`, `simple-icons:ktor`, `simple-icons:laravel`, `simple-icons:nestjs`, `simple-icons:nextdotjs`, `simple-icons:nodedotjs`, `simple-icons:nuxt`, `simple-icons:openjdk`, `simple-icons:phoenixframework`, `simple-icons:php`, `simple-icons:python`, `simple-icons:quarkus`, `simple-icons:ruby`, `simple-icons:rubyonrails`, `simple-icons:rust`, `simple-icons:scala`, `simple-icons:springboot`, `simple-icons:svelte`, `simple-icons:swift`, `simple-icons:symfony`, `simple-icons:vite`, `simple-icons:zig`) and filled with the brand colors (the standard icon grey for black logos). Licensed under [CC0 1.0 Universal](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md).
 
+## Microsoft ConPTY
+
+`crates/ide-core/resources/conpty/` contains the unmodified Microsoft Windows Console
+ConPTY runtime 1.25.260930003, embedded in Windows builds. Copyright (c) Microsoft
+Corporation. Licensed under MIT; see its [license](crates/ide-core/resources/conpty/LICENSE)
+and [package provenance](crates/ide-core/resources/conpty/README.md).
+
 ## Project Lombok
 
 `java/lombok/lombok-1.18.48-openidea.3.jar` contains Project Lombok v1.18.48 with the Equinox
@@ -66,7 +73,7 @@ At render time `src/ui/icons.tsx` may recolour monochrome icons to `currentColor
 These icons of [flutter-intellij](https://github.com/flutter/flutter-intellij) (commit `d02813ad5890`) are used
 under the BSD 3-Clause License:
 
-- `src/ui/expui/flutter/*.svg`: the DevTools tool window icons, copied unmodified from
+- `src/ui/expui/flutter/*.svg`: the Flutter tool window icons, copied unmodified from
   `resources/icons/expui/`.
 - `src/ui/expui/flutter/widget@2x.png` and `widget_private@2x.png`: the Flutter outline's widget
   icons, `resources/icons/custom/class@2x.png` and `method@2x.png`, renamed, content unmodified.

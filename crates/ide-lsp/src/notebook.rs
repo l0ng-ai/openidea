@@ -237,6 +237,7 @@ impl LspManager {
                     notebook: Some(path.to_owned()),
                     changed: std::time::Instant::now(),
                     flutter_outline: None,
+                    closing_labels: None,
                 },
             );
             state.cells.push((cell.id.clone(), doc));

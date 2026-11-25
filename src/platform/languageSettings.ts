@@ -178,6 +178,8 @@ export interface LanguagesValid {
   };
   ruby: { interpreter: string };
   zig: { zig: string };
+  /** Flutter SDK root; empty = `flutter` / `dart` on PATH. */
+  flutter: { sdk: string };
   node: {
     runTarget: string;
     interpreter: string;
@@ -247,6 +249,8 @@ export interface LanguagesValid {
       downloadSources: boolean;
       /** Always update snapshots: `-U` on Maven runs, `java.maven.updateSnapshots` for jdtls. */
       updateSnapshots: boolean;
+      /** Who runs the gutter's JUnit 5 tests: OpenIDEA's runner or Surefire. */
+      runTestsUsing: "ide" | "maven";
     };
   };
   markdown: {
@@ -310,6 +314,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   },
   ruby: { interpreter: "" },
   zig: { zig: "" },
+  flutter: { sdk: "" },
   node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
@@ -348,6 +353,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       delegateBuild: false,
       downloadSources: false,
       updateSnapshots: false,
+      runTestsUsing: "ide",
     },
   },
   markdown: { previewLayout: "sideBySide", previewFontSize: null, runCommands: true, commandDirectory: null },
@@ -432,6 +438,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const py = obj(l.python);
   const ruby = obj(l.ruby);
   const zig = obj(l.zig);
+  const flutter = obj(l.flutter);
   const node = obj(l.node);
   const php = obj(l.php);
   const rust = obj(l.rust);
@@ -462,6 +469,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     zig: { zig: text(zig.zig, d.zig.zig) },
+    flutter: { sdk: text(flutter.sdk, d.flutter.sdk) },
     node: {
       runTarget: text(node.runTarget, ""),
       interpreter: text(node.interpreter, d.node.interpreter),
@@ -536,6 +544,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         delegateBuild: bool(maven.delegateBuild, d.java.maven.delegateBuild),
         downloadSources: bool(maven.downloadSources, d.java.maven.downloadSources),
         updateSnapshots: bool(maven.updateSnapshots, d.java.maven.updateSnapshots),
+        runTestsUsing: oneOf(maven.runTestsUsing, ["ide", "maven"] as const, d.java.maven.runTestsUsing),
       },
     },
     markdown: {

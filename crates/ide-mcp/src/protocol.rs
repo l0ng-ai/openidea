@@ -168,8 +168,13 @@ impl Session<'_> {
             "instructions": format!(
                 "Built-in OpenIDEA tools for {about}: they see the files as the IDE has them and, \
                  for a project open in a window, its editors. The project's workspace can include other \
-                 projects attached to it: call `get_workspace_roots` to list them before answering about \
-                 workspace directories or planning a change across projects."
+                 projects attached to it, which a session's working directory doesn't show. Before the \
+                 first project-related operation in a session, call `get_workspace_roots`: its \
+                 `projectRoot` is the project this connection serves and the default base for paths, and \
+                 its `roots` are every project in the IDE workspace. That is the scope to search and read, \
+                 not a list of projects to change; it doesn't change your working directory or \
+                 permissions. Pass another root as `projectPath` to reach that project. Call it again \
+                 when the user switches projects or attaches one."
             ),
         })
     }

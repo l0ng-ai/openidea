@@ -16,14 +16,41 @@
 //! thread: AppKit and WebKit also access the general pasteboard there, and its
 //! mutable type cache cannot be protected by a mutex in this crate.
 //!
-//! Other platforms (`text/uri-list` on X11) are not wired up: [`files`] is
-//! empty and [`set_files`] fails there.
+//! Linux keeps it as `text/uri-list` (Dolphin, Nautilus and most file
+//! managers) or GNOME's `x-special/gnome-copied-files` (`copy` or `cut`, then
+//! one URI per line), read and written through the GTK clipboard on X11 and
+//! Wayland alike; [`request_files`] reads it without blocking the main loop.
+//! Other platforms are not wired up: [`files`] is empty and [`set_files`]
+//! fails there.
 //!
 //! [`png`] reads an image (a screenshot) for the project view's Paste, which
 //! saves it as a file: `public.png` or `public.tiff` on macOS, the registered
 //! `PNG` format or `CF_DIB` on Windows. Linux reads it through GTK in the app.
 
 use std::path::PathBuf;
+
+#[cfg(any(windows, test))]
+mod image;
+
+/// Writes a PNG as a native image, independently of WebView clipboard permissions.
+/// Call on the main thread on macOS and Linux; `owner` is a window handle on Windows.
+pub fn set_png(png: &[u8], owner: usize) -> std::io::Result<()> {
+    if png.get(..8) != Some(b"\x89PNG\r\n\x1a\n") || png.get(12..16) != Some(b"IHDR") || png.len() < 24 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid clipboard image"));
+    }
+    let width = u32::from_be_bytes(png[16..20].try_into().unwrap()) as usize;
+    let height = u32::from_be_bytes(png[20..24].try_into().unwrap()) as usize;
+    if width == 0
+        || height == 0
+        || !width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .is_some_and(|size| size <= 64 * 1024 * 1024)
+    {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Clipboard image is too large"));
+    }
+    imp::set_png(png, owner)
+}
 
 /// Replaces every clipboard flavor with plain text. `owner` is the calling window
 /// handle on Windows, ignored elsewhere. Call on the main thread on macOS and Linux.
@@ -56,6 +83,7 @@ const HEADER: usize = 20;
 
 /// The absolute paths on the clipboard, empty when it holds no file list.
 /// Read failures remain errors so callers can retain an internal copy.
+/// Empty on Linux, where [`request_files`] reads it.
 pub fn files() -> std::io::Result<Vec<PathBuf>> {
     imp::files()
 }
@@ -78,7 +106,7 @@ pub fn set_files(paths: &[PathBuf]) -> bool {
 /// line. An editor paste inserts names, not the absolute paths the file list
 /// keeps for Explorer (#1878; IDEA's text flavor is names too). A path with no
 /// file name (a root like `C:\`) keeps its whole path.
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 fn names_text(paths: &[PathBuf], separator: &str) -> String {
     paths
         .iter()
@@ -87,6 +115,82 @@ fn names_text(paths: &[PathBuf], separator: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(separator)
+}
+
+/// The `file://` URIs in a `text/uri-list` or `x-special/gnome-copied-files`
+/// payload as local paths: comments, the `copy`/`cut` line and URIs for other
+/// hosts or schemes are skipped.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn uri_list_paths(text: &str) -> Vec<PathBuf> {
+    text.lines().map(str::trim).filter(|line| !line.starts_with('#')).filter_map(uri_to_path).collect()
+}
+
+/// A local `file://` URI (`file:///a%20b` or `file://localhost/a%20b`) as a
+/// path; its percent-escapes are raw bytes, as GLib writes them.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let rest = uri.strip_prefix("file://")?;
+    let path = if rest.starts_with('/') { rest } else { rest.strip_prefix("localhost")? };
+    let path = path.split(['?', '#']).next()?;
+    if !path.starts_with('/') {
+        return None;
+    }
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped =
+            (bytes[i] == b'%').then(|| Some((hex(*bytes.get(i + 1)?)? << 4) | hex(*bytes.get(i + 2)?)?)).flatten();
+        match escaped {
+            Some(b) => {
+                out.push(b);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    Some(PathBuf::from(std::ffi::OsString::from_vec(out)))
+}
+
+/// `path` as a `file://` URI, every byte outside the unreserved set and `/`
+/// percent-escaped.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn file_uri(path: &std::path::Path) -> String {
+    use std::fmt::Write;
+    use std::os::unix::ffi::OsStrExt;
+    let mut uri = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            uri.push(b as char);
+        } else {
+            let _ = write!(uri, "%{b:02X}");
+        }
+    }
+    uri
+}
+
+/// Reads the clipboard's file list without blocking: `text/uri-list` first,
+/// then GNOME's list, and calls `done` with the paths (empty without a list).
+/// Call on the main thread; `done` runs there later.
+#[cfg(target_os = "linux")]
+pub fn request_files(done: impl FnOnce(Vec<PathBuf>) + 'static) {
+    use gtk::gdk::{Atom, SELECTION_CLIPBOARD};
+    fn paths_in(data: &gtk::SelectionData) -> Vec<PathBuf> {
+        // A failed request has a negative length and no data.
+        if data.length() <= 0 { Vec::new() } else { uri_list_paths(&String::from_utf8_lossy(&data.data())) }
+    }
+    gtk::Clipboard::get(&SELECTION_CLIPBOARD).request_contents(&Atom::intern(imp::URI_LIST), move |board, data| {
+        let paths = paths_in(data);
+        if !paths.is_empty() {
+            return done(paths);
+        }
+        board.request_contents(&Atom::intern(imp::GNOME_COPIED), move |_, data| done(paths_in(data)));
+    });
 }
 
 /// `DROPFILES` for `paths`, in the wide form so names outside the ANSI code
@@ -240,6 +344,7 @@ mod imp {
     /// `CF_DIB`: Windows synthesizes it from `CF_BITMAP` and `CF_DIBV5`, so every
     /// bitmap on the clipboard reads as one.
     const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
 
     /// The `PNG` format browsers and the Snipping Tool add beside the bitmap; it
     /// keeps transparency, so it is read first.
@@ -422,6 +527,48 @@ mod imp {
         }
     }
 
+    pub fn set_png(png: &[u8], owner: usize) -> std::io::Result<()> {
+        let dib = super::image::png_to_dib(png)?;
+        let format = png_format();
+        if format == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let formats = [(format, png), (CF_DIBV5, dib.as_slice())];
+        // SAFETY: allocations remain ours until SetClipboardData accepts them. Prepare both
+        // before replacing the clipboard; free only allocations the OS did not take.
+        unsafe {
+            let mut blocks: Vec<_> = formats.iter().map(|(_, bytes)| global_bytes(bytes)).collect();
+            if blocks.iter().any(|memory| memory.is_null()) || !open_for(owner as Handle) {
+                let error = std::io::Error::last_os_error();
+                for memory in blocks {
+                    if !memory.is_null() {
+                        GlobalFree(memory);
+                    }
+                }
+                return Err(error);
+            }
+            let mut result = Ok(());
+            if EmptyClipboard() == 0 {
+                result = Err(std::io::Error::last_os_error());
+            } else {
+                for ((format, _), memory) in formats.iter().zip(&mut blocks) {
+                    if SetClipboardData(*format, *memory).is_null() {
+                        result = Err(std::io::Error::last_os_error());
+                        break;
+                    }
+                    *memory = ptr::null_mut();
+                }
+            }
+            CloseClipboard();
+            for memory in blocks {
+                if !memory.is_null() {
+                    GlobalFree(memory);
+                }
+            }
+            result
+        }
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         let bytes = encode(paths);
         if bytes.len() <= HEADER {
@@ -489,7 +636,7 @@ mod imp {
         NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypePNG,
         NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
     };
-    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
+    use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber, NSString, NSURL};
     use std::path::PathBuf;
 
     use super::names_text;
@@ -587,6 +734,23 @@ mod imp {
         })
     }
 
+    pub fn set_png(png: &[u8], _owner: usize) -> std::io::Result<()> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let data = NSData::with_bytes(png);
+            if NSBitmapImageRep::imageRepWithData(&data).is_none() {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid clipboard image"));
+            }
+            let board = NSPasteboard::generalPasteboard();
+            board.clearContents();
+            if board.setData_forType(Some(&data), unsafe { NSPasteboardTypePNG }) {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("Cannot write clipboard image"))
+            }
+        })
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
@@ -617,6 +781,21 @@ mod imp {
 mod imp {
     use std::path::PathBuf;
 
+    pub fn set_png(png: &[u8], _owner: usize) -> std::io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let image = gtk::gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(png.to_vec()))
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_image(&image);
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = png;
+            Err(std::io::Error::other("Clipboard images are unavailable on this platform"))
+        }
+    }
+
     pub fn set_text(text: &str, _owner: usize) -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
         {
@@ -630,8 +809,25 @@ mod imp {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub const URI_LIST: &str = "text/uri-list";
+    #[cfg(target_os = "linux")]
+    pub const GNOME_COPIED: &str = "x-special/gnome-copied-files";
+
     pub fn has_files() -> bool {
-        false
+        #[cfg(target_os = "linux")]
+        {
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).wait_for_targets().is_some_and(|targets| {
+                targets.into_iter().any(|target| {
+                    let name = target.name();
+                    name == URI_LIST || name == GNOME_COPIED
+                })
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 
     pub fn has_image() -> bool {
@@ -649,6 +845,33 @@ mod imp {
         Ok(Vec::new())
     }
 
+    /// Offers `paths` as `text/uri-list` (KDE and most file managers), GNOME's
+    /// list (Nautilus, Thunar) and their names as text, rendered on request.
+    #[cfg(target_os = "linux")]
+    pub fn set_files(paths: &[PathBuf]) -> bool {
+        use gtk::{TargetEntry, TargetFlags};
+        let uris: Vec<String> = paths.iter().map(|p| super::file_uri(p)).collect();
+        let uri_list: String = uris.iter().map(|uri| format!("{uri}\r\n")).collect();
+        let gnome = format!("copy\n{}", uris.join("\n"));
+        let names = super::names_text(paths, "\n");
+        let entry = |name: &str, info: u32| TargetEntry::new(name, TargetFlags::empty(), info);
+        let targets = [
+            entry(URI_LIST, 0),
+            entry(GNOME_COPIED, 1),
+            entry("UTF8_STRING", 2),
+            entry("text/plain;charset=utf-8", 2),
+            entry("text/plain", 2),
+        ];
+        gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_with_data(&targets, move |_, data, info| match info {
+            0 => data.set(&data.target(), 8, uri_list.as_bytes()),
+            1 => data.set(&data.target(), 8, gnome.as_bytes()),
+            _ => {
+                let _ = data.set_text(&names);
+            }
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
     pub fn set_files(_paths: &[PathBuf]) -> bool {
         false
     }
@@ -658,8 +881,39 @@ mod imp {
 mod tests {
     use super::*;
 
+    #[test]
+    fn invalid_or_oversized_images_are_rejected_before_accessing_the_clipboard() {
+        assert!(set_png(b"not a PNG", 0).is_err());
+        let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        header.extend_from_slice(&100_000u32.to_be_bytes());
+        header.extend_from_slice(&100_000u32.to_be_bytes());
+        assert!(set_png(&header, 0).is_err());
+    }
+
     fn paths(list: &[&str]) -> Vec<PathBuf> {
         list.iter().map(PathBuf::from).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_manager_uri_lists_become_paths() {
+        // Dolphin: CRLF-separated `text/uri-list`, with a comment line.
+        let kde = "# copied\r\nfile:///home/u/a%20b.txt\r\nfile://localhost/home/u/%E6%A1%8C%E9%9D%A2\r\n";
+        assert_eq!(uri_list_paths(kde), paths(&["/home/u/a b.txt", "/home/u/桌面"]));
+        // Nautilus/Thunar: `copy` or `cut`, then one URI per line.
+        assert_eq!(uri_list_paths("cut\nfile:///tmp/x\nfile:///tmp/y"), paths(&["/tmp/x", "/tmp/y"]));
+        // Other hosts and schemes are not local files.
+        assert!(uri_list_paths("file://server/share/x\nhttps://example.com/x\nsmb:///x").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn written_uris_read_back_as_the_same_paths() {
+        let list = paths(&["/home/u/a b#1%.txt", "/home/u/桌面/项目", "/tmp/plain-name_1.~"]);
+        let uris: Vec<String> = list.iter().map(|p| file_uri(p)).collect();
+        assert_eq!(uris[0], "file:///home/u/a%20b%231%25.txt");
+        assert_eq!(uris[2], "file:///tmp/plain-name_1.~");
+        assert_eq!(uri_list_paths(&uris.join("\r\n")), list);
     }
 
     #[test]
