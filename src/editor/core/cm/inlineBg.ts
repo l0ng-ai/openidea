@@ -1,22 +1,26 @@
 /**
  * Paints an inline mark's background capped at `1lh` so a font taller than the line height
  * does not bleed into the rows above and below. When the inline box is shorter than `1lh`,
- * its own border box clips the gradient. Safari before 16.4 has no `lh` and drops the
- * shorthand, keeping the plain colour before it.
+ * its own border box clips the gradient. Keep the size separate so Safari before 16.4
+ * ignores only the unsupported `lh` and still paints the fill.
  */
 export function inlineBackground(color: string) {
   return {
-    backgroundColor: color,
-    background: `linear-gradient(${color}, ${color}) center / 100% 1lh no-repeat`,
+    background: `linear-gradient(${color}, ${color}) center no-repeat`,
+    backgroundSize: "100% 1lh",
     WebkitBoxDecorationBreak: "clone",
     boxDecorationBreak: "clone",
   };
 }
 
+// Semantic roles can override this colour on nested syntax tokens without repainting
+// unrelated descendants (e.g. a selection). An unset colour produces no background image.
+export const inlineTokenBackground = inlineBackground("var(--openidea-token-bg)");
+
 /** Fallback style for an inline mark with a 1px frame (`inlineFramedModern` caps it at `1lh`). */
 export function inlineFramedFallback(fill: string, frame: string) {
   return {
-    backgroundColor: fill,
+    background: fill,
     outline: `1px solid ${frame}`,
     outlineOffset: "-1px",
     WebkitBoxDecorationBreak: "clone",

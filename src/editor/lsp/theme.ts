@@ -1,6 +1,11 @@
 /** Editor-side styling for LSP features (CodeMirror theme; tokens only). */
 import { EditorView } from "@codemirror/view";
-import { inlineBackground, inlineFramedFallback, inlineFramedModern } from "@/editor/core/cm/inlineBg";
+import {
+  inlineBackground,
+  inlineFramedFallback,
+  inlineFramedModern,
+  inlineTokenBackground,
+} from "@/editor/core/cm/inlineBg";
 import { RAINBOW_COLORS } from "./semantic";
 
 const tooltipSurface = {
@@ -84,15 +89,19 @@ const markdown = {
   ".tok-invalid": { color: "var(--syn-invalid)" },
 };
 
-function semanticStyle(token: string, fallback: string) {
+function semanticAttributes(token: string, fallback: string) {
   return {
     color: `var(--syn-${token}, var(--syn-${fallback}))`,
     fontWeight: `var(--syn-${token}-bold, inherit)`,
     fontStyle: `var(--syn-${token}-italic, inherit)`,
-    backgroundColor: `var(--syn-${token}-bg, transparent)`,
+    "--openidea-token-bg": `var(--syn-${token}-bg, initial)`,
     textDecoration: `var(--syn-${token}-effect, none)`,
     WebkitTextDecoration: `var(--syn-${token}-effect, none)`,
   };
+}
+
+function semanticStyle(token: string, fallback: string) {
+  return { ...semanticAttributes(token, fallback), ...inlineTokenBackground };
 }
 
 /** A token that shows `parent`'s colour and style while its own are unset (an `inherit` attribute). */
@@ -103,7 +112,8 @@ function inheritedStyle(token: string, parent: string) {
     color: v("", "inherit"),
     fontWeight: v("-bold", "inherit"),
     fontStyle: v("-italic", "inherit"),
-    backgroundColor: v("-bg", "transparent"),
+    "--openidea-token-bg": v("-bg", "initial"),
+    ...inlineTokenBackground,
     textDecoration: v("-effect", "none"),
     WebkitTextDecoration: v("-effect", "none"),
   };
@@ -117,7 +127,8 @@ function fallbackStyle(token: string, parents: string[]) {
     color: v("", "inherit"),
     fontWeight: v("-bold", "inherit"),
     fontStyle: v("-italic", "inherit"),
-    backgroundColor: v("-bg", "transparent"),
+    "--openidea-token-bg": v("-bg", "initial"),
+    ...inlineTokenBackground,
     textDecoration: v("-effect", "none"),
     WebkitTextDecoration: v("-effect", "none"),
   };
@@ -575,7 +586,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-python-nested": semanticStyle("python-nested-function", "function"),
   ".cm-sem-python-predefined-definition": semanticStyle("python-predefined-definition", "predefined"),
   ".cm-sem-python-predefined-usage": semanticStyle("python-predefined-usage", "predefined"),
-  ".cm-sem-python-docstring, .cm-sem-python-docstring *": semanticStyle("docstring", "string"),
+  ".cm-sem-python-docstring": inlineTokenBackground,
+  ".cm-sem-python-docstring, .cm-sem-python-docstring *": semanticAttributes("docstring", "string"),
   // After the docstring wildcard above so the tag's own colour wins inside it.
   ".cm-sem-python-docstring-tag": {
     ...semanticStyle("python-docstring-tag", "doc-comment-tag"),
@@ -645,7 +657,7 @@ export const lspTheme = EditorView.theme({
     color: "var(--syn-static-property, var(--syn-property))",
     fontStyle: "var(--syn-static-property-italic, var(--syn-static-italic, italic))",
     fontWeight: "var(--syn-static-property-bold, var(--syn-property-bold, inherit))",
-    backgroundColor: "var(--syn-static-property-bg, transparent)",
+    "--openidea-token-bg": "var(--syn-static-property-bg, initial)",
     textDecoration: "var(--syn-static-property-effect, none)",
     WebkitTextDecoration: "var(--syn-static-property-effect, none)",
   },

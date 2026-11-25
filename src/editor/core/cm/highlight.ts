@@ -5,6 +5,7 @@
  */
 import { HighlightStyle, type TagStyle } from "@codemirror/language";
 import { Tag, tags as t } from "@lezer/highlight";
+import { inlineTokenBackground } from "./inlineBg";
 
 /** Log warnings: the UI warning colour, since no syntax token reads as one in every scheme. */
 export const logWarning = Tag.define("logWarning");
@@ -28,7 +29,8 @@ function token(
     color: defaults.color ? variable("", "inherit") : `var(--syn-${name})`,
     fontStyle: variable("-italic", defaults.italic ?? "inherit"),
     fontWeight: variable("-bold", defaults.bold ?? "inherit"),
-    backgroundColor: variable("-bg", "transparent"),
+    "--openidea-token-bg": variable("-bg", "initial"),
+    ...inlineTokenBackground,
     textDecoration: variable("-effect", defaults.effect ?? "none"),
     // WebKit takes a decoration with a style or colour only through the prefixed property.
     WebkitTextDecoration: variable("-effect", defaults.effect ?? "none"),

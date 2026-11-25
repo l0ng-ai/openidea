@@ -58,13 +58,13 @@ describe("selectionMarks", () => {
 
   it("caps inline highlight backgrounds and 1px frames at 1lh with pre-16.4 fallbacks", () => {
     expect(inlineBackground("var(--editor-search)")).toEqual({
-      backgroundColor: "var(--editor-search)",
-      background: "linear-gradient(var(--editor-search), var(--editor-search)) center / 100% 1lh no-repeat",
+      background: "linear-gradient(var(--editor-search), var(--editor-search)) center no-repeat",
+      backgroundSize: "100% 1lh",
       WebkitBoxDecorationBreak: "clone",
       boxDecorationBreak: "clone",
     });
     expect(inlineFramedFallback("var(--fill)", "var(--frame)")).toMatchObject({
-      backgroundColor: "var(--fill)",
+      background: "var(--fill)",
       outline: "1px solid var(--frame)",
       outlineOffset: "-1px",
     });
