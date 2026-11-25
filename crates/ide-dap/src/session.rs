@@ -1061,7 +1061,8 @@ fn reap_on_exit(mut child: Box<dyn portable_pty::Child + Send + Sync>, exited: A
 /// starts a launcher that gives the program its terminal, and the program reads input only from
 /// a terminal), forwards its output to the console, and keeps the terminal for typed input.
 pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, String> {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use ide_core::pty::native_pty_system;
+    use portable_pty::{CommandBuilder, PtySize};
     let argv: Vec<String> = args
         .get("args")
         .and_then(Value::as_array)
