@@ -3,6 +3,7 @@
  * the conversation renders the rows these describe.
  */
 import type { AgentEntry } from "@/bindings";
+import { readOnlyCommand } from "./shellCommand";
 
 type ToolEntry = Extract<AgentEntry, { type: "tool" }>;
 
@@ -56,9 +57,14 @@ function countTool(s: WorkSummary, e: ToolEntry, edited: Set<string>) {
     case "search":
       s.search++;
       break;
-    case "execute":
-      s.run++;
+    case "execute": {
+      // A command that only reads or searches counts as what it did.
+      const kind = exploringCommand(e);
+      if (kind === "search") s.search++;
+      else if (kind === "read") s.read++;
+      else s.run++;
       break;
+    }
     case "fetch":
       s.fetch++;
       break;
@@ -148,6 +154,15 @@ export interface ToolRun {
 }
 
 /** Splits an `execute` tool's text into its command, output and exit code, where it names them. */
+/**
+ * How a shell command call only looks at the workspace (`"search"`, `"read"`), from the command
+ * it ran; `null` for any other call, or a command that may change something.
+ */
+export function exploringCommand(entry: ToolEntry): "search" | "read" | null {
+  if (entry.kind !== "execute" || entry.diffs.length) return null;
+  return readOnlyCommand(toolRun(entry).command ?? entry.title);
+}
+
 export function toolRun(entry: ToolEntry): ToolRun {
   const text = entry.output ?? "";
   const command = /^\$ (.+)$/m.exec(text)?.[1] ?? null;

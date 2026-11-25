@@ -1,5 +1,5 @@
 import type { AgentEntry } from "@/bindings";
-import { type FoldedTurn } from "../timeline";
+import { exploringCommand, type FoldedTurn } from "../timeline";
 
 export type ToolEntryData = Extract<AgentEntry, { type: "tool" }>;
 
@@ -23,12 +23,16 @@ export const liveTool = (entry: AgentEntry) =>
 const EXPLORATION_KINDS = new Set(["read", "search", "fetch", "think"]);
 
 /**
- * Reasoning and read-only exploration tool calls fold together, running ones included: the run
- * keeps its place while a call finishes, and its summary line says what is running. Edits,
- * commands and other side-effecting calls stay visible as their own rows.
+ * Reasoning and read-only exploration fold together, running calls included: the run keeps its
+ * place while a call finishes, and its summary line says what is running. Exploration is a
+ * read, search or fetch, or a shell command that only reads or searches (`grep`, `sed -n`,
+ * `git diff`); edits and other commands stay visible as their own rows.
  */
 export const isProcessEntry = (entry: AgentEntry) =>
-  entry.type === "thought" || (entry.type === "tool" && EXPLORATION_KINDS.has(entry.kind) && entry.diffs.length === 0);
+  entry.type === "thought" ||
+  (entry.type === "tool" &&
+    entry.diffs.length === 0 &&
+    (EXPLORATION_KINDS.has(entry.kind) || exploringCommand(entry) !== null));
 
 /**
  * The conversation's rows from `from`: a run of reasoning and finished tool calls becomes
