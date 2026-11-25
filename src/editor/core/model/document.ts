@@ -39,7 +39,7 @@ import {
   uiModeForPath,
 } from "../cm/languages";
 import { foldEffect } from "@codemirror/language";
-import { backendFolds, setBackendFolds } from "../cm/folding";
+import { backendFolds, compactFoldFits, setBackendFolds } from "../cm/folding";
 import { setSyntaxHighlights } from "../cm/syntaxHighlight";
 import {
   caretFor,
@@ -49,6 +49,7 @@ import {
   effectiveIndent,
   foldingFor,
   fontExtension,
+  hardWrapAt,
   heavyExtension,
   indentExtension,
   lineNumbersExtension,
@@ -389,6 +390,8 @@ export class DocModel {
 
   addSlot(slot: EditorSlot) {
     this.slots.add(slot);
+    // An attachment can load and refresh the document before its first editor opens.
+    if (this.meta.language === "go" && this.slots.size === 1 && !this.initialFolds) this.scheduleRefresh(0);
     if (this.highlights?.counter === this.changeCounter)
       slot.reconfigure([setSyntaxHighlights.of(this.highlights.value)]);
   }
@@ -637,6 +640,8 @@ export class DocModel {
       backend.folding(this.doc),
       backend.outline(this.doc),
       !this.desc || GRAMMAR_SUPPLEMENTED.has(this.meta.language) ? backend.highlights(this.doc) : null,
+      // Compact folds render the original statement with the Go syntax mode.
+      this.meta.language === "go" && !this.initialFolds ? this.loadLanguage() : null,
     ]);
     if (this.closed) return;
     if (counter !== this.changeCounter) {
@@ -645,7 +650,7 @@ export class DocModel {
     }
     if (folds.status === "fulfilled") {
       for (const s of this.slots) s.reconfigure([setBackendFolds.of(folds.value)]);
-      if (!this.initialFolds) {
+      if (!this.initialFolds && this.slots.size) {
         this.initialFolds = true;
         this.foldByDefault();
       }
@@ -661,14 +666,18 @@ export class DocModel {
     }
   }
 
-  /** Code Folding › "Fold by default": file header, imports, documentation comments. */
+  /** Code Folding › "Fold by default". */
   private foldByDefault() {
-    const f = prefsOf(this.settings()).folding;
-    if (!f.fileHeader && !f.imports && !f.docComments) return;
+    const settings = this.settings();
+    const f = prefsOf(settings).folding;
+    if (!f.fileHeader && !f.imports && !f.docComments && !f.goShortBlocks) return;
+    const margin = hardWrapAt(settings, this.info);
     for (const s of this.slots) {
       const state = s.currentState();
       const folds = state.field(backendFolds, false) ?? [];
+      if (!folds.length) continue;
       const info = this.info;
+      const head = state.selection.main.head;
       const firstCodeLine = (() => {
         for (let n = 1; n <= state.doc.lines; n++) {
           const t = state.doc.line(n).text.trim();
@@ -678,6 +687,12 @@ export class DocModel {
       })();
       const chosen = folds.filter((r) => {
         if (r.kind === "imports") return f.imports;
+        if (r.kind === "compact")
+          return (
+            f.goShortBlocks &&
+            !state.selection.ranges.some(({ from, to }) => r.from < to && from < r.to) &&
+            compactFoldFits(state, r, margin)
+          );
         if (r.kind !== "comment") return false;
         // A file header must sit at the top AND start with a comment token.
         // Keeping the position check keeps ordinary doc comments further down
@@ -690,7 +705,6 @@ export class DocModel {
       const effects: StateEffect<unknown>[] = chosen.map((r) => foldEffect.of({ from: r.from, to: r.to }));
       // Folding the header / imports shifts everything below: keep a navigation
       // target (caret revealed on open) in view.
-      const head = state.selection.main.head;
       if (effects.length && head > 0 && !chosen.some((r) => r.from < head && head <= r.to))
         effects.push(EditorView.scrollIntoView(head, { y: "center" }));
       if (effects.length) s.reconfigure(effects);
