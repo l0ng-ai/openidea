@@ -324,6 +324,32 @@ describe("build feature", () => {
     expect(show).toHaveBeenCalledTimes(3);
   });
 
+  it("says how many earlier lines the console line cap discarded", async () => {
+    const run = startBuild("build");
+    await act(async () => {});
+    render(<BuildView />);
+    await act(async () => {
+      fake.emit!({ kind: "started", system: "maven", title: "demo" });
+      fake.emit!({ kind: "output", text: "line\n".repeat(MAX_CONSOLE_LINES + 5_000), stderr: false });
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(useBuildRun.getState().lines).toHaveLength(MAX_CONSOLE_LINES);
+    expect(screen.getByText("5,000 earlier lines were discarded")).toBeInTheDocument();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+
+    // The next build starts with an empty console and no notice.
+    const second = startBuild("build");
+    await act(async () => {});
+    expect(screen.queryByText(/earlier lines were discarded/)).not.toBeInTheDocument();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await second;
+    });
+  });
+
   it.each([
     ["build.buildProject", undefined],
     ["build.buildModule", "/p/core/src/A.java"],

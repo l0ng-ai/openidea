@@ -28,7 +28,15 @@ import { useProject } from "@/platform/project";
 import { workflowSettings, type BuildToolWindowWhen } from "@/platform/workflowSettings";
 import { maybeEditorService, notifications, notifyBuildCompleted, toolWindowService } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
-import { appendOutput, finishSummary, firstError, messageFiles, type BuildStatus, type ConsoleLine } from "./model";
+import {
+  appendOutput,
+  finishSummary,
+  firstError,
+  messageFiles,
+  outputLines,
+  type BuildStatus,
+  type ConsoleLine,
+} from "./model";
 
 function whenMatches(when: BuildToolWindowWhen, reason: "start" | "error"): boolean {
   return when === "always" || (when === "onError" && reason === "error");
@@ -109,6 +117,8 @@ export interface BuildState {
   durationMs: number | null;
   messages: BuildMessage[];
   lines: ConsoleLine[];
+  /** Lines dropped from the front by `MAX_CONSOLE_LINES`. */
+  dropped: number;
   /** Files with diagnostics from the last build. */
   files: string[];
   /** Key of the selected tree node (a message node shows its detail beside the tree). */
@@ -129,6 +139,7 @@ const INITIAL: BuildState = {
   durationMs: null,
   messages: [],
   lines: [],
+  dropped: 0,
   files: [],
   selected: null,
   stepCwd: null,
@@ -138,15 +149,21 @@ export const useBuildRun = create<BuildState>(() => INITIAL);
 
 const TITLES: Record<BuildKind, string> = { build: "Build", rebuild: "Rebuild", artifacts: "Build Artifacts" };
 
+/** Appends console output, counting the lines the cap drops from the front. */
+function withOutput(s: BuildState, text: string, kind: ConsoleLine["kind"], cwd?: string) {
+  const lines = appendOutput(s.lines, text, kind, cwd);
+  return { lines, dropped: s.dropped + s.lines.length + outputLines(text).length - lines.length };
+}
+
 /** Applies one streamed event (pure; batched by the caller). */
 export function applyBuildEvent(s: BuildState, e: BuildEvent): Partial<BuildState> {
   switch (e.kind) {
     case "started":
       return { title: e.title, system: e.system, stepCwd: null };
     case "step":
-      return { stepCwd: e.cwd, lines: appendOutput(s.lines, `${e.command}\n`, "system", e.cwd) };
+      return { stepCwd: e.cwd, ...withOutput(s, `${e.command}\n`, "system", e.cwd) };
     case "output":
-      return { lines: appendOutput(s.lines, e.text, e.stderr ? "err" : "out", s.stepCwd ?? undefined) };
+      return withOutput(s, e.text, e.stderr ? "err" : "out", s.stepCwd ?? undefined);
     case "message":
       return { messages: [...s.messages, e.message] };
     case "progress":
@@ -302,7 +319,7 @@ async function executeBuild(
         status: "failed",
         files: [],
         message: null,
-        lines: appendOutput(s.lines, `${text}\n`, "err"),
+        ...withOutput(s, `${text}\n`, "err"),
         messages: [...s.messages, { severity: "error", text, path: null, range: null, code: null }],
       }));
       notifications().notify({

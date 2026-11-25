@@ -346,7 +346,16 @@ function BuildOutput({ rowHeight }: { rowHeight: number }) {
   const selected = useBuildRun((s) => s.selected);
   const messages = useBuildRun((s) => s.messages);
   const node = useMemo(() => (selected ? findNode(messages, selected) : undefined), [selected, messages]);
-  return node?.kind === "message" ? <MessageDetail message={node.message} /> : <BuildConsole rowHeight={rowHeight} />;
+  const dropped = useBuildRun((s) => s.dropped);
+  if (node?.kind === "message") return <MessageDetail message={node.message} />;
+  return (
+    <>
+      {dropped > 0 && (
+        <div className={styles.notice}>{tx`${dropped.toLocaleString()} earlier lines were discarded`}</div>
+      )}
+      <BuildConsole rowHeight={rowHeight} />
+    </>
+  );
 }
 
 export function BuildView() {
