@@ -368,5 +368,6 @@ export const ENCODING_CHOICES: ReadonlyArray<readonly [string, string]> = [
   ["euc-kr", "EUC-KR"],
   ["windows-1252", "windows-1252"],
   ["iso-8859-1", "ISO-8859-1"],
+  ["iso-8859-15", "ISO-8859-15"],
   ["koi8-r", "KOI8-R"],
 ];

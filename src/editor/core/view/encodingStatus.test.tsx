@@ -133,3 +133,12 @@ it("converts the current text when Convert is chosen", async () => {
   await waitFor(() => expect(setMeta).toHaveBeenCalledWith({ encoding: "gbk", hasBom: false, dirty: true }));
   view.unmount();
 });
+
+it("offers ISO-8859-15, the Latin-9 encoding of legacy Western European projects", async () => {
+  setEncoding.mockResolvedValue({ encoding: "iso-8859-15", hasBom: false });
+  const view = openPicker(meta({ path: "/p/Main.java", readOnly: false }));
+  choose("ISO-8859-15");
+  fireEvent.click(button("Convert"));
+  expect(setEncoding).toHaveBeenCalledWith(1, "iso-8859-15", false);
+  view.unmount();
+});
