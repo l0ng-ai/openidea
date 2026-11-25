@@ -1265,7 +1265,10 @@ function PushDialog({
       resizable="both"
       footerStart={
         <div className={styles.pushOptions}>
-          <span title={protectedTarget ? `Force push to protected branch '${target}' is prohibited` : undefined}>
+          <span
+            className={styles.pushOptionWrap}
+            title={protectedTarget ? `Force push to protected branch '${target}' is prohibited` : undefined}
+          >
             <Checkbox
               checked={force && forceAvailable}
               disabled={!forceAvailable || inspection.fetching}
