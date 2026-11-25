@@ -6437,7 +6437,8 @@
   "{provider} didn't start: {error}": "{provider} 未能启动：{error}",
   "resets {resetsMs}": "{resetsMs} 重置",
   "Run Again From Here": "从此处重新运行",
-  "The messages after this one are replaced. Files the agent changed stay as they are.": "这条之后的消息会被替换。Agent 改动过的文件保持不变。",
+  "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "这条之后的消息会被替换，Agent 在此之后改动的文件会恢复到这条消息发送前的状态。",
+  "The files the agent changed since go back to how they were before this message was sent.": "Agent 在此之后改动的文件会恢复到这条消息发送前的状态。",
   "Cancelling…": "正在取消…",
   "Code insight needs the index; it can't be stopped": "代码洞察依赖索引，无法停止",
   "Waiting for other tasks": "正在等待其他任务",
@@ -7999,7 +8000,7 @@
   "Couldn't rename the task": "无法重命名任务",
   "Start a Fresh Agent Session": "启动全新的智能体会话",
   "Start Fresh": "重新开始",
-  "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "这会清空整个对话，并使用此消息启动全新的智能体会话。智能体已修改的文件保持不变。",
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "这会清空整个对话，把 Agent 改动过的文件恢复到任务开始时的状态，并用这条消息开始一个新的 Agent 会话。",
   "Path From Source Root": "相对于源根的路径",
   "Path From Repository Root": "相对于仓库根的路径",
   "Agent Reference": "智能体引用",
@@ -8026,9 +8027,6 @@
   "Insert imports on paste": "粘贴时插入导入",
   "You": "你",
   "Jump to Latest": "跳转到最新位置",
-  "Retract Message": "撤回消息",
-  "Retract": "撤回",
-  "Couldn't retract the message": "无法撤回消息",
   "The agent is still stopping. Try again once it has stopped.": "智能体仍在停止中。请在停止后重试。",
   "Uninstall incomplete; retry Uninstall to finish cleanup.": "卸载未完成；请重试卸载以完成清理。",
   "refusing symlink in plugin cleanup path": "拒绝清理路径中包含符号链接的插件",
@@ -10248,5 +10246,8 @@
   "Find where this component is imported and used": "查找此组件被导入和使用的位置",
   "Gradle project sync failed": "Gradle 项目同步失败",
   "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. Cause: {cause}": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。原因：{cause}",
-  "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project.": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。"
+  "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project.": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。",
+  "Roll Back to Here": "回滚到这里",
+  "Couldn't roll back": "无法回滚",
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "这条消息及之后的消息会被移除，Agent 在此之后改动的文件会恢复到这条消息发送前的状态。消息会放回输入框。"
 }

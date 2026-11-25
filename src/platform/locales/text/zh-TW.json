@@ -5863,7 +5863,8 @@
   "{provider} didn't start: {error}": "{provider} 未能啟動：{error}",
   "resets {resetsMs}": "{resetsMs} 重設",
   "Run Again From Here": "從此處重新執行",
-  "The messages after this one are replaced. Files the agent changed stay as they are.": "這條之後的訊息會被取代。Agent 改動過的檔案保持不變。",
+  "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "這條之後的訊息會被取代，Agent 在此之後改動的檔案會恢復到這條訊息傳送前的狀態。",
+  "The files the agent changed since go back to how they were before this message was sent.": "Agent 在此之後改動的檔案會恢復到這條訊息傳送前的狀態。",
   "Cancelling…": "正在取消…",
   "Code insight needs the index; it can't be stopped": "程式碼洞察依賴索引，無法停止",
   "Waiting for other tasks": "正在等待其他任務",
@@ -7402,7 +7403,7 @@
   "Couldn't rename the task": "無法重新命名任務",
   "Start a Fresh Agent Session": "啟動全新的代理工作階段",
   "Start Fresh": "重新開始",
-  "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "這會清空整個對話，並使用此訊息啟動全新的代理對話。代理已修改的檔案保持不變。",
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "這會清空整個對話，把 Agent 改動過的檔案恢復到任務開始時的狀態，並用這條訊息開始一個新的 Agent 工作階段。",
   "Path From Source Root": "相對於源根的路徑",
   "Path From Repository Root": "相對於存放庫根的路徑",
   "Agent Reference": "智能體引用",
@@ -7429,9 +7430,6 @@
   "Insert imports on paste": "貼上時插入匯入",
   "You": "你",
   "Jump to Latest": "跳轉到最新位置",
-  "Retract Message": "撤回訊息",
-  "Retract": "撤回",
-  "Couldn't retract the message": "無法撤回訊息",
   "The agent is still stopping. Try again once it has stopped.": "代理仍在停止中。請在停止後重試。",
   "Uninstall incomplete; retry Uninstall to finish cleanup.": "解除安裝未完成；請重試解除安裝以完成清理。",
   "refusing symlink in plugin cleanup path": "拒絕清理路徑中包含符號連結的外掛",
@@ -9277,5 +9275,8 @@
   "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project.": "Gradle 無法同步 {project}。建置同步成功前，Java 程式碼分析可能無法正常運作。請修正建置，然後重新載入 Gradle 專案。",
   "Fill Paragraph": "填充段落",
   "Convert Indents to Spaces": "將縮排轉換為空格",
-  "Convert Indents to Tabs": "將縮排轉換為定位字元"
+  "Convert Indents to Tabs": "將縮排轉換為定位字元",
+  "Roll Back to Here": "回滾到這裡",
+  "Couldn't roll back": "無法回滾",
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "這條訊息及之後的訊息會被移除，Agent 在此之後改動的檔案會恢復到這條訊息傳送前的狀態。訊息會放回輸入框。"
 }

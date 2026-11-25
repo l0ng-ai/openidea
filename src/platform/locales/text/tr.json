@@ -930,7 +930,7 @@
   "Couldn't rename the task": "Görev yeniden adlandırılamadı",
   "Start a Fresh Agent Session": "Yeni Bir Ajan Oturumu Başlat",
   "Start Fresh": "Yeni Oturum Başlat",
-  "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "Bu işlem tüm konuşmayı temizler ve bu mesajla yeni bir ajan oturumu başlatır. Ajanın değiştirdiği dosyalar olduğu gibi kalır.",
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "Bu, tüm konuşmayı temizler, ajanın değiştirdiği dosyaları görevin başladığı andaki hâline döndürür ve bu mesajla yeni bir ajan oturumu başlatır.",
   "Copy Path From Source Root": "Kaynak Kökünden Yolu Kopyala",
   "Copy Path From Repository Root": "Depo Kökünden Yolu Kopyala",
   "Escape text on paste in string literals": "Dize sabitlerine yapıştırırken metindeki özel karakterleri kaçır",
@@ -967,9 +967,6 @@
   "Ask": "Sor",
   "You": "Siz",
   "Jump to Latest": "En Sona Git",
-  "Retract Message": "Mesajı Geri Çek",
-  "Retract": "Geri Çek",
-  "Couldn't retract the message": "Mesaj geri çekilemedi",
   "The agent is still stopping. Try again once it has stopped.": "Ajan hâlâ durduruluyor. Tamamen durduktan sonra yeniden deneyin.",
   "Uninstall incomplete; retry Uninstall to finish cleanup.": "Kaldırma işlemi tamamlanmadı; temizliği bitirmek için Kaldır'ı yeniden deneyin.",
   "refusing symlink in plugin cleanup path": "eklenti temizleme yolundaki sembolik bağlantı reddedildi",
@@ -7537,7 +7534,8 @@
   "{provider} didn't start: {error}": "{provider} başlatılamadı: {error}",
   "resets {resetsMs}": "{resetsMs} sonra sıfırlanır",
   "Run Again From Here": "Buradan Yeniden Çalıştır",
-  "The messages after this one are replaced. Files the agent changed stay as they are.": "Bu mesajdan sonraki mesajlar değiştirilir. Ajanın değiştirdiği dosyalar olduğu gibi kalır.",
+  "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "Bu mesajdan sonraki mesajlar değiştirilir; ajanın o zamandan beri değiştirdiği dosyalar bu mesaj gönderilmeden önceki hâline döner.",
+  "The files the agent changed since go back to how they were before this message was sent.": "Ajanın o zamandan beri değiştirdiği dosyalar bu mesaj gönderilmeden önceki hâline döner.",
   "Cancelling…": "İptal ediliyor…",
   "Code insight needs the index; it can't be stopped": "Kod desteği dizine ihtiyaç duyuyor; durdurulamaz",
   "Waiting for other tasks": "Diğer görevler bekleniyor",
@@ -8766,5 +8764,8 @@
   "Plugin update available": "Eklenti güncellemesi mevcut",
   "{length} plugin updates available": "{length} eklenti güncellemesi mevcut",
   "Updated {updated} plugins": "{updated} eklenti güncellendi",
-  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "Bu sürüm, yüklü olandan farklı bir anahtarla imzalanmış ve yayıncının önceki anahtarı bunu doğrulamıyor. Yalnızca yayıncının anahtar değiştirdiğinden eminseniz devam edin."
+  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "Bu sürüm, yüklü olandan farklı bir anahtarla imzalanmış ve yayıncının önceki anahtarı bunu doğrulamıyor. Yalnızca yayıncının anahtar değiştirdiğinden eminseniz devam edin.",
+  "Roll Back to Here": "Buraya Geri Al",
+  "Couldn't roll back": "Geri alınamadı",
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "Bu mesaj ve sonrakiler kaldırılır; ajanın o zamandan beri değiştirdiği dosyalar mesaj gönderilmeden önceki hâline döner. Mesaj yazma alanına geri konur."
 }

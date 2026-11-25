@@ -4932,7 +4932,8 @@
   "{provider} didn't start: {error}": "{provider}이(가) 시작되지 않았습니다: {error}",
   "resets {resetsMs}": "{resetsMs}에 재설정",
   "Run Again From Here": "여기부터 다시 실행",
-  "The messages after this one are replaced. Files the agent changed stay as they are.": "이 메시지 이후의 메시지가 대체됩니다. 에이전트가 변경한 파일은 그대로 유지됩니다.",
+  "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent.": "이 메시지 이후의 메시지가 대체되고, 그 이후 에이전트가 변경한 파일은 이 메시지를 보내기 전 상태로 돌아갑니다.",
+  "The files the agent changed since go back to how they were before this message was sent.": "그 이후 에이전트가 변경한 파일은 이 메시지를 보내기 전 상태로 돌아갑니다.",
   "Cancelling…": "취소 중…",
   "Code insight needs the index; it can't be stopped": "코드 인사이트에는 색인이 필요하므로 중지할 수 없습니다",
   "Waiting for other tasks": "다른 작업 대기 중",
@@ -6213,5 +6214,9 @@
   "Run as the image's user, not the project folder's owner (Linux)": "프로젝트 폴더 소유자가 아닌 이미지의 사용자로 실행(Linux)",
   "Select files in the Project view, Commit tool window, or open a file in the editor": "프로젝트 뷰나 커밋 도구 창에서 파일을 선택하거나 편집기에서 파일을 여세요",
   "Agent Reference": "에이전트 참조",
-  "Copy Agent Reference": "에이전트 참조 복사"
+  "Copy Agent Reference": "에이전트 참조 복사",
+  "Roll Back to Here": "여기로 롤백",
+  "Couldn't roll back": "롤백할 수 없습니다",
+  "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "이 메시지와 이후 메시지가 제거되고, 그 이후 에이전트가 변경한 파일은 메시지를 보내기 전 상태로 돌아갑니다. 메시지는 입력란으로 돌아갑니다.",
+  "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.": "전체 대화를 지우고, 에이전트가 변경한 파일을 작업 시작 시점의 상태로 되돌린 뒤, 이 메시지로 새 에이전트 세션을 시작합니다."
 }

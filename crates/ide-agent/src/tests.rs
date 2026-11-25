@@ -2688,7 +2688,7 @@ async fn forks_rollbacks_and_steering() {
     }
 
     // Undoing the last turn hands its message back.
-    let undone = mgr.rollback(&task.id, 1).await.unwrap().unwrap();
+    let undone = mgr.rollback(&task.id, 1, false).await.unwrap().unwrap();
     assert_eq!(undone.text, "again");
     assert_eq!(turn_starts(&mgr.entries(&task.id, None).unwrap()).len(), 1);
     assert!(agent.calls.lock().iter().any(|c| c == "_openidea/rollback 1"));
@@ -2715,7 +2715,7 @@ async fn forks_rollbacks_and_steering() {
     }
     handle.state.lock().conversation.main.entries.insert(0, AgentEntry::Agent { text: "Welcome".into() });
     let rewinds = agent.calls.lock().iter().filter(|c| c.starts_with("_openidea/rollback")).count();
-    let first = mgr.rollback(&task.id, 0).await.unwrap().unwrap();
+    let first = mgr.rollback(&task.id, 0, false).await.unwrap().unwrap();
     assert_eq!(first.text, "again");
     assert!(mgr.entries(&task.id, None).unwrap().is_empty());
     assert!(mgr.task(&task.id).unwrap().state.lock().session_id.is_none());
@@ -3654,7 +3654,7 @@ async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(!live(&mgr, &task.id));
-    mgr.rollback(&task.id, 1).await.unwrap();
+    mgr.rollback(&task.id, 1, false).await.unwrap();
     assert!(live(&mgr, &task.id));
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(!live(&mgr, &task.id), "an agent started to undo turns stops too");
@@ -4663,6 +4663,94 @@ async fn the_last_turn_lists_and_rolls_back_only_its_own_changes() {
             assert!(!repo.dir.join("store").join(format!("{}.turn", task.id)).exists(), "{case}");
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rolling_back_to_a_message_puts_back_the_files_as_it_was_sent() {
+    for isolation in [Isolation::Local, Isolation::Worktree] {
+        let repo = Checkout::new(Eol::Lf);
+        repo.write("a.txt", "base\n");
+        repo.write("gone.txt", "base\n");
+        repo.commit("init");
+        let mgr = manager(&repo.dir, Arc::new(FakeAgent::default()));
+        let task = mgr
+            .create(NewAgentTask { prompt: text("Hello"), provider: "claude".into(), isolation, ..Default::default() })
+            .await
+            .unwrap();
+        let cwd = task.cwd.0.clone();
+        let write = |rel: &str, text: &str| std::fs::write(cwd.join(rel), text).unwrap();
+        let read = |rel: &str| std::fs::read_to_string(cwd.join(rel)).ok();
+        let case = format!("{isolation:?}");
+
+        one_turn(&mgr, &task.id, None, || write("a.txt", "base\nturn 1\n")).await;
+        // The user's own work between the turns.
+        write("mine.txt", "mine\n");
+        one_turn(&mgr, &task.id, Some("more"), || {
+            write("a.txt", "base\nturn 1\nturn 2\n");
+            write("two.txt", "two\n");
+        })
+        .await;
+        one_turn(&mgr, &task.id, Some("last"), || {
+            write("a.txt", "base\nturn 1\nturn 2\nturn 3\n");
+            std::fs::remove_file(cwd.join("gone.txt")).unwrap();
+        })
+        .await;
+        // And after the last one.
+        write("later.txt", "later\n");
+
+        // After a restart: the turns' records are kept with the task.
+        mgr.shutdown();
+        let mgr = manager(&repo.dir, Arc::new(FakeAgent::default()));
+        let undone = mgr.rollback(&task.id, 1, true).await.unwrap().unwrap();
+        assert_eq!(undone.text, "more", "{case}");
+        assert_eq!(turn_starts(&mgr.entries(&task.id, None).unwrap()).len(), 1, "{case}");
+        assert_eq!(read("a.txt").as_deref(), Some("base\nturn 1\n"), "{case}");
+        assert_eq!(read("gone.txt").as_deref(), Some("base\n"), "{case}");
+        assert_eq!(read("two.txt"), None, "{case}");
+        // There before the message was sent.
+        assert_eq!(read("mine.txt").as_deref(), Some("mine\n"), "{case}");
+        let later = match isolation {
+            // In the project's own checkout, a file no turn of the task changed is the user's.
+            Isolation::Local => Some("later\n"),
+            // In its own worktree, everything changed there since is the task's.
+            Isolation::Worktree => None,
+        };
+        assert_eq!(read("later.txt").as_deref(), later, "{case}");
+        assert_eq!(mgr.task(&task.id).unwrap().state.lock().turns.len(), 1, "{case}");
+
+        // Without `files` they stay; the first message takes the task back to its start.
+        one_turn(&mgr, &task.id, Some("retry"), || write("a.txt", "again\n")).await;
+        mgr.rollback(&task.id, 1, false).await.unwrap();
+        assert_eq!(read("a.txt").as_deref(), Some("again\n"), "{case}");
+        mgr.rollback(&task.id, 0, true).await.unwrap();
+        assert_eq!(read("a.txt").as_deref(), Some("base\n"), "{case}");
+        assert!(mgr.task(&task.id).unwrap().state.lock().turns.is_empty(), "{case}");
+        let left = std::fs::read_dir(repo.dir.join("store").join(format!("{}.turn", task.id)));
+        assert!(left.map_or(true, |mut d| d.next().is_none()), "{case}: no copies left");
+        mgr.delete(&task.id, true).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_sent_before_turns_were_recorded_cannot_take_the_files_back() {
+    let repo = Checkout::new(Eol::Lf);
+    repo.write("a.txt", "base\n");
+    repo.commit("init");
+    let mgr = manager(&repo.dir, Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask { prompt: text("Hello"), provider: "claude".into(), ..Default::default() })
+        .await
+        .unwrap();
+    one_turn(&mgr, &task.id, None, || repo.write("a.txt", "base\nturn 1\n")).await;
+    one_turn(&mgr, &task.id, Some("more"), || repo.write("a.txt", "base\nturn 1\nturn 2\n")).await;
+    one_turn(&mgr, &task.id, Some("last"), || repo.write("a.txt", "base\nturn 1\nturn 2\nturn 3\n")).await;
+    // As a task saved with its last turn's record only.
+    mgr.task(&task.id).unwrap().state.lock().turns[1] = None;
+    assert!(mgr.rollback(&task.id, 1, true).await.is_err());
+    assert_eq!(turn_starts(&mgr.entries(&task.id, None).unwrap()).len(), 3, "nothing changed");
+    assert_eq!(repo.read("a.txt"), "base\nturn 1\nturn 2\nturn 3\n");
+    mgr.rollback(&task.id, 2, true).await.unwrap();
+    assert_eq!(repo.read("a.txt"), "base\nturn 1\nturn 2\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]

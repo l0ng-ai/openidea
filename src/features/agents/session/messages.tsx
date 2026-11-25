@@ -307,8 +307,8 @@ function UserMessage({
               size="small"
               icon="diff-revert"
               iconSize={14}
-              title="Retract Message"
-              action="agents.retractMessage"
+              title="Roll Back to Here"
+              action="agents.rollBackToMessage"
               actionArg={{ task: task.id, turn }}
             />
           )}
@@ -430,11 +430,16 @@ function MessageEditor({
         </div>
       )}
       <div className={styles.editBar}>
-        {later && (
-          <span className={styles.muted}>
-            <T>The messages after this one are replaced. Files the agent changed stay as they are.</T>
-          </span>
-        )}
+        <span className={styles.muted}>
+          {later ? (
+            <T>
+              The messages after this one are replaced, and the files the agent changed since go back to how they were
+              before this message was sent.
+            </T>
+          ) : (
+            <T>The files the agent changed since go back to how they were before this message was sent.</T>
+          )}
+        </span>
         <span className={styles.editButtons}>
           <IconButton icon="close" title="Cancel" disabled={sending} onClick={onCancel} />
           <SubmitButton
