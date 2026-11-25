@@ -17,6 +17,8 @@ export interface ConsoleLine {
   spans: Span[];
   /** Plain text without escape sequences. */
   text: string;
+  /** Cut at `MAX_LINE_LENGTH`: the next line continues it, with no line break between. */
+  continues?: boolean;
 }
 
 export const MAX_LINES = 50_000;
@@ -104,7 +106,10 @@ export class ConsoleModel {
       else line.spans.push({ ...span, text });
       line.text += text;
       this.chars += text.length;
-      if (rest) this.closeLine(kind);
+      if (rest) {
+        line.continues = true;
+        this.closeLine(kind);
+      }
     }
   }
 
@@ -127,7 +132,7 @@ export class ConsoleModel {
 
   /** The buffered output as plain-text chunks (the line still being written without a line break). */
   textChunks(): OutputChunk[] {
-    return this.lines.map((l) => ({ kind: l.kind, text: l === this.open ? l.text : `${l.text}\n` }));
+    return this.lines.map((l) => ({ kind: l.kind, text: l === this.open || l.continues ? l.text : `${l.text}\n` }));
   }
 
   /** Completes a trailing partial line (at process exit). */
@@ -177,6 +182,11 @@ export class ConsoleModel {
 
   /** Whole buffer as plain text (copy / export). */
   text(): string {
-    return this.lines.map((l) => l.text).join("\n");
+    let out = "";
+    this.lines.forEach((l, i) => {
+      if (i > 0 && !this.lines[i - 1]!.continues) out += "\n";
+      out += l.text;
+    });
+    return out;
   }
 }
