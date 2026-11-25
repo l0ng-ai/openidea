@@ -163,6 +163,9 @@ struct RunOptions {
     bounded: bool,
 }
 
+/// How long a run whose process exited keeps reading pipes that stay open but silent.
+const EXITED_PIPE_GRACE: Duration = Duration::from_secs(2);
+
 fn run_with_env_capture(
     program: &str,
     args: &[String],
@@ -236,6 +239,11 @@ fn run_with_env_capture(
     let mut tail_bytes = 0usize;
     let mut total = 0usize;
     let mut truncated = false;
+    // When the child exited, and since then (or since its last line) the pipes stayed open
+    // but silent: a process it left running holds them (a Gradle daemon inherits them on
+    // Windows), and EOF may never come.
+    let mut quiet_since: Option<std::time::Instant> = None;
+    let mut held_open = false;
     loop {
         if cancel.is_cancelled() {
             kill_tree(&mut child);
@@ -244,6 +252,9 @@ fn run_with_env_capture(
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok((_, line)) if encoding.notice.as_ref() == Some(&line) => {}
             Ok((stream, line)) => {
+                if quiet_since.is_some() {
+                    quiet_since = Some(std::time::Instant::now());
+                }
                 on_line(stream, &line);
                 if !bounded {
                     // The caller parses a complete model from `text`, so keep every line.
@@ -274,12 +285,30 @@ fn run_with_env_capture(
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => match quiet_since {
+                Some(since) if since.elapsed() >= EXITED_PIPE_GRACE => {
+                    held_open = true;
+                    break;
+                }
+                Some(_) => {}
+                None => {
+                    if child.try_wait()?.is_some() {
+                        quiet_since = Some(std::time::Instant::now());
+                    }
+                }
+            },
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    for r in readers.into_iter().flatten() {
-        let _ = r.join();
+    if held_open {
+        tracing::info!(
+            "build: {} exited; its output pipes are still held open, not waiting for them",
+            program.display()
+        );
+    } else {
+        for r in readers.into_iter().flatten() {
+            let _ = r.join();
+        }
     }
     let status = child.wait()?;
     let mut text = head;
@@ -390,6 +419,31 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    }
+
+    #[test]
+    fn a_process_left_holding_the_pipes_does_not_keep_the_run_waiting() {
+        if cfg!(windows) {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let mut lines = Vec::new();
+        let started = std::time::Instant::now();
+        // The background `sleep` inherits stdout and stderr, as a Gradle daemon does on Windows.
+        let out = run(
+            "sh",
+            &["-c".into(), "echo built; sleep 30 & echo done".into()],
+            tmp.path(),
+            &BTreeMap::new(),
+            &cancel,
+            |_, l| lines.push(l.to_owned()),
+        )
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(15), "waited {:?} for the held pipes", started.elapsed());
+        assert!(out.success);
+        assert_eq!(lines, ["built", "done"]);
+        assert_eq!(out.text, "built\ndone\n");
     }
 
     #[test]
