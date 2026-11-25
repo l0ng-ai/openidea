@@ -83,6 +83,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Move Caret to Page Top / Bottom", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="W" parent="$default"><action id="EditorMoveToPageTop"><keyboard-shortcut first-keystroke="alt PAGE_UP"/></action><action id="EditorMoveToPageBottomWithSelection"><keyboard-shortcut first-keystroke="alt shift PAGE_DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.moveToPageTop"]).toEqual([normalizeBinding("Alt+PageUp")]);
+    expect(k.overrides["editor.moveToPageBottomWithSelection"]).toEqual([normalizeBinding("Alt+Shift+PageDown")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Convert Indents to Spaces / to Tabs", () => {
     const k = parseIdeaKeymap(
       `<keymap name="M" parent="Mac OS X 10.5+"><action id="ConvertIndentsToSpaces"><keyboard-shortcut first-keystroke="shift meta 8"/></action><action id="ConvertIndentsToTabs"><keyboard-shortcut first-keystroke="shift meta 9"/></action></keymap>`,

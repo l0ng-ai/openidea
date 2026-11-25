@@ -61,6 +61,11 @@ describe("IDEA keymap parity", () => {
     // `Mac OS X 10.5+` removes the ⌘↑ / ⌘↓ it would inherit from `Mac OS X`.
     ["editor.scrollUp", [], ["Ctrl+Up"]],
     ["editor.scrollDown", [], ["Ctrl+Down"]],
+    // `$default` Ctrl reads as ⌘ in the Mac keymaps that inherit it.
+    ["editor.moveToPageTop", ["Meta+PageUp"], ["Ctrl+PageUp"]],
+    ["editor.moveToPageBottom", ["Meta+PageDown"], ["Ctrl+PageDown"]],
+    ["editor.moveToPageTopWithSelection", ["Meta+Shift+PageUp"], ["Ctrl+Shift+PageUp"]],
+    ["editor.moveToPageBottomWithSelection", ["Meta+Shift+PageDown"], ["Ctrl+Shift+PageDown"]],
     ["editor.toggleInsertState", ["Insert"], ["Insert"]],
     ["navigate.nextOccurrence", ["Meta+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["navigate.prevOccurrence", ["Meta+Alt+Up"], ["Ctrl+Alt+Up"]],

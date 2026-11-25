@@ -113,6 +113,8 @@ export const eclipseMacos: Record<string, string[]> = {
   "navigate.prevOccurrence": [],
   "editor.prevTab": ["Shift+Meta+F6", "Meta+Alt+Left"],
   "db.previousResultTab": ["Shift+Meta+F6", "Meta+Alt+Left"],
+  "editor.moveToPageTop": [],
+  "editor.moveToPageBottom": [],
   "code.quickDocumentation": ["F2"],
   "db.quickDoc": ["F2"],
   "localHistory.recentChanges": [],
