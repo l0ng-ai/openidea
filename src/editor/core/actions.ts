@@ -38,7 +38,7 @@ import {
   type SimpleRange,
 } from "./model/selectionStack";
 import type { EditorSlot } from "./model/slot";
-import type { Tab } from "./model/tabs";
+import type { SplitEdge, Tab } from "./model/tabs";
 import {
   findAgain,
   findPanelTarget,
@@ -828,6 +828,21 @@ export function registerEditorActions(): () => void {
       if (t) await close(t.paneId, t.tabId);
     },
   });
+  /** The tab menu's Split and Move item for the active tab; a lone tab cannot leave its group. */
+  const splitAndMove = (id: string, title: string, edge: SplitEdge): Action => ({
+    id,
+    title,
+    category: "Window",
+    when: TABS_WHEN,
+    enabled: () => {
+      const t = activePaneTab();
+      return !!t && (useTabs.getState().panes[t.paneId]?.tabs.length ?? 0) > 1;
+    },
+    run: () => {
+      const t = activePaneTab();
+      if (t) ctrl.moveTabToSplit(t.paneId, t.tabId, t.paneId, edge);
+    },
+  });
   const occurrence = (id: string, title: string, run: (view: EditorView) => unknown): Action => ({
     id,
     title,
@@ -1404,6 +1419,8 @@ export function registerEditorActions(): () => void {
       when: "editorTabsOpen",
       run: () => ctrl.split(useTabs.getState().activePane, "column"),
     },
+    splitAndMove("editor.splitAndMoveRight", "Split and Move Right", "right"),
+    splitAndMove("editor.splitAndMoveDown", "Split and Move Down", "bottom"),
     {
       id: "editor.nextSplitter",
       title: "Go to Next Splitter",

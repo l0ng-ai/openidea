@@ -215,6 +215,8 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.nextTab": ["Ctrl+Right", "Meta+Shift+]"],
   "editor.prevTab": ["Ctrl+Left", "Meta+Shift+["],
   "editor.splitRight": ["Meta+\\"],
+  "editor.splitAndMoveRight": [],
+  "editor.splitAndMoveDown": [],
   "editor.nextSplitter": ["Alt+Tab"],
   "editor.prevSplitter": ["Alt+Shift+Tab"],
   "window.toggleFullScreen": ["Meta+Ctrl+F"],
