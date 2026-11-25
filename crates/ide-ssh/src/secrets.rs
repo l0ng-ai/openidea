@@ -261,21 +261,26 @@ impl SecretFile {
         match self.read() {
             Ok(Stored::Index(index)) => Contents::Index(index),
             Ok(Stored::Legacy(old)) => self.migrate(old),
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData && !self.keep_legacy_until_moved => {
-                self.set_aside(&e.to_string())
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => self.set_aside(&e.to_string()),
             Err(e) => Contents::Plaintext(BTreeMap::new(), format!("{}: {e}", self.path.display())),
         }
     }
 
-    /// `Some` means plaintext remains. Never overwrite an unreadable file or an
-    /// index that another window already migrated.
+    /// `Some` means plaintext remains. Never overwrite an index that another window
+    /// already migrated; an unreadable file is set aside, as on any other access.
     pub(crate) fn resolve_legacy(&self, action: LegacyPasswordAction) -> IdeResult<Option<String>> {
         off_runtime(|| {
             let _g = LOCK.lock();
-            let Stored::Legacy(old) = self.read().map_err(|e| unavailable(&format!("{}: {e}", self.path.display())))?
-            else {
-                return Ok(None);
+            let old = match self.read() {
+                Ok(Stored::Legacy(old)) => old,
+                Ok(Stored::Index(_)) => return Ok(None),
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    return match self.set_aside(&e.to_string()) {
+                        Contents::Index(_) => Ok(None),
+                        Contents::Plaintext(_, why) => Err(unavailable(&why)),
+                    };
+                }
+                Err(e) => return Err(unavailable(&format!("{}: {e}", self.path.display()))),
             };
             if matches!(action, LegacyPasswordAction::Check) && !old.is_empty() {
                 return Ok(Some("Migration is incomplete.".into()));
@@ -520,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_plaintext_needs_no_vault_and_never_discards_an_unknown_format() {
+    fn removing_plaintext_needs_no_vault_and_sets_an_unknown_format_aside() {
         use LegacyPasswordAction::{RemovePlaintext, Retry};
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("ssh-passwords.json");
@@ -532,8 +537,10 @@ mod tests {
         assert!(files_containing(tmp.path(), "old-").is_empty());
         assert!(file.keys().is_empty());
         std::fs::write(&path, "unknown-format").unwrap();
-        assert!(file.resolve_legacy(RemovePlaintext).is_err());
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "unknown-format");
+        assert!(file.resolve_legacy(RemovePlaintext).unwrap().is_none());
+        let aside = files_containing(tmp.path(), "unknown-format");
+        assert_eq!(aside.len(), 1);
+        assert_ne!(aside[0], path);
     }
 
     #[test]
@@ -546,10 +553,22 @@ mod tests {
         std::fs::write(&path, r#"{"box":"legacy-value"}"#).unwrap();
         assert!(file.resolve_legacy(LegacyPasswordAction::Retry).unwrap().is_some());
         assert_eq!(file.get("box").as_deref(), Some("legacy-value"));
-        assert_eq!(files_containing(tmp.path(), "legacy-value"), [path.clone()]);
+        assert_eq!(files_containing(tmp.path(), "legacy-value"), std::slice::from_ref(&path));
+    }
+
+    #[test]
+    fn a_malformed_ssh_file_is_set_aside_instead_of_blocking_new_saves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ssh-passwords.json");
+        let vault = Arc::new(FakeVault::default());
+        let file = SecretFile { vault: vault.clone(), ..SecretFile::ssh_passwords(path.clone()) };
         std::fs::write(&path, "{ malformed").unwrap();
-        assert!(file.set("box", "new-value").is_err());
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "{ malformed");
+        assert!(file.resolve_legacy(LegacyPasswordAction::Check).unwrap().is_none());
+        let aside = files_containing(tmp.path(), "{ malformed");
+        assert_eq!(aside.len(), 1);
+        assert_ne!(aside[0], path);
+        file.set("box", "new-value").unwrap();
+        assert_eq!(file.get("box").as_deref(), Some("new-value"));
         assert!(files_containing(tmp.path(), "new-value").is_empty());
     }
 
