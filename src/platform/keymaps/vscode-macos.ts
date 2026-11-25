@@ -234,6 +234,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "navigate.searchText": [],
   "code.splitLine": [],
   "editor.scrollToCenter": [],
+  "editor.scrollUp": [],
+  "editor.scrollDown": [],
   "editor.codeBlockStart": [],
   "editor.codeBlockEnd": [],
   "editor.cloneCaretAbove": ["Meta+Alt+Up"],

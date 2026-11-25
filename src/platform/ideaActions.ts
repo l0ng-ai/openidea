@@ -98,6 +98,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   SplitHorizontally: "editor.splitDown",
   Unsplit: "editor.unsplit",
   ToggleDistractionFreeMode: "editor.toggleZen",
+  EditorScrollUp: "editor.scrollUp",
+  EditorScrollDown: "editor.scrollDown",
   EditorGutterToggleGlobalLineNumbers: "editor.toggleLineNumbers",
   EditorGutterToggleGlobalIndentLines: "editor.toggleIndentGuides",
   EditorGutterToggleGlobalStickyLines: "editor.toggleStickyLines",

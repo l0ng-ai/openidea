@@ -58,6 +58,9 @@ describe("IDEA keymap parity", () => {
     ["code.expandRecursively", ["Meta+Alt+="], ["Ctrl+Alt+="]],
     ["editor.cloneCaretAbove", ["Alt Alt+Up"], ["Ctrl Ctrl+Up"]],
     ["editor.cloneCaretBelow", ["Alt Alt+Down"], ["Ctrl Ctrl+Down"]],
+    // `Mac OS X 10.5+` removes the ⌘↑ / ⌘↓ it would inherit from `Mac OS X`.
+    ["editor.scrollUp", [], ["Ctrl+Up"]],
+    ["editor.scrollDown", [], ["Ctrl+Down"]],
     ["editor.toggleInsertState", ["Insert"], ["Insert"]],
     ["navigate.nextOccurrence", ["Meta+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["navigate.prevOccurrence", ["Meta+Alt+Up"], ["Ctrl+Alt+Up"]],

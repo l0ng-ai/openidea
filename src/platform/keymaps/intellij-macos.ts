@@ -127,6 +127,8 @@ export const intellijMacos: Record<string, string[]> = {
   // Before the HTTP / SQL consoles' ⌘↵ (Run), which wins there.
   "code.splitLine": ["Meta+Enter"],
   "editor.scrollToCenter": ["Ctrl+L"],
+  "editor.scrollUp": [],
+  "editor.scrollDown": [],
   "editor.codeBlockStart": ["Meta+Alt+["],
   "editor.codeBlockEnd": ["Meta+Alt+]"],
   "editor.codeBlockStartWithSelection": ["Meta+Alt+Shift+["],

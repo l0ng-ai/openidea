@@ -994,6 +994,8 @@
   "Start New Line Before Current": "在当前行前开始新行",
   "Split Line": "拆分行",
   "Scroll to Center": "滚动到中央",
+  "Scroll Up": "向上滚动",
+  "Scroll Down": "向下滚动",
   "Move Caret to Code Block Start": "将光标移至代码块开头",
   "Move Caret to Code Block End": "将光标移至代码块末尾",
   "Clone Caret Above": "在上方添加光标",

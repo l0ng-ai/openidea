@@ -128,6 +128,8 @@ export const intellijWindows: Record<string, string[]> = {
   // Before the HTTP / SQL consoles' Ctrl+Enter (Run), which wins there.
   "code.splitLine": ["Ctrl+Enter"],
   "editor.scrollToCenter": ["Ctrl+M"],
+  "editor.scrollUp": ["Ctrl+Up"],
+  "editor.scrollDown": ["Ctrl+Down"],
   "editor.codeBlockStart": ["Ctrl+["],
   "editor.codeBlockEnd": ["Ctrl+]"],
   "editor.codeBlockStartWithSelection": ["Ctrl+Shift+["],
