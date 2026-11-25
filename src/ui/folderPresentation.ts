@@ -13,7 +13,8 @@ const ROLE_KIND: Record<FolderRole, FolderKind> = {
   excluded: "excluded",
 };
 
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/;
+// `Gradle` marks the source sets a Gradle sync reported (ide-host `with_gradle_roots`).
+const JVM_BUILD = /^Gradle$|(^|\/)(pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
 const JVM_DIR = /(^|\/)(java|kotlin|scala|groovy)$/;
 
 const isAbsolute = (path: string) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
@@ -52,7 +53,8 @@ export function projectScopeForPath(
   };
 }
 
-function isJvmSourcePackage(rel: string, roots: readonly RootFolder[]): boolean {
+/** Inside a Java / Kotlin source or test root, where IDEA shows "Package" instead of "Directory". */
+export function isJvmSourcePackage(rel: string, roots: readonly RootFolder[]): boolean {
   const root = rootFor(roots, rel);
   if (root?.kind === "excluded") return false;
   return (

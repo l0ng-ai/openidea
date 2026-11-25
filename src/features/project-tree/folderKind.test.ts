@@ -41,6 +41,13 @@ describe("JVM folder presentation", () => {
     expect(kind(path, true)).toBe("excluded");
     expect(outputFolderKind(path, new Map())).toBeNull();
   });
+  it("shows packages below source sets a Gradle sync or an Eclipse .classpath reported", () => {
+    const noModules = { modules: new Map(), spring: false };
+    for (const detectedFrom of ["Gradle", "lib/.classpath"]) {
+      const rs: RootFolder[] = [{ path: "lib/src", kind: "source", detectedFrom }];
+      expect(folderKind({ path: "/p/lib/src/com/example", excluded: false }, rs, "/p", noModules)).toBe("package");
+    }
+  });
   it("shows packages below custom marked JVM source roots", () => {
     expect(kind("custom/com/example", false, [{ path: "custom", kind: "source", detectedFrom: null }])).toBe("package");
   });
