@@ -1402,45 +1402,94 @@ export class EditorController implements SlotHost {
       const canPreview = !lifecycle || (lifecycle.allowPreview && !documentDirty({ input, lifecycle }));
       const preview = !!o.preview && editorPrefs().tabs.previewTab && canPreview;
       if (!activate && preview) return;
+      const kind = kinds.get(input.kind);
       let paneId = s.panes[generation.pane] ? generation.pane : activate ? s.activePane : null;
       if (!paneId) return;
-      if (o.side) {
-        const right = neighbourPane(s, paneId);
-        if (right) paneId = right;
-        else {
-          const split = splitPane(s, paneId, "row");
+      const existingSingleton = kind?.singleton ? findTab(s, input.key, paneId) : null;
+      let tabId: string;
+      if (existingSingleton) {
+        tabId = existingSingleton.tab.id;
+        if (o.edge) {
+          const moved = moveTabToNewSplit(s, existingSingleton.paneId, tabId, paneId, o.edge);
+          if (moved) {
+            s = moved.state;
+            paneId = moved.paneId;
+          } else {
+            paneId = existingSingleton.paneId;
+            if (activate) s = activateTab(setActivePane(s, paneId), paneId, tabId);
+          }
+        } else if ((o.pane || o.side) && existingSingleton.paneId !== paneId) {
+          const target = o.side ? (neighbourPane(s, paneId) ?? paneId) : paneId;
+          if (target !== existingSingleton.paneId) {
+            s = moveTab(
+              s,
+              existingSingleton.paneId,
+              tabId,
+              target,
+              o.index ?? s.panes[target]?.tabs.length ?? 0,
+              o.pinned,
+            );
+            paneId = target;
+          } else if (o.side) {
+            const moved = moveTabToNewSplit(s, existingSingleton.paneId, tabId, paneId, "right");
+            if (moved) {
+              s = moved.state;
+              paneId = moved.paneId;
+            }
+          }
+        } else {
+          paneId = existingSingleton.paneId;
+          if (activate) s = activateTab(setActivePane(s, paneId), paneId, tabId);
+        }
+        if (!o.preview || !canPreview) s = promoteTab(s, paneId, tabId);
+      } else {
+        if (o.edge) {
+          const split = splitAtEdge(s, paneId, o.edge);
           s = split.state;
           paneId = split.paneId;
-          // The new pane starts with only the requested input.
-          const pane = s.panes[paneId]!;
-          s = { ...s, panes: { ...s.panes, [paneId]: { ...pane, tabs: [], active: null, mru: [] } } };
           if (!activate) s = { ...s, activePane: useTabs.getState().activePane };
+        } else if (o.side) {
+          const right = neighbourPane(s, paneId);
+          if (right) paneId = right;
+          else {
+            const split = splitPane(s, paneId, "row");
+            s = split.state;
+            paneId = split.paneId;
+            // The new pane starts with only the requested input.
+            const pane = s.panes[paneId]!;
+            s = { ...s, panes: { ...s.panes, [paneId]: { ...pane, tabs: [], active: null, mru: [] } } };
+            if (!activate) s = { ...s, activePane: useTabs.getState().activePane };
+          }
         }
-      }
-      const found = findTab(s, input.key, paneId);
-      let tabId: string;
-      if (found && (!(o.side || o.pane) || found.paneId === paneId)) {
-        paneId = found.paneId;
-        if (activate) s = activateTab(setActivePane(s, paneId), paneId, found.tab.id);
-        if (!o.preview || !canPreview) s = promoteTab(s, paneId, found.tab.id);
-        tabId = found.tab.id;
-        if (activate && found.tab.input.data !== input.data && input.data !== undefined)
-          s = openTab(s, paneId, input, {
-            preview: o.preview && canPreview,
+        const found = findTab(s, input.key, paneId);
+        if (found && (!(o.side || o.pane || o.edge) || found.paneId === paneId)) {
+          paneId = found.paneId;
+          if (activate) s = activateTab(setActivePane(s, paneId), paneId, found.tab.id);
+          if (!o.preview || !canPreview) s = promoteTab(s, paneId, found.tab.id);
+          tabId = found.tab.id;
+          if (activate && found.tab.input.data !== input.data && input.data !== undefined)
+            s = openTab(s, paneId, input, {
+              preview: o.preview && canPreview,
+              activate,
+            }).state;
+        } else {
+          const tabs = editorPrefs().tabs;
+          const r = openTab(s, paneId, input, {
+            preview,
+            pinned: o.pinned,
             activate,
-          }).state;
-      } else {
-        const tabs = editorPrefs().tabs;
-        const r = openTab(s, paneId, input, {
-          preview,
-          activate,
-          preservePreview: !activate,
-          keepPreview: (t) => !isTextInput(t.input),
-          ...(tabs.openAtEnd ? { index: s.panes[paneId]?.tabs.length ?? 0 } : {}),
-        });
-        s = r.state;
-        tabId = r.tabId;
-        if (tabs.sortAlphabetically) s = sortTabs(s, paneId, (t) => tabSortKey(t.input));
+            preservePreview: !activate,
+            keepPreview: (t) => !isTextInput(t.input),
+            ...(o.index !== undefined
+              ? { index: o.index }
+              : tabs.openAtEnd
+                ? { index: s.panes[paneId]?.tabs.length ?? 0 }
+                : {}),
+          });
+          s = r.state;
+          tabId = r.tabId;
+          if (tabs.sortAlphabetically && o.index === undefined) s = sortTabs(s, paneId, (t) => tabSortKey(t.input));
+        }
       }
       if (o.selection)
         this.selectionRequests.set(tabId, Math.max(generation.sequence, this.selectionRequests.get(tabId) ?? 0));
@@ -1891,18 +1940,26 @@ export class EditorController implements SlotHost {
   keepTab(paneId: string, tabId: string) {
     this.apply((s) => (s.panes[paneId] ? promoteTab(s, paneId, tabId) : s));
   }
+  private focusMovedTab(tabId: string) {
+    const slot = this.slots.get(tabId);
+    if (slot?.view) slot.focus();
+    else if (slot) slot.wantsFocus = true;
+    else
+      requestAnimationFrame(() => {
+        if (this.activeTabOf()?.id === tabId) this.focus();
+      });
+  }
   /** Drag & drop; the tab keeps its id (and slot) when moved within a pane. */
   moveTab(fromPane: string, tabId: string, toPane: string, index: number, pin?: boolean) {
     this.apply((s) => moveTab(s, fromPane, tabId, toPane, index, pin));
+    this.focusMovedTab(tabId);
   }
   /** Drag & drop onto an editor edge: the tab moves into a new split on that side. */
   moveTabToSplit(fromPane: string, tabId: string, targetPane: string, edge: SplitEdge) {
     const r = moveTabToNewSplit(useTabs.getState(), fromPane, tabId, targetPane, edge);
     if (!r) return;
     useTabs.setState(r.state, true);
-    const slot = this.slots.get(tabId);
-    if (slot?.view) slot.focus();
-    else if (slot) slot.wantsFocus = true;
+    this.focusMovedTab(tabId);
   }
   /** Files dropped on an editor: opened in that pane, or in a new split at `edge`. */
   async openFilesIn(paths: readonly string[], paneId: string, edge: SplitEdge | "center") {
@@ -1944,6 +2001,19 @@ export class EditorController implements SlotHost {
   split(paneId: string, dir: "row" | "column") {
     const s = useTabs.getState();
     const srcPane = s.panes[paneId];
+    const active = srcPane?.tabs.find((t) => t.id === srcPane.active);
+    const kind = active ? useContributions.getState().editorKinds.get(active.input.kind) : undefined;
+    if (active && kind?.singleton) {
+      if (kind.splitInput) {
+        void Promise.resolve(kind.splitInput(active.input)).then((fresh) => {
+          if (!fresh || !useTabs.getState().panes[paneId]) return;
+          void this.openInput(fresh, { pane: paneId, edge: dir === "row" ? "right" : "bottom", focus: true });
+        });
+      } else if (srcPane && srcPane.tabs.length > 1) {
+        this.moveTabToSplit(paneId, active.id, paneId, dir === "row" ? "right" : "bottom");
+      }
+      return;
+    }
     const srcSlot = srcPane?.active ? this.slots.get(srcPane.active) : undefined;
     const r = splitPane(s, paneId, dir);
     useTabs.setState(r.state, true);
@@ -2057,6 +2127,17 @@ export class EditorController implements SlotHost {
     if (!target) {
       this.activate(paneId, tabId, false);
       return this.split(paneId, "row");
+    }
+    const kind = useContributions.getState().editorKinds.get(tab.input.kind);
+    if (kind?.singleton) {
+      if (kind.splitInput) {
+        void Promise.resolve(kind.splitInput(tab.input)).then((fresh) => {
+          if (fresh && useTabs.getState().panes[target]) void this.openInput(fresh, { pane: target, focus: true });
+        });
+      } else {
+        this.moveToOpposite(paneId, tabId);
+      }
+      return;
     }
     const r = openTab(s, target, tab.input);
     useTabs.setState(r.state, true);
