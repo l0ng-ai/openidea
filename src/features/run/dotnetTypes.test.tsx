@@ -112,6 +112,8 @@ describe(".NET configurations", () => {
       isTest: false,
       params: { project: "src/App/App.csproj" },
     });
+    // Like a configuration from the form, it builds before launching so Debug works unbuilt.
+    expect(p.beforeLaunch).toEqual([{ kind: "dotnetBuild", target: "" }]);
     // F#, Visual Basic and a project file at the root get the same shape.
     expect(dotnetProjectProduction("lib/Worker.vbproj").name).toBe("Worker");
     expect(dotnetProjectProduction("App.fsproj").name).toBe("App");

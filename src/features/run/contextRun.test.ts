@@ -124,6 +124,9 @@ describe("run context menu group", () => {
       arg: { path: `${ROOT}/src/App/App.csproj`, dir: false },
     });
     expect(items[1]).toMatchObject({ action: "run.debugContext", label: "Debug 'App'", icon: "debug" });
+    // A solution or a shared props file gets no Run / Debug entries.
+    expect(contextMenuItems("projectView", { paths: [`${ROOT}/src/App/App.sln`], dirs: [false] })).toEqual([]);
+    expect(contextMenuItems("projectView", { paths: [`${ROOT}/Directory.Build.props`], dirs: [false] })).toEqual([]);
   });
 
   it("routes an attached Spring Boot main and its tests through the member's Maven build", () => {

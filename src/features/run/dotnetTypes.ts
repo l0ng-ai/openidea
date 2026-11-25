@@ -87,6 +87,7 @@ export function dotnetProjectProduction(project: string): RunConfig {
     detected: true,
     isTest: false,
     debugAdapter: "netcoredbg",
+    beforeLaunch: [{ kind: "dotnetBuild", target: "" }],
     params: { project },
   };
 }

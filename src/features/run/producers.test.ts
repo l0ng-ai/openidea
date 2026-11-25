@@ -872,6 +872,9 @@ describe("project producers", () => {
     // A `.csproj.user` is not a project, and a source file has no entry-point production.
     expect(produceContext({ path: `${ROOT}/src/App/App.csproj.user`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
     expect(produceContext({ path: `${ROOT}/src/App/Program.cs`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    // Neither is a solution or a shared props file.
+    expect(produceContext({ path: `${ROOT}/src/App/App.sln`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    expect(produceContext({ path: `${ROOT}/Directory.Build.props`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
   });
 
   it("⌃⇧R picks the innermost context: test > describe > file", () => {
