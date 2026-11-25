@@ -22,7 +22,7 @@ import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMat
 import { useConsoleRules } from "@/workbench/contributions";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
-import { routeConsoleUrl, openTarget, openUrl } from "./navigate";
+import { consoleLinkMenu, debugConsoleUrl, openTarget, openUrl } from "./navigate";
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
@@ -56,7 +56,7 @@ const Line = memo(
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
       if (link.kind !== "url") void openTarget(link.target, cwd);
-      else if (!routeConsoleUrl(e, link.url)) void openUrl(link.url);
+      else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     // A blank line is an empty row: its height comes from CSS, never from a character in the text.
     if (segments.length === 0) return null;
@@ -450,6 +450,7 @@ export function ConsoleView({
     const selection = selectedOutput();
     const foldText = foldLineText(selection, lineAt(e.target));
     showContextMenu(e, [
+      ...consoleLinkMenu(e.target),
       {
         label: "Copy",
         icon: "copy",

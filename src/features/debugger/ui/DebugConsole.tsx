@@ -36,7 +36,7 @@ import {
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { findOutputLinks, type OutputLink } from "@/features/run/links";
-import { routeConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
+import { consoleLinkMenu, debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
@@ -65,7 +65,7 @@ const DebugLine = memo(
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
       if (link.kind !== "url") void openTarget(link.target, cwd);
-      else if (!routeConsoleUrl(e, link.url)) void openUrl(link.url);
+      else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     if (segments.length === 0) return <>{"\u200B"}</>;
     return (
@@ -401,6 +401,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     e.preventDefault();
     const selection = selectedOutput();
     showContextMenu(e, [
+      ...consoleLinkMenu(e.target),
       {
         label: "Copy",
         icon: "copy",

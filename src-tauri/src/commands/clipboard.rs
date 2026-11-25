@@ -28,7 +28,7 @@ pub async fn clipboard_write_text(app: AppHandle, window: Window, text: String) 
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn clipboard_write_image(app: AppHandle, window: WebviewWindow, png: String) -> IdeResult<()> {
+pub async fn clipboard_write_image(app: AppHandle, window: Window, png: String) -> IdeResult<()> {
     use base64::Engine;
     if png.len() > 90 * 1024 * 1024 {
         return Err(ide_core::IdeError::invalid("Clipboard image is too large"));

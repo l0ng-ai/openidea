@@ -8,6 +8,7 @@ import { streamSearch } from "@/platform/textSearch";
 import { joinPath, type FileTarget } from "./links";
 import { findRubyTest } from "./rubyTests";
 import { tx } from "@/platform/i18n";
+import type { MenuItem } from "@/ui";
 
 async function exists(path: string): Promise<boolean> {
   const slash = path.lastIndexOf("/");
@@ -168,14 +169,16 @@ export async function openTarget(target: FileTarget, cwd: string, focus = true):
 /**
  * ⌘⇧-click (Ctrl+Shift elsewhere) on a URL in console output debugs its page in a browser
  * session instead of opening it, like IDEA's Ctrl+Shift+click on a URL in the Run tool window.
- * A normal click on a loopback URL in a trusted local project opens the Browser panel;
- * public URLs and remote-project output keep the external opener.
+ * Returns whether the click was taken.
  */
-export function routeConsoleUrl(e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, url: string): boolean {
-  if (e.shiftKey && (e.metaKey || e.ctrlKey) && getAction("debug.debugInBrowser")) {
-    void executeAction("debug.debugInBrowser", url);
-    return true;
-  }
+export function debugConsoleUrl(e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, url: string): boolean {
+  if (!e.shiftKey || !(e.metaKey || e.ctrlKey) || !getAction("debug.debugInBrowser")) return false;
+  void executeAction("debug.debugInBrowser", url);
+  return true;
+}
+
+/** Whether `url` can open in the Browser tool window: loopback HTTP(S) without credentials, trusted local project. */
+export function opensInLocalBrowser(url: string): boolean {
   if (
     !isTauri() ||
     !useProject.getState().project?.trusted ||
@@ -185,15 +188,29 @@ export function routeConsoleUrl(e: { metaKey: boolean; ctrlKey: boolean; shiftKe
   )
     return false;
   const { protocol, hostname, username, password } = new URL(url);
-  if (
-    !(protocol === "http:" || protocol === "https:") ||
-    username ||
-    password ||
-    !(hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d+){3}$/.test(hostname))
-  )
-    return false;
-  void executeAction("web.openLocalBrowser", url);
-  return true;
+  return (
+    (protocol === "http:" || protocol === "https:") &&
+    !username &&
+    !password &&
+    (hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d+){3}$/.test(hostname))
+  );
+}
+
+/**
+ * Context-menu entries for the console link under `target`: a loopback URL can open in the
+ * Browser tool window. A plain click keeps opening the external browser.
+ */
+export function consoleLinkMenu(target: EventTarget): MenuItem[] {
+  const url = (target as Element).closest?.("a[href]")?.getAttribute("href");
+  if (!url || !opensInLocalBrowser(url)) return [];
+  return [
+    {
+      label: "Open in Browser Tool Window",
+      icon: "toolwindow-web",
+      run: () => void executeAction("web.openLocalBrowser", url),
+    },
+    { kind: "separator" },
+  ];
 }
 
 export async function openUrl(url: string): Promise<void> {

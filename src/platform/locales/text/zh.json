@@ -2524,6 +2524,7 @@
   "Open console for tool output": "为工具输出打开控制台",
   "Open documents": "打开的文档",
   "Open Local Browser": "打开本地浏览器",
+  "Open in Browser Tool Window": "在浏览器工具窗口中打开",
   "Local page URL": "本地页面地址",
   "Inspect Element": "检查元素",
   "Click an element to inspect it": "单击要检查的元素",

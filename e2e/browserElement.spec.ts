@@ -222,20 +222,26 @@ test("navigates the same session and keeps native history until Close", async ({
   expect(await ipcCalls(page, "cancel_request")).toHaveLength(1);
 });
 
-test("localhost console links open the Browser, public and credential-bearing links do not", async ({
+test("localhost console links offer the Browser in their context menu; a plain click stays external", async ({
   workbench: page,
 }) => {
   await stubDesktop(page);
   await stubBrowser(page);
   const routed = await page.evaluate(async () => {
     const path = "/src/features/run/navigate.ts";
-    const { routeConsoleUrl } = await import(path);
+    const { consoleLinkMenu, debugConsoleUrl } = await import(path);
     const click = { metaKey: false, ctrlKey: false, shiftKey: false };
-    return ["https://localhost.example.org/", "http://guest@localhost:3000/", "http://127.0.0.1:3000/app"].map((url) =>
-      routeConsoleUrl(click, url),
-    );
+    const urls = ["https://localhost.example.org/", "http://guest@localhost:3000/", "http://127.0.0.1:3000/app"];
+    const menus = urls.map((url) => {
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.textContent = url;
+      return consoleLinkMenu(link);
+    });
+    menus[2][0].run();
+    return { plain: urls.map((url) => debugConsoleUrl(click, url)), offered: menus.map((m) => m.length > 0) };
   });
-  expect(routed).toEqual([false, false, true]);
+  expect(routed).toEqual({ plain: [false, false, false], offered: [false, false, true] });
   await expect(page.getByLabel("Local page URL")).toHaveValue("http://127.0.0.1:3000/app");
   expect(await ipcCalls(page, "web_browser_open")).toHaveLength(1);
 });

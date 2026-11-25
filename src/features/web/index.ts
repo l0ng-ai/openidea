@@ -88,7 +88,7 @@ export function activate(): () => void {
     registerToolWindow({
       id: "browser",
       title: "Browser",
-      icon: "web",
+      icon: "toolwindow-web",
       anchor: "right",
       order: 7,
       stripe: "onUse",

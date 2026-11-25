@@ -250,6 +250,7 @@ const ICONS = {
   "toolwindow-inspection": "toolwindows/toolWindowInspection",
   "toolwindow-duplicates": "toolwindows/toolWindowDuplicates",
   "toolwindow-changes": "toolwindows/changes",
+  "toolwindow-web": "toolwindows/web",
   "toolwindow-database": "openidea/toolwindows/database",
   "toolwindow-agents": "openidea/toolwindows/agents",
   "toolwindow-graphql": "openidea/toolwindows/graphql",
