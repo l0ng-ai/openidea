@@ -2104,10 +2104,8 @@ fn the_flutter_sdk_setting_picks_flutter_and_dart_for_server_and_run_configurati
     assert_eq!(crate::apply::without_derived(&configs[0], tmp.path(), &s).command, "flutter");
     // An explicit tool path still wins.
     let explicit_dart = tmp.path().join("tools").join(exe("dart"));
-    s.tools.insert(
-        "dart".into(),
-        ide_core::settings::ToolSettings { path: explicit_dart.to_string_lossy().into_owned() },
-    );
+    s.tools
+        .insert("dart".into(), ide_core::settings::ToolSettings { path: explicit_dart.to_string_lossy().into_owned() });
     assert_eq!(crate::apply::tool_command(tmp.path(), &s, "dart"), Some(explicit_dart));
 }
 
