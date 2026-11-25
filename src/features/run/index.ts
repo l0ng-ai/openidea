@@ -294,6 +294,22 @@ async function runCurrentFile(debug: boolean) {
   selectConfig(CURRENT_FILE);
 }
 
+/** Flutter Attach: `flutter attach` with the selected Flutter configuration, to an app started elsewhere. */
+async function flutterAttachSelected() {
+  await ensureConfigs();
+  const config = selectedConfig();
+  if (config?.kind !== "flutter") {
+    notifications().notify({
+      group: "run",
+      level: "info",
+      title: "Select a Flutter run configuration to attach with",
+      key: "run-flutter-attach",
+    });
+    return;
+  }
+  await executeAction("debug.startConfig", { ...config, params: { ...config.params, request: "attach" } });
+}
+
 function nothingToRun() {
   notifications().notify({
     group: "run",
@@ -626,6 +642,15 @@ export function activate(): () => void {
         category: "Run",
         when: "flutterProject",
         run: () => restartFlutterDaemon(),
+      },
+      {
+        id: "run.flutterAttach",
+        title: "Flutter Attach",
+        category: "Run",
+        icon: "debug",
+        description: "Attach the debugger to the app of the selected Flutter configuration, started elsewhere",
+        when: "flutterProject",
+        run: () => flutterAttachSelected(),
       },
       {
         id: "run.flutterHotReload",
