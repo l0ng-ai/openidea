@@ -1,0 +1,232 @@
+.skillName {
+  font-weight: 600;
+  color: var(--fg-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modeControls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+.modeSelect {
+  min-width: 96px;
+}
+
+.scopeSelect {
+  min-width: 104px;
+}
+
+.hint {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+
+.installBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+.installSourceRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.installSourceInput {
+  flex: 1;
+  min-width: 0;
+}
+
+.installScopeRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--fs-small);
+  color: var(--fg-secondary);
+}
+
+.installScopeSelect {
+  min-width: 240px;
+}
+
+.candidateSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+
+.candidateHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-small);
+  color: var(--fg-muted);
+}
+
+.candidateList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  max-height: 112px;
+  overflow-y: auto;
+}
+
+.candidateBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: 4px 10px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--border-popup);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+
+.candidateBtn:hover {
+  background: var(--bg-hover);
+}
+
+.candidateBtnActive {
+  border-color: var(--accent);
+  background: var(--bg-selected);
+  color: var(--fg-strong);
+}
+
+.candidateMeta {
+  color: var(--fg-muted);
+  font-size: var(--fs-tiny);
+}
+
+.scanClean {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 10px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--border-popup);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+
+.scanCleanIcon {
+  color: var(--success);
+  flex-shrink: 0;
+}
+
+.scanWarnBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 10px 12px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--warning);
+  background: var(--bg-elev);
+  font-size: var(--fs-small);
+}
+
+.scanWarnTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.scanWarnList {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--fg);
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.scanWarnCode {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  color: var(--fg-secondary);
+}
+
+.previewBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-small);
+  padding: 10px;
+  background: var(--bg-app);
+}
+
+.previewMeta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+}
+
+.previewMarkdown {
+  margin: 0;
+  max-height: 210px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.fileList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.fileRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 3px 6px;
+  border-radius: var(--radius-small);
+  font-size: var(--fs-small);
+}
+
+.filePath {
+  font-family: var(--font-mono);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileRight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--fg-muted);
+  font-size: var(--fs-tiny);
+  flex-shrink: 0;
+}

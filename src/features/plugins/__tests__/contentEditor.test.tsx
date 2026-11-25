@@ -20,6 +20,7 @@ import {
   contentTabData,
   contentTabKey,
   handleContentTabReplyText,
+  openPluginDiffRequest,
   registerContentTabSender,
 } from "../views/contentTab";
 
@@ -217,13 +218,88 @@ describe("plugin-backed content editor tabs", () => {
       });
       await waitFor(() => expect(diffs).toHaveLength(1));
       expect(diffs[0]).toEqual({
-        path: "service.toml",
+        path: "plugin-diff:/service.toml",
         title: "Diff: service.toml",
         left: { type: "text", text: 'name = "demo"\nreplicas = 2\n', label: "Live" },
         right: { type: "text", text: 'name = "demo"\nreplicas = 5\n', label: "Edited" },
       });
     } finally {
       f.offSender();
+      unregisterDiff();
+    }
+  });
+
+  it("opens a plugin's open-diff request in the IDE diff viewer and rejects invalid ones", () => {
+    const diffs: unknown[] = [];
+    const unregisterDiff = registerActions([
+      { id: "vcs.openDiff", title: "Open Diff", run: ({ arg }) => void diffs.push(arg) },
+    ]);
+    try {
+      openPluginDiffRequest({ left: "a\n", right: "b\n", fileName: "src/review.ts", leftLabel: "Target" }, 10);
+      openPluginDiffRequest({ left: "", right: "b\n", title: "MR !12" }, 10);
+      expect(diffs).toEqual([
+        {
+          path: "plugin-diff:/review.ts",
+          title: "src/review.ts",
+          left: { type: "text", text: "a\n", label: "Target" },
+          right: { type: "text", text: "b\n", label: "After" },
+        },
+        {
+          path: "plugin-diff:/MR !12",
+          title: "MR !12",
+          left: { type: "text", text: "", label: "Before" },
+          right: { type: "text", text: "b\n", label: "After" },
+        },
+      ]);
+      // A file name only names the syntax: never a path on disk (a UNC share, say).
+      openPluginDiffRequest({ left: "a", right: "b", fileName: "\\\\attacker\\share\\x.rs" }, 10);
+      openPluginDiffRequest({ left: "a", right: "b", title: "C:\\Users\\x\\y.ts" }, 10);
+      expect(diffs.slice(2).map((d) => (d as { path: string }).path)).toEqual([
+        "plugin-diff:/x.rs",
+        "plugin-diff:/y.ts",
+      ]);
+      diffs.splice(2);
+      expect(() => openPluginDiffRequest({ left: "a", right: 1 }, 10)).toThrow();
+      expect(() => openPluginDiffRequest({ left: "a", right: "b", fileName: "x\ny" }, 10)).toThrow();
+      expect(() => openPluginDiffRequest({ left: "a", right: "b" }, 40 << 20)).toThrow();
+      expect(diffs).toHaveLength(2);
+      // Lock files and generated code: several MiB per side open; past the limit the error says why.
+      const big = "x".repeat(5 << 20);
+      openPluginDiffRequest({ left: big, right: big + "y" }, 10 << 20);
+      expect(diffs).toHaveLength(3);
+      const huge = "x".repeat((8 << 20) + 1);
+      expect(() => openPluginDiffRequest({ left: "a", right: huge }, huge.length)).toThrow(/Diff too large/);
+    } finally {
+      unregisterDiff();
+    }
+  });
+
+  it("opens a plugin diff with a missing side as the IDE's one-sided added or deleted file", () => {
+    const diffs: unknown[] = [];
+    const unregisterDiff = registerActions([
+      { id: "vcs.openDiff", title: "Open Diff", run: ({ arg }) => void diffs.push(arg) },
+    ]);
+    try {
+      openPluginDiffRequest({ left: null, right: "added\n", fileName: "src/new.ts" }, 10);
+      openPluginDiffRequest({ left: "deleted\n", right: null, rightLabel: "MR !12", fileName: "old.ts" }, 10);
+      // `absent` is what the diff viewer shows alone (oneSided), as for the IDE's own added / deleted files.
+      expect(diffs).toEqual([
+        {
+          path: "plugin-diff:/new.ts",
+          title: "src/new.ts",
+          left: { type: "text", text: "", label: "Before", absent: true },
+          right: { type: "text", text: "added\n", label: "After" },
+        },
+        {
+          path: "plugin-diff:/old.ts",
+          title: "old.ts",
+          left: { type: "text", text: "deleted\n", label: "Before" },
+          right: { type: "text", text: "", label: "MR !12", absent: true },
+        },
+      ]);
+      expect(() => openPluginDiffRequest({ left: null, right: null }, 10)).toThrow();
+      expect(diffs).toHaveLength(2);
+    } finally {
       unregisterDiff();
     }
   });
@@ -326,6 +402,49 @@ describe("plugin-backed content editor tabs", () => {
       expect(f.view().state.facet(EditorState.readOnly)).toBe(false);
     } finally {
       f.offSender();
+    }
+  });
+
+  it("renders a read-only Markdown tab as a preview and switches layouts like a Markdown file", async () => {
+    const md = "# Fix login\n\n- [docs](https://example.com/docs)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+    const f = setup({ readOnly: true, language: "markdown", fileName: "MR-12.md", title: "MR !12", content: md });
+    try {
+      const preview = await screen.findByRole("document", { name: "MR !12" });
+      await waitFor(() => expect(preview.querySelector("h1")?.textContent).toBe("Fix login"));
+      expect(preview.querySelector("table")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Find in Editor/ })).toBeNull();
+      expect(screen.getByRole("button", { name: "Preview Only" }).getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(screen.getByRole("button", { name: "Editor Only" }));
+      expect(screen.queryByRole("document", { name: "MR !12" })).toBeNull();
+      expect(f.view().state.doc.toString()).toBe(md);
+      fireEvent.click(screen.getByRole("button", { name: "Editor and Preview" }));
+      expect(screen.getByRole("document", { name: "MR !12" })).toBeTruthy();
+      // Content the plugin reloads into the editor shows in the preview.
+      act(() => f.view().dispatch({ changes: { from: 0, to: f.view().state.doc.length, insert: "## Reloaded" } }));
+      await waitFor(() =>
+        expect(screen.getByRole("document", { name: "MR !12" }).querySelector("h2")?.textContent).toBe("Reloaded"),
+      );
+    } finally {
+      f.offSender();
+    }
+  });
+
+  it("opens other and editable tabs in the editor without layout buttons", () => {
+    const f = setup();
+    try {
+      expect(screen.queryByRole("button", { name: "Preview Only" })).toBeNull();
+      expect(screen.queryByRole("document")).toBeNull();
+    } finally {
+      f.offSender();
+    }
+    cleanup();
+    closeContentSession(contentTabKey("probe", "inspector", "service-config"));
+    const g = setup({ language: "markdown", fileName: "notes.md" });
+    try {
+      expect(screen.getByRole("button", { name: "Editor Only" }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.queryByRole("document")).toBeNull();
+    } finally {
+      g.offSender();
     }
   });
 

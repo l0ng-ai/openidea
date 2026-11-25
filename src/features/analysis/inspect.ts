@@ -200,7 +200,8 @@ export async function runInspection(choice: ScopeChoice, profileId: ProfileId = 
     summary: null,
     error: null,
     scopeLabel: describeScope(choice, scope),
-    last: choice,
+    // Rerun repeats this run's scope: "Current file" stays the file inspected now.
+    last: choice.kind === "file" && scope.kind === "files" ? { ...choice, file: scope.paths[0] } : choice,
     profile: profileId,
     excluded: new Set(),
   });

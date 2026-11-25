@@ -1,0 +1,191 @@
+60412:
+2026-11-23 22:06:43
+Full thread dump OpenJDK 64-Bit Server VM (17.0.21+9 mixed mode, sharing):
+
+Threads class SMR info:
+_java_thread_list=0x0000007a5f8afc40, length=14, elements={
+0x00000001033b4360, 0x0000007a5ec5c600, 0x0000007a5ec5cc00, 0x0000007a5ec5d800,
+0x0000007a5ec5de00, 0x0000007a5ec5e400, 0x0000007a5ec5ea00, 0x0000007a5ec5f000,
+0x0000007a5ec5f600, 0x0000007a5e914000, 0x0000007a5e914600, 0x0000007a5e915200,
+0x0000007a5e915800, 0x0000007a5e915e00
+}
+
+"main" #1 prio=5 os_prio=31 cpu=15.70ms elapsed=1.68s tid=0x00000001033b4360 nid=0xe03 waiting on condition  [0x000000016d596000]
+   java.lang.Thread.State: TIMED_WAITING (sleeping)
+	at java.lang.Thread.sleep(java.base@17.0.21/Native Method)
+	at Deadlock.sleep(Deadlock.java:7)
+	at Deadlock.main(Deadlock.java:31)
+
+   Locked ownable synchronizers:
+	- None
+
+"Reference Handler" #2 daemon prio=10 os_prio=31 cpu=0.04ms elapsed=1.67s tid=0x0000007a5ec5c600 nid=0x5703 waiting on condition  [0x000000016e3ea000]
+   java.lang.Thread.State: RUNNABLE
+	at java.lang.ref.Reference.waitForReferencePendingList(java.base@17.0.21/Native Method)
+	at java.lang.ref.Reference.processPendingReferences(java.base@17.0.21/Reference.java:253)
+	at java.lang.ref.Reference$ReferenceHandler.run(java.base@17.0.21/Reference.java:215)
+
+   Locked ownable synchronizers:
+	- None
+
+"Finalizer" #3 daemon prio=8 os_prio=31 cpu=0.09ms elapsed=1.67s tid=0x0000007a5ec5cc00 nid=0x5803 in Object.wait()  [0x000000016e5f6000]
+   java.lang.Thread.State: WAITING (on object monitor)
+	at java.lang.Object.wait(java.base@17.0.21/Native Method)
+	- waiting on <0x0000007018402f40> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(java.base@17.0.21/ReferenceQueue.java:155)
+	- locked <0x0000007018402f40> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(java.base@17.0.21/ReferenceQueue.java:176)
+	at java.lang.ref.Finalizer$FinalizerThread.run(java.base@17.0.21/Finalizer.java:172)
+
+   Locked ownable synchronizers:
+	- None
+
+"Signal Dispatcher" #4 daemon prio=9 os_prio=31 cpu=0.14ms elapsed=1.67s tid=0x0000007a5ec5d800 nid=0x6103 waiting on condition  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+   Locked ownable synchronizers:
+	- None
+
+"Service Thread" #5 daemon prio=9 os_prio=31 cpu=0.02ms elapsed=1.67s tid=0x0000007a5ec5de00 nid=0x6303 runnable  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+   Locked ownable synchronizers:
+	- None
+
+"Monitor Deflation Thread" #6 daemon prio=9 os_prio=31 cpu=0.14ms elapsed=1.67s tid=0x0000007a5ec5e400 nid=0x6503 runnable  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+   Locked ownable synchronizers:
+	- None
+
+"C2 CompilerThread0" #7 daemon prio=9 os_prio=31 cpu=1.09ms elapsed=1.67s tid=0x0000007a5ec5ea00 nid=0x6703 waiting on condition  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+   No compile task
+
+   Locked ownable synchronizers:
+	- None
+
+"C1 CompilerThread0" #10 daemon prio=9 os_prio=31 cpu=1.04ms elapsed=1.67s tid=0x0000007a5ec5f000 nid=0x6803 waiting on condition  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+   No compile task
+
+   Locked ownable synchronizers:
+	- None
+
+"Sweeper thread" #11 daemon prio=9 os_prio=31 cpu=0.01ms elapsed=1.67s tid=0x0000007a5ec5f600 nid=0x7003 runnable  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+   Locked ownable synchronizers:
+	- None
+
+"Notification Thread" #12 daemon prio=9 os_prio=31 cpu=0.02ms elapsed=1.67s tid=0x0000007a5e914000 nid=0x6e03 runnable  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+   Locked ownable synchronizers:
+	- None
+
+"Common-Cleaner" #13 daemon prio=8 os_prio=31 cpu=0.04ms elapsed=1.67s tid=0x0000007a5e914600 nid=0x6b03 in Object.wait()  [0x000000016f97a000]
+   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+	at java.lang.Object.wait(java.base@17.0.21/Native Method)
+	- waiting on <0x00000070184192e0> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(java.base@17.0.21/ReferenceQueue.java:155)
+	- locked <0x00000070184192e0> (a java.lang.ref.ReferenceQueue$Lock)
+	at jdk.internal.ref.CleanerImpl.run(java.base@17.0.21/CleanerImpl.java:140)
+	at java.lang.Thread.run(java.base@17.0.21/Thread.java:840)
+	at jdk.internal.misc.InnocuousThread.run(java.base@17.0.21/InnocuousThread.java:162)
+
+   Locked ownable synchronizers:
+	- None
+
+"juc-1" #14 prio=5 os_prio=31 cpu=0.32ms elapsed=1.67s tid=0x0000007a5e915200 nid=0x8003 waiting on condition  [0x000000016fb86000]
+   java.lang.Thread.State: WAITING (parking)
+	at jdk.internal.misc.Unsafe.park(java.base@17.0.21/Native Method)
+	- parking to wait for  <0x000000701841c728> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+	at java.util.concurrent.locks.LockSupport.park(java.base@17.0.21/LockSupport.java:211)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@17.0.21/AbstractQueuedSynchronizer.java:715)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@17.0.21/AbstractQueuedSynchronizer.java:938)
+	at java.util.concurrent.locks.ReentrantLock$Sync.lock(java.base@17.0.21/ReentrantLock.java:153)
+	at java.util.concurrent.locks.ReentrantLock.lock(java.base@17.0.21/ReentrantLock.java:322)
+	at Deadlock.lambda$jucPair$2(Deadlock.java:15)
+	at Deadlock$$Lambda$1/0x0000008001000a08.run(Unknown Source)
+	at java.lang.Thread.run(java.base@17.0.21/Thread.java:840)
+
+   Locked ownable synchronizers:
+	- <0x000000701841c6f8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"juc-2" #15 prio=5 os_prio=31 cpu=0.17ms elapsed=1.67s tid=0x0000007a5e915800 nid=0x8203 waiting on condition  [0x000000016fd92000]
+   java.lang.Thread.State: WAITING (parking)
+	at jdk.internal.misc.Unsafe.park(java.base@17.0.21/Native Method)
+	- parking to wait for  <0x000000701841c6f8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+	at java.util.concurrent.locks.LockSupport.park(java.base@17.0.21/LockSupport.java:211)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@17.0.21/AbstractQueuedSynchronizer.java:715)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@17.0.21/AbstractQueuedSynchronizer.java:938)
+	at java.util.concurrent.locks.ReentrantLock$Sync.lock(java.base@17.0.21/ReentrantLock.java:153)
+	at java.util.concurrent.locks.ReentrantLock.lock(java.base@17.0.21/ReentrantLock.java:322)
+	at Deadlock.lambda$jucPair$3(Deadlock.java:16)
+	at Deadlock$$Lambda$2/0x0000008001000c28.run(Unknown Source)
+	at java.lang.Thread.run(java.base@17.0.21/Thread.java:840)
+
+   Locked ownable synchronizers:
+	- <0x000000701841c728> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"Attach Listener" #16 daemon prio=9 os_prio=31 cpu=0.36ms elapsed=0.10s tid=0x0000007a5e915e00 nid=0x8403 waiting on condition  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+   Locked ownable synchronizers:
+	- None
+
+"VM Periodic Task Thread" os_prio=31 cpu=0.95ms elapsed=1.67s tid=0x00000001033d2c20 nid=0x6a03 waiting on condition  
+
+"VM Thread" os_prio=31 cpu=0.46ms elapsed=1.68s tid=0x00000001033c7da0 nid=0x4d03 runnable  
+
+"G1 Service" os_prio=31 cpu=0.19ms elapsed=1.68s tid=0x00000001033c2e70 nid=0x5203 runnable  
+
+"G1 Refine#0" os_prio=31 cpu=0.02ms elapsed=1.68s tid=0x00000001033c2500 nid=0x5403 runnable  
+
+"G1 Conc#0" os_prio=31 cpu=0.01ms elapsed=1.68s tid=0x00000001033c0110 nid=0x3503 runnable  
+
+"G1 Main Marker" os_prio=31 cpu=0.02ms elapsed=1.68s tid=0x00000001033bf7a0 nid=0x3303 runnable  
+
+"GC Thread#0" os_prio=31 cpu=0.02ms elapsed=1.68s tid=0x00000001033be940 nid=0x3203 runnable  
+
+JNI global refs: 6, weak refs: 0
+
+
+Found one Java-level deadlock:
+=============================
+"juc-1":
+  waiting for ownable synchronizer 0x000000701841c728, (a java.util.concurrent.locks.ReentrantLock$NonfairSync),
+  which is held by "juc-2"
+
+"juc-2":
+  waiting for ownable synchronizer 0x000000701841c6f8, (a java.util.concurrent.locks.ReentrantLock$NonfairSync),
+  which is held by "juc-1"
+
+Java stack information for the threads listed above:
+===================================================
+"juc-1":
+	at jdk.internal.misc.Unsafe.park(java.base@17.0.21/Native Method)
+	- parking to wait for  <0x000000701841c728> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+	at java.util.concurrent.locks.LockSupport.park(java.base@17.0.21/LockSupport.java:211)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@17.0.21/AbstractQueuedSynchronizer.java:715)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@17.0.21/AbstractQueuedSynchronizer.java:938)
+	at java.util.concurrent.locks.ReentrantLock$Sync.lock(java.base@17.0.21/ReentrantLock.java:153)
+	at java.util.concurrent.locks.ReentrantLock.lock(java.base@17.0.21/ReentrantLock.java:322)
+	at Deadlock.lambda$jucPair$2(Deadlock.java:15)
+	at Deadlock$$Lambda$1/0x0000008001000a08.run(Unknown Source)
+	at java.lang.Thread.run(java.base@17.0.21/Thread.java:840)
+"juc-2":
+	at jdk.internal.misc.Unsafe.park(java.base@17.0.21/Native Method)
+	- parking to wait for  <0x000000701841c6f8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+	at java.util.concurrent.locks.LockSupport.park(java.base@17.0.21/LockSupport.java:211)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@17.0.21/AbstractQueuedSynchronizer.java:715)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@17.0.21/AbstractQueuedSynchronizer.java:938)
+	at java.util.concurrent.locks.ReentrantLock$Sync.lock(java.base@17.0.21/ReentrantLock.java:153)
+	at java.util.concurrent.locks.ReentrantLock.lock(java.base@17.0.21/ReentrantLock.java:322)
+	at Deadlock.lambda$jucPair$3(Deadlock.java:16)
+	at Deadlock$$Lambda$2/0x0000008001000c28.run(Unknown Source)
+	at java.lang.Thread.run(java.base@17.0.21/Thread.java:840)
+
+Found 1 deadlock.
+

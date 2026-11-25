@@ -23,3 +23,21 @@ it("keeps platform defaults when the query fails", async () => {
   await loadPlatformInfo();
   expect(usePlatform.getState()).toEqual(initialPlatform);
 });
+
+it.each([
+  [
+    { left: ["close", "maximize", "minimize"], right: [] },
+    { left: ["close", "maximize", "minimize"], right: [] },
+  ],
+  [undefined, { left: [], right: ["minimize", "maximize", "close"] }],
+])("takes the caption button layout %j from the backend", async (windowButtons, expected) => {
+  appInfo.mockResolvedValue({
+    platform: "linux",
+    windowsBuildNumber: null,
+    version: "0.1.46",
+    wayland: true,
+    windowButtons,
+  });
+  await loadPlatformInfo();
+  expect(usePlatform.getState().windowButtons).toEqual(expected);
+});

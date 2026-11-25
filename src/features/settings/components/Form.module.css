@@ -10,7 +10,7 @@
 .sectionTitle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: 22px;
   margin-bottom: 6px;
   color: var(--fg-strong);
@@ -27,6 +27,9 @@
 .formGroup {
   display: grid;
   grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  /* WebKit sizes an `auto` row from its item's height at an earlier width, so a hint or
+     control that wraps to one more line after the window narrows lies over the next row. */
+  grid-auto-rows: min-content;
   column-gap: var(--space-2);
   min-width: 0;
 }
@@ -49,8 +52,10 @@
 .row {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
+  /* See `.formGroup`. */
+  grid-auto-rows: min-content;
   align-items: start;
-  column-gap: 8px;
+  column-gap: var(--space-2);
   min-height: 28px;
   padding: 2px 6px;
   margin: 0 -6px;
@@ -59,9 +64,12 @@
 .matched {
   background: color-mix(in srgb, var(--warning) 8%, transparent);
 }
+.disabled > .label {
+  color: var(--fg-faint);
+}
 .stacked {
   grid-template-columns: minmax(0, 1fr);
-  row-gap: 6px;
+  row-gap: var(--space-1-5);
   align-items: start;
   padding-top: 4px;
   padding-bottom: 4px;
@@ -84,7 +92,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   min-height: var(--h-field);
 }
@@ -93,6 +101,7 @@
 }
 .hint {
   grid-column: 2;
+  margin-top: var(--space-1);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   line-height: 1.4;
@@ -104,16 +113,19 @@
 }
 .toggleHint {
   grid-column: 1 / -1;
-  padding-left: 20px;
+  /* Starts with the checkbox text: the 16px box and its label gap (`ui/Checkbox`). */
+  padding-left: calc(16px + var(--space-2));
 }
 .stacked > .hint {
   grid-column: 1 / -1;
+  /* The stacked row's gap already separates it. */
+  margin-top: 0;
 }
 
 .number {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .numberInput {
   width: 64px;
@@ -136,10 +148,30 @@
   }
 }
 
+@container settings-content (max-width: 440px) {
+  .stackFields > .row:not(.toggleRow) {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-1-5);
+  }
+
+  .stackFields > .row:not(.toggleRow) > .label {
+    padding-top: 0;
+  }
+
+  .stackFields > .row:not(.toggleRow) > .label::after {
+    content: none;
+  }
+
+  .stackFields > .row:not(.toggleRow) > .hint {
+    grid-column: 1;
+    margin-top: 0;
+  }
+}
+
 .swatches {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .swatch {
   position: relative;
@@ -191,14 +223,16 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  max-width: 480px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
   overflow: hidden;
 }
+.globCompact {
+  max-width: 480px;
+}
 .listToolbar {
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: 28px;
   align-items: center;
   padding: 0 4px;
@@ -218,8 +252,10 @@
   align-items: center;
   height: var(--h-row);
   padding: 0 8px;
-  font-family: var(--font-mono);
   color: var(--fg);
+}
+.globMono {
+  font-family: var(--font-mono);
 }
 .globSelected {
   background: var(--bg-selected);

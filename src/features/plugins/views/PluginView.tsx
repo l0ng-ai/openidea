@@ -18,6 +18,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import type { View, ViewEvent, ViewField, ViewTable, ViewTreeItem, Viewport } from "@/bindings";
+import { isTauri } from "@/platform/ipc";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import {
   Checkbox,
@@ -34,9 +35,9 @@ import {
   showContextMenu,
   type MenuItem,
 } from "@/ui";
-import { pluginsBackend } from "../backend";
+import { pluginsBackend, webSchemeUrl } from "../backend";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
-import { FRAME_TAG, frameDocument, frameTheme, frameThemeMessage } from "./frame";
+import { FRAME_HOST_PATH, FRAME_TAG, frameDocument, frameTheme, frameThemeMessage } from "./frame";
 import { localizeView, usePluginT } from "../pluginText";
 import { currentViewLocation, onViewMessage, useViewLocation, useViewRevision } from "./viewStore";
 import { ServicePane } from "./ServicePane";
@@ -674,7 +675,10 @@ function HtmlBody({
   const frame = useRef<HTMLIFrameElement>(null);
   // The theme at load time is in the document; later changes are posted, so a
   // theme switch doesn't reload the frame and lose its state.
-  const srcDoc = useMemo(() => frameDocument(html, frameTheme()), [html]);
+  const doc = useMemo(() => frameDocument(html, frameTheme()), [html]);
+  // In the app the document is written into a page of the plugin scheme: a `srcdoc` frame
+  // would inherit the workbench's CSP, which blocks the document's inline scripts.
+  const host = isTauri() ? webSchemeUrl(FRAME_HOST_PATH) : null;
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const postTheme = useCallback(
     () => frame.current?.contentWindow?.postMessage(frameThemeMessage(frameTheme()), "*"),
@@ -685,8 +689,10 @@ function HtmlBody({
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.source !== frame.current?.contentWindow) return;
-      const data = e.data as { tag?: unknown; text?: unknown } | null;
-      if (data?.tag === FRAME_TAG && typeof data.text === "string") send({ kind: "message", text: data.text });
+      const data = e.data as { tag?: unknown; text?: unknown; ready?: unknown } | null;
+      if (data?.tag !== FRAME_TAG) return;
+      if (data.ready === true) frame.current?.contentWindow?.postMessage({ tag: FRAME_TAG, document: doc }, "*");
+      else if (typeof data.text === "string") send({ kind: "message", text: data.text });
     };
     window.addEventListener("message", onMessage);
     const off = onViewMessage(pluginId, view, (text) =>
@@ -696,18 +702,22 @@ function HtmlBody({
       window.removeEventListener("message", onMessage);
       off();
     };
-  }, [pluginId, view, send]);
+  }, [pluginId, view, send, doc]);
 
   // No `allow-same-origin`: an opaque origin without access to the IDE.
-  // `onLoad` re-sends the theme in case it changed between building `srcDoc` and the frame loading.
-  return (
+  // `onLoad` re-sends the theme in case it changed between building the document and the frame loading.
+  // A new document loads a new frame (`key`), as a changed `srcdoc` does.
+  return host ? (
     <iframe
+      key={doc}
       ref={frame}
       className={styles.frame}
       title={view}
       sandbox="allow-scripts"
-      srcDoc={srcDoc}
+      src={host}
       onLoad={postTheme}
     />
+  ) : (
+    <iframe ref={frame} className={styles.frame} title={view} sandbox="allow-scripts" srcDoc={doc} onLoad={postTheme} />
   );
 }

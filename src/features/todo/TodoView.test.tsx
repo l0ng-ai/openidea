@@ -1,8 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { _provideOpenEditorPaths } from "@/editor/api";
 import { TodoView, useTodoView, useTodoViewOptions } from "./TodoView";
-import { useTodos } from "./store";
+import { setLiveTodos, useTodos } from "./store";
 import { setLocalChanges } from "@/workbench/contributions";
+
+vi.mock("./store", async (original) => ({
+  ...(await original<typeof import("./store")>()),
+  scanScope: vi.fn(),
+}));
 
 describe("TodoView", () => {
   it("renders grouped items with the keyword emphasised and filters by keyword", () => {
@@ -23,7 +29,7 @@ describe("TodoView", () => {
     render(<TodoView />);
     expect(screen.getByText("a.ts")).toBeInTheDocument();
     expect(screen.getByText("2 items")).toBeInTheDocument();
-    expect(screen.getByText("(5, 4)")).toBeInTheDocument();
+    expect(screen.getByText("5")).toHaveAttribute("title", "(5, 4)");
     expect(screen.getByText(": wire it")).toBeInTheDocument();
     act(() => useTodoView.getState().toggleKeyword("FIXME"));
     expect(screen.getByText("1 item")).toBeInTheDocument();
@@ -60,6 +66,54 @@ describe("TodoView", () => {
     });
   });
 
+  it("shows new, changed and removed live TODOs in Open Files", () => {
+    const fresh = "/p/src/fresh.ts";
+    const saved = "/p/src/saved.ts";
+    const outside = "/p/src/outside.ts";
+    const openPaths = [fresh, saved];
+    const scoped = new Map([[saved, [{ path: saved, line: 0, col: 3, keyword: "TODO", text: "TODO saved" }]]]);
+    const items = (path: string, text: string) => [{ path, line: 0, col: 3, keyword: "TODO", text: `TODO ${text}` }];
+    const initialView = useTodoView.getState();
+    const initialTodos = useTodos.getState();
+    _provideOpenEditorPaths(() => openPaths);
+    try {
+      act(() => {
+        useTodoView.setState({ tab: "scope", scope: "openFiles" });
+        useTodos.setState({ scoped, scopedKey: JSON.stringify({ kind: "files", paths: openPaths }) });
+        setLiveTodos(outside, items(outside, "outside the scope"));
+      });
+      render(<TodoView />);
+      expect(screen.getByText("saved.ts")).toBeVisible();
+      expect(screen.queryByText("fresh.ts")).toBeNull();
+
+      act(() => setLiveTodos(fresh, items(fresh, "first unsaved match")));
+      expect(screen.getByText("fresh.ts")).toBeVisible();
+      expect(screen.getByText("first unsaved match")).toBeVisible();
+      expect(screen.queryByText("outside.ts")).toBeNull();
+
+      act(() => setLiveTodos(fresh, items(fresh, "edited match")));
+      expect(screen.getByText("edited match")).toBeVisible();
+      expect(screen.queryByText("first unsaved match")).toBeNull();
+      act(() => useTodoView.setState({ scope: "productionFiles" }));
+      expect(screen.queryByText("fresh.ts")).toBeNull();
+      expect(screen.getByText("saved.ts")).toBeVisible();
+
+      act(() => {
+        useTodoView.setState({ scope: "openFiles" });
+        setLiveTodos(saved, []);
+        setLiveTodos(fresh, []);
+      });
+      expect(screen.queryByText("fresh.ts")).toBeNull();
+      expect(screen.queryByText("saved.ts")).toBeNull();
+    } finally {
+      _provideOpenEditorPaths(() => []);
+      act(() => {
+        useTodoView.setState(initialView);
+        useTodos.setState(initialTodos);
+      });
+    }
+  });
+
   it("shows the preview pane and does not autoscroll by default, as IDEA", () => {
     expect(useTodoViewOptions.getState()).toEqual({ preview: true, autoscroll: false });
     render(<TodoView />);
@@ -81,7 +135,7 @@ describe("TodoView", () => {
     render(<TodoView />);
     // Select the file group so the preview has an item (trees select on mousedown).
     fireEvent.mouseDown(screen.getByText("a.ts").closest("[role=treeitem]")!);
-    await screen.findByText("(5, 4)");
+    await screen.findByText("5");
     // No editing switch: the preview is simply an editor, like IntelliJ's.
     expect(screen.queryByLabelText("Allow editing")).toBeNull();
     // No document attacher in tests: the editable pane degrades to its error

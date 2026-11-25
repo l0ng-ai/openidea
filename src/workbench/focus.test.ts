@@ -102,3 +102,24 @@ describe("focus after popups", () => {
     dispose();
   });
 });
+
+describe("focus tracking", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("tells whether focus entered the editor area", () => {
+    document.body.innerHTML = `<div data-editor-area><div class="cm-content" tabindex="0"></div></div><section data-toolwindow="project" tabindex="-1"></section><button id="other">x</button>`;
+    const calls: Array<[string | null, boolean]> = [];
+    const dispose = installFocusTracking((id, editor) => calls.push([id, editor]));
+    document.querySelector<HTMLElement>(".cm-content")!.focus();
+    document.querySelector<HTMLElement>("[data-toolwindow]")!.focus();
+    document.getElementById("other")!.focus();
+    expect(calls).toEqual([
+      [null, true],
+      ["project", false],
+      [null, false],
+    ]);
+    dispose();
+  });
+});

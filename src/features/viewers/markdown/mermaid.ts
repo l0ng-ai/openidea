@@ -9,7 +9,9 @@ import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 import { themeKey } from "@/platform/themeWatch";
 import { attachPanZoom } from "../panZoom";
 import { attachDiagramTools, TOOLS_ATTR } from "./mermaidTools";
+import { localSvg } from "./localSvg";
 import { reid } from "./svgIds";
+import { svgElementSize } from "@/ui/svgSize";
 
 export const MERMAID_SELECTOR = "[data-mermaid]";
 const OUTPUT_CLASS = "mermaid-output";
@@ -180,6 +182,8 @@ function configure(mermaid: Mermaid, key: string) {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
+    // These go into the diagram's stylesheet as written: a diagram setting them could fetch from any host.
+    secure: ["themeCSS", "fontFamily", "altFontFamily"],
     suppressErrorRendering: true,
     theme: "base",
     // Each diagram type defaults to "neo": the start state is hard-coded
@@ -213,7 +217,15 @@ async function renderOne(source: string, key: string): Promise<Result> {
 
 /** Resolves `null` when the pass was superseded before its turn came. */
 function enqueue(source: string, key: string, live: () => boolean): Promise<Result | null> {
-  const p = queue.then(() => (live() ? renderOne(source, key) : null));
+  const k = `${key}\n${source}`;
+  const p = queue.then(async () => {
+    if (!live()) return null;
+    const cached = cache.get(k);
+    if (cached) return cached;
+    const result = await renderOne(source, key);
+    remember(k, result);
+    return result;
+  });
   queue = p.catch(() => undefined);
   return p;
 }
@@ -229,7 +241,12 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
   const out = document.createElement("div");
   out.className = OUTPUT_CLASS;
   if (result && "svg" in result) {
-    out.innerHTML = reid(result.svg);
+    const drawing = localSvg(reid(result.svg));
+    // WebKit paints relatively positioned MathML wrappers at the SVG origin
+    for (const label of drawing.querySelectorAll<HTMLElement>("foreignObject .katex:has(> math)")) {
+      label.style.position = "static";
+    }
+    out.append(drawing);
     block.setAttribute(RENDERED_ATTR, "ok");
   } else if (result) {
     out.setAttribute("role", "alert");
@@ -247,7 +264,15 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
   if (block.getAttribute(RENDERED_ATTR) === "ok") {
     attachPanZoom(out);
     const svg = out.querySelector("svg");
-    if (svg) attachDiagramTools(block, svg);
+    if (svg) {
+      const size = svgElementSize(svg);
+      if (size) {
+        svg.dataset.naturalWidth = "";
+        svg.style.setProperty("--diagram-width", `${Number(size.w.toFixed(2))}px`);
+        svg.style.maxWidth = "calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1))";
+      }
+      attachDiagramTools(block, svg);
+    }
   }
 }
 
@@ -272,6 +297,7 @@ export function renderMermaidIn(root: HTMLElement, previous: Node[] = []): Merma
   if (!blocks.length) return { async: false, done: Promise.resolve(), cancel: () => {} };
   const key = themeKey();
   const pending: Promise<void>[] = [];
+  const rendering = new Map<string, Promise<Result | null>>();
   blocks.forEach((block, i) => {
     const source = (block.querySelector("code")?.textContent ?? "").replace(/\n+$/, "");
     const k = `${key}\n${source}`;
@@ -293,11 +319,14 @@ export function renderMermaidIn(root: HTMLElement, previous: Node[] = []): Merma
     }
     drawn.delete(block);
     show(block, null, previous[i]);
+    let result = rendering.get(k);
+    if (!result) {
+      result = enqueue(source, key, () => live);
+      rendering.set(k, result);
+    }
     pending.push(
-      enqueue(source, key, () => live).then((r) => {
-        if (!r) return;
-        remember(k, r);
-        if (!live) return;
+      result.then((r) => {
+        if (!live || !r) return;
         show(block, r);
         drawn.set(block, k);
         keep();

@@ -1,6 +1,7 @@
 /** Installed plugins, their UI contributions, the selected plugin theme, and the operations on them. */
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
+import { isErrorKind } from "@/platform/ipc";
 import type {
   ActiveTheme,
   CapabilityInfo,
@@ -166,6 +167,7 @@ export function uninstallPlugin(id: string): Promise<boolean> {
   return withBusy(id, `Could not uninstall ${name}`, async () => {
     await pluginsBackend().uninstall(id);
     notifications().notify({ group: "plugins", level: "info", title: `Uninstalled ${name}` });
+    await refreshMarket(false);
   });
 }
 
@@ -412,7 +414,7 @@ export async function runPluginCommand(
     const status = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.status;
     // A trap disables the plugin and the backend already announced why; a
     // consent request opens its own dialog.
-    const permission = (e as { kind?: string }).kind === "permissionDenied";
+    const permission = isErrorKind(e, "permissionDenied");
     if (status !== "failed" && !permission)
       notifications().notify({ group: "plugins", level: "error", title: `${title} failed`, body: errorText(e) });
     return null;

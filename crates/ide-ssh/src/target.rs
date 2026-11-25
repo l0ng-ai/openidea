@@ -53,6 +53,65 @@ pub(crate) struct Hop {
     pub proxy_command: Option<String>,
     pub host_key_policy: HostKeyPolicy,
     pub known_hosts: Option<PathBuf>,
+    pub agent: Agent,
+}
+
+/// Where the SSH agent of a hop listens (`IdentityAgent`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Agent {
+    /// `SSH_AUTH_SOCK` (the OpenSSH pipe on Windows when it is unset).
+    Default,
+    /// `IdentityAgent none`, or an unset `$VARIABLE`.
+    Off,
+    Socket(PathBuf),
+}
+
+impl Agent {
+    /// The socket (or Windows pipe) to connect to, `None` for no agent.
+    pub fn socket(&self) -> Option<PathBuf> {
+        match self {
+            Agent::Off => None,
+            Agent::Socket(path) => Some(path.clone()),
+            Agent::Default => {
+                let var = env_var("SSH_AUTH_SOCK").filter(|v| !v.is_empty()).map(PathBuf::from);
+                if cfg!(windows) {
+                    // Only a pipe works there; a Unix socket path comes from MSYS or WSL tools.
+                    let pipe = var.filter(|p| p.to_string_lossy().starts_with(r"\\.\pipe\"));
+                    Some(pipe.unwrap_or_else(|| PathBuf::from(r"\\.\pipe\openssh-ssh-agent")))
+                } else {
+                    var
+                }
+            }
+        }
+    }
+}
+
+/// A variable as the user's shell sees it. An app started from Finder or the Dock has the
+/// login session's environment; the shell's rc files may set another value (an SSH agent
+/// socket exported in `~/.zshrc`), and that is the one `ssh` in a terminal uses.
+fn env_var(name: &str) -> Option<std::ffi::OsString> {
+    ide_core::process::login_env()
+        .and_then(|vars| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()))
+        .or_else(|| std::env::var_os(name))
+}
+
+/// `IdentityAgent`: `none`, `SSH_AUTH_SOCK`, `$VARIABLE`, or a path (`~` and `%` tokens expanded).
+fn identity_agent(value: Option<&str>, expand_path: impl Fn(&str) -> PathBuf) -> Agent {
+    let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else { return Agent::Default };
+    if value.eq_ignore_ascii_case("none") {
+        return Agent::Off;
+    }
+    if value == "SSH_AUTH_SOCK" {
+        return Agent::Default;
+    }
+    if let Some(name) = value.strip_prefix('$') {
+        let name = name.strip_prefix('{').and_then(|n| n.strip_suffix('}')).unwrap_or(name);
+        return match env_var(name).filter(|v| !v.is_empty()) {
+            Some(path) => Agent::Socket(expand(&path.to_string_lossy())),
+            None => Agent::Off,
+        };
+    }
+    Agent::Socket(expand_path(value))
 }
 
 /// `StrictHostKeyChecking`: what happens to a host key missing from `known_hosts`.
@@ -98,6 +157,7 @@ struct RawConfig {
     proxy_command: Option<String>,
     host_key_policy: Option<HostKeyPolicy>,
     user_known_hosts_file: Option<String>,
+    identity_agent: Option<String>,
 }
 
 fn strip_quotes(s: &str) -> &str {
@@ -444,6 +504,11 @@ fn parse_config_file(
                     });
                 }
             }
+            "identityagent" => {
+                if out.identity_agent.is_none() {
+                    out.identity_agent = Some(strip_quotes(value).to_owned());
+                }
+            }
             "userknownhostsfile" => {
                 if out.user_known_hosts_file.is_none()
                     && let Some(first) = split_args(value).into_iter().next()
@@ -492,7 +557,9 @@ fn config_hop(
     };
     let host_key_policy =
         if null_known_hosts { HostKeyPolicy::Off } else { raw.host_key_policy.unwrap_or(HostKeyPolicy::Ask) };
-    let hop = Hop { host, port, user, identity_files, proxy_command, host_key_policy, known_hosts };
+    let agent =
+        identity_agent(raw.identity_agent.as_deref(), |p| expand(&expand_tokens(p, alias, &host, port, &user, &local)));
+    let hop = Hop { host, port, user, identity_files, proxy_command, host_key_policy, known_hosts, agent };
     (hop, proxy_jump)
 }
 
@@ -529,6 +596,7 @@ pub(crate) fn resolve_hops(target: &SshTarget, config: Option<&Path>) -> IdeResu
                 proxy_command: None,
                 host_key_policy: HostKeyPolicy::Ask,
                 known_hosts: None,
+                agent: Agent::Default,
             },
             None,
         )
@@ -592,6 +660,32 @@ mod tests {
         let hops = resolve_hops(&target, Some(&config)).unwrap();
         assert_eq!(hops.iter().map(Hop::label).collect::<Vec<_>>(), ["u@db-bastion:22"]);
         assert!(resolve_hops(&SshTarget::default(), None).is_err());
+    }
+
+    #[test]
+    fn identity_agent_picks_the_agent_of_each_hop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        std::fs::write(
+            &config,
+            "Host vault\n  IdentityAgent \"~/agents/%h.sock\"\n  ProxyJump plain\n\n\
+             Host off\n  IdentityAgent none\n\nHost shell\n  IdentityAgent ${OPENIDEA_TEST_AGENT}\n\n\
+             Host unset\n  IdentityAgent $OPENIDEA_TEST_UNSET_AGENT\n\nHost env\n  IdentityAgent SSH_AUTH_SOCK\n",
+        )
+        .unwrap();
+        // Exported only by the shell's rc files, as a GUI app sees it (#4934).
+        ide_core::process::set_shell_env(vec![("OPENIDEA_TEST_AGENT".into(), "/run/agent.sock".into())]);
+        let agent = |host: &str| {
+            let target = SshTarget { host: host.into(), auth: SshAuth::OpenSsh, ..Default::default() };
+            resolve_hops(&target, Some(&config)).unwrap().into_iter().map(|h| h.agent).collect::<Vec<_>>()
+        };
+        let home = home().unwrap();
+        assert_eq!(agent("vault"), [Agent::Default, Agent::Socket(home.join("agents/vault.sock"))]);
+        assert_eq!(agent("off"), [Agent::Off]);
+        assert_eq!(agent("shell"), [Agent::Socket("/run/agent.sock".into())]);
+        assert_eq!(agent("unset"), [Agent::Off]);
+        assert_eq!(agent("env"), [Agent::Default]);
+        assert_eq!(Agent::Off.socket(), None);
     }
 
     #[test]

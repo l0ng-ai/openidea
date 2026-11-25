@@ -1,6 +1,6 @@
 [package]
 name = "ide-clipboard"
-description = "The OS clipboard's file list (Explorer <-> project view): Windows CF_HDROP or macOS NSPasteboard file URLs, no window or message loop"
+description = "The OS clipboard's file list (Explorer <-> project view) and pasted images: Windows CF_HDROP / PNG / CF_DIB or macOS NSPasteboard, no window or message loop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,8 +9,14 @@ license.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSObject", "NSString", "NSURL", "NSValue"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSEnumerator", "NSObject", "NSString", "NSURL", "NSValue"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSBitmapImageRep", "NSImageRep", "NSPasteboard"] }
+
+[target.'cfg(windows)'.dependencies]
+png = "0.18"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+
+[dev-dependencies]
+png = "0.18"

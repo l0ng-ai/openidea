@@ -1,0 +1,58 @@
+---
+title: "Introduction"
+description: "OpenIDEA is an open-source IDE with the IntelliJ IDEA way of working, built as a native app with a Rust core."
+---
+
+OpenIDEA brings the IntelliJ IDEA way of working (its keymap, its tool windows, its search-everything habits) to a native desktop app with a Rust core. It runs on macOS, Windows and Linux and is licensed under Apache 2.0.
+
+If you have used IntelliJ IDEA, PyCharm or another JetBrains IDE, most of what you know carries over: pressing <kbd>Shift</kbd> twice opens Search Everywhere, `⌥↵` / `Alt+Enter` shows context actions, and the default keymap matches IDEA's. Coming from VS Code or Eclipse? Their keymaps are built in too.
+
+## Highlights
+
+- **One IDE for many languages.** Editor and code insight for 60+ languages, and a one-click install of the language servers a project needs. See [Languages](/en/languages/index).
+- **The tools you expect.** Debugger, Git, terminal, database client, HTTP client, test runner, coverage and profiler, each in its own tool window.
+- **Search everything.** Search Everywhere, Find Action, Go to Class / File / Symbol and Find in Files across the indexed project.
+- **Refactorings and inspections.** Rename, extract, inline, change signature, safe delete, quick fixes and Inspect Code.
+- **Remote development.** Work on a machine over SSH or in a dev container with the `openidea-server` backend.
+- **AI agents.** Run coding agents in a tool window, and give them the IDE's own tools through the built-in MCP server.
+- **Plugins.** Plugins add actions, completion, quick fixes, tool windows, custom editors, themes, file icons and languages. They run as sandboxed WebAssembly components; themes, icon themes and languages need no code. The plugin API is still a preview.
+
+## Benchmark
+
+Opening [freqtrade](https://github.com/freqtrade/freqtrade) (Python, about 770 files) with warm caches, median of 5 runs:
+
+|                             | OpenIDEA          | IntelliJ IDEA 2026.2.3 |
+| --------------------------- | ----------------- | ---------------------- |
+| Window with the project     | **0.9 s**         | 3.1 s                  |
+| Ready (CPU settled)         | **1.1 s**         | 13.2 s                 |
+| Memory (USS, all processes) | **169 MB**        | 2011 MB                |
+| CPU time until ready        | **2.4 s**         | 47.9 s                 |
+| Idle CPU                    | **4 %** of a core | 7 % of a core          |
+| Quit                        | **0.3 s**         | 5.9 s                  |
+
+Measured with a release build of OpenIDEA from `main` and IDEA with default settings and plugins, on Windows 11, 32-core AMD, 62 GB RAM. IDEA analyses Python more deeply, so "ready" doesn't mean the same work on both sides. Both are measured from the outside, the same way: see [`perf/compare`](https://github.com/l0ng-ai/openidea/blob/main/perf/compare) to run the comparison on your own machine and projects.
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Install" icon="download" href="/en/guide/install">
+    Download OpenIDEA for macOS, Windows or Linux.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/en/guide/quickstart">
+    Open a project, find your way around, run and debug.
+  </Card>
+  <Card title="Coming from another IDE" icon="right-left" href="/en/guide/migrate">
+    Keymaps, settings import and concepts for IntelliJ IDEA, VS Code and Eclipse users.
+  </Card>
+  <Card title="Languages" icon="code" href="/en/languages/index">
+    What each language supports and what it needs installed.
+  </Card>
+  <Card title="Plugins" icon="puzzle-piece" href="/en/plugins/index">
+    Write themes, languages and WebAssembly plugins.
+  </Card>
+  <Card title="Contribute" icon="code-branch" href="/en/contribute/setup">
+    Build OpenIDEA from source and send a pull request.
+  </Card>
+</CardGroup>
+
+<Note>OpenIDEA is not affiliated with JetBrains. IntelliJ IDEA is a trademark of JetBrains s.r.o.</Note>

@@ -189,6 +189,14 @@ describe("context configuration", () => {
     expect(fileRole("lib/tasks/gen.rb")).toBe("script");
     expect(fileRole("src/main.rs")).toBe("main");
     expect(fileRole("cmd/main.go", "package main\nfunc main() {}")).toBe("main");
+    // A JVM class with a `main` runs as a program even under a test-like name.
+    expect(
+      fileRole("src/test/java/com/example/Test.java", "class Test { public static void main(String[] a) {} }"),
+    ).toBe("main");
+    expect(fileRole("src/test/kotlin/Spec.kt", "fun main() {}")).toBe("main");
+    // Without content (the menu's first pass) the name still says test.
+    expect(fileRole("src/test/java/com/example/Test.java")).toBe("test");
+    expect(fileRole("src/test/java/com/example/OrderBookTest.java", "@Test void totals() {}")).toBe("test");
     expect(fileRole("tools/gen.py")).toBe("script");
     expect(fileRole("scripts/build.bat", undefined, true)).toBe("script");
     expect(fileRole("scripts/run.cmd", undefined, true)).toBe("script");
@@ -316,7 +324,12 @@ describe("context configuration", () => {
       command: ".venv/bin/python",
       args: ["tools/gen.py"],
     });
-    expect(contextConfig("scripts/build.sh", configs)).toMatchObject({ command: "sh", args: ["scripts/build.sh"] });
+    // Run in a terminal, as IDEA's Shell Script "Execute in the terminal": interactive scripts work.
+    expect(contextConfig("scripts/build.sh", configs)).toMatchObject({
+      command: "sh",
+      args: ["scripts/build.sh"],
+      emulateTerminal: true,
+    });
     expect(contextConfig("scripts/build.bat", configs, undefined, true)).toMatchObject({
       command: "cmd.exe",
       args: ["/c", "build.bat"],
@@ -395,6 +408,17 @@ describe("context configuration", () => {
     expect(contextConfig("tools/gen.py", venv)).toMatchObject({ command: ".venv/bin/python", args: ["tools/gen.py"] });
     const uv = [cfg({ id: "pytest", kind: "pytest", command: "uv", args: ["run", "pytest"], isTest: true })];
     expect(contextConfig("tools/gen.py", uv)).toMatchObject({ command: "uv", args: ["run", "python", "tools/gen.py"] });
+  });
+
+  it("prefers a detected Python config's interpreter over one made by hand", () => {
+    const configs = [
+      cfg({ id: "mine", kind: "python", command: "python3", args: ["tool.py"], detected: false }),
+      cfg({ id: "found", kind: "python", command: "uv", args: ["run", "python", "-m", "app"], detected: true }),
+    ];
+    expect(contextConfig("tools/gen.py", configs)).toMatchObject({
+      command: "uv",
+      args: ["run", "python", "tools/gen.py"],
+    });
   });
 
   it("takes the interpreter from a Django runserver config without its arguments", () => {

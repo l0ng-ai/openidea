@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { monoFontFamily, quoteFontFamily, uiFontFamily } from "./fonts";
+import { monoFontFamily, quoteFontFamily, resolveMonoFont, uiFontFamily } from "./fonts";
 
 const BASE = "var(--font-mono)";
 
@@ -44,6 +44,112 @@ describe("uiFontFamily", () => {
     ["Inter", " ", '"Inter", "Inter Variable", system-ui, sans-serif'],
   ])("%j + %j", (family, fallback, expected) => {
     expect(uiFontFamily(family, fallback)).toBe(expected);
+  });
+});
+
+describe("resolveMonoFont", () => {
+  const terminal = {
+    useEditorFont: true,
+    fontFamily: "JetBrains Mono",
+    fallbackFontFamily: "",
+    fontSize: 13,
+  };
+  const editor = { fontFamily: "Fira Code", fallbackFont: "PingFang SC", fontSize: 16 };
+
+  it("follows Editor › Font while Use editor font is on", () => {
+    expect(resolveMonoFont(terminal, editor, BASE)).toEqual({
+      family: `"Fira Code", "PingFang SC", ${BASE}`,
+      size: 16,
+    });
+  });
+
+  it("uses the terminal's own family, fallback and size when it is off", () => {
+    expect(
+      resolveMonoFont(
+        { ...terminal, useEditorFont: false, fontFamily: "Hack", fallbackFontFamily: "Maple Mono NF CN", fontSize: 14 },
+        editor,
+        BASE,
+      ),
+    ).toEqual({ family: `"Hack", "Maple Mono NF CN", ${BASE}`, size: 14 });
+  });
+
+  it("prefers the terminal's fallback over the editor's while following the editor font", () => {
+    expect(resolveMonoFont({ ...terminal, fallbackFontFamily: "Maple Mono NF CN" }, editor, BASE).family).toBe(
+      `"Fira Code", "Maple Mono NF CN", ${BASE}`,
+    );
+  });
+
+  it("falls back to the bundled family and 13px without settings", () => {
+    expect(resolveMonoFont(undefined, undefined, BASE)).toEqual({
+      family: `"JetBrains Mono", "JetBrains Mono Variable", ${BASE}`,
+      size: 13,
+    });
+  });
+});
+
+describe("discovered Nerd Font fallbacks (#3723)", () => {
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("ranks full faces before their Mono variants, Propo last, without non-Nerd names", async () => {
+    const fonts = await import("./fonts");
+    expect(
+      fonts.nerdFontFamilies([
+        "Inter",
+        "Maple Mono NF CN",
+        "JetBrainsMono Nerd Font Mono",
+        "CaskaydiaCove Nerd Font Propo",
+        "JetBrainsMono Nerd Font",
+        "Cascadia Code NF",
+        "Symbols Nerd Font Mono",
+      ]),
+    ).toEqual([
+      "Maple Mono NF CN",
+      "JetBrainsMono Nerd Font",
+      "Cascadia Code NF",
+      "JetBrainsMono Nerd Font Mono",
+      "Symbols Nerd Font Mono",
+      "CaskaydiaCove Nerd Font Propo",
+    ]);
+    expect(fonts.nerdFontFamilies(["Inter", "Menlo", "NFsans"])).toEqual([]);
+    expect(fonts.nerdFontFamilies(["Inter", "NF Sans Display"])).toEqual(["NF Sans Display"]);
+  });
+
+  it("feeds nerdFontFaces beyond the known list, deduped against it", async () => {
+    const fonts = await import("./fonts");
+    fonts.discoverNerdFonts(["Inter", "CaskaydiaCove Nerd Font", "Maple Mono NF CN", "JetBrainsMono Nerd Font Mono"]);
+    const faces = fonts.nerdFontFaces();
+    expect(faces.filter((face) => face.includes("CaskaydiaCove"))).toHaveLength(1);
+    // Discovered faces join after every known one.
+    expect(faces.indexOf('"Maple Mono NF CN"')).toBeGreaterThan(faces.indexOf('"CaskaydiaCove Nerd Font"'));
+    expect(faces).toHaveLength(11);
+  });
+
+  it("lets terminalFont pick up discovered families once they land", async () => {
+    const { terminalFont } = await import("../features/terminal/theme");
+    const t = {
+      useEditorFont: true,
+      fontFamily: "JetBrains Mono",
+      fontSize: 10,
+      lineHeight: 1,
+      fallbackFontFamily: "",
+      columnWidth: 1,
+    };
+    const BASE = '"JetBrains Mono Variable", monospace';
+    expect(terminalFont(t, { fontFamily: "JetBrains Mono", fontSize: 10 }, BASE).family).not.toContain("Maple");
+    const fonts = await import("./fonts");
+    fonts.discoverNerdFonts(["Maple Mono NF CN"]);
+    const { family } = terminalFont(t, { fontFamily: "JetBrains Mono", fontSize: 10 }, BASE);
+    expect(family.indexOf('"Maple Mono NF CN"')).toBeGreaterThan(family.indexOf('"Symbols Nerd Font"'));
+    expect(family.endsWith(", monospace")).toBe(true);
+  });
+
+  it("uiIconFaces falls back to a discovered family, proportional faces first", async () => {
+    const fonts = await import("./fonts");
+    expect(fonts.uiIconFaces(["Inter", "Maple Mono NF CN", "Maple Mono NF Propo"])).toEqual(['"Maple Mono NF Propo"']);
+    expect(fonts.uiIconFaces(["Inter", "Maple Mono NF CN"])).toEqual(['"Maple Mono NF CN"']);
+    expect(fonts.uiIconFaces(["Inter", "Menlo"])).toEqual([]);
   });
 });
 
@@ -165,6 +271,14 @@ describe("macOS user font resolver", () => {
     const { fonts, invoke } = await resolver("symbols");
     expect(fonts.familyFaces("Symbols Nerd Font Mono")).toEqual(['"Symbols Nerd Font Mono"']);
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("loads only the first installed Nerd Font for UI icons, proportional faces first", async () => {
+    const { fonts, invoke } = await resolver(false);
+    const installed = ["Inter", "JetBrainsMono Nerd Font Mono", "jetbrainsmono nerd font propo"];
+    expect(fonts.uiIconFaces(installed)).toEqual(['"OpenIDEA User Font 0"', '"JetBrainsMono Nerd Font Propo"']);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", { family: "JetBrainsMono Nerd Font Propo" });
+    expect(fonts.uiIconFaces(["Inter", "Menlo"])).toEqual([]);
   });
 
   it("never reads bundled webfonts even before their CSS faces load", async () => {

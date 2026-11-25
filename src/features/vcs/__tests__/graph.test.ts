@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { compactLanes, computeGraph, straightenLaneChanges, type GraphRow } from "../graph";
+import {
+  compactLanes,
+  computeGraph,
+  pruneFilteredEdges,
+  straightenLaneChanges,
+  type GraphCommit,
+  type GraphRow,
+} from "../graph";
 
 const c = (id: string, ...parents: string[]) => ({ id, parents });
 
@@ -60,6 +67,102 @@ describe("computeGraph", () => {
     const { rows } = computeGraph([c("t", "x"), c("m2", "b", "x"), c("x", "b"), c("b")]);
     const m2 = rows[1]!;
     expect(m2.down).toContainEqual({ from: m2.lane, to: 0, color: rows[0]!.color });
+  });
+});
+
+describe("pruneFilteredEdges", () => {
+  // A filtered log: hidden commits connect the rows to their nearest matching
+  // ancestors, one dashed edge per merge path (`filtered` kind).
+  const filtered = (id: string, ...parents: string[]): GraphCommit => ({
+    id,
+    parents,
+    dashed: parents.map(() => true),
+    edgeTypes: parents.map(() => "filtered" as const),
+  });
+  const shown = (id: string, parent: string): GraphCommit => ({
+    id,
+    parents: [parent],
+    dashed: [false],
+    edgeTypes: ["normal" as const],
+  });
+
+  it("drops filtered ancestors that another connection of the commit already reaches", () => {
+    // A merge pyramid under an author filter: every hidden merge path's nearest match
+    // is a different row, while v1's own chain already reaches the rest (#2670).
+    const commits = [
+      filtered("v0", "v1", "v2", "v3", "v4"),
+      shown("v1", "v2"),
+      shown("v2", "v3"),
+      shown("v3", "v4"),
+      shown("v4", "base"),
+      c("base"),
+    ];
+    // Without pruning each dashed connection opens a lane of its own.
+    expect(computeGraph(commits).rows[0]!.width).toBe(4);
+    const pruned = pruneFilteredEdges(commits);
+    expect(pruned[0]!.parents).toEqual(["v1"]);
+    expect(computeGraph(pruned).rows[0]!.width).toBe(1);
+  });
+
+  it("keeps filtered ancestors that no other connection reaches", () => {
+    // Two sibling side branches match on different commits: both edges are needed.
+    const commits = [filtered("tip", "left", "right"), shown("left", "base"), shown("right", "base"), c("base")];
+    expect(pruneFilteredEdges(commits)).toEqual(commits);
+  });
+
+  it("keeps real merge edges even when one parent reaches the other", () => {
+    // A full history has no filtered edges; `git log --graph` draws both parents.
+    const commits = [c("m", "b", "f"), c("f", "a"), c("b", "a"), c("a")];
+    expect(pruneFilteredEdges(commits)).toEqual(commits);
+  });
+
+  it("does not fan out connections to filtered ancestors that are not loaded yet", () => {
+    // The #5345 history under an author filter: the merge's hidden parent projects onto
+    // every older matching commit, deepest first. Only the first 300 rows are loaded.
+    const n = 340;
+    const older = ["root", ...Array.from({ length: n - 1 }, (_, i) => `a${i + 1}`)];
+    const merge: GraphCommit = {
+      id: "tip",
+      parents: [`a${n}`, ...older],
+      dashed: [false, ...older.map(() => true)],
+      edgeTypes: ["normal", ...older.map(() => "filtered" as const)],
+    };
+    const chain = Array.from({ length: n }, (_, i) => shown(`a${n - i}`, n - i === 1 ? "root" : `a${n - i - 1}`));
+    const all = [merge, ...chain, c("root")];
+    expect(all).toHaveLength(342);
+
+    const page = pruneFilteredEdges(all.slice(0, 300));
+    expect(page[0]!.parents).toEqual([`a${n}`]);
+    expect(computeGraph(page).rows[0]!.width).toBe(1);
+    expect(pruneFilteredEdges(all)[0]!.parents).toEqual([`a${n}`]);
+  });
+
+  it("keeps one connection leaving the page and restores the rest once they load", () => {
+    // Sibling side branches: neither reaches the other, but neither is loaded yet.
+    const all = [filtered("tip", "left", "right"), shown("left", "base"), shown("right", "base"), c("base")];
+    expect(pruneFilteredEdges(all.slice(0, 1))[0]!.parents).toEqual(["left"]);
+    // `left` leads further down the log, so `right` still waits for its own row...
+    expect(pruneFilteredEdges(all.slice(0, 2))[0]!.parents).toEqual(["left"]);
+    // ...and gets its connection back as soon as it is loaded.
+    expect(pruneFilteredEdges(all.slice(0, 3))[0]!.parents).toEqual(["left", "right"]);
+    expect(pruneFilteredEdges(all)[0]!.parents).toEqual(["left", "right"]);
+  });
+
+  it("prefers a real parent over filtered ones when all of them are below the page", () => {
+    const real = { id: "x", kind: "normal" as const };
+    const hidden = ["y", "z"].map((id) => ({ id, kind: "filtered" as const }));
+    for (const order of [
+      [real, ...hidden],
+      [...hidden, real],
+    ]) {
+      const merge: GraphCommit = {
+        id: "m",
+        parents: order.map((p) => p.id),
+        dashed: order.map((p) => p.kind === "filtered"),
+        edgeTypes: order.map((p) => p.kind),
+      };
+      expect(pruneFilteredEdges([merge])[0]!.parents).toEqual(["x"]);
+    }
   });
 });
 

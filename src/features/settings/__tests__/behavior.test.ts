@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatPattern, formatTimestamp } from "@/platform/dateFormat";
 import { resolveThemeId } from "@/workbench/theme";
+import { useCompactMode } from "@/ui/density";
 import { applyAppearanceOptions, nextZoom, SMALL_TREE_INDENT } from "../appearanceRuntime";
 import { validateSettings } from "../model/schema";
 import { validateGeneralExtras, validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
@@ -106,6 +107,16 @@ describe("appearance & behavior settings", () => {
     expect(validateAppearanceExtras({ navigationBar: "everywhere" }).navigationBar).toBe("statusBar");
   });
 
+  it("applies Compact mode to the root attribute and the JS density store", () => {
+    const root = document.createElement("div");
+    applyAppearanceOptions(validateSettings({ appearance: { compactMode: true } }), root);
+    expect(root.dataset.compact).toBe("");
+    expect(useCompactMode.getState()).toBe(true);
+    applyAppearanceOptions(validateSettings({}), root);
+    expect(root.dataset.compact).toBeUndefined();
+    expect(useCompactMode.getState()).toBe(false);
+  });
+
   it("defaults Use smaller indents in trees to off and applies the indent variable", () => {
     expect(validateAppearanceExtras({}).smallTreeIndents).toBe(false);
     expect(validateAppearanceExtras({ smallTreeIndents: true }).smallTreeIndents).toBe(true);
@@ -120,6 +131,18 @@ describe("appearance & behavior settings", () => {
     expect(root.style.getPropertyValue("--tree-indent")).toBe("");
   });
 
+  it("defaults Smooth scrolling to on", () => {
+    expect(validateAppearanceExtras({}).smoothScrolling).toBe(true);
+    expect(validateAppearanceExtras({ smoothScrolling: false }).smoothScrolling).toBe(false);
+    expect(validateAppearanceExtras({ smoothScrolling: "off" }).smoothScrolling).toBe(true);
+  });
+
+  it("opens Settings in a separate window unless turned off", () => {
+    expect(validateAppearanceExtras({}).settingsInSeparateWindow).toBe(true);
+    expect(validateAppearanceExtras({ settingsInSeparateWindow: false }).settingsInSeparateWindow).toBe(false);
+    expect(validateAppearanceExtras({ settingsInSeparateWindow: "off" }).settingsInSeparateWindow).toBe(true);
+  });
+
   it("keeps the UI fallback font empty by default and trims a stored one", () => {
     expect(validateAppearanceExtras({}).uiFontFallback).toBe("");
     expect(validateAppearanceExtras({ uiFontFallback: " 思源黑体 " }).uiFontFallback).toBe("思源黑体");
@@ -132,10 +155,12 @@ describe("appearance & behavior settings", () => {
       appearance: { useCustomFont: true, uiFontFamily: "Menlo", uiFontFallback: "Songti SC" },
     });
     applyAppearanceOptions(settings, root);
-    expect(root.style.getPropertyValue("--font-ui")).toBe('"Menlo", "Songti SC", system-ui, sans-serif');
+    expect(root.style.getPropertyValue("--font-ui")).toBe(
+      '"Menlo", "Songti SC", system-ui, sans-serif, var(--font-icons)',
+    );
     settings.appearance.uiFontFallback = "";
     applyAppearanceOptions(settings, root);
-    expect(root.style.getPropertyValue("--font-ui")).toBe('"Menlo", system-ui, sans-serif');
+    expect(root.style.getPropertyValue("--font-ui")).toBe('"Menlo", system-ui, sans-serif, var(--font-icons)');
     settings.appearance.useCustomFont = false;
     applyAppearanceOptions(settings, root);
     expect(root.style.getPropertyValue("--font-ui")).toBe("");
@@ -154,11 +179,26 @@ describe("appearance & behavior settings", () => {
     expect(validateNotifications({ groups: { vcs: { display: "weird", log: false } }, sound: 1 })).toEqual({
       balloons: true,
       sound: false,
+      systemNotifications: true,
+      terminalCompletion: "longRunning",
+      terminalThresholdSeconds: 10,
       groups: { vcs: { display: "balloon", log: false } },
+    });
+    expect(validateNotifications({ systemNotifications: false }).systemNotifications).toBe(false);
+    expect(validateNotifications({ terminalCompletion: "sometimes", terminalThresholdSeconds: "10" })).toMatchObject({
+      terminalCompletion: "longRunning",
+      terminalThresholdSeconds: 10,
+    });
+    // Out-of-range numbers clamp, as every numeric setting does.
+    expect(validateNotifications({ terminalThresholdSeconds: 0 }).terminalThresholdSeconds).toBe(1);
+    expect(validateNotifications({ terminalCompletion: "all", terminalThresholdSeconds: 5 })).toMatchObject({
+      terminalCompletion: "all",
+      terminalThresholdSeconds: 5,
     });
   });
 });
 
 it("loads an old attach setting as ask", () => {
   expect(validateGeneralExtras({ openProjectIn: "attach" }).openProjectIn).toBe("ask");
+  expect(validateGeneralExtras({ openProjectIn: "tab" }).openProjectIn).toBe("tab");
 });

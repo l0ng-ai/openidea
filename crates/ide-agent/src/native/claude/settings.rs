@@ -48,10 +48,17 @@ impl Settings {
             .filter_map(|m| {
                 let s = |k: &str| m.get(k).and_then(Value::as_str).map(str::to_owned);
                 let value = s("value")?;
+                let resolved = s("resolvedModel");
+                // The default entry follows the account's default model, so "Default
+                // (recommended)" hides what actually runs: name the model it resolves to.
+                let name = match (value.as_str(), resolved.as_deref()) {
+                    ("default", Some(r)) if !r.is_empty() => format!("Default ({r})"),
+                    _ => s("displayName").unwrap_or_else(|| value.clone()),
+                };
                 Some(Model {
-                    name: s("displayName").unwrap_or_else(|| value.clone()),
+                    name,
                     description: s("description"),
-                    resolved: s("resolvedModel"),
+                    resolved,
                     efforts: if m.get("supportsEffort").and_then(Value::as_bool) == Some(true) {
                         m.get("supportedEffortLevels")
                             .and_then(Value::as_array)
@@ -228,6 +235,19 @@ mod tests {
         assert_eq!(flag.model, "default", "`--model` wins over the settings file");
         let s = Settings::from_cli(&init(), &json!({"applied": {"model": "claude-x-1"}}));
         assert_eq!(s.model, "claude-x-1");
+    }
+
+    #[test]
+    fn the_default_entry_is_named_by_the_model_it_runs() {
+        let s = Settings::from_cli(&init(), &json!({"applied": {"model": "claude-sonnet-5-5"}}));
+        let names: Vec<_> = s.models.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Default (claude-sonnet-5-5)", "Opus", "Haiku 4.5"]);
+        // Without a resolved model, the agent's own name stands.
+        let s = Settings::from_cli(
+            &json!({"models": [{"value": "default", "displayName": "Default (recommended)"}]}),
+            &json!({}),
+        );
+        assert_eq!(s.models[0].name, "Default (recommended)");
     }
 
     #[test]

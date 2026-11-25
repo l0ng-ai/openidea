@@ -1,0 +1,449 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { history, redo, undo } from "@codemirror/commands";
+import { html } from "@codemirror/lang-html";
+import { javascript } from "@codemirror/lang-javascript";
+import { linkedTags } from "./linkedTags";
+import { prefsExtension } from "./prefs";
+import { angular } from "./angular";
+import { astro } from "./astro";
+import { django } from "./django";
+import { jsp } from "./jsp";
+import { vueLanguage } from "./vue";
+import { validateEditorExtras } from "@/platform/editorSettings";
+
+const views: EditorView[] = [];
+afterEach(() => views.splice(0).forEach((v) => v.destroy()));
+
+const extensions: Extension = [html(), linkedTags];
+
+/** `|` marks carets, `[`/`]` a selection. */
+function make(text: string, extra: Extension = []) {
+  return makeWith([EditorState.allowMultipleSelections.of(true), extensions, extra], text);
+}
+
+/** Like `make`, with the full extension list spelled out. */
+function makeWith(extensions: Extension, text: string) {
+  const ranges: ReturnType<typeof EditorSelection.cursor>[] = [];
+  let doc = "";
+  let anchor = -1;
+  for (const ch of text) {
+    if (ch === "|") ranges.push(EditorSelection.cursor(doc.length));
+    else if (ch === "[") anchor = doc.length;
+    else if (ch === "]") ranges.push(EditorSelection.range(anchor, doc.length));
+    else doc += ch;
+  }
+  const view = new EditorView({
+    state: EditorState.create({
+      doc,
+      selection: EditorSelection.create(ranges.length ? ranges : [EditorSelection.cursor(0)]),
+      extensions,
+    }),
+    parent: document.body,
+  });
+  views.push(view);
+  return view;
+}
+
+function show(view: EditorView): string {
+  const { doc, selection } = view.state;
+  let out = doc.toString();
+  for (const r of [...selection.ranges].sort((a, b) => b.from - a.from))
+    out = r.empty
+      ? out.slice(0, r.head) + "|" + out.slice(r.head)
+      : out.slice(0, r.from) + "[" + out.slice(r.from, r.to) + "]" + out.slice(r.to);
+  return out;
+}
+
+/** Types `text` at every caret / over every selection, as typing does. */
+function type(view: EditorView, text: string) {
+  const { state } = view;
+  view.dispatch(
+    state.changeByRange((r) => ({
+      changes: { from: r.from, to: r.to, insert: text },
+      range: EditorSelection.cursor(r.from + text.length),
+    })),
+    { userEvent: "input.type" },
+  );
+}
+
+/** One Backspace at every caret, or over every selection. */
+function backspace(view: EditorView) {
+  const { state } = view;
+  view.dispatch(
+    state.changeByRange((r) => {
+      const from = r.empty ? Math.max(0, r.head - 1) : r.from;
+      return { changes: { from, to: r.to }, range: EditorSelection.cursor(from) };
+    }),
+    { userEvent: "delete.backward" },
+  );
+}
+
+/** One Delete after every caret. */
+function deleteForward(view: EditorView) {
+  const { state } = view;
+  view.dispatch(
+    state.changeByRange((r) => ({
+      changes: { from: r.head, to: Math.min(state.doc.length, r.head + 1) },
+      range: EditorSelection.cursor(r.head),
+    })),
+    { userEvent: "delete.forward" },
+  );
+}
+
+describe("linked html tags", () => {
+  it("renames the closing tag while the opening one is typed", () => {
+    const v = make('<div| class="container">\n  Content\n</div>');
+    type(v, "ision");
+    expect(v.state.doc.toString()).toBe('<division class="container">\n  Content\n</division>');
+    // The caret stays where the user typed, not in the mirrored tag.
+    expect(show(v)).toBe('<division| class="container">\n  Content\n</division>');
+  });
+
+  it("renames the opening tag while the closing one is typed", () => {
+    const v = make('<div class="container">\n  Content\n</div|>');
+    type(v, "ision");
+    expect(v.state.doc.toString()).toBe('<division class="container">\n  Content\n</division>');
+  });
+
+  it("renames a name typed at its start", () => {
+    const v = make("<|div></div>");
+    type(v, "s");
+    expect(v.state.doc.toString()).toBe("<sdiv></sdiv>");
+  });
+
+  it("follows deletions", () => {
+    const v = make("<div|></div>");
+    backspace(v);
+    expect(v.state.doc.toString()).toBe("<di></di>");
+    backspace(v);
+    expect(v.state.doc.toString()).toBe("<d></d>");
+  });
+
+  it("follows a selection replaced with a new name", () => {
+    const v = make("<[div]>x</div>");
+    type(v, "article");
+    expect(v.state.doc.toString()).toBe("<article>x</article>");
+    expect(show(v)).toBe("<article|>x</article>");
+  });
+
+  it("pairs the outer tags of nested same-name elements", () => {
+    const v = make("<div>\n  <div>inner</div>\n</div|>");
+    type(v, "s");
+    expect(v.state.doc.toString()).toBe("<divs>\n  <div>inner</div>\n</divs>");
+  });
+
+  it("pairs the inner tags of nested same-name elements", () => {
+    const v = make("<div>\n  <div|>inner</div>\n</div>");
+    type(v, "s");
+    expect(v.state.doc.toString()).toBe("<div>\n  <divs>inner</divs>\n</div>");
+  });
+
+  it("renames two elements with one caret each", () => {
+    const v = make("<p|>one</p>\n<h2|>two</h2>");
+    type(v, "x");
+    expect(v.state.doc.toString()).toBe("<px>one</px>\n<h2x>two</h2x>");
+  });
+
+  it("leaves both tags alone when the caret edits both at once", () => {
+    const v = make("<div|></div|>");
+    type(v, "s");
+    expect(v.state.doc.toString()).toBe("<divs></divs>");
+  });
+
+  it("mirrors only the caret inside a tag name", () => {
+    const v = make("<p|>one\nplain| text\n</p>");
+    type(v, "x");
+    expect(v.state.doc.toString()).toBe("<px>one\nplainx text\n</px>");
+  });
+
+  it("skips rather than guesses with two carets in one name", () => {
+    const v = make("<di|v|></div>");
+    type(v, "x");
+    expect(v.state.doc.toString()).toBe("<dixvx></div>");
+  });
+
+  it("does not touch other tags or attributes", () => {
+    const v = make('<div class="container" |>\n  <span>keep</span>\n</div>');
+    type(v, "x");
+    expect(v.state.doc.toString()).toBe('<div class="container" x>\n  <span>keep</span>\n</div>');
+  });
+
+  it("skips void and self-closing tags", () => {
+    const v = make("<p>before</p>\n<img|>\n<br>");
+    type(v, "x");
+    expect(v.state.doc.toString()).toBe("<p>before</p>\n<imgx>\n<br>");
+    const selfClosing = make("<p>before</p>\n<div|/>");
+    type(selfClosing, "x");
+    expect(selfClosing.state.doc.toString()).toBe("<p>before</p>\n<divx/>");
+  });
+
+  it("skips unclosed elements and stray close tags", () => {
+    const v = make("<div|>unclosed");
+    type(v, "x");
+    expect(v.state.doc.toString()).toBe("<divx>unclosed");
+    const stray = make("<p>before</p>\n</div|>");
+    type(stray, "x");
+    expect(stray.state.doc.toString()).toBe("<p>before</p>\n</divx>");
+  });
+
+  it("keeps a partially typed tag unmirrored", () => {
+    const v = make("<di|v");
+    type(v, "s");
+    expect(v.state.doc.toString()).toBe("<disv");
+  });
+
+  it("does not follow structural characters typed at the name's edge", () => {
+    // `/` would make the open tag self-closing; `>` would end it: neither extends the name.
+    const v = make("<div|></div>");
+    type(v, "/");
+    expect(v.state.doc.toString()).toBe("<div/></div>");
+    const closing = make("<div>content</di|v>");
+    type(closing, ">");
+    expect(closing.state.doc.toString()).toBe("<div>content</di>v>");
+  });
+
+  // #5314: removing a tag piece by piece is a deletion, not a rename. Once its `>` (or `</`)
+  // is gone the tag is incomplete, and the name edits after that must not follow.
+  describe("deleting a whole tag", () => {
+    it("leaves the opening tag alone while the closing tag is backspaced away", () => {
+      const v = make("<div>x</div>|");
+      for (let i = 0; i < "</div>".length; i++) backspace(v);
+      expect(show(v)).toBe("<div>x|");
+    });
+
+    it("leaves the closing tag alone while the opening tag is backspaced away", () => {
+      const v = make("<div>|x</div>");
+      for (let i = 0; i < "<div>".length; i++) backspace(v);
+      expect(show(v)).toBe("|x</div>");
+    });
+
+    it("leaves the opening tag alone when the closing tag is deleted forwards", () => {
+      const v = make("<div>x|</div>\n<p>y</p>");
+      for (let i = 0; i < "</div>".length; i++) deleteForward(v);
+      expect(v.state.doc.toString()).toBe("<div>x\n<p>y</p>");
+    });
+
+    it("leaves the closing tag alone while an opening tag followed by children is backspaced away", () => {
+      const v = make("<div>|\n  <span>y</span>\n</div>");
+      for (let i = 0; i < "<div>".length; i++) backspace(v);
+      expect(show(v)).toBe("|\n  <span>y</span>\n</div>");
+      const inline = make("<div>|<span>y</span></div>");
+      for (let i = 0; i < "<div>".length; i++) backspace(inline);
+      expect(show(inline)).toBe("|<span>y</span></div>");
+    });
+
+    it("leaves the other tag alone when a selection covering a tag is deleted", () => {
+      const v = make("<div>x[</div>]");
+      backspace(v);
+      expect(show(v)).toBe("<div>x|");
+      const open = make("[<div>]x</div>");
+      backspace(open);
+      expect(show(open)).toBe("|x</div>");
+    });
+
+    it("leaves the other tag alone when a cut runs from inside the name past the tag", () => {
+      const v = make("<div>x</d[iv>\n]<p>y</p>");
+      backspace(v);
+      expect(v.state.doc.toString()).toBe("<div>x</d<p>y</p>");
+    });
+
+    it("does not rename into or out of a tag that lost its `>`", () => {
+      const v = make("<div|>x</div");
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs>x</div");
+      const open = make("<div\n  x</di|v>");
+      backspace(open);
+      expect(open.state.doc.toString()).toBe("<div\n  x</dv>");
+    });
+
+    it("deletes the closing tags at every caret, leaving the opening tags alone", () => {
+      const v = make("<p>a</p>|\n<b>c</b>|");
+      for (let i = 0; i < "</p>".length; i++) backspace(v);
+      expect(show(v)).toBe("<p>a|\n<b>c|");
+    });
+
+    it("undo brings back the deleted closing tag and keeps the opening one", () => {
+      const v = make("<div>x[</div>]", history());
+      backspace(v);
+      expect(v.state.doc.toString()).toBe("<div>x");
+      expect(undo(v)).toBe(true);
+      expect(v.state.doc.toString()).toBe("<div>x</div>");
+    });
+
+    it("still renames after the `>` is typed back", () => {
+      const v = make("<div>x</div|");
+      type(v, ">");
+      expect(v.state.doc.toString()).toBe("<div>x</div>");
+      v.dispatch({ selection: { anchor: "<div".length } });
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs>x</divs>");
+    });
+  });
+
+  it("undoes the pair as one step and redoes it", () => {
+    const v = make("<div|></div>", history());
+    type(v, "x");
+    expect(v.state.doc.toString()).toBe("<divx></divx>");
+    expect(undo(v)).toBe(true);
+    expect(v.state.doc.toString()).toBe("<div></div>");
+    expect(redo(v)).toBe(true);
+    expect(v.state.doc.toString()).toBe("<divx></divx>");
+  });
+
+  // Every mode whose outer parser is `@lezer/html`: renaming an opening tag follows into
+  // the closing one (prefs.ts enables the filter for exactly these language ids).
+  describe("in the html-based modes", () => {
+    const modes: [string, () => Extension][] = [
+      ["Vue", () => vueLanguage()],
+      ["Angular Template", () => angular()],
+      ["JSP", () => jsp()],
+      ["Django Template", () => django()],
+      ["Astro", () => astro()],
+    ];
+
+    for (const [name, language] of modes) {
+      it(`renames the closing tag while the opening one is typed in ${name}`, () => {
+        const v = makeWith([language(), linkedTags], '<div| class="a">x</div>');
+        type(v, "s");
+        expect(v.state.doc.toString()).toBe('<divs class="a">x</divs>');
+      });
+
+      it(`leaves the opening tag alone while the closing tag is backspaced away in ${name}`, () => {
+        const v = makeWith([language(), linkedTags], '<div class="a">x</div>|');
+        for (let i = 0; i < "</div>".length; i++) backspace(v);
+        expect(v.state.doc.toString()).toBe('<div class="a">x');
+      });
+    }
+  });
+
+  describe("in JSX / TSX", () => {
+    const tsx = (text: string) => makeWith([javascript({ jsx: true, typescript: true }), linkedTags, history()], text);
+
+    it("renames the closing tag while the opening one is typed, and back", () => {
+      const v = tsx('const a = <div| className="x">hi</div>;');
+      type(v, "s");
+      expect(show(v)).toBe('const a = <divs| className="x">hi</divs>;');
+      const w = tsx("const a = <Foo>hi</Fo|o>;");
+      type(w, "x");
+      expect(show(w)).toBe("const a = <Foxo>hi</Fox|o>;");
+    });
+
+    it("renames member and namespaced names as a whole", () => {
+      const v = tsx("const a = <Foo.Bar|>x</Foo.Bar>;");
+      type(v, "z");
+      expect(v.state.doc.toString()).toBe("const a = <Foo.Barz>x</Foo.Barz>;");
+      const w = tsx("const a = <|Foo.Bar>x</Foo.Bar>;");
+      type(w, "My");
+      expect(w.state.doc.toString()).toBe("const a = <MyFoo.Bar>x</MyFoo.Bar>;");
+    });
+
+    it("follows the element's own closing tag through nested same-name elements", () => {
+      const v = tsx("const a = <div|><div></div></div>;");
+      type(v, "x");
+      expect(v.state.doc.toString()).toBe("const a = <divx><div></div></divx>;");
+    });
+
+    it("leaves fragments, self-closing tags and attributes alone", () => {
+      const v = tsx("const a = <Foo| />;");
+      type(v, "x");
+      expect(v.state.doc.toString()).toBe("const a = <Foox />;");
+      const w = tsx("const a = <div |>x</div>;");
+      type(w, "a");
+      expect(w.state.doc.toString()).toBe("const a = <div a>x</div>;");
+      const f = tsx("const a = <|>x</>;");
+      type(f, "p");
+      expect(f.state.doc.toString()).toBe("const a = <p>x</>;");
+    });
+
+    it("leaves the other tag alone while a tag is backspaced away", () => {
+      const v = tsx("const a = <div>x</div>|;");
+      for (let i = 0; i < "</div>".length; i++) backspace(v);
+      expect(v.state.doc.toString()).toBe("const a = <div>x;");
+      const m = tsx("const a = (\n  <div>|\n    <span>y</span>\n  </div>\n);");
+      for (let i = 0; i < "<div>".length; i++) backspace(m);
+      expect(m.state.doc.toString()).toBe("const a = (\n  \n    <span>y</span>\n  </div>\n);");
+      const w = tsx("const a = <Foo>|x</Foo>;");
+      for (let i = 0; i < "<Foo>".length; i++) backspace(w);
+      expect(w.state.doc.toString()).toBe("const a = x</Foo>;");
+    });
+
+    it("undoes both tags in one step", () => {
+      const v = tsx("const a = <div|></div>;");
+      type(v, "x");
+      expect(undo(v)).toBe(true);
+      expect(v.state.doc.toString()).toBe("const a = <div></div>;");
+    });
+  });
+
+  describe("the smart key gates the filter", () => {
+    /** The real wiring: prefsExtension attaches the filter for the document's language. */
+    const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
+      makeWith(
+        [
+          EditorState.allowMultipleSelections.of(true),
+          // A parseable tree: the real editors attach the mode's parser beside prefsExtension.
+          html(),
+          prefsExtension({
+            prefs: validateEditorExtras({ smartKeys }),
+            path: "",
+            softWrap: false,
+            showWhitespace: false,
+            hardWrapAt: 120,
+            readOnly: false,
+            language,
+          }),
+        ],
+        "<div|></div>",
+      );
+
+    it("links tags for plain html", () => {
+      const v = prefs("html");
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs></divs>");
+    });
+
+    it("links tags for the html-based language ids", () => {
+      for (const language of ["vue", "jsp", "django-html", "astro"]) {
+        const v = prefs(language);
+        type(v, "s");
+        expect(v.state.doc.toString()).toBe("<divs></divs>");
+      }
+    });
+
+    it("links tags for JSX / TSX", () => {
+      for (const language of ["typescriptreact", "javascriptreact"]) {
+        const v = makeWith(
+          [
+            javascript({ jsx: true, typescript: language === "typescriptreact" }),
+            prefsExtension({
+              prefs: validateEditorExtras({ smartKeys: {} }),
+              path: "",
+              softWrap: false,
+              showWhitespace: false,
+              hardWrapAt: 120,
+              readOnly: false,
+              language,
+            }),
+          ],
+          "const a = <div|></div>;",
+        );
+        type(v, "s");
+        expect(v.state.doc.toString()).toBe("const a = <divs></divs>;");
+      }
+    });
+
+    it("stays off when the option is off", () => {
+      const v = prefs("html", { simultaneousTagEditing: false });
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs></div>");
+    });
+
+    it("stays off for the token-based erb mode", () => {
+      const v = prefs("erb");
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs></div>");
+    });
+  });
+});

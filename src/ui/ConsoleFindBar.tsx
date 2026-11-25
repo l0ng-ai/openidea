@@ -25,6 +25,8 @@ export interface ConsoleFindBarProps {
   onNext: () => void;
   onPrevious: () => void;
   onClose: () => void;
+  /** What is searched, for the field's placeholder and label. */
+  label?: string;
 }
 
 export function ConsoleFindBar({
@@ -40,6 +42,7 @@ export function ConsoleFindBar({
   onNext,
   onPrevious,
   onClose,
+  label = "Find in console",
 }: ConsoleFindBarProps) {
   const none = !!query && !invalid && count === 0;
   const counter = invalid
@@ -81,20 +84,14 @@ export function ConsoleFindBar({
 
   return (
     <div className={styles.container}>
-      <div
-        className={styles.find}
-        role="search"
-        aria-label={tx("Find in console")}
-        data-console-find=""
-        onKeyDown={onKeyDown}
-      >
+      <div className={styles.find} role="search" aria-label={tx(label)} data-console-find="" onKeyDown={onKeyDown}>
         <SearchField
           ref={inputRef}
           className={styles.findField}
           value={query}
           onChange={onChange}
-          placeholder="Find in console"
-          aria-label="Find in console"
+          placeholder={label}
+          aria-label={label}
           invalid={invalid || none}
           toggles={[
             {
@@ -123,27 +120,35 @@ export function ConsoleFindBar({
             },
           ]}
         />
-        <span className={clsx(styles.findCount, (invalid || none) && styles.findCountNone)} aria-live="polite">
-          {counter}
-        </span>
+        <div className={styles.findActions}>
+          <span className={clsx(styles.findCount, (invalid || none) && styles.findCountNone)} aria-live="polite">
+            {counter}
+          </span>
+          <IconButton
+            icon="arrow-up"
+            title="Previous Occurrence"
+            shortcut={formatBinding("Shift+Enter")}
+            size="small"
+            disabled={count === 0}
+            onClick={onPrevious}
+          />
+          <IconButton
+            icon="arrow-down"
+            title="Next Occurrence"
+            shortcut="↵"
+            size="small"
+            disabled={count === 0}
+            onClick={onNext}
+          />
+        </div>
         <IconButton
-          icon="arrow-up"
-          title="Previous Occurrence"
-          shortcut={formatBinding("Shift+Enter")}
+          className={styles.findClose}
+          icon="close"
+          title="Close"
+          shortcut="⎋"
           size="small"
-          disabled={count === 0}
-          onClick={onPrevious}
+          onClick={onClose}
         />
-        <IconButton
-          icon="arrow-down"
-          title="Next Occurrence"
-          shortcut="↵"
-          size="small"
-          disabled={count === 0}
-          onClick={onNext}
-        />
-        <span className={styles.findSpacer} />
-        <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={onClose} />
       </div>
     </div>
   );

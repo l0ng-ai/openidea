@@ -1,5 +1,13 @@
 import { expect, it, vi } from "vitest";
-import { executeAction, executeActionOrThrow, registerAction, useRunningActions } from "./actions";
+import {
+  executeAction,
+  executeActionOrThrow,
+  getAction,
+  registerAction,
+  registerActions,
+  useActions,
+  useRunningActions,
+} from "./actions";
 
 const running = (id: string) => useRunningActions.getState().running.get(id) ?? 0;
 
@@ -89,5 +97,31 @@ it("checks argument-specific enablement before dispatch", async () => {
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ arg: "/tracked.txt" }));
   } finally {
     dispose();
+  }
+});
+
+it("registers and disposes a batch with one store update each while keeping later overrides", () => {
+  const updates: number[] = [];
+  const off = useActions.subscribe((s) => updates.push(s.actions.size));
+  const dispose = registerActions([
+    { id: "test.batch.one", title: "One", run: () => {} },
+    { id: "test.batch.two", title: "Two", run: () => {} },
+    { id: "test.batch.three", title: "Three", run: () => {} },
+  ]);
+  const disposeOverride = registerAction({ id: "test.batch.two", title: "Overridden", run: () => {} });
+  try {
+    expect(updates).toHaveLength(2);
+    expect(getAction("test.batch.one")?.title).toBe("One");
+    expect(getAction("test.batch.two")?.title).toBe("Overridden");
+    expect(getAction("test.batch.three")?.title).toBe("Three");
+    dispose();
+    // Disposing the 3-action batch fires only 1 store update and leaves the overridden id intact.
+    expect(updates).toHaveLength(3);
+    expect(getAction("test.batch.one")).toBeUndefined();
+    expect(getAction("test.batch.two")?.title).toBe("Overridden");
+    expect(getAction("test.batch.three")).toBeUndefined();
+  } finally {
+    disposeOverride();
+    off();
   }
 });

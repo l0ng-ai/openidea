@@ -1,5 +1,6 @@
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
-import { registerActions } from "@/platform/actions";
+import { executeAction, getAction, isActionEnabled, registerActions } from "@/platform/actions";
+import { getContext } from "@/platform/context";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
@@ -29,6 +30,7 @@ vi.mock("@tanstack/react-virtual", () => ({
     getTotalSize: () => count * 24,
     getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ index, start: index * 24, key: index })),
     scrollToIndex: () => {},
+    measure: () => {},
   }),
 }));
 
@@ -40,6 +42,27 @@ describe("database grid", () => {
       .reverse()
       .forEach((dispose) => dispose());
   });
+  it("keeps result columns with identical SQL aliases distinct", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(
+        <Grid
+          columns={[
+            { name: "alias", type: "integer" },
+            { name: "alias", type: "text" },
+          ]}
+          rowCount={1}
+          value={(_, column) => (column === 0 ? "1" : "one")}
+        />,
+      );
+      expect(screen.getAllByRole("columnheader", { name: "alias" })).toHaveLength(2);
+      expect(screen.getAllByRole("gridcell").map((cell) => cell.textContent)).toEqual(["1", "one"]);
+      expect(errors.mock.calls.some(([message]) => String(message).includes("same key"))).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it("drags a rectangle and copies it as TSV through the Windows dispatcher", () => {
     useKeymap.setState({ preset: "intellij-windows", overrides: {} });
     const globalCopy = vi.fn();
@@ -68,6 +91,48 @@ describe("database grid", () => {
     fireEvent.keyDown(screen.getByRole("grid"), { key: "c", code: "KeyC", ctrlKey: true });
     expect(writeText).toHaveBeenCalledWith("one\ttwo\nthree\tfour");
     expect(globalCopy).not.toHaveBeenCalled();
+  });
+  it("adds and removes separate rows with ⌘-click on their numbers, and drags across numbers for a range", () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const data = [
+      ["1", "a"],
+      ["2", "b"],
+      ["3", "c"],
+      ["4", "d"],
+    ];
+    render(
+      <Grid
+        columns={[
+          { name: "id", type: "INTEGER" },
+          { name: "name", type: "TEXT" },
+        ]}
+        rowCount={4}
+        value={(r, c) => data[r]![c]!}
+      />,
+    );
+    const number = (r: number) => screen.getAllByRole("row")[r + 1]!.firstElementChild!;
+    const copied = () => {
+      writeText.mockClear();
+      fireEvent.keyDown(screen.getByRole("grid"), { key: "c", metaKey: true });
+      return writeText.mock.calls[0]?.[0];
+    };
+    fireEvent.mouseDown(number(0), { button: 0 });
+    fireEvent.mouseUp(window);
+    fireEvent.mouseDown(number(2), { button: 0, metaKey: true });
+    fireEvent.mouseUp(window);
+    fireEvent.mouseDown(number(3), { button: 0, metaKey: true });
+    fireEvent.mouseUp(window);
+    expect(copied()).toBe("1\ta\n3\tc\n4\td");
+    // ⌘-click on a selected row takes it out again.
+    fireEvent.mouseDown(number(2), { button: 0, metaKey: true });
+    fireEvent.mouseUp(window);
+    expect(copied()).toBe("1\ta\n4\td");
+    // A plain click starts over; dragging down the numbers selects whole rows.
+    fireEvent.mouseDown(number(1), { button: 0 });
+    fireEvent.mouseEnter(number(2));
+    fireEvent.mouseUp(window);
+    expect(copied()).toBe("2\tb\n3\tc");
   });
   it("copies the selection in the extractor's format for plain ⌘C", () => {
     const writeText = vi.fn();
@@ -698,6 +763,33 @@ describe("Set NULL / Set DEFAULT (issue #2331, phase 1)", () => {
     { name: "b", type: "int", nullable: false },
     { name: "c", type: "text", default: "now()" },
   ];
+
+  it("keeps the invoking grid available to a popup using its captured focus context", async () => {
+    const onEdit = vi.fn();
+    render(
+      <>
+        <Grid columns={[columns[0]!]} rowCount={1} value={() => "old"} editable onEdit={onEdit} />
+        <div role="dialog">
+          <input aria-label="Action query" />
+        </div>
+        <button>Outside the grid</button>
+      </>,
+    );
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    const source = { ...getContext() };
+    const action = getAction("db.setCellNull")!;
+    expect(isActionEnabled(action, source)).toBe(true);
+
+    act(() => screen.getByLabelText("Action query").focus());
+    expect(isActionEnabled(action)).toBe(false);
+    expect(isActionEnabled(action, source)).toBe(true);
+    act(() => screen.getByRole("grid").focus());
+    await act(() => executeAction(action.id));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, null);
+
+    act(() => screen.getByRole("button", { name: "Outside the grid" }).focus());
+    expect(isActionEnabled(action, source)).toBe(false);
+  });
 
   it("sets NULL on the selection from the context menu and ⌘⌫, skipping NOT NULL columns", async () => {
     const onEdit = vi.fn();

@@ -26,7 +26,15 @@ vi.mock("@/workbench/contributions", async (orig) => ({
   ...(await orig<typeof import("@/workbench/contributions")>()),
   maybeEditorService: () => ({ openFile: vi.fn(async () => {}) }),
 }));
-import { adoptSession, handleDebugEvent, selectThread, resumeExecution, useDebug, useExecutionPoint } from "../state";
+import {
+  adoptSession,
+  handleDebugEvent,
+  isThreadSuspended,
+  selectThread,
+  resumeExecution,
+  useDebug,
+  useExecutionPoint,
+} from "../state";
 
 const path = "/proj/MsMemberUtils.java";
 const frame = (line: number, id = 100): StackFrame => ({
@@ -50,7 +58,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useDebug.setState({ sessions: {}, active: null, stopSeq: 0 });
+  useDebug.setState({ sessions: {}, active: null, stopSeq: 0, variablesEpoch: 0 });
   useExecutionPoint.setState({ path: null, line: 0, top: true, values: {} });
   adoptSession(1, { adapter: "java-debug" });
   ipc.debugStackTrace.mockResolvedValue(ipc.ok([frame(6840)]));
@@ -72,6 +80,17 @@ describe("execution point state", () => {
     await settle();
     expect(useDebug.getState().sessions[1]?.selectedThread).toBe(1);
     expect(useExecutionPoint.getState()).toMatchObject({ path, line: 9 });
+  });
+
+  it("counts stops per session", async () => {
+    adoptSession(2, { adapter: "java-debug" });
+    expect(useDebug.getState().sessions[1]!.stops).toBe(0);
+    stopped();
+    stopped();
+    handleDebugEvent(2, { kind: "stopped", threadId: 1, allThreadsStopped: false, reason: "step", description: null });
+    expect(useDebug.getState().sessions[1]!.stops).toBe(2);
+    expect(useDebug.getState().sessions[2]!.stops).toBe(1);
+    await settle();
   });
 
   it("clears the old point while a new stack or selected thread is loading", async () => {
@@ -113,6 +132,56 @@ describe("execution point state", () => {
     expect(useDebug.getState().sessions[1]?.status).toBe("paused");
     handleDebugEvent(1, { kind: "continued", threadId: 5, allThreadsContinued: false });
     expect(useExecutionPoint.getState().path).toBeNull();
+  });
+
+  it("moves to another thread still stopped by its own breakpoint when the current one continues", async () => {
+    stopped(5);
+    await settle();
+    ipc.debugStackTrace.mockResolvedValueOnce(ipc.ok([frame(9, 200)]));
+    stopped(1);
+    await settle();
+    ipc.debugStackTrace.mockResolvedValueOnce(ipc.ok([frame(6841)]));
+    await resumeExecution(1, async () => {
+      handleDebugEvent(1, { kind: "continued", threadId: 1, allThreadsContinued: false });
+    });
+    await settle();
+    expect(useDebug.getState().sessions[1]).toMatchObject({
+      status: "paused",
+      stoppedThread: 5,
+      selectedThread: 5,
+      stopReason: "step",
+      selectedFrame: 100,
+    });
+    expect(useExecutionPoint.getState()).toMatchObject({ path, line: 6841 });
+    expect(isThreadSuspended(useDebug.getState().sessions[1]!, 5)).toBe(true);
+    expect(isThreadSuspended(useDebug.getState().sessions[1]!, 1)).toBe(false);
+    handleDebugEvent(1, { kind: "continued", threadId: 5, allThreadsContinued: false });
+    expect(useDebug.getState().sessions[1]?.status).toBe("running");
+  });
+
+  it("forgets a stopped thread that continues while another one is shown", async () => {
+    stopped(5);
+    await settle();
+    stopped(1);
+    await settle();
+    handleDebugEvent(1, { kind: "continued", threadId: 5, allThreadsContinued: false });
+    expect(useDebug.getState().sessions[1]).toMatchObject({ status: "paused", stoppedThread: 1 });
+    handleDebugEvent(1, { kind: "continued", threadId: 1, allThreadsContinued: false });
+    expect(useDebug.getState().sessions[1]?.status).toBe("running");
+  });
+
+  it.each([
+    ["every thread continues", false, true],
+    ["the stop suspended every thread", true, false],
+  ])("runs when %s", async (_, allStopped, allContinued) => {
+    stopped(5, allStopped);
+    await settle();
+    stopped(1, allStopped);
+    await settle();
+    expect(isThreadSuspended(useDebug.getState().sessions[1]!, 5)).toBe(true);
+    handleDebugEvent(1, { kind: "continued", threadId: 1, allThreadsContinued: allContinued });
+    expect(useDebug.getState().sessions[1]?.status).toBe("running");
+    expect(isThreadSuspended(useDebug.getState().sessions[1]!, 5)).toBe(false);
   });
 
   it.each(["continued", "terminated"] as const)("clears the execution point on %s", async (kind) => {
@@ -198,5 +267,56 @@ describe("execution point state", () => {
     old.resolve(ipc.ok([{ name: "count", value: "40", typeName: null, variablesReference: 0, evaluateName: "count" }]));
     await settle();
     expect(useExecutionPoint.getState().values.count).toBe("42");
+  });
+});
+
+describe("invalidated variables", () => {
+  const library = (value: string): Variable => ({
+    name: "library",
+    value,
+    typeName: null,
+    variablesReference: 0,
+    evaluateName: "library",
+  });
+
+  it("reloads the selected frame's variables without counting a stop", async () => {
+    ipc.debugVariables.mockResolvedValue(ipc.ok([library("Collecting data…")]));
+    stopped();
+    await settle();
+    expect(useExecutionPoint.getState().values.library).toBe("Collecting data…");
+    const before = useDebug.getState();
+    ipc.debugVariables.mockResolvedValue(ipc.ok([library("Library@1")]));
+    handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] });
+    await settle();
+    expect(useDebug.getState().variablesEpoch).toBe(1);
+    expect(useExecutionPoint.getState().values.library).toBe("Library@1");
+    // A stop would mark every value changed and make the Memory view ask again.
+    expect(useDebug.getState().stopSeq).toBe(before.stopSeq);
+    expect(useDebug.getState().sessions[1]!.stops).toBe(before.sessions[1]!.stops);
+  });
+
+  it.each([[[]], [["all"]], [["variables", "threads"]]])("reloads for areas %j", async (areas) => {
+    stopped();
+    await settle();
+    ipc.debugScopes.mockClear();
+    handleDebugEvent(1, { kind: "invalidated", areas });
+    await settle();
+    expect(useDebug.getState().variablesEpoch).toBe(1);
+    expect(ipc.debugScopes).toHaveBeenCalledOnce();
+  });
+
+  it("changes nothing while the program runs or for other areas", async () => {
+    handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] });
+    stopped();
+    await settle();
+    ipc.debugScopes.mockClear();
+    handleDebugEvent(1, { kind: "invalidated", areas: ["threads", "stacks"] });
+    await settle();
+    expect(ipc.debugScopes).not.toHaveBeenCalled();
+    await resumeExecution(1, async () => {});
+    handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] });
+    await settle();
+    expect(ipc.debugScopes).not.toHaveBeenCalled();
+    expect(useDebug.getState().variablesEpoch).toBe(0);
   });
 });

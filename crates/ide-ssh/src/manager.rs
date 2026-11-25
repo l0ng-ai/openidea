@@ -105,6 +105,16 @@ impl SshManager {
         }
     }
 
+    /// A password entered this session or saved under `key` (not an SSH configuration's).
+    pub fn password(&self, key: &str) -> Option<String> {
+        self.entered.lock().get(key).cloned().or_else(|| self.saved.get(key))
+    }
+
+    /// Whether a password is saved under `key` (not one only entered this session).
+    pub fn password_saved(&self, key: &str) -> bool {
+        self.saved.get(key).is_some()
+    }
+
     /// The known password / passphrase of configuration `id`.
     pub fn secret(&self, config: &SshConfiguration) -> Option<String> {
         if let Some(s) = self.entered.lock().get(&config.id) {
@@ -178,6 +188,17 @@ impl SshManager {
 
     pub fn disconnect(&self, id: &str) {
         self.sessions.lock().remove(id);
+    }
+
+    /// Closes the shared session of configuration `id` when nothing but this manager holds it
+    /// right now (no terminal, tunnel or transfer in progress); returns whether it did.
+    pub fn release(&self, id: &str) -> bool {
+        let mut sessions = self.sessions.lock();
+        let unused = sessions.get(id).is_some_and(|s| Arc::strong_count(s) == 1);
+        if unused {
+            sessions.remove(id);
+        }
+        unused
     }
 
     /// Ids of the configurations with an open session.

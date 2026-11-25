@@ -13,6 +13,40 @@ test("opens a file from the project tree and types into it", async ({ workbench:
   await expect(editor.locator(".cm-content")).not.toContainText("// typed by e2e");
 });
 
+test("indentation shows the language and current width with room for the keyboard choices", async ({
+  workbench: page,
+}) => {
+  await openFromTree(page, "build.gradle.kts");
+  await page.evaluate(async () => {
+    const path = "/src/editor/core/controller.ts";
+    const { editorController, useEditorStatus } = await import(/* @vite-ignore */ path);
+    const active = useEditorStatus.getState().status!.path;
+    editorController().manager.get(active)!.setIndent({ tabSize: 3, insertSpaces: true });
+  });
+
+  const status = page.getByRole("button", { name: "3 spaces", exact: true });
+  await status.click();
+  const menu = page.getByRole("menu", { name: "Indentation", exact: true });
+  const title = page.getByText("Kotlin Code Style", { exact: true });
+  await expect(title).toBeVisible();
+  await page.setViewportSize({ width: 500, height: 520 });
+  await expect(title).toBeInViewport({ ratio: 1 });
+  await expect(title).toHaveCSS("font-size", "13px");
+  await expect(title).toHaveCSS("font-weight", "600");
+  await expect(menu.getByRole("menuitemcheckbox", { name: "3 spaces", checked: true })).toBeInViewport({ ratio: 1 });
+  await expect(menu.getByRole("menuitem", { name: "Configure Indents…" })).toBeInViewport({ ratio: 1 });
+
+  await expect(menu.getByRole("menuitemcheckbox", { name: "2 spaces", checked: false })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeHidden();
+  const four = page.getByRole("button", { name: "4 spaces", exact: true });
+  await expect(four).toBeVisible();
+  await four.click();
+  await expect(menu.getByRole("menuitemcheckbox", { name: "4 spaces", checked: true })).toBeVisible();
+});
+
 test("Delete edits text after the focused Project tree is remounted", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");
@@ -53,6 +87,39 @@ test("⌘F opens the find bar and highlights matches; Escape returns to the edit
   await page.keyboard.press("Escape");
   await expect(find).toBeHidden();
   await expect(editor.locator(".cm-content")).toBeFocused();
+});
+
+test("Go to Line keeps its label beside the selected coordinates and returns focus to the editor", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const content = editor.locator(".cm-content");
+  await content.focus();
+  await page.keyboard.press("Meta+l");
+  const dialog = page.getByRole("dialog", { name: "Go to Line:Column", exact: true });
+  const coordinates = dialog.getByRole("textbox", { name: "Line and column", exact: true });
+  await expect(coordinates).toBeFocused();
+  await expect(coordinates).toHaveValue("1:1");
+  expect(await coordinates.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd])).toEqual([0, 3]);
+
+  await page.setViewportSize({ width: 360, height: 500 });
+  const label = dialog.getByText("Line and column", { exact: true });
+  await expect(label).toBeVisible();
+  const text = (await label.boundingBox())!;
+  const field = (await coordinates.boundingBox())!;
+  expect(text.x + text.width).toBeLessThan(field.x);
+  expect(Math.abs(text.y + text.height / 2 - field.y - field.height / 2)).toBeLessThan(2);
+  await expect(coordinates).toHaveCSS("font-size", await label.evaluate((el) => getComputedStyle(el).fontSize));
+
+  await coordinates.fill("0:2");
+  await expect(coordinates).toHaveAttribute("aria-invalid", "true");
+  await expect(dialog.getByRole("button", { name: "OK", exact: true })).toBeDisabled();
+  await coordinates.fill("6:8");
+  await coordinates.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(content).toBeFocused();
+  await page.setViewportSize({ width: 960, height: 600 });
+  await expect(page.getByRole("button", { name: "6:8", exact: true })).toBeVisible();
 });
 
 test("each file keeps its own find bar, query and caret", async ({ workbench: page }) => {
@@ -133,6 +200,64 @@ test("breadcrumbs follow the caret into the symbol under it", async ({ workbench
   await expect(bar).toBeHidden();
 });
 
+test("narrow breadcrumb bars keep the current symbol visible and allow opening earlier crumbs", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const path = page.getByRole("navigation", { name: "Breadcrumbs", exact: true });
+  const code = page.getByRole("navigation", { name: "Code breadcrumbs" });
+  await editor.locator(".cm-line", { hasText: "service.find(status" }).click();
+  await expect(code).toContainText("list()");
+
+  await page.evaluate(async () => {
+    const documentModule = "/src/editor/core/model/document.ts";
+    const editorModule = "/src/editor/core/controller.ts";
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const [{ useOutline }, { useEditorStatus }, { useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+      import(/* @vite-ignore */ documentModule),
+      import(/* @vite-ignore */ editorModule),
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({ settings: { ...base, editor: { ...base.editor, fontSize: 17 } } });
+    const activePath = useEditorStatus.getState().status.path;
+    let outline = useOutline.getState()[activePath];
+    for (const name of ["OrderProcessingStrategies", "SalesApplicationRouting", "CheckoutWorkspaceConfiguration"]) {
+      outline = [{ ...outline[0], name, detail: null, children: outline }];
+    }
+    useOutline.setState({ [activePath]: outline });
+  });
+
+  await page.setViewportSize({ width: 620, height: 620 });
+  const fullyInBar = (bar: typeof path, label: string) =>
+    bar.evaluate((nav, text) => {
+      const crumb = [...nav.querySelectorAll("button")].find((button) => button.textContent === text);
+      if (!crumb) return false;
+      const { left, right } = nav.getBoundingClientRect();
+      const rect = crumb.getBoundingClientRect();
+      return rect.width > 0 && rect.left >= left - 1 && rect.right <= right + 1;
+    }, label);
+  for (const bar of [path, code]) {
+    await expect.poll(() => fullyInBar(bar, "list()")).toBe(true);
+    await expect(bar.locator('[aria-current="location"]')).toHaveText("list()");
+  }
+  await expect(code.locator('[aria-current="location"]')).toHaveCSS("font-size", "17px");
+  await code.hover();
+  await page.mouse.wheel(0, -1200);
+  await expect.poll(() => fullyInBar(code, "CheckoutWorkspaceConfiguration")).toBe(true);
+
+  const current = path.locator('[aria-current="location"]');
+  await current.focus();
+  await current.press("Home");
+  const project = path.getByRole("button", { name: /acme-api/ }).first();
+  await expect(project).toBeFocused();
+  await expect.poll(() => fullyInBar(path, "acme-api")).toBe(true);
+  await project.press("ArrowDown");
+  await expect(page.getByRole("listbox", { name: "acme-api" })).toBeVisible();
+});
+
 /** What the in-memory backend has saved for `path`. */
 const saved = (page: Page, path: string) =>
   page.evaluate(async (path) => {
@@ -174,12 +299,125 @@ test("⌘R replaces every match in the file", async ({ workbench: page }) => {
   await expect(editor.locator(".cm-line", { hasText: "OrderDto" })).toHaveCount(2);
 });
 
-test("Markdown preview highlights ⌘F matches and selected word occurrences", async ({ workbench: page }) => {
+test("the inline find and replace fields share a column that grows with the editor", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1120, height: 760 });
+  const editor = await openFromTree(page, "build.gradle.kts");
+  await editor.locator(".cm-content").click();
+  await page.keyboard.press("Meta+r");
+  const bar = page.getByRole("search", { name: "Replace in file" });
+  const find = bar.getByRole("textbox", { name: "Find" });
+  const replace = bar.getByRole("textbox", { name: "Replace" });
+  const more = bar.getByRole("button", { name: "More", exact: true });
+  const close = bar.getByRole("button", { name: "Close", exact: true });
+  await find.fill("OrderDto");
+  await replace.fill("OrderView");
+
+  const column = () =>
+    bar.evaluate((panel) => {
+      const [find, replace] = panel.querySelectorAll("textarea");
+      const findField = find!.parentElement!.getBoundingClientRect();
+      const replaceField = replace!.parentElement!.getBoundingClientRect();
+      return {
+        left: findField.left,
+        width: findField.width,
+        replaceLeft: replaceField.left,
+        replaceWidth: replaceField.width,
+      };
+    });
+  const initial = await column();
+  expect(initial.left).toBeCloseTo(initial.replaceLeft);
+  expect(initial.width).toBeCloseTo(initial.replaceWidth);
+
+  for (const width of [1120, 1480]) {
+    await page.setViewportSize({ width, height: 760 });
+    const [moreBox, closeBox] = await Promise.all([more.boundingBox(), close.boundingBox()]);
+    expect(closeBox!.y).toBeCloseTo(moreBox!.y);
+    expect(closeBox!.x).toBeGreaterThanOrEqual(moreBox!.x + moreBox!.width);
+    expect(closeBox!.x).toBeLessThanOrEqual(moreBox!.x + moreBox!.width + 4);
+  }
+  await expect.poll(async () => (await column()).width).toBeGreaterThan(initial.width + 60);
+  await close.click();
+  await expect(bar).toBeHidden();
+});
+
+test("the inline find and replace controls stay inside a narrow editor pane", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1120, height: 760 });
+  const editor = await openFromTree(page, "build.gradle.kts");
+  await editor.locator(".cm-content").click();
+  await page.keyboard.press("Meta+r");
+  const bar = page.getByRole("search", { name: "Replace in file" });
+  const find = bar.getByRole("textbox", { name: "Find" });
+  const replace = bar.getByRole("textbox", { name: "Replace" });
+  const next = bar.getByRole("button", { name: /Next Occurrence/ });
+  await find.fill("OrderDto");
+  await find.press("Tab");
+  await expect(replace).toBeFocused();
+  await replace.fill("OrderView");
+  const navigationIsBelowFind = async () => {
+    const [input, button] = await Promise.all([find.boundingBox(), next.boundingBox()]);
+    return !!input && !!button && button.y >= input.y + input.height;
+  };
+  const controlsFit = () =>
+    bar.evaluate((panel) => {
+      const bounds = panel.getBoundingClientRect();
+      return [...panel.querySelectorAll("button, textarea")].every((element) => {
+        const control = element.getBoundingClientRect();
+        return control.width > 0 && control.left >= bounds.left && control.right <= bounds.right;
+      });
+    });
+  await expect.poll(navigationIsBelowFind).toBe(false);
+
+  await page.setViewportSize({ width: 590, height: 760 });
+  await expect.poll(controlsFit).toBe(true);
+  await expect.poll(navigationIsBelowFind).toBe(true);
+  await page.setViewportSize({ width: 495, height: 760 });
+  await expect.poll(controlsFit).toBe(true);
+  const close = bar.getByRole("button", { name: "Close", exact: true });
+  const more = bar.getByRole("button", { name: "More", exact: true });
+  const [moreBox, closeBox] = await Promise.all([more.boundingBox(), close.boundingBox()]);
+  expect(closeBox!.y).toBeCloseTo(moreBox!.y);
+  expect(closeBox!.x).toBeGreaterThanOrEqual(moreBox!.x + moreBox!.width);
+  expect(closeBox!.x).toBeLessThanOrEqual(moreBox!.x + moreBox!.width + 4);
+  await expect(find).toHaveValue("OrderDto");
+  await expect(replace).toHaveValue("OrderView");
+  await next.click();
+  await expect(bar.getByText(/^[12]\/2$/)).toBeVisible();
+  await bar.getByRole("button", { name: "Replace All" }).click();
+  await expect(editor.locator(".cm-line", { hasText: "OrderView" })).toHaveCount(2);
+  await close.click();
+  await expect(bar).toBeHidden();
+});
+
+test("Markdown preview highlights ⌘F matches, selected words and scales diagrams with font zoom", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" width="320" height="96"><!-- svg-source:excalidraw --><rect width="320" height="96"/></svg>';
+    const url = `data:image/svg+xml;base64,${btoa(svg)}`;
+    const routeModule = "/src/platform/tauriCore.ts";
+    const { setInvokeRoute } = await import(/* @vite-ignore */ routeModule);
+    setInvokeRoute((cmd: string) => (cmd === "fs_read_image" ? Promise.resolve(url) : null));
+  });
+
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");
   await content.click();
   await page.keyboard.press("Meta+a");
-  await page.keyboard.insertText("# Order Service\n\nManage **Order** items and `Order` status.\n");
+  await page.keyboard.insertText(
+    [
+      "# Order Service",
+      "",
+      "Manage **Order** items and `Order` status.",
+      "",
+      "```mermaid",
+      "flowchart LR",
+      "  A --> B",
+      "```",
+      "",
+      "![Diagram](./arch.excalidraw.svg)",
+    ].join("\n"),
+  );
 
   const preview = page.getByRole("document", { name: "Markdown preview" });
   await expect(preview).toContainText("Manage Order items");
@@ -209,4 +447,707 @@ test("Markdown preview highlights ⌘F matches and selected word occurrences", a
       })),
     )
     .toEqual({ current: ["Order"], other: ["Order", "Order"] });
+
+  const mermaidSvg = preview.locator(".mermaid-output svg");
+  const excalidrawImg = preview.locator('img[alt="Diagram"]');
+  await expect(mermaidSvg).toBeVisible();
+  await expect(excalidrawImg).toHaveAttribute("src", /^data:image\/svg\+xml/);
+
+  const widths = async () => ({
+    mermaid: (await mermaidSvg.boundingBox())!.width,
+    excalidraw: (await excalidrawImg.boundingBox())!.width,
+  });
+  const base = await widths();
+  expect(base.mermaid).toBeGreaterThan(50);
+  expect(base.excalidraw).toBeCloseTo(320, 0);
+
+  const runAction = (id: string, times = 1) =>
+    page.evaluate(
+      async ({ id, times }) => {
+        const actionsModule = "/src/platform/actions.ts";
+        const { executeAction } = await import(/* @vite-ignore */ actionsModule);
+        for (let i = 0; i < times; i++) await executeAction(id);
+      },
+      { id, times },
+    );
+
+  await runAction("editor.increaseFontSize", 4);
+  const zoomedIn = await widths();
+  expect(zoomedIn.mermaid / base.mermaid).toBeCloseTo(17 / 13, 2);
+  expect(zoomedIn.excalidraw / base.excalidraw).toBeCloseTo(17 / 13, 2);
+
+  await runAction("editor.decreaseFontSize", 6);
+  const zoomedOut = await widths();
+  expect(zoomedOut.mermaid / base.mermaid).toBeCloseTo(11 / 13, 2);
+  expect(zoomedOut.excalidraw / base.excalidraw).toBeCloseTo(11 / 13, 2);
+
+  await runAction("editor.resetFontSize");
+  const reset = await widths();
+  expect(reset.mermaid).toBeCloseTo(base.mermaid, 1);
+  expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
+});
+
+for (const mode of ["Preview Only", "Editor and Preview"]) {
+  test(`Markdown ${mode} reveals a cross-file heading on first open`, async ({ workbench: page }) => {
+    const path = "/dev/acme-api/linked-heading.md";
+    const heading = "5.2 状态机";
+    const spacer = Array.from({ length: 80 }, (_, i) => `Paragraph ${i}.`).join("\n\n");
+    const target = `# Destination\n\n${spacer}\n\n## ${heading}\n\n${spacer}`;
+    const editor = await openFromTree(page, "README.md");
+    await page.evaluate(
+      async ({ path, target }) => {
+        const backendModule = "/src/editor/core/backend.ts";
+        const routeModule = "/src/platform/tauriCore.ts";
+        const { docBackend } = await import(/* @vite-ignore */ backendModule);
+        const { setInvokeRoute } = await import(/* @vite-ignore */ routeModule);
+        docBackend().files.set(path, target);
+        setInvokeRoute((cmd: string, args?: Record<string, unknown>) =>
+          cmd === "fs_read_text" && args?.path === path ? Promise.resolve(target) : null,
+        );
+      },
+      { path, target },
+    );
+
+    await editor.locator(".cm-content").focus();
+    await page.keyboard.press("Meta+a");
+    await page.keyboard.insertText("[Linked heading](linked-heading.md#52-%E7%8A%B6%E6%80%81%E6%9C%BA)");
+    if (mode === "Preview Only") await page.getByRole("button", { name: mode, exact: true }).click();
+
+    const destinationTab = page.getByRole("tab", { name: "linked-heading.md", exact: true });
+    const preview = page.getByRole("document", { name: "Markdown preview" });
+    await expect(destinationTab).toHaveCount(0);
+    await preview.getByRole("link", { name: "Linked heading" }).click();
+    await expect(destinationTab).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("button", { name: mode, exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(preview.getByRole("heading", { name: heading })).toBeInViewport({ ratio: 1 });
+    if (mode === "Editor and Preview") {
+      await expect(editor.locator(".cm-line", { hasText: heading })).toBeInViewport({ ratio: 1 });
+    }
+  });
+}
+
+test("Markdown preview keeps following find and edits after scrolling the source", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const spacer = Array.from({ length: 90 }, (_, i) => `Paragraph ${i}.`).join("\n\n");
+  await page.keyboard.insertText(`First needle\n\n${spacer}\n\nSecond needle\n\n${spacer}\n\nThird needle`);
+  await content.press("Control+Home");
+  await expect(preview).toContainText("Third needle");
+  await editor.locator(".cm-scroller").evaluate((el) => (el.scrollTop = 2000));
+  await expect.poll(() => preview.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  await preview.focus();
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("textbox", { name: "Find" });
+  await find.fill("needle");
+  const visibleMatch = () =>
+    preview.evaluate((el) => {
+      const match = (CSS.highlights.get("markdown-find-current") as unknown as Set<Range> | undefined)
+        ?.values()
+        .next().value;
+      if (!match) return null;
+      const box = el.getBoundingClientRect();
+      const range = match.getBoundingClientRect();
+      return range.top >= box.top && range.bottom <= box.bottom ? match.startContainer.textContent : null;
+    });
+  await expect.poll(visibleMatch).toBe("First needle");
+  await find.press("ArrowDown");
+  await expect.poll(visibleMatch).toBe("Second needle");
+  await find.press("ArrowDown");
+  await expect.poll(visibleMatch).toBe("Third needle");
+  await find.press("ArrowUp");
+  await expect.poll(visibleMatch).toBe("Second needle");
+
+  await find.press("Escape");
+  await content.focus();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("- **$`v_0`$ Flat wings.**");
+  await expect(preview.locator("strong [data-math-svg] > svg")).toHaveAttribute("aria-label", "v_0");
+});
+
+test("drags the Markdown preview scrollbar through a document after it grows", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("Short");
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await expect(preview).toHaveText("Short");
+  await content.press("Meta+a");
+  await page.keyboard.insertText(Array.from({ length: 180 }, (_, i) => `Paragraph ${i}`).join("\n\n"));
+  await expect(preview).toContainText("Paragraph 179");
+  const thumb = preview.locator("..").locator(":scope > [aria-hidden=true] > div");
+  await expect(thumb).toBeVisible();
+  const thumbBox = (await thumb.boundingBox())!;
+  const box = (await preview.boundingBox())!;
+  const x = thumbBox.x + thumbBox.width / 2;
+  await page.mouse.move(x, thumbBox.y + thumbBox.height / 2);
+  await page.mouse.down();
+  try {
+    for (const end of [true, false, true]) {
+      await page.mouse.move(x, box.y + (end ? box.height - 1 : 0), { steps: 3 });
+      expect(await preview.evaluate((el) => Math.round(el.scrollTop))).toBe(
+        end ? await preview.evaluate((el) => el.scrollHeight - el.clientHeight) : 0,
+      );
+    }
+  } finally {
+    await page.mouse.up();
+  }
+});
+
+test("keeps diagrams and their math labels when editing or switching Markdown tabs", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const source = [
+    "An equation $x^2$ and [a link](#title).",
+    '```mermaid\nflowchart LR\n  A["$$x^2$$"] --> B\n```',
+    "Text to edit",
+  ].join("\n\n");
+  await page.keyboard.insertText(source);
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const diagram = preview.locator(".mermaid-output .pan-zoom-content > svg");
+  await expect(diagram.locator("foreignObject math")).toHaveCount(1);
+  const original = await diagram.elementHandle();
+  const formula = preview.locator("[data-math-svg] > svg").first();
+  const equation = await formula.elementHandle();
+  await content.press("Control+End");
+  await page.keyboard.insertText(" here");
+  await expect(preview).toContainText("Text to edit here");
+  expect(await diagram.evaluate((svg, old) => svg === old, original)).toBe(true);
+  expect(await formula.evaluate((svg, old) => svg === old, equation)).toBe(true);
+
+  await content.press("Meta+a");
+  await page.keyboard.insertText(source.replace("$$x^2$$", () => "$$z^3$$"));
+  await expect(diagram.locator("foreignObject math mi")).toHaveText("z");
+  const edited = await diagram.elementHandle();
+  expect(await diagram.evaluate((svg, old) => svg === old, original)).toBe(false);
+  expect(await formula.evaluate((svg, old) => svg === old, equation)).toBe(true);
+
+  const other = await openFromTree(page, "settings.gradle.kts");
+  await expect(other.locator(".cm-content")).toBeVisible();
+  await expect(preview).toHaveCount(0);
+  expect(await edited!.evaluate((svg) => svg.isConnected)).toBe(true);
+  const hiddenLink = page.locator('a[href="#title"]');
+  await expect(hiddenLink).toBeHidden();
+  await hiddenLink.evaluate((el) => el.focus());
+  await expect(hiddenLink).not.toBeFocused();
+  await page.getByRole("tab", { name: /README/ }).click();
+  await expect(preview).toBeVisible();
+  expect(await diagram.evaluate((svg, old) => svg === old, edited)).toBe(true);
+  await expect(diagram.locator("foreignObject math")).toHaveCount(1);
+});
+
+test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const diagram = ["```mermaid", "flowchart LR", "  A --> B", "```"].join("\n");
+  await page.keyboard.insertText(
+    [
+      diagram,
+      "",
+      '<div align="left" style="width: 960px; max-width: 100%; margin-left: 0; text-align: left;">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="right">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="left"><div align="center">',
+      "",
+      diagram,
+      "",
+      "</div></div>",
+    ].join("\n"),
+  );
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const outputs = preview.locator("[data-mermaid-state='ok'] .mermaid-output");
+  await expect(outputs).toHaveCount(4);
+
+  const offsets = await outputs.evaluateAll((els) =>
+    els.map((out) => {
+      const outRect = out.getBoundingClientRect();
+      const svgRect = out.querySelector("svg")!.getBoundingClientRect();
+      return {
+        leftGap: svgRect.left - outRect.left,
+        rightGap: outRect.right - svgRect.right,
+      };
+    }),
+  );
+
+  expect(offsets[0]!.leftGap).toBeGreaterThan(20);
+  expect(Math.abs(offsets[0]!.leftGap - offsets[0]!.rightGap)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offsets[1]!.leftGap)).toBeLessThanOrEqual(1);
+  expect(offsets[1]!.rightGap).toBeGreaterThan(40);
+  expect(offsets[2]!.leftGap).toBeGreaterThan(40);
+  expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
+  expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
+});
+
+test("the bookmark gutter takes no width until the file has a bookmark", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const column = editor.locator(".cm-gutter.cm-openidea-bookmarks");
+  const width = () => column.evaluate((el) => el.getBoundingClientRect().width);
+  await expect.poll(width).toBe(0);
+
+  await editor.locator(".cm-content").click();
+  await page.keyboard.press("F3");
+  await expect(column.locator(".cm-openidea-bookmark")).toBeVisible();
+  await expect.poll(width).toBeGreaterThan(0);
+});
+
+test("single-line selection stays on its own row when font glyphs exceed line height", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, fontSize: 20, lineHeight: 22 } },
+    });
+    await document.fonts.ready;
+  });
+
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("- Build desktop bundle\n- Run integration suite\n---");
+
+  const targetLine = editor.locator(".cm-line", { hasText: "Run integration suite" });
+  await expect(targetLine).toBeVisible();
+  await targetLine.dblclick();
+
+  const sel = editor.locator(".cm-openidea-selectionLayer .cm-selectionBackground");
+  await expect(sel).toHaveCount(1);
+  const [lineBox, selBox] = await Promise.all([targetLine.boundingBox(), sel.boundingBox()]);
+  expect(lineBox).not.toBeNull();
+  expect(selBox).not.toBeNull();
+  expect(Math.abs(selBox!.y - lineBox!.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(selBox!.height - lineBox!.height)).toBeLessThanOrEqual(1);
+});
+
+test("find and occurrence highlights stay on their own row when font glyphs exceed line height", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, fontSize: 18, lineHeight: 18 } },
+    });
+    const root = document.documentElement.style;
+    root.setProperty("--bg-editor", "#ffffff");
+    root.setProperty("--bg-current-line", "#ffffff");
+    root.setProperty("--bg-identifier-under-caret", "#cc0000");
+    root.setProperty("--bg-search-match", "#cc00cc");
+    root.setProperty("--bg-search-match-current", "#cc8800");
+    await document.fonts.ready;
+  });
+
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText(
+    ["            ", "description", "            ", "description", "            "].join("\n"),
+  );
+
+  const lines = editor.locator(".cm-line");
+  await expect(lines).toHaveCount(5);
+
+  const blankRowsAreUnpainted = async () => {
+    const [editorBox, b0, b2, b4, matchBox] = await Promise.all([
+      editor.boundingBox(),
+      lines.nth(0).boundingBox(),
+      lines.nth(2).boundingBox(),
+      lines.nth(4).boundingBox(),
+      lines.nth(1).boundingBox(),
+    ]);
+    const png = await editor.screenshot();
+    const base64 = png.toString("base64");
+    return page.evaluate(
+      async ({ base64, editorBox, blanks, probeX }) => {
+        const img = new Image();
+        img.src = `data:image/png;base64,${base64}`;
+        await img.decode();
+        const scale = img.width / editorBox!.width;
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(img, 0, 0);
+        const x = Math.round((probeX - editorBox!.x) * scale);
+        for (const row of blanks) {
+          const yStart = Math.ceil((row!.y - editorBox!.y) * scale) + 1;
+          const yEnd = Math.floor((row!.y + row!.height - editorBox!.y) * scale) - 1;
+          for (let y = yStart; y <= yEnd; y++) {
+            const [r, g, b] = ctx.getImageData(x, y, 1, 1).data;
+            if (r !== 255 || g !== 255 || b !== 255) return { ok: false, x, y, rgb: [r, g, b] };
+          }
+        }
+        return { ok: true };
+      },
+      { base64, editorBox, blanks: [b0, b2, b4], probeX: matchBox!.x + 30 },
+    );
+  };
+
+  // Selection match on line 4 (`description`) when line 2 is selected.
+  await lines.nth(1).dblclick();
+  await expect(editor.locator(".cm-selectionMatch")).toHaveCount(1);
+  expect(await blankRowsAreUnpainted()).toEqual({ ok: true });
+
+  // Find matches: line 2 is `.cm-openidea-findMatch-current` (with 1px frame), line 4 is `.cm-openidea-findMatch`.
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("textbox", { name: "Find" });
+  await expect(find).toBeFocused();
+  await find.fill("description");
+  await expect(editor.locator(".cm-openidea-findMatch-current")).toHaveCount(1);
+  await expect(editor.locator(".cm-openidea-findMatch")).toHaveCount(2);
+  expect(await blankRowsAreUnpainted()).toEqual({ ok: true });
+});
+
+test("vertical tabs leave a narrow editor group most of its width", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 900, height: 600 });
+  await openFromTree(page, "settings.gradle.kts");
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const controllerModule = "/src/editor/core/controller.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }, { editorController, useTabs }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+      import(/* @vite-ignore */ controllerModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, tabs: { ...base.editor.tabs, placement: "left" } } },
+    });
+    editorController().split(useTabs.getState().activePane, "row");
+  });
+
+  const panes = page.locator("[data-pane-id]");
+  await expect(panes).toHaveCount(2);
+  for (const pane of await panes.all()) {
+    const strip = pane.getByRole("tablist", { name: "Editor tabs" });
+    await expect(strip).toHaveAttribute("aria-orientation", "vertical");
+    const [paneBox, contentBox] = await Promise.all([pane.boundingBox(), pane.getByRole("tabpanel").boundingBox()]);
+    expect(contentBox!.width).toBeGreaterThanOrEqual(paneBox!.width * 0.6 - 1);
+  }
+});
+
+test("dragging the vertical tab column's edge resizes it and the width is kept", async ({ workbench: page }) => {
+  await openFromTree(page, "settings.gradle.kts");
+  const placeLeft = () =>
+    page.evaluate(async () => {
+      const projectModule = "/src/platform/project.ts";
+      const schemaModule = "/src/features/settings/model/schema.ts";
+      const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+        import(/* @vite-ignore */ projectModule),
+        import(/* @vite-ignore */ schemaModule),
+      ]);
+      const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+      useProject.setState({
+        settings: { ...base, editor: { ...base.editor, tabs: { ...base.editor.tabs, placement: "left" } } },
+      });
+    });
+  await placeLeft();
+
+  const strip = page.getByRole("tablist", { name: "Editor tabs" });
+  const handle = page.getByRole("separator", { name: "Resize editor tabs" });
+  const before = (await strip.boundingBox())!.width;
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 60, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => (await strip.boundingBox())!.width).toBeLessThan(before - 40);
+  const narrowed = (await strip.boundingBox())!.width;
+
+  // The next session starts with the dragged width.
+  await page.reload();
+  await openFromTree(page, "settings.gradle.kts");
+  await placeLeft();
+  await expect.poll(async () => Math.round((await strip.boundingBox())!.width)).toBe(Math.round(narrowed));
+});
+
+test("dragging the source scrollbar across the Markdown divider keeps the arrow and pane width", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("Top\n\n" + "Long paragraph.\n\n".repeat(180));
+  const divider = page.getByRole("separator", { name: "Resize Markdown preview" });
+  const scroller = editor.locator(".cm-scroller");
+  await expect(page.getByRole("document", { name: "Markdown preview" })).toContainText("Long paragraph.");
+  const thumb = editor.locator(".cm-openidea-overviewThumb");
+  const box = (await thumb.boundingBox())!;
+  const boundary = (await divider.boundingBox())!;
+  const x = boundary.x + boundary.width / 2;
+  const y = box.y + box.height / 2;
+  const dy = y > boundary.y + boundary.height / 2 ? -80 : 80;
+  const before = await scroller.evaluate((el) => el.scrollTop);
+  await page.mouse.move(box.x + box.width - 1, y);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(x, y + dy, { steps: 5 });
+    expect(
+      await page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor, { x, y: y + dy }),
+    ).toBe("default");
+    await page.mouse.move(x + 20, y + dy, { steps: 3 });
+    expect((await divider.boundingBox())!.x).toBe(boundary.x);
+    expect(Math.sign((await scroller.evaluate((el) => el.scrollTop)) - before)).toBe(Math.sign(dy));
+  } finally {
+    await page.mouse.up();
+  }
+  await page.mouse.move(x, y + dy);
+  await expect(divider).toHaveCSS("cursor", "col-resize");
+  await page.mouse.down();
+  await page.mouse.move(x + 50, y + dy, { steps: 4 });
+  await page.mouse.up();
+  expect((await divider.boundingBox())!.x).toBeGreaterThan(boundary.x + 40);
+});
+
+test("visible Markdown reflows during a tool window drag and distant blocks catch up on release", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText(
+    Array.from({ length: 180 }, (_, i) => `Paragraph ${i} with enough text to wrap across the pane.`).join("\n\n"),
+  );
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await expect(preview).toContainText("Paragraph 179");
+  await content.press("Control+Home");
+  const near = preview.locator("[data-line][data-in-viewport]").first();
+  const far = preview.locator("[data-line]:not([data-in-viewport])").last();
+  const width = (el: typeof near) => el.evaluate((n) => n.getBoundingClientRect().width);
+  await expect(near).toBeAttached();
+  await expect(far).toBeAttached();
+  const before = await width(far);
+  await expect.poll(() => width(near)).toBe(before);
+  const handle = page.getByRole("separator", { name: "Resize left tool window", exact: true });
+  const box = (await handle.boundingBox())!;
+  const x = box.x + box.width / 2,
+    y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(x + 160, y, { steps: 4 });
+    await expect.poll(() => width(near)).toBeLessThan(before - 30);
+    expect(await preview.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+    expect(await width(far)).toBe(before);
+  } finally {
+    await page.mouse.up();
+  }
+  await expect.poll(() => width(far)).toBe(await width(near));
+});
+
+test("dragging the Markdown split divider resizes and reflows editor and preview content, keeps the ratio, and resets on double-click", async ({
+  workbench: page,
+}) => {
+  const applyDefaultSettings = () =>
+    page.evaluate(async () => {
+      const projectModule = "/src/platform/project.ts";
+      const schemaModule = "/src/features/settings/model/schema.ts";
+      const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+        import(/* @vite-ignore */ projectModule),
+        import(/* @vite-ignore */ schemaModule),
+      ]);
+      useProject.setState({ settings: useProject.getState().settings ?? DEFAULT_SETTINGS });
+    });
+  await applyDefaultSettings();
+
+  const editor = await openFromTree(page, "README.md");
+  await page.evaluate(async () => {
+    const controllerModule = "/src/editor/core/controller.ts";
+    const { editorController } = await import(/* @vite-ignore */ controllerModule);
+    const view = editorController().activeSlot!.view!;
+    view.dispatch({
+      changes: {
+        from: 0,
+        to: view.state.doc.length,
+        insert: [
+          "# Order Service",
+          "",
+          "Event-driven order processing API with idempotent checkout, inventory reservation, webhook delivery, and automatic retry policies.",
+          "",
+          "| Method | Path | Description |",
+          "| :--- | :--- | :--- |",
+          "| `POST` | `/v1/orders/{id}/cancel` | Release reserved stock and emit cancellation event |",
+        ].join("\n"),
+      },
+      selection: { anchor: 0 },
+    });
+  });
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const handle = page.getByRole("separator", { name: "Resize Markdown preview" });
+  const cmContent = editor.locator(".cm-content");
+  await expect(preview).toContainText("Event-driven order processing API");
+  await expect(handle).toBeVisible();
+  await expect(cmContent).toHaveClass(/cm-lineWrapping/);
+
+  const initialEditor = (await editor.boundingBox())!.width;
+  const initialPreview = (await preview.boundingBox())!.width;
+  const initialContent = (await cmContent.boundingBox())!.width;
+  expect(Math.abs(initialEditor - initialPreview)).toBeLessThanOrEqual(2);
+  expect(initialContent).toBeLessThanOrEqual(initialEditor);
+
+  const box = (await handle.boundingBox())!;
+  const startX = box.x + box.width / 2;
+  const midY = box.y + box.height / 2;
+  const cursorAt = (x: number) =>
+    page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor, { x, y: midY });
+
+  await page.mouse.move(startX + 40, midY);
+  await page.mouse.move(startX, midY);
+  expect(await cursorAt(startX)).toMatch(/resize$/);
+  await page.mouse.move(startX - 5, midY);
+  expect(await cursorAt(startX - 5)).not.toMatch(/resize$/);
+
+  await page.mouse.move(startX, midY);
+  await page.mouse.down();
+  await page.mouse.move(startX - 180, midY, { steps: 6 });
+  await expect(handle).toHaveAttribute("data-separator", "active");
+  const sourceX = (await editor.boundingBox())!.x + 60;
+  expect(await cursorAt(sourceX)).toMatch(/resize$/);
+  await page.mouse.up();
+  await page.mouse.move(sourceX, midY);
+  expect(await cursorAt(sourceX)).toBe("text");
+
+  await expect.poll(async () => (await editor.boundingBox())!.width).toBeLessThan(initialEditor - 150);
+  await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview + 150);
+  const narrowedEditor = (await editor.boundingBox())!.width;
+  // Soft-wrapped editor content shrinks with the narrowed editor pane rather than overflowing.
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeLessThanOrEqual(narrowedEditor);
+
+  // Dragging right narrows the preview: table and prose stay within the preview content width.
+  const narrowedHandleBox = (await handle.boundingBox())!;
+  await page.mouse.move(narrowedHandleBox.x + narrowedHandleBox.width / 2, midY);
+  await page.mouse.down();
+  await page.mouse.move(narrowedHandleBox.x + narrowedHandleBox.width / 2 + 380, midY, { steps: 8 });
+  await page.mouse.up();
+  const widenedEditor = (await editor.boundingBox())!.width;
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeGreaterThan(initialContent + 140);
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeLessThanOrEqual(widenedEditor);
+  expect(await preview.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+
+  // Editor Only and Preview Only both expand content to full pane width.
+  await page.getByRole("button", { name: "Editor Only" }).click();
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeGreaterThan(widenedEditor);
+  await page.getByRole("button", { name: "Preview Only" }).click();
+  await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview * 1.8);
+  await page.getByRole("button", { name: "Editor and Preview" }).click();
+  await expect.poll(async () => Math.round((await editor.boundingBox())!.width)).toBe(Math.round(widenedEditor));
+
+  // Persists across reload.
+  await page.reload();
+  await applyDefaultSettings();
+  const reopenedEditor = await openFromTree(page, "README.md");
+  await expect
+    .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
+    .toBe(Math.round(widenedEditor));
+
+  // Double-clicking the divider resets the split back to 50/50.
+  const reopenedHandle = page.getByRole("separator", { name: "Resize Markdown preview" });
+  await reopenedHandle.dblclick();
+  await expect
+    .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
+    .toBe(Math.round(initialEditor));
+});
+
+test("Markdown Preview only leaves the Project view clickable", async ({ workbench: page }) => {
+  await openFromTree(page, "README.md");
+  await page.getByRole("button", { name: "Preview Only" }).click();
+  await expect(page.getByRole("document", { name: "Markdown preview" })).toBeVisible();
+
+  const row = page.getByRole("treeitem", { name: "build.gradle.kts", exact: true });
+  // A hidden editor panel used to leave an implicit resize region over everything left of the preview,
+  // which swallowed the click.
+  await row.click();
+  await expect(row).toHaveAttribute("aria-selected", "true");
+});
+
+test("drags selected text to move it, and copies it with Option held", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const content = editor.locator(".cm-content");
+  /** Sets the document and selection, and returns the client point of each requested position. */
+  const prepare = (doc: string, from: number, to: number, points: number[]) =>
+    content.evaluate(
+      async (el, { doc, from, to, points }) => {
+        const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+        const { EditorView } = await import(/* @vite-ignore */ viewModule);
+        const view = EditorView.findFromDOM(el as HTMLElement)!;
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: doc },
+          selection: { anchor: from, head: to },
+        });
+        view.focus();
+        return points.map((p) => {
+          const c = view.coordsAtPos(p, 1)!;
+          return { x: c.left + 1, y: (c.top + c.bottom) / 2 };
+        });
+      },
+      { doc, from, to, points },
+    );
+  const docText = () =>
+    content.evaluate(async (el) => {
+      const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+      const { EditorView } = await import(/* @vite-ignore */ viewModule);
+      return EditorView.findFromDOM(el as HTMLElement)!.state.doc.toString();
+    });
+  const drag = async (from: { x: number; y: number }, to: { x: number; y: number }, copy = false) => {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 10, from.y + 2, { steps: 2 });
+    // Option is pressed once the drag is under way: Option+press itself starts a column selection.
+    if (copy) await page.keyboard.down("Alt");
+    await page.mouse.move(to.x, to.y, { steps: 4 });
+    await expect(editor.locator(".cm-openidea-textDropLayer .cm-dropCursor")).toHaveCount(1);
+    await page.mouse.up();
+    if (copy) await page.keyboard.up("Alt");
+  };
+
+  // "alpha" (0–5) dragged to the start of the third line.
+  let [grab, target] = await prepare("alpha beta\ngamma\ndelta", 0, 5, [2, 17]);
+  await drag(grab!, target!);
+  await expect.poll(docText).toBe(" beta\ngamma\nalphadelta");
+  await expect(editor.locator(".cm-openidea-textDropLayer .cm-dropCursor")).toHaveCount(0);
+
+  // With Option held, the text is copied instead.
+  [grab, target] = await prepare("alpha beta\ngamma\ndelta", 0, 5, [2, 17]);
+  await drag(grab!, target!, true);
+  await expect.poll(docText).toBe("alpha beta\ngamma\nalphadelta");
+
+  // A click on the selection without dragging places the caret there.
+  [grab] = await prepare("alpha beta", 0, 5, [2]);
+  await page.mouse.click(grab!.x, grab!.y);
+  await expect.poll(docText).toBe("alpha beta");
+  await page.keyboard.type("X");
+  await expect.poll(docText).toBe("alXpha beta");
 });

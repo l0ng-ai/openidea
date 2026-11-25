@@ -1,3 +1,5 @@
+mod common;
+
 use ide_core::{CancellationToken, Diagnostic, Pos, Range, Severity};
 use ide_host::plugins::{HostWorkspace, PluginWorkspace};
 use ide_host::{Host, HostConfig};
@@ -16,15 +18,8 @@ impl Harness {
         let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
         std::fs::create_dir_all(&root).unwrap();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
             local_data_dir: tmp.path().join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..common::host_config(tmp.path())
         }));
         host.open_project("main", &root).unwrap();
         host.open_project("second", &root).unwrap();
@@ -139,7 +134,7 @@ async fn text_search_uses_overlay_excludes_utf16_and_limits() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn problems_share_project_reports_and_keep_sources_separate() {
+async fn problems_come_from_the_host_snapshot_whatever_window_published_them() {
     let f = Harness::new();
     let path = f.root.join("a.txt");
     std::fs::write(&path, "text").unwrap();
@@ -153,21 +148,30 @@ async fn problems_share_project_reports_and_keep_sources_separate() {
         deprecated: false,
         server: None,
     };
-    f.host.mcp_reports.report_problems(
-        "second",
-        true,
-        vec![ide_host::mcp::FileProblems {
+    // Producers publish per (file, producer) through the event sink, like the
+    // language servers and the spelling check do.
+    let publish = |host: &Host, source: &str, items: Vec<Diagnostic>| {
+        host.project("main").unwrap().sink.emit(ide_core::IdeEvent::Diagnostics {
             path: path.clone().into(),
-            items: vec![diagnostic("lsp"), diagnostic("plugin")],
-        }],
-    );
+            source: source.into(),
+            items,
+        });
+    };
+    publish(&f.host, "rust-analyzer", vec![diagnostic("lsp")]);
+    publish(&f.host, "build", vec![diagnostic("plugin")]);
+    // A file outside the window's project is visible too: annotations follow the file.
+    let outside = f.host.diagnostics.problems().len();
     let workspace = f.workspace();
     let files = workspace.problems("main", Some(&path)).unwrap();
     assert_eq!(files.len(), 2);
     assert!(files.iter().all(|f| f.diagnostics.len() == 1));
     assert!(workspace.problems("main", Some(&f.root.join("other.txt"))).unwrap().is_empty());
-    f.host.mcp_reports.forget_window("second");
-    assert!(workspace.problems("main", None).unwrap().is_empty());
+    assert_eq!(outside, 2);
+    // A full replacement per producer clears only that producer.
+    publish(&f.host, "rust-analyzer", vec![]);
+    let files = workspace.problems("main", None).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].source, "build");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -309,15 +313,16 @@ async fn plugin_run_targets_register_prompt_route_revalidate_and_withdraw() {
         allow_parallel: false,
         extras: Default::default(),
     };
-    let run = ide_host::ops::run::start(
+    let run = ide_host::ops::run::run_start(
         &f.host,
         "main",
         config.clone(),
-        Arc::new(move |chunk| {
+        ide_host::ops::Channel::new(move |chunk| {
             if let ide_run::OutputChunk::Stdout { text } = chunk {
                 captured.lock().push_str(&text);
             }
         }),
+        None,
     )
     .await
     .unwrap();
@@ -333,10 +338,18 @@ async fn plugin_run_targets_register_prompt_route_revalidate_and_withdraw() {
     assert!(!f.root.join("forbidden").exists());
     // Pin checks are repeated at launch, not only at registration.
     std::fs::write(&tool, "#!/bin/sh\nexit 99\n").unwrap();
-    assert!(ide_host::ops::run::start(&f.host, "main", config.clone(), Arc::new(|_| {})).await.is_err());
+    assert!(
+        ide_host::ops::run::run_start(&f.host, "main", config.clone(), ide_host::ops::Channel::new(|_| {}), None)
+            .await
+            .is_err()
+    );
     plugins.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(plugins.run_targets(&f.root).is_empty());
-    assert!(ide_host::ops::run::start(&f.host, "main", config, Arc::new(|_| {})).await.is_err());
+    assert!(
+        ide_host::ops::run::run_start(&f.host, "main", config, ide_host::ops::Channel::new(|_| {}), None)
+            .await
+            .is_err()
+    );
     plugins.choose_program("execution", "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
     plugins.run_command("execution", "target", None, invocation()).unwrap();
     f.host.set_project_trust(&f.root, false, false).await.unwrap();
@@ -453,7 +466,8 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
             f._tmp.path().join("plugins"),
             Arc::new(|_: Option<&str>, _| {}),
             Limits {
-                timeout: Duration::from_millis(200),
+                // Room for a reclaimed instance to start again on a slow runner.
+                timeout: Duration::from_millis(750),
                 idle_timeout: Some(Duration::from_millis(20)),
                 restart_backoff: Duration::ZERO,
                 ..Default::default()
@@ -499,7 +513,9 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
         let mut config = config.clone();
         config.is_test = is_test;
         config.extras.target = Some(selected.clone());
-        let error = ide_host::ops::run::start(&f.host, "main", config, Arc::new(|_| {})).await.unwrap_err();
+        let error = ide_host::ops::run::run_start(&f.host, "main", config, ide_host::ops::Channel::new(|_| {}), None)
+            .await
+            .unwrap_err();
         assert!(error.message.contains("Plugin execution tests: Project runtime is stopped"), "{error}");
         assert!(f.host.processes.list().is_empty());
         assert!(!f.root.join("spawned").exists());
@@ -515,7 +531,7 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
     cfg.extras.target = Some(id("timeout"));
     let worker = f.host.clone();
     let pending = tokio::spawn(async move {
-        ide_host::ops::run::start_request(&worker, "main", cfg, Arc::new(|_| {}), Some(request)).await
+        ide_host::ops::run::run_start(&worker, "main", cfg, ide_host::ops::Channel::new(|_| {}), Some(request)).await
     });
     tokio::time::sleep(Duration::from_millis(30)).await;
     f.host.cancel_request(request);

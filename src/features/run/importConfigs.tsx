@@ -5,7 +5,7 @@
  * how many came in and why the others were left out.
  */
 import type { ReactNode } from "react";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { call, commands, type RunConfig, type RunImport, type RunImportSource, type SkipReason } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { loadConfigs, useRun } from "./store";
@@ -46,6 +46,8 @@ export function skipReasonText(reason: SkipReason): string {
   switch (reason.kind) {
     case "nameTaken":
       return tx("A configuration with this name already exists");
+    case "sameAs":
+      return tx`Same as the existing configuration '${reason.existing}'`;
     case "unsupportedType":
       return tx`Type '${reason.type}' has no equivalent here`;
     case "unsupportedRequest":
@@ -87,7 +89,7 @@ export function importSummary(result: RunImport): {
         ? tx`Imported ${n} run configuration from ${file}`
         : tx`Imported ${n} run configurations from ${file}`;
   const notes = [
-    ...result.skipped.map((s) => tx`Skipped '${s.name || tx("Unnamed")}': ${skipReasonText(s.reason)}`),
+    ...result.skipped.map((s) => tx`Skipped '${s.name || txPart("Unnamed")}': ${skipReasonText(s.reason)}`),
     ...result.imported
       .filter((c) => c.ignored.length)
       .map((c) => tx`Left out of '${c.config.name}': ${c.ignored.join(", ")}`),
@@ -99,7 +101,14 @@ export function importSummary(result: RunImport): {
   return {
     level: n ? "info" : "warning",
     title,
-    ...(lines.length ? { body: lines.map((line, i) => <div key={i}>{line}</div>) } : {}),
+    ...(lines.length
+      ? {
+          body: lines.map((line, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- messages can repeat; position is the identity
+            <div key={i}>{line}</div>
+          )),
+        }
+      : {}),
     // The reasons stay readable until dismissed.
     sticky: notes.length > 0,
   };

@@ -1,23 +1,29 @@
 /** Registers the built-in pages as ordinary settings-page contributions and indexes their labels. */
 import { commands } from "@/platform/ipc";
-import { UPDATES_PAGE } from "./updates";
 import { onLanguageListChanged } from "@/platform/languageList";
-import { registerSettingsPage, type SettingsPageContribution } from "@/workbench/contributions";
+import { registerSettingsPage, registerSettingsPages, type SettingsPageContribution } from "@/workbench/contributions";
 import { BEHAVIOR_PAGES } from "./behavior";
 import { BUILTIN_PAGES as CORE_PAGES } from "./builtins";
 import { DEPLOYMENT_PAGES } from "./deployment";
 import { EDITOR_PAGES, codeStyleLanguagePages } from "./editor";
 import { EXECUTION_PAGES } from "./execution";
 import { LANGUAGE_PAGES } from "./languages";
+import { preloadBuiltinPage } from "./lazyPage";
 import { OptionsPage } from "./OptionsPage";
+import { REMOTE_DEVELOPMENT_PAGE } from "./remoteDevelopment";
 import { RUN_TARGET_PAGES } from "./runTargets";
-import { specLabels, type PageSpec } from "./spec";
+import { SCOPE_PAGES } from "./scopes";
+import { flattenOptions, specLabels, type PageSpec } from "./spec";
 import { SSH_PAGES } from "./ssh";
 import { TOOLS_PAGES } from "./tools";
+import { UPDATES_PAGE } from "./updates";
 import { VCS_PAGES } from "./vcs";
+
+export { preloadBuiltinPage };
 
 const BUILTIN_PAGES = [
   ...BEHAVIOR_PAGES,
+  ...SCOPE_PAGES,
   UPDATES_PAGE,
   ...CORE_PAGES,
   ...EDITOR_PAGES,
@@ -27,6 +33,7 @@ const BUILTIN_PAGES = [
   ...RUN_TARGET_PAGES,
   ...TOOLS_PAGES,
   ...SSH_PAGES,
+  REMOTE_DEVELOPMENT_PAGE,
   ...LANGUAGE_PAGES,
 ];
 const specs = new Map<string, PageSpec>(BUILTIN_PAGES.map((p) => [p.id, p]));
@@ -49,7 +56,7 @@ export function pageLabels(id: string): string[] {
 /** Labels of a built-in page's options (each is a Search Everywhere entry). */
 export function optionLabels(id: string): string[] {
   const spec = specs.get(id);
-  return (spec?.sections ?? []).flatMap((s) => s.options.map((o) => o.label)).filter((l) => !!l.trim());
+  return (spec?.sections ?? []).flatMap((s) => flattenOptions(s.options).map((o) => o.label)).filter((l) => !!l.trim());
 }
 
 function toContribution(spec: PageSpec): SettingsPageContribution {
@@ -57,30 +64,33 @@ function toContribution(spec: PageSpec): SettingsPageContribution {
   return { id: spec.id, title: spec.title, group: spec.group, order: spec.order, keywords: spec.keywords, component };
 }
 
-export function registerBuiltinPages(): () => void {
-  const disposers = BUILTIN_PAGES.filter((spec) => spec !== UPDATES_PAGE).map((spec) =>
-    registerSettingsPage(toContribution(spec)),
+export function registerBuiltinPages(opts: { updates?: boolean } = {}): () => void {
+  const disposeBuiltins = registerSettingsPages(
+    BUILTIN_PAGES.filter((spec) => spec !== UPDATES_PAGE).map(toContribution),
   );
   // Code Style › <Language> pages come from the backend's language list, which plugins change.
   let live = true;
-  void commands
-    .appBuildInfo()
-    .then((info) => {
-      if (live && info.updates) disposers.push(registerSettingsPage(toContribution(UPDATES_PAGE)));
-    })
-    .catch(() => {});
-  let languagePages: (() => void)[] = [];
+  let disposeUpdates = () => {};
+  if (opts.updates !== undefined) {
+    if (opts.updates) disposeUpdates = registerSettingsPage(toContribution(UPDATES_PAGE));
+  } else {
+    void commands
+      .appBuildInfo()
+      .then((info) => {
+        if (live && info.updates) disposeUpdates = registerSettingsPage(toContribution(UPDATES_PAGE));
+      })
+      .catch(() => {});
+  }
+  let disposeLanguagePages = () => {};
   let generation = 0;
   const loadLanguagePages = () => {
     const mine = ++generation;
     void codeStyleLanguagePages()
       .then((pages) => {
         if (!live || mine !== generation) return;
-        languagePages.forEach((d) => d());
-        languagePages = pages.map((spec) => {
-          specs.set(spec.id, spec);
-          return registerSettingsPage(toContribution(spec));
-        });
+        disposeLanguagePages();
+        for (const spec of pages) specs.set(spec.id, spec);
+        disposeLanguagePages = registerSettingsPages(pages.map(toContribution));
       })
       .catch(() => {});
   };
@@ -89,7 +99,8 @@ export function registerBuiltinPages(): () => void {
   return () => {
     live = false;
     unsubscribe();
-    languagePages.forEach((d) => d());
-    disposers.forEach((d) => d());
+    disposeLanguagePages();
+    disposeUpdates();
+    disposeBuiltins();
   };
 }

@@ -51,7 +51,7 @@ struct Response {
     #[serde(default)]
     incomplete: bool,
 }
-fn syntax() -> &'static Syntax {
+pub(crate) fn syntax() -> &'static Syntax {
     static SYNTAX: OnceLock<Syntax> = OnceLock::new();
     SYNTAX.get_or_init(Syntax::new)
 }

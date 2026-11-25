@@ -4,16 +4,34 @@ import { cargoParser } from "./cargo";
 import { goParser } from "./go";
 import { jsParser } from "./js";
 import { jvmParser } from "./jvm";
+import { withMochaHook } from "./mocha";
+import { withNodeTestReporter } from "./nodeTest";
+import { recordsParser } from "./records";
 import { phpunitParser, withTeamcity } from "./phpunit";
+import { playwrightParser } from "./playwright";
 import { pytestParser } from "./pytest";
 import { rubyParser } from "./ruby";
 import { unittestParser } from "./unittest";
+import { zigParser } from "./zig";
 import type { TestEvent, TestOutputParser } from "./types";
+import { appendScriptArgs } from "../scriptArgs";
 
 export type { TestEvent, TestOutputParser, TestStatus } from "./types";
-export { parseDuration } from "./types";
-export { TestResults, nodeStatus, type TestNode } from "./results";
-export { cargoParser, goParser, jsParser, jvmParser, phpunitParser, pytestParser, rubyParser, unittestParser };
+export { formatDuration, parseDuration } from "./types";
+export { TestResults, nodeDuration, nodeOutput, nodeStatus, type TestNode } from "./results";
+export {
+  cargoParser,
+  goParser,
+  jsParser,
+  jvmParser,
+  phpunitParser,
+  playwrightParser,
+  pytestParser,
+  recordsParser,
+  rubyParser,
+  unittestParser,
+  zigParser,
+};
 
 /** Runs several parsers side by side (unknown tool: e.g. `make test`). */
 export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
@@ -23,10 +41,31 @@ export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
   };
 }
 
-export type Framework = "cargo" | "js" | "pytest" | "unittest" | "phpunit" | "go" | "jvm" | "ruby" | "dotnet" | "auto";
+export type Framework =
+  | "cargo"
+  | "js"
+  | "playwright"
+  | "node-test"
+  | "mocha"
+  | "pytest"
+  | "unittest"
+  | "phpunit"
+  | "go"
+  | "jvm"
+  | "ruby"
+  | "dotnet"
+  | "zig"
+  | "auto";
 
-export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args">): Framework {
+type FrameworkConfig = Pick<RunConfig, "kind" | "command" | "args"> & Partial<Pick<RunConfig, "testRunner" | "env">>;
+
+export function frameworkFor(config: FrameworkConfig): Framework {
   const cmd = [config.command, ...config.args].join(" ");
+  // A `package.json` script names its runner only in package.json: detection records it.
+  if (config.testRunner === "playwright" || /\bplaywright\s+test\b/.test(cmd)) return "playwright";
+  if (config.testRunner === "node-test" || /(^|[\s/\\])(node|tsx)(\.exe)?(\s+-\S*)*\s+--test(\s|$)/.test(cmd))
+    return "node-test";
+  if (config.testRunner === "mocha" || /(^|[\s/\\])_?mocha(\.cmd|\.js)?(\s|$)/.test(cmd)) return "mocha";
   switch (config.kind) {
     case "dotnet-test":
       return "dotnet";
@@ -54,6 +93,8 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
     case "rake":
     case "rspec":
       return "ruby";
+    case "zig":
+      return "zig";
   }
   if (/(^|[/\\])dotnet(?:\.exe)?$/i.test(config.command) && config.args[0] === "test") return "dotnet";
   if (/\bcargo\b/.test(cmd)) return "cargo";
@@ -87,7 +128,14 @@ function rubyVerbose<T extends Pick<RunConfig, "kind" | "command" | "args">>(con
  * reach the tree. `-v` (Django: `-v 2`) adds one line per test (live, like
  * IDEA's runner) unless the user chose a verbosity already.
  */
-export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" | "args">>(config: T): T {
+export function withTestReporting<T extends FrameworkConfig>(config: T): T {
+  if (frameworkFor(config) === "node-test") return { ...config, env: withNodeTestReporter(config.env ?? {}) };
+  if (frameworkFor(config) === "mocha") return { ...config, env: withMochaHook(config.env ?? {}) };
+  if (frameworkFor(config) === "playwright") {
+    // The list reporter prints a line per test; a project's own (`html`, `dot` on CI) may print none.
+    const chosen = config.args.some((a) => a === "--reporter" || a.startsWith("--reporter="));
+    return chosen ? config : { ...config, args: appendScriptArgs(config.command, config.args, ["--reporter=list"]) };
+  }
   if (frameworkFor(config) === "go" && config.args[0] === "test") {
     const boundary = config.args.findIndex((a) => a === "-args" || a === "--");
     const tool = boundary < 0 ? config.args : config.args.slice(0, boundary);
@@ -98,6 +146,10 @@ export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" |
     };
   }
   if (frameworkFor(config) === "phpunit") return { ...config, args: withTeamcity(config.args) };
+  if (frameworkFor(config) === "zig" && config.args[0] === "build") {
+    // `zig build test` prints nothing for a passing (or cached) run; the summary reports the counts.
+    return config.args.includes("--summary") ? config : { ...config, args: [...config.args, "--summary", "all"] };
+  }
   if (frameworkFor(config) === "unittest") {
     const chosen = config.args.some((a) => /^(-v|--verbosity)(=?\d)?$/.test(a));
     return chosen ? config : { ...config, args: [...config.args, "-v", "2"] };
@@ -111,7 +163,7 @@ export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" |
   return chosen ? config : { ...config, args: [...config.args, "-v"] };
 }
 
-export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "args">): TestOutputParser {
+export function createTestParser(config: FrameworkConfig): TestOutputParser {
   switch (frameworkFor(config)) {
     case "dotnet":
       return { feed: () => [] };
@@ -119,6 +171,11 @@ export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "a
       return cargoParser();
     case "js":
       return jsParser();
+    case "playwright":
+      return playwrightParser();
+    case "node-test":
+    case "mocha":
+      return recordsParser();
     case "pytest":
       return pytestParser();
     case "unittest":
@@ -131,6 +188,8 @@ export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "a
       return jvmParser();
     case "ruby":
       return rubyParser();
+    case "zig":
+      return zigParser();
     default:
       return combinedParser([
         cargoParser(),

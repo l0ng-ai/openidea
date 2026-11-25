@@ -14,7 +14,7 @@
  */
 import { syntaxTree } from "@codemirror/language";
 import type { Tree } from "@lezer/common";
-import { Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
+import { Prec, StateEffect, StateField, type EditorState, type Extension, type Text } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { commands, type SemanticTokens } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -30,6 +30,8 @@ import "./kotlin";
 import "./python";
 import "./php";
 import "./go";
+import "./java";
+import "./javascript";
 
 const semanticBackoff = featureBackoff();
 
@@ -45,6 +47,8 @@ const TYPE_CLASS: Record<string, string> = {
   typeParameter: "typeParameter",
   function: "function",
   method: "function",
+  // typescript-language-server passes tsserver's name for methods through (vtsls renames it `method`).
+  member: "function",
   macro: "macro",
   decorator: "annotation",
   // jdtls extensions
@@ -61,7 +65,8 @@ const TYPE_CLASS: Record<string, string> = {
   lifetime: "annotation",
   selfParameter: "self",
   clsParameter: "self",
-  selfKeyword: "self",
+  // rust-analyzer's `self`: RustRover colours the self parameter as a keyword.
+  selfKeyword: "keyword",
 };
 
 const MODIFIER_CLASS: Record<string, string> = {
@@ -155,7 +160,7 @@ export function semanticRanges(
     if (base && base !== "variable") classes.push(`cm-sem-${base}`);
     // `hasOwn`: servers send names like `constructor` (jdtls) that `Object.prototype` also has.
     for (const n of names) if (Object.hasOwn(MODIFIER_CLASS, n)) classes.push(`cm-sem-${MODIFIER_CLASS[n]}`);
-    semantics?.tokenClasses?.({ type, modifiers: names, kind, classes });
+    semantics?.tokenClasses?.({ type, modifiers: names, kind, classes, marksLocals, from, doc, tree });
     const local =
       rainbow &&
       !constant &&
@@ -205,6 +210,11 @@ const semanticField = StateField.define<DecorationSet>({
     return tr.docChanged ? deco.map(tr.changes) : deco;
   },
 });
+
+/** The semantic marks the editor shows over the syntax colours (empty without semantic highlighting). */
+export function semanticHighlights(state: EditorState): DecorationSet {
+  return state.field(semanticField, false) ?? Decoration.none;
+}
 
 const semanticPlugin = ViewPlugin.fromClass(
   class {

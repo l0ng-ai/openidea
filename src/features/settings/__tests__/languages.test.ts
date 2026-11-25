@@ -25,6 +25,7 @@ describe("languages settings", () => {
       python: { interpreter: " /usr/bin/python3 ", activateVirtualenv: "yes" },
       node: { packageManager: "pip" },
       rust: { checkCommand: "clippy", checkOnSave: false },
+      go: { gofumpt: true },
       typescript: { version: "" },
       java: {
         jdtlsVmArgs: " -Xmx2g ",
@@ -39,10 +40,13 @@ describe("languages settings", () => {
         },
       },
     });
-    expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
+    expect(v.python).toEqual({ ...DEFAULT_LANGUAGES.python, interpreter: "/usr/bin/python3" });
     expect(v.node.packageManager).toBe("");
     expect(v.rust.checkCommand).toBe("clippy");
     expect(v.rust.checkOnSave).toBe(false);
+    expect(v.go.gofumpt).toBe(true);
+    expect(DEFAULT_LANGUAGES.go.gofumpt).toBe(false);
+    expect(validateLanguages({ go: { gofumpt: "yes" } }).go.gofumpt).toBe(false);
     expect(v.typescript.version).toBe("bundled");
     expect(v.java.jdtlsVmArgs).toBe("-Xmx2g");
     expect(v.java.jdk).toBe("");
@@ -59,6 +63,9 @@ describe("languages settings", () => {
       mvndHome: "/opt/mvnd",
       threads: "2C",
       activeProfiles: "",
+      delegateBuild: false,
+      downloadSources: false,
+      updateSnapshots: false,
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
@@ -66,9 +73,35 @@ describe("languages settings", () => {
 
   it("defaults the Maven runner JRE to the project JDK and preserves a chosen JDK", () => {
     expect(validateSettings({}).languages.java.maven.runnerJre).toBe("");
+    expect(validateSettings({}).languages.java.maven.delegateBuild).toBe(false);
     expect(validateLanguages({ java: { maven: { runnerJre: 21 } } }).java.maven.runnerJre).toBe("");
+    expect(validateLanguages({ java: { maven: { delegateBuild: true } } }).java.maven.delegateBuild).toBe(true);
+    expect(validateLanguages({ java: { maven: { delegateBuild: "yes" } } }).java.maven.delegateBuild).toBe(false);
+    expect(validateLanguages({ java: { maven: { downloadSources: true } } }).java.maven.downloadSources).toBe(true);
+    expect(validateLanguages({ java: { maven: { updateSnapshots: true } } }).java.maven.updateSnapshots).toBe(true);
     const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
     expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
+  });
+
+  it("keeps the IDE-wide interpreter list and its view options, defaulting them", () => {
+    expect(validateLanguages({}).python).toMatchObject({
+      interpreters: [],
+      hiddenInterpreters: [],
+      hideOtherProjectInterpreters: false,
+      showInterpreterPaths: true,
+    });
+    const v = validateLanguages({
+      python: {
+        interpreters: [" /envs/a/bin/python ", "", "/envs/a/bin/python", 3],
+        hiddenInterpreters: [" /usr/bin/python3.9 "],
+        hideOtherProjectInterpreters: "yes",
+        showInterpreterPaths: false,
+      },
+    });
+    expect(v.python.interpreters).toEqual(["/envs/a/bin/python"]);
+    expect(v.python.hiddenInterpreters).toEqual(["/usr/bin/python3.9"]);
+    expect(v.python.hideOtherProjectInterpreters).toBe(false);
+    expect(v.python.showInterpreterPaths).toBe(false);
   });
 
   it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
@@ -77,6 +110,14 @@ describe("languages settings", () => {
     const settings = validateSettings({ languages: { ruby: { interpreter: " /opt/ruby/bin/ruby " } } });
     expect(settings.languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
     expect(validateSettings(settings).languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+  });
+
+  it("keeps the Zig toolchain through settings normalization and defaults to Auto", () => {
+    expect(validateSettings({}).languages.zig.zig).toBe("");
+    expect(validateLanguages({ zig: { zig: 42 } }).zig.zig).toBe("");
+    const settings = validateSettings({ languages: { zig: { zig: " /opt/zig " } } });
+    expect(settings.languages.zig.zig).toBe("/opt/zig");
+    expect(validateSettings(settings).languages.zig.zig).toBe("/opt/zig");
   });
 
   it("defaults the PHP language level to Auto and keeps only known levels", () => {
@@ -143,6 +184,16 @@ describe("languages settings", () => {
     expect(v.prettier).toMatchObject({ runOnSave: true, prefer: false, path: "" });
   });
 
+  it("gives Biome the opt-in settings for the languages it formats", () => {
+    expect(validateLanguages({}).biome).toEqual({
+      ...DEFAULT_LANGUAGES.prettier,
+      languages: ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"],
+    });
+    const v = validateLanguages({ biome: { languages: ["json"], prefer: true, runOnSave: true } });
+    expect(v.biome).toMatchObject({ languages: ["json"], prefer: true, runOnSave: true });
+    expect(v.prettier).toMatchObject({ prefer: false, runOnSave: false });
+  });
+
   it("enables Ruff for Python by default and keeps its settings separate", () => {
     expect(validateLanguages({}).ruff).toMatchObject({
       path: "",
@@ -171,9 +222,24 @@ describe("languages settings", () => {
   });
 
   it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
-    expect(validateLanguages({}).markdown).toEqual({ previewFontSize: null });
-    expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown).toEqual({ previewFontSize: 72 });
-    expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown).toEqual({ previewFontSize: null });
+    expect(validateLanguages({}).markdown.previewFontSize).toBeNull();
+    expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown.previewFontSize).toBe(72);
+    expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown.previewFontSize).toBeNull();
+  });
+
+  it("defaults Markdown preview to side by side and accepts a stacked layout", () => {
+    expect(validateLanguages({}).markdown.previewLayout).toBe("sideBySide");
+    expect(validateLanguages({ markdown: { previewLayout: "stacked" } }).markdown.previewLayout).toBe("stacked");
+    expect(validateLanguages({ markdown: { previewLayout: "other" } }).markdown.previewLayout).toBe("sideBySide");
+  });
+
+  it("detects Markdown commands by default and asks for their folder until one is chosen", () => {
+    expect(validateLanguages({}).markdown).toMatchObject({ runCommands: true, commandDirectory: null });
+    expect(validateLanguages({ markdown: { runCommands: false, commandDirectory: "file" } }).markdown).toMatchObject({
+      runCommands: false,
+      commandDirectory: "file",
+    });
+    expect(validateLanguages({ markdown: { commandDirectory: "elsewhere" } }).markdown.commandDirectory).toBeNull();
   });
 
   it("keeps the Markdown page global, like IDEA's application-level setting", () => {
@@ -303,22 +369,45 @@ describe("languages settings", () => {
 describe("language pages", () => {
   it("keeps every language under Languages & Frameworks, as in IntelliJ IDEA", () => {
     const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
-    expect(tree.map((n) => n.title)).toEqual(["Project Structure", "Languages & Frameworks"]);
+    expect(tree.map((n) => n.title)).toEqual(["Languages & Frameworks"]);
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     expect(langs.children.map((n) => n.title)).toEqual([
       "Go",
       "Java",
+      "JavaScript Runtime",
       "Markdown",
-      "Node.js",
-      "Python Interpreter",
+      "Python",
       "PHP",
       "Prettier",
       "oxfmt",
-      "Ruff",
+      "Biome",
       "Ruby",
       "Rust",
       "TypeScript",
+      "Zig",
     ]);
+  });
+
+  it("puts the Python pages in a Python folder, in PyCharm's order", () => {
+    const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
+    const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
+    const python = langs.children.find((n) => n.title === "Python")!;
+    expect(python.children.map((n) => n.title)).toEqual([
+      "All Interpreters",
+      "Dependencies",
+      "Docstrings",
+      "Ruff",
+      "Black formatter",
+    ]);
+    expect(python.children.map((n) => n.key)).toEqual([
+      "python.interpreters",
+      "python.interpreter",
+      "python.docstrings",
+      "python.ruff",
+      "python.black",
+    ]);
+    // The folder itself has no page body: it links to the pages below it.
+    expect(python.page?.component).toBeUndefined();
   });
 
   it("filters packages and shortens home paths", () => {

@@ -1,9 +1,32 @@
-use super::Emit;
+use super::{Channel, Emit};
 use crate::Host;
+use ide_command::command;
 use ide_core::remote_settings::RunTargetKind;
 use ide_core::{IdeError, IdeResult, RunId};
-use ide_run::{OutputChunk, RunConfig, RunInfo, StartOptions};
+use ide_run::{OutputChunk, RunAttach, RunConfig, RunInfo, StartOptions};
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Detected configs followed by user-defined ones (user ids win on conflict).
+#[command(trust = trusted)]
+pub async fn run_configs(host: &Arc<Host>, window: &str) -> IdeResult<Vec<RunConfig>> {
+    // Detection reads build files (and Spring Boot sources): off the command thread.
+    let (host, window) = (host.clone(), window.to_owned());
+    super::blocking(move || configs(&host, &window)).await
+}
+
+#[command(trust = trusted)]
+pub async fn run_save_configs(
+    host: &Arc<Host>,
+    window: &str,
+    configs: Vec<RunConfig>,
+    removed_detected_ids: Option<Vec<String>>,
+) -> IdeResult<()> {
+    let (host, window) = (host.clone(), window.to_owned());
+    let removed = removed_detected_ids.unwrap_or_default();
+    super::blocking(move || save_configs(&host, &window, &configs, &removed)).await
+}
 
 /// Detected configs followed by user-defined ones (user ids win on conflict).
 pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
@@ -70,17 +93,68 @@ fn detected_and_saved(
         .linked_projects
         .as_ref()
         .map(|_| ide_build::gradle::load_linked(root, &settings.languages.java.gradle));
-    let mut all: Vec<RunConfig> =
-        ide_run::detect_with_profiles(root, &excluded_poms, settings.cmake.profiles.as_deref())
-            .into_iter()
-            .filter(|d| !suppressed.contains(&d.id) && !saved.iter().any(|u| u.id == d.id))
-            .filter(|d| linked_config(root, gradle.as_deref(), &excluded_poms, d))
-            .collect();
+    let mut detected = ide_run::detect_with_profiles(root, &excluded_poms, settings.cmake.profiles.as_deref());
+    detected.extend(ide_run::detect_builds(root, &linked_build_dirs(root, settings, gradle.as_deref(), &detected)));
+    let mut all: Vec<RunConfig> = detected
+        .into_iter()
+        .filter(|d| !suppressed.contains(&d.id) && !saved.iter().any(|u| u.id == d.id))
+        .filter(|d| linked_config(root, gradle.as_deref(), &excluded_poms, d))
+        .collect();
     all.extend(saved.iter().cloned());
     for config in all.iter_mut().filter(|c| !matches!(c.kind.as_str(), "gradle" | "maven")) {
         ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(config), root, settings);
     }
     all
+}
+
+/// Folders of the Maven / Gradle builds linked explicitly (Add Maven Projects, linked Gradle
+/// builds) that detection did not reach: deeper than its folder search, or inside the folder of
+/// a build it found without being one of that build's projects (a separate build nested there).
+fn linked_build_dirs(
+    root: &Path,
+    settings: &ide_core::settings::Settings,
+    gradle: Option<&[ide_build::GradleModel]>,
+    detected: &[RunConfig],
+) -> Vec<std::path::PathBuf> {
+    let found = |kind: &str| -> Vec<std::path::PathBuf> {
+        let mut dirs: Vec<_> = detected
+            .iter()
+            .filter(|c| c.kind == kind)
+            .map(|c| ide_core::project_roots::resolve(root, c.cwd.as_deref().unwrap_or(Path::new(""))))
+            .collect();
+        dirs.dedup();
+        dirs
+    };
+    let canonical = |dir: &Path| dunce::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let profiles = settings.languages.java.maven.profiles(&[]);
+    let maven_builds = found("maven");
+    let poms = settings.languages.java.maven.linked_projects.iter().filter_map(|pom| {
+        let pom = root.join(pom.trim());
+        pom.is_file().then(|| pom.parent().map(Path::to_path_buf)).flatten()
+    });
+    let maven = poms.map(|dir| ide_core::project_roots::resolve(root, &dir)).filter(|dir| {
+        let dir_canon = canonical(dir);
+        !maven_builds.iter().any(|build| {
+            dir.starts_with(build) && ide_build::maven::reactor_member_dirs(build, &profiles).contains(&dir_canon)
+        })
+    });
+    let models = gradle.unwrap_or_default();
+    let gradle_builds = found("gradle");
+    let gradle =
+        models.iter().map(|build| ide_core::project_roots::resolve(root, &root.join(&build.dir))).filter(|dir| {
+            !gradle_builds.iter().any(|build| {
+                dir == build
+                    || (dir.starts_with(build)
+                        && models.iter().filter(|m| root.join(&m.dir) == *build).any(|m| {
+                            m.projects
+                                .iter()
+                                .any(|p| ide_core::project_roots::resolve(root, &root.join(&p.dir)) == *dir)
+                        }))
+            })
+        });
+    let mut dirs: Vec<_> = maven.chain(gradle).collect();
+    dirs.dedup();
+    dirs
 }
 
 fn linked_config(
@@ -138,8 +212,21 @@ pub fn save_configs(
     ide_run::save_user_configs_with_removals(&project.root, &configs, removed_detected_ids)
 }
 
-/// The project `config` runs in (a workspace member, by its working directory) and its settings.
+/// The project `config` runs in (a workspace member, by its working directory) and its
+/// settings, with the primary project as the inherited fallback: a member with no Python
+/// of its own runs on the primary project's interpreter (see `apply_to_run_configs_in`).
 fn settings_for(
+    host: &Host,
+    project: &crate::project::Project,
+    config: &mut RunConfig,
+) -> IdeResult<(std::path::PathBuf, ide_core::settings::Settings, Option<std::path::PathBuf>)> {
+    let (root, settings) = settings_only(host, project, config)?;
+    let fallback = (root != project.root).then_some(project.root.clone());
+    Ok((root, settings, fallback))
+}
+
+/// [`settings_for`] without the fallback, for callers that only rebase or read settings.
+fn settings_only(
     host: &Host,
     project: &crate::project::Project,
     config: &mut RunConfig,
@@ -155,7 +242,10 @@ fn settings_for(
             .cloned()
     });
     if workspace.as_ref().is_some_and(|w| w.is_container(&project.root)) || member.is_some() {
-        if config.extras.module.is_none() && !matches!(config.kind.as_str(), "application" | "spring-boot") {
+        let jvm = matches!(config.kind.as_str(), "application" | "spring-boot");
+        if jvm && member.is_some() && config.cwd.is_none() {
+            config.cwd = Some(owner.into());
+        } else if config.extras.module.is_none() && !jvm {
             config.extras.module = config.cwd.as_deref().map(ide_core::ipc_path::to_ipc);
         }
         ide_run::scope::rebase(config, &project.root, None);
@@ -169,9 +259,16 @@ fn settings_for(
     })
 }
 
-/// Temporary configurations as they are kept between sessions: without what settings derived
-/// (toolchain commands, Maven options, `JAVA_HOME`…), so they follow later settings changes.
-pub fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+/// Temporary configurations as they are kept between sessions: without what settings derived.
+#[command(trust = trusted)]
+pub async fn run_without_derived(host: &Arc<Host>, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+    let (host, window) = (host.clone(), window.to_owned());
+    super::blocking(move || without_derived(&host, &window, configs)).await
+}
+
+/// Without what settings derived (toolchain commands, Maven options, `JAVA_HOME`…), so they
+/// follow later settings changes.
+fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     configs
@@ -180,42 +277,66 @@ pub fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> Id
             if c.kind == "gradle" {
                 return Ok(c);
             }
-            let (root, settings) = settings_for(host, &project, &mut c)?;
-            Ok(ide_sdk::apply::without_derived(&c, &root, &settings))
+            let (root, settings, fallback) = settings_for(host, &project, &mut c)?;
+            Ok(ide_sdk::apply::without_derived_in(&c, &root, fallback.as_deref(), &settings))
         })
         .collect()
 }
 
-/// Kept temporary configurations with today's settings applied, as [`configs`] lists the others.
-pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+/// Kept temporary configurations with the current settings applied.
+#[command(trust = trusted)]
+pub async fn run_apply_settings(host: &Arc<Host>, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+    let (host, window) = (host.clone(), window.to_owned());
+    super::blocking(move || apply_settings(&host, &window, configs)).await
+}
+
+/// Today's settings applied, as [`configs`] lists the others.
+fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     configs
         .into_iter()
         .map(|mut c| {
             if c.kind != "gradle" {
-                let (root, settings) = settings_for(host, &project, &mut c)?;
-                ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut c), &root, &settings);
+                let (root, settings, fallback) = settings_for(host, &project, &mut c)?;
+                ide_sdk::apply::apply_to_run_configs_in(
+                    std::slice::from_mut(&mut c),
+                    &root,
+                    fallback.as_deref(),
+                    &settings,
+                );
             }
             Ok(c)
         })
         .collect()
 }
 
-pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {
-    start_request(host, window, config, on_output, None).await
-}
-
-pub async fn start_request(
+#[command(trust = trusted)]
+pub async fn run_start(
     host: &Host,
     window: &str,
     config: RunConfig,
-    on_output: Emit<OutputChunk>,
+    on_output: Channel<OutputChunk>,
     request: Option<ide_core::RequestId>,
 ) -> IdeResult<RunInfo> {
+    let on_output: Emit<OutputChunk> = Arc::new(move |chunk| {
+        let _ = on_output.send(chunk);
+    });
     let cancel = request.map(|id| host.begin_request(id)).unwrap_or_default();
     let operation = config.extras.params.get("plugin.operation").cloned();
-    let result = start_inner(host, window, config, on_output, &cancel).await;
+    let mut config = config;
+    let agent = match host.project(window) {
+        Ok(project) => host.mcp_agent_runs.launch(&project.root, window, &mut config),
+        Err(_) => None,
+    };
+    let on_output = match &agent {
+        Some(agent) => agent.wrap_output(on_output),
+        None => on_output,
+    };
+    let result = start_inner(host, window, config, on_output, agent.as_ref(), &cancel).await;
+    if let Some(agent) = &agent {
+        agent.started(&result);
+    }
     if let Some(id) = request {
         host.end_request(id);
     }
@@ -230,6 +351,7 @@ async fn start_inner(
     window: &str,
     mut config: RunConfig,
     on_output: Emit<OutputChunk>,
+    agent: Option<&crate::mcp::run::agent::Launch>,
     cancel: &ide_core::CancellationToken,
 ) -> IdeResult<RunInfo> {
     if cancel.is_cancelled() {
@@ -263,9 +385,14 @@ async fn start_inner(
     if let Some(plugins) = host.plugin_host() {
         sink = plugins.run_operation_sink(window, &mut config, sink)?;
     }
+    if let Some(agent) = agent {
+        sink = agent.wrap_sink(sink);
+    }
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
     }
+    let on_target = config.extras.target.as_deref().is_some_and(|t| !t.is_empty());
+    add_java_agents(&mut config, &on_output, !on_target);
     // Settings › Run Targets: over SSH, or in a container.
     if config.kind == "tomcat" && config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
         return Err(IdeError::invalid("Tomcat Local requires the local machine"));
@@ -329,7 +456,7 @@ async fn start_inner(
         return host.remote.run(&settings, &project.root, &config, sink.clone(), Box::new(move |c| out(c))).await;
     }
     let mut config = config;
-    let (root, settings) = settings_for(host, &project, &mut config)?;
+    let (root, settings, fallback) = settings_for(host, &project, &mut config)?;
     let root = &root;
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
     // Maven re-applies too: a config listed before a settings change (daemon toggle,
@@ -338,16 +465,40 @@ async fn start_inner(
     if config.kind == "maven" {
         ide_sdk::apply::prepare_maven_run(&mut config, root, &settings);
     } else if matches!(config.kind.as_str(), "gradle" | "tomcat" | "junit") {
-        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+        ide_sdk::apply::apply_to_run_configs_in(
+            std::slice::from_mut(&mut config),
+            root,
+            fallback.as_deref(),
+            &settings,
+        );
     } else {
         ide_sdk::apply::resolve_run_command(&mut config, root, &settings);
     }
     if config.kind == "go" {
-        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+        ide_sdk::apply::apply_to_run_configs_in(
+            std::slice::from_mut(&mut config),
+            root,
+            fallback.as_deref(),
+            &settings,
+        );
         ide_sdk::go::apply_to_run(&mut config, &settings.languages.go.build_tags);
     }
     if config.command == ide_sdk::godot::COMMAND {
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
+    }
+    // A Python configuration pointing at a missing interpreter fails in the depth of
+    // process spawn otherwise; name the cause and the fix like PyCharm's "Invalid SDK".
+    let is_python = matches!(config.kind.as_str(), "python" | "pytest" | "django-test");
+    if is_python && Path::new(&config.command).components().count() > 1 {
+        let cwd = project.root.join(config.cwd.as_deref().unwrap_or(Path::new("")));
+        let executable = ide_core::project_roots::resolve(&cwd, Path::new(&config.command));
+        if !executable.is_file() {
+            return Err(IdeError::invalid(format!(
+                "The configured Python interpreter does not exist: {}\nSelect a working interpreter in Settings › Languages & Frameworks › Python Interpreter.",
+                config.command
+            )));
+        }
+        config.command = ide_core::ipc_path::to_ipc(&executable);
     }
     if config.kind == "tomcat" {
         if host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
@@ -370,10 +521,21 @@ async fn start_inner(
             })
             .await?;
     }
+    let mut python_paths = if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) };
+    if is_python {
+        let near = ide_run::scope::owner(&project.root, &config);
+        python_paths = super::python::with_user_paths(
+            python_paths,
+            &host.config_dir,
+            &project,
+            Some(&config.command),
+            Some(&near),
+        );
+    }
     let encoding = settings.console.encoding;
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
-        python_paths: if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) },
+        python_paths,
         ruby_reporter: ruby_reporter_dir(host, &config),
     };
     project.require_trust()?;
@@ -388,6 +550,30 @@ async fn start_inner(
         });
     }
     host.processes.start(&project.root, &config, &options, sink, Box::new(move |c| on_output(c)))
+}
+
+/// Plugins' Java agents (`[[contributes.javaAgents]]`, granted `java.agent`) for the JVM of an
+/// Application, Spring Boot or JAR Application configuration started on this machine. A JVM on a
+/// run target gets none; the console says so, and why an approved agent was left out.
+fn add_java_agents(config: &mut RunConfig, on_output: &Emit<OutputChunk>, local: bool) {
+    if !ide_run::java_agent::applies(&config.kind) {
+        return;
+    }
+    let java = std::path::Path::new(&config.command);
+    let agents = ide_run::java_agent::current_for(Some(java));
+    let say = |text: &str| on_output(OutputChunk::System { text: format!("{text}\n") });
+    if !local {
+        if !agents.options.is_empty() {
+            say(
+                "Plugin Java agents were not added: they load only into JVMs started on this machine, not on a run target.",
+            );
+        }
+        return;
+    }
+    for note in &agents.notes {
+        say(note);
+    }
+    ide_run::java_agent::add_to_args(&mut config.args, &agents.options);
 }
 
 /// The Ruby test reporter's directory, installed on demand, for runs that take it.
@@ -405,11 +591,13 @@ fn ruby_reporter_dir(host: &Host, config: &RunConfig) -> Option<std::path::PathB
     }
 }
 
-/// Stops a run (interrupt, then kill after Settings › Run's termination timeout).
-pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
+#[command(trust = always)]
+pub fn run_stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
+    // Interrupt, then kill after Settings › Run's termination timeout.
     if let Some(plugins) = host.plugin_host() {
         plugins.run_operation_stopped(id);
     }
+    host.mcp_agent_runs.stopping(id);
     let settings = match host.project(window) {
         Ok(p) => p.settings.effective(),
         Err(_) => host.global_settings.effective(),
@@ -421,35 +609,56 @@ pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
     host.processes.stop_with_grace(id, grace)
 }
 
-pub fn stdin(host: &Host, id: RunId, data: &str) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub fn run_stdin(host: &Host, id: RunId, data: String) -> IdeResult<()> {
+    // Input the user typed into a run (the agent's goes to the process directly).
+    let data = data.as_str();
+    host.mcp_agent_runs.user_input(id, data);
     if host.remote.runs.contains(id) {
         return host.remote.runs.write_stdin(id, data);
     }
     host.processes.write_stdin(id, data)
 }
 
-pub fn resize(host: &Host, id: RunId, cols: u16, rows: u16) -> IdeResult<()> {
+/// Terminal size of a run started with "Emulate terminal in output console".
+#[command(trust = trusted)]
+pub fn run_resize(host: &Host, id: RunId, cols: u16, rows: u16) -> IdeResult<()> {
     if host.remote.runs.contains(id) {
         return host.remote.runs.resize(id, cols, rows);
     }
     host.processes.resize(id, cols, rows)
 }
 
-pub fn close_stdin(host: &Host, id: RunId) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub fn run_close_stdin(host: &Host, id: RunId) -> IdeResult<()> {
     if host.remote.runs.contains(id) {
         return host.remote.runs.close_stdin(id);
     }
     host.processes.close_stdin(id)
 }
 
-pub fn list(host: &Host) -> Vec<RunInfo> {
+#[command(trust = always)]
+pub fn run_list(host: &Host) -> Vec<RunInfo> {
     let mut runs = host.processes.list();
     runs.extend(host.remote.runs.list());
     runs
 }
 
-mod commands;
-mod container;
+/// Reattaches to a running process `id` on this host, returning its buffered output
+/// and configuration while streaming subsequent chunks to `on_output`.
+#[command(trust = always)]
+pub async fn run_attach(host: &Host, window: &str, id: RunId, on_output: Channel<OutputChunk>) -> IdeResult<RunAttach> {
+    host.processes.reattach(
+        id,
+        host.window_sink(window),
+        Box::new(move |chunk| {
+            let _ = on_output.send(chunk);
+        }),
+    )
+}
+
+pub mod commands;
+pub(crate) mod container;
 pub use commands::*;
 
 #[cfg(test)]
@@ -478,4 +687,156 @@ mod ownership_tests {
         let configs = detected_and_saved(root, &settings, &[], &[]);
         assert!(configs.is_empty(), "{configs:?}");
     }
+
+    /// #4066: a build linked explicitly is detected beyond the folder search depth.
+    #[test]
+    fn linked_builds_are_detected_at_any_depth() {
+        const BOOT_POM: &str = "<project><build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>";
+        const APP: &str = "package com.example;\n@SpringBootApplication public class DemoApplication { public static void main(String[] a) {} }";
+        let deep = "site/service/03_src/demo-monitor";
+        let tool = "a/b/c/tool";
+        type Case =
+            (&'static str, Vec<(String, &'static str)>, Vec<&'static str>, Option<Vec<&'static str>>, Vec<String>);
+        let cases: Vec<Case> = vec![
+            (
+                "reporter: Maven module four levels deep, no root POM, linked",
+                vec![
+                    (format!("{deep}/pom.xml"), BOOT_POM),
+                    (format!("{deep}/src/main/java/com/example/DemoApplication.java"), APP),
+                ],
+                vec!["site/service/03_src/demo-monitor/pom.xml"],
+                None,
+                vec![
+                    format!("maven:package:{deep}"),
+                    format!("maven:test:{deep}"),
+                    format!("maven:spring-boot:run:{deep}"),
+                    format!("application:{deep}:com.example.DemoApplication"),
+                ],
+            ),
+            (
+                "the same module, not linked: depth limit unchanged",
+                vec![(format!("{deep}/pom.xml"), BOOT_POM)],
+                vec![],
+                None,
+                vec![],
+            ),
+            (
+                "Gradle build four levels deep, linked",
+                vec![(format!("{tool}/build.gradle.kts"), "plugins {\n    application\n}")],
+                vec![],
+                Some(vec![tool]),
+                vec![format!("gradle:build:{tool}"), format!("gradle:test:{tool}"), format!("gradle:run:{tool}")],
+            ),
+            (
+                "linked module inside the root reactor belongs to the reactor",
+                vec![
+                    (
+                        "pom.xml".into(),
+                        "<project><modules><module>site/service/03_src/demo-monitor</module></modules></project>",
+                    ),
+                    (format!("{deep}/pom.xml"), BOOT_POM),
+                ],
+                vec!["site/service/03_src/demo-monitor/pom.xml"],
+                None,
+                vec!["maven:package".into(), "maven:test".into()],
+            ),
+            (
+                "a separate Maven build linked inside the root build's folder has its own configurations",
+                vec![("pom.xml".into(), "<project></project>"), (format!("{deep}/pom.xml"), BOOT_POM)],
+                vec!["site/service/03_src/demo-monitor/pom.xml"],
+                None,
+                vec![
+                    "maven:package".into(),
+                    "maven:test".into(),
+                    format!("maven:package:{deep}"),
+                    format!("maven:test:{deep}"),
+                    format!("maven:spring-boot:run:{deep}"),
+                ],
+            ),
+            (
+                "a Gradle subproject linked as a build belongs to the root build",
+                vec![
+                    ("settings.gradle.kts".into(), "rootProject.name = \"root\"\ninclude(\"a:b:c:tool\")\n"),
+                    ("build.gradle.kts".into(), "plugins {\n    java\n}"),
+                    (format!("{tool}/build.gradle.kts"), "plugins {\n    application\n}"),
+                ],
+                vec![],
+                Some(vec![".", tool]),
+                vec!["gradle:build".into(), "gradle:test".into()],
+            ),
+            (
+                "a separate Gradle build linked inside the root build's folder has its own configurations",
+                vec![
+                    ("settings.gradle.kts".into(), "rootProject.name = \"root\"\n"),
+                    ("build.gradle.kts".into(), "plugins {\n    java\n}"),
+                    (format!("{tool}/settings.gradle.kts"), "rootProject.name = \"tool\"\n"),
+                    (format!("{tool}/build.gradle.kts"), "plugins {\n    application\n}"),
+                ],
+                vec![],
+                Some(vec![".", tool]),
+                vec![
+                    "gradle:build".into(),
+                    "gradle:test".into(),
+                    format!("gradle:build:{tool}"),
+                    format!("gradle:test:{tool}"),
+                    format!("gradle:run:{tool}"),
+                ],
+            ),
+            (
+                "linked module within the search depth is not detected twice",
+                vec![("svc/pom.xml".into(), "<project></project>")],
+                vec!["svc/pom.xml"],
+                None,
+                vec!["maven:package:svc".into(), "maven:test:svc".into()],
+            ),
+        ];
+        for (name, files, maven, gradle, expected) in cases {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            for (path, text) in &files {
+                std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+                std::fs::write(root.join(path), text).unwrap();
+            }
+            let mut settings = ide_core::settings::Settings::default();
+            settings.languages.java.maven.linked_projects = maven.into_iter().map(String::from).collect();
+            settings.languages.java.gradle.linked_projects = gradle.map(|d| d.into_iter().map(String::from).collect());
+            let configs = detected_and_saved(root, &settings, &[], &[]);
+            let mut ids: Vec<_> = configs.iter().map(|c| c.id.clone()).collect();
+            let mut expected = expected;
+            ids.sort();
+            expected.sort();
+            assert_eq!(ids, expected, "{name}");
+            for config in configs.iter().filter(|c| matches!(c.kind.as_str(), "maven" | "gradle")) {
+                let cwd = config.cwd.as_deref().map(|p| p.to_string_lossy().replace('\\', "/"));
+                assert!(config.id.ends_with(cwd.as_deref().unwrap_or("")), "{name}: {config:?}");
+            }
+        }
+
+        // A POM linked from outside the project folder (an extra content root).
+        let (temp, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let external = dunce::canonicalize(outside.path()).unwrap().join("svc");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("pom.xml"), BOOT_POM).unwrap();
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.java.maven.linked_projects = vec![external.join("pom.xml").to_string_lossy().into_owned()];
+        let configs = detected_and_saved(temp.path(), &settings, &[], &[]);
+        let package =
+            configs.iter().find(|c| c.id == format!("maven:package:{}", external.to_string_lossy().replace('\\', "/")));
+        assert_eq!(package.and_then(|c| c.cwd.as_deref()), Some(external.as_path()), "{configs:?}");
+    }
 }
+
+ide_command::domain!(
+    run:
+    run_apply_settings,
+    run_attach,
+    run_close_stdin,
+    run_configs,
+    run_list,
+    run_resize,
+    run_save_configs,
+    run_start,
+    run_stdin,
+    run_stop,
+    run_without_derived,
+);

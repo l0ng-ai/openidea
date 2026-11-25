@@ -7,7 +7,7 @@ import { classFileBreakpointReason } from "@/platform/classFiles";
 import type { Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import type { EditorDocContext } from "@/editor/api";
-import { iconNode } from "@/editor/lsp/iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";

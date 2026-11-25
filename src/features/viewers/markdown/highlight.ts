@@ -97,6 +97,7 @@ function collectRuns(root: Node): TextRun[] {
     const el = node as Element;
     const tag = el.tagName.toUpperCase();
     if (SKIP_TAGS.has(tag)) return;
+    if (tag === "MJX-ASSISTIVE-MML" || el.classList.contains("katex-mathml")) return;
     if (tag === "PRE" && el.parentElement?.getAttribute("data-mermaid-state") === "ok") return;
     const isBlock = BLOCK_TAGS.has(tag);
     if (isBlock) flush();
@@ -197,7 +198,8 @@ export function invalidatePreviewIndex(root: HTMLElement) {
 function previewIndex(root: HTMLElement): PreviewIndex {
   let index = previewIndexes.get(root);
   if (!index) {
-    const els = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")];
+    const content = root.querySelector(":scope > [data-preview-blocks]") ?? root;
+    const els = [...content.querySelectorAll<HTMLElement>(":scope > [data-line]")];
     const blocks = els.map((el) => ({ startLine: Number(el.dataset.line), runs: collectRuns(el) }));
     index = { blocks, runs: blocks.length ? blocks.flatMap((b) => b.runs) : collectRuns(root) };
     previewIndexes.set(root, index);
@@ -275,9 +277,24 @@ export function previewSelectionOf(root: HTMLElement): { text: string; range: Ra
   if (typeof window === "undefined") return null;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || sel.rangeCount !== 1) return null;
-  const range = sel.getRangeAt(0);
+  let range = sel.getRangeAt(0);
   if (!root.contains(range.commonAncestorContainer)) return null;
-  const text = sel.toString();
+  let text = sel.toString();
+  // Double-clicking a word on Windows selects the space after it too; the word is what was meant.
+  const trailing = /^\S+(\s+)$/.exec(text)?.[1];
+  if (trailing) {
+    text = text.slice(0, -trailing.length);
+    const end = range.endContainer;
+    if (end.nodeType === Node.TEXT_NODE && range.endOffset >= trailing.length) {
+      const trimmed = range.cloneRange();
+      trimmed.setEnd(end, range.endOffset - trailing.length);
+      if (trimmed.toString() === text) {
+        sel.removeAllRanges();
+        sel.addRange(trimmed);
+        range = trimmed;
+      }
+    }
+  }
   if (text.length < MIN_SELECTION_LENGTH || text.length > MAX_SELECTION_LENGTH || text.includes("\n") || !text.trim())
     return null;
   return { text, range: range.cloneRange() };

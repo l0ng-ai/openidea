@@ -1,0 +1,55 @@
+id = "flask"
+name = "Flask"
+group = "Python"
+icon = "project-flask"
+order = 3
+description = "A Flask application, with its environment managed by uv."
+
+[[requires]]
+program = "uv"
+hint = "Install uv: https://docs.astral.sh/uv/getting-started/installation/"
+
+[[fields]]
+id = "python"
+label = "Python version:"
+type = "text"
+placeholder = "Latest installed"
+hint = "A version such as 3.13; uv downloads it when missing."
+
+[[steps]]
+label = "Running uv init"
+program = "uv"
+args = [
+    "init", "--bare", "--name", "{{name|kebab}}", "--vcs", "none", "--no-workspace",
+    { if-set = "python", args = ["--python", "{{python}}"] },
+]
+
+[[steps]]
+label = "Adding Flask"
+program = "uv"
+args = ["add", "flask"]
+
+[[files]]
+path = "app.py"
+content = '''
+from flask import Flask
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def hello_world():
+    return "Hello, World!"
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+.venv/
+__pycache__/
+*.pyc
+'''

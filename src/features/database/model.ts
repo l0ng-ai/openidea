@@ -5,13 +5,14 @@ import type {
   DbDriver,
   DbProperty,
   DbRowEdit,
+  DbSnowflakeAuth,
   DbSortKey,
   DbSsh,
   DbSslMode,
   DataSource,
 } from "@/platform/ipc";
 import type { SshConfigValid } from "@/platform/remoteSettings";
-import { vendorOf, vendorOfScheme } from "./vendors";
+import { blankSnowflake, vendorOf, vendorOfScheme } from "./vendors";
 
 export type Cell = string | null;
 
@@ -205,20 +206,17 @@ export function passesObjectFilter(name: string, filter: string | null | undefin
 }
 
 /**
- * The tree's quick filter (the toolbar's field): `name` contains it,
- * case-insensitively (`*` / `?` still work through `matchesPattern` callers).
- */
-export function passesTreeFilter(name: string, filter: string | null | undefined): boolean {
-  const q = (filter ?? "").trim().toLowerCase();
-  return !q || name.toLowerCase().includes(q);
-}
-
-/**
  * Whether a console of `driver` gets the active-schema dropdown (a server with
  * several schemas / databases to switch between; SQLite has one database only).
  */
 export function schemaSwitchable(driver: DbDriver | null | undefined): boolean {
-  return driver === "postgres" || driver === "mysql" || driver === "sqlServer" || driver === "oracle";
+  return (
+    driver === "postgres" ||
+    driver === "mysql" ||
+    driver === "sqlServer" ||
+    driver === "oracle" ||
+    driver === "snowflake"
+  );
 }
 
 /** The schema a console's statements run in: its pick, else the connection's default. */
@@ -253,12 +251,16 @@ export function idleTargets(
   now: number,
 ): string[] {
   const out: string[] = [];
+  const activeSiblings = new Set<string>();
   for (const t of connected) {
-    const secs = sources.find((s) => s.id === splitTarget(t).id)?.options?.autoDisconnectSecs;
-    if (!secs || busy(t)) continue;
-    if (now - (lastUsed.get(t) ?? now) >= secs * 1000) out.push(t);
+    const { id, database } = splitTarget(t);
+    const secs = sources.find((s) => s.id === id)?.options?.autoDisconnectSecs;
+    if (!secs) continue;
+    if (!busy(t) && now - (lastUsed.get(t) ?? now) >= secs * 1000) out.push(t);
+    else if (database) activeSiblings.add(id);
   }
-  return out;
+  // Disconnecting the source row also disconnects its other databases.
+  return out.filter((t) => !activeSiblings.has(t));
 }
 
 export function newSourceId(): string {
@@ -339,6 +341,20 @@ export function targetOf(id: string, database: string | null, current: string | 
 /** Key of the Database tree node of database `name` of data source `id`. */
 export const databaseKey = (id: string, name: string) => `${id}/@${name}`;
 
+/**
+ * `expanded` without the Database tree nodes that show what target `id` loaded (a data source
+ * id: the source and all its databases). Once that is forgotten, an expanded node would wait
+ * for children nothing loads until it is expanded again.
+ */
+export function collapseTarget(expanded: ReadonlySet<string>, id: string): Set<string> {
+  const { id: source, database } = splitTarget(id);
+  const under = (key: string, node: string) => key === node || key.startsWith(`${node}/`);
+  const shows = database
+    ? (key: string) => under(key, databaseKey(source, database)) || under(key, id)
+    : (key: string) => under(key, source) || key.startsWith(`${source}:`);
+  return new Set([...expanded].filter((key) => !shows(key)));
+}
+
 const SSL_MODES: Record<string, DbSslMode> = {
   disable: "disable",
   disabled: "disable",
@@ -352,6 +368,44 @@ const SSL_MODES: Record<string, DbSslMode> = {
   verify_identity: "verifyFull",
   "verify-identity": "verifyFull",
 };
+
+const SNOWFLAKE_AUTHENTICATORS: Record<string, DbSnowflakeAuth> = {
+  snowflake_jwt: "keyPair",
+  snowflake: "password",
+  programmatic_access_token: "token",
+  oauth: "oAuth",
+  externalbrowser: "browser",
+};
+
+/** Applies a parameter of a Snowflake JDBC URL that names a connection setting. */
+function snowflakeParameter(source: Partial<DataSource>, name: string, value: string): boolean {
+  const settings = (source.snowflake ??= blankSnowflake());
+  switch (name.toLowerCase()) {
+    case "db":
+    case "database":
+      source.database = value;
+      return true;
+    case "schema":
+      source.options = { ...source.options, defaultSchema: value } as DataSource["options"];
+      return true;
+    case "warehouse":
+      settings.warehouse = value;
+      return true;
+    case "role":
+      settings.role = value;
+      return true;
+    case "private_key_file":
+      settings.privateKeyFile = value;
+      return true;
+    case "authenticator": {
+      const auth = SNOWFLAKE_AUTHENTICATORS[value.toLowerCase()];
+      if (auth) settings.auth = auth;
+      return !!auth;
+    }
+    default:
+      return false;
+  }
+}
 
 /**
  * Data Source from URL (and the General tab's URL field): `postgres://user:pass@host:5432/db`,
@@ -422,6 +476,7 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
         source.sslKeyFile = v;
         break;
       default:
+        if (vendor.driver === "snowflake" && snowflakeParameter(source, k, v)) break;
         properties.push({ name: k, value: v });
     }
   }
@@ -432,4 +487,74 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
   }
   if (properties.length) source.properties = properties;
   return { source, password };
+}
+
+/** A row of the console's database › schema switcher. */
+export interface SchemaTreeRow {
+  value: string;
+  label: string;
+  verbatim?: boolean;
+  icon?: string;
+  disabled?: boolean;
+  /** Searching a database's name keeps its schemas visible. */
+  keywords?: string;
+  tree: { depth: number; expanded?: boolean };
+}
+
+const TREE_SEP = "\u0000";
+
+/** The switcher value of database `database`, or of its schema `schema`. */
+export function schemaTreeValue(database: string, schema?: string): string {
+  return schema === undefined ? `d${TREE_SEP}${database}` : `s${TREE_SEP}${database}${TREE_SEP}${schema}`;
+}
+
+/** The database (and schema, for a schema row) a switcher value names. */
+export function parseSchemaTreeValue(value: string): { database: string; schema: string | null } {
+  const [kind, database = "", schema = ""] = value.split(TREE_SEP);
+  return { database, schema: kind === "s" ? schema : null };
+}
+
+/**
+ * Rows of the switcher (IDEA's `database.schema` popup): every database, each expanded one followed
+ * by its schemas, a "Loading…" row while `schemasOf` has none for it yet, or the error reading them.
+ */
+export function schemaTreeRows(
+  databases: readonly string[],
+  expanded: ReadonlySet<string>,
+  schemasOf: (database: string) => readonly string[] | { error: string } | undefined,
+): SchemaTreeRow[] {
+  const out: SchemaTreeRow[] = [];
+  for (const database of databases) {
+    const open = expanded.has(database);
+    out.push({
+      value: schemaTreeValue(database),
+      label: database,
+      verbatim: true,
+      icon: "database",
+      tree: { depth: 0, expanded: open },
+    });
+    if (!open) continue;
+    const schemas = schemasOf(database);
+    if (!schemas || "error" in schemas) {
+      out.push({
+        value: `l${TREE_SEP}${database}`,
+        label: schemas ? schemas.error : "Loading…",
+        verbatim: !!schemas,
+        disabled: true,
+        keywords: database,
+        tree: { depth: 1 },
+      });
+      continue;
+    }
+    for (const schema of schemas)
+      out.push({
+        value: schemaTreeValue(database, schema),
+        label: schema,
+        verbatim: true,
+        icon: "db-schema",
+        keywords: database,
+        tree: { depth: 1 },
+      });
+  }
+  return out;
 }

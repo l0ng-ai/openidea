@@ -6,11 +6,16 @@ use ide_run::wrap::{self, program_name};
 use std::path::Path;
 
 const GRADLE_INIT: &str = r#"// Written by OpenIDEA for Run with Coverage.
-allprojects {
-    plugins.withId('java') {
-        apply plugin: 'jacoco'
-        tasks.withType(Test).configureEach { t -> t.finalizedBy(tasks.named('jacocoTestReport')) }
-        tasks.named('jacocoTestReport') { r -> r.reports { xml.required.set(true) } }
+import org.gradle.util.GradleVersion
+// `configureEach` (lazy) is Gradle 4.9+; older ones configure each task as it is added.
+def each = { tasks, Closure action -> GradleVersion.current() >= GradleVersion.version('4.9') ? tasks.configureEach(action) : tasks.all(action) }
+allprojects { p ->
+    p.plugins.withId('java') {
+        p.apply plugin: 'jacoco'
+        each(p.tasks.withType(Test)) { t -> t.finalizedBy('jacocoTestReport') }
+        def xml = p.tasks.getByName('jacocoTestReport').reports.xml
+        // `Report.required` is Gradle 6.1+, `enabled` is gone in 8.0.
+        if (xml.hasProperty('required')) xml.required.set(true) else xml.enabled = true
     }
 }
 "#;
@@ -391,7 +396,10 @@ mod tests {
         let p = prepare(dir.path(), &cfg("gradle", "./gradlew", &[":app:test", "--tests", "*Calc"]), dir.path());
         let (l, report) = launch(&p);
         assert_eq!(l.args[0], "--init-script");
-        assert!(std::fs::read_to_string(&l.args[1]).unwrap().contains("jacoco"));
+        let script = std::fs::read_to_string(&l.args[1]).unwrap();
+        assert!(script.contains("p.apply plugin: 'jacoco'"), "{script}");
+        // `Report.required` is Gradle 6.1+, `configureEach` 4.9+ (#3864).
+        assert!(script.contains("else xml.enabled = true") && script.contains(": tasks.all(action)"), "{script}");
         assert!(matches!(report, CoverageReportSpec::Jacoco { .. }));
     }
 

@@ -4,51 +4,85 @@
  * merge and Local History editors, remote operations.
  */
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
+import { useTodoSettings } from "@/platform/todo";
 import { editorsFor, registerEditorContribution } from "@/editor/api";
 import {
   notifications,
+  provideChangesViewSelection,
   registerEditorKind,
   registerMenuGroup,
   registerOverlay,
-  registerSettingsPage,
+  registerStatusItem,
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
-import { executeAction } from "@/platform/actions";
+import { executeAction, registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
-import { registerVcsActions } from "./actions";
+import { commitWindowFocused, registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
 import { registerLogPaneActions } from "./logPaneActions";
-import { controlLabel, controlOperation, inProgress } from "./operations";
+import {
+  BRANCH_COMPARISON_KIND,
+  branchComparisonTitle,
+  comparisonPaneIds,
+  type BranchComparisonData,
+} from "./CompareBranches";
+import { controlLabel, controlOperation, inProgress, installOperationNoticeExpiry } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
+import { activateRevisionAnnotations } from "./annotateRevisionProvider";
 import { inlineBlame } from "./inlineBlame";
-import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
-import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
+import {
+  BranchWidget,
+  BranchesPopupHost,
+  STATUS_BRANCH_WIDGET,
+  StatusBranchWidget,
+  useBranchesPopup,
+} from "./BranchWidget";
+import { SyncCommitsPopupHost } from "./SyncCommitsPopup";
+import { clearUnstashConflictNotices, showConflictsDialog } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
-import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
+import { activateDiffViewer } from "./diffViewer";
+import { installDiffEditorHost } from "./DiffWindow";
 import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
+import { DIRECTORY_COMPARE_KIND, directoryCompareTitle, type DirectoryCompareData } from "./directoryCompareKind";
 import { SELECTION_HISTORY_KIND, type SelectionHistoryData } from "./selectionHistoryKind";
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
 import { registerMergeActions } from "./mergeActions";
-import { baseName } from "./model";
-import { installDiagnosticsTracking } from "./commitChecks";
-import { installPreparedMessage, useCommit } from "./commitStore";
+import { baseName, stripSlash } from "./model";
+import { installCommitChecks } from "./commitChecks";
+import { installDiagnosticsTracking } from "./commitAnalysis";
+import { installPostCommitChecks } from "./postCommitChecks";
+import { installCommitMessages, useCommit } from "./commitStore";
 import { installDraftRevision, provideCommit } from "./commitSelection";
 import { activate as activateConflictBanner } from "./conflictBanner";
+import { registerWorktreeIncludeEditor } from "./worktreeInclude";
 import { activate as activateConflictMarkers } from "./conflictMarkers";
 import { MergeRebaseWidget } from "./MergeRebaseWidget";
 import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
-import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
+import {
+  currentRepoRoot,
+  existsOnDisk,
+  installVcsStore,
+  onConflictsChanged,
+  onConflictsCleared,
+  repoOf,
+  selectRepo,
+  useVcs,
+} from "./store";
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
+import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
+import { copyRepositoryPathActions, registerCopyRepositoryPath } from "./copyRepositoryPath";
+import { activateSettingsPages } from "./settingsPages";
+import { registerStagedEditor } from "./StagedEditor";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
 function trackMergeRebaseItem(): () => void {
@@ -82,13 +116,17 @@ function trackTitleItem(): () => void {
   let dispose: (() => void) | null = null;
   const sync = (available: boolean) => {
     if (available && !dispose) {
-      dispose = registerTitleItem({
-        id: "vcs.branch",
-        title: "VCS Widget",
-        align: "left",
-        priority: 10,
-        component: BranchWidget,
-      });
+      const disposers = [
+        registerTitleItem({
+          id: "vcs.branch",
+          title: "VCS Widget",
+          align: "left",
+          priority: 10,
+          component: BranchWidget,
+        }),
+        registerStatusItem({ ...STATUS_BRANCH_WIDGET, align: "right", priority: 60, component: StatusBranchWidget }),
+      ];
+      dispose = () => disposers.forEach((d) => d());
     } else if (!available && dispose) {
       dispose();
       dispose = null;
@@ -119,7 +157,7 @@ function trackCommitWindow(): () => void {
         icon: "toolwindow-commit",
         anchor: "left",
         order: 1,
-        component: lazyComponent(() => import("./CommitView").then((m) => m.CommitToolWindow)),
+        component: lazyComponent(() => import("./CommitView").then((m) => m.CommitToolWindow), { prefetch: true }),
         headerContent: lazyComponent(() => import("./CommitView").then((m) => m.CommitTabs)),
         tabsReplaceTitle: true,
         useBadge: () => {
@@ -149,32 +187,10 @@ function conflictsBody(names: string[]): string {
     : tx`${names.length} files have conflicts: ${list}`;
 }
 
-/** Settings › Version Control › Log (also used by the Settings window). */
-export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
-
-/** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
-export function activateDiffViewer(): () => void {
-  return registerEditorKind({
-    kind: DIFF_KIND,
-    standalone: true,
-    component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
-    title: (input) => diffTitle(input.data as DiffData),
-    icon: () => "diff",
-  });
-}
-
-export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: "vcs.log",
-    title: "Log",
-    order: 6,
-    keywords: ["git log", "references", "tags", "columns", "commit time"],
-    component: lazyComponent(() => import("./LogSettingsPage").then((m) => m.LogSettingsPage)),
-  });
-}
-
 export function activate(): () => void {
-  onConflictsAppeared((files) =>
+  let resolvedNoticeRepo: string | null = null;
+  onConflictsChanged((files) => {
+    resolvedNoticeRepo = null;
     notifications().notify({
       group: "vcs",
       level: "warning",
@@ -183,19 +199,18 @@ export function activate(): () => void {
       body: conflictsBody(files.map((f) => baseName(f.path))),
       sticky: true,
       actions: [{ label: "Resolve…", run: showConflictsDialog }],
-    }),
-  );
+    });
+  });
 
-  onConflictsCleared(() => {
+  onConflictsCleared((files) => {
     notifications().expire?.("vcs.conflicts");
-    const op = inProgress();
-    // Resolved from the Conflicts dialog: the stopped rebase / cherry-pick goes on by itself.
-    if (op && takeContinueWhenResolved() === op) {
-      void controlOperation("continue", op);
-      return;
-    }
-    // Otherwise, as IDEA does once the last conflict is resolved: offer to continue it.
-    if (op)
+    const { operations, resolvedConflicts } = useVcs.getState();
+    const roots = files.map((file) => repoOf(file.path)).filter((root) => root && inProgress(operations[root] ?? null));
+    const selected = currentRepoRoot();
+    const repo = selected && roots.includes(selected) ? selected : (roots[0] ?? null);
+    const op = repo && inProgress(operations[repo] ?? null);
+    resolvedNoticeRepo = op ? repo : null;
+    if (op && repo)
       notifications().notify({
         group: "vcs",
         level: "info",
@@ -203,10 +218,11 @@ export function activate(): () => void {
         title: "All conflicts resolved",
         sticky: true,
         actions: [
+          ...(resolvedConflicts.size ? [{ label: "Review Resolved Conflicts…", run: showConflictsDialog }] : []),
           op === "merge"
-            ? { label: "Commit…", run: () => void executeAction("vcs.commit") }
-            : { label: controlLabel(op, "continue"), run: () => void controlOperation("continue", op) },
-          { label: controlLabel(op, "abort"), run: () => void controlOperation("abort", op) },
+            ? { label: "Commit…", run: () => void selectRepo(repo).then(() => executeAction("vcs.commit")) }
+            : { label: controlLabel(op, "continue"), run: () => void controlOperation("continue", op, repo) },
+          { label: controlLabel(op, "abort"), run: () => void controlOperation("abort", op, repo) },
         ],
       });
   });
@@ -214,20 +230,47 @@ export function activate(): () => void {
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
     installVcsStore(),
+    clearUnstashConflictNotices,
+    installOperationNoticeExpiry(() => resolvedNoticeRepo),
     installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
-    installPreparedMessage(),
+    installCommitChecks(),
+    useTodoSettings.subscribe(() => {
+      if (workflowSettings().vcs.commit.checkTodo) useCommit.setState({ checkResult: null });
+    }),
+    installPostCommitChecks(),
+    installCommitMessages(),
     installDraftRevision(),
     provideCommit(),
+    // Deployment shortcuts (and similar) use this while Commit / Local Changes is focused.
+    provideChangesViewSelection(() => {
+      if (!commitWindowFocused()) return [];
+      // As the context menu: deleted files have nothing to upload.
+      const deleted = new Set(
+        useVcs
+          .getState()
+          .status.filter((f) => !existsOnDisk(f))
+          .map((f) => f.path),
+      );
+      return useCommit
+        .getState()
+        .selection.filter((p) => !deleted.has(p))
+        .map(stripSlash);
+    }),
     installIncomingCheck(),
     installFileConfirmations(),
+    installDiffEditorHost(),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.
     onWorkflowSettingsChange(
       (w) => w.vcs.git.signOff,
       (signOff) => useCommit.setState({ signOff }),
     ),
     registerVcsActions(),
+    registerActions(openOnRemoteActions),
+    registerOpenOnRemote(),
+    registerActions(copyRepositoryPathActions),
+    registerCopyRepositoryPath(),
     registerHistoryActions(),
     registerLogPaneActions(),
     activateSettingsPages(),
@@ -241,7 +284,9 @@ export function activate(): () => void {
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
     registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
+    registerOverlay({ id: "vcs.syncCommits", component: SyncCommitsPopupHost }),
     activateConflictBanner(),
+    registerWorktreeIncludeEditor(),
     activateConflictMarkers(),
     trackCommitWindow(),
     registerToolWindow({
@@ -250,7 +295,7 @@ export function activate(): () => void {
       icon: "toolwindow-git",
       anchor: "bottom",
       order: 5,
-      component: lazyComponent(() => import("./GitLog").then((m) => m.GitToolWindow)),
+      component: lazyComponent(() => import("./GitLog").then((m) => m.GitToolWindow), { prefetch: true }),
       headerContent: lazyComponent(() => import("./GitLog").then((m) => m.GitTabs)),
     }),
     registerEditorKind({
@@ -274,6 +319,14 @@ export function activate(): () => void {
       onClose: (input) => closeLogTab((input.data as { id: string }).id),
     }),
     registerEditorKind({
+      kind: BRANCH_COMPARISON_KIND,
+      component: lazyComponent(() => import("./BranchComparisonEditor").then((m) => m.BranchComparisonEditor)),
+      title: (input) => branchComparisonTitle(input.data as BranchComparisonData),
+      icon: () => "diff",
+      restorable: true,
+      onClose: (input) => comparisonPaneIds(input.key).forEach(closeLogTab),
+    }),
+    registerEditorKind({
       kind: "git-merge-diff",
       standalone: true,
       component: lazyComponent(() => import("./GitMergeDiff").then((m) => m.GitMergeDiff)),
@@ -282,11 +335,20 @@ export function activate(): () => void {
       restorable: true,
     }),
     activateDiffViewer(),
+    registerStagedEditor(),
+    activateRevisionAnnotations(),
     registerEditorKind({
       kind: MERGE_KIND,
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),
       title: (input) => `Merge: ${baseName((input.data as MergeData).path)}`,
       icon: () => "branch",
+    }),
+    registerEditorKind({
+      kind: DIRECTORY_COMPARE_KIND,
+      component: lazyComponent(() => import("./DirectoryCompare").then((m) => m.DirectoryCompareEditor)),
+      title: (input) => directoryCompareTitle(input.data as DirectoryCompareData),
+      icon: () => "diff",
+      restorable: true,
     }),
     registerEditorKind({
       kind: LOCAL_HISTORY_KIND,
@@ -325,7 +387,7 @@ export function activate(): () => void {
     }),
   ];
   return () => {
-    onConflictsAppeared(() => undefined);
+    onConflictsChanged(() => undefined);
     disposers.reverse().forEach((d) => d());
   };
 }

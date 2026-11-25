@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EditorSelection, EditorState, Prec } from "@codemirror/state";
-import { Decoration, EditorView } from "@codemirror/view";
+import { EditorSelection, EditorState, Prec, StateEffect } from "@codemirror/state";
+import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import { setSearchQuery } from "@codemirror/search";
 import { StreamLanguage } from "@codemirror/language";
 import { literalKindAt } from "./literals";
 import { selectionMarks } from "./selectionMarks";
+import { findStyles, markWidgetStyles } from "./theme";
 import {
   countMatches,
   findResultLines,
@@ -22,6 +23,7 @@ import {
   replaceNext,
   setFindScope,
   setFindOpen,
+  setReplacePreview,
   type FindOptions,
 } from "./find";
 
@@ -40,6 +42,49 @@ function make(doc: string, o: Partial<FindOptions>, scope?: { from: number; to: 
 }
 
 const sel = (v: EditorView) => [v.state.selection.main.from, v.state.selection.main.to];
+
+class TextWidget extends WidgetType {
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "widget";
+    el.textContent = "hint";
+    return el;
+  }
+}
+
+describe("widgets inside find matches", () => {
+  it.each([
+    ["before the cursor side", Decoration.widget({ widget: new TextWidget(), side: -1 }).range(3)],
+    ["after the cursor side", Decoration.widget({ widget: new TextWidget(), side: 1 }).range(3)],
+    ["replacing text", Decoration.replace({ widget: new TextWidget() }).range(2, 4)],
+  ])("keep their own colour %s", (_name, widget) => {
+    const view = new EditorView({
+      parent: document.body,
+      doc: "Session",
+      extensions: [
+        // At the top precedence, as only then does the match wrap the widget.
+        Prec.highest(EditorView.decorations.of(Decoration.set(widget))),
+        findExtension(),
+      ],
+    });
+    views.push(view);
+    view.dispatch({
+      effects: [
+        setFindOpen.of(true),
+        setSearchQuery.of(
+          makeQuery({ search: "Session", caseSensitive: true, wholeWord: false, regexp: false, replace: "" }),
+        ),
+      ],
+    });
+    const el = view.contentDOM.querySelector<HTMLElement>(".cm-openidea-findMatch .widget")!;
+    // Browsers reflect this property to the attribute; jsdom does not.
+    el.setAttribute("contenteditable", el.contentEditable);
+    expect(el.matches(Object.keys(markWidgetStyles)[0]!)).toBe(true);
+    expect(Object.values(markWidgetStyles)[0]!.WebkitTextFillColor).toBe("currentcolor");
+    // A text fill of `--fg-search-match` here would reach every widget in the match.
+    expect(findStyles[".cm-openidea-findMatch"].WebkitTextFillColor).toBe("currentcolor");
+  });
+});
 
 describe("find backgrounds", () => {
   it.each([
@@ -124,6 +169,64 @@ describe("find in selection", () => {
     expect(mapScope({ from: 2, to: 5 }, ins(2))).toEqual({ from: 4, to: 7 });
     expect(mapScope({ from: 2, to: 5 }, ins(5))).toEqual({ from: 2, to: 5 });
     expect(mapScope({ from: 2, to: 5 }, s.changes({ from: 2, to: 5 }))).toBeNull();
+  });
+});
+
+describe("replacement preview", () => {
+  it("uses the scoped match, hides excluded matches, and respects the editor becoming read-only", () => {
+    const line = "unposted:\n";
+    const v = make(
+      "posted:USD\n" + line,
+      { search: "posted:([A-Z]*)", regexp: true, replace: "$1" },
+      { from: 11, to: 11 + line.length },
+    );
+    const preview = () => v.dom.querySelector('[aria-label="Replacement preview"]')?.textContent;
+    v.dispatch({ effects: [setFindOpen.of(true), setReplacePreview.of(false)] });
+    findNext(v);
+    expect(preview()).toBe("Empty replacement");
+
+    const { from, to } = v.state.selection.main;
+    v.dispatch({ effects: toggleFindExcluded.of({ from, to }) });
+    expect(preview()).toBeUndefined();
+    v.dispatch({ effects: toggleFindExcluded.of({ from, to }) });
+    expect(preview()).toBe("Empty replacement");
+
+    v.dispatch({ effects: StateEffect.appendConfig.of(EditorState.readOnly.of(true)) });
+    expect(preview()).toBeUndefined();
+  });
+});
+
+describe("plain-text queries", () => {
+  it("match regex syntax and line breaks literally, case-insensitively", () => {
+    const v = make("a.b(c)[d]$ x A.B(C)[D]$ axb\nend\n1 + 1 = 2", { search: "a.b(c)[d]$" });
+    expect(countMatches(v.state).total).toBe(2);
+    expect(countMatches(make("one\ntwo\none two", { search: "one\ntwo" }).state).total).toBe(1);
+    expect(countMatches(make("1+1 11", { search: "1+1" }).state).total).toBe(1);
+    expect(countMatches(make("a/b a\\b", { search: "a\\b" }).state).total).toBe(1);
+  });
+
+  it("replace with `$` and backslashes as written", () => {
+    const v = make("cost: x; cost: y", { search: "cost", replace: "$& $1 $$ \\n" });
+    replaceAll(v);
+    expect(v.state.doc.toString()).toBe("$& $1 $$ \\n: x; $& $1 $$ \\n: y");
+    const w = make("cost", { search: "cost", replace: "$" });
+    replaceNext(w, true);
+    replaceNext(w, true);
+    expect(w.state.doc.toString()).toBe("$");
+  });
+
+  it("previous wraps from the start to the last match, skipping the selected one", () => {
+    const v = make("ab ab ab", { search: "ab" });
+    v.dispatch({ selection: { anchor: 0, head: 2 } });
+    findPrevious(v);
+    expect(sel(v)).toEqual([6, 8]);
+    findPrevious(v);
+    expect(sel(v)).toEqual([3, 5]);
+    const only = make("x ab", { search: "ab" });
+    only.dispatch({ selection: { anchor: 2, head: 4 } });
+    expect(findPrevious(only)).toBe(false);
+    expect(sel(only)).toEqual([2, 4]);
+    expect(findPrevious(make("x", { search: "ab" }))).toBe(false);
   });
 });
 

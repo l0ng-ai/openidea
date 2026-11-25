@@ -18,25 +18,11 @@
 .listTab {
   padding-top: 8px;
 }
-.column {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-}
-.grow {
-  flex: 1;
-  min-height: 0;
-}
-.scroll {
-  height: 100%;
-  overflow: auto;
-}
 .loading {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 100%;
   color: var(--fg-secondary);
 }
@@ -50,24 +36,18 @@
 .tabs {
   min-width: 0;
 }
-.repoTitle {
-  overflow: hidden;
-  color: var(--fg-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 /* Repository selector (several GitHub remotes) */
 .selector {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px;
 }
 .selectorRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .error {
   color: var(--danger);
@@ -79,7 +59,7 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 26px;
   padding: 0 6px 0 10px;
   border-bottom: 1px solid var(--border);
@@ -96,38 +76,3 @@
 }
 
 /* Placeholder panels */
-.plainRow {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  height: 100%;
-  padding: 0 13px;
-  overflow: hidden;
-}
-.ellipsis {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.secondary {
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-}
-.detailsTitle {
-  color: var(--fg-strong);
-  font-weight: 600;
-}
-.buttons {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-}
-.timelineStub {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  max-width: 720px;
-  text-align: left;
-}

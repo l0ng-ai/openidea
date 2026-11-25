@@ -12,7 +12,8 @@ vi.mock("@/platform/ipc", async (original) => {
     },
   };
 });
-import { loadLogDetails } from "../logDetails";
+import { act, renderHook } from "@testing-library/react";
+import { loadLogDetails, useCommitDetails } from "../logDetails";
 import { useVcs } from "../store";
 import { useGitLog } from "../logStore";
 const commit = (id: string): Commit => ({
@@ -42,6 +43,28 @@ beforeEach(() => {
   useVcs.setState((s) => ({ repo: "/repo", root: "/repo", version: s.version + 1 }));
 });
 describe("commit detail jobs", () => {
+  it("reloads expired signature results and retains unsigned results", async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      const signed = commit("signature-expiration");
+      const unsigned = commit("unsigned-expiration");
+      api.batch.mockImplementation(async (_repo: string, ids: string[]) => ({
+        status: "ok",
+        data: ids.map((id) => ({ signature: id === signed.id ? "E" : "N" })),
+      }));
+      await Promise.all([loadLogDetails(signed), loadLogDetails(unsigned)]);
+      now.mockReturnValue(59_999);
+      await loadLogDetails(signed);
+      expect(api.batch).toHaveBeenCalledTimes(1);
+      now.mockReturnValue(60_000);
+      await Promise.all([loadLogDetails(signed), loadLogDetails(unsigned)]);
+      expect(api.batch).toHaveBeenCalledTimes(2);
+      expect(api.batch.mock.calls[1]![1]).toEqual([signed.id]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("retries immediately after the last consumer cancels without losing the replacement cache entry", async () => {
     let rejectOld!: (error: Error) => void;
     api.batch.mockImplementationOnce(
@@ -90,5 +113,40 @@ describe("commit detail jobs", () => {
     expect(api.cancel).toHaveBeenCalledWith(api.batch.mock.calls[0]![2]);
     finish({ status: "ok", data: [{ message: "shared" }] });
     await Promise.all([first, second]);
+  });
+});
+
+describe("useCommitDetails", () => {
+  it("keeps the shown details while a repository refresh reloads them", async () => {
+    const c = commit("kept-on-refresh");
+    const { result, rerender } = renderHook(({ c }) => useCommitDetails(c), { initialProps: { c } });
+    await vi.waitFor(() => expect(result.current.details?.message).toBe("kept-on-refresh"));
+    let finish!: () => void;
+    api.batch.mockImplementationOnce(
+      (_repo: string, ids: string[]) =>
+        new Promise((resolve) => {
+          finish = () =>
+            resolve({
+              status: "ok",
+              data: ids.map(() => ({
+                message: "reloaded",
+                containingBranches: ["main"],
+                signature: "N",
+                signer: "",
+                key: "",
+                fingerprint: "",
+              })),
+            });
+        }),
+    );
+    act(() => useVcs.setState((s) => ({ version: s.version + 1 })));
+    await vi.waitFor(() => expect(api.batch).toHaveBeenCalledTimes(2));
+    expect(result.current.details?.message).toBe("kept-on-refresh");
+    await act(async () => finish());
+    await vi.waitFor(() => expect(result.current.details?.message).toBe("reloaded"));
+    // Another commit shows nothing until its own details arrive.
+    api.batch.mockImplementationOnce(() => new Promise(() => {}));
+    rerender({ c: commit("another") });
+    expect(result.current.details).toBeNull();
   });
 });

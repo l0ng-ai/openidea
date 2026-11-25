@@ -55,6 +55,14 @@ const declaration: SettingsDecl = {
       properties: [JSON.parse(JSON.stringify(profile))],
       actions: [{ title: "Test", command: "test" }],
     },
+    {
+      id: "defaults",
+      title: "Defaults",
+      properties: [
+        { key: "enabled", title: "Enabled", type: "boolean", default: false },
+        { key: "name", title: "Name", type: "string", default: "" },
+      ],
+    },
   ],
 };
 let dispose: () => void;
@@ -163,6 +171,24 @@ it("does not run a command when applying settings fails", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Test" }));
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not apply settings."));
   expect(run).not.toHaveBeenCalled();
+});
+
+it("lists the plugin's declared secrets on its settings page", async () => {
+  setPluginsBackend({
+    ...createMemoryPluginsBackend([]),
+    list: async () => ({
+      plugins: [{ id: "example.helper" } as never],
+      activeTheme: null,
+      ui: [
+        { pluginId: "example.helper", point: "secrets", key: "api-key", decl: { name: "api-key", label: "API key" } },
+      ],
+    }),
+  });
+  const { refreshPlugins } = await import("../store");
+  await refreshPlugins();
+  render(<Harness page="llm" />);
+  expect(screen.getByRole("heading", { name: "Secrets" })).toBeInTheDocument();
+  expect(await screen.findByLabelText("Value of API key")).toBeInTheDocument();
 });
 
 it("preserves the legacy single-schema page", () => {
@@ -277,4 +303,17 @@ it("indexes string-list enum options", () => {
   expect(useSettingsPages.getState().pages.get("plugins.example-helper.settings:list")!.keywords).toContain(
     "documentation",
   );
+});
+
+it("keeps values that equal the setting's default instead of dropping them", () => {
+  useProject.setState({
+    settings: { plugins: { "example.helper": { enabled: true, name: "Custom" } } } as never,
+  });
+  openSettings();
+  render(<Harness page="defaults" />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Enabled" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "" } });
+  expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toMatchObject({
+    "example.helper": { enabled: false, name: "" },
+  });
 });

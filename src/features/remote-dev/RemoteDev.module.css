@@ -1,8 +1,13 @@
+/* Fields fill the first column; their side buttons share the second, so both rows end at the same edge. */
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1-5) var(--space-2);
+  align-items: center;
+  padding: 14px var(--space-4);
+}
+.form > * {
+  grid-column: 1 / -1;
 }
 .hint {
   margin: 0 0 6px;
@@ -14,12 +19,15 @@
   margin-top: 4px;
 }
 .row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
+  display: contents;
+}
+.row > * {
+  grid-column: auto;
+}
+.row > :only-child {
+  grid-column: 1 / -1;
 }
 .grow {
-  flex: 1;
   min-width: 0;
 }
 .folders {
@@ -34,7 +42,7 @@
 .folder {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
   padding: 3px 8px;
   border: 0;
@@ -57,18 +65,23 @@
 .progress {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-top: 4px;
 }
 
 .progressLine {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-muted);
 }
 
 .percent {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
+}
+.lost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }

@@ -1,5 +1,7 @@
 //! Filesystem operations shared by deployment and remote development bootstrap.
+use crate::ftp::FtpFs;
 use crate::sftp::{RemoteEntry, SftpFs};
+use ide_core::remote_settings::FtpConnection;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
@@ -9,12 +11,21 @@ use std::path::Path;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FsConnection {
-    Sftp { ssh: String },
+    Sftp {
+        ssh: String,
+    },
+    /// `server`: the deployment server whose saved password is used.
+    Ftp {
+        server: String,
+        secure: bool,
+        ftp: FtpConnection,
+    },
     Local,
 }
 
 pub enum RemoteFs {
     Sftp(SftpFs),
+    Ftp(FtpFs),
     Local,
 }
 
@@ -24,9 +35,26 @@ impl RemoteFs {
         Self::Sftp(SftpFs::new(sftp))
     }
 
+    /// Lets [`RemoteFs::tree`] list a whole folder tree with one command over `shell`.
+    pub fn with_shell(self, shell: std::sync::Arc<crate::Session>) -> Self {
+        match self {
+            Self::Sftp(fs) => Self::Sftp(fs.with_shell(shell)),
+            other => other,
+        }
+    }
+
+    /// See [`SftpFs::tree`]; `None` means list folder by folder.
+    pub async fn tree(&self, dir: &str, prune: &[String]) -> Option<Vec<RemoteEntry>> {
+        match self {
+            Self::Sftp(fs) => fs.tree(dir, prune).await,
+            Self::Ftp(_) | Self::Local => None,
+        }
+    }
+
     pub async fn home(&self) -> IdeResult<String> {
         match self {
             Self::Sftp(fs) => fs.home().await,
+            Self::Ftp(fs) => Ok(fs.home()),
             Self::Local => {
                 dirs::home_dir().map(|p| path_string(&p)).ok_or_else(|| IdeError::invalid("Home folder is unavailable"))
             }
@@ -36,6 +64,7 @@ impl RemoteFs {
     pub async fn resolve(&self, path: &str) -> IdeResult<String> {
         match self {
             Self::Sftp(fs) => fs.resolve(path).await,
+            Self::Ftp(fs) => Ok(fs.resolve(path)),
             Self::Local => {
                 let expanded = crate::expand(path.trim());
                 let path = if path.trim().is_empty() || path.trim() == "~" {
@@ -52,6 +81,7 @@ impl RemoteFs {
     pub async fn stat(&self, path: &str) -> IdeResult<Option<RemoteEntry>> {
         match self {
             Self::Sftp(fs) => fs.stat(path).await,
+            Self::Ftp(fs) => fs.stat(path).await,
             Self::Local => match tokio::fs::metadata(path).await {
                 Ok(meta) => Ok(Some(local_entry(path, meta).await?)),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -63,6 +93,7 @@ impl RemoteFs {
     pub async fn list(&self, dir: &str) -> IdeResult<Vec<RemoteEntry>> {
         match self {
             Self::Sftp(fs) => fs.list(dir).await,
+            Self::Ftp(fs) => fs.list(dir).await,
             Self::Local => {
                 let mut read = tokio::fs::read_dir(dir).await?;
                 let mut entries = Vec::new();
@@ -81,6 +112,7 @@ impl RemoteFs {
     pub async fn read(&self, path: &str) -> IdeResult<Vec<u8>> {
         match self {
             Self::Sftp(fs) => fs.read(path).await,
+            Self::Ftp(fs) => fs.read(path).await,
             Self::Local => Ok(tokio::fs::read(path).await?),
         }
     }
@@ -88,6 +120,7 @@ impl RemoteFs {
     pub async fn write(&self, path: &str, data: &[u8], mtime: Option<u32>) -> IdeResult<()> {
         match self {
             Self::Sftp(fs) => fs.write(path, data, mtime).await,
+            Self::Ftp(fs) => fs.write(path, data, mtime).await,
             Self::Local => {
                 if let Some(parent) = Path::new(path).parent() {
                     tokio::fs::create_dir_all(parent).await?;
@@ -104,6 +137,7 @@ impl RemoteFs {
     pub async fn upload(&self, local: &Path, remote: &str, preserve_time: bool) -> IdeResult<()> {
         match self {
             Self::Sftp(fs) => fs.upload(local, remote, preserve_time).await,
+            Self::Ftp(fs) => fs.upload(local, remote, preserve_time).await,
             Self::Local => {
                 reject_same_file(local, Path::new(remote)).await?;
                 copy_file(local, Path::new(remote)).await?;
@@ -122,6 +156,7 @@ impl RemoteFs {
         }
         match self {
             Self::Sftp(fs) => fs.upload_new(local, remote, cancel).await,
+            Self::Ftp(fs) => fs.upload_new(local, remote, cancel).await,
             Self::Local => {
                 let mut input = tokio::fs::File::open(local).await?;
                 let mut output = tokio::fs::OpenOptions::new().write(true).create_new(true).open(remote).await?;
@@ -145,6 +180,7 @@ impl RemoteFs {
     pub async fn symlink(&self, target: &str, link: &str) -> IdeResult<()> {
         match self {
             Self::Sftp(fs) => fs.symlink(target, link).await,
+            Self::Ftp(_) => Err(IdeError::invalid("Cannot create a symbolic link over FTP")),
             #[cfg(unix)]
             Self::Local => Ok(tokio::fs::symlink(target, link).await?),
             #[cfg(not(unix))]
@@ -155,6 +191,7 @@ impl RemoteFs {
     pub async fn create_dir(&self, path: &str) -> IdeResult<()> {
         match self {
             Self::Sftp(fs) => fs.create_dir(path).await,
+            Self::Ftp(fs) => fs.create_dir(path).await,
             Self::Local => Ok(tokio::fs::create_dir(path).await?),
         }
     }
@@ -162,6 +199,7 @@ impl RemoteFs {
     pub async fn download(&self, remote: &str, local: &Path) -> IdeResult<()> {
         match self {
             Self::Sftp(fs) => fs.download(remote, local).await,
+            Self::Ftp(fs) => fs.download(remote, local).await,
             Self::Local => {
                 reject_same_file(Path::new(remote), local).await?;
                 copy_file(Path::new(remote), local).await
@@ -172,6 +210,7 @@ impl RemoteFs {
     pub async fn mkdir_all(&self, path: &str) -> IdeResult<()> {
         match self {
             Self::Sftp(fs) => fs.mkdir_all(path).await,
+            Self::Ftp(fs) => fs.mkdir_all(path).await,
             Self::Local => Ok(tokio::fs::create_dir_all(path).await?),
         }
     }
@@ -179,6 +218,7 @@ impl RemoteFs {
     pub async fn remove(&self, path: &str) -> IdeResult<()> {
         match self {
             Self::Sftp(fs) => fs.remove(path).await,
+            Self::Ftp(fs) => fs.remove(path).await,
             Self::Local => {
                 let meta = tokio::fs::symlink_metadata(path).await?;
                 if meta.is_dir() {
@@ -194,6 +234,7 @@ impl RemoteFs {
     pub async fn rename(&self, from: &str, to: &str) -> IdeResult<()> {
         match self {
             Self::Sftp(fs) => fs.rename(from, to).await,
+            Self::Ftp(fs) => fs.rename(from, to).await,
             Self::Local => Ok(tokio::fs::rename(from, to).await?),
         }
     }
@@ -237,8 +278,10 @@ impl RemoteFs {
     }
 
     pub async fn close(&self) {
-        if let Self::Sftp(fs) = self {
-            fs.close().await;
+        match self {
+            Self::Sftp(fs) => fs.close().await,
+            Self::Ftp(fs) => fs.close().await,
+            Self::Local => {}
         }
     }
 }

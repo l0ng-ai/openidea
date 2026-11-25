@@ -14,7 +14,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 0;
   border-right: 1px solid var(--border);
 }
@@ -40,7 +40,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 10px;
   font-size: var(--fs-ui);
   color: var(--fg-subtle);
@@ -51,7 +51,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding-right: 10px;
   white-space: nowrap;
 }
@@ -68,9 +68,6 @@
 .ok {
   color: var(--success);
 }
-.code {
-  font-weight: 600;
-}
 .result {
   height: 100%;
   display: flex;
@@ -82,7 +79,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 10px;
   white-space: nowrap;
   border-bottom: 1px solid var(--border);
@@ -135,7 +132,7 @@
 .editorToolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   height: var(--h-header);
   padding: 0 8px;
   background: var(--bg-editor);
@@ -272,7 +269,7 @@
 .envToolbar {
   flex: none;
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px 4px;
   border-bottom: 1px solid var(--border);
 }

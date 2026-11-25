@@ -1,7 +1,7 @@
 //! Starting server processes: binary resolution and the [`Launcher`] seam.
 
 use ide_core::CancellationToken;
-use ide_core::tool_path::search_path;
+use ide_core::tool_path::search_path_in;
 use ide_jsonrpc::{Handler, Peer};
 use ide_language::LanguageServerConfig;
 use std::ffi::{OsStr, OsString};
@@ -95,12 +95,15 @@ impl Launcher for ProcessLauncher {
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
         cancel: &CancellationToken,
     ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
-        let search = server_search_path(config);
+        if !required_env_set(config, root) {
+            return Err(LaunchError::Missing);
+        }
+        let search = server_search_path(config, root);
         let binary = match &config.pinned {
             // A plugin's server: the approved program, unchanged since.
             Some(pin) => Some(pin.verify().map_err(LaunchError::Failed)?.to_path_buf()),
             None => ide_core::tool_path::find_command(&config.command, &search, root)
-                .and_then(|b| resolve_rustup_proxy(&config.command, b))
+                .and_then(|b| resolve_rustup_proxy(&config.command, b, root))
                 .and_then(|b| reject_dead_shim(b, &search, root)),
         };
         let mut env: Vec<(String, String)> = vec![("PATH".into(), search.to_string_lossy().into_owned())];
@@ -125,16 +128,27 @@ impl Launcher for ProcessLauncher {
     }
 
     fn available(&self, config: &LanguageServerConfig, root: &Path) -> bool {
+        if !required_env_set(config, root) {
+            return false;
+        }
         if let Some(pin) = &config.pinned {
             return pin.path.is_file();
         }
-        ide_core::tool_path::find_command(&config.command, &server_search_path(config), root).is_some()
+        ide_core::tool_path::find_command(&config.command, &server_search_path(config, root), root).is_some()
     }
 }
 
-/// A configured `PATH` (e.g. a selected toolchain prepended) also resolves the binary.
-fn server_search_path(config: &LanguageServerConfig) -> OsString {
-    config.env.get("PATH").map(OsString::from).unwrap_or_else(search_path)
+fn required_env_set(config: &LanguageServerConfig, root: &Path) -> bool {
+    config.requires_env.iter().all(|key| match config.env.get(key) {
+        Some(value) => !value.is_empty(),
+        None => ide_core::process::host_var_os_in(root, key).is_some_and(|v| !v.is_empty()),
+    })
+}
+
+/// A configured `PATH` (e.g. a selected toolchain prepended) also resolves the binary; else
+/// the project's (a Nix devshell's language servers), then the IDE's.
+pub(crate) fn server_search_path(config: &LanguageServerConfig, root: &Path) -> OsString {
+    config.env.get("PATH").map(OsString::from).unwrap_or_else(|| search_path_in(root))
 }
 
 /// What a version manager's shim says when the active version has no such tool.
@@ -146,13 +160,13 @@ const DEAD_SHIM_MESSAGES: &[&str] =
 /// server that dies like that on every start is missing (an install hint), not crashing.
 /// Anything but a clear "not installed" answer from the shim counts as working.
 fn reject_dead_shim(binary: PathBuf, search: &OsStr, root: &Path) -> Option<PathBuf> {
-    if !binary.parent().is_some_and(|d| d.file_name().is_some_and(|n| n == "shims")) {
+    if binary.parent().and_then(Path::file_name) != Some(OsStr::new("shims")) {
         return Some(binary);
     }
-    let Ok(mut child) = ide_core::process::prepare(&mut std::process::Command::new(&binary))
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.current_dir(root).env("PATH", search);
+    let Ok(mut child) = ide_core::process::prepare(&mut cmd)
         .arg("--version")
-        .current_dir(root)
-        .env("PATH", search)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -195,34 +209,16 @@ fn reject_dead_shim(binary: PathBuf, search: &OsStr, root: &Path) -> Option<Path
 /// toolchain lacks the component (common for rust-analyzer). In that case use
 /// the newest installed toolchain that ships the binary; with none, the tool is
 /// missing (an install hint, not a server that crashes on every restart).
-fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> Option<PathBuf> {
+/// The probe runs in the project's root, where a `rust-toolchain.toml` picks the toolchain.
+fn resolve_rustup_proxy(command: &str, binary: PathBuf, root: &Path) -> Option<PathBuf> {
     let is_proxy = binary.parent().is_some_and(|d| d.ends_with(".cargo/bin"));
     if !is_proxy || command.contains('/') {
         return Some(binary);
     }
-    let works = ide_core::process::prepare(&mut std::process::Command::new(&binary))
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if works {
+    if proxy_works(&binary, root) {
         return Some(binary);
     }
-    let toolchains = std::env::var_os("RUSTUP_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".rustup")))
-        .map(|h| h.join("toolchains"));
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = toolchains
-        .and_then(|dir| std::fs::read_dir(dir).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path().join("bin").join(command))
-        .filter(|p| p.is_file())
-        .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p)))
-        .collect();
+    let mut candidates = rustup_home().map(|h| toolchain_binaries(&h.join("toolchains"), command)).unwrap_or_default();
     // Prefer stable-looking toolchains, then the most recently installed.
     candidates.sort_by_key(|(mtime, p)| (!p.to_string_lossy().contains("nightly"), *mtime));
     match candidates.pop() {
@@ -235,6 +231,56 @@ fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> Option<PathBuf> {
             None
         }
     }
+}
+
+/// Whether the proxy runs for the toolchain active in `root`. A probe that hangs or can't
+/// be waited for counts as working: the real start decides.
+fn proxy_works(binary: &Path, root: &Path) -> bool {
+    let Ok(mut child) = ide_core::process::prepare(std::process::Command::new(binary).current_dir(root))
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return true;
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                return true;
+            }
+        }
+    }
+}
+
+/// Where rustup keeps its toolchains: `RUSTUP_HOME`, else `.rustup` in the user's home
+/// (`HOME`, which a GUI app on Windows doesn't have, or `USERPROFILE`).
+fn rustup_home() -> Option<PathBuf> {
+    std::env::var_os("RUSTUP_HOME").map(PathBuf::from).or_else(|| {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+        Some(PathBuf::from(home).join(".rustup"))
+    })
+}
+
+/// The `command` binary (with the platform's executable suffix) of every toolchain in
+/// `toolchains`, with its modification time.
+fn toolchain_binaries(toolchains: &Path, command: &str) -> Vec<(std::time::SystemTime, PathBuf)> {
+    let file = format!("{command}{}", std::env::consts::EXE_SUFFIX);
+    std::fs::read_dir(toolchains)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join("bin").join(&file))
+        .filter(|p| p.is_file())
+        .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p)))
+        .collect()
 }
 
 /// Workspace root for `file`: the outermost ancestor within `project_root`
@@ -302,6 +348,35 @@ mod tests {
         assert_eq!(reject_dead_shim(plain.clone(), &search, tmp.path()), Some(plain));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn servers_from_the_project_environment_are_found() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let devshell = tmp.path().join("nix-store-devshell/bin");
+        std::fs::create_dir_all(&devshell).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let server = devshell.join("openidea-test-nil");
+        std::fs::write(&server, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut config: LanguageServerConfig =
+            toml::from_str("name = \"nil\"\ncommand = \"openidea-test-nil\"").unwrap();
+        config.requires_env = vec!["OPENIDEA_TEST_IN_DEVSHELL".into()];
+        assert!(!ProcessLauncher.available(&config, &root));
+        ide_core::project_env::set(
+            &root,
+            vec![
+                ("PATH".into(), Some(devshell.clone().into_os_string())),
+                ("OPENIDEA_TEST_IN_DEVSHELL".into(), Some("1".into())),
+            ],
+        );
+        assert!(ProcessLauncher.available(&config, &root));
+        assert_eq!(std::env::split_paths(&server_search_path(&config, &root)).next(), Some(devshell));
+        ide_core::project_env::remove(&root);
+        assert!(!ProcessLauncher.available(&config, &root));
+    }
+
     #[test]
     fn marked_root_needs_a_marker() {
         let tmp = tempfile::tempdir().unwrap();
@@ -316,8 +391,26 @@ mod tests {
     }
 
     #[test]
+    fn a_server_needing_an_unset_variable_is_missing() {
+        let exe = std::env::current_exe().unwrap();
+        let mut config: LanguageServerConfig =
+            toml::from_str(&format!("name = \"x\"\ncommand = {:?}", exe.to_string_lossy())).unwrap();
+        let root = exe.parent().unwrap();
+        assert!(ProcessLauncher.available(&config, root));
+        config.requires_env = vec!["OPENIDEA_TEST_NEVER_SET".into()];
+        assert!(!ProcessLauncher.available(&config, root));
+        let handler: Arc<dyn Handler> = Arc::new(ide_jsonrpc::NoopHandler);
+        let launched = ProcessLauncher.launch(&config, root, handler, Box::new(|_| {}));
+        assert!(matches!(launched, Err(LaunchError::Missing)));
+        config.env.insert("OPENIDEA_TEST_NEVER_SET".into(), String::new());
+        assert!(!ProcessLauncher.available(&config, root));
+        config.env.insert("OPENIDEA_TEST_NEVER_SET".into(), "/bundle".into());
+        assert!(ProcessLauncher.available(&config, root));
+    }
+
+    #[test]
     fn search_path_contains_env_path() {
-        let p = search_path();
+        let p = ide_core::tool_path::search_path();
         let dirs: Vec<PathBuf> = std::env::split_paths(&p).collect();
         // The process's own `PATH` starts the search, then per-user and system dirs.
         let first_env = std::env::split_paths(&std::env::var_os("PATH").unwrap()).find(|d| d.is_absolute()).unwrap();
@@ -332,7 +425,24 @@ mod proxy_tests {
     #[test]
     fn non_proxy_binaries_are_kept() {
         let p = PathBuf::from("/usr/bin/true");
-        assert_eq!(resolve_rustup_proxy("true", p.clone()), Some(p));
+        assert_eq!(resolve_rustup_proxy("true", p.clone(), Path::new(".")), Some(p));
+    }
+
+    /// The binary is `rust-analyzer.exe` on Windows: a lookup of the bare name found nothing there.
+    #[test]
+    fn toolchain_binaries_carry_the_platform_executable_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = format!("rust-analyzer{}", std::env::consts::EXE_SUFFIX);
+        for toolchain in ["stable-x86_64", "nightly-x86_64"] {
+            std::fs::create_dir_all(tmp.path().join(toolchain).join("bin")).unwrap();
+        }
+        std::fs::write(tmp.path().join("stable-x86_64/bin").join(&file), "").unwrap();
+        // Another tool, and a bare name without the suffix where one is required.
+        std::fs::write(tmp.path().join("nightly-x86_64/bin").join("rustfmt"), "").unwrap();
+        let found = toolchain_binaries(tmp.path(), "rust-analyzer");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1, tmp.path().join("stable-x86_64/bin").join(&file));
+        assert!(toolchain_binaries(&tmp.path().join("missing"), "rust-analyzer").is_empty());
     }
 
     /// Exercises the real machine setup when a broken rustup proxy is present.
@@ -341,7 +451,7 @@ mod proxy_tests {
     fn broken_rustup_proxy_falls_back_to_a_toolchain() {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap());
         let proxy = home.join(".cargo/bin/rust-analyzer");
-        let resolved = resolve_rustup_proxy("rust-analyzer", proxy.clone()).unwrap();
+        let resolved = resolve_rustup_proxy("rust-analyzer", proxy.clone(), Path::new(".")).unwrap();
         eprintln!("resolved: {}", resolved.display());
         assert_ne!(resolved, proxy);
     }

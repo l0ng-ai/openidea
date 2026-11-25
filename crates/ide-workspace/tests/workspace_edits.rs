@@ -1,4 +1,4 @@
-use ide_core::{ChangeSet, FileEdit, LanguageId, NullSink, Pos, Range, TextChange, TextEdit, WorkspaceEdit};
+use ide_core::{ChangeSet, FileEdit, FileMove, LanguageId, NullSink, Pos, Range, TextChange, TextEdit, WorkspaceEdit};
 use ide_core::{IdeEvent, error::ErrorKind};
 use ide_workspace::Documents;
 use parking_lot::Mutex;
@@ -160,6 +160,60 @@ fn undo_id(events: &Mutex<Vec<IdeEvent>>) -> u32 {
             _ => None,
         })
         .expect("successful transaction has one undo record")
+}
+
+#[test]
+fn applied_event_lists_the_files_the_edit_renamed() {
+    for by_agent in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("ListPrice.java");
+        let to = tmp.path().join("BasePrice.java");
+        let user = tmp.path().join("BulkDiscount.java");
+        std::fs::write(&from, "old").unwrap();
+        std::fs::write(&user, "old\n").unwrap();
+        let (docs, events) = recorded_documents();
+        let edit = WorkspaceEdit {
+            files: vec![edit(&user, "new"), FileEdit::Rename { from: from.clone().into(), to: to.clone().into() }],
+            ..Default::default()
+        };
+        if by_agent { docs.apply_agent_workspace_edit(&edit) } else { docs.apply_workspace_edit(&edit) }.unwrap();
+        let moves = events
+            .lock()
+            .iter()
+            .find_map(|event| match event {
+                IdeEvent::WorkspaceEditApplied { moves, .. } => Some(moves.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(moves, vec![FileMove { from: from.into(), to: to.into() }], "by_agent: {by_agent}");
+    }
+}
+
+#[test]
+fn applied_event_lists_no_moves_for_text_edits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    assert!(
+        events.lock().iter().any(|e| matches!(e, IdeEvent::WorkspaceEditApplied { moves, .. } if moves.is_empty()))
+    );
+}
+
+#[test]
+fn undo_keeps_the_encoding_chosen_for_a_file_opened_after_the_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("legacy.txt");
+    std::fs::write(&path, b"abc\xC3\xA9").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    let info = docs.open(&path).unwrap();
+    docs.set_encoding(info.id, "windows-1252", true).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "newÃ©");
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    let snapshot = docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("abcÃ©", "windows-1252"));
 }
 
 #[test]
@@ -516,6 +570,18 @@ fn duplicate_edits_keep_versions_and_apply_one_replacement() {
 }
 
 #[test]
+fn repeated_inserts_at_one_position_all_apply_once_per_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("main.ts");
+    std::fs::write(&path, "f(").unwrap();
+    let docs = documents();
+    let close = TextEdit { range: Range::new(Pos::new(0, 2), Pos::new(0, 2)), new_text: ")".into() };
+    let entry = FileEdit::Edit { path: path.clone().into(), version: None, edits: vec![close.clone(), close] };
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![entry.clone(), entry], ..Default::default() }).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "f())");
+}
+
+#[test]
 fn undo_accepts_typing_that_was_reverted_to_the_saved_refactoring() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("main.ts");
@@ -612,4 +678,26 @@ fn replacing_a_directory_symlink_does_not_resolve_later_child_paths_through_its_
         assert_eq!(std::fs::read_to_string(target.join("file.txt")).unwrap(), "old target\n");
         assert_eq!(std::fs::read_to_string(link.join("file.txt")).unwrap(), "new file\n");
     }
+}
+
+#[test]
+fn an_overwritten_open_file_keeps_the_editorconfig_charset() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = tmp.path().join("A.java");
+    std::fs::write(&path, "class A {}\n").unwrap();
+    let docs = documents();
+    let mut defaults = docs.file_defaults();
+    defaults.project_fallback = "iso-8859-15".into();
+    docs.set_file_defaults(defaults);
+    let doc = docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+
+    docs.apply_workspace_edit(&WorkspaceEdit {
+        files: vec![FileEdit::Create { path: path.clone().into(), overwrite: true }],
+        ..Default::default()
+    })
+    .unwrap();
+
+    assert_eq!(docs.snapshot(doc.id).unwrap().encoding, "utf-8");
 }

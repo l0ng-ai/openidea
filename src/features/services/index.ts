@@ -19,6 +19,7 @@ import {
   registerServiceView,
   registerToolWindow,
   showServiceView,
+  useServicesRunningCount,
 } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { addFileIconProvider } from "@/ui";
@@ -36,6 +37,7 @@ import { gutterActions, registerDockerRunTypes } from "./runTypes";
 import { ServicesDialogHost } from "./dialogs";
 import { dockerProvider, selectedTarget } from "./docker";
 import { DOCKER_LOG_EDITOR_KIND, DockerLogEditor, dockerLogEditorTitle, openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeSource } from "./composeSource";
 import {
   canRemove,
   canStart,
@@ -51,12 +53,23 @@ import {
 } from "./ops";
 import { SERVICES_VIEW_FOCUS, ServicesTreeView, showAddServiceMenu } from "./ServicesTree";
 import { ServicesHeaderActions, ServicesHost, ServicesTabs } from "./ServicesHost";
-import { connections, refresh, setDockerFilters, useServices } from "./store";
+import {
+  connectConnection,
+  connectionState,
+  connections,
+  disconnectConnection,
+  refresh,
+  setDockerFilters,
+  useServices,
+} from "./store";
 import { SERVICES_TREE_VIEW } from "./tree";
 import { isRunning } from "./model";
 import type { PruneTarget } from "@/platform/ipc";
 
 const PROJECT = "projectOpen";
+
+/** The window badge: how many of the listed services are running (the run provider tracks them). */
+const useServicesBadge = () => useServicesRunningCount((s) => s.count);
 
 /** The connection of the selection, else the first one. */
 const currentConnection = () => selectedTarget()?.conn ?? connections()[0]?.id ?? null;
@@ -71,6 +84,7 @@ export function activate(): () => void {
       anchor: "bottom",
       order: 8,
       stripe: "onUse",
+      useBadge: useServicesBadge,
       component: ServicesHost,
       headerContent: ServicesTabs,
       headerActions: ServicesHeaderActions,
@@ -139,6 +153,26 @@ export function activate(): () => void {
         run: () => refresh(),
       },
       {
+        id: "docker.connect",
+        title: "Connect to Docker",
+        category: "Docker",
+        when: PROJECT,
+        run: () => {
+          const id = currentConnection();
+          if (id && connectionState(id).disconnected) void connectConnection(id);
+        },
+      },
+      {
+        id: "docker.disconnect",
+        title: "Disconnect from Docker",
+        category: "Docker",
+        when: PROJECT,
+        run: () => {
+          const id = currentConnection();
+          if (id && !connectionState(id).disconnected) void disconnectConnection(id);
+        },
+      },
+      {
         id: "docker.start",
         title: "Start Container",
         category: "Docker",
@@ -200,6 +234,22 @@ export function activate(): () => void {
         run: () => {
           const t = selectedTarget();
           if (t?.node.kind === "container") openContainerLogInEditor(t.conn, t.node.container);
+        },
+      },
+      {
+        id: "docker.jumpToSource",
+        title: "Jump to Source",
+        category: "Docker",
+        icon: "autoscroll-to-source",
+        when: PROJECT,
+        run: () => {
+          const t = selectedTarget();
+          if (t?.node.kind === "container" && hasComposeSource(t.node.container)) {
+            return jumpToContainerComposeSource(t.node.container);
+          }
+          if (t?.node.kind === "compose" && t.node.containers[0] && hasComposeSource(t.node.containers[0])) {
+            return jumpToComposeProjectSource(t.node.project, t.node.containers);
+          }
         },
       },
       {

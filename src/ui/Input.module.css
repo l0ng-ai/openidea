@@ -52,7 +52,7 @@
 .searchField {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: var(--h-field, 28px);
   min-width: 0;
   padding: 0 4px 0 8px;
@@ -108,7 +108,7 @@
 .large {
   height: 38px;
   padding: 0 8px 0 12px;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .large .searchInput {
   font-size: var(--fs-input-large);

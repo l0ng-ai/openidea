@@ -132,6 +132,24 @@ mac = "Meta+Alt+C"        # optional; macOS uses `key` as written when it is mis
   the user already uses that keystroke, or when the action already has a binding. The user
   can rebind it in **Settings › Keymap**.
 
+### Escape in the editor
+
+API 1.10 lets a command answer a plain <kbd>Escape</kbd> in a focused editor, to clear
+something the plugin shows there (a highlight, a mode):
+
+```toml
+[[contributes.keymaps]]
+command = "clear-highlight"
+key = "Escape"
+when = "plugin.my-plugin.highlighting"   # required; set it with set-context while there is something to clear
+```
+
+- It runs only after everything the IDE does with Escape in the editor found nothing to do:
+  closing a popup, completion or rename, collapsing a selection or extra carets, Vim.
+- `when` is required and `key` (and `mac`, if given) must be `Escape`. Escape is the only plain
+  key a plugin can bind, and `when` is accepted only on such a binding.
+- When several plugins' `when` hold, the most recently loaded one runs.
+
 ## Menus
 
 ```toml
@@ -207,6 +225,13 @@ A declared item shows before the code runs. From code:
 - `host::set_window_status_item(id, item)` (API 1.4) overrides it in the invoking window
   only; `remove_window_status_item(id)` falls back to the global item. Only valid from a
   command or event of a window.
+- `host::set_status_item_menu(id, item, &menu)` and `set_window_status_item_menu` (API 1.14)
+  give the item a menu: clicking the item opens it anchored to the item instead of running
+  `command`, and choosing an action runs its command with its argument in that window.
+  Entries are `StatusMenuEntry::action(label, command)` (with `.with_description(…)` for
+  secondary text such as a URL and `.with_argument(…)`), `Separator` and `Header(text)`, at
+  most 64. An action naming a command the plugin doesn't declare fails the call. A later
+  `set_status_item` drops the menu.
 
 ## Context keys from code
 

@@ -1,37 +1,191 @@
 import type { Page } from "@playwright/test";
+import type { BeforeLaunchTask } from "../src/bindings";
 import { expect, test } from "./fixtures";
 
-async function openConfigurations(page: Page) {
-  await page.evaluate(async () => {
+test("expands VM options beside the field and returns edited text to the configuration", async ({
+  workbench: page,
+}) => {
+  const original = "-Xmx512m\n-Ddemo.endpoint=https://example.test/" + "long-segment/".repeat(12);
+  await page.evaluate(async (vmOptions) => {
     const path = "/src/features/run/store.ts";
     const { useRun } = await import(/* @vite-ignore */ path);
-    const base = {
-      kind: "shell",
-      command: "/Users/developer/projects/acme/services/payments/scripts/start-development-server",
-      args: ["--watch"],
-      cwd: "/Users/developer/projects/acme/services/payments",
-      env: { NODE_ENV: "development" },
-      detected: false,
-      isTest: false,
-      debugAdapter: null,
-    };
     useRun.setState({
       configs: [
         {
-          ...base,
-          id: "layout:app",
-          name: "Payments development server",
-          beforeLaunch: [{ kind: "run", target: "layout:prepare" }],
+          id: "layout:jvm",
+          name: "Catalog service",
+          kind: "application",
+          command: "java",
+          args: ["example.Catalog"],
+          params: { mainClass: "example.Catalog", vmOptions },
+          env: {},
+          cwd: null,
+          detected: false,
+          isTest: false,
+          debugAdapter: "java-debug",
         },
-        { ...base, id: "layout:prepare", name: "Prepare generated sources for the payments development server" },
       ],
-      selectedId: "layout:app",
+      editTarget: "layout:jvm",
       loaded: true,
       editorOpen: true,
     });
-  });
+  }, original);
+
+  const config = page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true });
+  const field = config.getByRole("textbox", { name: "VM options", exact: true });
+  const expanded = page.getByRole("dialog", { name: "VM options", exact: true });
+  const editor = expanded.getByRole("textbox", { name: "VM options", exact: true });
+  for (const width of [1100, 560]) {
+    await page.setViewportSize({ width, height: 760 });
+    await field.scrollIntoViewIfNeeded();
+    await field.press("Shift+Enter");
+    await expect(editor).toBeFocused();
+    await expect
+      .poll(async () => {
+        const source = (await field.boundingBox())!;
+        const popup = (await expanded.boundingBox())!;
+        const gap = Math.min(Math.abs(popup.y - source.y - source.height), Math.abs(source.y - popup.y - popup.height));
+        return popup.x >= 0 && popup.x + popup.width <= width && gap <= 6;
+      })
+      .toBe(true);
+    await expect.poll(() => editor.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeGreaterThan(0);
+    await editor.fill("-Xmx1g");
+    await editor.press("Escape");
+    await expect(expanded).toBeHidden();
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue(original);
+  }
+
+  const expand = config.getByRole("button", { name: "Expand (⇧⏎)", exact: true });
+  await expand.click();
+  await expect(editor).toBeFocused();
+  await editor.fill(original + "\n-Ddemo.mode=local");
+  await editor.press("Control+Enter");
+  await expect(expanded).toBeHidden();
+  await expect(field).toHaveValue(original + "\n-Ddemo.mode=local");
+});
+
+async function openConfigurations(page: Page, target?: string, beforeLaunch?: BeforeLaunchTask[]) {
+  await page.evaluate(
+    async ({ target, beforeLaunch }) => {
+      const path = "/src/features/run/store.ts";
+      const { useRun } = await import(/* @vite-ignore */ path);
+      const base = {
+        kind: "shell",
+        command: "/Users/developer/projects/acme/services/payments/scripts/start-development-server",
+        args: ["--watch"],
+        cwd: "/Users/developer/projects/acme/services/payments",
+        env: { NODE_ENV: "development" },
+        detected: false,
+        isTest: false,
+        debugAdapter: null,
+      };
+      useRun.setState({
+        configs: [
+          {
+            ...base,
+            id: "layout:app",
+            name: "Payments development server",
+            target,
+            beforeLaunch: beforeLaunch ?? [{ kind: "run", target: "layout:prepare" }],
+          },
+          { ...base, id: "layout:prepare", name: "Prepare generated sources for the payments development server" },
+        ],
+        selectedId: "layout:app",
+        loaded: true,
+        editorOpen: true,
+      });
+    },
+    { target, beforeLaunch },
+  );
   await expect(page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true })).toBeVisible();
 }
+
+test("before-launch tasks wrap as ordered tags and keep their edit controls", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1150, height: 820 });
+  await openConfigurations(page, undefined, [
+    { kind: "build" },
+    { kind: "buildArtifacts" },
+    { kind: "command", target: "make generate" },
+  ]);
+  const dialog = page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true });
+  const tasks = dialog.getByRole("list", { name: "Before launch tasks", exact: true });
+  const build = tasks.getByRole("button", { name: "1. Build Project", exact: true });
+  const artifacts = tasks.getByRole("button", { name: "2. Build Artifacts", exact: true });
+  await tasks.scrollIntoViewIfNeeded();
+  await expect(build).toBeVisible();
+  expect((await build.boundingBox())!.y).toBeCloseTo((await artifacts.boundingBox())!.y, 0);
+  await expect(build).toHaveCSS("font-size", "13px");
+
+  await page.setViewportSize({ width: 520, height: 820 });
+  await expect.poll(() => tasks.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  const command = tasks.getByRole("textbox", { name: "Before launch command 3" });
+  expect((await command.boundingBox())!.y).toBeGreaterThan((await build.boundingBox())!.y + 20);
+  await command.fill("make report");
+
+  await build.press("Enter");
+  const actions = page.getByRole("menu", { name: "Task Actions", exact: true });
+  const moveDown = actions.getByRole("menuitem", { name: "Move Down", exact: true });
+  await expect(moveDown).toBeVisible();
+  await moveDown.click();
+  await expect(tasks.getByRole("button", { name: "1. Build Artifacts", exact: true })).toBeVisible();
+  const moved = tasks.getByRole("listitem").filter({
+    has: page.getByRole("button", { name: "2. Build Project", exact: true }),
+  });
+  await moved.getByRole("button", { name: "Remove Task" }).click();
+  await expect(tasks.getByRole("textbox", { name: "Before launch command 2" })).toHaveValue("make report");
+
+  await tasks.getByRole("button", { name: "Add task", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Build Project", exact: true }).click();
+  await expect(tasks.getByRole("button", { name: "3. Build Project", exact: true })).toBeVisible();
+});
+
+test("long run target names leave room for configuration names in the sidebar", async ({ workbench: page }) => {
+  const target = "payments-development-shared-staging-runner-west";
+  await openConfigurations(page, target);
+  const dialog = page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true });
+  const tree = dialog.getByRole("tree", { name: "Run configurations", exact: true });
+  const row = tree.getByRole("treeitem", { name: /^Payments development server/ });
+  const name = row.getByText("Payments development server", { exact: true });
+  const badge = row.getByText(`@ ${target}`, { exact: true });
+  await expect(badge).toBeVisible();
+
+  for (const width of [1100, 520]) {
+    await page.setViewportSize({ width, height: 820 });
+    await expect.poll(async () => (await name.boundingBox())!.width).toBeGreaterThan(width === 1100 ? 80 : 50);
+    await expect.poll(() => tree.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  }
+
+  await expect(badge).toBeHidden();
+  await expect(row).toHaveAttribute("title", new RegExp(`Payments development server @ ${target}`));
+  await expect(dialog.getByRole("textbox", { name: "Name", exact: true })).toHaveValue("Payments development server");
+});
+
+test("the configuration type list scrolls below its search field in a short window", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 780, height: 370 });
+  await openConfigurations(page);
+  const dialog = page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true });
+  await dialog.getByRole("button", { name: "Add New Configuration", exact: true }).click();
+  const chooser = page.getByRole("dialog", { name: "Add New Configuration", exact: true });
+  const search = chooser.getByRole("textbox", { name: "Search configuration types" });
+  const list = chooser.getByRole("listbox", { name: "Configuration types" });
+  await expect(search).toBeFocused();
+  expect(await chooser.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
+  expect(await list.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+
+  await search.press("End");
+  const active = list.getByRole("option", { selected: true });
+  await expect(active).toBeInViewport({ ratio: 0.98 });
+  expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(active.locator("svg")).toHaveAttribute("width", "16");
+  await expect(search).toBeInViewport({ ratio: 1 });
+
+  await search.fill("Tomcat");
+  await expect(list.getByRole("option", { name: "Tomcat Server", selected: true })).toBeVisible();
+  await search.press("Enter");
+  await expect(chooser).toBeHidden();
+  await expect(dialog.getByRole("tab", { name: "Server", exact: true })).toBeVisible();
+});
 
 test("run configuration sidebar resizes with mouse and keyboard and remembers the layout", async ({
   workbench: page,
@@ -90,7 +244,7 @@ test("resizing the configuration dialog grows its panes and keeps the footer vis
   await expect(dialog.getByRole("tree", { name: "Run configurations", exact: true })).toBeVisible();
   await expect.poll(async () => (await content.boundingBox())!.height).toBeLessThan(initial);
   await expect
-    .poll(() => dialog.locator("[class*='editForm_']").evaluate((el) => el.scrollHeight - el.clientHeight))
+    .poll(() => dialog.locator("[class*='_formSettings_']").evaluate((el) => el.scrollHeight - el.clientHeight))
     .toBeGreaterThan(0);
 });
 
@@ -122,7 +276,7 @@ test("Java, npm and Python forms fit narrow and zoomed content panes", async ({ 
       for (const width of [1024, 640, 520]) {
         await page.setViewportSize({ width, height: 820 });
         await expect
-          .poll(() => dialog.locator("[class*='editForm_']").evaluate((el) => el.scrollWidth - el.clientWidth), {
+          .poll(() => dialog.locator("[class*='_formSettings_']").evaluate((el) => el.scrollWidth - el.clientWidth), {
             message: `${kind}, ${width}px, ${zoom * 100}%`,
           })
           .toBeLessThanOrEqual(1);
@@ -182,7 +336,7 @@ for (const locale of ["en", "zh"]) {
           )
           .toMatchObject({ overflow: expect.any(Number), footerFits: true, footerVisible: true });
         await expect
-          .poll(() => dialog.locator("[class*='editForm_']").evaluate((el) => el.scrollWidth - el.clientWidth))
+          .poll(() => dialog.locator("[class*='_formSettings_']").evaluate((el) => el.scrollWidth - el.clientWidth))
           .toBeLessThanOrEqual(1);
         const tasks = dialog.getByRole("list");
         await tasks.scrollIntoViewIfNeeded();

@@ -4,9 +4,13 @@ export {
   applySettingsToAll,
   applyThemeToAll,
   closeAll,
+  detachTab,
   newTab,
+  newTabRunning,
   pluginSession,
+  rememberTerminals,
   syncTerminalProject,
+  tabTitle,
   unbindTerminals,
   newTabAt,
   requestCloseSession,
@@ -17,6 +21,21 @@ export {
   unsplit,
   useTerminals,
 } from "./store";
+export {
+  adoptCli,
+  applySettingsToClis,
+  applyThemeToClis,
+  cliBusy,
+  cliSession,
+  cliSessionForTerminalId,
+  cliSessionFromElement,
+  disposeAllClis,
+  disposeCli,
+  isCliSession,
+  reattachCli,
+  startCli,
+} from "./cliSessions";
+export { CliEditor } from "./CliEditor";
 export { TerminalTabs, TerminalView } from "./TerminalView";
 export { applyThemeToEmbedded, createEmbeddedTerminal } from "./embedded";
 export { closeTerminalFind, openTerminalFind, useTerminalFind } from "./FindBar";

@@ -1,23 +1,27 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { insertNewlineAndIndent } from "@codemirror/commands";
-import { indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
+import { history, insertNewlineAndIndent, redo, undo } from "@codemirror/commands";
+import { indentOnInput, indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
 import {
   addCaretsToLineEnds,
   commentLine,
   completeStatement,
+  cycleCase,
+  deleteLine,
+  duplicateEntireLines,
   joinLines,
   startNewLine,
   startNewLineBefore,
   toggleCase,
   unselectOccurrence,
 } from "./editing";
-import { batchLanguage, commentTokens, findLanguageDescription } from "./languages";
+import { batchLanguage, commentTokens, findLanguageDescription, loadSupport } from "./languages";
 import { toggleCaret } from "./multiCaret";
 import { restructuredtextLanguage } from "./restructuredtext";
 import { commentBlock, enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
+import { java } from "@codemirror/lang-java";
 
 /** Brace languages in miniature: one unit deeper after a line ending in `{`. */
 const javascript = () =>
@@ -90,6 +94,19 @@ describe("start new line", () => {
   });
 });
 
+describe("delete line", () => {
+  it("puts the caret back where the deletion left it on Redo", () => {
+    const v = make("class A {\n    void m() {\n        int count = 1;|\n        print(count);\n    }\n}\n", history());
+    deleteLine(v);
+    const after = show(v);
+    undo(v);
+    expect(show(v)).toBe("class A {\n    void m() {\n        int count = 1;|\n        print(count);\n    }\n}\n");
+    redo(v);
+    expect(show(v)).toBe(after);
+    expect(v.state.doc.toString()).not.toContain("count = 1");
+  });
+});
+
 describe("join lines", () => {
   it("joins the next line with one space, dropping its indent", () => {
     const v = make("let a =| \n    1;\n");
@@ -128,6 +145,41 @@ describe("join lines", () => {
   });
 });
 
+describe("duplicate entire lines", () => {
+  it("copies the whole lines a selection touches below them and selects the copy", () => {
+    const v = make("a[b\nc]d\ne");
+    duplicateEntireLines(v);
+    expect(show(v)).toBe("ab\ncd\na[b\nc]d\ne");
+  });
+
+  it("copies the caret's line without a selection", () => {
+    const v = make("a|b\nc");
+    duplicateEntireLines(v);
+    expect(show(v)).toBe("ab\na|b\nc");
+  });
+
+  it("leaves out the line where a selection ends at its start", () => {
+    const v = make("[ab\n]cd");
+    duplicateEntireLines(v);
+    expect(show(v)).toBe("ab\n[ab\n]cd");
+  });
+
+  it("copies a line once for several carets on it, and each caret's line otherwise", () => {
+    const one = make("a|b|c");
+    duplicateEntireLines(one);
+    expect(show(one)).toBe("abc\na|b|c");
+    const two = make("a|\nb\nc|");
+    duplicateEntireLines(two);
+    expect(show(two)).toBe("a\na|\nb\nc\nc|");
+  });
+
+  it("does nothing in a read-only editor", () => {
+    const v = make("a[b]", EditorState.readOnly.of(true));
+    expect(duplicateEntireLines(v)).toBe(false);
+    expect(show(v)).toBe("a[b]");
+  });
+});
+
 describe("toggle case", () => {
   it("lower-cases text with any upper-case letter, upper-cases the rest", () => {
     const v = make("[fooBar]");
@@ -147,6 +199,58 @@ describe("toggle case", () => {
     const v = make("[abc] [Def]");
     toggleCase(v);
     expect(v.state.doc.toString()).toBe("abc def");
+  });
+});
+
+describe("cycle case", () => {
+  it("cycles the identifier at the caret and keeps it selected", () => {
+    const v = make("int myVar|Name = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("int [MyVarName] = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("int [my_var_name] = 1;");
+  });
+
+  it("cycles the identifier the caret just left", () => {
+    const v = make("let my_var| = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("let [MY_VAR] = 1;");
+  });
+
+  it("converts the selection", () => {
+    const v = make("const [SOME_VALUE] = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("const [some-value] = 1;");
+  });
+
+  it("takes a kebab-case name at the caret whole", () => {
+    const v = make("<div data-some-|attribute>");
+    cycleCase(v);
+    expect(show(v)).toBe("<div [dataSomeAttribute]>");
+  });
+
+  it("leaves a subtraction alone", () => {
+    const v = make("let n = a - b|;");
+    cycleCase(v);
+    expect(show(v)).toBe("let n = a - [B];");
+  });
+
+  it("moves each caret to the next style", () => {
+    const v = make("[fooBar] [foo_bar]");
+    cycleCase(v);
+    expect(show(v)).toBe("[FooBar] [FOO_BAR]");
+  });
+
+  it("keeps what surrounds a converted selection", () => {
+    const v = make("x = [ user name ] + 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("x = [ userName ] + 1;");
+  });
+
+  it("does nothing where there is no identifier to convert", () => {
+    const v = make("let a = 2|0;");
+    expect(cycleCase(v)).toBe(false);
+    expect(show(v)).toBe("let a = 2|0;");
   });
 });
 
@@ -264,6 +368,107 @@ describe("enter in a line comment", async () => {
   });
 });
 
+describe("Python indentation", async () => {
+  const py = (await loadSupport(languages.find((l) => l.name === "Python")!))!;
+  const ext = [py, indentUnit.of("    ")];
+
+  it("dedents the line after return, pass, raise, break and continue", () => {
+    for (const stmt of ["return 1", "pass", "raise ValueError(x)", "break", "continue"]) {
+      const v = make(`def f():\n    while x:\n        ${stmt}|`, ext);
+      insertNewlineAndIndent(v);
+      expect(show(v)).toBe(`def f():\n    while x:\n        ${stmt}\n    |`);
+    }
+  });
+
+  it("keeps the indentation inside an unfinished return", () => {
+    const v = make("def f():\n    return foo(|", ext);
+    insertNewlineAndIndent(v);
+    expect(show(v).split("\n")[2]).not.toBe("|");
+    const w = make("def f():\n    value = 1|", ext);
+    insertNewlineAndIndent(w);
+    expect(show(w)).toBe("def f():\n    value = 1\n    |");
+  });
+
+  it("aligns a bare except: with its try as it is typed", () => {
+    const v = make("try:\n    load()\n    except|", [ext, indentOnInput()]);
+    const r = v.state.selection.main;
+    const insert = () => v.state.update(v.state.replaceSelection(":"), { userEvent: "input.type" });
+    if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ":", insert))) v.dispatch(insert());
+    expect(show(v)).toBe("try:\n    load()\nexcept:|");
+  });
+});
+
+describe("C++ access specifiers", async () => {
+  const cpp = (await loadSupport(languages.find((l) => l.name === "C++")!))!;
+
+  it("lines up with the class as its colon is typed, and the members below stay indented", () => {
+    const v = make("namespace n {\n    class A {\n        |\n    };\n}", [cpp, indentUnit.of("    "), indentOnInput()]);
+    for (const ch of "public:") {
+      const at = v.state.selection.main.head;
+      v.dispatch({ changes: { from: at, insert: ch }, selection: { anchor: at + 1 }, userEvent: "input.type" });
+    }
+    expect(show(v)).toBe("namespace n {\n    class A {\n    public:|\n    };\n}");
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe("namespace n {\n    class A {\n    public:\n        |\n    };\n}");
+  });
+
+  it("leaves a scope qualifier alone", () => {
+    const v = make("class A {\n    |\n};", [cpp, indentUnit.of("    "), indentOnInput()]);
+    for (const ch of "std::") {
+      const at = v.state.selection.main.head;
+      v.dispatch({ changes: { from: at, insert: ch }, selection: { anchor: at + 1 }, userEvent: "input.type" });
+    }
+    expect(show(v)).toBe("class A {\n    std::|\n};");
+  });
+});
+
+describe("Enter after a case label", async () => {
+  const load = async (name: string) => (await loadSupport(languages.find((l) => l.name === name)!))!;
+  const [c, cpp, php] = await Promise.all([load("C"), load("C++"), load("PHP")]);
+
+  it("indents the branch body one level in C, C++ and PHP", () => {
+    for (const [support, head] of [
+      [c, "int f(int x) {\n    switch (x) {\n        case 1:|\n    }\n}"],
+      [cpp, "int f(int x) {\n    switch (x) {\n        default:|\n    }\n}"],
+      [php, "<?php\nfunction f($x) {\n    switch ($x) {\n        case 'a':|\n    }\n}"],
+    ] as const) {
+      const v = make(head, [support, indentUnit.of("    ")]);
+      insertNewlineAndIndent(v);
+      const lines = show(v).split("\n");
+      expect(lines.find((l) => l.includes("|"))).toBe("            |");
+    }
+  });
+
+  it("leaves other lines alone", () => {
+    const v = make("void f() {\n    std::|\n}", [cpp, indentUnit.of("    ")]);
+    insertNewlineAndIndent(v);
+    expect(show(v).split("\n")[2]).toBe("    |");
+  });
+});
+
+describe("Kotlin continuation indentation", async () => {
+  const kt = (await loadSupport(languages.find((l) => l.name === "Kotlin")!))!;
+  const ext = [kt, indentUnit.of("    ")];
+
+  it("indents a when branch body and an assigned expression one level", () => {
+    const v = make("fun f(x: Int) {\n    when (x) {\n        1 ->|\n    }\n}", ext);
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe("fun f(x: Int) {\n    when (x) {\n        1 ->\n            |\n    }\n}");
+    const w = make("fun f() {\n    val answer =|\n}", ext);
+    insertNewlineAndIndent(w);
+    expect(show(w)).toBe("fun f() {\n    val answer =\n        |\n}");
+  });
+
+  it("leaves comparisons and finished statements alone", () => {
+    const v = make("fun f() {\n    val ok = a ==|\n}", ext);
+    insertNewlineAndIndent(v);
+    expect(show(v).split("\n")[2]).not.toBe("        |");
+    const w = make("fun f() {\n    val a = 1|\n}", ext);
+    insertNewlineAndIndent(w);
+    expect(show(w)).toBe("fun f() {\n    val a = 1\n    |\n}");
+  });
+});
+
 describe("fallback indentation for GDScript", () => {
   const gd = [
     EditorState.tabSize.of(4),
@@ -311,6 +516,14 @@ describe("fallback indentation for GDScript", () => {
     const v = make("func test() -> void|", gd);
     completeStatement("gdscript")(v);
     expect(show(v)).toBe("func test() -> void:\n\t|");
+  });
+});
+
+describe("complete current statement", () => {
+  it("indents the line after an added semicolon like the statement, not as its continuation", () => {
+    const v = make('class A {\n  void f() {\n    String a = "1"|\n    g();\n  }\n}\n', java());
+    completeStatement("java")(v);
+    expect(show(v)).toBe('class A {\n  void f() {\n    String a = "1";\n    |\n    g();\n  }\n}\n');
   });
 });
 
@@ -418,6 +631,27 @@ describe("toggle comment where the tokens depend on the syntax context", () => {
   // A JSX comment is `{/* … */}` in JSX children, but its own text parses as
   // JavaScript, where the tokens are `/* … */`.
   const wrap = (body: string) => `const a = (\n  <div>\n    ${body}\n  </div>\n);`;
+
+  it.each(["JSX", "TSX"])("comments a JSX expression child with Ctrl+/ in %s", async (name) => {
+    const mode = await languages.find((l) => l.name === name)!.load();
+    const v = make("const view = <section>\n  |{label}\n</section>;", mode);
+    commentLine(v);
+    expect(v.state.doc.line(2).text).toBe("  {/* {label} */}");
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe("const view = <section>\n  {label}\n</section>;");
+  });
+
+  it.each(["JSX", "TSX"])("comments a selected JSX child subtree with Ctrl+/ in %s", async (name) => {
+    const mode = await languages.find((l) => l.name === name)!.load();
+    const original = "const view = <main>\n  <aside>\n    <strong>ready</strong>\n  </aside>\n</main>;";
+    const v = make(original.replace("<aside>", "[<aside>").replace("</aside>", "</aside>]"), mode);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(
+      "const view = <main>\n  {/* <aside>\n    <strong>ready</strong>\n  </aside> */}\n</main>;",
+    );
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(original);
+  });
 
   it("takes a JSX line comment back out, with the caret", async () => {
     const tsx = await languages.find((l) => l.name === "TSX")!.load();

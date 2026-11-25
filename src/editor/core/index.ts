@@ -11,8 +11,11 @@ import {
   registerStatusItem,
 } from "@/workbench/contributions";
 import { _provideCodePreview, _provideDocumentAttacher, editorsFor } from "@/editor/api";
+import { isUntitledUri } from "@/platform/virtualDocs";
 import { formatDocument } from "@/editor/lsp/format";
-import { editorController } from "./controller";
+import { chooserTitle, locationItems, pinToFind } from "@/editor/lsp/navigation";
+import { openPopup } from "@/editor/lsp/popupStore";
+import { editorController, useTabs } from "./controller";
 import { attachDocument } from "./model/attachment";
 import { previewExtensions } from "./cm/preview";
 import { registerEditorActions } from "./actions";
@@ -42,15 +45,20 @@ export function activate(): void | (() => void) {
   provideEditorService({
     openFile: (path, options) => ctrl.openFile(path, options),
     openInput: (input, options) => ctrl.openInput(input, options),
+    openInWindow: (input) => ctrl.openInWindow(input),
+    openUntitled: (options) => ctrl.openUntitled(options),
     activePath: () => ctrl.activePath(),
     activeCursor: () => ctrl.activeCursor(),
-    saveAll: () => ctrl.saveAll(),
+    saveAll: (opts) => ctrl.saveAll(opts),
     dirtyDocumentIds: () => [...ctrl.manager.byId.values()].filter((m) => m.getMeta().dirty).map((m) => m.doc),
+    untitledDirtyDocumentIds: () =>
+      [...ctrl.manager.byId.values()].filter((m) => isUntitledUri(m.path) && m.getMeta().dirty).map((m) => m.doc),
     focus: () => ctrl.focus(),
     openPaths: () => ctrl.openPaths(),
+    onOpenTabsChange: (fn) => useTabs.subscribe(fn),
     openTabs: () => ctrl.openTabs(),
     tabInput: (paneId, tabId) => ctrl.tabInput(paneId, tabId),
-    activeInput: () => ctrl.activeInput(),
+    activeInput: (options) => ctrl.activeInput(options),
     onActiveInputChange: (fn) => ctrl.onActiveInputChange(fn),
     closePath: (path) => ctrl.closePath(path),
     closeInput: (key) => ctrl.closeInput(key),
@@ -58,7 +66,16 @@ export function activate(): void | (() => void) {
     cancelClose: () => ctrl.cancelClose(),
     forgetSavedTabs: () => ctrl.forgetSavedTabs(),
     keepSavedTabs: () => ctrl.keepSavedTabs(),
+    flushSession: () => ctrl.saveSession(),
     documentHistory: (command) => ctrl.documentHistory(command),
+    chooseDeclaration: async (targets, name, anchor) =>
+      openPopup({
+        kind: "list",
+        anchor,
+        title: chooserTitle("declaration", name, targets.length),
+        items: await locationItems(targets),
+        pin: pinToFind(name, targets),
+      }),
     reformat: async (path) => {
       const handle = editorsFor(path)[0];
       return !!handle && (await formatDocument(handle.view, { explicit: false, selectionOnly: false })).applied;

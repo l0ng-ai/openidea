@@ -10,7 +10,7 @@
 import type { BranchInfo } from "@/bindings";
 import { buildFileTree, type FileTreeNode } from "@/features/vcs/fileTree";
 import type { EffectiveKind } from "@/features/vcs/model";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import type {
   CodeReviewCIJob,
   CodeReviewCIJobState,
@@ -269,12 +269,12 @@ export function resolveConflicts(input: {
   const { details: pr, remotes } = input;
   if (input.mergeInProgress) return { error: "Merge is already in progress" };
   if (!pr) return { error: "Details have not finished loading" };
-  if (!pr.headRepository) return { error: tx`${tx("Source")} repository not found` };
-  if (!pr.baseRepository) return { error: tx`${tx("Target")} repository not found` };
+  if (!pr.headRepository) return { error: tx`${txPart("Source")} repository not found` };
+  if (!pr.baseRepository) return { error: tx`${txPart("Target")} repository not found` };
   const head = remoteOf(remotes, pr.headRepository.nameWithOwner);
-  if (!head) return { error: tx`${tx("Source")} remote not found: ${pr.headRepository.url}` };
+  if (!head) return { error: tx`${txPart("Source")} remote not found: ${pr.headRepository.url}` };
   const base = remoteOf(remotes, pr.baseRepository.nameWithOwner);
-  if (!base) return { error: tx`${tx("Target")} remote not found: ${pr.baseRepository.url}` };
+  if (!base) return { error: tx`${txPart("Target")} remote not found: ${pr.baseRepository.url}` };
   if (input.alreadyResolvedLocally) return { error: "Already resolved locally, push your changes to resolve" };
   return { headRemote: head.remote, baseRemote: base.remote, headRefName: pr.headRefName, baseRefName: pr.baseRefName };
 }

@@ -1,151 +1,34 @@
 //! IPC commands of `ide_host::ops::nav` (the shared implementation).
 
 use crate::state::AppState;
-use ide_core::{DocId, IdeResult, IpcPath, Pos};
-#[allow(unused_imports)]
-pub use ide_host::ops::nav::*;
-use ide_index::{ExtensionCount, FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
-use ide_language::FileReference;
-use ide_workspace::file_refs::PathCompletion;
-use std::path::PathBuf;
+use ide_command::desktop_command;
+use ide_core::IdeResult;
 use tauri::{State, Window};
 
-#[tauri::command]
-#[specta::specta]
-pub fn index_status(window: Window, state: State<'_, AppState>) -> IdeResult<IndexStatus> {
-    ide_host::ops::nav::index_status(&state.host, window.label())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn index_file_extensions(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ExtensionCount>> {
-    ide_host::ops::nav::index_file_extensions(&state.host, window.label())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn find_files(window: Window, state: State<'_, AppState>, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
-    ide_host::ops::nav::find_files(&state.host, window.label(), query, limit)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn find_files_named(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<Vec<IpcPath>> {
-    ide_host::ops::nav::find_files_named(&state.host, window.label(), name).await
-}
-
-/// Folders holding indexed files, for `@` references.
-#[tauri::command]
-#[specta::specta]
-pub fn find_dirs(window: Window, state: State<'_, AppState>, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
-    ide_host::ops::nav::find_dirs(&state.host, window.label(), query, limit)
-}
-
 /// Spring Web mapping sources for the request-path index of Search Everywhere.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub fn spring_route_sources(
+pub async fn spring_route_sources(
     window: Window,
     state: State<'_, AppState>,
 ) -> IdeResult<Vec<ide_host::ops::routes::RouteSource>> {
-    ide_host::ops::routes::spring_route_sources(&state.host, window.label())
+    ide_host::ops::routes::spring_route_sources(&state.host, window.label()).await
 }
 
+/// Cucumber feature files and step definition files, for step navigation.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub fn find_symbols(
+pub async fn cucumber_sources(
     window: Window,
     state: State<'_, AppState>,
-    query: String,
-    filter: SymbolFilter,
-    limit: u32,
-) -> IdeResult<Vec<SymbolMatch>> {
-    ide_host::ops::nav::find_symbols(&state.host, window.label(), query, filter, limit)
+) -> IdeResult<Vec<ide_host::ops::bdd::StepSource>> {
+    let host = state.host.clone();
+    let label = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::bdd::cucumber_sources(&host, &label))
+        .await
+        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn mark_recent(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
-    ide_host::ops::nav::mark_recent(&state.host, window.label(), path)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn remove_recent(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
-    ide_host::ops::nav::remove_recent(&state.host, window.label(), path)
-}
-
-/// Recently opened files, most recent first (⌘E).
-#[tauri::command]
-#[specta::specta]
-pub fn recent_files(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ide_core::IpcPath>> {
-    ide_host::ops::nav::recent_files(&state.host, window.label())
-}
-
-/// The web reference at `pos` of `doc` and its targets; `None` when there is no reference.
-#[tauri::command]
-#[specta::specta]
-pub async fn web_goto(window: Window, state: State<'_, AppState>, doc: DocId, pos: Pos) -> IdeResult<Option<WebGoto>> {
-    ide_host::ops::nav::web_goto(&state.host, window.label(), doc, pos).await
-}
-
-/// The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
-/// no project or content root has it.
-#[tauri::command]
-#[specta::specta]
-pub async fn nav_resolve_module(
-    window: Window,
-    state: State<'_, AppState>,
-    name: String,
-    from: IpcPath,
-) -> IdeResult<Option<IpcPath>> {
-    ide_host::ops::nav::nav_resolve_module(&state.host, window.label(), name, from).await
-}
-
-/// Index definitions named `name` within the roots `from` may navigate into (its own root
-/// plus its configured dependencies).
-#[tauri::command]
-#[specta::specta]
-pub async fn nav_index_definitions(
-    window: Window,
-    state: State<'_, AppState>,
-    name: String,
-    from: IpcPath,
-) -> IdeResult<Vec<SymbolMatch>> {
-    ide_host::ops::nav::nav_index_definitions(&state.host, window.label(), name, from).await
-}
-
-/// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
-#[tauri::command]
-#[specta::specta]
-pub async fn fs_resolve_reference(
-    window: Window,
-    state: State<'_, AppState>,
-    from: IpcPath,
-    value: String,
-) -> IdeResult<Option<IpcPath>> {
-    ide_host::ops::nav::fs_resolve_reference(&state.host, window.label(), from, value).await
-}
-
-/// Files and folders that continue `prefix`, a path being typed in `from`.
-#[tauri::command]
-#[specta::specta]
-pub async fn path_completions(
-    window: Window,
-    state: State<'_, AppState>,
-    from: IpcPath,
-    prefix: String,
-) -> IdeResult<Vec<PathCompletion>> {
-    ide_host::ops::nav::path_completions(&state.host, window.label(), from, prefix).await
-}
-
-/// Paths in an HTML document or stylesheet that name no existing file.
-#[tauri::command]
-#[specta::specta]
-pub async fn web_unresolved_references(
-    window: Window,
-    state: State<'_, AppState>,
-    doc: DocId,
-) -> IdeResult<Vec<FileReference>> {
-    ide_host::ops::nav::web_unresolved_references(&state.host, window.label(), doc).await
-}
+ide_command::desktop_domain!(cucumber_sources, spring_route_sources);

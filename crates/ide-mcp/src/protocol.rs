@@ -34,7 +34,7 @@ const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
-/// The requested folder isn't a project open in the IDE (or has no tools there).
+/// The requested folder isn't in a project the IDE serves (or has no tools there).
 pub(crate) const NOT_OPEN: i64 = -32001;
 
 pub(crate) struct RpcError {
@@ -158,15 +158,18 @@ impl Session<'_> {
         let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(LATEST);
         let version = if SUPPORTED.contains(&asked) { asked } else { LATEST };
         let about = match self.project() {
-            Ok(root) => format!("the project open in OpenIDEA at {}", root.display()),
-            Err(_) => "a project open in OpenIDEA".to_owned(),
+            Ok(root) => format!("the project OpenIDEA serves at {}", root.display()),
+            Err(_) => "a project open in OpenIDEA or served in the background".to_owned(),
         };
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false } },
             "serverInfo": { "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
             "instructions": format!(
-                "Built-in OpenIDEA tools for {about}: they see the files and editors the IDE has open."
+                "Built-in OpenIDEA tools for {about}: they see the files as the IDE has them and, \
+                 for a project open in a window, its editors. The project's workspace can include other \
+                 projects attached to it: call `get_workspace_roots` to list them before answering about \
+                 workspace directories or planning a change across projects."
             ),
         })
     }
@@ -205,7 +208,7 @@ impl Session<'_> {
         Ok(result)
     }
 
-    /// The open project the request names.
+    /// The project the request names.
     fn project(&self) -> Result<PathBuf, RpcError> {
         self.resolve_project(self.project)
     }
@@ -215,11 +218,14 @@ impl Session<'_> {
         roots.sort();
         roots.dedup();
         if let Some(requested) = requested.filter(|p| !p.trim().is_empty()) {
-            return resolve(&roots, Path::new(requested)).ok_or_else(|| {
+            let path = Path::new(requested);
+            // An open project wins; the registry is asked only for a folder outside all of them.
+            return resolve(&roots, path).or_else(|| self.registry.resolve(path)).ok_or_else(|| {
                 RpcError::new(
                     NOT_OPEN,
                     format!(
-                        "this folder isn't open in OpenIDEA: {requested}. Open projects: {}",
+                        "this folder isn't open in OpenIDEA and isn't served in the background \
+                         (Settings › Agents › IDE MCP Server): {requested}. Open projects: {}",
                         roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
                     ),
                 )

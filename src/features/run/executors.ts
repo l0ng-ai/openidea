@@ -22,13 +22,15 @@ export async function runWithExecutor(config: RunConfig, executorId: string): Pr
       level: "error",
       title: `Cannot run '${config.name}'`,
       body: e instanceof Error ? e.message : String(e),
+      userInitiated: true,
     });
     return;
   }
   if (!plan) return;
-  const { launch, finished } = plan;
+  const { launch, finished, beforeStop } = plan;
   await startRun(config, undefined, undefined, {
     launch,
     onExit: (exitCode, stopped) => finished({ exitCode, stopped }),
+    beforeStop,
   });
 }

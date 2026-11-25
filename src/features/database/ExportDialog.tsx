@@ -77,7 +77,7 @@ export function ExportDialog({
 
   const browse = async () => {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { save } = await import("@/platform/dialog");
       const f = EXPORT_FORMATS.find((x) => x.id === format)!;
       const path = await save({ defaultPath: file, filters: [{ name: f.label, extensions: [f.extension] }] });
       if (path) setFile(path);

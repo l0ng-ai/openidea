@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { call, commands, isCancelled, onIdeEvent, type RemoteEntry, type RemoteTarget } from "@/platform/ipc";
-import { useRemoteProgress } from "@/platform/remote";
+import { localGlobalSettings, useRemoteProgress } from "@/platform/remote";
 import { sshLabel, type SshConfigValid, validateRemote } from "@/platform/remoteSettings";
 import { Button, Dialog, Icon, Input, ProgressBar, Select, Spinner } from "@/ui";
 import { openRemoteProject } from "@/workbench/projectWindow";
@@ -33,7 +33,7 @@ function useLocalSshConfigs(): SshConfigValid[] {
   useEffect(() => {
     let live = true;
     const load = () =>
-      void commands.settingsGetGlobal().then(
+      void localGlobalSettings().then(
         (s) => live && setConfigs(validateRemote(s).ssh.configs),
         () => {},
       );

@@ -4,18 +4,24 @@
  */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { tx } from "@/platform/i18n";
+import type { RunTargetValid } from "@/platform/remoteSettings";
+import type { SelectOption } from "@/ui";
 import {
   call,
   commands,
   isTauri,
+  type ContainerPython,
   nextRequestId,
   type PhpLanguageLevels,
+  type ProjectInterpreter,
   type PythonPackage,
   type Sdk,
   type SdkKind,
+  type UserPathProblem,
 } from "@/platform/ipc";
 
-export type { PythonPackage, Sdk, SdkKind };
+export type { ContainerPython, ProjectInterpreter, PythonPackage, Sdk, SdkKind, UserPathProblem };
 
 interface SdkCache {
   byKind: Partial<Record<SdkKind, Sdk[]>>;
@@ -58,6 +64,11 @@ export function detectSdks(kind: SdkKind, force = false): Promise<Sdk[]> {
   return p;
 }
 
+/** Drops an SDK (e.g. a JDK added by hand, then removed) from the cached list. */
+export function forgetSdk(kind: SdkKind, path: string) {
+  useSdks.setState((s) => ({ byKind: { ...s.byKind, [kind]: (s.byKind[kind] ?? []).filter((x) => x.path !== path) } }));
+}
+
 /** Adds an SDK (e.g. a just-created virtualenv) to the cached list. */
 export function rememberSdk(kind: SdkKind, sdk: Sdk) {
   const remember = () =>
@@ -75,26 +86,70 @@ export interface Streamed<T> {
   cancel: () => void;
 }
 
+/**
+ * A line of tool output as a terminal shows it: backspaces erase (conda's `-\|/` spinner),
+ * a carriage return starts the line over (pip's progress bar), colour and other control
+ * sequences go. Null when nothing visible is left.
+ */
+export function terminalLine(raw: string): string | null {
+  // eslint-disable-next-line no-control-regex
+  const plain = raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]/g, "");
+  let line = "";
+  for (const segment of plain.split("\r")) {
+    if (!segment) continue;
+    let text = "";
+    for (const ch of segment) {
+      if (ch === "\b") text = text.slice(0, -1);
+      // eslint-disable-next-line no-control-regex
+      else if (ch === "\t" || !/[\x00-\x1f\x7f]/.test(ch)) text += ch;
+    }
+    // A carriage return overwrites from the line start; the last non-empty rewrite wins.
+    if (text.trim()) line = text.length >= line.length ? text : text + line.slice(text.length);
+  }
+  return line.trim() ? line.trimEnd() : null;
+}
+
 function streamed<T>(
   run: (request: ReturnType<typeof nextRequestId>, ch: Channel<string>) => Promise<T>,
   onLine: (line: string) => void,
 ): Streamed<T> {
   const request = nextRequestId();
   const channel = new Channel<string>();
-  channel.onmessage = onLine;
+  channel.onmessage = (raw) => {
+    const line = terminalLine(raw);
+    if (line !== null) onLine(line);
+  };
   return { promise: run(request, channel), cancel: () => void commands.cancelRequest(request) };
 }
 
 /** Tool that creates a new Python environment (`VenvTool` in `ide-sdk`). */
-export type VenvTool = "venv" | "uv" | "poetry" | "conda";
+export type VenvTool = "venv" | "uv" | "poetry" | "conda" | "pipenv" | "hatch";
 
 export function createVenv(
   tool: VenvTool,
   base: string,
   location: string,
+  /** Also install the packages the project declares (pipenv: its `Pipfile`). */
+  installPackages: boolean,
   onLine: (line: string) => void,
 ): Streamed<Sdk> {
-  return streamed((req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, req, ch)), onLine);
+  return streamed(
+    (req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, installPackages, req, ch)),
+    onLine,
+  );
+}
+
+/**
+ * The open project's Hatch environments, or an empty list when Hatch is unconfigured.
+ * Hatch may install plugins first, so the caller cancels it when it no longer needs it.
+ */
+export function hatchEnvs(): Streamed<string[]> {
+  if (!isTauri()) return { promise: Promise.resolve([]), cancel: () => {} };
+  const request = nextRequestId();
+  return {
+    promise: call(commands.sdkPythonHatchEnvs(request)),
+    cancel: () => void commands.cancelRequest(request),
+  };
 }
 
 /** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */
@@ -102,8 +157,26 @@ export function pythonInterpreter(path: string): Promise<Sdk | null> {
   return isTauri() ? call(commands.sdkPythonInterpreter(path)) : Promise.resolve(null);
 }
 
-export function listPackages(python: string): Promise<PythonPackage[]> {
-  return call(commands.sdkPythonPackages(python, nextRequestId()));
+/** `sys.path` of an interpreter; `cancel` stops the query when its answer is no longer wanted. */
+export function pythonSysPath(python: string): { promise: Promise<string[]>; cancel: () => void } {
+  if (!isTauri()) return { promise: Promise.resolve([]), cancel: () => {} };
+  const request = nextRequestId();
+  return {
+    promise: call(commands.sdkPythonSysPath(python, request)),
+    cancel: () => void commands.cancelRequest(request),
+  };
+}
+
+/** Why each folder added to an interpreter's paths stays off the import path (`null`: it is used). */
+export function pythonUserPathProblems(paths: string[]): Promise<(UserPathProblem | null)[]> {
+  return isTauri() && paths.length
+    ? call(commands.sdkPythonUserPathProblems(paths))
+    : Promise.resolve(paths.map(() => null));
+}
+
+/** Interpreters of the other recently opened projects, each with the project it belongs to. */
+export function pythonProjectInterpreters(): Promise<ProjectInterpreter[]> {
+  return isTauri() ? call(commands.sdkPythonProjectInterpreters()) : Promise.resolve([]);
 }
 
 export function pip(
@@ -118,29 +191,44 @@ export function pip(
   );
 }
 
-/** Interpreter the project uses when none is configured (its virtualenv). */
-export function effectivePython(): Promise<string | null> {
-  return isTauri() ? call(commands.sdkPythonEffective(null)) : Promise.resolve(null);
+/** Interpreter the project uses when none is configured (its virtualenv); `near` picks the workspace member. */
+export function effectivePython(near: string | null = null): Promise<string | null> {
+  return isTauri() ? call(commands.sdkPythonEffective(near)) : Promise.resolve(null);
+}
+
+/** What `languages.python.interpreter` starts with when the interpreter is a run target's. */
+const TARGET_PREFIX = "target:";
+
+/** The run target id of a `target:<id>` interpreter value; null for a local interpreter. */
+export function interpreterTarget(value: string | null | undefined): string | null {
+  const v = value?.trim() ?? "";
+  if (!v.startsWith(TARGET_PREFIX)) return null;
+  return v.slice(TARGET_PREFIX.length).trim() || null;
+}
+
+/** Docker and Compose run targets as interpreter choices (`target:<id>`). */
+export function targetChoices(targets: readonly RunTargetValid[]): SelectOption[] {
+  return targets
+    .filter((t) => t.kind === "docker" || t.kind === "compose")
+    .map((t) => ({
+      value: `${TARGET_PREFIX}${t.id}`,
+      label: t.name || t.id,
+      verbatim: true,
+      detail: t.kind === "compose" ? tx`Docker Compose service ${t.service}` : tx`Docker image ${t.image}`,
+    }));
+}
+
+/** The project interpreter when it is a Docker or Compose run target's, with its library snapshot. */
+export function containerPython(): Promise<ContainerPython | null> {
+  return isTauri() ? call(commands.sdkContainerPython()) : Promise.resolve(null);
+}
+
+/** Copies the container's libraries again (after the image was rebuilt). */
+export function refreshContainerPython(): Promise<ContainerPython | null> {
+  return isTauri() ? call(commands.sdkContainerPythonRefresh()) : Promise.resolve(null);
 }
 
 /** The PHP language level of the project `path` belongs to; null outside Tauri. */
 export function phpLanguageLevel(path: string): Promise<PhpLanguageLevels | null> {
   return isTauri() ? call(commands.sdkPhpLanguageLevel(path)) : Promise.resolve(null);
-}
-
-/** File / folder chooser (Tauri dialog); null when cancelled or outside Tauri. */
-export async function choosePath(opts: {
-  directory: boolean;
-  title: string;
-  defaultPath?: string;
-}): Promise<string | null> {
-  if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const picked = await open({
-    directory: opts.directory,
-    multiple: false,
-    title: opts.title,
-    defaultPath: opts.defaultPath || undefined,
-  });
-  return (Array.isArray(picked) ? picked[0] : picked) ?? null;
 }

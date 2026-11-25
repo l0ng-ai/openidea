@@ -59,9 +59,6 @@
   display: flex;
   white-space: pre;
 }
-.currentLine {
-  background: var(--bg-current-line);
-}
 .gutter {
   flex: none;
   position: sticky;
@@ -72,10 +69,6 @@
   color: var(--fg-gutter);
   background: inherit;
   background-color: var(--bg-app);
-}
-.currentLine .gutter {
-  color: var(--fg-muted);
-  background-color: var(--bg-current-line);
 }
 .code {
   padding-right: 16px;

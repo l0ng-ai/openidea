@@ -438,6 +438,74 @@ pub fn effective_base_dir(root: &Path, cache: &Path, config: &RunConfig) -> IdeR
     Ok(base)
 }
 
+/// The deployment fields of a Tomcat config; the first deployment keeps them as plain params.
+const DEPLOYMENT_KEYS: [&str; 6] =
+    ["deployment", "artifact", "artifactName", "deploymentPath", "contextPath", "contextDescriptor"];
+
+/// One more deployment of a Tomcat config (IDEA's Deployment list), stored as JSON in
+/// `extraDeployments`; the first one is the config's own params.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct ExtraDeployment {
+    deployment: Option<String>,
+    artifact: Option<String>,
+    artifact_name: Option<String>,
+    deployment_path: Option<String>,
+    context_path: Option<String>,
+    context_descriptor: Option<String>,
+    /// The artifact's module, as `cwd` is for the first deployment.
+    module: Option<String>,
+}
+
+/// Every deployment of `config` as a config of its own: the first is `config`, each further one
+/// carries its fields in place of the first's and `deploymentIndex` (from 1), which gives it its
+/// own state directory (see [`state_dir`]).
+pub fn deployment_configs(config: &RunConfig) -> IdeResult<Vec<RunConfig>> {
+    let mut configs = vec![config.clone()];
+    let Some(raw) = config.extras.params.get("extraDeployments").filter(|s| !s.trim().is_empty()) else {
+        return Ok(configs);
+    };
+    let extras: Vec<ExtraDeployment> =
+        serde_json::from_str(raw).map_err(|e| invalid(format!("Invalid Tomcat deployments: {e}")))?;
+    for (i, extra) in extras.into_iter().enumerate() {
+        let mut sub = config.clone();
+        let p = &mut sub.extras.params;
+        p.remove("extraDeployments");
+        for key in DEPLOYMENT_KEYS {
+            p.remove(key);
+        }
+        let fields = [
+            ("deployment", extra.deployment),
+            ("artifact", extra.artifact),
+            ("artifactName", extra.artifact_name),
+            ("deploymentPath", extra.deployment_path),
+            ("contextPath", extra.context_path),
+            ("contextDescriptor", extra.context_descriptor),
+        ];
+        for (key, value) in fields {
+            if let Some(value) = value.filter(|v| !v.is_empty()) {
+                p.insert(key.into(), value);
+            }
+        }
+        p.insert("deploymentIndex".into(), (i + 1).to_string());
+        sub.cwd = extra.module.filter(|m| !m.is_empty()).map(|m| PathBuf::from(m).into());
+        configs.push(sub);
+    }
+    Ok(configs)
+}
+
+/// Where a deployment keeps its built-archive records and exploded copy: the runtime base for
+/// the first deployment, `deployments/<n>` below it for the others.
+pub fn state_dir(base: &Path, config: &RunConfig) -> PathBuf {
+    match config.extras.params.get("deploymentIndex").and_then(|i| i.parse::<u32>().ok()).filter(|i| *i > 0) {
+        Some(i) => base.join("deployments").join(i.to_string()),
+        None => base.to_path_buf(),
+    }
+}
+
+/// The archive records a build leaves in a deployment's state directory, kept across launches.
+const ARTIFACT_RECORDS: [&str; 3] = ["artifact-path.txt", "artifact-id.txt", "artifact-project.txt"];
+
 pub fn free_port() -> IdeResult<u16> {
     Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
 }
@@ -863,6 +931,48 @@ fn module_dir(root: &Path, module: Option<&Path>) -> PathBuf {
     }
 }
 
+/// The module directory a Tomcat config's WAR belongs to. Created configs carry it as `cwd`
+/// (set from the selected artifact); when it is missing, the selected artifact id still names
+/// the module — `maven:<pom>` its POM, `gradle:…` its build — instead of falling back to the
+/// project root, whose own `src` rarely exists and would make every launch look current.
+fn artifact_module_dir(root: &Path, config: &RunConfig) -> PathBuf {
+    if config.cwd.is_some() {
+        return module_dir(root, config.cwd.as_ref().map(|c| c.0.as_path()));
+    }
+    let selected = config.extras.params.get("artifact").filter(|s| !s.is_empty());
+    if let Some(id) = selected {
+        if let Some(pom) = id.strip_prefix("maven:") {
+            // `maven:pom.xml` is the root module itself.
+            return match Path::new(pom).parent().filter(|p| !p.as_os_str().is_empty()) {
+                Some(dir) => root.join(dir),
+                None => root.to_path_buf(),
+            };
+        }
+        if let Some(rest) = id.strip_prefix("gradle:") {
+            // `gradle:<project path>` for the root build, else `gradle:["<build dir>", "<path>"]`.
+            if let Ok((dir, path)) = serde_json::from_str::<(String, String)>(rest) {
+                return root.join(gradle_module_dir(&dir, &path));
+            }
+            if !rest.trim_matches(':').is_empty() {
+                return root.join(gradle_module_dir("", rest));
+            }
+        }
+    }
+    root.to_path_buf()
+}
+
+/// Maps a Gradle project path (`:` for the build itself, `:web` for a subproject) below its
+/// build directory. Custom `projectDir` mappings are invisible here, so this is the
+/// conventional layout; still closer than the project root.
+fn gradle_module_dir(dir: &str, path: &str) -> PathBuf {
+    let mut module = PathBuf::from(dir);
+    let rel = path.trim_start_matches(':').replace(':', "/");
+    if !rel.is_empty() {
+        module.push(rel);
+    }
+    module
+}
+
 /// The newest modification time of `path` or, for a directory, anything below it.
 fn newest_mtime_under(path: &Path) -> Option<std::time::SystemTime> {
     let meta = fs::metadata(path).ok()?;
@@ -902,14 +1012,16 @@ fn find_built_war(root: &Path, module: Option<&Path>) -> Option<PathBuf> {
 
 /// Whether the WAR a Tomcat config deploys is newer than the module's sources, so its
 /// "Before launch › Build" task can be skipped (IDEA's up-to-date check). Conservative:
-/// a missing WAR or a newer source/build file means it is not current. Only the module's
-/// own sources and build files are inspected, not dependency modules.
-pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig) -> bool {
+/// a missing WAR or a newer source/build file means it is not current. Besides the WAR
+/// module's sources, web resources and build files, the sources and build files of every
+/// module in `modules` (project-relative build modules) are inspected: a mapper XML or
+/// class in a module the WAR depends on is packaged into it as a JAR.
+pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig, modules: &[PathBuf]) -> bool {
     let p = &config.extras.params;
     if p.get("deployment").map(String::as_str).unwrap_or("artifact") != "artifact" {
         return true;
     }
-    let module = module_dir(root, config.cwd.as_ref().map(|c| c.0.as_path()));
+    let module = artifact_module_dir(root, config);
     let selected = p.get("artifact").filter(|s| !s.is_empty());
     let recorded_id = fs::read_to_string(base.join("artifact-id.txt")).ok();
     let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id.as_str()));
@@ -923,7 +1035,24 @@ pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig) -> bool
     };
     let Ok(war_time) = fs::metadata(&war).and_then(|m| m.modified()) else { return false };
     let mut newest = newest_mtime_under(&module.join("src"));
-    for dir in [module.as_path(), root] {
+    // Web content packaged from outside `src` (a custom `warSourceDirectory`, `webResources`
+    // directories, a custom Gradle web app dir) also lands in the WAR — the running-session
+    // sync copies it from these same folders — so a save there must rebuild too (#2685).
+    for (dir, _) in web_sources(&module) {
+        if let Some(time) = newest_mtime_under(&dir)
+            && newest.is_none_or(|cur| time > cur)
+        {
+            newest = Some(time);
+        }
+    }
+    let other_modules = modules.iter().map(|m| root.join(m));
+    for dir in [module.clone(), root.to_path_buf()].into_iter().chain(other_modules) {
+        if dir != module
+            && let Some(time) = newest_mtime_under(&dir.join("src"))
+            && newest.is_none_or(|cur| time > cur)
+        {
+            newest = Some(time);
+        }
         for name in ["pom.xml", "build.gradle", "build.gradle.kts"] {
             if let Ok(time) = fs::metadata(dir.join(name)).and_then(|m| m.modified())
                 && newest.is_none_or(|cur| time > cur)
@@ -946,6 +1075,7 @@ pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: 
             let recorded_id = fs::read_to_string(base.join("artifact-id.txt")).ok();
             let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id.as_str()));
             let recorded = fs::read_to_string(base.join("artifact-path.txt")).ok().map(|s| PathBuf::from(s.trim()));
+            let module = artifact_module_dir(root, config);
             let war = match recorded.filter(|_| id_matches) {
                 Some(war) => {
                     if war.is_file() && is_war(&war) {
@@ -954,7 +1084,7 @@ pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: 
                         return Err(invalid(format!("The built WAR artifact does not exist: {}", war.display())));
                     }
                 }
-                None => find_built_war(root, config.cwd.as_ref().map(|c| c.0.as_path())).ok_or_else(|| {
+                None => find_built_war(root, Some(module.as_path())).ok_or_else(|| {
                     invalid("No built WAR artifact found - build the project first, or add 'Build' to Before launch")
                 })?,
             };
@@ -1000,6 +1130,12 @@ pub fn script_command(home: &Path, windows: bool, verb: &str) -> (String, Vec<St
     } else {
         ("sh".into(), vec![home.join("bin/catalina.sh").to_string_lossy().into_owned(), verb.into()])
     }
+}
+
+/// The memory view finds the debuggee through its attach socket, and has no Windows support;
+/// a user's own choice about the attach mechanism wins.
+fn wants_attach_listener(opts: &str, windows: bool) -> bool {
+    !windows && !opts.contains("StartAttachListener") && !opts.contains("DisableAttachMechanism")
 }
 
 fn parse_optional_port(
@@ -1070,17 +1206,23 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
         TomcatPorts { http: port, https, ajp, shutdown },
         &secret,
     )?;
-    // Build runs before prepare; retain its archive identity while recreating the runtime.
-    let metadata: Vec<_> = ["artifact-path.txt", "artifact-id.txt", "artifact-project.txt"]
-        .into_iter()
-        .filter_map(|name| fs::read(base.join(name)).ok().map(|bytes| (name, bytes)))
+    // Build runs before prepare; retain each deployment's archive identity while recreating the runtime.
+    let deployments = deployment_configs(config)?;
+    let metadata: Vec<_> = deployments
+        .iter()
+        .map(|d| state_dir(&base, d))
+        .flat_map(|dir| ARTIFACT_RECORDS.map(|name| dir.join(name)))
+        .filter_map(|path| fs::read(&path).ok().map(|bytes| (path, bytes)))
         .collect();
     if base.exists() {
         fs::remove_dir_all(&base)?;
     }
     fs::create_dir_all(&base)?;
-    for (name, bytes) in metadata {
-        fs::write(base.join(name), bytes)?;
+    for (path, bytes) in metadata {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(path, bytes)?;
     }
     copy_tree(&source.join("conf"), &base.join("conf"))?;
     let deploy_apps = config.extras.params.get("deployTomcatApps").is_some_and(|v| v == "true");
@@ -1104,15 +1246,22 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     if deploy_apps && source.join("webapps").is_dir() {
         copy_tree(&source.join("webapps"), &base.join("webapps"))?;
     }
-    let doc = deployment(root, &base, config, false)?;
-    let context = context_name(&effective_context(config, &doc))?;
     let contexts = base.join("conf/Catalina/localhost");
     fs::write(base.join("conf/server.xml"), server)?;
     let debug = config.extras.params.get("tomcatDebug").is_some_and(|v| v == "true");
-    let custom_descriptor =
-        config.extras.params.get("contextDescriptor").map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| root.join(s));
-    let context_xml_content = deployed_context_xml_with_descriptor(&doc, custom_descriptor.as_deref(), !debug)?;
-    fs::write(contexts.join(format!("{context}.xml")), context_xml_content)?;
+    let mut deployed = std::collections::HashSet::new();
+    for d in &deployments {
+        let doc = deployment(root, &state_dir(&base, d), d, false)?;
+        let path = effective_context(d, &doc);
+        let context = context_name(&path)?;
+        if !deployed.insert(context.clone()) {
+            return Err(invalid(format!("Two deployments use the application context {path}")));
+        }
+        let custom_descriptor =
+            d.extras.params.get("contextDescriptor").map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| root.join(s));
+        let context_xml_content = deployed_context_xml_with_descriptor(&doc, custom_descriptor.as_deref(), !debug)?;
+        fs::write(contexts.join(format!("{context}.xml")), context_xml_content)?;
+    }
     if let Some(jre) = config.extras.params.get("jre").filter(|s| !s.trim().is_empty()) {
         let jre = dunce::canonicalize(root.join(jre))?;
         config.env.insert("JAVA_HOME".into(), jre.to_string_lossy().into_owned());
@@ -1124,6 +1273,9 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     let mut opts = config.env.get("CATALINA_OPTS").cloned().unwrap_or_default();
     opts.push_str(&format!(" {vm} -Dcom.sun.management.jmxremote.port={jmx} -Dcom.sun.management.jmxremote.rmi.port={jmx} -Dcom.sun.management.jmxremote.host=127.0.0.1 -Djava.rmi.server.hostname=127.0.0.1 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false"));
     if debug {
+        if wants_attach_listener(&opts, cfg!(windows)) {
+            opts.push_str(" -XX:+StartAttachListener");
+        }
         let jdwp_port = parse_optional_port(&config.extras.params, "debugPort", "Debug port")?.unwrap_or(0);
         opts.push_str(&format!(" -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:{jdwp_port}"));
     }
@@ -1202,15 +1354,17 @@ pub fn update(root: &Path, cache: &Path, config: &RunConfig, mode: &str) -> IdeR
         return Err(invalid("Unknown Tomcat update operation"));
     }
     let base = effective_base_dir(root, cache, config)?;
-    let doc = deployment(root, &base, config, mode == "resources")?;
-    let context = context_name(&effective_context(config, &doc))?;
-    let file = base.join("conf/Catalina/localhost").join(format!("{context}.xml"));
-    if !file.is_file() {
-        return Err(invalid("Start this Tomcat configuration before updating it"));
-    }
-    if mode == "redeploy" {
-        let content = fs::read(&file)?;
-        fs::write(file, content)?;
+    for d in deployment_configs(config)? {
+        let doc = deployment(root, &state_dir(&base, &d), &d, mode == "resources")?;
+        let context = context_name(&effective_context(&d, &doc))?;
+        let file = base.join("conf/Catalina/localhost").join(format!("{context}.xml"));
+        if !file.is_file() {
+            return Err(invalid("Start this Tomcat configuration before updating it"));
+        }
+        if mode == "redeploy" {
+            let content = fs::read(&file)?;
+            fs::write(file, content)?;
+        }
     }
     Ok(())
 }
@@ -1583,16 +1737,189 @@ mod tests {
         c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
         c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
         // The WAR was packed after the source was written.
-        assert!(artifact_is_current(root, &base, &c));
+        assert!(artifact_is_current(root, &base, &c, &[]));
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&source, "class App { int changed; }").unwrap();
-        assert!(!artifact_is_current(root, &base, &c));
+        assert!(!artifact_is_current(root, &base, &c, &[]));
+    }
+
+    #[test]
+    fn up_to_date_check_follows_the_selected_artifact_when_cwd_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module = root.join("web");
+        fs::create_dir_all(module.join("src/main/resources")).unwrap();
+        fs::create_dir_all(module.join("target")).unwrap();
+        fs::write(root.join("pom.xml"), "<project/>").unwrap();
+        fs::write(module.join("pom.xml"), "<project/>").unwrap();
+        let source = module.join("src/main/resources/applicationContext.xml");
+        fs::write(&source, "<beans/>").unwrap();
+        let war = module.join("target/app.war");
+        archive(&war, &[("WEB-INF/web.xml", "<web-app/>")]);
+        let base = root.join("cache");
+        fs::create_dir_all(&base).unwrap();
+        // A previous IDE build recorded its archive, as `ide_build::web::build` leaves behind.
+        fs::write(base.join("artifact-id.txt"), "maven:web/pom.xml").unwrap();
+        fs::write(base.join("artifact-path.txt"), war.to_string_lossy().as_bytes()).unwrap();
+        // Older configs may not carry the artifact's module as `cwd` (the UI sets it today).
+        let mut c = config();
+        c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
+        assert!(artifact_is_current(root, &base, &c, &[]));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&source, "<beans><edited/></beans>").unwrap();
+        assert!(!artifact_is_current(root, &base, &c, &[]));
+    }
+
+    #[test]
+    fn up_to_date_check_watches_web_resources_outside_src() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module = root.join("web");
+        fs::create_dir_all(module.join("src/main/java")).unwrap();
+        fs::create_dir_all(module.join("target")).unwrap();
+        fs::create_dir_all(module.join("WebContent/WEB-INF")).unwrap();
+        fs::write(
+            module.join("pom.xml"),
+            "<project><plugin><artifactId>maven-war-plugin</artifactId><configuration><webResources>\
+             <resource><directory>WebContent</directory></resource></webResources></configuration></plugin></project>",
+        )
+        .unwrap();
+        fs::write(module.join("src/main/java/App.java"), "class App {}").unwrap();
+        let web_xml = module.join("WebContent/WEB-INF/web.xml");
+        fs::write(&web_xml, "<web-app/>").unwrap();
+        let war = module.join("target/app.war");
+        archive(&war, &[("WEB-INF/web.xml", "<web-app/>"), ("index.html", "built")]);
+        let base = root.join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let mut c = config();
+        c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
+        c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
+        assert!(artifact_is_current(root, &base, &c, &[]));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&web_xml, "<web-app><edited/></web-app>").unwrap();
+        assert!(!artifact_is_current(root, &base, &c, &[]));
+    }
+
+    #[test]
+    fn up_to_date_check_watches_the_modules_the_war_depends_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let web = root.join("web");
+        let dao = root.join("dao");
+        fs::create_dir_all(web.join("src/main/java")).unwrap();
+        fs::create_dir_all(web.join("target")).unwrap();
+        fs::create_dir_all(dao.join("src/main/resources/mapper")).unwrap();
+        fs::write(web.join("pom.xml"), "<project/>").unwrap();
+        fs::write(dao.join("pom.xml"), "<project/>").unwrap();
+        fs::write(web.join("src/main/java/App.java"), "class App {}").unwrap();
+        let mapper = dao.join("src/main/resources/mapper/UserMapper.xml");
+        fs::write(&mapper, "<mapper/>").unwrap();
+        archive(&web.join("target/app.war"), &[("WEB-INF/web.xml", "<web-app/>")]);
+        let base = root.join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let mut c = config();
+        c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
+        c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
+        let modules = [PathBuf::from(""), PathBuf::from("web"), PathBuf::from("dao")];
+        assert!(artifact_is_current(root, &base, &c, &modules));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&mapper, "<mapper><select/></mapper>").unwrap();
+        assert!(!artifact_is_current(root, &base, &c, &modules), "a dependency module's XML changed");
+        assert!(artifact_is_current(root, &base, &c, &[]), "without the build's modules only the WAR module counts");
+    }
+
+    #[test]
+    fn artifact_module_prefers_cwd_then_selected_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module_of = |cwd: Option<&str>, artifact: Option<&str>| {
+            let mut c = config();
+            c.cwd = cwd.map(|d| ide_core::IpcPath(PathBuf::from(d)));
+            if let Some(id) = artifact {
+                c.extras.params.insert("artifact".into(), id.into());
+            }
+            artifact_module_dir(root, &c)
+        };
+        // The UI keeps `cwd` on the artifact's module; it wins over a stale selection.
+        assert_eq!(module_of(Some("web"), Some("maven:other/pom.xml")), root.join("web"));
+        assert_eq!(module_of(None, Some("maven:web/pom.xml")), root.join("web"));
+        assert_eq!(module_of(None, Some("maven:pom.xml")), root);
+        assert_eq!(module_of(None, Some("gradle::web")), root.join("web"));
+        assert_eq!(module_of(None, Some("gradle::")), root);
+        assert_eq!(module_of(None, Some("gradle:[\"sub\",\":web\"]")), root.join("sub/web"));
+        assert_eq!(module_of(None, Some("other:whatever")), root);
+        assert_eq!(module_of(None, None), root);
+        assert_eq!(module_of(Some("web"), None), root.join("web"));
     }
 
     #[test]
     fn prepares_isolated_base_and_jdwp_only_for_run() {
         let tmp = tempfile::tempdir().unwrap();
         check_prepared_paths(tmp.path());
+    }
+    /// `CATALINA_OPTS` of a prepared Tomcat configuration (`debug` or run) with the given user options.
+    fn prepared_opts(debug: bool, vm_options: &str, catalina_opts: Option<&str>) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("home");
+        fs::create_dir_all(home.join("bin")).unwrap();
+        fs::create_dir_all(home.join("conf")).unwrap();
+        fs::create_dir_all(root.join("WebRoot")).unwrap();
+        fs::write(home.join("bin/catalina.sh"), "").unwrap();
+        fs::write(home.join("bin/catalina.bat"), "").unwrap();
+        archive(
+            &home.join("lib/catalina.jar"),
+            &[("org/apache/catalina/util/ServerInfo.properties", "server.info=Apache Tomcat/10.1")],
+        );
+        let server = "<Server port='8005'><Service><Connector port='8080'/><Engine name='Catalina'><Host name='localhost'/></Engine></Service></Server>";
+        fs::write(home.join("conf/server.xml"), server).unwrap();
+        let mut c = config();
+        for (k, v) in [
+            ("tomcatHome", "home"),
+            ("deployment", "directory"),
+            ("deploymentPath", "WebRoot"),
+            ("contextPath", "/app"),
+            ("tomcatDebug", if debug { "true" } else { "false" }),
+            ("vmOptions", vm_options),
+        ] {
+            c.extras.params.insert(k.into(), v.into());
+        }
+        if let Some(opts) = catalina_opts {
+            c.env.insert("CATALINA_OPTS".into(), opts.into());
+        }
+        prepare(root, &root.join("cache"), &mut c).unwrap();
+        c.env["CATALINA_OPTS"].clone()
+    }
+    #[test]
+    fn starts_the_attach_listener_right_before_the_debug_agent() {
+        let opts = prepared_opts(true, "-Xmx256m", None);
+        assert_eq!(
+            opts.contains(" -XX:+StartAttachListener -agentlib:jdwp=transport=dt_socket"),
+            !cfg!(windows),
+            "{opts}"
+        );
+        assert!(!prepared_opts(false, "-Xmx256m", None).contains("StartAttachListener"));
+    }
+    #[test]
+    fn no_attach_listener_for_windows() {
+        assert!(wants_attach_listener(" -Xmx256m", false));
+        assert!(!wants_attach_listener(" -Xmx256m", true));
+        assert!(!wants_attach_listener(" -XX:+DisableAttachMechanism", false));
+    }
+    #[test]
+    fn keeps_user_attach_opt_out() {
+        for vm in ["-XX:+DisableAttachMechanism", "-XX:+StartAttachListener", "-XX:-StartAttachListener"] {
+            let opts = prepared_opts(true, vm, None);
+            assert_eq!(
+                opts.matches("StartAttachListener").count(),
+                vm.matches("StartAttachListener").count(),
+                "{opts}"
+            );
+            assert!(opts.contains("-agentlib:jdwp="), "{opts}");
+        }
+        let opts = prepared_opts(true, "", Some("-XX:+DisableAttachMechanism"));
+        assert!(!opts.contains("StartAttachListener"), "{opts}");
+        assert!(opts.contains("-agentlib:jdwp="), "{opts}");
     }
     #[cfg(windows)]
     #[test]
@@ -1657,6 +1984,7 @@ mod tests {
         assert_eq!(c.env["CATALINA_HOME"], dunce::canonicalize(&home).unwrap().to_string_lossy());
         assert_eq!(base, dunce::canonicalize(base_dir(&cache, &c.id)).unwrap());
         assert!(c.env["CATALINA_OPTS"].contains("suspend=n,address=127.0.0.1:0"));
+        assert_eq!(c.env["CATALINA_OPTS"].contains(" -XX:+StartAttachListener -agentlib:jdwp="), !cfg!(windows));
         assert!(c.env["CATALINA_OPTS"].contains("-Xmx256m"));
         assert!(!c.env.get("JAVA_OPTS").is_some_and(|s| s.contains("jdwp")));
         assert_eq!(c.env["JRE_HOME"], "/jdk with spaces");
@@ -1992,5 +2320,101 @@ mod tests {
         assert_eq!(info.https_port, Some(8443));
         assert_eq!(info.ajp_port, Some(8009));
         assert_eq!(info.shutdown_port, Some(8005));
+    }
+
+    #[test]
+    fn splits_extra_deployments_into_configs_with_their_own_state() {
+        let mut c = config();
+        c.cwd = Some(PathBuf::from("web").into());
+        for (k, v) in [
+            ("deployment", "artifact"),
+            ("artifact", "maven:web/pom.xml"),
+            ("contextPath", "/web"),
+            ("contextDescriptor", "web/context.xml"),
+            (
+                "extraDeployments",
+                r#"[{"deployment":"artifact","artifact":"maven:service/pom.xml","artifactName":"service","contextPath":"/service","module":"service"},{"deployment":"directory","deploymentPath":"static"}]"#,
+            ),
+        ] {
+            c.extras.params.insert(k.into(), v.into());
+        }
+        let configs = deployment_configs(&c).unwrap();
+        assert_eq!(configs.len(), 3);
+        assert_eq!(configs[0], c);
+        let base = Path::new("/base");
+        assert_eq!(state_dir(base, &configs[0]), base);
+        let service = &configs[1].extras.params;
+        assert_eq!(service["artifact"], "maven:service/pom.xml");
+        assert_eq!(service["contextPath"], "/service");
+        // The first deployment's own fields don't leak into the others.
+        assert!(!service.contains_key("contextDescriptor") && !service.contains_key("extraDeployments"));
+        assert_eq!(configs[1].cwd.as_ref().map(|c| c.0.clone()), Some(PathBuf::from("service")));
+        assert_eq!(state_dir(base, &configs[1]), base.join("deployments/1"));
+        let static_dir = &configs[2].extras.params;
+        assert_eq!((static_dir["deployment"].as_str(), static_dir["deploymentPath"].as_str()), ("directory", "static"));
+        assert!(!static_dir.contains_key("artifact") && configs[2].cwd.is_none());
+        assert_eq!(state_dir(base, &configs[2]), base.join("deployments/2"));
+
+        c.extras.params.insert("extraDeployments".into(), "not json".into());
+        assert!(deployment_configs(&c).is_err());
+    }
+
+    #[test]
+    fn deploys_every_deployment_with_its_own_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("Tomcat Home");
+        fs::create_dir_all(home.join("bin")).unwrap();
+        fs::create_dir_all(home.join("conf")).unwrap();
+        fs::write(home.join("bin/catalina.sh"), "").unwrap();
+        fs::write(home.join("bin/catalina.bat"), "").unwrap();
+        archive(
+            &home.join("lib/catalina.jar"),
+            &[("org/apache/catalina/util/ServerInfo.properties", "server.info=Apache Tomcat/10.1")],
+        );
+        let server = "<Server port='8005'><Service><Connector port='8080'/><Engine name='Catalina'><Host name='localhost'/></Engine></Service></Server>";
+        fs::write(home.join("conf/server.xml"), server).unwrap();
+        fs::create_dir_all(root.join("WebRoot")).unwrap();
+        fs::create_dir_all(root.join("Admin")).unwrap();
+        archive(&root.join("service/target/service.war"), &[("WEB-INF/web.xml", "<web-app/>")]);
+        let mut c = config();
+        for (k, v) in [
+            ("tomcatHome", "Tomcat Home"),
+            ("deployment", "directory"),
+            ("deploymentPath", "WebRoot"),
+            ("contextPath", "/"),
+            (
+                "extraDeployments",
+                r#"[{"deployment":"artifact","artifact":"maven:service/pom.xml","artifactName":"service","module":"service"},{"deployment":"directory","deploymentPath":"Admin","contextPath":"/admin"}]"#,
+            ),
+        ] {
+            c.extras.params.insert(k.into(), v.into());
+        }
+        let cache = root.join("cache");
+        let base = base_dir(&cache, &c.id);
+        // A build recorded for the second deployment survives the runtime's recreation.
+        let war = root.join("service/target/service.war");
+        fs::create_dir_all(base.join("deployments/1")).unwrap();
+        fs::write(base.join("deployments/1/artifact-id.txt"), "maven:service/pom.xml").unwrap();
+        fs::write(base.join("deployments/1/artifact-path.txt"), war.to_string_lossy().as_bytes()).unwrap();
+        prepare(root, &cache, &mut c).unwrap();
+        let base = PathBuf::from(&c.env["CATALINA_BASE"]);
+        let contexts = base.join("conf/Catalina/localhost");
+        let doc_base = |name: &str| fs::read_to_string(contexts.join(name)).unwrap();
+        assert!(doc_base("ROOT.xml").contains("WebRoot"));
+        let service = base.join("deployments").join("1").join("deployment");
+        assert!(doc_base("service.xml").contains(&format!("docBase=\"{}\"", escape(&service.to_string_lossy()))));
+        assert!(service.join("WEB-INF/web.xml").is_file());
+        assert!(base.join("deployments/1/artifact-path.txt").is_file());
+        assert!(doc_base("admin.xml").contains("Admin"));
+
+        // Redeploy touches each context; a context path used twice is refused.
+        update(root, &cache, &c, "redeploy").unwrap();
+        c.extras.params.insert(
+            "extraDeployments".into(),
+            r#"[{"deployment":"directory","deploymentPath":"Admin","contextPath":"/"}]"#.into(),
+        );
+        let error = prepare(root, &cache, &mut c).unwrap_err().to_string();
+        assert!(error.contains("Two deployments use the application context /"), "{error}");
     }
 }

@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 import type { EditorInput } from "@/workbench/contributions";
 import { LogIdContext, LogOptionsContext } from "./logContext";
 import { rootLogOptions } from "./logOptions";
@@ -9,12 +9,13 @@ import styles from "./GitLog.module.css";
 export function LogScope({ id, children }: { id: string; children: ReactNode }) {
   const active = useRootGitLog((s) => s.shownLog);
   const options = rootLogOptions();
+  const value = useMemo(() => (active === id ? options : (parkedLogOptions(id) ?? options)), [active, id, options]);
   const focus = () => {
     if (useRootGitLog.getState().shownLog !== id) focusLogView(id);
   };
   return (
     <LogIdContext.Provider value={id}>
-      <LogOptionsContext.Provider value={active === id ? options : (parkedLogOptions(id) ?? options)}>
+      <LogOptionsContext.Provider value={value}>
         <div className={styles.root} data-git-log onPointerDownCapture={focus} onFocusCapture={focus}>
           {children}
         </div>

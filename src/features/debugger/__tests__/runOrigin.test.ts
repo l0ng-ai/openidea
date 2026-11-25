@@ -22,6 +22,7 @@ import {
 } from "../state";
 
 const ipc = vi.hoisted(() => ({
+  javaDebugAdapter: vi.fn(async () => ({ status: "ok", data: "java-debug" })),
   javaDebugServer: vi.fn(async () => ({ status: "ok", data: 5005 })),
   debugStart: vi.fn(async () => ({ status: "ok", data: 42 })),
   debugStop: vi.fn(async () => ({ status: "ok", data: null })),

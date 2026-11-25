@@ -5,29 +5,31 @@
  */
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
-import { clearProblems, installProblemsEvents, useProblems } from "./problemsStore";
+import {
+  registerAgentContextSource,
+  registerMenuGroup,
+  registerOverlay,
+  registerStatusItem,
+  registerToolWindow,
+} from "@/workbench/contributions";
+import { getContext } from "@/platform/context";
+import { clearProblems, installProblemsEvents, problemsReport, useProblems } from "./problemsStore";
 import { installProblemDecorations } from "./decorations";
-import { ProblemsHeaderActions, ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
+import { ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
 import { UsagesTabs, UsagesView, useUsagesHeaderMenu } from "./UsagesView";
 import { UsagesPopup } from "./UsagesPopup";
 import { findUsages, rerunActiveUsages, resetUsages, showUsageResults, showUsagesPopup } from "./usages";
 import { HierarchyTabs, HierarchyView } from "./HierarchyView";
 import { resetHierarchy, showHierarchy } from "./hierarchy";
-import { installServerEvents } from "./servers";
+import { installServerEvents, linterCovers } from "./servers";
 import { ServerStatus } from "./ServerStatus";
 import { reportProblems } from "./problemsReport";
 import { installWorkspaceEditUndo } from "./workspaceUndo";
 
-const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 function useErrorBadge(): number | null {
-  return useProblems((s) => {
-    let n = 0;
-    for (const sources of s.map.values())
-      for (const items of sources.values()) for (const d of items) if (d.severity === "error") n++;
-    return n || null;
-  });
+  return useProblems((s) => s.counts.error || null);
 }
 
 export function activate(): () => void {
@@ -44,9 +46,36 @@ export function activate(): () => void {
   const disposers = [
     unsubProject,
     installProblemsEvents(),
+    registerAgentContextSource({
+      id: "problems",
+      title: "Problems",
+      description: "The project's errors and warnings",
+      icon: "problems",
+      resolve: async () => {
+        const root = useProject.getState().project?.root;
+        const text = root ? problemsReport(useProblems.getState().map, root) : null;
+        return text ? { kind: "block", info: "problems", text } : null;
+      },
+    }),
     reportProblems(),
     installProblemDecorations(),
     installServerEvents(),
+    // WebStorm's editor popup offers Fix ESLint / Stylelint Problems wherever that linter lints the file.
+    registerMenuGroup({
+      id: "codeInsight.eslint",
+      menus: ["editor"],
+      order: 40,
+      items: (_menu, { paths }) => {
+        if (paths.length !== 1) return [];
+        const language = getContext().editorLangId as string | null;
+        return [
+          ["eslint", "code.fixEslintProblems"],
+          ["stylelint", "code.fixStylelintProblems"],
+        ]
+          .filter(([server]) => linterCovers(server!, paths[0]!, language))
+          .map(([, action]) => ({ kind: "action" as const, action: action! }));
+      },
+    }),
     installWorkspaceEditUndo(),
     registerToolWindow({
       id: "problems",
@@ -56,7 +85,6 @@ export function activate(): () => void {
       order: 30,
       component: ProblemsView,
       headerContent: ProblemsTabs,
-      headerActions: ProblemsHeaderActions,
       headerMenu: useProblemsHeaderMenu,
       useBadge: useErrorBadge,
     }),
@@ -66,6 +94,7 @@ export function activate(): () => void {
       icon: "toolwindow-usages",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 35,
       component: UsagesView,
       headerContent: UsagesTabs,

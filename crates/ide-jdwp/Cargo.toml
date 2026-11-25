@@ -1,0 +1,16 @@
+[package]
+name = "ide-jdwp"
+description = "JDWP codec and a transparent debugger link that counts every object ID it receives, so it can release them exactly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-jvm-inspect.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

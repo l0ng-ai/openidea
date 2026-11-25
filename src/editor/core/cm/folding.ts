@@ -1,7 +1,7 @@
 /**
  * Folding: ranges from the backend (`doc_folding`, tree-sitter based) merged
  * with CodeMirror's syntax folding (`foldNodeProp`) as fallback, IDEA-style
- * chevrons in the gutter (open chevrons only on gutter hover).
+ * chevrons in the gutter (open chevrons can be shown only on hover).
  */
 import {
   EditorSelection,
@@ -12,7 +12,7 @@ import {
   type Extension,
   type Line,
 } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import type { EditorView, ViewUpdate } from "@codemirror/view";
 import {
   codeFolding,
   foldEffect,
@@ -23,7 +23,10 @@ import {
   unfoldEffect,
 } from "@codemirror/language";
 import type { FoldRange } from "@/platform/ipc";
+import type { FoldingOutlineVisibility } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { enclosingCodeBlock } from "./caretCommands";
+import { foldPreviewExtension } from "./foldPreview";
 import { regionMarkerAt, regionNameAt } from "./regions";
 
 export interface BackendFold {
@@ -43,11 +46,62 @@ export const setBackendFolds = StateEffect.define<FoldRange[]>();
  * folds from the declaration line above it, so the fold and the sticky line
  * show `namespace Demo` / `void F()` rather than a bare brace.
  */
-function allmanHeader(state: EditorState, line: Line): Line {
+export function allmanHeader(state: EditorState, line: Line): Line {
   if (line.text.trim() !== "{" || line.number === 1) return line;
   const prev = state.doc.line(line.number - 1);
   const code = prev.text.trim();
   return code && !/[;{},]$/.test(code) && !/^(\/\/|#|\*|\/\*|--)/.test(code) ? prev : line;
+}
+
+function commentPlaceholderFold(
+  state: EditorState,
+  first: Line,
+  end: Line,
+): { from: number; to: number; text: string } | null {
+  const from = first.from + first.text.length - first.text.trimStart().length;
+  const source = state.doc.sliceString(from, end.to);
+  let prefix: string;
+  let suffix: string;
+  let body: string;
+  let lines: string[];
+  let inlineBlockText = false;
+  if (source.startsWith("/*") && !source.startsWith("/**/")) {
+    prefix = source.startsWith("/**") ? "/**" : "/*";
+    const close = source.indexOf("*/", prefix.length);
+    if (close < 0) return null;
+    suffix = "*/";
+    body = source.slice(prefix.length, close);
+    inlineBlockText = !!body.split("\n", 1)[0]?.trim();
+    lines = body.split("\n").map((line, index) => (index ? line.replace(/^\s*\*/, "") : line).trimEnd());
+  } else if (/^\/\/[/!](?!\/)/.test(source)) {
+    prefix = source.slice(0, 3);
+    suffix = "";
+    lines = source.split("\n");
+    if (lines.some((line) => !line.trimStart().startsWith(prefix))) return null;
+    lines = lines.map((line) => line.trimStart().slice(prefix.length).trimEnd());
+    body = lines.join("\n");
+  } else {
+    const quote = /^(?:(?:@(?:doc|moduledoc|typedoc)\s+)?(?:~[A-Za-z])?|[rRuU]?)("""|''')/.exec(source);
+    if (!quote) return null;
+    prefix = quote[0];
+    suffix = quote[1]!;
+    const close = source.indexOf(suffix, prefix.length);
+    if (close < 0) return null;
+    body = source.slice(prefix.length, close);
+    lines = body.split("\n").map((line) => line.trim());
+  }
+  // IDEA takes a block comment's summary from the line after its opener.
+  const header = inlineBlockText ? "" : (lines.slice(0, 2).find((line) => line.trim()) ?? "");
+  const more = prefix.startsWith("//") || lines.join("").replace(/\s/g, "") !== header.replace(/\s/g, "");
+  const separator =
+    prefix.startsWith("/*") || (!prefix.startsWith("//") && !source.slice(prefix.length).startsWith(header)) ? " " : "";
+  const text =
+    prefix +
+    (header ? `${separator}${prefix.startsWith("/*") ? header.trim() : header} ` : "") +
+    (more ? "..." : "") +
+    suffix;
+  const closeOffset = suffix ? source.indexOf(suffix, prefix.length) + suffix.length : source.length;
+  return { from, to: from + closeOffset, text };
 }
 
 /** Converts backend line ranges to offsets in `state`. */
@@ -63,11 +117,22 @@ export function foldsFromRanges(state: EditorState, ranges: readonly FoldRange[]
       if (end.to > from) out.push({ from, to: end.to, kind: r.kind, custom: true });
       continue;
     }
+    if (r.kind === "comment") {
+      const doc = commentPlaceholderFold(state, first, end);
+      if (doc) {
+        out.push({ from: doc.from, to: doc.to, kind: r.kind });
+        continue;
+      }
+    }
     const start = allmanHeader(state, first);
+    const importHead = r.kind === "imports" && /^\s*import\s+/.exec(first.text);
+    const from = importHead && /(?:\{|,)\s*$/.test(first.text) ? first.from + importHead[0].length : start.to;
     const trimmed = end.text.trimStart();
-    // `}` / `)` / `]` on the last line stays visible after the placeholder, like IDEA.
-    const to = /^[}\])]/.test(trimmed) ? end.from + (end.text.length - trimmed.length) : end.to;
-    if (to > start.to) out.push({ from: start.to, to, kind: r.kind });
+    // `}` / `)` / `]` on the last line stays visible after the placeholder, like IDEA. An import
+    // run ending in `} from '…'` hides that whole statement; a bare `)` / `};` still shows.
+    const delimiter = r.kind === "imports" ? /^[}\])]+[;,]?$/.test(trimmed.trimEnd()) : /^[}\])]/.test(trimmed);
+    const to = delimiter ? end.from + (end.text.length - trimmed.length) : end.to;
+    if (to > from) out.push({ from, to, kind: r.kind });
   }
   return out.sort((a, b) => a.from - b.from || b.to - a.to);
 }
@@ -99,8 +164,9 @@ function foldAtLine(folds: readonly BackendFold[], lineStart: number, lineEnd: n
   let best: BackendFold | null = null;
   for (let i = lo; i < folds.length && folds[i]!.from <= lineEnd; i++) {
     const f = folds[i]!;
-    // Only folds whose header ends on this line (custom regions: on this line); keep the widest.
-    if ((f.from === lineEnd || f.custom) && (!best || f.to > best.to)) best = f;
+    // Multiline import groups and custom regions can start within their header line.
+    if ((f.from === lineEnd || f.custom || f.kind === "imports" || f.kind === "comment") && (!best || f.to > best.to))
+      best = f;
   }
   return best;
 }
@@ -369,9 +435,10 @@ export const expandRecursively = (view: EditorView) =>
     view.state.selection.ranges.flatMap((r) => expandRecursivelyEffects(view.state, r.head)),
   );
 
-function chevron(open: boolean): HTMLElement {
+function chevron(open: boolean, visibility: FoldingOutlineVisibility): HTMLElement {
   const span = document.createElement("span");
   span.className = open ? "cm-openidea-foldOpen" : "cm-openidea-foldClosed";
+  span.classList.toggle("cm-openidea-foldOnHover", open && visibility === "hover");
   span.title = open ? "Collapse" : "Expand";
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -390,22 +457,100 @@ function chevron(open: boolean): HTMLElement {
   return span;
 }
 
-export function foldingExtension(showOutline = true): Extension {
+/**
+ * Backend folds arrive asynchronously (`setBackendFolds`) and are not a document,
+ * viewport or language change, so CodeMirror's fold gutter keeps the chevrons it
+ * built before they arrived. A click then hits a gutter element at a stale line
+ * and silently does nothing. Rebuild the markers whenever the backend field changes.
+ */
+export function backendFoldingChanged(update: ViewUpdate): boolean {
+  return update.startState.field(backendFolds, false) !== update.state.field(backendFolds, false);
+}
+
+/**
+ * The folded chip is an in-flow widget drawn at the fold start, which for header-line folds is
+ * the same position as the zero-width anchors of the line-end annotations (`codeLens.ts`, inline
+ * blame, plugin messages). Their absolutely positioned boxes park a fixed offset past those
+ * anchors, so a chip drawn after them paints under (over) the hint. Each consumer measures the
+ * chip and steps past it, but only when the chip follows its anchor in the DOM — a chip earlier
+ * in the line (mid-line import folds) already sits before the anchor and cannot overlap.
+ */
+export function foldChipWidth(el: HTMLElement): number {
+  const chip = el.closest(".cm-line")?.querySelector(".cm-foldPlaceholder");
+  if (!chip || !(el.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING)) return 0;
+  return Math.round(chip.getBoundingClientRect().width);
+}
+
+// Long image payloads would occupy thousands of soft-wrapped rows before the first editor measure.
+export function markdownImageFolds(state: EditorState) {
+  const effects = [];
+  const destination =
+    /(?:\]\(\s*<?|<img\b[^>]*?\ssrc\s*=\s*["'])data:image\/[\w.+-]+;base64,([A-Za-z0-9+/]{256,}={0,2})(?=[>\s)"'])/gi;
+  let offset = 0;
+  let fence = "";
+  for (const line of state.doc.iterLines()) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker && !fence) fence = marker;
+    else if (marker && marker.startsWith(fence) && !line.trim().slice(marker.length).trim()) fence = "";
+    else if (!fence && line.length >= 256) {
+      for (const match of line.matchAll(destination)) {
+        const to = offset + match.index + match[0].length;
+        effects.push(foldEffect.of({ from: to - match[1]!.length, to }));
+      }
+    }
+    offset += line.length + 1;
+  }
+  return effects;
+}
+
+export function foldingExtension(showOutline = true, visibility: FoldingOutlineVisibility = "hover"): Extension {
   return [
     // The chevron column sits right of contributed icon gutters (IDEA new UI).
-    showOutline ? Prec.lowest(foldGutter({ markerDOM: chevron })) : [],
+    showOutline
+      ? Prec.lowest(
+          foldGutter({ markerDOM: (open) => chevron(open, visibility), foldingChanged: backendFoldingChanged }),
+        )
+      : [],
     backendFolds,
     backendFoldService,
+    foldPreviewExtension,
     codeFolding({
       // A folded custom region shows its name, as in IDEA.
-      preparePlaceholder: (state, range) => regionNameAt(state, range.from),
-      placeholderDOM: (_view, onclick, name: string | null) => {
+      preparePlaceholder: (state, range) => {
+        const name = regionNameAt(state, range.from);
+        if (name) return name;
+        const doc = commentPlaceholderFold(state, state.doc.lineAt(range.from), state.doc.lineAt(range.to));
+        if (!doc || range.from < doc.from || range.to > doc.to) return null;
+        const before = state.doc.sliceString(doc.from, range.from);
+        const after = state.doc.sliceString(range.to, doc.to);
+        return doc.text.startsWith(before) && doc.text.endsWith(after)
+          ? doc.text.slice(before.length, doc.text.length - after.length)
+          : null;
+      },
+      placeholderDOM: (view, onclick, name: string | null) => {
         const el = document.createElement("span");
         el.className = "cm-foldPlaceholder";
         el.textContent = name ?? "…";
-        el.title = "Expand";
-        el.setAttribute("aria-label", "folded code");
-        el.onclick = onclick;
+        el.setAttribute("aria-label", tx("Folded code"));
+        // The chip is a button, not a text anchor. Letting the mousedown through
+        // starts a mouse selection that moves the caret to the chip's line; a caret
+        // change re-runs the inline blame refresh, which replaces this line's DOM
+        // before the click fires, so the browser never dispatches the click
+        // (its down-target is no longer connected). Swallowing the mousedown
+        // keeps the caret where it is and the click reliably reaches `onclick`.
+        el.onmousedown = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        el.onclick = (event) => {
+          // CodeMirror's own handler resolves the fold through the clicked line
+          // block, which can miss a fold starting at a line boundary (docstring,
+          // Allman header). Resolving at the chip's own position cannot miss.
+          const folded = foldToExpand(view.state, view.posAtDOM(el));
+          if (folded) view.dispatch({ effects: unfoldEffect.of(folded) });
+          else onclick(event);
+          event.preventDefault();
+        };
         return el;
       },
     }),

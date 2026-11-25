@@ -254,6 +254,56 @@ export function inferPhpNamespace(directory: string, psr4: ReadonlyArray<readonl
   return parts.every((p) => /^[A-Za-z_\x80-\uffff][\w\x80-\uffff]*$/.test(p)) ? parts.join("\\") : "";
 }
 
+/** A folder or project name as a C# identifier: other characters become `_`, as Rider does. */
+function csharpIdentifier(s: string): string {
+  const id = s.replace(/[^\p{L}\p{N}_]/gu, "_");
+  return /^\p{N}/u.test(id) ? `_${id}` : id;
+}
+
+/** A .csproj's `<RootNamespace>`, else its file name (`My.App.csproj` → `My.App`). */
+export function csprojRootNamespace(text: string, fileName: string): string {
+  const explicit = /<RootNamespace>\s*([^<]*?)\s*<\/RootNamespace>/i.exec(text)?.[1];
+  const base = explicit || fileName.replace(/\.csproj$/i, "");
+  return base.split(".").filter(Boolean).map(csharpIdentifier).join(".");
+}
+
+/**
+ * Whether a .csproj's C# version has file-scoped namespaces (C# 10): its `<LangVersion>`,
+ * else every target framework is .NET 6 or later. .NET Framework (Unity), .NET Standard and
+ * .NET Core projects stay on C# 9 or earlier.
+ */
+export function csprojFileScoped(text: string): boolean {
+  const lang = /<LangVersion>\s*([^<]*?)\s*<\/LangVersion>/i.exec(text)?.[1]?.toLowerCase();
+  if (lang && /^(latest|latestmajor|preview)$/.test(lang)) return true;
+  if (lang && /^\d+(\.\d+)?$/.test(lang)) return Number(lang) >= 10;
+  if (/<TargetFrameworkVersion>/i.test(text)) return false;
+  const frameworks = /<TargetFrameworks?>\s*([^<]*?)\s*<\/TargetFrameworks?>/i.exec(text)?.[1];
+  if (!frameworks) return true;
+  return frameworks
+    .split(";")
+    .map((f) => f.trim())
+    .filter(Boolean)
+    .every((f) => Number(/^net(\d+)\.\d/.exec(f)?.[1] ?? 0) >= 6);
+}
+
+/** The namespace of a folder `relDir` below the .csproj: the root namespace plus each folder. */
+export function inferCsharpNamespace(relDir: string, rootNamespace: string): string {
+  const folders = relDir.split("/").filter(Boolean).map(csharpIdentifier);
+  return [...rootNamespace.split(".").filter(Boolean), ...folders].join(".");
+}
+
+/** A body with `namespace $PACKAGE$;` rewritten as a namespace block, for C# before 10. */
+export function blockScopedNamespace(body: string): string {
+  const m = /^namespace \$PACKAGE\$;\n\n?/m.exec(body);
+  if (!m) return body;
+  const rest = body.slice(m.index + m[0].length).replace(/\n+$/, "");
+  const indented = rest
+    .split("\n")
+    .map((l) => (l ? `    ${l}` : l))
+    .join("\n");
+  return `${body.slice(0, m.index)}namespace $PACKAGE$\n{\n${indented}\n}\n`;
+}
+
 export interface FileTemplateVars {
   name: string;
   fileName: string;

@@ -1,13 +1,16 @@
 //! A Gradle project's resolved dependencies for the Dependency Analyzer:
 //! `gradle <project>:dependencies --configuration <name>`, parsed from its tree report.
+//! The reports it read are kept per build ([`save_gradle_report`]) until a build file
+//! changes, for readers that must not run Gradle themselves (plugins).
 
 use crate::gradle;
 use crate::process;
-use crate::sync::{SyncOptions, error_summary};
+use crate::sync::{self, SyncOptions, error_summary};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::Path;
+use std::sync::Mutex;
 
 /// One line of the report: an occurrence of a dependency where it is requested.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -132,7 +135,7 @@ pub fn gradle_dependencies(
     configuration: &str,
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<GradleDependency>> {
-    if !configuration.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') || configuration.is_empty() {
+    if configuration.is_empty() || !configuration.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')) {
         return Err(IdeError::invalid(format!("not a configuration name: {configuration}")));
     }
     if !project.starts_with(':') || project.chars().any(char::is_whitespace) {
@@ -140,7 +143,7 @@ pub fn gradle_dependencies(
     }
     let task = if project == ":" { ":dependencies".to_owned() } else { format!("{project}:dependencies") };
     let mut args: Vec<String> =
-        vec!["--console=plain".into(), "-q".into(), task, "--configuration".into(), configuration.into()];
+        vec!["--console=plain".into(), "-q".into(), task, format!("--configuration={configuration}")];
     if options.offline {
         args.push("--offline".into());
     }
@@ -153,9 +156,60 @@ pub fn gradle_dependencies(
         |_, _| {},
     )?;
     if !out.success {
-        return Err(IdeError::unavailable(error_summary(&out.text)));
+        return Err(IdeError::unavailable(error_summary(&out)));
+    }
+    if let Some(note) = sync::truncation_note(&out) {
+        return Err(IdeError::unavailable(note));
     }
     Ok(parse_report(&out.text))
+}
+
+/// A `dependencies` report of one project of a build for one configuration.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GradleReport {
+    /// Gradle path of the project (`:`, `:app`).
+    pub project: String,
+    pub configuration: String,
+    pub dependencies: Vec<GradleDependency>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct ReportCache {
+    /// The build files the reports were read with ([`sync::hash_gradle_files`]).
+    hash: String,
+    reports: Vec<GradleReport>,
+}
+
+const REPORT_CACHE: &str = "gradle-dependencies.json";
+
+/// Keeps `report` with the build's other reports (`cache_dir` is the build's cache
+/// directory), replacing an earlier one of the same project and configuration. Reports
+/// read before a build file changed are dropped.
+pub fn save_gradle_report(
+    root: &Path,
+    cache_dir: &Path,
+    model: &gradle::GradleModel,
+    report: &GradleReport,
+) -> IdeResult<()> {
+    // Reports of several configurations may finish together: one read-modify-write at a time.
+    static SAVING: Mutex<()> = Mutex::new(());
+    let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    let hash = sync::hash_gradle_files(&gradle::build_files(root, model));
+    let mut cache = sync::read_cache::<ReportCache>(cache_dir, REPORT_CACHE)
+        .filter(|c| c.hash == hash)
+        .unwrap_or_else(|| ReportCache { hash, reports: Vec::new() });
+    cache.reports.retain(|r| (&r.project, &r.configuration) != (&report.project, &report.configuration));
+    cache.reports.push(report.clone());
+    sync::write_cache(cache_dir, REPORT_CACHE, &cache)
+}
+
+/// The reports kept for the build, unless a build file changed since they were read.
+pub fn gradle_reports(root: &Path, cache_dir: &Path, model: &gradle::GradleModel) -> Vec<GradleReport> {
+    let Some(cache) = sync::read_cache::<ReportCache>(cache_dir, REPORT_CACHE) else { return Vec::new() };
+    if cache.hash != sync::hash_gradle_files(&gradle::build_files(root, model)) {
+        return Vec::new();
+    }
+    cache.reports
 }
 
 #[cfg(test)]
@@ -234,6 +288,37 @@ runtimeClasspath - Runtime classpath of source set 'main'.
         );
     }
 
+    #[test]
+    fn reports_are_kept_per_project_and_configuration_until_a_build_file_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let cache = root.join("cache");
+        std::fs::write(root.join("settings.gradle"), "include 'app'").unwrap();
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let model = gradle::load(root).unwrap();
+        assert!(gradle_reports(root, &cache, &model).is_empty());
+        let report = |project: &str, configuration: &str, version: &str| GradleReport {
+            project: project.into(),
+            configuration: configuration.into(),
+            dependencies: vec![dep("org.a", "b", Some(version))],
+        };
+        save_gradle_report(root, &cache, &model, &report(":app", "runtimeClasspath", "1.0")).unwrap();
+        save_gradle_report(root, &cache, &model, &report(":app", "compileClasspath", "1.0")).unwrap();
+        // Reading a report again replaces what was read before.
+        save_gradle_report(root, &cache, &model, &report(":app", "runtimeClasspath", "2.0")).unwrap();
+        assert_eq!(
+            gradle_reports(root, &cache, &model),
+            [report(":app", "compileClasspath", "1.0"), report(":app", "runtimeClasspath", "2.0")]
+        );
+        // A comment changes nothing Gradle reads; a dependency does.
+        std::fs::write(root.join("build.gradle"), "// notes").unwrap();
+        assert_eq!(gradle_reports(root, &cache, &model).len(), 2);
+        std::fs::write(root.join("build.gradle"), "dependencies { implementation 'org.a:b:3.0' }").unwrap();
+        assert!(gradle_reports(root, &cache, &model).is_empty());
+        save_gradle_report(root, &cache, &model, &report(":", "compileClasspath", "3.0")).unwrap();
+        assert_eq!(gradle_reports(root, &cache, &model), [report(":", "compileClasspath", "3.0")]);
+    }
+
     #[cfg(unix)]
     #[test]
     fn runs_the_report_of_the_project_and_configuration() {
@@ -255,14 +340,14 @@ runtimeClasspath - Runtime classpath of source set 'main'.
             &gradle::load(root).unwrap(),
             &options,
             ":app",
-            "testRuntimeClasspath",
+            "review.tools",
             &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(tree, vec![dep("org.a", "b", Some("1.0"))]);
         assert_eq!(
             std::fs::read_to_string(root.join("args")).unwrap().trim(),
-            "--console=plain -q :app:dependencies --configuration testRuntimeClasspath --offline"
+            "--console=plain -q :app:dependencies --configuration=review.tools --offline"
         );
     }
 }

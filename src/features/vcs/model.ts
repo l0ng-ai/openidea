@@ -2,7 +2,7 @@
 import type { ChangeKind, FileStatus } from "@/bindings";
 import type { FileDecoration } from "@/workbench/contributions";
 import { formatDay, formatTimestamp } from "@/platform/dateFormat";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 /** What a file looks like in IDEA's change lists (one kind per file). */
 export type EffectiveKind = "modified" | "added" | "deleted" | "renamed" | "untracked" | "ignored" | "conflicted";
@@ -63,7 +63,7 @@ export function statusDecorations(status: readonly FileStatus[], propagate = tru
     if (!kind) continue;
     const deco: FileDecoration = {
       color: KIND_COLOR[kind],
-      tooltip: fs.renamedFrom ? tx`${KIND_LABEL[kind]} (from ${fs.renamedFrom})` : KIND_LABEL[kind],
+      tooltip: fs.renamedFrom ? tx`${txPart(KIND_LABEL[kind])} (from ${fs.renamedFrom})` : KIND_LABEL[kind],
     };
     if (kind === "ignored") deco.faded = true;
     // Settings › Version Control › Show directories with changed descendants.
@@ -112,6 +112,26 @@ export function dirName(path: string): string {
   return i < 0 ? "" : p.slice(0, i);
 }
 
+/**
+ * Changed-file label for a rename, in IDEA's wording: `renamed from old.txt` when the
+ * file stays in its directory, `moved from ../old/old.txt` when it changed directories
+ * — the old path relative to the file's new directory, so the move is visible.
+ */
+export function renameFrom(newPath: string, oldPath: string): string {
+  const dir = dirName(newPath);
+  if (dirName(oldPath) === dir) return tx`renamed from ${baseName(oldPath)}`;
+  return tx`moved from ${relativePath(dir, oldPath)}`;
+}
+
+/** `path` seen from the directory `from`, with `../` segments to climb out of it. */
+function relativePath(from: string, path: string): string {
+  const source = from ? from.split("/") : [];
+  const target = path.split("/");
+  let common = 0;
+  while (common < source.length && common < target.length - 1 && source[common] === target[common]) common++;
+  return "../".repeat(source.length - common) + target.slice(common).join("/");
+}
+
 /** List timestamp per Settings › System Settings › Date Formats. */
 export function formatTime(ms: number | null | undefined, now = Date.now()): string {
   return ms ? formatTimestamp(ms, now) : "";
@@ -119,6 +139,12 @@ export function formatTime(ms: number | null | undefined, now = Date.now()): str
 
 export function formatDate(ms: number | null | undefined): string {
   return ms ? formatDay(new Date(ms), undefined, true) : "";
+}
+
+export function formatSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** Parses a git progress line ("Receiving objects:  45% (9/20)") into a fraction. */
@@ -139,6 +165,13 @@ export function stashLabel(message: string): { branch: string | null; text: stri
   return { branch: m[1]!, text: m[2]!.trim() || message };
 }
 
+/** SSH front hosts that serve the same service as the web host in the value. */
+const WEB_HOST_ALIASES: Record<string, string> = {
+  "ssh.bitbucket.org": "bitbucket.org",
+  "ssh.github.com": "github.com",
+  "altssh.gitlab.com": "gitlab.com",
+};
+
 /**
  * Web page of a git remote URL (`git@github.com:o/r.git`, `ssh://git@host:22/o/r`,
  * `https://user@host/o/r.git`), or null for local paths.
@@ -155,6 +188,7 @@ export function remoteWebUrl(url: string): string | null {
   if (full) [, host, path] = full as unknown as [string, string, string];
   else if (scp) [, host, path] = scp as unknown as [string, string, string];
   else return null;
+  host = WEB_HOST_ALIASES[host.toLowerCase()] ?? host;
   return `https://${host}/${path.replace(/^\/+/, "")}`;
 }
 
@@ -165,7 +199,53 @@ export function commitWebUrl(remoteUrl: string, sha: string): string | null {
   return `${base}/${/bitbucket\.org\//.test(base) ? "commits" : "commit"}/${sha}`;
 }
 
-/** "N file(s)", worded for the locale. */
+/** How a Git hosting service lays out its file pages. */
+export type HostingKind = "github" | "gitlab" | "bitbucket";
+
+/**
+ * The hosting service of a remote, by its host: GitHub (and GitHub Enterprise, Gitee, which share
+ * its URLs), Bitbucket, and GitLab for gitlab.* and any other host, as self-managed GitLab is the
+ * usual company server. Null for remotes with no web page (local paths).
+ */
+export function remoteHosting(url: string): { name: string; kind: HostingKind } | null {
+  const base = remoteWebUrl(url);
+  if (!base) return null;
+  const host = new URL(base).hostname.toLowerCase();
+  if (host === "github.com" || host.includes("github")) return { name: "GitHub", kind: "github" };
+  if (host === "gitee.com") return { name: "Gitee", kind: "github" };
+  if (host === "bitbucket.org") return { name: "Bitbucket", kind: "bitbucket" };
+  if (host.includes("gitlab")) return { name: "GitLab", kind: "gitlab" };
+  return { name: host, kind: "gitlab" };
+}
+
+/**
+ * Page of a file or directory at `revision` on the remote's web UI, with the 0-based `line`
+ * (through `endLine`, when later) selected. `relative` is the `/`-separated path inside the
+ * repository ("" for its root).
+ */
+export function fileWebUrl(
+  remoteUrl: string,
+  revision: string,
+  relative: string,
+  opts: { dir?: boolean; line?: number; endLine?: number } = {},
+): string | null {
+  const base = remoteWebUrl(remoteUrl);
+  const hosting = remoteHosting(remoteUrl);
+  if (!base || !hosting) return null;
+  const path = [...revision.split("/"), ...relative.split("/")].filter(Boolean).map(encodeURIComponent).join("/");
+  const line = opts.line !== undefined && !opts.dir ? opts.line + 1 : null;
+  const end = line && opts.endLine !== undefined && opts.endLine + 1 > line ? opts.endLine + 1 : null;
+  switch (hosting.kind) {
+    case "github":
+      return `${base}/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}${end ? `-L${end}` : ""}` : ""}`;
+    case "gitlab":
+      return `${base}/-/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}${end ? `-${end}` : ""}` : ""}`;
+    case "bitbucket":
+      return `${base}/src/${path}${line ? `#lines-${line}${end ? `:${end}` : ""}` : ""}`;
+  }
+}
+
+/** "N file(s)", worded for the locale. */ /** "N file(s)", worded for the locale. */
 export function fileCount(n: number): string {
   return n === 1 ? tx`${n} file` : tx`${n} files`;
 }

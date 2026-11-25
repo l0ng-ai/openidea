@@ -1,8 +1,25 @@
 .root {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+/* Absolute in both states, so hiding and showing the log doesn't lay it out again. */
+.logHost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logHidden {
+  content-visibility: hidden;
+  z-index: -1;
+}
+/* WebKit leaves a stale selection highlight on a subtree whose rendering was skipped when the selection cleared. */
+.logHidden[data-selection] {
+  content-visibility: visible;
+  opacity: 0;
 }
 .headerTabs {
   min-width: 0;
@@ -14,6 +31,7 @@
   min-height: 0;
 }
 .log {
+  container: git-log / inline-size;
   height: 100%;
   min-height: 0;
   display: flex;
@@ -35,7 +53,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 2px;
   border-right: 1px solid var(--border);
 }
@@ -52,7 +70,7 @@
   height: 32px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
 }
 .branchSearch {
@@ -64,25 +82,51 @@
   flex: 1;
   min-height: 0;
 }
+/* Long repository lists shrink before the branch name. */
+.mergedBranchTree {
+  --tree-detail-flex-shrink: 1000;
+}
+.branchRepos {
+  margin-left: var(--space-1-5);
+  color: var(--fg-subtle);
+}
 .branchDetail {
   min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   line-height: 1;
   vertical-align: middle;
 }
 
 /* filters */
 .filters {
-  gap: 4px;
-  padding: 0 8px 0 6px;
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-0-5) var(--space-1);
+  padding: var(--space-0-5) 8px var(--space-0-5) 6px;
   min-width: 0;
-  overflow: hidden;
+}
+.filterControls,
+.filterActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.filterControls {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.filterActions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
 }
 .textFilter {
   flex: 0 1 260px;
-  min-width: 100px;
+  min-width: min(100px, 60%);
 }
 .filterGroup {
   position: relative;
@@ -90,11 +134,25 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   overflow: hidden;
 }
 .filterHidden {
   visibility: hidden;
+}
+@container git-log (max-width: 320px) {
+  .filterControls,
+  .filterActions {
+    display: contents;
+  }
+  .textFilter {
+    flex: 1 0 100%;
+  }
+  /* Keep the filters measurable for the overflow menu. */
+  .filterGroup {
+    position: absolute;
+    width: 0;
+  }
 }
 .filterButton {
   flex: none;
@@ -121,15 +179,24 @@
   white-space: nowrap;
   max-width: 220px;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .filterValue {
+  min-width: 0;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-strong);
+}
+@container git-log (max-width: 600px) {
+  .filterValue {
+    max-width: 10ch;
+  }
 }
 .filterChevron {
   color: var(--fg-icon);
 }
 .filterClear {
+  flex: none;
   height: 100%;
   display: inline-flex;
   align-items: center;
@@ -168,7 +235,7 @@
 .list {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden auto;
   outline: none;
   /* Rows coming and going while scrolling relay out the list alone, not the workbench. */
   contain: strict;
@@ -181,8 +248,8 @@
   height: 26px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px;
+  gap: min(var(--space-2), 2%);
+  padding: 0 min(var(--space-2), 2%);
   white-space: nowrap;
   cursor: default;
   font-size: var(--fs-ui);
@@ -199,13 +266,23 @@
   background: var(--bg-app);
 }
 .columnCell {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Keep the first glyph clear of the divider on this column's left edge.
+     box-sizing: border-box keeps the width and boundary position unchanged. */
+  padding-inline-start: min(var(--space-2), 2%);
+  /* Anchor for the full-height column resize strip (IDEA's invisible divider). */
+  position: relative;
+}
+.signatureIndicator {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
 }
 .columnHeading {
   position: relative;
-  padding-inline-end: 6px;
   cursor: grab;
   touch-action: none;
 }
@@ -219,17 +296,75 @@
 .columnHeading.dropAfter {
   box-shadow: inset -2px 0 0 var(--accent);
 }
+/* Column divider: an 8px hit strip centred on the column's LEFT edge, with a
+   visible rule and grip so the resize target is easy to see and grab. Each row
+   carries one, so the rule runs the full table height. */
 .columnResize {
   position: absolute;
   inset-block: 0;
-  inset-inline-end: 0;
-  width: 6px;
-  cursor: ew-resize;
+  /* Keep the strip centre (and rule) at the cell's left edge: the cell has
+     overflow:hidden, so any rule drawn into the 8px gap would be clipped away. */
+  inset-inline-start: -4px;
+  width: 8px;
+  cursor: col-resize;
   touch-action: none;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Divider line is opt-in (View Options › Columns › Column Dividers, off by
+   default like IDEA). The transparent hit strip and resize cursor always work;
+   only the paint is gated. */
+.columnResize::before,
+.columnResize::after {
+  content: "";
+  display: none;
+}
+.showDividers .columnResize::before {
+  display: block;
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 4px;
+  width: 1px;
+  background: var(--border-strong);
+}
+.showDividers .columnResize::after {
+  display: block;
+  width: 2px;
+  height: 16px;
+  border-radius: 1px;
+  background: var(--control-off);
+}
+.showDividers .columnResize:hover::before,
+.showDividers .columnResize:active::before {
+  background: var(--accent);
+  width: 2px;
+}
+.showDividers .columnResize:hover::after,
+.showDividers .columnResize:active::after {
+  background: var(--accent);
+}
+/* First column's border: visible only when dividers are on, never draggable. */
+.columnResizeDisabled {
+  cursor: default;
+}
+.showDividers .columnResizeDisabled::after {
+  display: none;
+}
+.showDividers .columnResizeDisabled:hover::before,
+.showDividers .columnResizeDisabled:active::before {
+  background: var(--border-strong);
+  width: 1px;
+}
+/* Data-row strips keep the full-height rule but not the repeating grip. */
+.columnResizeRow::after {
+  display: none;
 }
 .columnResize:focus-visible {
   outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+  outline-offset: -1px;
+  border-radius: 1px;
 }
 /* View Options › Highlight › Current Branch: commits reachable from HEAD are tinted. */
 .currentBranch {
@@ -251,11 +386,14 @@
   --log-row-bg: var(--bg-tree-selected);
 }
 .colSubject {
-  flex: 1;
+  flex: 1 0 min(220px, 50%);
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
+  /* Anchor for the left divider. The graph SVG uses lane-relative coordinates,
+     so a positioned parent does not move it. */
+  position: relative;
   /* Let graph endpoints overlap adjacent rows, but never paint over the next column. */
   overflow-x: clip;
   overflow-y: visible;
@@ -281,27 +419,41 @@
   font-weight: 600;
   color: var(--fg);
 }
-.mergeSubject {
-  color: var(--fg-subtle);
-}
 .muted {
   color: var(--fg-subtle);
 }
+.commitText {
+  --log-subject-min: min(10ch, 30%);
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
 .subject {
   flex: 0 1 auto;
-  min-width: 0;
+  min-width: var(--log-subject-min);
+  color: var(--fg);
+}
+.subjectText {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--fg);
+}
+.mergeSubject {
+  color: var(--fg-subtle);
 }
 .headSubject {
   font-weight: 600;
 }
 .graph {
   flex: none;
+  /* Leave room for the subject when the graph has many lanes: the lanes past it are cut off, not squeezed. */
+  max-width: calc(100% - min(120px, 50%));
   fill: none;
   stroke-width: 1.6;
   overflow: visible;
+  clip-path: inset(-50% 0);
 }
 .refs {
   flex: 0 1 auto;
@@ -309,12 +461,31 @@
   min-width: 11px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  /* May use the whole subject cell when space allows (#2447); shrinks with
-     per-label ellipsis before crowding out the commit message. */
+  gap: var(--space-2);
   max-width: 100%;
   overflow: hidden;
   margin-left: auto;
+}
+.commitText > .refs {
+  /* Keep ref names at their full width while leaving space for a short subject. */
+  flex: none;
+  max-width: calc(100% - var(--log-subject-min) - var(--space-1-5));
+}
+.commitText > .refsCompact {
+  flex: 0 1 auto;
+  max-width: calc(100% / 3);
+}
+.commitText:has(> .refsCompact) > .subject {
+  /* Protect a short subject while leaving room for compact reference names. */
+  flex: 0 1000 max-content;
+  min-width: auto;
+  width: min(75%, 24ch);
+}
+.commitText > .refs .ref {
+  font-size: var(--fs-small);
+}
+.refsCompact .ref {
+  min-width: 11px;
 }
 .refsLeft {
   margin-left: 0;
@@ -323,15 +494,16 @@
   --tag-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1.5 1.5h4.2l4.8 4.8-4.2 4.2-4.8-4.8z' fill='none' stroke='black' stroke-width='1.1' stroke-linejoin='round'/%3E%3Ccircle cx='4' cy='4' r='.9'/%3E%3C/svg%3E");
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
-  /* Sizes to content (#2447): truncates with ellipsis only when .refs runs
-     out of room; the full name stays available via the title tooltip. */
+}
+.refText {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Outlined tag glyph in the ref's colour. */
 .ref::before {
@@ -374,7 +546,17 @@
   flex-direction: column;
   min-height: 0;
 }
+.detailsBar {
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  padding-block: var(--space-0-5);
+}
 .detailsCount {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding-left: 4px;
   color: var(--fg-subtle);
   font-size: var(--fs-ui);
@@ -386,13 +568,25 @@
 .fileRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
 }
 .fileIcon {
   flex: none;
+}
+.iconStack {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.iconOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 .fileName {
   min-width: 0;
@@ -407,7 +601,7 @@
 }
 .lineStats {
   display: inline-flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex: none;
   font-variant-numeric: tabular-nums;
 }
@@ -429,6 +623,10 @@
   user-select: text;
   font-size: var(--fs-ui);
 }
+.historyMessageBox {
+  padding: var(--space-2) var(--space-3);
+  border-top: 0;
+}
 .commitTooltip {
   width: min(520px, calc(100vw - 32px));
   max-height: 60vh;
@@ -444,45 +642,101 @@
   display: flex;
   flex-direction: column;
 }
+/* Go to a merge commit's file: parent 1 | merge result | parent 2, each pane scrolling itself. */
+.mergeDiff {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mergeDiffLabels {
+  flex: none;
+  height: var(--h-row);
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.mergeDiffLabels > span {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mergeDiffLabels > span + span {
+  border-left: 1px solid var(--border);
+}
+.mergeDiffPanes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+}
+.mergeDiffPane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.mergeDiffPane + .mergeDiffPane {
+  border-left: 1px solid var(--border);
+}
+.mergeDiffPane > :global(.cm-editor) {
+  flex: 1;
+  min-width: 0;
+}
+.messageText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
 .subjectLine {
   color: var(--fg-strong);
-  font-weight: 600;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .fullMessage {
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
   color: var(--fg);
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .meta {
-  margin-top: 10px;
+  font-size: var(--fs-small);
   color: var(--fg-subtle);
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.messageText + .meta {
+  margin-top: var(--space-2);
+}
+.meta + .meta,
+.commitEntry .messageText + .meta {
+  margin-top: var(--space-0-5);
 }
 .commitEntry + .commitEntry {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
-.metaCompact {
-  margin-top: 2px;
-}
-.meta .refs {
-  margin-left: 0;
-  max-width: none;
+.detailRefGroup {
+  display: flex;
   flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
 }
-.meta .ref {
+.detailRefGroup .ref {
+  align-items: baseline;
+  font-size: inherit;
   max-width: 100%;
   white-space: normal;
-  overflow-wrap: anywhere;
 }
 .hash {
   font-family: var(--font-mono);
+}
+.messageText .linkButton,
+.meta .linkButton {
+  max-width: 100%;
 }
 .linkButton {
   color: var(--link);
@@ -580,7 +834,11 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+}
+/* A branch inside an opened Local / Remote group. */
+.branchFilterNested {
+  padding-left: var(--tree-indent, 16px);
 }
 .branchFilterIcon {
   flex: none;
@@ -621,7 +879,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 4px 6px;
 }
 .worktreeList {
@@ -630,9 +888,19 @@
 }
 
 .colRepository {
-  flex: 0 0 100px;
+  flex: 0 1 100px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-secondary);
+}
+.shallowHistory {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
 }

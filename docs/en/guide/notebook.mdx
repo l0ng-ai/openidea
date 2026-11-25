@@ -54,6 +54,14 @@ Use **Add Code Cell** and **Add Markdown Cell** at the end of the notebook to ap
 
 Code cells show the execution count (`[3]`) next to the cell toolbar. Raw cells and cell types OpenIDEA doesn't know are shown read-only; their content is kept as it is.
 
+## Code intelligence
+
+Code cells get completion, quick documentation on hover, parameter info and error highlighting from the project's Python language server, as in a `.py` file. The server reads the code cells in order, so names defined in one cell are known in the cells below it, and IPython syntax such as `%matplotlib inline` or `!pip list` isn't reported as an error.
+
+`⌘`-click (macOS) or `Ctrl`-click (Windows/Linux) a name to go to its declaration, in another cell or in a library.
+
+This needs a language server that supports notebooks: **basedpyright** (the default) and **Ruff** do. With other Python servers, code cells only get syntax highlighting.
+
 ## Keyboard
 
 | Action                     | Keys                                                                        |

@@ -15,8 +15,11 @@ import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui"
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useConsoleFont } from "@/platform/consoleFont";
 import { spanStyle } from "@/ui/ansi";
-import ansi from "@/ui/ansi.module.css";
+import { logLineColor } from "@/ui/logColors";
+import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
+import { useConsoleRules } from "@/workbench/contributions";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions, type FindResult } from "@/ui/consoleFind";
 import {
@@ -33,9 +36,10 @@ import {
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { findOutputLinks, type OutputLink } from "@/features/run/links";
-import { openTarget, openUrl, runDirectory } from "@/features/run/navigate";
+import { debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
+import { WidestColumns } from "@/platform/consoleColumns";
 
 const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
 
@@ -46,19 +50,22 @@ const DebugLine = memo(
   function DebugLine({
     line,
     marks,
+    rules,
     cwd,
   }: {
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
+    rules?: ConsoleRuleMatch;
     length: number;
     cwd: string;
   }) {
-    const segments = segmentLine(line.spans, line.category === "system" ? [] : findOutputLinks(line.text), marks);
+    const spans = rules ? styleSpans(line.spans, rules) : line.spans;
+    const segments = segmentLine(spans, line.category === "system" ? [] : findOutputLinks(line.text), marks);
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
-      if (link.kind === "url") void openUrl(link.url);
-      else void openTarget(link.target, cwd);
+      if (link.kind !== "url") void openTarget(link.target, cwd);
+      else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     if (segments.length === 0) return <>{"\u200B"}</>;
     return (
@@ -74,6 +81,7 @@ const DebugLine = memo(
           const marked = seg.mark ? { "data-find-match": "", "data-find-current": seg.current ? "" : undefined } : {};
           return seg.link ? (
             <a
+              // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
               key={i}
               href={seg.link.kind === "url" ? seg.link.url : undefined}
               className={styles.link}
@@ -86,10 +94,12 @@ const DebugLine = memo(
               {seg.text}
             </a>
           ) : seg.mark ? (
+            // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
             <mark key={i} className={styles.findMatch} style={style} {...marked}>
               {seg.text}
             </mark>
           ) : (
+            // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
             <span key={i} style={style}>
               {seg.text}
             </span>
@@ -98,7 +108,7 @@ const DebugLine = memo(
       </>
     );
   },
-  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks,
+  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks && a.rules === b.rules,
 );
 
 export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
@@ -118,10 +128,23 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const [follow, setFollow] = useState(true);
   const stick = useRef(true);
   stick.current = follow;
+  // The debug console uses the same font as the Run console.
+  const consoleFont = useConsoleFont();
+  const { rowHeight } = consoleFont;
+  const fontStyle = {
+    fontFamily: consoleFont.family,
+    fontSize: `${consoleFont.size}px`,
+    fontWeight: consoleFont.weight,
+    ["--fw-code-bold" as string]: String(consoleFont.boldWeight),
+  };
   // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
   const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
+  const logColors = useWorkflowSettings((s) => s.console.logColors);
+  const consoleRules = compileConsoleRules(useConsoleRules((s) => s.providers));
   const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
   const softWrap = wrapOverride ?? defaultWrap;
+  const [widest] = useState(() => new WidestColumns());
+  const columns = useMemo(() => widest.measure(lines ?? []), [widest, lines]);
   const programmatic = useRef(false);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
@@ -141,13 +164,13 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const virtualizer = useVirtualizer({
     count: lines?.length ?? 0,
     getScrollElement: () => scroller.current,
-    estimateSize: () => 18,
+    estimateSize: () => rowHeight,
     overscan: 30,
     getItemKey: (i) => lines?.[i]?.id ?? i,
   });
 
   // Wrapping changes every row's height; the end is pinned again below.
-  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, virtualizer]);
+  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, rowHeight, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -429,7 +452,8 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         )}
         <div
           ref={scroller}
-          className={clsx(styles.consoleOutput, ansi.palette, !softWrap && styles.noWrap)}
+          className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
+          style={{ ...fontStyle, lineHeight: `${rowHeight}px` }}
           onScroll={(e) => {
             if (programmatic.current) return;
             const el = e.currentTarget;
@@ -445,19 +469,32 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
           {!lines?.length && session.launch?.request === "attach" && (
             <T>The attached process may not provide standard output to the debugger.</T>
           )}
-          <div ref={inner} className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+          <div
+            ref={inner}
+            className={styles.consoleInner}
+            style={{ height: virtualizer.getTotalSize(), minWidth: softWrap ? undefined : `${columns}ch` }}
+          >
             {virtualizer.getVirtualItems().map((item) => {
               const l = lines?.[item.index];
               if (!l) return null;
+              // As in the Run console: a whole-line rule replaces the level colour.
+              const ruled = matchConsoleRules(l.text, l.category, consoleRules);
+              const color = ruled?.line ? ruled.line.fg : logLineColor(l.text, l.category, logColors);
               return (
                 <span
                   key={item.key}
                   data-index={item.index}
                   ref={virtualizer.measureElement}
                   className={clsx(styles.out, styles[`cat-${l.category}`])}
-                  style={{ transform: `translateY(${item.start}px)` }}
+                  style={{ transform: `translateY(${item.start}px)`, color, background: ruled?.line?.bg }}
                 >
-                  <DebugLine line={l} marks={marksByLine.get(item.index)} length={l.text.length} cwd={cwd} />
+                  <DebugLine
+                    line={l}
+                    marks={marksByLine.get(item.index)}
+                    rules={ruled}
+                    length={l.text.length}
+                    cwd={cwd}
+                  />
                 </span>
               );
             })}
@@ -466,12 +503,13 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         <div className={styles.repl}>
           {interactive && (
             <>
-              <span className={styles.prompt} aria-hidden>
+              <span className={styles.prompt} style={fontStyle} aria-hidden>
                 ›
               </span>
               <input
                 ref={inputRef}
                 className={styles.evalInput}
+                style={fontStyle}
                 onFocus={() => setConsoleHistoryBrowser(browseHistory)}
                 onBlur={() => {
                   setConsoleHistoryBrowser(null);

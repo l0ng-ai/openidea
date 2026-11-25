@@ -16,6 +16,11 @@
   gap: 1px;
 }
 
+/* A marker that opens its commits shows the pointer, inside the widget's own button. */
+.selectable {
+  cursor: pointer;
+}
+
 .incoming {
   color: var(--accent);
 }

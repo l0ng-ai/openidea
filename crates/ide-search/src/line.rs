@@ -1,5 +1,6 @@
-//! Turns a matched line plus byte ranges into a [`LineMatch`] with UTF-16
-//! columns, truncating very long lines to a window around the first match.
+//! Turns a matched line plus byte ranges into [`LineMatch`]es with UTF-16
+//! columns. A very long line is cut into windows: one around its first match
+//! and the matches that fit with it, then one around each match left out.
 
 use crate::LineMatch;
 
@@ -8,33 +9,72 @@ pub(crate) const MAX_LINE_LEN: usize = 500;
 /// How much text before the first match a truncated line keeps.
 const CONTEXT_BEFORE: usize = 100;
 
-/// `line` excludes the line terminator; `ranges` are sorted, non-overlapping
+/// Appends the matches of one line to `out`: a single [`LineMatch`], or one per window of a
+/// very long line. `line` excludes the line terminator; `ranges` are sorted, non-overlapping
 /// byte ranges within `line`.
-pub(crate) fn line_match(line_no: u32, line: &[u8], ranges: &[(usize, usize)]) -> LineMatch {
+pub(crate) fn line_matches(line_no: u32, line: &[u8], ranges: &[(usize, usize)], out: &mut Vec<LineMatch>) {
     match std::str::from_utf8(line) {
-        Ok(s) => from_str(line_no, s, ranges),
+        Ok(s) => from_str(line_no, s, ranges, out),
         Err(_) => {
             let (s, mapped) = lossy(line, ranges);
-            from_str(line_no, &s, &mapped)
+            from_str(line_no, &s, &mapped, out)
         }
     }
 }
 
-fn from_str(line_no: u32, s: &str, ranges: &[(usize, usize)]) -> LineMatch {
-    let (start, end) = if s.len() <= MAX_LINE_LEN || utf16_len(s.as_bytes()) <= MAX_LINE_LEN {
-        (0, s.len())
-    } else {
-        window(s, floor_boundary(s, ranges.first().map_or(0, |r| r.0.min(s.len()))))
-    };
+#[cfg(test)]
+fn line_match(line_no: u32, line: &[u8], ranges: &[(usize, usize)]) -> LineMatch {
+    let mut out = Vec::new();
+    line_matches(line_no, line, ranges, &mut out);
+    out.swap_remove(0)
+}
+
+fn from_str(line_no: u32, s: &str, ranges: &[(usize, usize)], out: &mut Vec<LineMatch>) {
+    if s.len() <= MAX_LINE_LEN || utf16_len(s.as_bytes()) <= MAX_LINE_LEN {
+        out.push(in_window(line_no, s, ranges, (0, s.len()), 0).0);
+        return;
+    }
+    let mut rest = ranges;
+    // UTF-16 offset of the previous window's start: counting from the line start for every
+    // window is quadratic in the line length.
+    let (mut prev_start, mut prev_offset) = (0, 0);
+    loop {
+        let bounds = window(s, floor_boundary(s, rest.first().map_or(0, |r| r.0.min(s.len()))));
+        let text_offset = if bounds.0 >= prev_start {
+            prev_offset + utf16_len(&s.as_bytes()[prev_start..bounds.0])
+        } else {
+            utf16_len(&s.as_bytes()[..bounds.0])
+        };
+        (prev_start, prev_offset) = (bounds.0, text_offset);
+        let (m, used) = in_window(line_no, s, rest, bounds, text_offset);
+        out.push(m);
+        rest = &rest[used.max(1)..];
+        if rest.is_empty() {
+            break;
+        }
+    }
+}
+
+/// The [`LineMatch`] of the text in `bounds` with the leading `ranges` that end inside it (at
+/// least the first one, cut to the window), and how many ranges it took. `text_offset` is the
+/// UTF-16 length of `s[..start]`.
+fn in_window(
+    line_no: u32,
+    s: &str,
+    ranges: &[(usize, usize)],
+    (start, end): (usize, usize),
+    text_offset: usize,
+) -> (LineMatch, usize) {
     let text = &s[start..end];
-    let text_offset = if start == 0 { 0 } else { utf16_len(&s.as_bytes()[..start]) };
 
     let mut out = Vec::with_capacity(ranges.len());
     let (mut pos, mut col) = (start, 0usize);
+    let mut used = 0;
     for &(a, b) in ranges {
-        if a > end || (a == end && b > a) {
+        if a > end || (a == end && b > a) || (used > 0 && b > end) {
             break;
         }
+        used += 1;
         let (a, b) = (floor_boundary(s, a.max(start)), ceil_boundary(s, b.min(end)));
         if a < pos {
             continue;
@@ -45,7 +85,7 @@ fn from_str(line_no: u32, s: &str, ranges: &[(usize, usize)]) -> LineMatch {
         pos = b;
         out.push((col_a as u32, col as u32));
     }
-    LineMatch { line: line_no, text: text.to_owned(), ranges: out, text_offset: text_offset as u32 }
+    (LineMatch { line: line_no, text: text.to_owned(), ranges: out, text_offset: text_offset as u32 }, used)
 }
 
 /// Byte window `[start, end)` of at most `MAX_LINE_LEN` UTF-16 units that
@@ -185,5 +225,108 @@ mod tests {
         assert_eq!(m.text_offset, 700);
         assert_eq!(m.ranges, vec![(100, 106)]);
         assert!(utf16_len(m.text.as_bytes()) <= MAX_LINE_LEN);
+    }
+
+    #[test]
+    fn matches_outside_the_first_window_get_their_own() {
+        // Two matches 100 apart share a window; the one 1000 further gets another.
+        let s = format!("{}ab{}cd{}ef{}", "x".repeat(1000), "x".repeat(100), "x".repeat(1000), "x".repeat(10));
+        let at = |needle: &str| s.find(needle).unwrap();
+        let ranges = [(at("ab"), at("ab") + 2), (at("cd"), at("cd") + 2), (at("ef"), at("ef") + 2)];
+        let mut out = Vec::new();
+        line_matches(7, s.as_bytes(), &ranges, &mut out);
+        let found: Vec<Vec<u32>> =
+            out.iter().map(|m| m.ranges.iter().map(|&(a, _)| m.text_offset + a).collect()).collect();
+        let col = |needle: &str| at(needle) as u32;
+        assert_eq!(found, vec![vec![col("ab"), col("cd")], vec![col("ef")]]);
+        assert!(out.iter().all(|m| m.line == 7 && utf16_len(m.text.as_bytes()) <= MAX_LINE_LEN));
+        assert_eq!(&out[1].text[out[1].ranges[0].0 as usize..out[1].ranges[0].1 as usize], "ef");
+    }
+
+    #[test]
+    fn a_match_longer_than_the_window_is_cut_to_it() {
+        let s = format!("{}{}tail", "x".repeat(100), "y".repeat(1000));
+        let mut out = Vec::new();
+        line_matches(0, s.as_bytes(), &[(100, 1100), (1100, 1104)], &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].ranges, vec![(100, 500)]);
+        assert_eq!(out[1].text_offset + out[1].ranges[0].0, 1100);
+    }
+
+    #[test]
+    fn a_long_line_with_many_windows_is_cut_in_linear_time() {
+        // 4 MB with a match every 600 bytes: one window each.
+        let s = format!("{}function", "x".repeat(592)).repeat(7_000);
+        let ranges: Vec<_> = s.match_indices("function").map(|(a, m)| (a, a + m.len())).collect();
+        let started = std::time::Instant::now();
+        let mut out = Vec::new();
+        line_matches(0, s.as_bytes(), &ranges, &mut out);
+        assert_eq!(out.len(), 7_000);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    /// `main`'s windowing, which counts each window's offset from the line start.
+    fn reference(line_no: u32, line: &[u8], ranges: &[(usize, usize)]) -> Vec<LineMatch> {
+        fn from_str(line_no: u32, s: &str, ranges: &[(usize, usize)], out: &mut Vec<LineMatch>) {
+            if s.len() <= MAX_LINE_LEN || utf16_len(s.as_bytes()) <= MAX_LINE_LEN {
+                out.push(in_window(line_no, s, ranges, (0, s.len()), 0).0);
+                return;
+            }
+            let mut rest = ranges;
+            loop {
+                let bounds = window(s, floor_boundary(s, rest.first().map_or(0, |r| r.0.min(s.len()))));
+                let (m, used) = in_window(line_no, s, rest, bounds, utf16_len(&s.as_bytes()[..bounds.0]));
+                out.push(m);
+                rest = &rest[used.max(1)..];
+                if rest.is_empty() {
+                    break;
+                }
+            }
+        }
+        let mut out = Vec::new();
+        match std::str::from_utf8(line) {
+            Ok(s) => from_str(line_no, s, ranges, &mut out),
+            Err(_) => {
+                let (s, mapped) = lossy(line, ranges);
+                from_str(line_no, &s, &mapped, &mut out)
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn windows_match_the_reference_on_random_lines() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let pieces: [&[u8]; 8] = [b"a", b"x", b" ", "é".as_bytes(), "中".as_bytes(), "😀".as_bytes(), b"ab", b"\xFF"];
+        for case in 0..3_000 {
+            let len = [next(600), 400 + next(300), next(6_000)][case % 3];
+            let mut line = Vec::new();
+            while line.len() < len {
+                // Invalid UTF-8 in a tenth of the lines.
+                let piece = pieces[next(if case % 10 == 0 { 8 } else { 7 })];
+                line.extend_from_slice(piece);
+            }
+            let mut ranges = Vec::new();
+            let mut at = if next(4) == 0 { line.len().saturating_sub(next(40)) } else { next(200) };
+            while at <= line.len() {
+                let end = (at + next(12)).min(line.len());
+                ranges.push((at, end));
+                at = end + 1 + next([20, 300, 1_500][case % 3]);
+            }
+            if ranges.is_empty() {
+                continue;
+            }
+            let mut out = Vec::new();
+            line_matches(case as u32, &line, &ranges, &mut out);
+            let fields = |m: &LineMatch| (m.line, m.text.clone(), m.ranges.clone(), m.text_offset);
+            let expected = reference(case as u32, &line, &ranges);
+            assert_eq!(out.iter().map(fields).collect::<Vec<_>>(), expected.iter().map(fields).collect::<Vec<_>>());
+        }
     }
 }

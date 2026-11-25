@@ -7,8 +7,10 @@ import type { MenuItem } from "@/ui";
 import { confirm, confirmChecked } from "@/workbench/messages";
 import { promptText } from "./dialogs";
 import { openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeSource } from "./composeSource";
 import { isRunning, nodeContainers, nodeLabel, shortId, type DockerTarget, type ServiceNode } from "./model";
 import {
+  busyOp,
   composeOp,
   connectionState,
   containerOp,
@@ -21,17 +23,31 @@ import {
   type DetailTab,
 } from "./store";
 
+/**
+ * The operation in progress on `t`: a start / stop / … of its containers, or for a
+ * Compose project a running Docker task. Its actions stay disabled until it ends.
+ */
+export function targetBusy(t: DockerTarget | null, s = useServices.getState()): string | null {
+  if (!t) return null;
+  if (t.node.kind === "compose" && s.task) return "task";
+  return busyOp(
+    t.conn,
+    nodeContainers(t.node).map((c) => c.id),
+    s,
+  );
+}
+
 export function canStart(t: DockerTarget | null): boolean {
-  return !!t && nodeContainers(t.node).some((c) => !isRunning(c));
+  return !!t && !targetBusy(t) && nodeContainers(t.node).some((c) => !isRunning(c));
 }
 export function canStop(t: DockerTarget | null): boolean {
-  return !!t && nodeContainers(t.node).some(isRunning);
+  return !!t && !targetBusy(t) && nodeContainers(t.node).some(isRunning);
 }
 export function canRestart(t: DockerTarget | null): boolean {
-  return !!t && (t.node.kind === "container" || t.node.kind === "compose");
+  return !!t && !targetBusy(t) && (t.node.kind === "container" || t.node.kind === "compose");
 }
 export function canRemove(t: DockerTarget | null): boolean {
-  return !!t && ["container", "compose", "image", "volume", "network"].includes(t.node.kind);
+  return !!t && !targetBusy(t) && ["container", "compose", "image", "volume", "network"].includes(t.node.kind);
 }
 
 export async function start(t: DockerTarget | null) {
@@ -220,6 +236,17 @@ export function nodeMenu(t: DockerTarget): MenuItem[] {
       { label: "Restart", icon: "rerun", run: () => void restart(t) },
     );
   }
+  if (n.kind === "compose" && n.containers[0] && hasComposeSource(n.containers[0])) {
+    items.push(
+      { kind: "separator" },
+      {
+        label: "Jump to Source",
+        icon: "autoscroll-to-source",
+        shortcut: "F4",
+        run: () => void jumpToComposeProjectSource(n.project, n.containers),
+      },
+    );
+  }
   if (n.kind === "container") {
     const running = isRunning(n.container);
     items.push(
@@ -233,6 +260,16 @@ export function nodeMenu(t: DockerTarget): MenuItem[] {
           },
       { kind: "separator" },
       { label: "Dashboard", icon: "layout", run: () => showDetail("dashboard") },
+      ...(hasComposeSource(n.container)
+        ? [
+            {
+              label: "Jump to Source",
+              icon: "autoscroll-to-source",
+              shortcut: "F4",
+              run: () => void jumpToContainerComposeSource(n.container),
+            },
+          ]
+        : []),
       { label: "Show Log", icon: "file-log", run: () => showDetail("log") },
       {
         label: "Open Log in Editor",

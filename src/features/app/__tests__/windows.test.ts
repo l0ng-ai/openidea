@@ -8,6 +8,7 @@ const workspaceUpdate = vi.fn();
 const projectCurrent = vi.fn();
 const windowOpenProject = vi.fn();
 const windowOpenFiles = vi.fn();
+const windowGroupJoin = vi.fn();
 const windowTakeLaunch = vi.fn();
 const windowCompleteLaunch = vi.fn();
 const wslResolve = vi.fn();
@@ -17,6 +18,8 @@ const listen = vi.fn();
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({ listen }),
 }));
+const holdSplash = vi.fn();
+vi.mock("@/platform/splash", () => ({ holdSplash: (...a: unknown[]) => holdSplash(...a) }));
 vi.mock("@/platform/remote", async (original) => ({
   ...(await original<typeof import("@/platform/remote")>()),
   isRemoteWindow: vi.fn(() => false),
@@ -44,6 +47,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       projectCurrent: () => projectCurrent(),
       windowOpenProject: (...a: unknown[]) => windowOpenProject(...a),
       windowOpenFiles: (...a: unknown[]) => windowOpenFiles(...a),
+      windowGroupJoin: (...a: unknown[]) => windowGroupJoin(...a),
       windowTakeLaunch: () => windowTakeLaunch(),
       windowCompleteLaunch: () => windowCompleteLaunch(),
       wslResolve: (p: string) => wslResolve(p),
@@ -111,7 +115,8 @@ beforeEach(() => {
   workspaceAttach.mockReset();
   workspaceUpdate.mockReset();
   projectCurrent.mockReset();
-  for (const f of [windowOpenProject, windowOpenFiles, windowTakeLaunch, wslResolve]) f.mockReset();
+  for (const f of [windowOpenProject, windowOpenFiles, windowGroupJoin, windowTakeLaunch, wslResolve]) f.mockReset();
+  windowGroupJoin.mockResolvedValue(ok(null));
   windowTakeLaunch.mockResolvedValue(null);
   windowCompleteLaunch.mockReset().mockResolvedValue(ok(null));
   wslResolve.mockResolvedValue(null);
@@ -121,6 +126,7 @@ beforeEach(() => {
   vi.mocked(confirmLeaveProject).mockClear();
   notify.mockClear();
   listen.mockReset();
+  holdSplash.mockClear();
   openEditorFile.mockClear();
   openDiff.mockClear();
   vi.mocked(isRemoteWindow).mockReturnValue(false);
@@ -148,6 +154,8 @@ describe("openProjectInWindow", () => {
     expect(wslResolve).toHaveBeenCalledWith(share);
     expect(connectRemote).toHaveBeenCalledWith(target, linuxPath);
     expect(openProject).not.toHaveBeenCalled();
+    // The remote window doesn't keep untitled buffers, so the guard counts them.
+    expect(confirmLeaveProject).toHaveBeenCalledWith(false);
   });
 
   it("asks for a new window when this one already has a project", async () => {
@@ -190,6 +198,20 @@ describe("replacing a project in this window", () => {
     expect(useProject.getState().project?.root).toBe("/local");
   });
 
+  it("asks about trust before leaving, so Don't Open keeps the current project running", async () => {
+    useProject.setState({
+      ...projectState("/a"),
+      settings: { general: { openProjectIn: "same" } },
+    } as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    vi.mocked(confirmProjectTrust).mockRejectedValueOnce(new IpcError({ kind: "cancelled", message: "Cancelled" }));
+    await openProjectWithPolicy("/b");
+    expect(confirmProjectTrust).toHaveBeenCalledWith("/b", "local");
+    expect(confirmLeaveProject).not.toHaveBeenCalled();
+    expect(openProject).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
   it("opens the local project when its path matches the remote root", async () => {
     useProject.setState({
       ...projectState("/same"),
@@ -200,6 +222,49 @@ describe("replacing a project in this window", () => {
     await openProjectWithPolicy("/same");
     expect(windowOpenProject).toHaveBeenCalledWith("/same", false, []);
     expect(openProject).toHaveBeenCalledWith("/same");
+  });
+});
+
+describe("a recent project opened with a modifier key", () => {
+  it.each([
+    ["same", "new"],
+    ["new", "same"],
+    ["ask", "new"],
+    ["ask", "same"],
+  ] as const)("opens in the chosen window over 'Open project in: %s' without asking", async (policy, override) => {
+    const newWindow = override === "new";
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: policy } } } as never);
+    windowOpenProject.mockResolvedValue(ok(newWindow ? { kind: "opened", label: "project-2" } : { kind: "current" }));
+    await openProjectWithPolicy("/p/b", [], override);
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", newWindow, []);
+    expect(ask).not.toHaveBeenCalled();
+    // Only the current window takes the project here; a new one leaves this project alone.
+    expect(openProject.mock.calls).toEqual(newWindow ? [] : [["/p/b"]]);
+  });
+
+  it("opens a new window from a window that has no project", async () => {
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-2" }));
+    await openProjectWithPolicy("/p/b", [], "new");
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", true, []);
+    expect(openProject).not.toHaveBeenCalled();
+  });
+
+  it("keeps asking for a plain open", async () => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "ask" } } } as never);
+    vi.mocked(ask).mockResolvedValue({ button: "cancel", checked: false });
+    await openProjectWithPolicy("/p/b");
+    expect(ask).toHaveBeenCalledOnce();
+    expect(windowOpenProject).not.toHaveBeenCalled();
+  });
+
+  it("takes the window from the Open Recent action's argument", async () => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "same" } } } as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-2" }));
+    const action = windowActions().find((a) => a.id === "file.openRecentProject")!;
+    await action.run({ arg: { path: "/p/b", window: "new" } } as never);
+    expect(windowOpenProject).toHaveBeenLastCalledWith("/p/b", true, []);
+    await action.run({ arg: "/p/b" } as never);
+    expect(windowOpenProject).toHaveBeenLastCalledWith("/p/b", false, []);
   });
 });
 
@@ -381,6 +446,43 @@ describe("launch", () => {
     }
   });
 
+  it("uncovers the splash once the launch project starts opening, not only when it finishes", async () => {
+    const opening = deferred();
+    openProject.mockImplementationOnce(async (path) => {
+      useProject.setState({ opening: true, openingPath: path } as never);
+      await opening.promise;
+      const state = projectState(path);
+      useProject.setState({ ...state, opening: false, openingPath: null, lightEdit: false } as never);
+      return state.project;
+    });
+    listen.mockResolvedValue(() => {});
+    windowTakeLaunch.mockResolvedValueOnce({ project: "/p", files: [] });
+    const dispose = installLaunchHandling();
+    try {
+      const shown = holdSplash.mock.calls[0]![0] as Promise<void>;
+      await vi.waitFor(() => expect(openProject).toHaveBeenCalledOnce());
+      // The project is still opening, yet the splash hold has already released.
+      await shown;
+      expect(useProject.getState().opening).toBe(true);
+    } finally {
+      opening.resolve();
+      await startupLaunchHandled();
+      dispose();
+    }
+  });
+
+  it("uncovers the splash when launch setup fails", async () => {
+    listen.mockRejectedValueOnce(new Error("listener unavailable"));
+    const dispose = installLaunchHandling();
+    try {
+      await holdSplash.mock.calls[0]![0];
+      await startupLaunchHandled();
+      expect(windowTakeLaunch).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
   it("waits for an existing project restore before opening a received file", async () => {
     useProject.setState({ opening: true, openingPath: "/p" });
     windowTakeLaunch.mockResolvedValueOnce({
@@ -499,6 +601,7 @@ describe("launch", () => {
         path: "/x/b.txt",
         left: { type: "file", path: "/x/a.txt", label: "/x/a.txt" },
         right: { type: "worktree", label: "/x/b.txt" },
+        swappable: true,
       },
     ]);
   });
@@ -514,6 +617,7 @@ describe("launch", () => {
         path: "/p/b.txt",
         left: { type: "file", path: "/p/a.txt", label: "a.txt" },
         right: { type: "worktree", label: "b.txt" },
+        swappable: true,
       },
     ]);
   });
@@ -676,6 +780,37 @@ describe("Attach", () => {
   });
 });
 
+describe("Project tabs", () => {
+  it("opens the project in its own window and joins that window into this window's group", async () => {
+    useProject.setState(projectState("/p/a"));
+    vi.mocked(ask).mockResolvedValueOnce({ button: "tab", checked: false });
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "main-2" }));
+    await openProjectWithPolicy("/p/b", ["/p/b/file.txt"]);
+    expect(confirmProjectTrust).toHaveBeenCalledWith("/p/b", "local");
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", true, ["/p/b/file.txt"]);
+    expect(windowGroupJoin).toHaveBeenCalledWith("main-2");
+    // The new window opens its own files, and this window keeps its project.
+    expect(opened).toEqual([]);
+    expect(openProject).not.toHaveBeenCalled();
+    expect(confirmLeaveProject).not.toHaveBeenCalled();
+  });
+  it("groups the window that already has the project", async () => {
+    useProject.setState(projectState("/p/a"));
+    vi.mocked(ask).mockResolvedValueOnce({ button: "tab", checked: false });
+    windowOpenProject.mockResolvedValue(ok({ kind: "focused", label: "main-3" }));
+    await openProjectWithPolicy("/p/b");
+    expect(windowGroupJoin).toHaveBeenCalledWith("main-3");
+  });
+  it("reports a window it could not group", async () => {
+    useProject.setState(projectState("/p/a"));
+    vi.mocked(ask).mockResolvedValueOnce({ button: "tab", checked: false });
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "main-2" }));
+    windowGroupJoin.mockRejectedValueOnce(new Error("Window closed"));
+    await openProjectWithPolicy("/p/b");
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: "Window closed" }));
+  });
+});
+
 it("removes the first workspace member while retaining the workspace state root", async () => {
   const project = {
     root: "/workspace",
@@ -744,5 +879,58 @@ describe("explicit project-window requests", () => {
     } finally {
       dispose();
     }
+  });
+});
+
+describe("trust is asked before a new project window opens", () => {
+  const openProjectPath = (arg: unknown) =>
+    windowActions()
+      .find((a) => a.id === "file.openProjectPath")!
+      .run({ arg } as never);
+  const newWindowEntries: [string, () => unknown][] = [
+    ["Open… from a project window", () => openProjectInWindow("/p/b", false)],
+    ["Open in New Window", () => openProjectInWindow("/p/b", true)],
+    ["Open project in: New Window", () => openProjectWithPolicy("/p/b")],
+    ["a plugin's new-window request", () => openProjectPath({ path: "/p/b", newWindow: true })],
+  ];
+
+  it.each(newWindowEntries)("%s asks in this window first", async (_, open) => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "new" } } } as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
+    await open();
+    expect(confirmProjectTrust).toHaveBeenCalledWith("/p/b", "local");
+    expect(vi.mocked(confirmProjectTrust).mock.invocationCallOrder[0]).toBeLessThan(
+      windowOpenProject.mock.invocationCallOrder[0]!,
+    );
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", true, []);
+  });
+
+  it.each(newWindowEntries)("%s opens no window when the user chooses Don't Open", async (_, open) => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "new" } } } as never);
+    vi.mocked(confirmProjectTrust).mockRejectedValueOnce(new IpcError({ kind: "cancelled", message: "Cancelled" }));
+    await open();
+    expect(windowOpenProject).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(useProject.getState().project?.root).toBe("/p/a");
+  });
+
+  it("leaves a WSL folder to the remote window, which asks about the distribution's project", async () => {
+    useProject.setState(projectState("/p/a") as never);
+    wslResolve.mockResolvedValue({ target: { kind: "wsl", distro: "Debian" }, path: "/srv/app" });
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
+    await openProjectInWindow("\\\\wsl.localhost\\Debian\\srv\\app", true);
+    expect(confirmProjectTrust).not.toHaveBeenCalled();
+    expect(windowOpenProject).toHaveBeenCalled();
+  });
+
+  it("asks once this window takes the project, before leaving its current one", async () => {
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    await openProjectInWindow("/p/b", false);
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", false, []);
+    expect(confirmProjectTrust).toHaveBeenCalledOnce();
+    expect(vi.mocked(confirmProjectTrust).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(confirmLeaveProject).mock.invocationCallOrder[0]!,
+    );
+    expect(openProject).toHaveBeenCalledWith("/p/b");
   });
 });

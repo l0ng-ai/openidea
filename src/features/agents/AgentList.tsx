@@ -1,20 +1,29 @@
 /**
- * Settings › Agents › Coding Agents: one searchable list of every agent, those this machine can run first
+ * Agent Setup lists every agent, with those this machine can run first
  * (built in, installed from the ACP Registry, or defined in an agent file), then those it
  * can install. The selected agent's page holds its actions, the settings its new tasks
  * start with, and how it is launched. Launch edits are staged until Apply; installs run in
  * the background and keep running after the page closes.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { AgentConfigOption, AgentProvider, AgentRegistry, RegistryAgent, RequestId } from "@/bindings";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import type {
+  AgentConfigOption,
+  AgentProvider,
+  AgentRegistry,
+  CustomAgentInput,
+  RegistryAgent,
+  RequestId,
+} from "@/bindings";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import clsx from "clsx";
-import { Button, Icon, IconButton, Input, List, ProgressBar, SearchField, Select, Spinner, T } from "@/ui";
+import { Button, Dialog, Icon, IconButton, Input, List, ProgressBar, SearchField, Select, Spinner, T } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
-import { providerIcon } from "./model";
+import { LocalCliUpdate } from "./LocalCliUpdate";
+import { isPerModelOption } from "./composerModel";
+import { providerIcon, slugifyId } from "./model";
 import {
   DISTRIBUTION_LABEL,
   afterInstall,
@@ -27,6 +36,10 @@ import {
 import styles from "./AgentList.module.css";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const COPILOT_GITHUB_ACCOUNT_ENV = "OPENIDEA_COPILOT_GITHUB_ACCOUNT";
+
+const launchEnv = (env: Record<string, string>) =>
+  Object.fromEntries(Object.entries(env).filter(([name]) => name !== COPILOT_GITHUB_ACCOUNT_ENV));
 
 /** How often the page checks on installs it did not start. */
 const BACKGROUND_POLL_MS = 1500;
@@ -86,9 +99,19 @@ export function agentRows(providers: AgentProvider[], registry: RegistryAgent[],
   ];
 }
 
+/** Live registry update version once loaded, falling back to the cached provider snapshot before it arrives. */
+function registryUpdate(provider: AgentProvider | null, registry?: RegistryAgent | null): string | null {
+  if (provider && provider.source.kind !== "registry") return null;
+  if (registry) return registry.installed != null && registry.update ? registry.version : null;
+  return provider?.source.kind === "registry" ? provider.source.update : null;
+}
+
 /** What the agent needs, if anything, as a trailing tag in the list. */
-export function agentStatus(agent: AgentProvider): { label: string; tone: "muted" | "accent" } | null {
-  if (agent.source.kind === "registry" && agent.source.update) return { label: "Update", tone: "accent" };
+export function agentStatus(
+  agent: AgentProvider,
+  registry?: RegistryAgent | null,
+): { label: string; tone: "muted" | "accent" } | null {
+  if (registryUpdate(agent, registry)) return { label: "Update", tone: "accent" };
   if (agent.commandOverridden || agent.source.kind === "custom") return { label: "Custom", tone: "accent" };
   if (!agent.installed) return { label: "Not found", tone: "muted" };
   return null;
@@ -96,8 +119,8 @@ export function agentStatus(agent: AgentProvider): { label: string; tone: "muted
 
 function AgentItem({ agent, working }: { agent: Agent; working: boolean }) {
   const status = agent.provider
-    ? agentStatus(agent.provider)
-    : agent.registry?.installed != null && agent.registry.update
+    ? agentStatus(agent.provider, agent.registry)
+    : registryUpdate(null, agent.registry)
       ? ({ label: "Update", tone: "accent" } as const)
       : null;
   return (
@@ -135,6 +158,9 @@ export function AgentList({
   const [job, setJob] = useState<Job | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -247,6 +273,51 @@ export function AgentList({
       .finally(() => setJob(null));
   };
 
+  const removeCustom = async (agent: Agent) => {
+    if (
+      !(await confirm({
+        title: tx`Remove ${agent.name}`,
+        message: tx`Remove ${agent.name} and delete its agent file? Its tasks stay, but can't continue without it.`,
+        ok: tx("Remove"),
+      }))
+    )
+      return;
+    setAgentError(agent.id, null);
+    setRemoving(agent.id);
+    try {
+      await backend.removeCustom(agent.id);
+      changed();
+    } catch (e) {
+      setAgentError(agent.id, errorText(e));
+    } finally {
+      setRemoving(null);
+    }
+  };
+
+  const importAcpJson = async () => {
+    setImporting(true);
+    setNotice(null);
+    try {
+      const text = await backend.pickAcpJson();
+      if (text == null) return;
+      const outcomes = await backend.importAcp(text);
+      const saved = outcomes.filter((o) => o.saved);
+      const skipped = outcomes.filter((o) => !o.saved);
+      const names = saved.map((o) => o.name).join(", ");
+      const parts = [saved.length ? tx`Imported ${names} from acp.json.` : tx("Imported nothing from acp.json.")];
+      if (skipped.length) {
+        const details = skipped.map((o) => `${o.name} (${o.reason})`).join(", ");
+        parts.push(tx`Skipped ${details}.`);
+      }
+      setNotice(parts.join(" "));
+      changed();
+    } catch (e) {
+      setNotice(errorText(e));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const remove = async (agent: Agent) => {
     if (
       !(await confirm({
@@ -319,6 +390,19 @@ export function AgentList({
             </p>
           )
         )}
+        <div className={styles.customActions}>
+          <Button size="small" variant="secondary" disabled={busy} onClick={() => setAdding(true)}>
+            <T>Add Custom Agent…</T>
+          </Button>
+          <Button size="small" variant="secondary" disabled={busy || importing} onClick={() => void importAcpJson()}>
+            {importing ? <T>Importing…</T> : <T>Import acp.json</T>}
+          </Button>
+        </div>
+        {notice && (
+          <p className={styles.customNotice} role="status">
+            {notice}
+          </p>
+        )}
         {(!registry || registry.warning) && (
           <div className={styles.registryState}>
             {registryError ? (
@@ -351,7 +435,18 @@ export function AgentList({
           error={errors[agent.id] ?? null}
           onInstall={() => void install(agent)}
           onRemove={() => void remove(agent)}
+          onRemoveCustom={() => void removeCustom(agent)}
           onCancel={(request) => registryBackend.cancel(request)}
+        />
+      )}
+      {adding && (
+        <CustomAgentModal
+          backend={backend}
+          onClose={() => setAdding(false)}
+          onSaved={() => {
+            setAdding(false);
+            changed();
+          }}
         />
       )}
     </div>
@@ -409,6 +504,7 @@ function Details({
   error,
   onInstall,
   onRemove,
+  onRemoveCustom,
   onCancel,
 }: {
   agent: Agent;
@@ -421,13 +517,14 @@ function Details({
   error: string | null;
   onInstall: () => void;
   onRemove: () => void;
+  onRemoveCustom: () => void;
   onCancel: (request: RequestId) => void;
 }) {
   const { provider, registry } = agent;
   const installed = provider?.source.kind === "registry" || (!provider && registry?.installed != null);
+  const isCustom = provider?.source.kind === "custom";
   const canInstall = registry?.distribution != null;
-  const update =
-    provider?.source.kind === "registry" ? provider.source.update : registry?.update ? registry.version : null;
+  const update = registryUpdate(provider, registry);
   const facts = provider
     ? [providerStatus(provider)]
     : [
@@ -481,6 +578,11 @@ function Details({
                   {removing ? "Removing…" : "Remove"}
                 </Button>
               )}
+              {isCustom && (
+                <Button size="small" disabled={busy} onClick={onRemoveCustom}>
+                  {removing ? "Removing…" : "Remove"}
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -488,7 +590,7 @@ function Details({
       {job && (
         <div className={styles.progress}>
           <ProgressBar value={job.fraction} aria-label={tx`Installing ${agent.name}`} />
-          <span className={styles.hint}>{job.message}</span>
+          <span>{job.message}</span>
         </div>
       )}
       {!job && installed && update && <p className={styles.notice}>{tx`${update} is available`}</p>}
@@ -524,6 +626,177 @@ function Details({
   );
 }
 
+/** Splits arguments on whitespace, honoring single and double quotes. */
+function parseArgs(text: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (const ch of text.trim()) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      if (current) {
+        out.push(current);
+        current = "";
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+function CustomAgentModal({
+  backend,
+  onClose,
+  onSaved,
+}: {
+  backend: CommandsBackend;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const uid = useId();
+  const [name, setName] = useState("");
+  const [id, setId] = useState("");
+  const [idTouched, setIdTouched] = useState(false);
+  const [command, setCommand] = useState("");
+  const [argsText, setArgsText] = useState("");
+  const [envText, setEnvText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const changeName = (next: string) => {
+    setName(next);
+    if (!idTouched) setId(slugifyId(next));
+  };
+  const canSave = name.trim().length > 0 && id.trim().length > 0 && command.trim().length > 0 && !saving;
+
+  const browse = async () => {
+    try {
+      const trimmed = name.trim();
+      const title = trimmed ? tx`Select ${trimmed}` : tx("Select executable");
+      const path = await backend.chooseExecutable(title, command, "desktop");
+      if (path) setCommand(path);
+      setError(null);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const input: CustomAgentInput = {
+        id: id.trim(),
+        name: name.trim(),
+        command: command.trim(),
+        args: parseArgs(argsText),
+        env: parseEnv(envText),
+      };
+      await backend.saveCustom(input);
+      onSaved();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={tx("Add Custom Agent")}
+      width={560}
+      buttons={[
+        { label: "Add", role: "default", disabled: !canSave, onClick: () => void save() },
+        { label: "Cancel", role: "cancel", onClick: onClose },
+      ]}
+    >
+      <div className={`${styles.form} ${styles.dialogForm}`}>
+        {error && (
+          <p className={styles.error} role="alert" style={{ gridColumn: "1 / -1" }}>
+            {error}
+          </p>
+        )}
+        <Row label={<T>Name</T>} htmlFor={`${uid}-name`}>
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-name`}
+              data-autofocus
+              value={name}
+              placeholder={tx("My agent")}
+              onChange={(e) => changeName(e.target.value)}
+            />
+          </div>
+        </Row>
+        <Row
+          label={<T>ID</T>}
+          htmlFor={`${uid}-id`}
+          hint={<T>Letters, digits, dashes and underscores only; names the agent file.</T>}
+        >
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-id`}
+              mono
+              value={id}
+              placeholder="my-agent"
+              onChange={(e) => {
+                setId(e.target.value);
+                setIdTouched(true);
+              }}
+            />
+          </div>
+        </Row>
+        <Row label={<T>Command</T>} htmlFor={`${uid}-command`}>
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-command`}
+              mono
+              value={command}
+              placeholder={tx("/path/to/agent-acp")}
+              onChange={(e) => setCommand(e.target.value)}
+            />
+            <IconButton icon="folder-open" title="Browse…" disabled={saving} onClick={() => void browse()} />
+          </div>
+        </Row>
+        <Row
+          label={<T>Arguments</T>}
+          htmlFor={`${uid}-args`}
+          hint={<T>Separate arguments with spaces; quote ones containing spaces.</T>}
+        >
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-args`}
+              mono
+              value={argsText}
+              placeholder="--acp"
+              onChange={(e) => setArgsText(e.target.value)}
+            />
+          </div>
+        </Row>
+        <Row label={<T>Environment variables</T>} htmlFor={`${uid}-env`}>
+          <div className={styles.field}>
+            <Input
+              id={`${uid}-env`}
+              mono
+              value={envText}
+              placeholder="NAME=value; OTHER=value"
+              onChange={(e) => setEnvText(e.target.value)}
+            />
+          </div>
+        </Row>
+      </div>
+    </Dialog>
+  );
+}
+
 function providerStatus(agent: AgentProvider): string {
   if (agent.source.kind === "registry") return tx`ACP Registry · ${agent.source.version}`;
   if (agent.source.kind === "custom") return tx("Agent file");
@@ -551,13 +824,26 @@ function ProviderSettings({
     onChanged?.();
     return command === agent.defaultProgram ? "" : (command ?? "");
   });
-  const envBase = formatEnv(agent.env);
+  const accountBase = agent.env[COPILOT_GITHUB_ACCOUNT_ENV] ?? "";
+  const account = form.useExternal(`agents.${agent.id}.githubAccount`, accountBase, async (draft) => {
+    const next = { ...agent.env };
+    const value = draft.trim();
+    if (value) next[COPILOT_GITHUB_ACCOUNT_ENV] = value;
+    else delete next[COPILOT_GITHUB_ACCOUNT_ENV];
+    await backend.setEnv(agent.id, next);
+    await refresh();
+    onChanged?.();
+    return value;
+  });
+  const envBase = formatEnv(launchEnv(agent.env));
   const env = form.useExternal(`agents.${agent.id}.env`, envBase, async (draft) => {
     const parsed = parseEnv(draft);
+    const account = agent.env[COPILOT_GITHUB_ACCOUNT_ENV];
+    if (account) parsed[COPILOT_GITHUB_ACCOUNT_ENV] = account;
     await backend.setEnv(agent.id, parsed);
     await refresh();
     onChanged?.();
-    return formatEnv(parsed);
+    return formatEnv(launchEnv(parsed));
   });
   const [error, setError] = useState<string | null>(null);
   // An edit can have been staged by a previous page instance. Its Apply callback
@@ -569,6 +855,9 @@ function ProviderSettings({
   const envEditable = agent.commandReadOnlyReason !== "registry" && agent.commandReadOnlyReason !== "customAgent";
   return (
     <>
+      {value.trim() === current && agent.installed && agent.canCheckCliUpdate && (
+        <LocalCliUpdate key={agent.program} agent={agent} backend={backend} />
+      )}
       {agent.loginHint && (
         <Section title="Sign In">
           <p className={styles.text}>
@@ -581,6 +870,27 @@ function ProviderSettings({
       </Section>
       <Section title="Launch">
         <div className={styles.form}>
+          {agent.id === "copilot" && (
+            <Row
+              label={<T>GitHub account</T>}
+              htmlFor={`agent-github-account-${agent.id}`}
+              hint={
+                <T>
+                  Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never
+                  stores it.
+                </T>
+              }
+            >
+              <Input
+                id={`agent-github-account-${agent.id}`}
+                mono
+                value={account.value}
+                disabled={account.saving}
+                placeholder="github-username"
+                onChange={(e) => account.set(e.target.value)}
+              />
+            </Row>
+          )}
           <Row label={<T>Command</T>}>
             <code className={styles.launch} title={launch}>
               {launch}
@@ -684,7 +994,14 @@ function LoginHint({ text }: { text: string }) {
   const translate = useTxTemplate();
   return translate(text)
     .split(/(`[^`]+`)/g)
-    .map((part, i) => (i % 2 === 1 ? <code key={i}>{part.slice(1, -1)}</code> : part));
+    .map((part, i) =>
+      i % 2 === 1 ? (
+        // oxlint-disable-next-line react/no-array-index-key -- code tokens can repeat; position is the identity
+        <code key={i}>{part.slice(1, -1)}</code>
+      ) : (
+        part
+      ),
+    );
 }
 
 function ExternalLink({ url, label }: { url: string; label: string }) {
@@ -699,7 +1016,7 @@ function ExternalLink({ url, label }: { url: string; label: string }) {
 
 /** The options a new task of `agent` starts with: each the agent's own default unless chosen. */
 export function defaultOptions(agent: AgentProvider, chosen: Record<string, string>): AgentConfigOption[] {
-  const base = agent.config.filter((o) => o.category !== "thought_level" && o.values.length > 1);
+  const base = agent.config.filter((o) => !isPerModelOption(o) && o.values.length > 1);
   const modelOption = base.find((o) => o.category === "model");
   const model = (modelOption && chosen[modelOption.id]) || modelOption?.current;
   const levels = (model && agent.thoughtLevels?.[model]) || [];

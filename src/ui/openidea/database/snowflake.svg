@@ -1,0 +1,5 @@
+<!-- OpenIDEA: Snowflake data source -->
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M8 1.5V14.5M2.4 4.75L13.6 11.25M13.6 4.75L2.4 11.25" stroke="#29B5E8" stroke-width="1.4" stroke-linecap="round"/>
+<path d="M6.3 2.6L8 4.2L9.7 2.6M6.3 13.4L8 11.8L9.7 13.4M2.5 7L4.7 6.1L4.3 3.8M13.5 9L11.3 9.9L11.7 12.2M2.5 9L4.7 9.9L4.3 12.2M13.5 7L11.3 6.1L11.7 3.8" stroke="#29B5E8" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

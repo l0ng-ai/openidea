@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatSql } from "./format";
+import { formatSql, formatted } from "./format";
 
 const fmt = (sql: string) => {
   let out = sql;
@@ -69,5 +69,53 @@ describe("formatSql", () => {
     expect(fmt(sql)).toBe("-- head\nselect a, -- why\n       b\nfrom t;\n\n\nselect 1;");
     const edits = formatSql(sql, "sqlite", { from: sql.length - 2, to: sql.length - 1 });
     expect(edits).toEqual([{ from: sql.lastIndexOf("select"), to: sql.length, insert: "select 1;" }]);
+  });
+
+  it("keeps Snowflake dollar strings, comments, casts, variant paths and stages", () => {
+    const sf = (sql: string) => formatted(sql, "snowflake");
+    expect(sf("select src:customer.name::string,src['k'].v[0] from t where x=$$ a  b $$ // why\n;")).toBe(
+      "select src:customer.name::string,\n       src['k'].v[0]\nfrom t\nwhere x = $$ a  b $$ // why\n;",
+    );
+    expect(sf("select $1 from @my_stage/path/f.csv (file_format=>'ff') t where y='it\\'s; ok';")).toBe(
+      "select $1\nfrom @my_stage/path/f.csv (file_format => 'ff') t\nwhere y = 'it\\'s; ok';",
+    );
+    expect(sf("select a from t qualify row_number() over (order by a)=1 and a>0;")).toBe(
+      "select a\nfrom t\nqualify row_number() over(order by a) = 1\n  and a > 0;",
+    );
+    expect(sf("show tables ->> select $1 from $1;")).toBe("show tables ->>\nselect $1\nfrom $1;");
+    const body = "create procedure p() returns int language sql as $$ begin  return 1; end $$;";
+    expect(sf(body)).toContain("$$ begin  return 1; end $$;");
+  });
+});
+
+describe("formatSql word case", () => {
+  const upper = { keywords: "upper", identifiers: "keep" } as const;
+
+  it("upper-cases keywords and keeps identifiers (IDEA's default)", () => {
+    expect(formatted("select id from t_user where id = 1", "mysql", upper)).toBe(
+      "SELECT id\nFROM t_user\nWHERE id = 1",
+    );
+    expect(
+      formatted("select count(*) from t left join u on u.id = t.u_id where x is not null", "postgres", upper),
+    ).toBe("SELECT count(*)\nFROM t\n         LEFT JOIN u ON u.id = t.u_id\nWHERE x IS NOT NULL");
+  });
+
+  it("applies the identifier case to unquoted names only", () => {
+    const lower = { keywords: "lower", identifiers: "lower" } as const;
+    expect(formatted("SELECT Name, \"MixedCase\" FROM Users AS U WHERE U.Id = 'Ab'", "postgres", lower)).toBe(
+      "select name,\n       \"MixedCase\"\nfrom users as u\nwhere u.id = 'Ab'",
+    );
+  });
+
+  it("leaves qualified names that look like keywords, bind parameters and ClickHouse names alone", () => {
+    const both = { keywords: "upper", identifiers: "upper" } as const;
+    expect(formatted("select t.key from t where t.id = :userId", "postgres", { ...upper })).toBe(
+      "SELECT t.key\nFROM t\nWHERE t.id = :userId",
+    );
+    expect(formatted("select uniqExact(id) from events", "clickhouse", both)).toBe("SELECT uniqExact(id)\nFROM events");
+  });
+
+  it("keeps the case by default", () => {
+    expect(formatted("select id from t", "sqlite")).toBe("select id\nfrom t");
   });
 });

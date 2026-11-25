@@ -185,6 +185,26 @@ describe("OS file imports", () => {
     expect(fs.nodes.has("/p/target/local.txt")).toBe(true);
   });
 
+  it("saves a pasted image as img.png, then img_1.png, and selects it", async () => {
+    const png = new Uint8Array([137, 80, 78, 71]);
+    setOsClipboardForTests({ hasImage: async () => true, image: async () => png });
+    await refreshOsClipboard();
+    expect(canPaste()).toBe(true);
+    await paste("/p/target");
+    await paste("/p/target");
+    expect(fs.nodes.get("/p/target/img.png")).toEqual({ kind: "file", size: 4 });
+    expect(fs.nodes.has("/p/target/img_1.png")).toBe(true);
+    expect(useProjectTree.getState().revealRequest?.path).toBe("/p/target/img_1.png");
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("says the clipboard is empty when it holds neither files nor an image", async () => {
+    setOsClipboardForTests({});
+    await paste("/p/target");
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "No files on the clipboard" }));
+    expect([...fs.nodes.keys()].filter((p) => p.startsWith("/p/target/"))).toEqual([]);
+  });
+
   it("reports a clipboard read failure", async () => {
     setOsClipboardForTests({
       files: async () => {

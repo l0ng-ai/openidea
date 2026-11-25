@@ -100,6 +100,39 @@ describe("Select", () => {
     key("Enter");
     expect(changed).toHaveBeenCalledExactlyOnceWith("other/BlueMoon");
   });
+  it("opens a searchable list from a key typed on the closed trigger, with that key as the query", async () => {
+    const onChange = vi.fn();
+    render(
+      <Select
+        aria-label="Branch"
+        options={[
+          { value: "main", label: "main" },
+          { value: "develop", label: "develop" },
+          { value: "feature/dev-tools", label: "feature/dev-tools" },
+        ]}
+        value="main"
+        searchable
+        onChange={onChange}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "Branch" });
+    fireEvent.keyDown(trigger, { key: "d", ctrlKey: true });
+    fireEvent.keyDown(trigger, { key: "Shift" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    fireEvent.keyDown(trigger, { key: "d" });
+    const search = screen.getByRole("textbox");
+    expect(search).toHaveValue("d");
+    fireEvent.change(search, { target: { value: "dev" } });
+    expect(labels()).toEqual(["develop", "feature/dev-tools"]);
+    key("Enter", search);
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("develop");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+  it("leaves typed keys to type-ahead when the list is not searchable", () => {
+    render(<Select aria-label="Model" options={options} value={null} onChange={() => {}} />);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Model" }), { key: "b" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
   it("does not confuse a heading value with a real option value", () => {
     const changed = setup(false, [
       { value: "a", label: "Provider", section: true },

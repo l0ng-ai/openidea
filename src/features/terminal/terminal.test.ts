@@ -17,6 +17,8 @@ import {
 } from "./store";
 import type { SessionSnapshot } from "./session";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
+import type { Settings } from "@/bindings";
 import { buildTheme, mix, parseColor, terminalFont, toHex } from "./theme";
 
 describe("theme", () => {
@@ -81,8 +83,35 @@ describe("terminal links", () => {
     expect(l?.kind === "file" && [l.path, l.line, l.col]).toEqual(["/Users/me/p/App.tsx", 14, 3]);
   });
 
+  it("keeps the directories and drive of Windows paths", () => {
+    const loc = (text: string) =>
+      findTerminalLinks(text).map((l) => (l.kind === "file" ? [l.text, l.path, l.line, l.col] : l.text));
+    expect(loc("  --> src\\bin\\main.rs:10:5")).toEqual([["src\\bin\\main.rs:10:5", "src\\bin\\main.rs", 10, 5]]);
+    expect(loc("    at run (C:\\p\\web\\index.js:3:7)")).toEqual([
+      ["C:\\p\\web\\index.js:3:7", "C:\\p\\web\\index.js", 3, 7],
+    ]);
+    expect(loc("C:\\p\\Program.cs(10,5): error CS1002")).toEqual([
+      ["C:\\p\\Program.cs(10,5)", "C:\\p\\Program.cs", 10, 5],
+    ]);
+    expect(loc(".\\main.go:5:2: undefined: x")).toEqual([[".\\main.go:5:2", ".\\main.go", 5, 2]]);
+    expect(loc("D:/p/a/b.ts:4")).toEqual([["D:/p/a/b.ts:4", "D:/p/a/b.ts", 4, undefined]]);
+  });
+
   it("ignores plain numbers and URL ports", () => {
     expect(findTerminalLinks("12:30 http://localhost:3000").map((l) => l.kind)).toEqual(["url"]);
+  });
+
+  it("opens file:// URLs as file locations", () => {
+    const line = "[ERROR] file:///develop/mc/src/main/kotlin/top/A%20B.kt:15:56 Unresolved reference 'x'.";
+    expect(findTerminalLinks(line)).toEqual([
+      expect.objectContaining({ kind: "file", path: "/develop/mc/src/main/kotlin/top/A B.kt", line: 15, col: 56 }),
+    ]);
+    expect(findTerminalLinks("see file:///C:/work/a.kt:3")).toEqual([
+      expect.objectContaining({ kind: "file", path: "C:/work/a.kt", line: 3, col: undefined }),
+    ]);
+    expect(findTerminalLinks("file://host/srv/x.txt")).toEqual([
+      expect.objectContaining({ kind: "file", path: "/srv/x.txt", line: undefined }),
+    ]);
   });
 
   it("trims trailing punctuation from URLs", () => {
@@ -171,6 +200,19 @@ describe("terminal keys", () => {
     } finally {
       usePlatform.setState({ os: "macos" });
     }
+  });
+
+  it("pastes on plain Ctrl+V only on Windows", () => {
+    const ctrlV = key({ key: "v", code: "KeyV", ctrlKey: true });
+    try {
+      usePlatform.setState({ os: "windows" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "paste" });
+      usePlatform.setState({ os: "linux" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+    expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
   });
 
   it("keeps Ctrl+C as interrupt on macOS even with a selection", () => {
@@ -276,6 +318,16 @@ describe("terminal find", () => {
     const d = buildSearchDecorations((n) => (n === "--match" ? "#8fa5d6" : n === "--bg-app" ? "#000000" : ""));
     for (const v of Object.values(d)) expect(v).toMatch(/^#[0-9a-f]{6}$/);
     expect(d.matchOverviewRuler).toBe("#8fa5d6");
+
+    const fromSearchTokens = buildSearchDecorations((n) => {
+      if (n === "--bg-app") return "#191a1c";
+      if (n === "--bg-search-match") return "#ba9752";
+      if (n === "--bg-search-match-current") return "#f2c55c";
+      return "";
+    });
+    expect(fromSearchTokens.matchBackground).toBe("#ba9752");
+    expect(fromSearchTokens.activeMatchBackground).toBe("#f2c55c");
+    expect(fromSearchTokens.activeMatchBorder).toBe("#f2c55c");
   });
 });
 
@@ -312,7 +364,7 @@ describe("terminalFont", () => {
     columnWidth: 1,
   };
   const editor = { fontFamily: "JetBrains Mono", fontSize: 10, lineHeight: 12 };
-  const head = (family: string) => family.slice(0, family.indexOf('"Symbols Nerd Font Mono"'));
+  const head = (family: string) => family.slice(0, family.indexOf('"Symbols Nerd Font"'));
 
   it.each([
     // #26: "Use editor font" with the default family must reach the bundled face, not the system monospace.
@@ -373,11 +425,12 @@ describe("terminalFont", () => {
   it("prefers the terminal's fallback over the editor's", () => {
     const font = terminalFont(
       { ...t, fallbackFontFamily: "Sarasa Mono SC" },
-      { ...editor, fallbackFont: "PingFang SC" },
+      { ...editor, fallbackFont: "Source Code Pro" },
       BASE,
     );
     expect(font.family).toContain('"Sarasa Mono SC"');
-    expect(font.family).not.toContain("PingFang SC");
+    // The CJK faces are always named (see the test below), so the editor's pick must not be one.
+    expect(font.family).not.toContain("Source Code Pro");
   });
 
   it("follows the editor's Typography Settings weights with Use editor font", () => {
@@ -397,16 +450,39 @@ describe("terminalFont", () => {
     expect(terminalFont({ ...t, lineHeight: 1.2 }, editor, BASE).lineHeight).toBe(1.2);
   });
 
+  it("prefers full-width Nerd Font fallbacks ahead of shrunk Mono variants", () => {
+    const { family } = terminalFont(t, editor, BASE);
+    expect(family.indexOf('"Symbols Nerd Font"')).toBeLessThan(family.indexOf('"Symbols Nerd Font Mono"'));
+    expect(family.indexOf('"JetBrainsMono Nerd Font"')).toBeLessThan(family.indexOf('"JetBrainsMono Nerd Font Mono"'));
+  });
+
   it("turns the column width into letter spacing", () => {
     expect(terminalFont({ ...t, useEditorFont: false }, editor, BASE).letterSpacing).toBe(0);
     expect(terminalFont({ ...t, useEditorFont: false, columnWidth: 1.5 }, editor, BASE).letterSpacing).toBe(3);
+  });
+  it("names CJK faces after the icon fonts so a wide character keeps two cells", () => {
+    const { family } = terminalFont(t, editor, BASE);
+    // After the icon fonts: they must win their own glyphs, and only CJK falls through to these.
+    expect(family.indexOf('"Microsoft YaHei"')).toBeGreaterThan(family.indexOf('"Symbols Nerd Font"'));
+    expect(family).toContain('"PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC"');
+    expect(family.endsWith(', "Source Han Sans SC", monospace')).toBe(true);
   });
 });
 
 describe("terminal tab titles", () => {
   const tab: TerminalTab = { id: "t1", name: "Local", customName: null, shell: null, session: "s1", group: "g1" };
   const snap = (appTitle: string | null, commandRunning = true): Record<string, SessionSnapshot> => ({
-    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p" },
+    s1: {
+      status: "running",
+      exitCode: null,
+      title: "zsh",
+      appTitle,
+      commandRunning,
+      progress: null,
+      working: commandRunning,
+      cwd: "/p",
+      unseenDone: false,
+    },
   });
 
   it("shows the default name at the prompt, whatever title the shell sets", () => {
@@ -421,6 +497,19 @@ describe("terminal tab titles", () => {
     expect(tabTitle(tab, snap(long))).toHaveLength(30);
     expect(tabTitle(tab, snap(long))).toBe(trimMiddle(long, 30));
     expect(tabFullTitle(tab, snap(long))).toBe(long);
+  });
+
+  it("uses the program's title always or never, per Settings › Terminal", () => {
+    const set = (appTitleAsTabName: string) =>
+      useProject.setState({ settings: { terminal: { appTitleAsTabName } } as unknown as Settings });
+    try {
+      set("always");
+      expect(tabTitle(tab, snap("claude", false))).toBe("claude");
+      set("off");
+      expect(tabTitle(tab, snap("vim notes.md"))).toBe("Local");
+    } finally {
+      useProject.setState({ settings: null });
+    }
   });
 
   it("keeps a name the user gave the tab", () => {
@@ -443,6 +532,7 @@ describe("fit scheduling", () => {
     const fit = vi.fn();
     const f = fitScheduler(fit);
     f.schedule();
+    f.schedule();
     vi.advanceTimersToNextFrame();
     expect(fit).toHaveBeenCalledTimes(1);
     for (let i = 0; i < 30; i++) {
@@ -457,6 +547,19 @@ describe("fit scheduling", () => {
     f.cancel();
     vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
     expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a new terminal on the frame schedule until it can measure its grid", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const scheduler = fitScheduler(fit);
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    scheduler.schedule();
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("fits a lone second request after it settles without needing another request", () => {

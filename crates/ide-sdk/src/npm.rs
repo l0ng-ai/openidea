@@ -10,6 +10,48 @@ pub(crate) fn has_ts_api(lib: &Path) -> bool {
     lib.join("typescript.js").is_file()
 }
 
+/// `command` installed in the project: the nearest `node_modules/.bin` from `server_root` up to `root`.
+pub(crate) fn project_bin(command: &str, root: &Path, server_root: &Path) -> Option<PathBuf> {
+    server_root.ancestors().take_while(|dir| dir.starts_with(root)).find_map(|dir| {
+        ide_core::tool_path::find_command(command, dir.join("node_modules/.bin").as_os_str(), server_root)
+    })
+}
+
+/// The native executable of TypeScript 7 (`typescript` 7+, whose `tsc` is native, or
+/// `@typescript/native-preview`'s `tsgo`), from its package directory or its `lib`.
+/// These packages have no JavaScript API (`lib/typescript.js`); their platform package
+/// (`@typescript/typescript-darwin-arm64`) holds the executable, which serves LSP itself
+/// (`--lsp --stdio`).
+pub(crate) fn native_typescript(dir: &Path) -> Option<PathBuf> {
+    let package = if dir.join("package.json").is_file() { dir } else { dir.parent()? };
+    if has_ts_api(&package.join("lib")) {
+        return None;
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(package.join("package.json")).ok()?).ok()?;
+    let (base, bin) = match manifest.get("name")?.as_str()? {
+        "typescript" => ("typescript", "tsc"),
+        "@typescript/native-preview" => ("native-preview", "tsgo"),
+        _ => return None,
+    };
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        os => os,
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        arch => arch,
+    };
+    let platform = format!("{base}-{os}-{arch}");
+    // Next to the package (`node_modules/@typescript/…`) or nested in it.
+    package
+        .ancestors()
+        .map(|a| a.join("node_modules/@typescript").join(&platform).join("lib").join(crate::exe(bin)))
+        .find(|exe| exe.is_file())
+}
+
 /// The usable TypeScript library Node resolves from an installed server package.
 pub(crate) fn own_typescript(package: &Path) -> Option<PathBuf> {
     package.ancestors().map(|a| a.join("node_modules/typescript/lib")).find(|l| has_ts_api(l))

@@ -2,19 +2,23 @@
 pub(crate) mod cache;
 
 use crate::Host;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 
-use super::build::load;
+use super::build::{load, with_profiles, workspace};
+use ide_build::BuildModel;
 use ide_build::compile;
+use ide_core::error::ErrorKind;
+use ide_core::settings::Settings;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
 use ide_lsp::jdtls::{JavaBuildStatus, JavaLaunchInfo};
 use ide_run::BuildPolicy;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Cancellable with `cancel_request(request)`.
-/// Builds the workspace (when `build`), then resolves the runtime (or test)
+/// Builds according to `policy`, then resolves the runtime (or test)
 /// classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 /// A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+#[command(trust = trusted)]
 pub async fn java_resolve_launch(
     host: &Host,
     window: &str,
@@ -23,6 +27,8 @@ pub async fn java_resolve_launch(
     policy: BuildPolicy,
     request: RequestId,
 ) -> IdeResult<JavaLaunchInfo> {
+    // Resources a Gradle build filters or renames are processed by Gradle, replacing the language
+    // server's plain copies.
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = resolve_launch(host, window, module, test, policy, &cancel).await;
@@ -30,7 +36,7 @@ pub async fn java_resolve_launch(
     result
 }
 
-async fn resolve_launch(
+pub(crate) async fn resolve_launch(
     host: &Host,
     window: &str,
     module: PathBuf,
@@ -40,50 +46,101 @@ async fn resolve_launch(
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
     let project = host.project(window)?;
-    let module = project.root.join(module);
-    let settings = project.settings.effective();
+    let module = ide_core::project_roots::resolve(&project.root, &module);
+    let scope = {
+        let (project, module) = (project.clone(), module.clone());
+        tokio::task::spawn_blocking(move || workspace::scope_for(&project, &module))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))??
+    };
+    if !project.lsp.java_served_by_jdtls(&module) {
+        return resolve_launch_without_jdtls(host, &project, module, scope, test, policy, cancel).await;
+    }
+    let scope = std::sync::Arc::new(scope);
+    let launches = project.java_launches.for_cache(&scope.cache);
+    let waiting = launches.waiting.add(module.clone(), test, policy);
+    let prefer_maven = scope.settings.languages.java.maven.delegate_build;
     // A launch builds incrementally unless the configuration asks for Rebuild or NoBuild.
     let build = policy != BuildPolicy::NoBuild;
     let full = policy == BuildPolicy::Rebuild;
     let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-    let (model, external, delegated) = {
-        let project = project.clone();
-        let settings = settings.clone();
+    let (model, external, mut delegated, is_maven) = {
+        let scope = scope.clone();
+        let launches = launches.clone();
         let module = module.clone();
         tokio::task::spawn_blocking(move || {
-            project.java_launch_snapshots.lock().initialize();
-            let model = load(&project.root, &project.build_cache_dir(), &settings);
-            let non_java = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
+            launches.snapshots.lock().initialize();
+            let root = &scope.root;
+            let model = load_launch_model(&scope);
+            let non_java = build && compile::launch_has_non_java_sources(root, &model, &module, test);
+            let is_maven = is_maven_module(root, &model, &module);
             let delegated = build
-                && model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module))
-                && (non_java || cache::has_record(&project.root, &project.build_cache_dir(), &module));
+                && delegates_to_external_build(
+                    is_maven,
+                    policy,
+                    non_java,
+                    cache::has_record(root, &scope.cache, &module),
+                    prefer_maven,
+                );
             let external = non_java || delegated;
-            (model, external, delegated)
+            (model, external, delegated, is_maven)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
     };
-    let external_build = if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
+    let mut external_build =
+        if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
     let mut info = project.lsp.java_launch(&module, test, build && !delegated, full, delegated, cancel).await?;
+    if info.errors.iter().any(|e| processor_recreated_a_file(&e.message)) {
+        if build && !delegated && is_maven {
+            // JDT runs an annotation processor again over sources it generated in the same build
+            // (MapStruct over MapStruct-Plus's mappers) and fails on the file it already wrote;
+            // javac doesn't, so Maven builds the module.
+            tracing::info!("Annotation processing failed in JDT; building with Maven");
+            delegated = true;
+            external_build = Some(project.lsp.java_external_build(&module, cancel).await?);
+            info = project.lsp.java_launch(&module, test, false, false, true, cancel).await?;
+        }
+        if delegated {
+            // Maven runs the annotation processors itself; JDT's failure to rerun one is no compile error.
+            drop_processor_recreate_errors(&mut info);
+        }
+    }
+    let model = std::sync::Arc::new(model);
+    let members = if delegated {
+        build_members(&project, &scope, &model, &module, test, &waiting, cancel).await?
+    } else {
+        Vec::new()
+    };
     let lsp_ms = started.elapsed().as_millis();
     let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;
+        let (root, cache, settings) = (&scope.root, &scope.cache, &scope.settings);
+        let local_repo = ide_sdk::apply::maven_local_repository(root, settings);
+        // Module outputs the launch runs from a snapshot of: the originals must not come back.
+        let mut snapshotted = Vec::new();
+        // The modules of the launches sharing this build also share its classpath probe.
+        let probed: Vec<PathBuf> =
+            std::iter::once(module.clone()).chain(members.iter().map(|m| m.module.clone())).collect();
         let built = if delegated {
-            let outputs = project.java_launch_snapshots.lock().build(
-                &project.root,
+            let rebuild_on_jdt_errors = rebuild_on_jdt_errors(policy, prefer_maven, info.error_count);
+            let outputs = launches.snapshots.lock().build(
+                root,
                 &model,
                 &module,
-                cache::BuildOptions { test, policy },
-                ide_sdk::apply::maven_local_repository(&project.root, &settings),
+                cache::BuildOptions { test, policy, rebuild_on_jdt_errors, members },
+                local_repo.clone(),
                 &cancel,
             )?;
+            drop(waiting);
             let copies = use_snapshot(&mut info, &outputs.originals, &outputs.snapshot);
-            apply_external_build_result(&mut info, outputs.failure);
+            apply_external_build_result(&mut info, outputs.failure, outputs.authoritative);
+            snapshotted = outputs.originals;
             copies
         } else if external {
-            let built = compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel)?;
+            let built = compile::build_for_launch(root, &model, &module, test, build_kind, &cancel)?;
             if let Some(failure) = built.failure {
                 if policy != BuildPolicy::MakeAndContinueOnErrors {
                     return Err(IdeError::internal(failure));
@@ -96,43 +153,30 @@ async fn resolve_launch(
             Vec::new()
         };
         let mut class_paths: Vec<String> = built.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        for p in std::mem::take(&mut info.class_paths) {
-            if !class_paths.iter().any(|c| same_entry(c, &p, cfg!(windows))) {
-                class_paths.push(p);
-            }
+        if delegated {
+            // m2e runs inside jdtls on the server JDK and can resolve a different
+            // Maven profile/classifier than the module build. Ask the same Maven
+            // process that built the module for its runtime/test dependencies.
+            let maven_cp = compile::module_classpaths(root, &model, &probed, test, local_repo, cache, &cancel);
+            merge_maven_launch_classpath(&mut class_paths, &mut info, maven_cp, &snapshotted)?;
+        } else {
+            append_unique_class_paths(&mut class_paths, std::mem::take(&mut info.class_paths));
         }
         info.class_paths = class_paths;
-        apply_library_classpath(&mut info, &project.root, &settings.project_structure.libraries, test);
-        let compile_ms = started.elapsed().as_millis() - lsp_ms;
-        // The module/project JDK, else the JDK jdtls compiles the module against, else one matching its Java version.
-        let project_jdk = ide_sdk::apply::module_jdk(&project.root, &module, &settings);
-        let from_jdtls = info.java_home.as_deref().map(ide_sdk::java::java_executable).filter(|p| p.is_file());
-        let java = project_jdk.map(|j| ide_sdk::java::java_executable(&j.home)).or(from_jdtls).or_else(|| {
-            // The build model's level includes what the module inherits from its parent POMs.
-            let release = model
-                .maven
-                .as_ref()
-                .and_then(|m| m.projects.iter().find(|p| project.root.join(&p.dir) == module))
-                .and_then(|p| p.java_version)
-                .or_else(|| ide_sdk::java::project_java_version(&module));
-            let jdks = ide_sdk::java::installed_jdks();
-            info.hints.extend(ide_sdk::java::missing_jdk_message(&jdks, release));
-            ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
-        });
-        info.java_exec = Some(java.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "java".to_owned()));
-        let exec = PathBuf::from(info.java_exec.as_deref().unwrap_or("java"));
-        let shorten =
-            ide_run::java_cmdline::shortening_for(&exec, &info.class_paths, &info.module_paths, cfg!(windows));
-        info.shorten_command_line = Some(shorten.as_str().to_owned());
-        if info.error_count > 0 {
-            let own = ide_sdk::lombok::agent_in_args(settings.languages.java.jdtls_vm_args.split_whitespace());
-            let managed = ide_tools::managed_bundle(&data_dir, "lombok");
-            let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings);
-            let root = project.root.clone();
-            // Detection may read the project's sources.
-            let lombok = ide_sdk::lombok::lombok_agent(&root, own, managed, repo);
-            info.hints.extend(lombok.problem());
+        apply_library_classpath(&mut info, root, &settings.project_structure.libraries, test);
+        if build && !delegated {
+            match compile::process_launch_resources(root, &model, cache, &info.class_paths, &cancel) {
+                Ok(tasks) if !tasks.is_empty() => tracing::info!(?tasks, "Processed launch resources with Gradle"),
+                Ok(_) => {}
+                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                Err(e) => info.hints.push(format!(
+                    "Gradle could not process the resources, so they are used as they are in the source folders:\n{}",
+                    e.message
+                )),
+            }
         }
+        let compile_ms = started.elapsed().as_millis() - lsp_ms;
+        finish_launch(&mut info, root, &module, settings, &model, &data_dir);
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -149,10 +193,189 @@ async fn resolve_launch(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-fn apply_external_build_result(info: &mut JavaLaunchInfo, failure: Option<String>) {
+fn load_launch_model(scope: &workspace::Scope) -> BuildModel {
+    with_profiles(load(&scope.root, &scope.cache, &scope.settings), &scope.cache)
+}
+
+fn is_maven_module(root: &Path, model: &BuildModel, module: &Path) -> bool {
+    model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| root.join(&p.dir) == module))
+}
+
+/// A launch of a module jdtls doesn't serve (another Java language server, or none): the
+/// build tool compiles it, and the classpath comes from that server, else from Maven.
+async fn resolve_launch_without_jdtls(
+    host: &Host,
+    project: &std::sync::Arc<crate::Project>,
+    module: PathBuf,
+    scope: workspace::Scope,
+    test: bool,
+    policy: BuildPolicy,
+    cancel: &CancellationToken,
+) -> IdeResult<JavaLaunchInfo> {
+    let started = std::time::Instant::now();
+    let scope = std::sync::Arc::new(scope);
+    let kind = if policy == BuildPolicy::Rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
+    let (model, built) = {
+        let (scope, module, cancel) = (scope.clone(), module.clone(), cancel.clone());
+        tokio::task::spawn_blocking(move || {
+            let model = load_launch_model(&scope);
+            let built = if policy == BuildPolicy::NoBuild {
+                None
+            } else {
+                Some(compile::build_for_launch(&scope.root, &model, &module, test, kind, &cancel))
+            };
+            (model, built)
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+    };
+    let mut info =
+        JavaLaunchInfo { path_list_separator: if cfg!(windows) { ";" } else { ":" }.into(), ..Default::default() };
+    let mut class_paths = Vec::new();
+    match built {
+        None => {}
+        Some(Err(e)) if e.kind == ErrorKind::Cancelled => return Err(e),
+        Some(Err(e)) => {
+            return Err(IdeError::unavailable(format!(
+                "Cannot build the module without jdtls: {}. Running needs a Maven or Gradle build, or jdtls",
+                e.message
+            )));
+        }
+        Some(Ok(built)) => {
+            info.build = Some(match built.failure {
+                None => JavaBuildStatus::Succeeded,
+                Some(failure) if policy == BuildPolicy::MakeAndContinueOnErrors => {
+                    info.hints.push(failure);
+                    JavaBuildStatus::Failed
+                }
+                Some(failure) => return Err(IdeError::internal(failure)),
+            });
+            class_paths.extend(built.class_dirs.iter().map(|p| p.to_string_lossy().into_owned()));
+        }
+    }
+    let build_ms = started.elapsed().as_millis();
+    let from_server = project.lsp.java_server_classpath(&module, test, cancel).await?;
+    let data_dir = host.local_data_dir.clone();
+    let cancel = cancel.clone();
+    tokio::task::spawn_blocking(move || {
+        let (root, cache, settings) = (&scope.root, &scope.cache, &scope.settings);
+        match from_server {
+            Some(server) => {
+                info.project_root = server.classpath.project_root;
+                info.module_paths = server.classpath.module_paths;
+                info.java_home = server.jdk_home.map(Into::into);
+                append_unique_class_paths(&mut class_paths, server.classpath.class_paths);
+            }
+            None => {
+                if !is_maven_module(root, &model, &module) {
+                    return Err(IdeError::unavailable(
+                        "Cannot resolve the classpath: the Java language server does not report it \
+                         (java-analyzer/projectClasspath), and the module is not a Maven project",
+                    ));
+                }
+                let local_repo = ide_sdk::apply::maven_local_repository(root, settings);
+                let classpath = compile::module_classpath(root, &model, &module, test, local_repo, cache, &cancel)?;
+                append_unique_class_paths(
+                    &mut class_paths,
+                    std::env::split_paths(&classpath).map(|p| p.to_string_lossy().into_owned()),
+                );
+            }
+        }
+        info.class_paths = class_paths;
+        apply_library_classpath(&mut info, root, &settings.project_structure.libraries, test);
+        finish_launch(&mut info, root, &module, settings, &model, &data_dir);
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        tracing::info!(build_ms, total_ms = started.elapsed().as_millis(), "Java launch resolved without jdtls");
+        Ok(info)
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// Picks the `java` launcher and how to shorten its command line, and explains likely
+/// causes of compile errors.
+fn finish_launch(
+    info: &mut JavaLaunchInfo,
+    root: &Path,
+    module: &Path,
+    settings: &Settings,
+    model: &BuildModel,
+    data_dir: &Path,
+) {
+    // The module/project JDK, else the JDK the Java language server builds the module with, else one
+    // matching its Java version.
+    let project_jdk = ide_sdk::apply::module_jdk(root, module, settings);
+    // The build model's level includes what the module inherits from its parent POMs.
+    let release = || {
+        model
+            .maven
+            .as_ref()
+            .and_then(|m| m.projects.iter().find(|p| root.join(&p.dir) == module))
+            .and_then(|p| p.java_version)
+            .or_else(|| ide_sdk::java::project_java_version(module))
+    };
+    let java = match project_jdk {
+        Some(j) => Some(ide_sdk::java::java_executable(&j.home)),
+        None => {
+            let release = release();
+            let server = info.java_home.as_deref().and_then(|home| server_java(home, release));
+            match server {
+                Some(java) => Some(java),
+                None => {
+                    let jdks = ide_sdk::java::installed_jdks();
+                    info.hints.extend(ide_sdk::java::missing_jdk_message(&jdks, release));
+                    ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
+                }
+            }
+        }
+    };
+    info.java_exec = Some(java.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "java".to_owned()));
+    let exec = PathBuf::from(info.java_exec.as_deref().unwrap_or("java"));
+    let shorten = ide_run::java_cmdline::shortening_for(&exec, &info.class_paths, &info.module_paths, cfg!(windows));
+    info.shorten_command_line = Some(shorten.as_str().to_owned());
+    if info.error_count > 0 {
+        let own = ide_sdk::lombok::agent_in_args(settings.languages.java.jdtls_vm_args.split_whitespace());
+        let managed = ide_tools::managed_bundle(data_dir, "lombok");
+        let repo = ide_sdk::apply::maven_local_repository(root, settings);
+        // Detection may read the project's sources.
+        let lombok = ide_sdk::lombok::lombok_agent(root, own, managed, repo);
+        info.hints.extend(lombok.problem());
+    }
+}
+
+/// The `java` of the JDK a Java language server reports, when it can run classes compiled for
+/// `release`: that JDK is the one the server runs on or defaults to, not necessarily one the
+/// module's bytecode loads on. A home whose version is unknown is used only when `release` is too.
+fn server_java(home: &Path, release: Option<u32>) -> Option<PathBuf> {
+    match ide_sdk::java::jdk_at(home) {
+        Some(jdk) if release.is_none_or(|release| jdk.major >= release) => {
+            Some(ide_sdk::java::java_executable(&jdk.home))
+        }
+        Some(_) => None,
+        None => Some(ide_sdk::java::java_executable(home)).filter(|java| release.is_none() && java.is_file()),
+    }
+}
+
+/// With Settings › Maven › Delegate IDE build/run actions to Maven, javac's verdict replaces
+/// JDT's. Classes JDT wrote for sources with errors look up to date to Maven's incremental
+/// compiler, so a launch JDT reports errors for recompiles everything.
+fn rebuild_on_jdt_errors(policy: BuildPolicy, prefer_maven: bool, jdt_errors: u32) -> bool {
+    prefer_maven && jdt_errors > 0 && matches!(policy, BuildPolicy::Automatic | BuildPolicy::Make)
+}
+
+fn apply_external_build_result(info: &mut JavaLaunchInfo, failure: Option<String>, authoritative: bool) {
     info.build = Some(if let Some(failure) = failure {
         info.hints.push(failure);
         JavaBuildStatus::Failed
+    } else if authoritative {
+        // A clean rebuild or a fingerprint-verified snapshot is authoritative. JDT diagnostics
+        // may describe an older output or its own classpath, so they must not mark this launch
+        // as failed after Maven has produced usable classes.
+        info.errors.clear();
+        info.error_count = 0;
+        JavaBuildStatus::Succeeded
     } else if info.error_count > 0 {
         // Incremental Maven compilation can accept error-stub classes written by JDT.
         JavaBuildStatus::WithErrors
@@ -212,8 +435,142 @@ fn apply_library_classpath(
     }
 }
 
+/// Whether a launch should be built by the project's build system instead of jdtls.
+/// The launches waiting for their build that join this launch's Maven run, each with
+/// whether its JDT errors call for a clean rebuild (as its own launch would decide).
+async fn build_members(
+    project: &std::sync::Arc<crate::Project>,
+    scope: &std::sync::Arc<workspace::Scope>,
+    model: &std::sync::Arc<BuildModel>,
+    module: &Path,
+    test: bool,
+    waiting: &cache::WaitingGuard,
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<cache::Member>> {
+    let others: Vec<_> = waiting.others().into_iter().filter(|o| project.lsp.java_served_by_jdtls(&o.module)).collect();
+    if others.is_empty() {
+        return Ok(Vec::new());
+    }
+    let prefer_maven = scope.settings.languages.java.maven.delegate_build;
+    let joining = {
+        let (scope, model, module) = (scope.clone(), model.clone(), module.to_path_buf());
+        tokio::task::spawn_blocking(move || {
+            joining_launches(&scope.root, &scope.cache, &model, &module, test, others, prefer_maven)
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+    };
+    let mut members = Vec::new();
+    for launch in joining {
+        // The build lock is held: the member's own launch reads the same diagnostics afterwards.
+        let errors = match project.lsp.java_launch(&launch.module, test, false, false, true, cancel).await {
+            Ok(info) => info.error_count,
+            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+            Err(e) => {
+                tracing::debug!(module = %launch.module.display(), "Not joining the launch build: {e}");
+                continue;
+            }
+        };
+        members.push(cache::Member {
+            module: launch.module.clone(),
+            rebuild_on_jdt_errors: rebuild_on_jdt_errors(launch.policy, prefer_maven, errors),
+        });
+    }
+    Ok(members)
+}
+
+/// Waiting launches that can share the Maven build of the launch of `module`: an
+/// incremental build (Rebuild and "no error check" launches keep their own) of the same
+/// scope, of another module of the same Maven reactor, delegated to Maven as this one is.
+fn joining_launches(
+    root: &Path,
+    cache_dir: &Path,
+    model: &BuildModel,
+    module: &Path,
+    test: bool,
+    others: Vec<std::sync::Arc<cache::WaitingLaunch>>,
+    prefer_maven: bool,
+) -> Vec<std::sync::Arc<cache::WaitingLaunch>> {
+    let Some(reactor) = compile::launch_reactor(root, model, module) else { return Vec::new() };
+    let mut seen = std::collections::HashSet::from([module.to_path_buf()]);
+    others
+        .into_iter()
+        .filter(|o| {
+            let is_maven = is_maven_module(root, model, &o.module);
+            o.test == test
+                && matches!(o.policy, BuildPolicy::Automatic | BuildPolicy::Make)
+                && compile::launch_reactor(root, model, &o.module).as_ref() == Some(&reactor)
+                && seen.insert(o.module.clone())
+                && delegates_to_external_build(
+                    is_maven,
+                    o.policy,
+                    compile::launch_has_non_java_sources(root, model, &o.module, test),
+                    cache::has_record(root, cache_dir, &o.module),
+                    prefer_maven,
+                )
+        })
+        .collect()
+}
+
+/// A Rebuild has to clean the output; jdtls' full build only recompiles sources, so
+/// Maven modules always delegate for it, even when every source is Java.
+/// `prefer_maven` is Settings › Maven › Delegate IDE build/run actions to Maven.
+fn delegates_to_external_build(
+    is_maven: bool,
+    policy: BuildPolicy,
+    non_java: bool,
+    has_record: bool,
+    prefer_maven: bool,
+) -> bool {
+    is_maven && (prefer_maven || policy == BuildPolicy::Rebuild || non_java || has_record)
+}
+
 fn same_entry(a: &str, b: &str, windows: bool) -> bool {
     a == b || entry_key(a, windows) == entry_key(b, windows)
+}
+
+/// Merge the Maven launch classpath without turning a recoverable probe failure into a
+/// failed launch. Cancellation still propagates; ordinary failures keep jdtls' classpath
+/// and leave the reason in the run console. Maven lists the module's and its reactor
+/// siblings' `target/classes`; those in `snapshotted` already run from their snapshot,
+/// and listing both would make every resource (MyBatis mapper XML) load twice.
+fn merge_maven_launch_classpath(
+    class_paths: &mut Vec<String>,
+    info: &mut JavaLaunchInfo,
+    classpath: IdeResult<String>,
+    snapshotted: &[PathBuf],
+) -> IdeResult<()> {
+    match classpath {
+        Ok(classpath) => {
+            let snapshotted: Vec<_> = snapshotted.iter().map(|p| p.to_string_lossy()).collect();
+            append_unique_class_paths(
+                class_paths,
+                std::env::split_paths(&classpath)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .filter(|path| !snapshotted.iter().any(|original| same_entry(path, original, cfg!(windows)))),
+            );
+            Ok(())
+        }
+        Err(error) if error.kind == ErrorKind::Cancelled => Err(error),
+        Err(error) => {
+            info.hints.push(format!(
+                "Maven launch classpath resolution failed; using the Java language server classpath instead:\n{}",
+                error.message
+            ));
+            append_unique_class_paths(class_paths, std::mem::take(&mut info.class_paths));
+            Ok(())
+        }
+    }
+}
+
+/// Append entries without changing their precedence; `same_entry` also catches
+/// Windows case-insensitive duplicates that would otherwise lengthen the command.
+fn append_unique_class_paths(class_paths: &mut Vec<String>, entries: impl IntoIterator<Item = String>) {
+    for entry in entries {
+        if !class_paths.iter().any(|existing| same_entry(existing, &entry, cfg!(windows))) {
+            class_paths.push(entry);
+        }
+    }
 }
 
 fn use_snapshot(info: &mut JavaLaunchInfo, built: &[PathBuf], snapshot: &std::path::Path) -> Vec<PathBuf> {
@@ -245,7 +602,23 @@ fn use_snapshot_on(
     copies
 }
 
+/// The debug adapter for the JVMs of `module`: `java-debug` inside jdtls, or `java-analyzer`
+/// (`java-analyzer dap`) when jdtls doesn't serve the module and java-analyzer does.
+#[command(trust = trusted)]
+pub fn java_debug_adapter(host: &Host, window: &str, module: PathBuf) -> IdeResult<String> {
+    let project = host.project(window)?;
+    let module = project.root.join(module);
+    let lsp = &project.lsp;
+    Ok(if !lsp.java_served_by_jdtls(&module) && lsp.java_analyzer_binary(&module).is_some() {
+        ide_dap::adapter::JAVA_ANALYZER
+    } else {
+        "java-debug"
+    }
+    .to_owned())
+}
+
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).
+#[command(trust = trusted)]
 pub async fn java_debug_server(host: &Host, window: &str, module: PathBuf) -> IdeResult<u16> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -254,6 +627,7 @@ pub async fn java_debug_server(host: &Host, window: &str, module: PathBuf) -> Id
 }
 
 /// Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap).
+#[command(trust = trusted)]
 pub async fn java_build_workspace(
     host: &Host,
     window: &str,
@@ -272,21 +646,164 @@ pub async fn java_build_workspace(
     result
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("java_resolve_launch", |c| async move {
-        java_resolve_launch(&c.host, &c.window, c.arg("module")?, c.arg("test")?, c.arg("policy")?, c.arg("request")?)
-            .await
-    });
-    d.add("java_debug_server", |c| async move { java_debug_server(&c.host, &c.window, c.arg("module")?).await });
-    d.add("java_build_workspace", |c| async move {
-        java_build_workspace(&c.host, &c.window, c.arg("module")?, c.arg("request")?).await
-    });
+/// An annotation processor's error for writing a file this build already wrote (JDT's
+/// `IdeFilerImpl`: "Source file already created", javac's Filer: "Attempt to recreate a file").
+fn processor_recreated_a_file(message: &str) -> bool {
+    message.contains("FilerException")
+        && (message.contains("Source file already created") || message.contains("Attempt to recreate a file"))
+}
+
+fn drop_processor_recreate_errors(info: &mut JavaLaunchInfo) {
+    let before = info.errors.len();
+    info.errors.retain(|e| !processor_recreated_a_file(&e.message));
+    info.error_count = info.error_count.saturating_sub((before - info.errors.len()) as u32);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fake_jdk(dir: &Path, version: Option<&str>) -> PathBuf {
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+        if let Some(version) = version {
+            std::fs::write(dir.join("release"), format!("JAVA_VERSION=\"{version}\"\n")).unwrap();
+        }
+        dir.to_path_buf()
+    }
+
+    #[test]
+    fn a_server_jdk_older_than_the_module_release_is_not_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk17 = fake_jdk(&tmp.path().join("17"), Some("17.0.12"));
+        let jdk21 = fake_jdk(&tmp.path().join("21"), Some("21.0.4"));
+        let unknown = fake_jdk(&tmp.path().join("unknown"), None);
+        // (server JDK, module release, used?)
+        let cases = [
+            (&jdk17, Some(21), false),
+            (&jdk17, Some(17), true),
+            (&jdk17, Some(11), true),
+            (&jdk17, None, true),
+            (&jdk21, Some(21), true),
+            (&unknown, None, true),
+            (&unknown, Some(21), false),
+        ];
+        for (home, release, used) in cases {
+            assert_eq!(server_java(home, release).is_some(), used, "{} for release {release:?}", home.display());
+        }
+        assert!(server_java(&tmp.path().join("missing"), None).is_none());
+    }
+
+    #[test]
+    fn recognises_a_processor_recreating_its_output() {
+        assert!(processor_recreated_a_file(
+            "Internal error in the mapping processor: java.lang.RuntimeException: \
+             javax.annotation.processing.FilerException: Source file already created: /m/target/generated-sources/annotations/a/AMapper__4Impl.java"
+        ));
+        assert!(processor_recreated_a_file(
+            "javax.annotation.processing.FilerException: Attempt to recreate a file for type a.B"
+        ));
+        assert!(!processor_recreated_a_file("Source file already created"));
+        assert!(!processor_recreated_a_file("cannot find symbol"));
+    }
+
+    #[test]
+    fn a_delegated_launch_ignores_jdt_processor_recreate_errors() {
+        let error = |message: &str| ide_lsp::jdtls::JavaCompileError {
+            path: "src/main/java/a/A.java".into(),
+            line: 1,
+            column: 1,
+            message: message.into(),
+        };
+        let mut info = JavaLaunchInfo {
+            error_count: 2,
+            errors: vec![
+                error(
+                    "javax.annotation.processing.FilerException: Source file already created: /m/AMapper__1Impl.java",
+                ),
+                error("cannot find symbol"),
+            ],
+            ..Default::default()
+        };
+        drop_processor_recreate_errors(&mut info);
+        assert_eq!(info.error_count, 1);
+        assert_eq!(info.errors.len(), 1);
+        assert_eq!(info.errors[0].message, "cannot find symbol");
+    }
+
+    #[test]
+    fn delegated_launches_with_jdt_errors_recompile_with_maven() {
+        assert!(rebuild_on_jdt_errors(BuildPolicy::Make, true, 1));
+        assert!(rebuild_on_jdt_errors(BuildPolicy::Automatic, true, 2));
+        assert!(!rebuild_on_jdt_errors(BuildPolicy::Make, true, 0));
+        assert!(!rebuild_on_jdt_errors(BuildPolicy::Make, false, 1));
+        assert!(!rebuild_on_jdt_errors(BuildPolicy::MakeAndContinueOnErrors, true, 1));
+    }
+
+    #[test]
+    fn maven_classpath_probe_failure_falls_back_to_jdtls_classpaths() {
+        let maven = std::env::join_paths(["maven.jar", "snapshot.jar"]).unwrap().to_string_lossy().into_owned();
+        let mut class_paths = vec!["snapshot.jar".to_owned()];
+        let mut info =
+            JavaLaunchInfo { class_paths: vec!["snapshot.jar".into(), "jdtls.jar".into()], ..Default::default() };
+        merge_maven_launch_classpath(&mut class_paths, &mut info, Ok(maven), &[]).unwrap();
+        assert_eq!(class_paths, ["snapshot.jar", "maven.jar"]);
+
+        merge_maven_launch_classpath(&mut class_paths, &mut info, Err(IdeError::internal("offline dependency")), &[])
+            .unwrap();
+        assert_eq!(class_paths, ["snapshot.jar", "maven.jar", "jdtls.jar"]);
+        assert!(info.hints[0].contains("offline dependency"), "{:?}", info.hints);
+    }
+
+    /// Maven's launch classpath lists the module's and its reactor siblings' outputs, which
+    /// the launch already runs from a snapshot: listed twice, MyBatis loads each mapper XML
+    /// twice and fails with "XML fragments parsed from previous mappers already contains value".
+    #[test]
+    fn maven_classpath_leaves_out_outputs_the_launch_runs_from_a_snapshot() {
+        let web = PathBuf::from("/work/haoke/haoke-web/target/classes");
+        let service = PathBuf::from("/work/haoke/haoke-service/target/classes");
+        let maven = std::env::join_paths([
+            "/work/haoke/haoke-web/target/classes/",
+            "/work/haoke/haoke-service/target/classes",
+            "/work/haoke/haoke-api/target/classes",
+            "/m2/mybatis.jar",
+        ])
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+        let mut class_paths = vec!["/cache/launch-x/0".to_owned(), "/cache/launch-x/1".to_owned()];
+        let mut info = JavaLaunchInfo::default();
+        merge_maven_launch_classpath(&mut class_paths, &mut info, Ok(maven), &[web, service]).unwrap();
+        assert_eq!(
+            class_paths,
+            ["/cache/launch-x/0", "/cache/launch-x/1", "/work/haoke/haoke-api/target/classes", "/m2/mybatis.jar"]
+        );
+    }
+
+    #[test]
+    fn cancelled_maven_classpath_probe_propagates_without_fallback() {
+        let mut class_paths = vec!["snapshot.jar".to_owned()];
+        let mut info = JavaLaunchInfo { class_paths: vec!["jdtls.jar".into()], ..Default::default() };
+        let error =
+            merge_maven_launch_classpath(&mut class_paths, &mut info, Err(IdeError::cancelled()), &[]).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert_eq!(class_paths, ["snapshot.jar"]);
+        assert!(info.hints.is_empty());
+    }
+
+    #[test]
+    fn rebuild_delegates_maven_builds_to_the_build_system() {
+        assert!(delegates_to_external_build(true, BuildPolicy::Rebuild, false, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Automatic, true, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Make, false, true, false));
+        assert!(!delegates_to_external_build(true, BuildPolicy::Automatic, false, false, false));
+        assert!(!delegates_to_external_build(true, BuildPolicy::Make, false, false, false));
+        assert!(!delegates_to_external_build(false, BuildPolicy::Rebuild, false, false, false));
+        assert!(delegates_to_external_build(true, BuildPolicy::Automatic, false, false, true));
+        assert!(delegates_to_external_build(true, BuildPolicy::Make, false, false, true));
+        assert!(!delegates_to_external_build(false, BuildPolicy::Automatic, false, false, true));
+    }
 
     #[test]
     fn successful_external_compilation_does_not_erase_scoped_jdt_errors() {
@@ -304,15 +821,33 @@ mod tests {
                 ..Default::default()
             };
             let errors = info.errors.clone();
-            apply_external_build_result(&mut info, failure.map(str::to_owned));
+            apply_external_build_result(&mut info, failure.map(str::to_owned), false);
             assert_eq!(info.build, Some(expected));
             assert_eq!(info.error_count, 1);
             assert_eq!(info.errors, errors);
             assert_eq!(info.hints, failure.into_iter().collect::<Vec<_>>());
         }
         let mut info = JavaLaunchInfo::default();
-        apply_external_build_result(&mut info, None);
+        apply_external_build_result(&mut info, None, false);
         assert_eq!(info.build, Some(JavaBuildStatus::Succeeded));
+    }
+
+    #[test]
+    fn authoritative_external_result_clears_stale_jdt_errors() {
+        let mut info = JavaLaunchInfo {
+            error_count: 7,
+            errors: vec![ide_lsp::jdtls::JavaCompileError {
+                path: "src/main/java/Main.java".into(),
+                line: 0,
+                column: 0,
+                message: "stale JDT diagnostic".into(),
+            }],
+            ..Default::default()
+        };
+        apply_external_build_result(&mut info, None, true);
+        assert_eq!(info.build, Some(JavaBuildStatus::Succeeded));
+        assert_eq!(info.error_count, 0);
+        assert!(info.errors.is_empty());
     }
 
     #[test]
@@ -410,3 +945,5 @@ mod tests {
         }
     }
 }
+
+ide_command::domain!(java: java_build_workspace, java_debug_adapter, java_debug_server, java_resolve_launch);

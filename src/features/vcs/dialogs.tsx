@@ -1,7 +1,22 @@
 /** Imperative dialogs for VCS actions, rendered by one overlay contribution. */
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useId, useState, type KeyboardEvent, type ReactNode } from "react";
+import clsx from "clsx";
 import { create } from "zustand";
-import { Checkbox, Dialog, Input, T, useSanitizedField } from "@/ui";
+import {
+  Checkbox,
+  Dialog,
+  HighlightedText,
+  Input,
+  List,
+  Popup,
+  Select,
+  T,
+  listNavigate,
+  useSanitizedField,
+} from "@/ui";
+import type { SelectOption } from "@/ui/Select";
+import { isImeKey } from "@/platform/ime";
+import { useTx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
 import styles from "./common.module.css";
 
@@ -37,25 +52,30 @@ export function VcsDialogHost() {
 export interface PromptOptions {
   title: string;
   label?: string;
+  labelPlacement?: "inline";
   initial?: string;
   placeholder?: string;
   okLabel?: string;
   mono?: boolean;
   /** Returns an error message, or null when valid. */
-  validate?: (value: string, overwrite: boolean) => string | null;
+  validate?: (value: string, overwrite: boolean, scope?: string) => string | null;
   /** Rewrites the field as the user types or pastes (e.g. spaces in a branch name). */
   sanitize?: (value: string) => string;
   /** Show the prefilled value's problem (e.g. the branch exists) before it is edited. */
   validateInitial?: boolean;
   /** Optional checkbox below the field. */
   checkbox?: { label: string; initial: boolean };
-  overwriteBranch?: (value: string) => boolean;
+  overwriteBranch?: (value: string, scope?: string) => boolean;
+  scope?: { label: string; initial: string; options: readonly SelectOption[] };
+  /** Branch name prefixes in the order the New Branch dialog should suggest them. */
+  prefixes?: readonly string[] | ((scope?: string) => readonly string[]);
 }
 
 export interface PromptResult {
   value: string;
   checked: boolean;
   overwrite?: boolean;
+  scope?: string;
 }
 
 export function promptText(opts: PromptOptions): Promise<PromptResult | null> {
@@ -73,45 +93,116 @@ export function promptText(opts: PromptOptions): Promise<PromptResult | null> {
 }
 
 function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) => void }) {
-  const { title, label, initial = "", placeholder, okLabel = "OK", mono, validate, sanitize, checkbox, onDone } = props;
+  const {
+    title,
+    label,
+    labelPlacement,
+    initial = "",
+    placeholder,
+    okLabel = "OK",
+    mono,
+    validate,
+    sanitize,
+    checkbox,
+    onDone,
+  } = props;
+  const tx = useTx();
+  const fieldId = useId();
+  const scopeId = `${fieldId}-scope`;
+  const listId = `${fieldId}-prefixes`;
+  const inline = !!label && labelPlacement === "inline";
   const { ref, clean } = useSanitizedField(sanitize);
   const [value, setValue] = useState(initial);
   const [checked, setChecked] = useState(checkbox?.initial ?? false);
+  const [scope, setScope] = useState(props.scope?.initial);
   const [overwrite, setOverwrite] = useState(false);
   const [touched, setTouched] = useState(!!props.validateInitial && initial !== "");
-  const canOverwrite = props.overwriteBranch?.(value) ?? false;
-  const error = validate ? validate(value, canOverwrite && overwrite) : value.trim() ? null : "Value must not be empty";
+  const [completing, setCompleting] = useState(false);
+  const [active, setActive] = useState(-1);
+  const prefixes = typeof props.prefixes === "function" ? props.prefixes(scope) : props.prefixes;
+  const hasPrefixes = !!prefixes?.length;
+  const suggestions =
+    completing && value ? (prefixes?.filter((p) => p.length > value.length && p.startsWith(value)) ?? []) : [];
+  const shown = suggestions.length > 0;
+  const canOverwrite = props.overwriteBranch?.(value, scope) ?? false;
+  const error = validate
+    ? validate(value, canOverwrite && overwrite, scope)
+    : value.trim()
+      ? null
+      : "Value must not be empty";
+  const errorId = touched && error && value ? `${fieldId}-error` : undefined;
   const submit = () => {
     setTouched(true);
-    if (!error) onDone({ value: value.trim(), checked, ...(canOverwrite ? { overwrite } : {}) });
+    if (!error)
+      onDone({ value: value.trim(), checked, ...(canOverwrite ? { overwrite } : {}), ...(scope && { scope }) });
   };
+
+  const acceptPrefix = (prefix: string) => {
+    setValue(prefix);
+    setOverwrite(false);
+    // A trailing slash is expected while the user finishes the name.
+    setTouched(false);
+    setCompleting(false);
+  };
+
+  const onPrefixKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (!shown || isImeKey(e.nativeEvent) || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const next = listNavigate(e.key, { items: suggestions, active, wrap: true });
+      if (next !== null) {
+        e.preventDefault();
+        setActive(next);
+      }
+      return;
+    }
+    const prefix = suggestions[active];
+    if (e.key === "Enter" || (e.key === "Tab" && prefix)) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (prefix) acceptPrefix(prefix);
+      else submit();
+    }
+  };
+  const options = (checkbox || canOverwrite) && (
+    <>
+      {checkbox && <Checkbox checked={checked} onChange={setChecked} label={checkbox.label} />}
+      {canOverwrite && <Checkbox checked={overwrite} onChange={setOverwrite} label="Overwrite existing branch" />}
+    </>
+  );
   return (
     <Dialog
       open
       title={title}
       onClose={() => onDone(null)}
-      width={420}
+      width={inline ? 520 : 420}
       buttons={[
         { label: okLabel, role: "default", disabled: !!error, onClick: submit },
         { label: "Cancel", role: "cancel" },
       ]}
     >
       <form
-        className={styles.form}
+        className={clsx(styles.form, inline && styles.inlinePrompt)}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
         {label && (
-          <label className={styles.fieldLabel}>
+          <label htmlFor={fieldId} className={styles.fieldLabel}>
             <T>{label}</T>
           </label>
         )}
         <Input
           ref={ref}
+          id={fieldId}
           data-autofocus
-          aria-label={label ?? title}
+          aria-label={label ? undefined : title}
+          aria-describedby={errorId}
+          role={hasPrefixes ? "combobox" : undefined}
+          aria-autocomplete={hasPrefixes ? "list" : undefined}
+          aria-expanded={hasPrefixes ? shown : undefined}
+          aria-controls={shown ? listId : undefined}
+          aria-activedescendant={shown && suggestions[active] ? `${listId}-${active}` : undefined}
           value={value}
           mono={mono}
           placeholder={placeholder}
@@ -122,11 +213,71 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
             const next = clean(e);
             if (next.trim() !== value.trim()) setOverwrite(false);
             setValue(next);
+            if (hasPrefixes) {
+              setActive(-1);
+              setCompleting(true);
+            }
           }}
+          onKeyDown={hasPrefixes ? onPrefixKey : undefined}
+          onBlur={hasPrefixes ? () => setCompleting(false) : undefined}
         />
-        {touched && error && value && <div className={styles.error}>{error}</div>}
-        {checkbox && <Checkbox checked={checked} onChange={setChecked} label={checkbox.label} />}
-        {canOverwrite && <Checkbox checked={overwrite} onChange={setOverwrite} label="Overwrite existing branch" />}
+        <Popup
+          open={shown}
+          anchor={ref}
+          matchWidth
+          role="presentation"
+          autoFocus={false}
+          restoreFocus={false}
+          onClose={() => setCompleting(false)}
+          className={styles.prefixPopup}
+        >
+          <div style={{ height: Math.min(suggestions.length, 8) * 24 }}>
+            <List
+              id={listId}
+              items={suggestions}
+              getKey={(prefix) => prefix}
+              activeIndex={active}
+              onActivate={acceptPrefix}
+              focusable={false}
+              aria-label={tx("Branch name prefixes")}
+              className={styles.prefixList}
+              renderItem={(prefix, state) => (
+                <span className={styles.targetName} title={prefix}>
+                  <HighlightedText
+                    text={prefix}
+                    indices={Array.from({ length: value.length }, (_, i) => i)}
+                    tone={state.active ? "accent" : "strong"}
+                  />
+                </span>
+              )}
+            />
+          </div>
+        </Popup>
+        {props.scope && (
+          <>
+            <label className={styles.fieldLabel} htmlFor={scopeId}>
+              <T>{props.scope.label}</T>
+            </label>
+            <Select
+              id={scopeId}
+              aria-label={tx(props.scope.label)}
+              value={scope ?? null}
+              options={props.scope.options}
+              onChange={(next) => {
+                setScope(next);
+                setOverwrite(false);
+                setTouched(true);
+                setCompleting(false);
+              }}
+            />
+          </>
+        )}
+        {errorId && (
+          <div id={errorId} className={styles.error}>
+            {error}
+          </div>
+        )}
+        {inline && options ? <div className={styles.inlinePromptOptions}>{options}</div> : options}
       </form>
     </Dialog>
   );

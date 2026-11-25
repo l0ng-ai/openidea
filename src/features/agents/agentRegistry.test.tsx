@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { AgentProvider, AgentRegistry, InstallEvent, RegistryAgent, RequestId } from "@/bindings";
+import type {
+  AcpImportOutcome,
+  AgentProvider,
+  AgentRegistry,
+  InstallEvent,
+  RegistryAgent,
+  RequestId,
+} from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import { setLocale, tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui/icons";
@@ -359,13 +366,64 @@ describe("the ACP Registry in the agent list", () => {
     renderRegistry(backend);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the ACP Registry: offline"));
   });
+
+  it("prefers the live registry update version over a stale cached provider snapshot", async () => {
+    const backend = new FakeBackend();
+    backend.registry = {
+      agents: [
+        agent({ id: "copilot", name: "GitHub Copilot", version: "1.0.114", installed: "1.0.112", update: true }),
+        agent({ id: "cline", name: "Cline", version: "3.0.74", installed: "3.0.70", update: true }),
+      ],
+      warning: null,
+    };
+    const commands = new FakeCommands();
+    commands.list = [
+      {
+        ...claudeProvider("/tools/copilot/1.0.112/copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        commandEditable: false,
+        commandReadOnlyReason: "registry",
+        source: { kind: "registry", version: "1.0.112", update: "1.0.113" },
+      },
+      {
+        ...claudeProvider("/tools/cline/3.0.70/cline"),
+        id: "cline",
+        name: "Cline",
+        commandEditable: false,
+        commandReadOnlyReason: "registry",
+        source: { kind: "registry", version: "3.0.70", update: null },
+      },
+    ];
+    render(
+      <>
+        <AgentRegistryPage backend={backend} commandBackend={commands} />
+        <MessagesHost />
+      </>,
+    );
+
+    await waitFor(() => expect(within(row("GitHub Copilot")).getByText("1.0.114 is available")).toBeInTheDocument());
+    expect(within(row("GitHub Copilot")).queryByText("1.0.113 is available")).toBeNull();
+    expect(within(item("GitHub Copilot")).getByText("Update")).toBeInTheDocument();
+
+    await waitFor(() => expect(within(item("Cline")).getByText("Update")).toBeInTheDocument());
+    expect(within(row("Cline")).getByText("3.0.74 is available")).toBeInTheDocument();
+    expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeEnabled();
+  });
 });
 
 class FakeCommands implements CommandsBackend {
+  checkCli = vi.fn<CommandsBackend["checkCli"]>();
+  updateCli = vi.fn<CommandsBackend["updateCli"]>();
+  cancel = vi.fn<CommandsBackend["cancel"]>();
   list: AgentProvider[] = [];
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
   chooseExecutable = vi.fn(async () => "/chosen/agent");
+  saveCustom = vi.fn(async () => {});
+  removeCustom = vi.fn(async () => {});
+  importAcp = vi.fn(async (): Promise<AcpImportOutcome[]> => []);
+  pickAcpJson = vi.fn(async (): Promise<string | null> => null);
   savedEnv: [string, Record<string, string>][] = [];
   async setEnv(id: string, env: Record<string, string>) {
     this.savedEnv.push([id, env]);
@@ -400,6 +458,7 @@ const claudeProvider = (command: string): AgentProvider => ({
   commandEditable: true,
   commandReadOnlyReason: null,
   installed: true,
+  canCheckCliUpdate: true,
   env: {},
   config: [],
   commands: [],
@@ -414,7 +473,7 @@ describe("Built-in executable overrides", () => {
     dispose();
   });
 
-  const openCommands = async (commands: FakeCommands, onChanged = vi.fn()) => {
+  const openCommands = async (commands: FakeCommands, onChanged = vi.fn(), name = "Claude Code") => {
     const backend = new FakeBackend();
     dispose = registerSettingsPage({
       id: REGISTRY_PAGE,
@@ -423,10 +482,49 @@ describe("Built-in executable overrides", () => {
       component: () => <RegistryPage backend={backend} commandBackend={commands} onChanged={onChanged} />,
     });
     render(<SettingsDialog />);
-    return screen.findByRole("region", { name: "Claude Code" });
+    return screen.findByRole("region", { name });
   };
   const apply = () => screen.getByRole("button", { name: "Apply" });
   const field = () => screen.getByRole("textbox", { name: "Executable" });
+
+  it("checks only on click and updates only after the user chooses the offered version", async () => {
+    const commands = new FakeCommands();
+    const provider = claudeProvider("claude");
+    const offer = { status: "available" as const, current: "1.0.0", latest: "1.1.0", prefix: "/usr/local" };
+    commands.list = [provider];
+    commands.checkCli.mockResolvedValueOnce(offer);
+    commands.updateCli.mockResolvedValueOnce({ status: "updated", current: "1.1.0" });
+    const panel = within(await openCommands(commands));
+    expect(commands.checkCli).not.toHaveBeenCalled();
+    fireEvent.click(panel.getByRole("button", { name: "Check for updates" }));
+    const update = await panel.findByRole("button", { name: "Update to 1.1.0" });
+    expect(commands.checkCli).toHaveBeenCalledOnce();
+    fireEvent.click(update);
+    await panel.findByText("Updated to 1.1.0. New sessions will use this version.");
+    expect(commands.updateCli).toHaveBeenCalledWith(provider.id, offer, expect.any(Number));
+    expect(commands.saved).toEqual([]);
+  });
+
+  it("cancels the in-progress update by its request id", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    commands.checkCli.mockResolvedValue({ status: "available", current: "1.0.0", latest: "1.1.0", prefix: "/test" });
+    let cancel!: () => void;
+    commands.updateCli.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          cancel = () => reject(new IpcError({ kind: "cancelled", message: "cancelled" }));
+        }),
+    );
+    const panel = within(await openCommands(commands));
+    fireEvent.click(panel.getByRole("button", { name: "Check for updates" }));
+    fireEvent.click(await panel.findByRole("button", { name: "Update to 1.1.0" }));
+    fireEvent.click(panel.getByRole("button", { name: "Cancel" }));
+    expect(commands.cancel).toHaveBeenCalledWith(commands.updateCli.mock.calls[0]![2]);
+    await act(async () => cancel());
+    await waitFor(() => expect(panel.getByRole("button", { name: "Check for updates" })).toBeEnabled());
+    expect(panel.queryByRole("alert")).toBeNull();
+  });
 
   it("follows locale changes and renders login commands as inline code", async () => {
     const commands = new FakeCommands();
@@ -507,6 +605,38 @@ describe("Built-in executable overrides", () => {
     fireEvent.change(env(), { target: { value: "" } });
     await act(async () => fireEvent.click(apply()));
     expect(commands.savedEnv.at(-1)).toEqual(["claude", {}]);
+  });
+
+  it("writes a Copilot GitHub account without storing a token or exposing the control variable", async () => {
+    const commands = new FakeCommands();
+    commands.list = [
+      {
+        ...claudeProvider("copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        command: "copilot --acp",
+        defaultProgram: "copilot",
+        commandReadOnlyReason: "registry",
+        env: { COPILOT_TELEMETRY_OPTOUT: "1" },
+      },
+    ];
+    await openCommands(commands, vi.fn(), "GitHub Copilot");
+    const account = screen.getByRole("textbox", { name: "GitHub account" });
+    expect(screen.queryByRole("textbox", { name: "Environment variables" })).toBeNull();
+    fireEvent.change(account, { target: { value: "dengliu_microsoft" } });
+
+    await act(async () => fireEvent.click(apply()));
+
+    expect(commands.savedEnv).toEqual([
+      [
+        "copilot",
+        {
+          COPILOT_TELEMETRY_OPTOUT: "1",
+          OPENIDEA_COPILOT_GITHUB_ACCOUNT: "dengliu_microsoft",
+        },
+      ],
+    ]);
+    expect(JSON.stringify(commands.savedEnv)).not.toMatch(/gho_|ghp_|token/i);
   });
 
   it("Cancel discards command edits without writing", async () => {
@@ -781,5 +911,97 @@ describe("the agent list", () => {
     commands.list = [claudeProvider("claude")];
     await open(commands);
     expect(screen.getByText(/after its first session/)).toBeInTheDocument();
+  });
+});
+
+describe("custom agents", () => {
+  let dispose = () => {};
+  beforeEach(() => openSettings(REGISTRY_PAGE));
+  afterEach(() => {
+    closeSettings();
+    dispose();
+  });
+
+  const customProvider = (): AgentProvider => ({
+    ...claudeProvider("/opt/mine"),
+    id: "mine",
+    name: "Mine",
+    args: ["acp"],
+    defaultProgram: null,
+    defaultArgs: [],
+    loginHint: null,
+    commandEditable: false,
+    commandReadOnlyReason: "customAgent",
+    source: { kind: "custom" },
+  });
+
+  const openList = (commands: FakeCommands) => {
+    const backend = new FakeBackend();
+    dispose = registerSettingsPage({
+      id: REGISTRY_PAGE,
+      title: "Agents",
+      group: "Tools",
+      component: () => <RegistryPage backend={backend} commandBackend={commands} />,
+    });
+    render(
+      <>
+        <SettingsDialog />
+        <MessagesHost />
+      </>,
+    );
+  };
+
+  it("adds a custom agent through the modal, suggesting the id", async () => {
+    const commands = new FakeCommands();
+    openList(commands);
+    await waitFor(() => expect(commands.providers).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Add Custom Agent…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add Custom Agent" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), { target: { value: "My Agent" } });
+    expect(within(dialog).getByRole("textbox", { name: "ID" })).toHaveValue("my-agent");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Command" }), {
+      target: { value: "/opt/mine" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() =>
+      expect(commands.saveCustom).toHaveBeenCalledWith({
+        id: "my-agent",
+        name: "My Agent",
+        command: "/opt/mine",
+        args: [],
+        env: {},
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add Custom Agent" })).toBeNull());
+    expect(commands.providers.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("removes a custom agent after asking", async () => {
+    const commands = new FakeCommands();
+    commands.list = [customProvider()];
+    openList(commands);
+    await waitFor(() => expect(row("Mine")).toBeInTheDocument());
+    fireEvent.click(within(row("Mine")).getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove Mine" });
+    expect(dialog).toHaveTextContent("Remove Mine and delete its agent file?");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(commands.removeCustom).toHaveBeenCalledWith("mine"));
+    expect(commands.providers.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("imports acp.json and reports saved and skipped entries", async () => {
+    const commands = new FakeCommands();
+    commands.pickAcpJson.mockResolvedValueOnce('{"agent_servers": {}}');
+    commands.importAcp.mockResolvedValueOnce([
+      { name: "My Agent", id: "my-agent", saved: true, reason: "" },
+      { name: "Taken", id: "taken", saved: false, reason: "there is already a custom agent 'taken'" },
+    ]);
+    openList(commands);
+    await waitFor(() => expect(commands.providers).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Import acp.json" }));
+    await screen.findByText(
+      "Imported My Agent from acp.json. Skipped Taken (there is already a custom agent 'taken').",
+    );
+    expect(commands.importAcp).toHaveBeenCalledTimes(1);
   });
 });

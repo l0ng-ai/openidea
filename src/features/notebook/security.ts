@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { Marked } from "marked";
+import { mathExtension, renderMath } from "@/editor/lsp/markdownMath";
 import { mimeText, object, own } from "./outputs";
 
 export const OUTPUT_CSP =
@@ -194,7 +195,7 @@ function htmlRoot(html: string, markdown = false): HTMLElement {
       "rowspan",
       "scope",
       "align",
-      ...(markdown ? ["href"] : ["style"]),
+      ...(markdown ? ["href", "data-math"] : ["style"]),
     ],
     // Attachment references are resolved by us after sanitization. No arbitrary
     // URI survives the explicit src allowlist below.
@@ -221,13 +222,14 @@ export function staticOutputDocument(html: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${OUTPUT_CSP}"><style>body{margin:8px;font:13px system-ui,sans-serif;color:#222;background:white;overflow-wrap:anywhere}table{border-collapse:collapse;max-width:100%}th,td{padding:4px 8px;border:1px solid #ddd;text-align:left}pre{white-space:pre-wrap}img{max-width:100%;height:auto}</style></head><body>${root.innerHTML}</body></html>`;
 }
 
-const markdown = new Marked({ gfm: true });
+const markdown = new Marked({ gfm: true }).use(mathExtension());
 /**
  * Sanitized Markdown with inert links; link clicks are handled by the editor and
  * `attachment:` images are left for `resolveMarkdownAttachments`.
  */
 export function markdownRoot(source: string): HTMLElement {
   const root = htmlRoot(markdown.parse(source, { async: false }) as string, true);
+  renderMath(root);
   for (const link of root.querySelectorAll("a[href]")) {
     const href = link.getAttribute("href")!;
     link.removeAttribute("href");

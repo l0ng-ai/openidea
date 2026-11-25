@@ -28,6 +28,7 @@ import logStyles from "@/ui/LogPane.module.css";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { isRunning } from "./model";
 import { connectionState, endpointOf, errorMessage, useServices } from "./store";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 export const DOCKER_LOG_EDITOR_KIND = "dockerLog";
 
@@ -71,9 +72,10 @@ function isActionStroke(stroke: string | null, actionId: string): boolean {
 
 const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
-    if (!e.metaKey && !e.ctrlKey) return false;
+    const step = wheelZoomStep(e);
+    if (step === null) return false;
     e.preventDefault();
-    stepFontZoom(view, e.deltaY < 0 ? 1 : -1);
+    if (step) stepFontZoom(view, step);
     return true;
   },
 });
@@ -396,10 +398,10 @@ function DockerLogEditorBody({ input, data }: { input: EditorInput; data: Docker
     };
 
     const request = nextRequestId();
-    const channel = new Channel<DockerLogLine>();
-    channel.onmessage = (line) => {
+    const channel = new Channel<DockerLogLine[]>();
+    channel.onmessage = (lines) => {
       if (stopped) return;
-      buffer.push(line.text.replace(ANSI, ""));
+      for (const line of lines) buffer.push(line.text.replace(ANSI, ""));
       frame ||= requestAnimationFrame(flush);
     };
     call(

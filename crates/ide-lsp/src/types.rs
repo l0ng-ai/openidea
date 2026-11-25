@@ -261,6 +261,8 @@ pub struct InlayHint {
     /// The label's parts when the server split it (empty for a plain label);
     /// their values concatenate to `label`.
     pub parts: Vec<InlayLabelPart>,
+    /// The edits that turn the hint into code (an annotation and any import it needs).
+    pub text_edits: Vec<TextEdit>,
 }
 
 /// One part of an inlay hint label, e.g. a type name that navigates to its declaration.
@@ -305,6 +307,27 @@ pub struct DocumentLink {
     pub tooltip: Option<String>,
 }
 
+/// A color a server found in a document (`textDocument/documentColor`); components are 0–1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentColor {
+    pub range: Range,
+    pub red: f32,
+    pub green: f32,
+    pub blue: f32,
+    pub alpha: f32,
+    pub server: ServerId,
+}
+
+/// One way to write a picked color (`textDocument/colorPresentation`): `edits` replace the
+/// color's range (with `label` unless the server gave its own edit), then any extra edits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorPresentation {
+    pub label: String,
+    pub edits: Vec<TextEdit>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum HierarchyDirection {
@@ -329,6 +352,11 @@ pub struct HierarchyItem {
     pub selection_range: Range,
     /// Call sites, for call hierarchy.
     pub from_ranges: Vec<Range>,
+    /// The file of `from_ranges` when it is not the item's own: for an outgoing call, the
+    /// file of the prepared item that makes it (a path, or the URI of a virtual document).
+    #[serde(default)]
+    #[specta(optional)]
+    pub from_path: Option<ide_core::IpcPath>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -341,6 +369,10 @@ pub struct ServerInfo {
     pub status: ServerStatus,
     /// OS process of the running instance (for memory attribution).
     pub pid: Option<u32>,
+    /// What the user sees as the server when another program serves in its place.
+    #[serde(default)]
+    #[specta(optional)]
+    pub label: Option<String>,
 }
 
 /// Read-only contents a language server provides for a non-`file:` URI
@@ -357,6 +389,14 @@ pub struct VirtualDocument {
     pub description: Option<String>,
     /// Generated Java from a decompiler, rather than real source or a disassembler stub.
     pub decompiled: bool,
+    /// Charset the content was decoded with (a WHATWG label, e.g. `gbk`);
+    /// `utf-8` for text the server decoded itself.
+    pub encoding: String,
+    pub has_bom: bool,
+    /// "Reload with Encoding" can re-decode the origin's bytes (archive
+    /// entries, JDT sources with an editable attachment encoding); false for
+    /// server-generated content such as decompiled code.
+    pub can_reload_encoding: bool,
 }
 
 /// Reference updates for a file / folder move (`workspace/willRenameFiles`).
@@ -450,6 +490,16 @@ pub struct HierarchyMember {
     pub abstractable: bool,
 }
 
+/// The exception class a caret names: a reference to it, its declaration, or a throw of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExceptionClassRef {
+    /// The binary name (`app.Outer$Failure`), as exception breakpoints take it.
+    pub qualified_name: String,
+    /// The simple name (`Failure`).
+    pub display_name: String,
+}
+
 /// The class at a position and what can move: pull-up destinations, or the subclasses
 /// members are pushed into.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -492,9 +542,81 @@ pub struct HierarchyRefactored {
     pub edit: Option<WorkspaceEdit>,
 }
 
+/// A parameter in Change Signature: its type, name, the value passed at existing calls when it is
+/// added, and its index in the current signature (-1 for an added one).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureParameter {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub name: String,
+    pub default_value: String,
+    pub original_index: i32,
+}
+
+/// A declared exception (`throws`), with the server's handle of its type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureException {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub type_handle_identifier: String,
+}
+
+/// The signature of the method at a position, as Change Signature edits it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MethodSignature {
+    /// The server's handle of the method, passed back unchanged.
+    pub method_identifier: String,
+    /// `public`, `protected`, `private`, or empty for package-private.
+    pub modifier: String,
+    pub return_type: String,
+    pub method_name: String,
+    pub parameters: Vec<SignatureParameter>,
+    pub exceptions: Vec<SignatureException>,
+}
+
+/// A member Extract Interface can declare in the new interface.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct InterfaceMember {
+    pub name: String,
+    /// The method's return type or the field's type.
+    pub type_name: String,
+    /// The method's parameter types; `None` for a field.
+    pub parameters: Option<Vec<String>>,
+    /// The server's handle of the member, passed back unchanged.
+    pub handle_identifier: String,
+}
+
+/// What Extract Interface starts from: the file's class, the members the interface can declare and
+/// the packages it can go to (as JSON, passed back unchanged).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractInterfaceInfo {
+    pub class_name: String,
+    pub members: Vec<InterfaceMember>,
+    pub packages: Vec<String>,
+}
+
+/// A refactoring checked by the server (Change Signature, Move, Extract Interface): problems to show, the edit when
+/// none is fatal, and the token that confirms going on despite warnings.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerRefactored {
+    pub problems: Vec<RefactoringProblem>,
+    pub edit: Option<WorkspaceEdit>,
+    pub confirmation: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CallHierarchy {
+    /// The symbol the hierarchy is for: the first item the server prepared at the position.
+    #[serde(default)]
+    #[specta(optional)]
+    pub root: Option<HierarchyItem>,
     pub items: Vec<HierarchyItem>,
     pub incomplete: Option<ReferencesIncomplete>,
 }

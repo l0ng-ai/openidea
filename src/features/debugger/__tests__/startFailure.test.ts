@@ -65,4 +65,32 @@ describe("debug start failures", () => {
       expect.objectContaining({ title: "Cannot start debugger for Listen for Xdebug", body: PORT_IN_USE }),
     );
   });
+
+  it("offers to reinstall a Delve that is too old for the Go toolchain", async () => {
+    const notify = vi.fn();
+    provideNotificationService({ notify });
+    useDebug.setState({ sessions: {}, active: null, console: {} });
+    const message =
+      "launch failed: Failed to launch /p/api: Version of Delve is too old for Go version go1.27.0 " +
+      "(maximum supported version 1.26, suppress this error with --check-go-version=false)";
+    ipc.debugStart.mockResolvedValueOnce({ status: "error", error: { kind: "invalidInput", message, data: null } });
+    const go: LaunchConfig = {
+      name: "api: go run .",
+      adapter: "delve",
+      request: "launch",
+      program: "/p/api",
+      args: [],
+      cwd: "/p/api",
+      env: {},
+      extraJson: JSON.stringify({ mode: "debug" }),
+    };
+    expect(await startSession(go)).toBeNull();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Delve is too old for Go 1.27.0",
+        body: `${message}. Reinstalling Delve runs go install github.com/go-delve/delve/cmd/dlv@latest.`,
+        actions: [expect.objectContaining({ label: "Reinstall and Debug" })],
+      }),
+    );
+  });
 });

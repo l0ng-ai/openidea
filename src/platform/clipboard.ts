@@ -7,6 +7,26 @@ export async function writeClipboardText(text: string): Promise<void> {
   else await navigator.clipboard.writeText(text);
 }
 
+/**
+ * The clipboard's plain text, read natively where the backend can (macOS, Linux), else
+ * through the WebView. A Paste from a menu has no paste event to read, and WebKitGTK's
+ * `navigator.clipboard.readText()` gives no text there. Rejects when the WebView refuses.
+ */
+export async function readClipboardPlainText(): Promise<string> {
+  if (isTauri()) {
+    const text = await call(commands.clipboardText()).catch(() => null);
+    if (text != null) return text;
+  }
+  return (await navigator.clipboard?.readText()) ?? "";
+}
+
+/** The clipboard's image as base64 PNG, read natively; null when it holds none or outside the desktop app. */
+export async function readClipboardPng(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const url = await call(commands.clipboardImage());
+  return url ? url.slice(url.indexOf(",") + 1) : null;
+}
+
 type FormatFiles = (paths: string[]) => string;
 const rawPaths: FormatFiles = (paths) => paths.join("\n");
 
@@ -15,9 +35,7 @@ export async function readClipboardText(
   transfer?: DataTransfer | null,
   formatFiles: FormatFiles = rawPaths,
 ): Promise<string> {
-  const text = transfer
-    ? transfer.getData("text/plain")
-    : ((await navigator.clipboard?.readText().catch(() => "")) ?? "");
+  const text = transfer ? transfer.getData("text/plain") : await readClipboardPlainText().catch(() => "");
   if ((text && formatFiles === rawPaths) || (transfer && !hasClipboardFiles(transfer)) || !isTauri()) return text;
   let paths: string[];
   try {

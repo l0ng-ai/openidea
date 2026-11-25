@@ -5,13 +5,15 @@
  * a terminal feeds its process).
  */
 import { writeClipboardText } from "@/platform/clipboard";
+import { noteCopySource } from "@/platform/clipboardSource";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
-import { installTerminalPaste } from "./paste";
+import { installTerminalPaste, pasteIntoTerminal } from "./paste";
 import { ownTerminalInput } from "./imeInput";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import "./xtermInput.css";
 import type { EmbeddedTerminal, EmbeddedTerminalOptions } from "@/workbench/contributions";
 import { isImeKey } from "@/platform/ime";
 import { terminalKeyAction } from "./keys";
@@ -19,24 +21,28 @@ import { useProject } from "@/platform/project";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { fitScheduler, settledResize } from "./fit";
-import { watchWindowsPty, windowsPty } from "./windowsPty";
+import { watchWindowsPty, windowsPtyOptions } from "./windowsPty";
 import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
-import { MIN_CONTRAST_RATIO, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
+import { MIN_CONTRAST_RATIO, readLinkColor, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
+import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
 
-const live = new Set<Terminal>();
+const live = new Map<Terminal, LinkHighlightController>();
 
 /** Follows a theme change (called with the terminal sessions' own update). */
 export function applyThemeToEmbedded() {
   const theme = readTerminalTheme();
-  for (const t of live) t.options.theme = theme;
+  for (const [t, links] of live) {
+    t.options.theme = theme;
+    links.refresh();
+  }
 }
 
 export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminalOptions): EmbeddedTerminal {
   const settings = workflowSettings().terminal;
   const font = fontFor(settings);
   const term = new Terminal({
-    windowsPty: windowsPty(),
+    ...windowsPtyOptions(),
     linkHandler: LINK_HANDLER,
     fontFamily: font.family,
     fontSize: font.size,
@@ -63,7 +69,14 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     if (action.kind === "send" && e.key === "Enter") {
       if (e.type === "keydown") term.input(action.data);
     } else if (action.kind === "copy") {
-      if (e.type === "keydown") void writeClipboardText(term.getSelection()).catch(() => undefined);
+      if (e.type === "keydown") {
+        const text = term.getSelection();
+        noteCopySource(text, { kind: "terminal", title: "Terminal" });
+        void writeClipboardText(text).catch(() => undefined);
+      }
+    } else if (action.kind === "paste") {
+      // Keep xterm from sending Ctrl+V as ^V; the native paste reaches its textarea.
+      return false;
     } else {
       return true;
     }
@@ -72,7 +85,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  live.add(term);
+  live.set(term, installLinkHighlights(term, readLinkColor));
   let lastSize = { cols: term.cols, rows: term.rows };
   const processResize = settledResize((cols, rows) => {
     if (cols === lastSize.cols && rows === lastSize.rows) return;
@@ -87,24 +100,21 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       provideLinks(y, callback) {
         const line = term.buffer.active.getLine(y - 1);
         const found = line ? findTerminalLinks(line.translateToString(true)) : [];
-        if (!found.length) return callback(undefined);
+        if (!line || !found.length) return callback(undefined);
         callback(
-          found.map((l) => ({
-            text: l.text,
-            range: { start: { x: l.start + 1, y }, end: { x: l.end, y } },
-            decorations: { underline: true, pointerCursor: true },
-            activate: (event: MouseEvent) => {
+          found.map((l) =>
+            xtermLink(term, line, y, l, (event) => {
               event.preventDefault();
               if (l.kind === "url") void openExternal(l.url);
               else void openFileLink(l, opts.cwd ?? useProject.getState().project?.root ?? "");
-            },
-          })),
+            }),
+          ),
         );
       },
     }),
   ];
-  const removePaste = installTerminalPaste(host, (text) => term.paste(text));
-  const removeDrop = installTerminalDrop(host, (text) => term.paste(text));
+  const removePaste = installTerminalPaste(host, (text) => pasteIntoTerminal(term, text));
+  const removeDrop = installTerminalDrop(host, (text) => pasteIntoTerminal(term, text));
   term.open(host);
   installDomRowCache(term);
   if (opts["aria-label"]) term.textarea?.setAttribute("aria-label", opts["aria-label"]);
@@ -114,9 +124,9 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   }
 
   const fitter = fitScheduler(() => {
-    if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return;
+    if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return false;
     const dims = fit.proposeDimensions();
-    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return false;
     if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
     processResize.resized(dims.cols, dims.rows);
   });
@@ -143,6 +153,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       removePaste();
       removeDrop();
       for (const d of disposables) d.dispose();
+      live.get(term)?.dispose();
       live.delete(term);
       term.dispose();
     },

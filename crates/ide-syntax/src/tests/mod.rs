@@ -4,6 +4,7 @@
 mod jvm;
 mod locals_langs;
 mod structure;
+mod tree;
 
 use crate::*;
 use ide_core::{LanguageId, Pos, Range};

@@ -9,6 +9,8 @@
 import type { EditorView } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import type { CodeAction, CodeActionQuery } from "@/bindings";
+import { executeAction } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
 import { commands, isCancelled } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { whenSynced } from "@/editor/api";
@@ -40,9 +42,22 @@ import {
 } from "./serverIntroduce";
 import { safeDelete } from "./safeDelete";
 import { startHierarchyRefactoring } from "./hierarchy";
+import { SIGNATURE_LANGUAGES, startChangeSignature } from "./signature";
+import { EXTRACT_INTERFACE_LANGUAGES, startExtractInterface } from "./extractInterface";
 
-/** Languages whose server runs the class-hierarchy refactorings (the app-owned JDT extension). */
-const HIERARCHY_LANGUAGES = new Set(["java"]);
+/** Languages with a server that runs the class-hierarchy refactorings (the app-owned JDT extension; Phoxite for PHP). */
+const HIERARCHY_LANGUAGES = new Set(["java", "php"]);
+
+/**
+ * Companion servers that alone provide these refactorings for a language: when one is
+ * missing, invoking a refactoring there offers to install it.
+ */
+const REFACTORING_SERVERS: Readonly<Record<string, { server: string; ids: ReadonlySet<RefactoringId> }>> = {
+  python: {
+    server: "pylsp",
+    ids: new Set(["extractMethod", "extractVariable", "extractConstant", "extractParameter", "inline"]),
+  },
+};
 
 /** Outcome of the server query: its answer, or why there is none. */
 export type ServerAnswer =
@@ -58,6 +73,26 @@ async function askServer(view: EditorView, signal?: AbortSignal, only?: string[]
     if (isUnavailable(e)) return { status: "notReady" };
     return { status: "error", message: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * Servers that return refactorings only when `only` names `refactor` itself: typescript-language-server,
+ * and clangd, whose tweaks are all of kind `refactor`.
+ */
+const WHOLE_REFACTOR_KIND = new Set([
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "c",
+  "cpp",
+  "objective-c",
+  "objective-cpp",
+]);
+
+/** The code action kind to ask `language`'s server for, to get the refactorings of `kind`. */
+export function requestKind(kind: string, language: string): string {
+  return WHOLE_REFACTOR_KIND.has(language) && kind.startsWith("refactor.") ? "refactor" : kind;
 }
 
 /** Server actions per IDEA refactoring, plus the unmapped refactorings (by title). */
@@ -153,6 +188,15 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
     showHint(view, cannotPerform("The file is read-only"));
     return;
   }
+  if (id === "changeSignature" && SIGNATURE_LANGUAGES.has(ctx.language)) {
+    await startChangeSignature(view);
+    return;
+  }
+  if (id === "extractInterface") {
+    if (EXTRACT_INTERFACE_LANGUAGES.has(ctx.language)) await startExtractInterface(view);
+    else showHint(view, cannotPerform(`Extract Interface is not supported for ${await languageName(ctx.language)}`));
+    return;
+  }
   // IDEA picks the expression first (and the server then extracts exactly that one).
   if (EXPRESSION_REFACTORINGS.has(id) && view.state.selection.main.empty) {
     if (await chooseExpressionFirst(view, () => runRefactoring(view, id))) return;
@@ -162,7 +206,7 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
   const state = view.state;
   let answer: ServerAnswer;
   try {
-    answer = await askServer(view, run.signal, r.kind ? [r.kind] : undefined);
+    answer = await askServer(view, run.signal, r.kind ? [requestKind(r.kind, ctx.language)] : undefined);
   } catch (e) {
     if (isCancelled(e)) return;
     throw e;
@@ -178,8 +222,23 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
   }
   const introduce = INTRODUCE[id];
   if (introduce) {
-    const reason = answer.status === "ok" ? "empty" : answer.status === "notReady" ? "notReady" : "error";
+    // A server offering another extraction there (gopls has only Extract constant for `1 + 2`)
+    // takes the selection for an expression: build the variable from the syntax.
+    const otherExtraction = [...groupActions(all).mapped.keys()].some((k) => INTRODUCE[k] && k !== id);
+    const reason =
+      answer.status === "ok"
+        ? otherExtraction
+          ? "otherKind"
+          : "empty"
+        : answer.status === "notReady"
+          ? "notReady"
+          : "error";
     if (await introduceFallback(view, introduce, reason)) return;
+  }
+  const companion = REFACTORING_SERVERS[ctx.language];
+  if (companion?.ids.has(id)) {
+    // Only offered when the companion server is not installed (`tools.promptInstall` checks).
+    void executeAction("tools.promptInstall", { name: companion.server, refactoring: tx(r.label).replace(/…$/, "") });
   }
   showHint(view, cannotPerform(await unavailableReason(view, r, answer, all)));
 }
@@ -219,11 +278,13 @@ async function expressionAtCaret(view: EditorView, signal: AbortSignal): Promise
 export function refactorThisItems(
   view: EditorView,
   answer: ServerAnswer,
-  facts: { symbol: boolean; expression: boolean; hierarchy?: boolean },
+  facts: { symbol: boolean; expression: boolean; hierarchy?: boolean; signature?: boolean; extractInterface?: boolean },
   run: {
     rename: (view: EditorView) => unknown;
     safeDelete: (view: EditorView) => unknown;
     hierarchy?: (view: EditorView, kind: "pullUp" | "pushDown") => unknown;
+    signature?: (view: EditorView) => unknown;
+    extractInterface?: (view: EditorView) => unknown;
   },
 ): ListPopupItem[] {
   const { mapped, other } = groupActions(answer.status === "ok" ? answer.query.actions : []);
@@ -237,6 +298,10 @@ export function refactorThisItems(
     // With only a caret the expression is chosen first, then the server asked for it.
     if (expression && caretOnly && serverUsable && (actions.length || facts.expression))
       go = () => runRefactoring(view, r.id);
+    else if (r.id === "changeSignature" && facts.signature && serverUsable && run.signature)
+      go = () => run.signature!(view);
+    else if (r.id === "extractInterface" && facts.extractInterface && serverUsable && run.extractInterface)
+      go = () => run.extractInterface!(view);
     else if (actions.length) go = () => runActions(view, r.label.replace(/…$/, ""), actions, r.id);
     else if (r.id === "rename" && facts.symbol) go = () => run.rename(view);
     else if (r.id === "safeDelete" && facts.symbol && !docOf(view)?.readOnly) go = () => run.safeDelete(view);
@@ -246,7 +311,13 @@ export function refactorThisItems(
       go = () => introduceFallback(view, INTRODUCE[r.id]!, answer.status === "notReady" ? "notReady" : "error");
     if (!go) continue;
     const exec = go;
-    items.push({ id: r.id, label: r.label, shortcut: shortcutLabel(r.action), run: () => void exec() });
+    items.push({
+      id: r.id,
+      label: r.label,
+      section: r.section,
+      shortcut: shortcutLabel(r.action),
+      run: () => void exec(),
+    });
   }
   other.forEach((a, i) =>
     items.push({
@@ -278,11 +349,19 @@ export async function refactorThis(view: EditorView, rename: (view: EditorView) 
       expressionAtCaret(view, run.signal),
     ]);
     const hierarchy = HIERARCHY_LANGUAGES.has(ctx.language) && !ctx.readOnly;
+    const signature = SIGNATURE_LANGUAGES.has(ctx.language) && !ctx.readOnly && symbol;
+    const extractInterface = EXTRACT_INTERFACE_LANGUAGES.has(ctx.language) && !ctx.readOnly;
     items = refactorThisItems(
       view,
       answer,
-      { symbol, expression, hierarchy },
-      { rename, safeDelete, hierarchy: startHierarchyRefactoring },
+      { symbol, expression, hierarchy, signature, extractInterface },
+      {
+        rename,
+        safeDelete,
+        hierarchy: startHierarchyRefactoring,
+        signature: startChangeSignature,
+        extractInterface: startExtractInterface,
+      },
     );
   } catch (e) {
     if (isCancelled(e)) return;
@@ -301,6 +380,7 @@ export async function refactorThis(view: EditorView, rename: (view: EditorView) 
     anchor: caretAnchor(view, state.selection.main.head),
     title: "Refactor This",
     items,
+    compact: true,
     numbered: true,
   });
 }
@@ -313,6 +393,7 @@ export function showNothingHere(
     kind: "list",
     anchor,
     title: "Refactor This",
+    compact: true,
     items: [{ id: "nothing", label: "Nothing here", disabled: "No refactoring applies here", run: () => {} }],
   });
 }

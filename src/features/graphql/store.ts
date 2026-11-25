@@ -6,8 +6,10 @@ import { create } from "zustand";
 import { editorsFor, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { tx } from "@/platform/i18n";
+import { toBase64 } from "@/platform/base64";
 import type { Diagnostic } from "@/bindings";
 import { call, commands, isCancelled, nextRequestId, type RequestId } from "@/platform/ipc";
+import type { JsonValue } from "@/platform/losslessJson";
 import { basename, dirname, useProject } from "@/platform/project";
 import { editorService, notifications, toolWindowService } from "@/workbench/contributions";
 import { confirm, showError } from "@/workbench/messages";
@@ -253,7 +255,7 @@ export async function addSchemaConfiguration(): Promise<void> {
   if (existing) return editorService().openFile(existing);
   const path = `${root}/${CONFIG_NAMES[0]}`;
   try {
-    await call(commands.fsCreateFileBytes(path, [...new TextEncoder().encode(CONFIG_TEMPLATE)]));
+    await call(commands.fsCreateFileBytes(path, toBase64(new TextEncoder().encode(CONFIG_TEMPLATE))));
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot create the GraphQL configuration", body: String(e) });
     return;
@@ -336,7 +338,7 @@ function notifyRequestFailed(configured: Endpoint, error: string, retry: () => v
   });
 }
 
-async function send(configured: Endpoint, query: string, variables: Record<string, unknown> | null) {
+async function send(configured: Endpoint, query: string, variables: JsonValue | null) {
   const endpoint = resolveEndpoint(configured);
   const busy = useGraphQL.getState().running;
   if (busy) void commands.cancelRequest(busy);
@@ -440,7 +442,7 @@ export async function introspectEndpoint(path: string, name?: string): Promise<v
     }
   } else {
     try {
-      await call(commands.fsCreateFileBytes(target, [...new TextEncoder().encode(sdl)]));
+      await call(commands.fsCreateFileBytes(target, toBase64(new TextEncoder().encode(sdl))));
     } catch (e) {
       notifications().notify({ level: "error", title: "Cannot write the GraphQL schema", body: String(e) });
       return;

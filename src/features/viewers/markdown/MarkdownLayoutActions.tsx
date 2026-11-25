@@ -3,8 +3,8 @@ import { tx } from "@/platform/i18n";
 import { modeOf, useMarkdownModes } from "./modes";
 import styles from "./Markdown.module.css";
 
-export function MarkdownLayoutActions({ path }: { path: string; tabId: string }) {
-  const mode = useMarkdownModes((s) => modeOf(s, path));
+export function MarkdownLayoutActions({ tabId }: { path: string; tabId: string }) {
+  const mode = useMarkdownModes((s) => modeOf(s, tabId));
   return (
     <div className={styles.layoutActions} role="toolbar" aria-label={tx("Markdown editor layout")}>
       <IconButton
@@ -13,7 +13,7 @@ export function MarkdownLayoutActions({ path }: { path: string; tabId: string })
         size="small"
         title="Editor Only"
         action="markdown.editorOnly"
-        actionArg={path}
+        actionArg={tabId}
         pressed={mode === "editor"}
       />
       <IconButton
@@ -22,7 +22,7 @@ export function MarkdownLayoutActions({ path }: { path: string; tabId: string })
         size="small"
         title="Editor and Preview"
         action="markdown.editorAndPreview"
-        actionArg={path}
+        actionArg={tabId}
         pressed={mode === "split"}
       />
       <IconButton
@@ -31,7 +31,7 @@ export function MarkdownLayoutActions({ path }: { path: string; tabId: string })
         size="small"
         title="Preview Only"
         action="markdown.previewOnly"
-        actionArg={path}
+        actionArg={tabId}
         pressed={mode === "preview"}
       />
     </div>

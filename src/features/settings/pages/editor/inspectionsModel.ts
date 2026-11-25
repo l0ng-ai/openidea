@@ -1,3 +1,5 @@
+import { commands, isTauri } from "@/platform/ipc";
+import { onLanguageListChanged } from "@/platform/languageList";
 /**
  * Editor › Inspections tree: language → language server → diagnostic codes
  * seen, plugins' problems under Plugins, plus the built-in checks; enabled /
@@ -307,4 +309,19 @@ function codeDescription(server: string, { code, source, sample }: SeenCode): st
       ? tx`${server} problems with code ${code} (${source}).`
       : tx`${server} problems with code ${code}.`;
   return sample ? tx`${what}\n\nExample: ${sample}` : what;
+}
+
+let languagesCache: LanguageServers[] | null = null;
+onLanguageListChanged(() => (languagesCache = null));
+
+export function cachedInspectionLanguages(): LanguageServers[] {
+  return languagesCache ?? [];
+}
+
+export async function loadInspectionLanguages(): Promise<LanguageServers[]> {
+  if (languagesCache) return languagesCache;
+  if (!isTauri()) return [];
+  const list = await commands.languages();
+  languagesCache = list.map((l) => ({ name: l.name, servers: l.languageServers ?? [] }));
+  return languagesCache;
 }

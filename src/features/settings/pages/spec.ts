@@ -7,7 +7,14 @@ import type { ComponentType, ReactNode } from "react";
 import type { SelectOption } from "@/ui";
 
 export type OptionSpec =
-  | { kind: "toggle"; key: string; label: string; hint?: ReactNode }
+  | {
+      kind: "toggle";
+      key: string;
+      label: string;
+      hint?: ReactNode;
+      /** Dependent options, indented and disabled while unchecked. */
+      children?: Exclude<OptionSpec, { kind: "custom" }>[];
+    }
   | {
       kind: "number";
       key: string;
@@ -57,11 +64,16 @@ export function specLabels(spec: PageSpec): string[] {
   const out: string[] = [...(spec.keywords ?? [])];
   for (const section of spec.sections ?? []) {
     if (section.title) out.push(section.title);
-    for (const o of section.options) {
+    for (const o of flattenOptions(section.options)) {
       out.push(o.label);
       if (o.kind === "custom") out.push(...(o.keywords ?? []));
       if (o.kind === "select") out.push(...o.options.map((x) => x.label));
     }
   }
   return out;
+}
+
+/** The options and, after each checkbox, its dependent options. */
+export function flattenOptions(options: readonly OptionSpec[]): OptionSpec[] {
+  return options.flatMap((o) => (o.kind === "toggle" && o.children ? [o, ...flattenOptions(o.children)] : [o]));
 }

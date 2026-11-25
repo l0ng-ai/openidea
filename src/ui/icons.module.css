@@ -3,6 +3,11 @@
   display: block;
 }
 
+.image {
+  object-fit: cover;
+  border-radius: var(--radius-small);
+}
+
 .mono {
   color: var(--icon-color, currentColor);
 }

@@ -17,6 +17,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 /// One row of a process listing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,16 +105,21 @@ pub struct MemoryRoot {
 }
 
 /// Memory of one row of the breakdown.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessMemory {
     pub category: MemoryCategory,
     pub label: String,
     /// Project, run kind or similar.
     pub detail: Option<String>,
+    /// The row's top process (the language server, run or terminal shell).
+    pub pid: u32,
     /// Number of processes counted in this row.
     pub processes: u32,
     pub bytes: Option<u64>,
+    /// CPU use since the previous measurement, in percent of one core (Activity
+    /// Monitor's "% CPU"); `None` on the first measurement of every process.
+    pub cpu_percent: Option<f32>,
 }
 
 /// Recognises WebView helpers that are our children (WebKitGTK, WebView2).
@@ -137,17 +143,21 @@ pub fn attribute(
     self_pid: u32,
     roots: &[MemoryRoot],
     footprint: impl Fn(u32) -> Option<u64>,
+    mut cpu: impl FnMut(u32) -> Option<f32>,
 ) -> Vec<ProcessMemory> {
     let mut claimed = HashSet::from([self_pid]);
     let mut out = Vec::new();
     let mut push = |category, label: String, detail, pids: Vec<u32>| {
         let sizes: Vec<u64> = pids.iter().filter_map(|&p| footprint(p)).collect();
+        let loads: Vec<f32> = pids.iter().filter_map(|&p| cpu(p)).collect();
         out.push(ProcessMemory {
             category,
             label,
             detail,
+            pid: pids[0],
             processes: pids.len() as u32,
             bytes: (!sizes.is_empty()).then(|| sizes.iter().sum()),
+            cpu_percent: (!loads.is_empty()).then(|| loads.iter().sum()),
         });
     };
     push(MemoryCategory::App, "Backend".into(), None, vec![self_pid]);
@@ -178,6 +188,84 @@ pub fn attribute(
         }
     }
     out
+}
+
+/// CPU load per process from the change of its CPU time between measurements.
+#[derive(Debug, Default)]
+pub struct CpuSampler {
+    last: HashMap<u32, CpuSample>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CpuSample {
+    time: Duration,
+    at: Instant,
+    percent: Option<f32>,
+}
+
+/// Shorter gaps (several windows polling at once) keep the previous value
+/// instead of measuring over a few milliseconds.
+const MIN_CPU_INTERVAL: Duration = Duration::from_millis(500);
+
+impl CpuSampler {
+    /// Percent of one core used by `pid` since its previous sample.
+    pub fn percent(&mut self, pid: u32) -> Option<f32> {
+        self.record(pid, cpu_time(pid)?, Instant::now())
+    }
+
+    fn record(&mut self, pid: u32, time: Duration, at: Instant) -> Option<f32> {
+        let percent = match self.last.get(&pid) {
+            Some(prev) if at.duration_since(prev.at) < MIN_CPU_INTERVAL => return prev.percent,
+            // A reused pid restarts its CPU time.
+            Some(prev) if time >= prev.time => {
+                Some((time - prev.time).as_secs_f32() / at.duration_since(prev.at).as_secs_f32() * 100.0)
+            }
+            _ => None,
+        };
+        self.last.insert(pid, CpuSample { time, at, percent });
+        percent
+    }
+
+    /// Forgets processes that are no longer listed.
+    pub fn retain(&mut self, table: &ProcessTable) {
+        if !table.entries.is_empty() {
+            self.last.retain(|pid, _| table.get(*pid).is_some());
+        }
+    }
+}
+
+/// CPU time (user + system) `pid` has used so far.
+pub fn cpu_time(pid: u32) -> Option<Duration> {
+    imp::cpu_time(pid)
+}
+
+/// Ends `pid` and every process it started, children first: a polite request
+/// (`SIGTERM`), then a forced kill after `grace` for whatever is still running.
+/// Refuses (returns false) unless `pid` descends from `self_pid`.
+pub fn end_process_tree(self_pid: u32, pid: u32, grace: Duration) -> bool {
+    let table = ProcessTable::snapshot();
+    if pid == self_pid || !table.tree(self_pid).contains(&pid) {
+        return false;
+    }
+    let pids: Vec<u32> = table.tree(pid).into_iter().rev().collect();
+    for &p in &pids {
+        imp::terminate(p, false);
+    }
+    let deadline = Instant::now() + grace;
+    loop {
+        let now = ProcessTable::snapshot();
+        let left: Vec<u32> = pids.iter().copied().filter(|p| now.get(*p).is_some()).collect();
+        if left.is_empty() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            for p in left {
+                imp::terminate(p, true);
+            }
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Bytes the OS attributes to `pid` (see the module docs); `None` when the
@@ -262,6 +350,15 @@ mod imp {
         fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut c_void, size: i32) -> i32;
         fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut c_void) -> i32;
         fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct MachTimebaseInfo {
+        numer: u32,
+        denom: u32,
     }
 
     #[link(name = "objc")]
@@ -315,6 +412,27 @@ mod imp {
         // SAFETY: `info` (512 bytes) is larger than `rusage_info_v4`.
         let rc = unsafe { proc_pid_rusage(pid as i32, RUSAGE_INFO_V4, info.as_mut_ptr().cast()) };
         (rc == 0).then_some(info[PHYS_FOOTPRINT_WORD])
+    }
+
+    /// `ri_user_time + ri_system_time` (words 2 and 3), in Mach absolute time units.
+    pub fn cpu_time(pid: u32) -> Option<std::time::Duration> {
+        static TIMEBASE: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+        let &(numer, denom) = TIMEBASE.get_or_init(|| {
+            let mut tb = MachTimebaseInfo::default();
+            // SAFETY: `tb` is a writable mach_timebase_info_data_t.
+            let ok = unsafe { mach_timebase_info(&mut tb) } == 0 && tb.denom != 0;
+            if ok { (tb.numer as u64, tb.denom as u64) } else { (1, 1) }
+        });
+        let mut info = [0u64; 64];
+        // SAFETY: `info` (512 bytes) is larger than `rusage_info_v4`.
+        let rc = unsafe { proc_pid_rusage(pid as i32, RUSAGE_INFO_V4, info.as_mut_ptr().cast()) };
+        let ticks = (rc == 0).then(|| info[2].saturating_add(info[3]))?;
+        Some(std::time::Duration::from_nanos((ticks as u128 * numer as u128 / denom as u128) as u64))
+    }
+
+    pub fn terminate(pid: u32, force: bool) {
+        // SAFETY: plain syscall.
+        unsafe { kill(pid as i32, if force { 9 } else { 15 }) };
     }
 
     /// `responsibility_get_pid_responsible_for_pid` (libsystem SPI used by
@@ -406,6 +524,39 @@ mod imp {
         None
     }
 
+    unsafe extern "C" {
+        fn sysconf(name: i32) -> i64;
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    const SC_CLK_TCK: i32 = 2;
+
+    /// `utime + stime` of `/proc/<pid>/stat` (fields 14 and 15, in clock ticks).
+    fn stat_ticks(text: &str) -> Option<u64> {
+        let mut rest = text.get(text.rfind(')')? + 1..)?.split_whitespace().skip(11);
+        Some(rest.next()?.parse::<u64>().ok()? + rest.next()?.parse::<u64>().ok()?)
+    }
+
+    pub fn cpu_time(pid: u32) -> Option<std::time::Duration> {
+        static HZ: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        // SAFETY: plain libc call.
+        let hz =
+            *HZ.get_or_init(|| u64::try_from(unsafe { sysconf(SC_CLK_TCK) }).ok().filter(|&h| h > 0).unwrap_or(100));
+        let ticks = stat_ticks(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
+        Some(std::time::Duration::from_nanos(ticks * 1_000_000_000 / hz))
+    }
+
+    pub fn terminate(pid: u32, force: bool) {
+        // SAFETY: plain syscall.
+        unsafe { kill(pid as i32, if force { 9 } else { 15 }) };
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn reads_cpu_ticks_from_stat() {
+        let text = "7 (a (b) c) S 3 7 7 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 1 0";
+        assert_eq!(stat_ticks(text), Some(300));
+    }
+
     #[cfg(test)]
     #[test]
     fn parses_stat_with_parens_in_name() {
@@ -463,7 +614,17 @@ mod imp {
         fn CloseHandle(handle: *mut c_void) -> i32;
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
         fn K32GetProcessMemoryInfo(process: *mut c_void, counters: *mut c_void, cb: u32) -> i32;
+        fn GetProcessTimes(
+            process: *mut c_void,
+            creation: *mut u64,
+            exit: *mut u64,
+            kernel: *mut u64,
+            user: *mut u64,
+        ) -> i32;
+        fn TerminateProcess(process: *mut c_void, code: u32) -> i32;
     }
+
+    const PROCESS_TERMINATE: u32 = 0x1;
 
     pub fn list_processes() -> Vec<ProcEntry> {
         // SAFETY: plain Win32 call; the handle is closed below.
@@ -507,6 +668,34 @@ mod imp {
         (ok != 0).then_some(c.PrivateUsage as u64)
     }
 
+    /// Kernel + user time from `GetProcessTimes` (100 ns units).
+    pub fn cpu_time(pid: u32) -> Option<std::time::Duration> {
+        // SAFETY: plain Win32 call; the handle is closed below.
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            return None;
+        }
+        let (mut creation, mut exit, mut kernel, mut user) = (0u64, 0u64, 0u64, 0u64);
+        // SAFETY: `h` is a process handle; the FILETIMEs are written as u64s.
+        let ok = unsafe { GetProcessTimes(h, &mut creation, &mut exit, &mut kernel, &mut user) };
+        // SAFETY: `h` came from OpenProcess.
+        unsafe { CloseHandle(h) };
+        (ok != 0).then(|| std::time::Duration::from_nanos(kernel.saturating_add(user).saturating_mul(100)))
+    }
+
+    /// Windows has no polite request for a console process; both steps terminate it.
+    pub fn terminate(pid: u32, _force: bool) {
+        // SAFETY: plain Win32 call; the handle is closed below.
+        let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        if h.is_null() {
+            return;
+        }
+        // SAFETY: `h` is a process handle opened with PROCESS_TERMINATE.
+        unsafe { TerminateProcess(h, 1) };
+        // SAFETY: `h` came from OpenProcess.
+        unsafe { CloseHandle(h) };
+    }
+
     pub fn responsible_pid(_pid: u32) -> Option<u32> {
         None
     }
@@ -522,6 +711,10 @@ mod imp {
     pub fn footprint_bytes(_pid: u32) -> Option<u64> {
         None
     }
+    pub fn cpu_time(_pid: u32) -> Option<std::time::Duration> {
+        None
+    }
+    pub fn terminate(_pid: u32, _force: bool) {}
     pub fn responsible_pid(_pid: u32) -> Option<u32> {
         None
     }
@@ -589,7 +782,7 @@ mod tests {
             // Already counted under rust-analyzer: no row.
             root(301, MemoryCategory::Process, "dup", true),
         ];
-        let rows = attribute(&t, 100, &roots, mb);
+        let rows = attribute(&t, 100, &roots, mb, |pid| (pid == 300 || pid == 301).then_some(25.0));
         let summary: Vec<(MemoryCategory, &str, u32, Option<u64>)> =
             rows.iter().map(|r| (r.category, r.label.as_str(), r.processes, r.bytes)).collect();
         assert_eq!(
@@ -606,15 +799,54 @@ mod tests {
             ]
         );
         assert_eq!(rows[2].detail.as_deref(), Some("idea"));
+        let pids: Vec<u32> = rows.iter().map(|r| r.pid).collect();
+        assert_eq!(pids, vec![100, 700, 200, 300, 400, 500, 600]);
+        assert_eq!(rows[3].cpu_percent, Some(50.0));
+        assert_eq!(rows[2].cpu_percent, None);
         assert!(!rows.iter().any(|r| r.label == "Safari"));
     }
 
     #[test]
     fn unreadable_rows_have_no_bytes() {
         let t = table();
-        let rows = attribute(&t, 100, &[root(401, MemoryCategory::Process, "cargo", false)], mb);
+        let rows = attribute(&t, 100, &[root(401, MemoryCategory::Process, "cargo", false)], mb, |_| None);
         let cargo = rows.iter().find(|r| r.label == "cargo").unwrap();
         assert_eq!((cargo.processes, cargo.bytes), (1, None));
+    }
+
+    #[test]
+    fn cpu_percent_comes_from_the_change_in_cpu_time() {
+        let mut s = CpuSampler::default();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        assert_eq!(s.record(7, ms(1000), t0), None, "first sample has nothing to compare with");
+        assert_eq!(s.record(7, ms(1500), t0 + ms(1000)), Some(50.0));
+        assert_eq!(s.record(7, ms(1900), t0 + ms(1100)), Some(50.0), "too soon: previous value");
+        assert_eq!(s.record(7, ms(3500), t0 + ms(2000)), Some(200.0), "two busy cores");
+        assert_eq!(s.record(7, ms(10), t0 + ms(3000)), None, "pid reused by a new process");
+        s.retain(&ProcessTable::from_entries([e(8, 1, "other")]));
+        assert_eq!(s.record(7, ms(500), t0 + ms(4000)), None, "forgotten once unlisted");
+    }
+
+    #[test]
+    fn ends_only_descendants() {
+        let me = std::process::id();
+        assert!(!end_process_tree(me, me, Duration::ZERO));
+        assert!(!end_process_tree(me, 1, Duration::ZERO));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ends_a_child_and_its_children() {
+        let mut child = std::process::Command::new("sh").args(["-c", "sleep 30 & wait"]).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ProcessTable::snapshot().children(child.id()).is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let sleeper = ProcessTable::snapshot().children(child.id())[0];
+        assert!(end_process_tree(std::process::id(), child.id(), Duration::from_secs(2)));
+        assert!(child.wait().is_ok());
+        assert!(ProcessTable::snapshot().get(sleeper).is_none(), "grandchild ended too");
     }
 
     #[test]
@@ -625,6 +857,13 @@ mod tests {
             assert!(t.get(me).is_some(), "own pid listed");
             let bytes = footprint_bytes(me).expect("own footprint");
             assert!(bytes > 1 << 16 && bytes < 1 << 40, "{bytes}");
+            let before = cpu_time(me).expect("own CPU time");
+            let spin = Instant::now();
+            while spin.elapsed() < Duration::from_millis(50) {
+                std::hint::black_box(spin.elapsed());
+            }
+            let used = cpu_time(me).unwrap() - before;
+            assert!(used > Duration::from_millis(10) && used < Duration::from_secs(5), "{used:?}");
         }
         if cfg!(target_os = "macos") {
             assert!(imp::responsible_pid(std::process::id()).is_some(), "responsibility SPI resolved");

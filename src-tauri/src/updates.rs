@@ -11,6 +11,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
+/// Tauri patches the installer copies; the raw exe shipped in the portable zip keeps no bundle type.
+pub fn portable_target(os: &str, arch: &str, bundle: Option<tauri::utils::config::BundleType>) -> Option<String> {
+    (os == "windows" && bundle.is_none()).then(|| format!("windows-{arch}-portable"))
+}
+
 #[derive(Default)]
 pub struct Updates {
     started: AtomicBool,
@@ -134,11 +139,14 @@ fn announce_available(app: &AppHandle) {
         return;
     }
     let state = app.state::<AppState>();
+    // Asking a window whether it is focused waits for the main thread, where
+    // `app_update_window_ready` takes `ready`: never hold the lock across it.
+    let focused = crate::windows::target_window(app);
+    let live = crate::windows::project_window_labels(app);
     let owner = {
         let mut ready = state.updates.ready.lock();
         ready.retain(|label| app.get_webview_window(label).is_some());
-        let focused = crate::windows::target_window(app);
-        ready_owner(focused.as_ref().map(|window| window.label()), &crate::windows::project_window_labels(app), &ready)
+        ready_owner(focused.as_ref().map(|window| window.label()), &live, &ready)
     };
     let Some(owner) = owner else { return };
     let update = {
@@ -162,6 +170,20 @@ fn ready_owner(preferred: Option<&str>, live: &[String], ready: &HashSet<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_unbundled_windows_builds_select_portable_updates() {
+        use tauri::utils::config::BundleType;
+        for arch in ["x86_64", "aarch64"] {
+            assert_eq!(portable_target("windows", arch, None), Some(format!("windows-{arch}-portable")));
+            for bundle in [BundleType::Msi, BundleType::Nsis] {
+                assert_eq!(portable_target("windows", arch, Some(bundle)), None);
+            }
+            for os in ["linux", "macos"] {
+                assert_eq!(portable_target(os, arch, None), None);
+            }
+        }
+    }
 
     #[test]
     fn notifications_only_target_live_owners_that_have_subscribed() {

@@ -4,16 +4,21 @@
  */
 import { activeEditor } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
+import { choosePath } from "@/platform/choosePath";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { maybeEditorService, notifications, projectViewSelection } from "@/workbench/contributions";
 import { promptText } from "./dialogs";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { compareFilesData, displayPath } from "./compareData";
+import { showDirectoryComparison } from "./directoryCompareKind";
+import { commitLineTarget, EXCLUDE_COMMIT_LINES, INCLUDE_COMMIT_LINES, setCommitLineInclusion } from "./hunkInclusion";
 export { compareFilesData, displayPath } from "./compareData";
 import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
-import { baseName } from "./model";
+import { baseName, dirName } from "./model";
 import { tx } from "@/platform/i18n";
+import { readClipboardPlainText } from "@/platform/clipboard";
+import { workflowSettings } from "@/platform/workflowSettings";
 
 function argPath(arg: unknown): string | undefined {
   if (typeof arg === "string") return arg;
@@ -32,13 +37,18 @@ function argPaths(arg: unknown): string[] {
 
 /** Clipboard ↔ the file (editable) or ↔ the editor selection. */
 export function clipboardDiffData(path: string, clipboard: string, selection: string | null): DiffData {
+  const file = baseName(path);
+  const label = selection !== null ? tx`Selection from ${file}` : file;
+  const labelDetail = dirName(displayPath(path));
   return {
     path,
-    title: selection ? tx`Clipboard ↔ ${baseName(path)} (selection)` : tx`Clipboard ↔ ${baseName(path)}`,
-    left: { type: "text", text: clipboard, label: "Clipboard" },
-    right: selection
-      ? { type: "text", text: selection, label: "Selection" }
-      : { type: "worktree", label: displayPath(path) },
+    swappable: true,
+    title: selection !== null ? tx`Clipboard ↔ ${file} (selection)` : tx`Clipboard ↔ ${file}`,
+    left: { type: "text", text: clipboard, label: tx("From Clipboard") },
+    right:
+      selection !== null
+        ? { type: "text", text: selection, label, labelDetail }
+        : { type: "worktree", label, labelDetail },
   };
 }
 
@@ -69,21 +79,32 @@ export function parseTextsArg(arg: unknown): TextsArg | null {
   };
 }
 
+let blankDiffs = 0;
+
+/** Open Blank Diff Window: two empty sides to type or paste into; the editor's selection fills the left one. */
+export function blankDiffData(selection: string | null): DiffData {
+  return {
+    // A path of its own, so each blank diff gets a new tab.
+    path: `blank-diff:${++blankDiffs}`,
+    title: tx("Blank Diff"),
+    left: { type: "text", text: selection ?? "", label: "", editable: true },
+    right: { type: "text", text: "", label: "", editable: true },
+    swappable: true,
+  };
+}
+
 function info(title: string) {
   notifications().notify({ group: "vcs", level: "info", title });
 }
 
 async function pickFile(near: string): Promise<string | null> {
-  if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
   const dir = near.slice(0, near.lastIndexOf("/")) || undefined;
-  const picked = await open({ multiple: false, directory: false, title: "Compare With", defaultPath: dir });
-  return (Array.isArray(picked) ? picked[0] : picked) ?? null;
+  return choosePath({ directory: false, title: tx("Compare With"), defaultPath: dir });
 }
 
 /**
- * The file to compare `path` against: the OS file dialog on the desktop; a
- * browser file picker's contents elsewhere (remote development / `pnpm dev`),
+ * The file to compare `path` against: a project-host path in the app; a
+ * browser file picker's contents in the browser build,
  * compared as text since no absolute path is available to the backend.
  */
 async function pickComparison(
@@ -111,11 +132,6 @@ async function pickComparison(
 
 const contextPath = (arg: unknown) => argPath(arg) ?? maybeEditorService()?.activePath() ?? undefined;
 
-async function showDirectories(left: string, right: string) {
-  const { showDirectoryComparison } = await import("./DirectoryCompare");
-  showDirectoryComparison(left, right);
-}
-
 async function isDirectory(path: string): Promise<boolean> {
   try {
     return (await call(commands.fsEntryKind(path))) === "dir";
@@ -129,7 +145,7 @@ async function pickDirectory(near: string): Promise<string | null> {
     const picked = await promptText({ title: "Compare With", label: "Directory path", initial: near, mono: true });
     return picked?.value ?? null;
   }
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ multiple: false, directory: true, title: tx("Compare With"), defaultPath: near });
   return (Array.isArray(picked) ? picked[0] : picked) ?? null;
 }
@@ -165,6 +181,22 @@ export function registerCompareActions(): () => void {
       when: "diffEditorFocus",
       run: () => focusedDiffNavigator()?.prev(),
     },
+    ...(
+      [
+        [INCLUDE_COMMIT_LINES, "Include Selected Lines in Commit", true],
+        [EXCLUDE_COMMIT_LINES, "Exclude Selected Lines from Commit", false],
+      ] as const
+    ).map(([id, title, include]) => ({
+      id,
+      title,
+      category: "Git",
+      hidden: true,
+      enabled: ({ arg }: { arg?: unknown }) => !!commitLineTarget(arg, include),
+      run: ({ arg }: { arg?: unknown }) => {
+        const target = commitLineTarget(arg, include);
+        if (target) setCommitLineInclusion(target.path, target.view, target.selection, include);
+      },
+    })),
     {
       id: "diff.showSettings",
       title: "Diff Settings",
@@ -173,6 +205,58 @@ export function registerCompareActions(): () => void {
       keywords: ["ignore whitespace", "highlighting", "side-by-side", "unified"],
       when: "diffEditorFocus",
       run: () => focusedDiffNavigator()?.showSettings(),
+    },
+    {
+      // Diff.FocusOppositePane; it beats the Switcher's ⌃⇧⇥ while a side-by-side diff is focused.
+      id: "diff.focusOppositePane",
+      title: "Select Opposite Diff Pane",
+      category: "Diff",
+      when: "diffEditorFocus",
+      keyWhen: "diffEditorFocus && !popupOpen",
+      enabled: () => (focusedDiffNavigator()?.viewer?.()?.panes().length ?? 0) > 1,
+      run: () => void focusedDiffNavigator()?.focusOpposite(),
+    },
+    {
+      // CloseDiffEditor: Esc in a diff tab that nothing in the diff takes (see DiffEditor).
+      id: "diff.closeEditor",
+      title: "Close Diff Editor",
+      category: "Diff",
+      when: "diffEditorFocus",
+      run: () => void focusedDiffNavigator()?.close(),
+    },
+    {
+      id: "diff.swapSides",
+      title: "Swap Sides",
+      description: "Swaps the left and right sides of the diff",
+      category: "Diff",
+      icon: "swap-panels",
+      when: "diffEditorFocus",
+      run: () => void focusedDiffNavigator()?.swapSides(),
+    },
+    {
+      id: "diff.showInExternalTool",
+      title: "Show Diff in External Tool",
+      category: "Diff",
+      icon: "external-tools",
+      when: "diffEditorFocus",
+      enabled: () => {
+        const { enabled, path } = workflowSettings().externalDiff;
+        return enabled && !!path;
+      },
+      run: () => void focusedDiffNavigator()?.showInExternalTool(),
+    },
+    {
+      id: "diff.openBlankDiff",
+      title: "Open Blank Diff Window",
+      description: "Opens two editors side by side to compare their content",
+      category: "Diff",
+      icon: "diff",
+      keywords: ["empty diff", "new diff", "compare text", "paste"],
+      run: () => {
+        const ed = activeEditor();
+        const sel = ed?.view.state.selection.main;
+        return openDiff(blankDiffData(sel && !sel.empty ? ed!.view.state.sliceDoc(sel.from, sel.to) : null));
+      },
     },
     {
       id: "diff.nextFile",
@@ -231,19 +315,20 @@ export function registerCompareActions(): () => void {
           const other = await pickDirectory(path);
           if (!other || other === path) return;
           if (!(await isDirectory(other))) return info("Select a directory to compare");
-          await showDirectories(path, other);
+          showDirectoryComparison(path, other);
           return;
         }
         const other = await pickComparison(path);
         if (!other) return;
         if (other.type === "file") {
           if (other.path === path) return;
-          await openVcsDiff(compareFilesData(path, other.path));
+          await openVcsDiff({ ...compareFilesData(path, other.path), swappable: true });
         } else {
           await openVcsDiff({
             path,
             left: { type: "text", text: other.text, label: other.label },
             right: { type: "worktree", label: displayPath(path) },
+            swappable: true,
           });
         }
       },
@@ -259,7 +344,7 @@ export function registerCompareActions(): () => void {
         const paths = arg === undefined ? projectViewSelection() : argPaths(arg);
         if (paths.length !== 2 || !(await isDirectory(paths[0]!)) || !(await isDirectory(paths[1]!)))
           return info("Select two directories to compare");
-        await showDirectories(paths[0]!, paths[1]!);
+        showDirectoryComparison(paths[0]!, paths[1]!);
       },
     },
     {
@@ -271,7 +356,7 @@ export function registerCompareActions(): () => void {
       run: async ({ arg }) => {
         const paths = argPaths(arg).filter((p) => !p.endsWith("/"));
         if (paths.length !== 2) return info("Select two files to compare");
-        await openVcsDiff(compareFilesData(paths[0]!, paths[1]!));
+        await openVcsDiff({ ...compareFilesData(paths[0]!, paths[1]!), swappable: true });
       },
     },
     {
@@ -285,7 +370,7 @@ export function registerCompareActions(): () => void {
         if (!path) return info("Open or select a file to compare with the clipboard");
         let clipboard: string;
         try {
-          clipboard = (await navigator.clipboard?.readText()) ?? "";
+          clipboard = await readClipboardPlainText();
         } catch {
           return info("The clipboard could not be read");
         }

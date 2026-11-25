@@ -8,6 +8,7 @@ vi.mock("./candidateFonts", () => ({ detectCandidateFonts: detect }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: native }));
 vi.mock("@/bindings", () => ({ commands: { systemFontFamilies: discover } }));
 import { bundledFonts, loadSystemFonts, useSystemFontStore } from "./systemFonts";
+import { nerdFontFaces } from "./fonts";
 
 beforeEach(() => {
   native.mockReturnValue(true);
@@ -48,6 +49,14 @@ describe("local font discovery", () => {
     expect(useSystemFontStore.getState()).toMatchObject({ status: "empty", source: "native" });
     expect(detect).not.toHaveBeenCalled();
     expect(useSystemFontStore.getState().fonts).toEqual([bundledFonts[1], bundledFonts[0]]);
+  });
+  it("knows the installed Nerd Fonts by the time subscribers hear of the catalog", async () => {
+    discover.mockResolvedValue({ status: "ok", data: [{ name: "Maple Mono NF CN", monospaced: true }] });
+    let seen: string[] = [];
+    const off = useSystemFontStore.subscribe(() => (seen = nerdFontFaces()));
+    await loadSystemFonts();
+    off();
+    expect(seen.some((face) => face.includes("Maple Mono NF CN"))).toBe(true);
   });
   it("reports errors without losing suggestions, then retries", async () => {
     discover.mockResolvedValueOnce({ status: "error", error: { kind: "unavailable", message: "Unavailable" } });

@@ -9,6 +9,7 @@ import { useDebug } from "../state";
 const ipc = vi.hoisted(() => ({
   javaResolveLaunch: vi.fn(),
   cancelRequest: vi.fn(async () => undefined),
+  javaDebugAdapter: vi.fn(async () => ({ status: "ok", data: "java-debug" })),
   javaDebugServer: vi.fn(async () => ({ status: "ok", data: 5005 })),
   debugStart: vi.fn(async () => ({ status: "ok", data: 42 })),
   debugStop: vi.fn(async () => ({ status: "ok", data: null })),

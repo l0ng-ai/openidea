@@ -1,4 +1,5 @@
 //! Window-owned snapshots. A project close drops every report from that window.
+use ide_command::command;
 use ide_core::{Diagnostic, IpcPath, Range};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -134,6 +135,37 @@ impl Reports {
     }
 }
 
+#[command(trust = trusted)]
+pub fn mcp_set_open_editors(host: &crate::Host, window: &str, paths: Vec<IpcPath>) -> ide_core::IdeResult<()> {
+    host.project(window)?;
+    host.mcp_reports.set_open_editors(window, paths.into_iter().map(PathBuf::from).collect());
+    Ok(())
+}
+
+#[command(trust = trusted)]
+pub fn mcp_set_focused_editor(
+    host: &crate::Host,
+    window: &str,
+    editor: Option<FocusedEditor>,
+    focused: bool,
+) -> ide_core::IdeResult<()> {
+    host.project(window)?;
+    host.mcp_reports.set_focused_editor(window, editor, focused);
+    Ok(())
+}
+
+#[command(trust = trusted)]
+pub fn mcp_report_problems(
+    host: &crate::Host,
+    window: &str,
+    reset: bool,
+    files: Vec<FileProblems>,
+) -> ide_core::IdeResult<()> {
+    host.project(window)?;
+    host.mcp_reports.report_problems(window, reset, files);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,3 +186,10 @@ mod tests {
         assert_eq!(windows, ["a", "b", "never", "c"]);
     }
 }
+
+ide_command::domain!(
+    mcp_reports:
+    mcp_report_problems,
+    mcp_set_focused_editor,
+    mcp_set_open_editors,
+);

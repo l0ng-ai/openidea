@@ -26,6 +26,7 @@ pub(crate) mod bindings {
             "openidea:plugin/tasks.task": super::TaskRes,
             "openidea:plugin/process.child": super::ChildRes,
             "openidea:plugin/ipc.connection": super::ConnectionRes,
+            "openidea:plugin/net.websocket": super::WebSocketRes,
             "openidea:plugin/auth.loopback": super::LoopbackRes,
         },
     });
@@ -47,6 +48,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -58,6 +60,87 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
             "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
+            "openidea:plugin/views": super::bindings::openidea::plugin::views,
+            "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
+        },
+    });
+}
+
+/// The optional `hover-actions` export, bound on its own when present.
+pub(crate) mod hover_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "plugin-hover-actions",
+        path: "../../wit",
+        imports: { default: trappable },
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/log": super::bindings::openidea::plugin::log,
+            "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
+            "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+            "openidea:plugin/events": super::bindings::openidea::plugin::events,
+            "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/net": super::bindings::openidea::plugin::net,
+            "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+            "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
+            "openidea:plugin/views": super::bindings::openidea::plugin::views,
+            "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
+        },
+    });
+}
+
+/// The optional `completion-list-provider` export (API 1.16), bound on its own when present.
+pub(crate) mod completion_list_bindings {
+    wasmtime::component::bindgen!({
+        world: "plugin-completion-list",
+        path: "../../wit",
+        imports: { default: trappable },
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/log": super::bindings::openidea::plugin::log,
+            "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
+            "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+            "openidea:plugin/events": super::bindings::openidea::plugin::events,
+            "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/net": super::bindings::openidea::plugin::net,
+            "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+            "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
@@ -85,6 +168,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -96,6 +180,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
             "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
@@ -123,6 +208,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -134,6 +220,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
             "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
@@ -146,8 +233,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets, settings,
-    storage, tasks, types as wit, ui, vcs, views, workspace,
+    build, commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets,
+    settings, storage, tasks, types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -160,6 +247,19 @@ pub struct ProjectRes {
 pub struct ChildRes {
     id: u64,
     host: std::sync::Arc<dyn crate::HostApi>,
+}
+
+/// A project-bound background WebSocket owned by this plugin instance.
+/// Releasing the component resource closes the underlying transport.
+pub struct WebSocketRes {
+    id: u64,
+    host: std::sync::Arc<dyn crate::HostApi>,
+}
+
+impl Drop for WebSocketRes {
+    fn drop(&mut self) {
+        self.host.websocket_close(self.id);
+    }
 }
 
 impl Drop for ChildRes {
@@ -183,10 +283,14 @@ pub struct TaskRes {
 const MAX_EDITS: usize = 10_000;
 const MAX_DIAGNOSTICS: usize = 5_000;
 const MAX_REQUEST_BODY: usize = 8 << 20;
+/// Upper bound for a WebSocket handshake; the call's remaining time can make it shorter.
+const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_FIND: u32 = 10_000;
 const MAX_STATUS_TEXT: usize = 128;
 const MAX_PICK_ITEMS: usize = 5000;
 const MAX_PICK_KEY: usize = 256;
+/// Filters of a `ui.pick-file` dialog, and extensions of each.
+const MAX_FILE_FILTERS: usize = 32;
 const MAX_ARGS: usize = 256;
 const MAX_ARG_BYTES: usize = 4096;
 const MAX_ENV: usize = 64;
@@ -251,11 +355,11 @@ impl StoreData {
 
     /// `path` as the real path an `fs.read:…` grant covers, or what the plugin
     /// should be told instead (`denied` naming the capability to declare).
+    /// The private plugin-dir and the install directory are readable without a
+    /// grant; writing still needs `fs.write` or the private dir.
     fn granted_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
         let mut granted = self.granted.clone();
-        if let Ok(dir) = self.host.plugin_dir() {
-            granted.push(Capability::FsRead(to_ipc(&dir)));
-        }
+        granted.extend(self.builtin_read_roots());
         sandbox::resolve_granted(&granted, path).map_err(Into::into)
     }
 
@@ -267,6 +371,19 @@ impl StoreData {
             granted.push(Capability::FsWrite(to_ipc(&dir)));
         }
         sandbox::resolve_writable(&granted, path).map_err(Into::into)
+    }
+
+    /// Private plugin-dir and install directory: readable without an `fs.read`
+    /// grant; `editor.open` / `open-location` may use them without project.read.
+    fn builtin_read_roots(&self) -> Vec<Capability> {
+        let mut roots = Vec::new();
+        if let Ok(dir) = self.host.plugin_dir() {
+            roots.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        if let Ok(dir) = self.host.install_dir() {
+            roots.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        roots
     }
 
     fn client(&self) -> Option<&str> {
@@ -304,6 +421,17 @@ impl log::Host for StoreData {
 }
 
 impl StoreData {
+    fn pick_path(&mut self, prompt: Prompt) -> Fallible<Option<String>> {
+        let answer = self.ask(prompt);
+        Ok(answer.and_then(|answer| {
+            let path = answer.and_then(|items| items.into_iter().next());
+            if let Some(path) = &path {
+                validate_ui_path(path)?;
+            }
+            Ok(path)
+        }))
+    }
+
     /// Asks the user and waits; the wait doesn't count against the call's
     /// wall-clock budget.
     fn ask(&mut self, prompt: Prompt) -> Result<Option<Vec<String>>, wit::Error> {
@@ -331,7 +459,7 @@ impl StoreData {
     /// their window; background and scheduled calls ask nobody, so only an
     /// already-allowed host connects there.
     fn ask_net(&mut self, host: &str) -> Result<Option<bool>, wit::Error> {
-        let client = self.net_interactive.then(|| self.invocation.client.clone()).flatten();
+        let client = self.user_invoked.then(|| self.invocation.client.clone()).flatten();
         let subject = self.subject.clone();
         let started = Instant::now();
         let answer = self.host.net_ask(&subject, client.as_deref(), host, &self.cancel.token());
@@ -365,6 +493,22 @@ impl StoreData {
         self.ask(Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple })
     }
 
+    /// A status item with its checked menu (`ui.set-status-item-menu`).
+    fn status_item_with_menu(
+        &self,
+        item: ui::StatusItem,
+        menu: Vec<ui::StatusMenuEntry>,
+    ) -> Result<StatusItem, wit::Error> {
+        let menu = status_menu(menu)?;
+        self.host.check_status_menu(&menu).map_err(to_wit)?;
+        Ok(StatusItem {
+            text: clip(item.text, MAX_STATUS_TEXT),
+            tooltip: item.tooltip.map(|t| clip(t, 1024)),
+            command: item.command.map(|c| clip(c, 128)),
+            menu,
+        })
+    }
+
     fn require_window(&self) -> Result<(), wit::Error> {
         self.require_interactive()?;
         if self.invocation.client.is_none() {
@@ -380,6 +524,47 @@ impl StoreData {
         }
         Err(wit::Error::Invalid("can only ask the user from a command or event".into()))
     }
+}
+
+/// Checks a status item's menu (`ui.set-status-item-menu`); the host checks that its commands are declared.
+fn status_menu(entries: Vec<ui::StatusMenuEntry>) -> Result<Vec<crate::StatusMenuEntry>, wit::Error> {
+    const MAX_ENTRIES: usize = 64;
+    if entries.len() > MAX_ENTRIES {
+        return Err(wit::Error::Invalid(format!("a status item menu has at most {MAX_ENTRIES} entries")));
+    }
+    let line = |text: &str, what: &str| {
+        if text.trim().is_empty() || text.len() > 256 || text.chars().any(char::is_control) {
+            Err(wit::Error::Invalid(format!("invalid menu {what} {text:?}")))
+        } else {
+            Ok(())
+        }
+    };
+    let mut checked = Vec::with_capacity(entries.len());
+    for entry in entries {
+        checked.push(match entry {
+            ui::StatusMenuEntry::Action(a) => {
+                line(&a.label, "label")?;
+                if let Some(description) = &a.description {
+                    line(description, "description")?;
+                }
+                if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+                    return Err(wit::Error::Invalid("a menu argument is limited to 64 KiB".into()));
+                }
+                crate::StatusMenuEntry::Action {
+                    label: a.label,
+                    description: a.description,
+                    command: a.command,
+                    argument: a.argument,
+                }
+            }
+            ui::StatusMenuEntry::Separator => crate::StatusMenuEntry::Separator,
+            ui::StatusMenuEntry::Header(label) => {
+                line(&label, "header")?;
+                crate::StatusMenuEntry::Header { label }
+            }
+        });
+    }
+    Ok(checked)
 }
 
 /// Checks `ui.notify` buttons; the host checks that their commands are declared.
@@ -451,6 +636,7 @@ impl ui::Host for StoreData {
             text: clip(item.text, MAX_STATUS_TEXT),
             tooltip: item.tooltip.map(|t| clip(t, 1024)),
             command: item.command.map(|c| clip(c, 128)),
+            menu: Vec::new(),
         };
         self.host.status_item(&clip(id, 64), Some(item));
         Ok(())
@@ -469,6 +655,38 @@ impl ui::Host for StoreData {
             text: clip(item.text, MAX_STATUS_TEXT),
             tooltip: item.tooltip.map(|t| clip(t, 1024)),
             command: item.command.map(|c| clip(c, 128)),
+            menu: Vec::new(),
+        };
+        Ok(self
+            .host
+            .window_status_item(self.invocation.client.as_deref().expect("checked"), &clip(id, 64), Some(item))
+            .map_err(to_wit))
+    }
+    fn set_status_item_menu(
+        &mut self,
+        id: String,
+        item: ui::StatusItem,
+        menu: Vec<ui::StatusMenuEntry>,
+    ) -> Fallible<()> {
+        let item = match self.status_item_with_menu(item, menu) {
+            Ok(item) => item,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.host.status_item(&clip(id, 64), Some(item));
+        Ok(Ok(()))
+    }
+    fn set_window_status_item_menu(
+        &mut self,
+        id: String,
+        item: ui::StatusItem,
+        menu: Vec<ui::StatusMenuEntry>,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let item = match self.status_item_with_menu(item, menu) {
+            Ok(item) => item,
+            Err(e) => return Ok(Err(e)),
         };
         Ok(self
             .host
@@ -483,6 +701,21 @@ impl ui::Host for StoreData {
             .host
             .window_status_item(self.invocation.client.as_deref().expect("checked"), &clip(id, 64), None)
             .map_err(to_wit))
+    }
+    fn set_console_rules(&mut self, rules: Vec<ui::ConsoleRule>) -> Fallible<()> {
+        let rules = rules
+            .into_iter()
+            .map(|r| crate::ConsoleRule {
+                pattern: r.pattern,
+                ignore_case: r.ignore_case,
+                foreground: r.foreground,
+                background: r.background,
+                styles: r.styles,
+                whole_line: r.whole_line,
+                enabled: r.enabled,
+            })
+            .collect();
+        Ok(self.host.console_rules(rules).map_err(to_wit))
     }
     fn set_context(&mut self, key: String, value: ui::ContextValue) -> Fallible<()> {
         let valid_key =
@@ -522,6 +755,37 @@ impl ui::Host for StoreData {
         Ok(self.host.copy_to_clipboard(client.as_deref(), clip(text, crate::runtime::MAX_TEXT)).map_err(to_wit))
     }
 
+    fn read_clipboard(&mut self) -> Fallible<ui::ClipboardContent> {
+        if let Err(e) = self.require(Capability::ClipboardRead) {
+            return Ok(Err(e));
+        }
+        // Never unattended: not from an event handler, a web view message or a command
+        // another plugin ran through `command-runner` (its chain is not empty).
+        let client = match &self.invocation.client {
+            Some(client) if self.user_invoked && self.invocation.command_chain.is_empty() => client.clone(),
+            _ => {
+                let why = "clipboard.read (only in a command or view action the user ran)";
+                return Ok(Err(wit::Error::Denied(why.into())));
+            }
+        };
+        let started = Instant::now();
+        let content = self.host.read_clipboard(&client, &self.cancel.token());
+        // The window may ask the user first: the wait doesn't count against the call's budget.
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        let content = match content {
+            Ok(content) => content,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        let max = crate::runtime::MAX_CLIPBOARD_BYTES;
+        if content.text.as_ref().is_some_and(|t| t.len() > max) || content.image.as_ref().is_some_and(|i| i.len() > max)
+        {
+            return Ok(Err(wit::Error::Failed(format!("the clipboard holds more than {} MiB", max >> 20))));
+        }
+        Ok(Ok(ui::ClipboardContent { text: content.text, image: content.image }))
+    }
+
     fn open_url(&mut self, url: String) -> Fallible<()> {
         let trimmed = url.trim();
         let valid = (trimmed.starts_with("https://") || trimmed.starts_with("http://")) && trimmed.len() <= 8192;
@@ -543,14 +807,27 @@ impl ui::Host for StoreData {
         {
             return Ok(Err(error));
         }
-        let answer = self.ask(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial });
-        Ok(answer.and_then(|answer| {
-            let path = answer.and_then(|items| items.into_iter().next());
-            if let Some(path) = &path {
-                validate_ui_path(path)?;
-            }
-            Ok(path)
-        }))
+        self.pick_path(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial })
+    }
+
+    fn pick_file(&mut self, title: String, dialog: ui::FileDialog) -> Fallible<Option<String>> {
+        let filters = dialog
+            .filters
+            .into_iter()
+            .take(MAX_FILE_FILTERS)
+            .map(|f| crate::PluginFileFilter {
+                name: clip(f.name, MAX_TITLE),
+                extensions: f.extensions.into_iter().take(MAX_FILE_FILTERS).map(|e| clip(e, MAX_PICK_KEY)).collect(),
+            })
+            .collect();
+        // A suggested file name only: the dialog starts where the user last was, never at a
+        // directory the plugin names.
+        let name = dialog
+            .name
+            .and_then(|n| n.rsplit(['/', '\\']).next().map(str::to_owned))
+            .filter(|n| !n.is_empty() && n != "." && n != "..")
+            .map(|n| clip(n, MAX_TITLE));
+        self.pick_path(Prompt::PickFile { title: clip(title, MAX_TITLE), save: dialog.save, name, filters })
     }
 
     fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
@@ -686,7 +963,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(e));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_in_root(&root, &path) {
+        let real = match self.resolve_in_project(&root, &path) {
             Ok(real) => real,
             Err(e) => {
                 let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
@@ -704,7 +981,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(e));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_in_root(&root, &path) {
+        let real = match self.resolve_in_project(&root, &path) {
             Ok(real) => real,
             Err(e) => {
                 let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
@@ -720,15 +997,20 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(e));
         }
         let root = self.table.get(&this)?.root.clone();
-        match sandbox::inside_root(&root, &path) {
+        match self.inside_project(&root, &path) {
             Err(e) => Ok(Err(wit::Error::Invalid(e))),
             Ok(false) => {
                 Ok(Err(wit::Error::Invalid(format!("{path}: access outside the project root is not allowed"))))
             }
             Ok(true) => {
                 let requested = Path::new(&path);
-                let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
-                Ok(Ok(joined.exists()))
+                let joined =
+                    |root: &Path| if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+                let mut exists = joined(&root).exists();
+                if !exists && !requested.is_absolute() {
+                    exists = self.host.member_roots(&root).iter().any(|root| joined(root).exists());
+                }
+                Ok(Ok(exists))
             }
         }
     }
@@ -738,7 +1020,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(e));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_in_root(&root, &path) {
+        let real = match self.resolve_in_project(&root, &path) {
             Ok(real) => real,
             Err(e) => {
                 let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
@@ -797,7 +1079,7 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(too_much_to_write(&path)));
         }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_writable_in_root(&root, &path) {
+        let real = match self.resolve_writable_in_project(&root, &path) {
             Ok(real) => real,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
@@ -817,6 +1099,52 @@ impl workspace::HostProject for StoreData {
 }
 
 impl editor::Host for StoreData {
+    fn document_at(&mut self, project: Resource<ProjectRes>, path: String) -> Fallible<editor::Document> {
+        if let Err(error) = self.require(Capability::ProjectRead).and_then(|_| self.require(Capability::EditorRead)) {
+            return Ok(Err(error));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        let path = match self.resolve_in_project(&root, &path) {
+            Ok(path) => path,
+            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
+        };
+        Ok(match self.host.document(&path) {
+            Some((version, text)) => Ok(editor::Document { version, text }),
+            None => Err(wit::Error::NotFound(format!("{} is not open", path.display()))),
+        })
+    }
+
+    fn apply_edits_at(
+        &mut self,
+        project: Resource<ProjectRes>,
+        path: String,
+        version: u64,
+        edits: Vec<wit::TextEdit>,
+    ) -> Fallible<u64> {
+        if let Err(error) = self.require(Capability::ProjectRead).and_then(|_| self.require(Capability::EditorWrite)) {
+            return Ok(Err(error));
+        }
+        if edits.len() > MAX_EDITS {
+            return Ok(Err(wit::Error::Invalid(format!("more than {MAX_EDITS} edits"))));
+        }
+        if edits.iter().map(|edit| edit.text.len()).sum::<usize>() > crate::runtime::MAX_TEXT * 8 {
+            return Ok(Err(wit::Error::Invalid("edits too large".into())));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        let path = match self.resolve_background_document_in_project(&root, &path) {
+            Ok(path) => path,
+            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
+        };
+        let edits = edits
+            .into_iter()
+            .map(|edit| ide_core::TextEdit {
+                range: ide_core::Range::new(pos(edit.range.start), pos(edit.range.end)),
+                new_text: edit.text,
+            })
+            .collect();
+        Ok(self.host.apply_edits(None, &path, version, edits).map_err(to_wit))
+    }
+
     fn open_editors(&mut self) -> Fallible<Vec<editor::OpenEditor>> {
         if let Err(e) = self.require(Capability::EditorRead).and_then(|_| self.require_window()) {
             return Ok(Err(e));
@@ -852,7 +1180,37 @@ impl editor::Host for StoreData {
 fn core_range(r: wit::Range) -> ide_core::Range {
     ide_core::Range::new(pos(r.start), pos(r.end))
 }
+
 impl StoreData {
+    /// A `project` resource's path: inside the resource's root, or — for a
+    /// project window group — inside any of its member roots (as the editor and
+    /// LSP resolve them). When no root accepts the path, the resource root's own
+    /// refusal is the error, as if there were no members.
+    fn resolve_in_project(&self, root: &Path, path: &str) -> Result<PathBuf, String> {
+        sandbox::resolve_in_root(root, path).or_else(|root_error| {
+            sandbox::resolve_in_roots(&self.host.member_roots(root), path).map_err(|_| root_error)
+        })
+    }
+    /// [`Self::resolve_in_project`] for a content write's destination.
+    fn resolve_writable_in_project(&self, root: &Path, path: &str) -> Result<PathBuf, String> {
+        sandbox::resolve_writable_in_root(root, path).or_else(|root_error| {
+            sandbox::resolve_writable_in_roots(&self.host.member_roots(root), path).map_err(|_| root_error)
+        })
+    }
+    /// A background document edit is the only plugin operation that changes an
+    /// editor on behalf of a remote peer.  It therefore rejects links and IDE
+    /// control directories instead of using the normal read resolver.
+    fn resolve_background_document_in_project(&self, root: &Path, path: &str) -> Result<PathBuf, String> {
+        sandbox::resolve_background_document_in_root(root, path).or_else(|root_error| {
+            sandbox::resolve_background_document_in_roots(&self.host.member_roots(root), path).map_err(|_| root_error)
+        })
+    }
+    /// Whether a `project` resource's path lands inside the resource's root or
+    /// any member of its workspace group, without requiring it to exist.
+    fn inside_project(&self, root: &Path, path: &str) -> Result<bool, String> {
+        sandbox::inside_root(root, path)
+            .or_else(|root_error| sandbox::inside_roots(&self.host.member_roots(root), path).map_err(|_| root_error))
+    }
     fn decoration_path(&self, path: &str) -> Result<PathBuf, wit::Error> {
         if Path::new(path).is_absolute() {
             return Ok(PathBuf::from(path));
@@ -865,9 +1223,7 @@ impl StoreData {
         sandbox::resolve_in_root(root, path).map_err(wit::Error::Invalid)
     }
     fn openable_path(&self, path: &str) -> Result<PathBuf, wit::Error> {
-        if let Ok(dir) = self.host.plugin_dir()
-            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], path)
-        {
+        if let Ok(real) = sandbox::resolve_granted(&self.builtin_read_roots(), path) {
             return Ok(real);
         }
         self.require(Capability::ProjectRead)?;
@@ -1090,6 +1446,72 @@ impl vcs::Host for StoreData {
         let root = self.table.get(&project)?.root.clone();
         Ok(self.host.vcs_remotes(&root).map_err(to_wit))
     }
+
+    fn roots(&mut self, project: Resource<ProjectRes>) -> Fallible<Vec<String>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        Ok(self.host.vcs_roots(&self.table.get(&project)?.root).map_err(to_wit))
+    }
+
+    fn repository_at(&mut self, project: Resource<ProjectRes>, path: String) -> Fallible<Option<vcs::RepositoryInfo>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        Ok(self
+            .host
+            .vcs_repository_at(&self.table.get(&project)?.root, &path)
+            .map(|r| {
+                r.map(|r| vcs::RepositoryInfo {
+                    root: r.root,
+                    relative_path: r.relative_path,
+                    branch: r.branch,
+                    commit: r.commit,
+                    upstream: r.upstream,
+                    ahead: r.ahead,
+                    remotes: r.remotes,
+                })
+            })
+            .map_err(to_wit))
+    }
+}
+
+impl build::Host for StoreData {
+    fn dependencies(
+        &mut self,
+        project: Resource<ProjectRes>,
+        module: Option<String>,
+    ) -> Fallible<Vec<build::DependencyNode>> {
+        if let Err(e) = self.require(Capability::BuildRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self
+            .host
+            .build_dependencies(&root, module.as_deref())
+            .map(|nodes| {
+                nodes
+                    .into_iter()
+                    .map(|n| build::DependencyNode {
+                        group: n.group,
+                        artifact: n.artifact,
+                        version: n.version,
+                        scope: n.scope,
+                        status: match n.status {
+                            crate::DependencyStatus::Resolved => build::DependencyStatus::Resolved,
+                            crate::DependencyStatus::OmittedForConflict => build::DependencyStatus::OmittedForConflict,
+                            crate::DependencyStatus::OmittedForDuplicate => {
+                                build::DependencyStatus::OmittedForDuplicate
+                            }
+                            crate::DependencyStatus::VersionManaged => build::DependencyStatus::VersionManaged,
+                        },
+                        requested_version: n.requested_version,
+                        parent: n.parent,
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
+    }
 }
 
 impl commit::Host for StoreData {
@@ -1170,6 +1592,11 @@ impl events::Host for StoreData {
         {
             return Ok(Err(to_wit(e)));
         }
+        if kind == EventKind::DocumentChanged {
+            return Ok(Err(wit::Error::Invalid(
+                "document-changed is delivered only for paths named with subscribe-paths".into(),
+            )));
+        }
         if let Some(cap) = kind.capability()
             && let Err(e) = self.require(cap)
         {
@@ -1182,6 +1609,14 @@ impl events::Host for StoreData {
     fn subscribe_paths(&mut self, kind: String, globs: Vec<String>) -> Fallible<()> {
         if let Err(e) = self.require(Capability::Events) {
             return Ok(Err(e));
+        }
+        if kind == EventKind::DocumentChanged.name() {
+            if let Err(e) = self.host.require_api(&kind, 6) {
+                return Ok(Err(to_wit(e)));
+            }
+            if let Err(e) = self.require(Capability::ProjectRead).and_then(|_| self.require(Capability::EditorRead)) {
+                return Ok(Err(e));
+            }
         }
         Ok(self.host.subscribe_paths(&kind, globs).map_err(to_wit))
     }
@@ -1241,6 +1676,11 @@ impl tasks::HostTask for StoreData {
     }
 }
 
+/// Headroom reserved before `StoreData::deadline` so a timed-out host subprocess
+/// or HTTP request can unwind as a recoverable `wit::Error` in guest code instead
+/// of immediately tripping the Wasm epoch trap on re-entry.
+const HOST_IO_UNWIND_GRACE: Duration = Duration::from_millis(250);
+
 impl StoreData {
     /// Lets the running call reach `from` plus the background budget (the
     /// longer of it and what was left), so a task that keeps saying it is alive
@@ -1251,12 +1691,36 @@ impl StoreData {
             self.deadline = extended;
             self.timeout = self.limits.background;
         }
+        let scale = (self.limits.background.as_millis() / self.limits.timeout.as_millis().max(1)).max(1) as u64;
+        self.active_fuel = self.limits.fuel.saturating_mul(scale);
     }
 
     /// What is left of the running call's wall-clock budget (host operations
     /// can't be interrupted by the epoch callback, so they get this as timeout).
     fn remaining(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    /// Budget handed to a blocking host I/O call (`process.run`, `net.fetch`),
+    /// leaving room before `self.deadline` when possible so a timed-out I/O call
+    /// returns `Err` to the guest instead of trapping the Wasm instance.
+    fn io_timeout(&self) -> Duration {
+        let rem = self.remaining();
+        if !self.host_io_grace_used && rem > HOST_IO_UNWIND_GRACE * 2 { rem - HOST_IO_UNWIND_GRACE } else { rem }
+    }
+
+    /// Grants at most one short unwind window per call when a blocking host I/O
+    /// call failed at or near `self.deadline` without caller cancellation. An
+    /// error well before the deadline leaves the window for a later call.
+    fn grant_io_error_grace(&mut self) {
+        if self.host_io_grace_used || self.cancel.is_set() {
+            return;
+        }
+        let min_deadline = Instant::now() + HOST_IO_UNWIND_GRACE;
+        if min_deadline > self.deadline {
+            self.deadline = min_deadline;
+            self.host_io_grace_used = true;
+        }
     }
 }
 
@@ -1345,19 +1809,85 @@ impl net::Host for StoreData {
             url: req.url,
             headers: req.headers.into_iter().map(|h| (h.name, h.value)).collect(),
             body: req.body,
-            timeout: wanted.min(self.remaining()),
+            timeout: wanted.min(self.io_timeout()),
             grants,
         };
         let token = self.cancel.token();
-        Ok(self
-            .host
-            .fetch(request, &token)
+        let outcome = self.host.fetch(request, &token);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome
             .map(|r| net::Response {
                 status: r.status,
                 headers: r.headers.into_iter().map(|(name, value)| net::Header { name, value }).collect(),
                 body: r.body,
             })
             .map_err(to_wit))
+    }
+
+    fn websocket_connect(
+        &mut self,
+        project: Resource<ProjectRes>,
+        req: net::WebsocketRequest,
+    ) -> Fallible<Resource<WebSocketRes>> {
+        let capability = match crate::types::websocket_capability(&req.url) {
+            Ok(capability) => capability,
+            Err(error) => return Ok(Err(wit::Error::Invalid(error))),
+        };
+        if let Err(error) = self.require(capability) {
+            return Ok(Err(error));
+        }
+        if req.headers.iter().any(|header| header.value.contains("{{secret:"))
+            && let Err(error) = self.require(Capability::Secrets)
+        {
+            return Ok(Err(error));
+        }
+        let request = crate::WebSocketRequest {
+            url: req.url,
+            headers: req.headers.into_iter().map(|header| (header.name, header.value)).collect(),
+            subprotocol: req.subprotocol,
+        };
+        let root = self.table.get(&project)?.root.clone();
+        let timeout = WEBSOCKET_HANDSHAKE_TIMEOUT.min(self.io_timeout());
+        match self.host.websocket_connect(&root, request, timeout) {
+            Ok(id) => self.push(WebSocketRes { id, host: self.host.clone() }).map(Ok),
+            Err(error) => {
+                self.grant_io_error_grace();
+                Ok(Err(to_wit(error)))
+            }
+        }
+    }
+}
+
+impl net::HostWebsocket for StoreData {
+    fn id(&mut self, this: Resource<WebSocketRes>) -> wasmtime::Result<u64> {
+        Ok(self.table.get(&this)?.id)
+    }
+
+    fn send(&mut self, this: Resource<WebSocketRes>, bytes: Vec<u8>) -> Fallible<()> {
+        let id = self.table.get(&this)?.id;
+        Ok(self.host.websocket_send(id, bytes).map_err(to_wit))
+    }
+
+    fn drain(&mut self, this: Resource<WebSocketRes>, limit: u32) -> Fallible<net::WebsocketBatch> {
+        let id = self.table.get(&this)?.id;
+        Ok(self
+            .host
+            .websocket_drain(id, limit as usize)
+            .map(|batch| net::WebsocketBatch { messages: batch.messages, closed: batch.closed })
+            .map_err(to_wit))
+    }
+
+    fn close(&mut self, this: Resource<WebSocketRes>) -> Fallible<()> {
+        let id = self.table.get(&this)?.id;
+        self.host.websocket_close(id);
+        Ok(Ok(()))
+    }
+
+    fn drop(&mut self, this: Resource<WebSocketRes>) -> wasmtime::Result<()> {
+        self.table.delete(this)?;
+        Ok(())
     }
 }
 
@@ -1426,6 +1956,10 @@ fn to_output(output: crate::types::ProcessOutput) -> process::Output {
     process::Output { status: output.status, stdout: output.stdout, stderr: output.stderr }
 }
 
+fn to_process_options(opts: process::ProcessOptions) -> crate::types::ProcessOptions {
+    crate::types::ProcessOptions { max_output_bytes: opts.max_output_bytes, buffer_bytes: opts.buffer_bytes }
+}
+
 impl process::Host for StoreData {
     fn run(
         &mut self,
@@ -1440,8 +1974,12 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let token = self.cancel.token();
-        let timeout = self.remaining();
-        Ok(self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout).map(to_output).map_err(to_wit))
+        let timeout = self.io_timeout();
+        let outcome = self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
     }
 
     fn run_command(
@@ -1456,8 +1994,12 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let token = self.cancel.token();
-        let timeout = self.remaining();
-        Ok(self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout).map(to_output).map_err(to_wit))
+        let timeout = self.io_timeout();
+        let outcome = self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
     }
 
     fn start(&mut self, cmd: process::Command, cwd: Option<Resource<ProjectRes>>) -> Fallible<Resource<ChildRes>> {
@@ -1467,6 +2009,47 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let id = match self.host.start_process(cmd, cwd.as_deref(), self.invocation.client.as_deref()) {
+            Ok(id) => id,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        self.push(ChildRes { id, host: self.host.clone() }).map(Ok)
+    }
+
+    fn run_captured(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        stdin: Option<String>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<process::Output> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let token = self.cancel.token();
+        let timeout = self.io_timeout();
+        let opts = options.map(to_process_options);
+        let outcome = self.host.run_process_with_options(cmd, cwd.as_deref(), stdin, &token, timeout, opts);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
+    }
+
+    fn start_stream(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<Resource<ChildRes>> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let opts = options.map(to_process_options);
+        let id = match self.host.start_process_stream(cmd, cwd.as_deref(), self.invocation.client.as_deref(), opts) {
             Ok(id) => id,
             Err(e) => return Ok(Err(to_wit(e))),
         };
@@ -1565,6 +2148,19 @@ impl views::Host for StoreData {
             )
             .map_err(to_wit))
     }
+    fn open_diff(&mut self, diff: views::ContentDiff, file_name: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let diff = crate::FileDiff::from(crate::ContentDiff::from(diff));
+        Ok(self.host.open_diff(self.invocation.client.as_deref().unwrap(), diff, file_name).map_err(to_wit))
+    }
+    fn open_file_diff(&mut self, diff: views::FileDiff, file_name: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        Ok(self.host.open_diff(self.invocation.client.as_deref().unwrap(), diff.into(), file_name).map_err(to_wit))
+    }
     fn reply_content_tab(&mut self, request_id: String, reply: views::ContentTabReply) -> Fallible<()> {
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
@@ -1632,9 +2228,7 @@ impl views::Host for StoreData {
     }
 
     fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
-        if let Ok(dir) = self.host.plugin_dir()
-            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], &path)
-        {
+        if let Ok(real) = sandbox::resolve_granted(&self.builtin_read_roots(), &path) {
             if let Err(e) = self.require_interactive() {
                 return Ok(Err(e));
             }
@@ -1876,6 +2470,18 @@ pub(crate) mod endpoints_bindings {
     });
 }
 
+pub(crate) mod search_bindings {
+    wasmtime::component::bindgen!({
+        world: "search", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
 /// The optional `file-actions` export.
 pub(crate) mod file_actions_bindings {
     wasmtime::component::bindgen!({
@@ -1920,6 +2526,12 @@ impl From<bindings::openidea::plugin::views::ContentTab> for crate::ContentTab {
 
 impl From<bindings::openidea::plugin::views::ContentDiff> for crate::ContentDiff {
     fn from(v: bindings::openidea::plugin::views::ContentDiff) -> Self {
+        Self { left: v.left, right: v.right, left_label: v.left_label, right_label: v.right_label, title: v.title }
+    }
+}
+
+impl From<bindings::openidea::plugin::views::FileDiff> for crate::FileDiff {
+    fn from(v: bindings::openidea::plugin::views::FileDiff) -> Self {
         Self { left: v.left, right: v.right, left_label: v.left_label, right_label: v.right_label, title: v.title }
     }
 }
@@ -2034,6 +2646,11 @@ impl bindings::openidea::plugin::run::Host for StoreData {
 }
 pub(crate) mod run_configurations_bindings {
     wasmtime::component::bindgen!({ world: "configurations-provider", path: "../../wit" });
+}
+pub(crate) mod launch_configurations_bindings {
+    wasmtime::component::bindgen!({ world: "launch-configurations-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
 }
 pub(crate) mod test_results_bindings {
     wasmtime::component::bindgen!({ world: "test-results-provider", path: "../../wit",
@@ -2239,6 +2856,23 @@ fn diagnostic_to_wit(d: ide_core::Diagnostic) -> diagnostics::Diagnostic {
         related: Vec::new(),
     }
 }
+impl StoreData {
+    /// Shared by `set` and `set-markdown`: both replace the same set-id namespace.
+    fn replace_decorations(&mut self, path: String, set_id: String, items: Vec<crate::Decoration>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if items.len() > 10_000 {
+            return Ok(Err(wit::Error::Invalid("at most 10000 decorations per file".into())));
+        }
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self.host.decorations(Some(&real), &set_id, items).map_err(to_wit))
+    }
+}
+
 impl bindings::openidea::plugin::decorations::Host for StoreData {
     fn set(
         &mut self,
@@ -2246,21 +2880,35 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
         set_id: String,
         items: Vec<bindings::openidea::plugin::decorations::Decoration>,
     ) -> Fallible<()> {
-        if let Err(e) = self.require(Capability::ProjectRead) {
-            return Ok(Err(e));
-        }
-        if items.len() > 10_000 {
-            return Ok(Err(wit::Error::Invalid("at most 10000 decorations per file".into())));
-        }
         let items = items
             .into_iter()
-            .map(|d| crate::Decoration { range: core_range(d.range), style: d.style, hover: d.hover, after: d.after })
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: None,
+            })
             .collect();
-        let real = match self.decoration_path(&path) {
-            Ok(real) => real,
-            Err(e) => return Ok(Err(e)),
-        };
-        Ok(self.host.decorations(Some(&real), &set_id, items).map_err(to_wit))
+        self.replace_decorations(path, set_id, items)
+    }
+    fn set_markdown(
+        &mut self,
+        path: String,
+        set_id: String,
+        items: Vec<bindings::openidea::plugin::decorations::MarkdownDecoration>,
+    ) -> Fallible<()> {
+        let items = items
+            .into_iter()
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: d.markdown_hover,
+            })
+            .collect();
+        self.replace_decorations(path, set_id, items)
     }
     fn clear(&mut self, set_id: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::ProjectRead) {
@@ -2286,7 +2934,13 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
             .file_decorations(
                 Some(&real),
                 &set_id,
-                Some(crate::FileDecoration { badge: item.badge, style: item.style, tooltip: item.tooltip }),
+                Some(crate::FileDecoration {
+                    badge: item.badge,
+                    style: item.style,
+                    tooltip: item.tooltip,
+                    note: None,
+                    icon: None,
+                }),
             )
             .map_err(to_wit))
     }
@@ -2295,6 +2949,44 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
             return Ok(Err(e));
         }
         Ok(self.host.file_decorations(None, &set_id, None).map_err(to_wit))
+    }
+    fn set_file_note(&mut self, path: String, set_id: String, note: String, tooltip: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let item = crate::FileDecoration { badge: None, style: String::new(), tooltip, note: Some(note), icon: None };
+        Ok(self.host.file_decorations(Some(&real), &set_id, Some(item)).map_err(to_wit))
+    }
+    fn set_file_icon(&mut self, path: String, set_id: String, icon: String, tooltip: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let item = crate::FileDecoration { badge: None, style: String::new(), tooltip, note: None, icon: Some(icon) };
+        Ok(self.host.file_decorations(Some(&real), &set_id, Some(item)).map_err(to_wit))
+    }
+    fn set_file_icons(&mut self, set_id: String, items: Vec<(String, String)>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if items.len() > 10_000 {
+            return Ok(Err(wit::Error::Invalid("at most 10000 file icons per set".into())));
+        }
+        let mut resolved = Vec::with_capacity(items.len());
+        for (path, icon) in items {
+            match self.decoration_path(&path) {
+                Ok(real) => resolved.push((real, icon)),
+                Err(e) => return Ok(Err(e)),
+            }
+        }
+        Ok(self.host.file_icon_decorations(&set_id, resolved).map_err(to_wit))
     }
 }
 
@@ -2380,6 +3072,57 @@ impl bindings::openidea::plugin::database::Host for StoreData {
         Ok(result.map_err(to_wit))
     }
 }
+/// The longest method name and params a plugin may send a language server.
+const MAX_LSP_METHOD: usize = 256;
+const MAX_LSP_PARAMS: usize = 1 << 20;
+
+impl StoreData {
+    fn lsp_call(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+        notify: bool,
+    ) -> Fallible<String> {
+        if let Err(e) = self.require(Capability::Lsp(server.clone())) {
+            return Ok(Err(e));
+        }
+        if method.len() > MAX_LSP_METHOD || params.as_ref().is_some_and(|p| p.len() > MAX_LSP_PARAMS) {
+            return Ok(Err(wit::Error::Invalid("method exceeds 256 bytes or params exceed 1 MiB".into())));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        let token = self.cancel.token();
+        let timeout = self.io_timeout();
+        let outcome = self.host.lsp_request(&root, &server, &method, params, notify, &token, timeout);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map_err(to_wit))
+    }
+}
+
+impl bindings::openidea::plugin::language_servers::Host for StoreData {
+    fn request(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+    ) -> Fallible<String> {
+        self.lsp_call(project, server, method, params, false)
+    }
+    fn notify(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+    ) -> Fallible<()> {
+        Ok(self.lsp_call(project, server, method, params, true)?.map(|_| ()))
+    }
+}
+
 impl bindings::openidea::plugin::extensions::Host for StoreData {
     fn contributions(&mut self, point: String) -> Fallible<Vec<bindings::openidea::plugin::extensions::Contribution>> {
         Ok(self

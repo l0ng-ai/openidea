@@ -53,6 +53,18 @@ describe("macros", () => {
     expect(useMacros.getState().saved.map((m) => m.name)).toEqual(["Duplicate"]);
   });
 
+  it("only replaces the confirmed version of a named macro", () => {
+    saveMacro("Existing", [{ kind: "text", text: "original" }]);
+    const original = useMacros.getState().saved[0];
+    expect(saveMacro("Existing", [])).toBe(false);
+
+    const newerSteps = [{ kind: "text" as const, text: "newer steps" }];
+    expect(saveMacro("Existing", newerSteps, original)).toBe(true);
+    expect(saveMacro("Existing", [], original)).toBe(false);
+    _reloadMacros();
+    expect(useMacros.getState().saved[0]?.steps).toEqual(newerSteps);
+  });
+
   it("drops malformed stored steps", () => {
     localStorage.setItem(
       STORAGE_KEY,

@@ -24,6 +24,16 @@ pub enum DockerEndpoint {
     Tcp { host: String, tls_cert_dir: Option<String> },
     /// A named `docker context`.
     Context { name: String },
+    /// A daemon on the host of an SSH configuration (Settings › Tools › SSH Configurations),
+    /// reached with the IDE's own SSH client and its saved credentials. The host resolves it to
+    /// a local [`DockerEndpoint::Tcp`] tunnel before running docker; unresolved, the CLI is
+    /// pointed at an address it rejects rather than at another daemon.
+    Ssh { config: String },
+}
+
+/// What an unresolved [`DockerEndpoint::Ssh`] gives the CLI: an error, never a fallback daemon.
+fn unresolved_ssh(config: &str) -> String {
+    format!("ssh-configuration://{}", config.trim())
 }
 
 impl DockerEndpoint {
@@ -55,6 +65,7 @@ impl DockerEndpoint {
                 args
             }
             Self::Context { name } => vec!["--context".into(), name.trim().to_owned()],
+            Self::Ssh { config } => vec!["--host".into(), unresolved_ssh(config)],
         }
     }
 
@@ -101,6 +112,11 @@ impl DockerEndpoint {
                 set("DOCKER_HOST", String::new());
                 set("DOCKER_TLS_VERIFY", String::new());
             }
+            Self::Ssh { config } => {
+                set("DOCKER_HOST", unresolved_ssh(config));
+                set("DOCKER_CONTEXT", String::new());
+                set("DOCKER_TLS_VERIFY", String::new());
+            }
         }
         env
     }
@@ -111,8 +127,13 @@ impl DockerEndpoint {
             Self::Socket { path } => path.trim().is_empty(),
             Self::Tcp { host, .. } => host.trim().is_empty(),
             Self::Context { name } => name.trim().is_empty() || name.trim().starts_with('-'),
+            Self::Ssh { config } => config.trim().is_empty(),
         };
-        if empty { Err(IdeError::invalid("the Docker connection needs a socket, host or context")) } else { Ok(()) }
+        if empty {
+            Err(IdeError::invalid("the Docker connection needs a socket, host, context or SSH configuration"))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -122,6 +143,9 @@ pub struct DockerConnection {
     pub id: String,
     pub name: String,
     pub endpoint: DockerEndpoint,
+    /// Whether the user explicitly disconnected this connection in Services.
+    #[serde(default)]
+    pub disconnected: bool,
 }
 
 /// A registry to log in to (Docker Hub, GHCR, a private one). The password is stored separately.
@@ -136,24 +160,19 @@ pub struct DockerRegistry {
     pub username: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DockerSettings {
-    #[serde(default = "default_connections")]
+    #[serde(default)]
     pub connections: Vec<DockerConnection>,
     #[serde(default)]
     pub registries: Vec<DockerRegistry>,
 }
 
-impl Default for DockerSettings {
-    fn default() -> Self {
-        Self { connections: default_connections(), registries: Vec::new() }
-    }
-}
-
-/// Before anything is configured the CLI's own daemon is shown, as before connections existed.
-fn default_connections() -> Vec<DockerConnection> {
-    vec![DockerConnection { id: "default".into(), name: "Docker".into(), endpoint: DockerEndpoint::Default }]
+/// Whether `c` is the connection older versions injected when nothing was configured:
+/// Services lists only connections the user added, so this one is dropped on load.
+fn is_injected_default(c: &DockerConnection) -> bool {
+    c.id == "default" && c.name == "Docker" && c.endpoint == DockerEndpoint::Default
 }
 
 const SETTINGS_FILE: &str = "docker.json";
@@ -161,10 +180,17 @@ const PASSWORDS_FILE: &str = "docker-passwords.json";
 
 pub fn load_settings(data_dir: &Path) -> DockerSettings {
     match std::fs::read(data_dir.join(SETTINGS_FILE)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-            tracing::warn!("{SETTINGS_FILE}: {e}");
-            DockerSettings::default()
-        }),
+        // A file written before the opt-in Services rework carries the injected default
+        // (saved along with a registry or another connection); drop it unless edited.
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(|mut s: DockerSettings| {
+                s.connections.retain(|c| !is_injected_default(c));
+                s
+            })
+            .unwrap_or_else(|e| {
+                tracing::warn!("{SETTINGS_FILE}: {e}");
+                DockerSettings::default()
+            }),
         Err(_) => DockerSettings::default(),
     }
 }
@@ -324,6 +350,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_unresolved_ssh_endpoint_never_falls_back_to_another_daemon() {
+        let ssh = DockerEndpoint::Ssh { config: "box".into() };
+        assert_eq!(ssh.global_args(), ["--host", "ssh-configuration://box"]);
+        let env = ssh.env_vars();
+        assert_eq!((env["DOCKER_HOST"].as_str(), env["DOCKER_CONTEXT"].as_str()), ("ssh-configuration://box", ""));
+        assert!(ssh.validate().is_ok());
+        assert!(DockerEndpoint::Ssh { config: " ".into() }.validate().is_err());
+        assert!(!crate::endpoint_is_local(&ssh).unwrap());
+    }
+
+    #[test]
     fn endpoint_args() {
         assert!(DockerEndpoint::Default.global_args().is_empty());
         assert_eq!(
@@ -373,12 +410,14 @@ mod tests {
     fn settings_round_trip_and_passwords() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        assert_eq!(load_settings(dir).connections[0].endpoint, DockerEndpoint::Default);
+        // Nothing configured: no connection is invented.
+        assert!(load_settings(dir).connections.is_empty());
         let settings = DockerSettings {
             connections: vec![DockerConnection {
                 id: "c1".into(),
                 name: "Build box".into(),
                 endpoint: DockerEndpoint::Tcp { host: "build:2376".into(), tls_cert_dir: None },
+                disconnected: true,
             }],
             registries: vec![DockerRegistry {
                 id: "r1".into(),
@@ -395,8 +434,54 @@ mod tests {
         assert!(auth_for(dir, "postgres").is_none());
         save_settings(dir, &DockerSettings { registries: Vec::new(), ..settings }).unwrap();
         assert_eq!(registry_password(dir, "r1"), None);
-        // An empty list stays empty (the default connection is only for a missing file).
+        // An empty list stays empty.
         save_settings(dir, &DockerSettings { connections: Vec::new(), registries: Vec::new() }).unwrap();
         assert!(load_settings(dir).connections.is_empty());
+    }
+
+    #[test]
+    fn connection_intent_defaults_to_connected_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(
+            dir.join(SETTINGS_FILE),
+            r#"{"connections":[{"id":"box","name":"Box","endpoint":{"kind":"ssh","config":"build"}}]}"#,
+        )
+        .unwrap();
+        let mut settings = load_settings(dir);
+        assert!(!settings.connections[0].disconnected);
+        for disconnected in [true, false] {
+            settings.connections[0].disconnected = disconnected;
+            save_settings(dir, &settings).unwrap();
+            assert_eq!(load_settings(dir), settings);
+        }
+    }
+
+    #[test]
+    fn load_drops_the_injected_default_connection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let injected = || DockerConnection {
+            id: "default".into(),
+            name: "Docker".into(),
+            endpoint: DockerEndpoint::Default,
+            disconnected: false,
+        };
+        let registry =
+            DockerRegistry { id: "r1".into(), name: "GHCR".into(), address: "ghcr.io".into(), username: "me".into() };
+        // Saved untouched by an older version (e.g. along with a registry): dropped on load.
+        save_settings(dir, &DockerSettings { connections: vec![injected()], registries: vec![registry.clone()] })
+            .unwrap();
+        let loaded = load_settings(dir);
+        assert!(loaded.connections.is_empty());
+        assert_eq!(loaded.registries, vec![registry]);
+        // A connection the user renamed or re-pointed stays theirs.
+        let renamed = DockerConnection { name: "Local engine".into(), ..injected() };
+        save_settings(dir, &DockerSettings { connections: vec![renamed.clone()], registries: Vec::new() }).unwrap();
+        assert_eq!(load_settings(dir).connections, vec![renamed]);
+        let repointed =
+            DockerConnection { endpoint: DockerEndpoint::Socket { path: "/var/run/docker.sock".into() }, ..injected() };
+        save_settings(dir, &DockerSettings { connections: vec![repointed.clone()], registries: Vec::new() }).unwrap();
+        assert_eq!(load_settings(dir).connections, vec![repointed]);
     }
 }

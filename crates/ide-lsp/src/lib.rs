@@ -15,17 +15,27 @@ mod convert;
 mod external_project;
 mod file_ops;
 mod file_watch;
+mod flutter_outline;
+mod go_mod;
 mod go_scope;
 mod handler;
 mod injections;
 mod inspect;
+pub mod java_project;
 pub mod jdtls;
+mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod maven_placeholder;
+mod message_requests;
+mod notebook;
+mod phoxite;
+mod plugin_requests;
 mod pull;
 mod scope;
 mod server;
+mod source_actions;
 mod tcp;
 mod text;
 mod ts_file_moves;
@@ -33,12 +43,22 @@ mod tsserver_bridge;
 pub mod types;
 mod uri;
 mod virtual_doc;
+mod vue_navigation;
+mod vue_refs;
+mod xml_catalog;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
-pub use inspect::{FileInspection, InspectHost, InspectOptions};
+pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
+pub use jdtls::exception_breakpoints::JdtExceptionBreakpoints;
+pub use jdtls::jvm_inspect::JdtJvmInspector;
+pub use jdtls::stream_trace::JdtStreamTracer;
+pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
+pub use message_requests::answer as answer_message_request;
+pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
+pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
-pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
+pub use uri::{path_to_uri_string, uri_target, uri_to_path};
 
 use caps::{ServerCaps, SyncKind};
 use convert::{Conv, lsp_range};
@@ -61,7 +81,7 @@ use server::{Conn, Running, Server};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 use text::{DocText, Encoding};
 use types::*;
@@ -69,6 +89,21 @@ use types::*;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 const LONG_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn did_change_content(
+    sync: SyncKind,
+    in_sync: bool,
+    key: u8,
+    events: &HashMap<u8, Vec<Value>>,
+    full: &OnceLock<Value>,
+    text: &str,
+) -> Value {
+    if !in_sync || sync == SyncKind::Full {
+        full.get_or_init(|| json!([{ "text": text }])).clone()
+    } else {
+        Value::Array(events.get(&key).cloned().unwrap_or_default())
+    }
+}
 
 /// How long a server may take to answer `initialize`. Some import the whole
 /// build there (kotlin-lsp, jdtls on a large Gradle project) and need minutes
@@ -110,6 +145,19 @@ struct DocState {
     servers: Vec<Attached>,
     /// Open YAML document whose filename does not match a Compose glob and whose content is Compose.
     compose_detected: bool,
+    /// The notebook a code cell belongs to: synced through `notebookDocument/*`, not as a file.
+    notebook: Option<PathBuf>,
+    /// When the servers last got new text (open or change): diagnostics published before are stale.
+    changed: std::time::Instant,
+    flutter_outline: Option<FlutterOutline>,
+}
+
+/// The widget tree last published for a document, valid while that server instance runs.
+/// ponytail: positions lag edits until the server's next publish, which follows each analysis.
+struct FlutterOutline {
+    server: ide_core::ServerId,
+    generation: u64,
+    items: Vec<OutlineItem>,
 }
 
 impl DocState {
@@ -148,6 +196,8 @@ struct DocSnap {
     language: LanguageId,
     text: Arc<DocText>,
     servers: Vec<Arc<Server>>,
+    /// [`DocState::changed`].
+    changed: std::time::Instant,
 }
 
 impl DocSnap {
@@ -192,6 +242,10 @@ pub struct LspManager {
     me: Weak<LspManager>,
     project_root: PathBuf,
     content_roots: RwLock<Vec<PathBuf>>,
+    /// Maven projects linked from outside `project_root`. jdtls scans them as extra
+    /// workspace folders; `projectConfigurations` stays unset so the opened root is
+    /// still discovered automatically.
+    jdtls_import_roots: RwLock<Vec<PathBuf>>,
     languages: Arc<LanguageRegistry>,
     sink: SharedSink,
     launcher: Arc<dyn Launcher>,
@@ -212,14 +266,24 @@ pub struct LspManager {
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
     java_usages_warned: AtomicBool,
+    /// java-debug DAP port → the module path whose jdtls serves it.
+    debug_servers: Mutex<HashMap<u16, PathBuf>>,
     configuration_cache: Arc<Mutex<jdtls::configuration::ConfigurationCache>>,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
+    /// go.mod files whose upgrades gopls has been asked to check this session.
+    go_mod_checked: Mutex<HashSet<PathBuf>>,
+    go_mod_queries: Mutex<go_mod::Queries>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
     /// Contents fetched for virtual URIs.
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
+    /// Modification time of the archive behind a cached library class, so a jar
+    /// replaced in place (a SNAPSHOT installed again) is read again.
+    virtual_stamps: Mutex<HashMap<String, virtual_doc::ArchiveStamp>>,
     injections: injections::State,
+    /// Open notebooks by path. Locked before `docs` when both are.
+    notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
 }
 
 /// Fetched virtual documents kept before the cache is reset.
@@ -313,25 +377,86 @@ impl<T> Outcome<T> {
     }
 }
 
+/// How often a rename the server withdrew (`ContentModified`) is asked, and the pause between.
+const RENAME_ATTEMPTS: u32 = 5;
+const RENAME_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+/// How often a semantic tokens, inlay hints or code lens request the server withdrew
+/// (`ContentModified`) is asked again, and the pause between.
+const STALE_RETRIES: u32 = 2;
+const STALE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// Implementation requests of one line-marker pass in flight at once.
 const IMPLEMENTATION_CONCURRENCY: usize = 4;
+
+/// How a virtual document's content was decoded, and whether it can be
+/// re-decoded ("Reload with Encoding").
+struct Decoding {
+    encoding: String,
+    has_bom: bool,
+    can_reload: bool,
+}
+
+impl Decoding {
+    /// Text the server decoded itself: no raw bytes here to re-read.
+    fn server_text() -> Self {
+        Decoding { encoding: "utf-8".into(), has_bom: false, can_reload: false }
+    }
+}
+
+/// jdtls' source attachment of a `jdt:` class (`java.project.resolveSourceAttachment`).
+struct SourceAttachment {
+    path: Option<String>,
+    encoding: Option<String>,
+    can_edit_encoding: bool,
+}
+
+/// Reads a `jar:` document's source: an entry as is, a class from the sources
+/// jar next to its binary. `encoding` decodes with it instead of detecting.
+fn read_jar_source(uri: &str, encoding: Option<&str>) -> Option<(String, ide_vfs::LoadedText)> {
+    match library_source::parse(uri) {
+        Some(e) if !e.entry.ends_with(".class") => {
+            library_source::read_entry(&e.jar, &e.entry, encoding).map(|loaded| (e.entry, loaded))
+        }
+        Some(_) => library_source::class_source(uri, encoding)
+            .and_then(|(source, loaded)| Some((library_source::parse(&source)?.entry, loaded))),
+        None => None,
+    }
+}
 
 /// Library classes in `jar:` targets (the official Kotlin LSP) go to their source
 /// in the artifact's sources jar when it is cached, at the declaration of the
 /// name navigated from; [`LspManager::virtual_document`] serves it.
-async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"))) {
+async fn library_sources(snap: &DocSnap, root: &Path, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
+    let jar_class = |u: &str| u.starts_with("jar:") && u.ends_with(".class");
+    // The path names the class's source file (`Db.kt`); the handle in the query, the class.
+    let jdt_class = |u: &str| u.starts_with("jdt://contents/") && u.contains(".class");
+    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| jar_class(u) || jdt_class(u))) {
         return locs;
     }
     let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
+    let root = root.to_owned();
     tokio::task::spawn_blocking(move || {
         locs.into_iter()
             .map(|loc| {
-                let Some(uri) = loc.uri.as_deref().filter(|u| u.starts_with("jar:") && u.ends_with(".class")) else {
+                // A class JDT finds in a project's class folder (Kotlin compiled for Java code):
+                // the project's source file, not the decompiled class.
+                if let Some(uri) = loc.uri.as_deref().filter(|u| jdt_class(u)) {
+                    let source = library_source::folder_class(uri)
+                        .and_then(|(package, class)| library_source::project_class_source(&root, &package, &class));
+                    let Some(source) = source else { return loc };
+                    let range = name
+                        .as_deref()
+                        .zip(std::fs::read_to_string(&source).ok())
+                        .map(|(n, text)| library_source::declaration_range(&text, n))
+                        .unwrap_or_default();
+                    return Location { path: source.into(), range, uri: None };
+                }
+                let Some(uri) = loc.uri.as_deref().filter(|u| jar_class(u)) else {
                     return loc;
                 };
-                let Some((source, text)) = library_source::class_source(uri) else { return loc };
-                let range = name.as_deref().map(|n| library_source::declaration_range(&text, n)).unwrap_or_default();
+                let Some((source, loaded)) = library_source::class_source(uri, None) else { return loc };
+                let range =
+                    name.as_deref().map(|n| library_source::declaration_range(&loaded.text, n)).unwrap_or_default();
                 Location { path: source.clone().into(), range, uri: Some(source) }
             })
             .collect()
@@ -342,12 +467,24 @@ async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<L
 
 const JAVA_IMPLEMENTATIONS: &str = "openidea.java.implementations";
 
+/// jdtls' locations of the implementations of the method at a position in the classes named
+/// with it, for implementation classes in dependencies: its standard request puts those at the
+/// start of the decompiled class instead of at the method.
+const JAVA_IMPLEMENTATION_LOCATIONS: &str = "openidea.java.implementationLocations";
+
 /// The answer of [`JAVA_IMPLEMENTATIONS`]: `complete` when the type is declared in the
 /// sources, so no dependency can implement it.
 #[derive(serde::Deserialize)]
 struct SourceImplementations {
     locations: Vec<lsp::Location>,
     complete: bool,
+}
+
+/// The answer of [`JAVA_IMPLEMENTATION_LOCATIONS`]: one entry per requested class, `None` when
+/// it has no implementation of the method.
+#[derive(serde::Deserialize)]
+struct TargetImplementations {
+    locations: Vec<Option<lsp::Location>>,
 }
 
 /// Receives the implementations found so far, before a slower search for the rest.
@@ -389,6 +526,7 @@ impl LspManager {
             me: me.clone(),
             project_root,
             content_roots: RwLock::new(Vec::new()),
+            jdtls_import_roots: RwLock::new(Vec::new()),
             languages,
             sink: {
                 let me = me.clone();
@@ -420,11 +558,16 @@ impl LspManager {
             shutting_down: AtomicBool::new(false),
             execution_allowed: AtomicBool::new(true),
             java_usages_warned: AtomicBool::new(false),
+            debug_servers: Mutex::new(HashMap::new()),
             configuration_cache: Arc::new(Mutex::new(Default::default())),
             shown_messages: Mutex::new(HashSet::new()),
+            go_mod_checked: Mutex::new(HashSet::new()),
+            go_mod_queries: Mutex::new(go_mod::Queries::default()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
+            virtual_stamps: Mutex::new(HashMap::new()),
             injections: injections::State::default(),
+            notebooks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -443,6 +586,28 @@ impl LspManager {
         {
             me.reconfigure_soon();
         }
+    }
+
+    /// Directories of Maven projects linked from outside the opened root. The jdtls
+    /// rooted at the opened project scans them together with that root. An empty list
+    /// leaves discovery as the single `rootUri` scan.
+    pub fn set_jdtls_import_roots(&self, mut roots: Vec<PathBuf>) {
+        roots.retain(|root| root.is_absolute() && root.is_dir() && !root.starts_with(&self.project_root));
+        roots.sort();
+        roots.dedup();
+        let changed = {
+            let mut current = self.jdtls_import_roots.write();
+            let changed = *current != roots;
+            *current = roots;
+            changed
+        };
+        if changed && let Some(me) = self.me.upgrade() {
+            me.reconfigure_soon();
+        }
+    }
+
+    pub fn jdtls_import_roots(&self) -> Vec<PathBuf> {
+        self.jdtls_import_roots.read().clone()
     }
 
     /// Shares JDT LS within this manager; callers reconfigure after the hook's value changes.
@@ -479,8 +644,27 @@ impl LspManager {
             if state.shared {
                 return state.roots.clone();
             }
+            // The opened project's server also scans linked external Maven projects.
+            // Other in-root builds keep their own server and their own root.
+            if server.root == self.project_root {
+                return self.project_and_import_roots();
+            }
         }
         vec![server.root.clone()]
+    }
+
+    fn project_and_import_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![self.project_root.clone()];
+        for root in self.jdtls_import_roots.read().iter() {
+            if root.is_absolute() && root.is_dir() && !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        roots
+    }
+
+    fn imports_external_java(&self, config: &LanguageServerConfig, path: &Path) -> bool {
+        is_local_jdtls(config) && self.jdtls_import_roots.read().iter().any(|root| path.starts_with(root))
     }
 
     fn project_root_for(&self, path: &Path) -> PathBuf {
@@ -494,12 +678,19 @@ impl LspManager {
             .unwrap_or_else(|| self.project_root.clone())
     }
 
+    /// `path` as the project's roots spell it ([`ide_language::project_spelling`]).
+    fn in_project_spelling<'a>(&self, path: &'a Path) -> std::borrow::Cow<'a, Path> {
+        ide_language::project_spelling(path, |p| p.starts_with(self.project_root_for(p)))
+    }
+
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
         let shared = is_local_jdtls(cfg).then(|| self.jdtls_workspace_state());
         let mut servers = self.servers.lock();
         let project = self.project_root_for(path);
         let sketch = (cfg.name == arduino::SERVER).then(|| arduino::sketch_root(&project, path)).flatten();
-        let root = if shared.as_ref().is_some_and(|state| state.shared) {
+        let root = if shared.as_ref().is_some_and(|state| state.shared) || self.imports_external_java(cfg, path) {
+            // One server for the opened root and a linked external Maven project, so
+            // Java completion and navigation see the import jdtls made of both.
             self.project_root.clone()
         } else {
             sketch.or_else(|| launch::find_root(&project, path, &cfg.root_markers)).unwrap_or_else(|| {
@@ -513,25 +704,44 @@ impl LspManager {
             })
         };
         if let Some(s) = servers.iter().find(|s| s.name == cfg.name && s.root == root) {
+            if !path.starts_with(&project) {
+                tracing::debug!(
+                    server = ?s.id,
+                    name = %s.name,
+                    root = %s.root.display(),
+                    "reusing language server for external file"
+                );
+            }
             s.add_language(language);
             return s.clone();
         }
         let server = Arc::new(Server::new(cfg.clone(), root, language.clone()));
+        tracing::debug!(
+            server = ?server.id,
+            name = %server.name,
+            root = %server.root.display(),
+            external = !path.starts_with(&project),
+            "created language server route"
+        );
         servers.push(server.clone());
         server
     }
 
     /// The servers serving `path`: every regular one, and each `fallback` one
-    /// only while all servers listed before it are missing. One that requires a
-    /// root marker serves only files below one, and stands in for no other.
+    /// only while all servers listed before it have given up (missing, not
+    /// launchable, or crashed for good). One that requires a root marker serves
+    /// only files below one, and stands in for no other. One that a server before
+    /// it `replaces` is left out while that server serves the file.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
+        let path = &*self.in_project_spelling(path);
         if let Some(servers) = self.arduino_servers(language, path) {
             return servers;
         }
         let mut out = Vec::new();
         let mut available_before = false;
+        let mut replaced: Vec<String> = Vec::new();
         for sc in &self.language_servers(language) {
-            if sc.fallback && available_before {
+            if (sc.fallback && available_before) || replaced.contains(&sc.name) {
                 continue;
             }
             if sc.require_root_marker
@@ -540,7 +750,10 @@ impl LspManager {
                 continue;
             }
             let server = self.server_for(sc, language, path);
-            available_before |= !sc.require_root_marker && server.status() != ide_core::event::ServerStatus::Missing;
+            available_before |= !sc.require_root_marker && !server.gave_up();
+            if !server.gave_up() {
+                replaced.extend(sc.replaces.iter().cloned());
+            }
             out.push(server);
         }
         out
@@ -563,8 +776,13 @@ impl LspManager {
     /// enabled in settings.
     fn attach_fallbacks(&self) {
         let _gate = self.injections.gate.lock();
-        let open: Vec<(DocId, LanguageId, PathBuf)> =
-            self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
+        let open: Vec<(DocId, LanguageId, PathBuf)> = self
+            .docs
+            .lock()
+            .iter()
+            .filter(|(_, d)| d.notebook.is_none())
+            .map(|(id, d)| (*id, d.language.clone(), d.path.clone()))
+            .collect();
         let wanted: Vec<(DocId, Vec<Arc<Server>>)> =
             open.into_iter().map(|(id, language, path)| (id, self.servers_for(&language, &path))).collect();
         let mut start = Vec::new();
@@ -597,6 +815,11 @@ impl LspManager {
         for (doc, server) in opened {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
+        for server in self.attach_notebook_servers() {
+            if !start.iter().any(|s| s.id == server.id) {
+                start.push(server);
+            }
+        }
         for server in &start {
             self.ensure_started(server);
         }
@@ -606,9 +829,14 @@ impl LspManager {
         if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
             return;
         }
+        // A server dropped meanwhile (disabled in settings, shadowed by another) must not come
+        // back as a process nothing lists, serves or stops: a crash backoff can outlive it.
+        if !self.servers.lock().iter().any(|s| s.id == server.id) {
+            return;
+        }
         let workspace = is_local_jdtls(&server.config).then(|| self.jdtls_workspace_state());
         if let Some(state) = &workspace {
-            if state.transitioning || !self.servers.lock().iter().any(|s| s.id == server.id) {
+            if state.transitioning {
                 return;
             }
             let (shared, roots) = self.desired_jdtls_workspace();
@@ -650,6 +878,9 @@ impl LspManager {
 
     async fn run_instance(self: Arc<Self>, server: Arc<Server>, generation: u64) {
         let Some(cancel) = server.starting_status(generation, &self.sink) else { return };
+        // Includes settings/prepare, blocking-pool queueing, launch and initialize.
+        let started = std::time::Instant::now();
+        tracing::info!(server = ?server.id, generation, name = %server.name, "starting language server");
         let handler = Arc::new(handler::ClientHandler::new(self.me.clone(), server.clone(), generation));
         let me = self.clone();
         let tail = server.clone();
@@ -657,6 +888,9 @@ impl LspManager {
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
+            // The project's direnv environment (a Nix devshell) may hold the server and its
+            // toolchain: start once it has loaded.
+            ide_core::project_env::wait(&tail.root, &launch_cancel);
             if !me.execution_allowed.load(Ordering::Acquire) {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
@@ -705,7 +939,7 @@ impl LspManager {
             Err(LaunchError::Missing) => {
                 let cfg = server.effective_config();
                 let message =
-                    cfg.install_hint.clone().unwrap_or_else(|| format!("`{}` was not found on PATH", cfg.command));
+                    cfg.install_hint.clone().unwrap_or_else(|| format!("{} was not found on PATH", cfg.command));
                 if server.fail_start(
                     generation,
                     Conn::Missing,
@@ -713,30 +947,34 @@ impl LspManager {
                     ide_core::event::ServerStatus::Missing,
                     Some(message),
                 ) {
-                    self.attach_fallbacks();
+                    self.fallbacks_take_over().await;
                 }
                 return;
             }
             Err(LaunchError::Config(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                server.fail_start(
+                if server.fail_start(
                     generation,
                     Conn::Failed,
                     &self.sink,
                     ide_core::event::ServerStatus::Misconfigured,
                     Some(message),
-                );
+                ) {
+                    self.fallbacks_take_over().await;
+                }
                 return;
             }
             Err(LaunchError::Failed(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                server.fail_start(
+                if server.fail_start(
                     generation,
                     Conn::Failed,
                     &self.sink,
                     ide_core::event::ServerStatus::Crashed,
                     Some(message),
-                );
+                ) {
+                    self.fallbacks_take_over().await;
+                }
                 return;
             }
         };
@@ -764,8 +1002,15 @@ impl LspManager {
         };
         let caps = match result {
             Ok(result) => {
+                tracing::info!(
+                    server = ?server.id,
+                    generation,
+                    name = %server.name,
+                    startup_to_initialize_ms = started.elapsed().as_millis() as u64,
+                    "language server initialized"
+                );
                 if let Some(info) = result.get("serverInfo") {
-                    tracing::info!("{} initialized: {info}", server.name);
+                    tracing::info!(server = ?server.id, generation, "{} initialized: {info}", server.name);
                 }
                 let mut caps_val = result.get("capabilities").cloned().unwrap_or_else(|| json!({}));
                 if server.name == arduino::SERVER {
@@ -778,9 +1023,18 @@ impl LspManager {
             }
             Err(e) => {
                 tracing::warn!("{}: initialize failed: {e}", server.name);
-                if matches!(e, RpcError::Closed) {
+                match e {
                     // The server is exiting: let it, so the crash report has its exit code and last output.
-                    let _ = tokio::time::timeout(Duration::from_secs(3), peer.closed()).await;
+                    RpcError::Closed => {
+                        let _ = tokio::time::timeout(Duration::from_secs(3), peer.closed()).await;
+                    }
+                    RpcError::Timeout => {
+                        server.set_start_error(
+                            generation,
+                            format!("it did not answer initialize within {} s", INITIALIZE_TIMEOUT.as_secs()),
+                        );
+                    }
+                    e => server.set_start_error(generation, format!("initialize failed ({e})")),
                 }
                 Self::kill_peer(&server, &peer).await;
                 // Treated like a crash so transient failures retry with backoff.
@@ -797,12 +1051,14 @@ impl LspManager {
         if let Err(e) = peer.notify("initialized", json!({})) {
             tracing::warn!("{}: {e}", server.name);
         }
-        // Servers that don't ask with `workspace/configuration` only learn settings this way.
-        let cfg = server.effective_config();
-        if cfg.settings.is_some()
-            && let Err(e) =
-                peer.notify("workspace/didChangeConfiguration", json!({ "settings": handler::all_settings(&cfg) }))
-        {
+        // Sent even without settings: servers that don't ask with `workspace/configuration`
+        // only learn settings this way, and Pyright, given workspace folders, waits for it
+        // before asking and loading the workspace.
+        let mut settings = handler::all_settings(&server.effective_config());
+        if settings.is_null() {
+            settings = json!({});
+        }
+        if let Err(e) = peer.notify("workspace/didChangeConfiguration", json!({ "settings": settings })) {
             tracing::debug!("{}: didChangeConfiguration: {e}", server.name);
         }
 
@@ -816,7 +1072,7 @@ impl LspManager {
                 false
             } else {
                 let open_close = run.caps.read().open_close;
-                for (id, d) in docs.iter_mut() {
+                for (id, d) in docs.iter_mut().filter(|(_, d)| d.notebook.is_none()) {
                     let params = d.did_open_params();
                     for a in
                         d.servers.iter_mut().filter(|a| a.server.id == server.id && a.opened_gen != Some(generation))
@@ -838,7 +1094,9 @@ impl LspManager {
         for doc in reopened {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
+        self.reopen_notebooks(&server, &run);
         self.check_clang_tidy(&server).await;
+        self.check_vue_navigation(&server).await;
         server.refresh_busy_status(&self.sink);
         server.announce_ready(generation);
         self.spawn_supervisor(server, generation, peer);
@@ -864,11 +1122,15 @@ impl LspManager {
             self.forget(std::slice::from_ref(&server));
             return;
         }
-        if let Some(delay) = delay {
-            tokio::time::sleep(delay).await;
-            if server.is_idle_gen(generation) {
-                self.ensure_started(&server);
+        match delay {
+            Some(delay) => {
+                tokio::time::sleep(delay).await;
+                if server.is_idle_gen(generation) {
+                    self.ensure_started(&server);
+                }
             }
+            // Gave up (crashed repeatedly, or its build expired): the fallbacks it hid take over.
+            None => self.fallbacks_take_over().await,
         }
     }
 
@@ -883,13 +1145,15 @@ impl LspManager {
             }
             init_options["settings"] = handler::all_settings(&cfg);
             let shared = is_local_jdtls(&server.config) && self.jdtls_workspace_state().shared;
-            if shared {
-                init_options["workspaceFolders"] = json!(
-                    self.server_workspace_roots(server)
-                        .iter()
-                        .map(|root| uri::path_to_uri_string(root))
-                        .collect::<Vec<_>>()
-                );
+            // jdtls imports `initializationOptions.workspaceFolders` by scanning each
+            // directory. It ignores the LSP workspace folder list for that first import,
+            // and a `projectConfigurations` list replaces the scan. Extra Maven projects
+            // are therefore folders here, not an explicit build-file list, so projects
+            // under the opened root are still discovered.
+            let folders: Vec<String> =
+                self.server_workspace_roots(server).iter().map(|root| uri::path_to_uri_string(root)).collect();
+            if shared || folders.len() > 1 {
+                init_options["workspaceFolders"] = json!(folders);
             }
             let triggers: Vec<_> = self
                 .docs
@@ -954,6 +1218,11 @@ impl LspManager {
         self.shown_messages.lock().insert((server.to_owned(), text.to_owned()))
     }
 
+    /// Whether `server` has shown a message containing `needle` in this project.
+    pub(crate) fn shown_message_containing(&self, server: &str, needle: &str) -> bool {
+        self.shown_messages.lock().iter().any(|(s, text)| s == server && text.contains(needle))
+    }
+
     pub(crate) fn apply_edit_hook(&self) -> Option<ApplyEditHook> {
         self.apply_edit_hook.read().clone()
     }
@@ -968,7 +1237,7 @@ impl LspManager {
         {
             return Some(text);
         }
-        let key = path.to_str().filter(|s| is_virtual_uri(s))?;
+        let key = path.to_str().filter(|s| ide_core::is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
     }
 
@@ -1020,6 +1289,7 @@ impl LspManager {
         servers: Vec<Arc<Server>>,
     ) {
         let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let canonical_path = canonical.clone();
         let compose_detected = language.as_str() == "yaml" && compose::is_content_detected_compose_file(&path, text);
         let mut state = DocState {
             path,
@@ -1030,6 +1300,9 @@ impl LspManager {
             text: Arc::new(DocText::new(text)),
             servers: servers.iter().map(|s| Attached { server: s.clone(), opened_gen: None }).collect(),
             compose_detected,
+            notebook: None,
+            changed: std::time::Instant::now(),
+            flutter_outline: None,
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1050,14 +1323,24 @@ impl LspManager {
         self.schedule_pull(doc, None, Duration::ZERO);
         for s in &servers {
             self.ensure_started(s);
+            // Waits for a server still starting, so it is not tied to `running()` below.
+            if s.name == "gopls"
+                && let Some(me) = self.me.upgrade()
+            {
+                let (path, server) = (canonical_path.clone(), s.clone());
+                self.runtime.spawn(async move { me.check_go_mod(doc, &path, server).await });
+            }
             if s.running().is_some()
                 && let Some(me) = self.me.upgrade()
             {
                 if s.name == compose::SERVER && compose_added {
                     me.reconfigure_soon();
                 }
+                let hint = me.clone();
                 let server = s.clone();
                 self.runtime.spawn(async move { me.check_clang_tidy(&server).await });
+                let server = s.clone();
+                self.runtime.spawn(async move { hint.check_vue_navigation(&server).await });
             }
         }
     }
@@ -1067,6 +1350,7 @@ impl LspManager {
         let mut docs = self.docs.lock();
         let Some(d) = docs.get_mut(&doc) else { return };
         d.version = version as i32;
+        d.changed = std::time::Instant::now();
 
         // Servers that have this document open on their current instance.
         let targets: Vec<(Arc<Server>, Running, SyncKind, Encoding)> = d
@@ -1106,18 +1390,14 @@ impl LspManager {
             tracing::warn!("lsp text copy of {} out of sync; resending full text", d.path.display());
             text.set(&full_text());
         }
-        let full = json!([{ "text": text.as_str() }]);
+        let full = OnceLock::new();
         for (server, run, sync, enc) in targets {
             let key = match enc {
                 Encoding::Utf8 => 8,
                 Encoding::Utf16 => 16,
                 Encoding::Utf32 => 32,
             };
-            let content = if !in_sync || sync == SyncKind::Full {
-                full.clone()
-            } else {
-                Value::Array(events.get(&key).cloned().unwrap_or_default())
-            };
+            let content = did_change_content(sync, in_sync, key, &events, &full, text.as_str());
             let params = json!({
                 "textDocument": { "uri": d.uri, "version": d.version },
                 "contentChanges": content,
@@ -1151,7 +1431,7 @@ impl LspManager {
             return;
         }
         let docs = self.docs.lock();
-        for d in docs.values() {
+        for d in docs.values().filter(|d| d.notebook.is_none()) {
             if !d.servers.iter().any(|a| a.server.id == server.id && a.opened_gen == Some(generation)) {
                 continue;
             }
@@ -1188,6 +1468,7 @@ impl LspManager {
         drop(docs);
         self.schedule_pull(doc, None, Duration::ZERO);
         self.pull_dependents(doc);
+        self.go_mod_saved(doc);
     }
 
     pub fn did_close(&self, doc: DocId) {
@@ -1197,6 +1478,7 @@ impl LspManager {
     }
 
     fn close_document(&self, doc: DocId) {
+        self.go_mod_queries.lock().cancel(doc);
         let (d, compose_removed) = {
             let mut docs = self.docs.lock();
             let Some(d) = docs.remove(&doc) else { return };
@@ -1224,13 +1506,24 @@ impl LspManager {
     fn snapshot(&self, doc: DocId) -> IdeResult<DocSnap> {
         let docs = self.docs.lock();
         let d = docs.get(&doc).ok_or_else(|| IdeError::not_found(format!("{doc} is not open")))?;
+        // A cell is asked only of the servers its notebook is open on (those that sync notebooks).
+        let servers = d
+            .servers
+            .iter()
+            .filter(|a| {
+                d.notebook.is_none()
+                    || a.opened_gen.is_some_and(|g| a.server.running().is_some_and(|run| run.generation == g))
+            })
+            .map(|a| a.server.clone())
+            .collect();
         Ok(DocSnap {
             version: d.version,
             path: d.path.clone(),
             uri: d.uri.clone(),
             language: d.language.clone(),
             text: d.text.clone(),
-            servers: d.servers.iter().map(|a| a.server.clone()).collect(),
+            servers,
+            changed: d.changed,
         })
     }
 
@@ -1272,13 +1565,9 @@ impl LspManager {
         let params = serde_json::to_value(params).map_err(|e| IdeError::internal(e.to_string()))?;
         let stamp = self.injected_request_stamp(&params);
         let fut = async {
-            if t.server.name == "csharp-ls" {
-                let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
-                virtual_doc::normalize_csharp_uris(&mut value);
-                serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
-            } else {
-                t.run.peer.request::<Value, R>(method, params, cancel.cloned()).await
-            }
+            let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
+            virtual_doc::normalize_uris(&mut value);
+            serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
         };
         let result = match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| rpc_err(&t.server.name, method, e)),
@@ -1288,6 +1577,28 @@ impl LspManager {
             self.check_injected_request(doc, version)?;
         }
         result
+    }
+
+    /// [`Self::call`], asked again when the server withdrew the answer because the text changed
+    /// (`ContentModified`, which arrives as a cancellation as no cancel token is passed).
+    /// The client advertises `retryOnContentModified` for the methods that use it.
+    async fn call_retrying<P: Serialize + Clone, R: DeserializeOwned>(
+        &self,
+        t: &Target,
+        method: &str,
+        params: P,
+        timeout: Duration,
+    ) -> IdeResult<R> {
+        let mut attempt = 0;
+        loop {
+            match self.call(t, method, params.clone(), None, timeout).await {
+                Err(e) if e.kind == ErrorKind::Cancelled && attempt < STALE_RETRIES => {
+                    attempt += 1;
+                    tokio::time::sleep(STALE_RETRY_DELAY).await;
+                }
+                result => return result,
+            }
+        }
     }
 
     // ---- features ----
@@ -1459,6 +1770,9 @@ impl LspManager {
             {
                 return Ok(result.locations);
             }
+            if let Some(found) = self.vue_ref_navigation(doc, &snap, pos).await {
+                return Ok(found);
+            }
         }
         let (method, cap, feature) = goto_method(kind);
         let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
@@ -1536,7 +1850,7 @@ impl LspManager {
             Ok(found) => {
                 let locs =
                     convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(found.locations));
-                let locs = library_sources(snap, pos, locs).await;
+                let locs = library_sources(snap, &self.project_root, pos, locs).await;
                 self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                 (locs, found.complete)
             }
@@ -1545,6 +1859,153 @@ impl LspManager {
                 (Vec::new(), false)
             }
         }
+    }
+
+    /// Library classes in `jar:` targets that have no cached sources jar: the official Kotlin
+    /// LSP decompiles them to signatures only (`/* compiled code */`). When jdtls is running,
+    /// the same class from its Java model instead, decompiled with method bodies and navigable.
+    /// Its documents belong to jdtls ([`Self::virtual_document`] records it).
+    async fn jdt_library_classes(&self, snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
+        let lib_class = |u: &str| {
+            (u.starts_with("jar:") && u.ends_with(".class"))
+                || (u.starts_with("jdt://contents/") && u.contains(".class"))
+        };
+        if !locs.iter().any(|l| l.uri.as_deref().is_some_and(lib_class))
+            || !self.servers.lock().iter().any(|s| s.name == jdtls::SERVER && s.running().is_some())
+        {
+            return locs;
+        }
+        let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
+        let mut out = Vec::with_capacity(locs.len());
+        for loc in locs {
+            let Some(original) = loc.uri.as_deref().filter(|u| lib_class(u)) else {
+                out.push(loc);
+                continue;
+            };
+            let jdt = original.starts_with("jdt:");
+            let uri = if !jdt {
+                let Some(entry) = library_source::parse(original) else {
+                    out.push(loc);
+                    continue;
+                };
+                // The Kotlin server may name the jar by another path than jdtls (its own copy of a
+                // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
+                // of that name.
+                match self.archive_class(entry.jar, entry.entry, true).await {
+                    Ok(uri) => uri,
+                    Err(e) => {
+                        tracing::info!("library class stays a stub: {}", e.message);
+                        out.push(loc);
+                        continue;
+                    }
+                }
+            } else {
+                original.to_owned()
+            };
+            let doc = self.virtual_document(&uri).await.ok();
+            let range = match (&name, &doc) {
+                // jdtls' own class: its range is exact (overloads included) unless it maps a
+                // Lombok-generated member onto the annotation or class header, which doesn't
+                // name the member; only then look the declaration up in the source.
+                (Some(name), Some(doc)) if jdt => {
+                    let line = doc.text.lines().nth(loc.range.start.line as usize).unwrap_or_default();
+                    if library_source::identifier_at(line, loc.range.start.col) == Some(name.as_str()) {
+                        loc.range
+                    } else {
+                        Some(library_source::declaration_range(&doc.text, name))
+                            .filter(|r| *r != Range::default())
+                            .unwrap_or(loc.range)
+                    }
+                }
+                (Some(name), Some(doc)) => library_source::declaration_range(&doc.text, name),
+                _ if jdt => loc.range,
+                _ => Range::default(),
+            };
+            out.push(if jdt {
+                Location { range, ..loc }
+            } else {
+                Location { path: uri.clone().into(), range, uri: Some(uri) }
+            });
+        }
+        out
+    }
+
+    /// jdtls: where the implementation methods of the method at `pos` are declared in the
+    /// dependency classes `locs` point at. Its standard request answers those with `0:0`, the
+    /// start of the class file's decompiled source; [`JAVA_IMPLEMENTATION_LOCATIONS`] resolves
+    /// the declaration itself.
+    async fn java_implementation_locations(
+        &self,
+        snap: &DocSnap,
+        t: &Target,
+        pos: Pos,
+        locs: Vec<Location>,
+        cancel: Option<&CancellationToken>,
+    ) -> Vec<Location> {
+        if t.server.name != "jdtls" || !t.caps().commands().iter().any(|c| c == JAVA_IMPLEMENTATION_LOCATIONS) {
+            return locs;
+        }
+        let targets: Vec<(usize, String)> = locs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| {
+                let uri = l.uri.as_deref()?;
+                (virtual_doc::scheme(uri) == "jdt" && l.range.start.line == 0).then(|| (i, uri.to_owned()))
+            })
+            .collect();
+        if targets.is_empty() {
+            return locs;
+        }
+        let params = snap.pos_params(t, pos);
+        let arguments = json!([
+            params["textDocument"]["uri"],
+            params["position"]["line"],
+            params["position"]["character"],
+            targets.iter().map(|(_, uri)| uri).collect::<Vec<_>>(),
+        ]);
+        let result: IdeResult<TargetImplementations> = self
+            .call(
+                t,
+                "workspace/executeCommand",
+                json!({ "command": JAVA_IMPLEMENTATION_LOCATIONS, "arguments": arguments }),
+                cancel,
+                LONG_TIMEOUT,
+            )
+            .await;
+        let found = match result {
+            Ok(found) if found.locations.len() == targets.len() => found,
+            Ok(_) => return locs,
+            Err(e) => {
+                tracing::debug!("{JAVA_IMPLEMENTATION_LOCATIONS}: {}", e.message);
+                return locs;
+            }
+        };
+        let mut out = locs;
+        for ((i, _), loc) in targets.into_iter().zip(found.locations) {
+            if let Some(loc) = loc.as_ref().and_then(|l| self.conv(t.enc()).location(l)) {
+                out[i] = loc;
+            }
+        }
+        out
+    }
+
+    /// Refines the implementation `locs` of the method at `pos`: jdtls puts an implementation in
+    /// a dependency at the start of its decompiled class instead of at the method, which matters
+    /// when the gutter marker's targets are opened one by one.
+    pub async fn implementation_locations(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        locs: Vec<Location>,
+        cancel: CancellationToken,
+    ) -> IdeResult<Vec<Location>> {
+        let (_, cap, feature) = goto_method(GotoKind::Implementation);
+        let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
+        let mut out = locs;
+        for t in &targets {
+            out = self.java_implementation_locations(&snap, t, pos, out, Some(&cancel)).await;
+        }
+        Ok(out)
     }
 
     async fn goto_in(
@@ -1585,9 +2046,16 @@ impl LspManager {
             match r {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
-                    let locs = library_sources(snap, pos, locs).await;
+                    let locs = library_sources(snap, &self.project_root, pos, locs).await;
+                    // Only explicit Go to Implementation: gutter markers ask for every line.
+                    let locs = if method == "textDocument/implementation" && partial.is_some() {
+                        self.java_implementation_locations(snap, t, pos, locs, cancel).await
+                    } else {
+                        locs
+                    };
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
+                    let locs = self.jdt_library_classes(snap, pos, locs).await;
                     let locs = merge_locations(first, locs);
                     if !locs.is_empty() {
                         return Ok(locs);
@@ -1610,21 +2078,10 @@ impl LspManager {
     /// References of the symbol at `pos`. With `project_wide`, files outside
     /// the servers' analysis scope that mention the name are opened for the
     /// search (see [`scope`]); without, only what the servers analyse counts
-    /// (cheap, for bulk scans over many symbols).
-    pub async fn references(
-        &self,
-        doc: DocId,
-        pos: Pos,
-        include_declaration: bool,
-        project_wide: bool,
-        cancel: CancellationToken,
-    ) -> IdeResult<References> {
-        self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
-    }
-
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources
-    /// are searched (`libraries_skipped`); with it and `project_wide`, those found
-    /// there arrive on `partial` before the dependencies and the JDK are searched.
+    /// (cheap, for bulk scans over many symbols). Java: without `libraries`,
+    /// only the workspace's sources are searched (`libraries_skipped`); with
+    /// it and `project_wide`, those found there arrive on `partial` before
+    /// the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -1969,6 +2426,33 @@ impl LspManager {
         out.finish(None)
     }
 
+    /// The document's widget tree, when its running Dart server published one.
+    pub fn flutter_outline(&self, doc: DocId) -> Option<Vec<OutlineItem>> {
+        let docs = self.docs.lock();
+        let d = docs.get(&doc)?;
+        let outline = d.flutter_outline.as_ref()?;
+        d.servers
+            .iter()
+            .any(|a| a.server.id == outline.server && a.server.is_live(outline.generation))
+            .then(|| outline.items.clone())
+    }
+
+    /// Records a published outline; whether what the open documents of `path` show changed.
+    fn set_flutter_outline(
+        &self,
+        path: &Path,
+        server: &Server,
+        generation: u64,
+        items: Option<Vec<OutlineItem>>,
+    ) -> bool {
+        let mut changed = false;
+        for d in self.docs.lock().values_mut().filter(|d| d.path == path) {
+            changed |= d.flutter_outline.is_some() || items.is_some();
+            d.flutter_outline = items.clone().map(|items| FlutterOutline { server: server.id, generation, items });
+        }
+        changed
+    }
+
     pub async fn workspace_symbols(&self, query: &str, cancel: CancellationToken) -> IdeResult<Vec<WorkspaceSymbol>> {
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         let targets = self.ready_targets(&servers, |c| c.has("workspaceSymbolProvider")).await;
@@ -2151,6 +2635,26 @@ impl LspManager {
         Ok(())
     }
 
+    /// Where other files import `doc`'s file (VS Code's Find File References): tsserver's
+    /// `fileReferences` through vtsls' `typescript.tsserverRequest`, which also answers for a
+    /// `.vue` component with the Vue TypeScript plugin (vtsls' own command refuses non-TS
+    /// documents). Unavailable when no TypeScript server serves the document.
+    pub async fn file_references(&self, doc: DocId, cancel: CancellationToken) -> IdeResult<Vec<Location>> {
+        let snap = self.snapshot(doc)?;
+        let targets =
+            self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == ts_file_moves::COMMAND)).await;
+        let t = targets
+            .iter()
+            .find(|t| t.server.config.tsserver_project)
+            .ok_or_else(|| IdeError::unavailable("No language server finds file references"))?;
+        let params = json!({
+            "command": ts_file_moves::COMMAND,
+            "arguments": ["fileReferences", { "file": snap.path }],
+        });
+        let result: Value = self.call(t, "workspace/executeCommand", params, Some(&cancel), LONG_TIMEOUT).await?;
+        Ok(ts_file_moves::file_references(&result))
+    }
+
     /// Whether a server of `doc` (`server`, when given) provides the command `name`. Code actions
     /// can carry commands other editors' extensions run themselves after the edit (vtsls'
     /// `_typescript.didOrganizeImports`): no server provides those.
@@ -2306,7 +2810,7 @@ impl LspManager {
         })
     }
 
-    /// Renames across the project: like [`Self::references`], files outside the
+    /// Renames across the project: like [`Self::references_streaming`], files outside the
     /// server's analysis scope that mention the name are opened for the request.
     /// Every server that can rename there does: the Angular server adds the
     /// templates to vtsls's edit, whose own edits win where both change the same text.
@@ -2365,8 +2869,25 @@ impl LspManager {
         let query = || async {
             let mut params = snap.pos_params(t, pos);
             params["newName"] = json!(new_name);
-            let r: Option<lsp::WorkspaceEdit> =
-                self.call(t, "textDocument/rename", params, Some(cancel), LONG_TIMEOUT).await?;
+            // A server still analysing an edit withdraws the rename (`ContentModified`, which
+            // arrives as a cancellation). The user asked for it: ask again shortly instead of
+            // dropping it without a word, and say why if it keeps being withdrawn.
+            let mut attempt = 0;
+            let r: Option<lsp::WorkspaceEdit> = loop {
+                match self.call(t, "textDocument/rename", params.clone(), Some(cancel), LONG_TIMEOUT).await {
+                    Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled && !cancel.is_cancelled() => {
+                        attempt += 1;
+                        if attempt >= RENAME_ATTEMPTS {
+                            return Err(IdeError::invalid(format!(
+                                "{} was still analysing a change and withdrew the rename; try again",
+                                t.server.name
+                            )));
+                        }
+                        tokio::time::sleep(RENAME_RETRY_DELAY).await;
+                    }
+                    r => break r?,
+                }
+            };
             Ok(r.map(|e| convert::workspace_edit(&self.conv(t.enc()), e)).unwrap_or_default())
         };
         // The Angular server renames in the file's own project only, whatever is open.
@@ -2604,7 +3125,12 @@ impl LspManager {
         for s in servers {
             let Some(run) = s.running() else { continue };
             let open = open.get(&(s.id, run.generation)).filter(|_| run.caps.read().sync != SyncKind::None);
+            // jdtls owns its annotation-processor output; javac's copy of those files is not an edit.
+            let jdtls = s.name == "jdtls";
             let send = |p: &PathBuf, change: Change| {
+                if jdtls && jdtls::is_processor_output(p) {
+                    return false;
+                }
                 change == Change::Deleted
                     || !open
                         .is_some_and(|paths| paths.contains(p) || canonical.get(p).is_some_and(|c| paths.contains(c)))
@@ -2678,6 +3204,67 @@ impl LspManager {
         Ok(!self.ready_targets(&snap.servers, |c| c.has("documentFormattingProvider")).await.is_empty())
     }
 
+    async fn snapshot_targets(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        feature: &str,
+        supports: impl Fn(&ServerCaps) -> bool,
+    ) -> IdeResult<Vec<Target>> {
+        let supports = |caps: &ServerCaps| caps.open_close && supports(caps);
+        let servers = self.servers_for(language, path);
+        for server in &servers {
+            self.ensure_started(server);
+        }
+        let mut targets = self.ready_targets(&servers, supports).await;
+        if targets.is_empty() {
+            // A primary server can become unavailable while it initializes.
+            let candidates = self.servers_for(language, path);
+            if candidates.iter().any(|server| !servers.iter().any(|old| old.id == server.id)) {
+                for server in &candidates {
+                    self.ensure_started(server);
+                }
+                targets = self.ready_targets(&candidates, supports).await;
+            }
+        }
+        if targets.is_empty() {
+            return Err(unsupported(&servers, feature));
+        }
+        Ok(targets)
+    }
+
+    async fn text_format_targets(&self, path: &Path, language: &LanguageId) -> IdeResult<Vec<Target>> {
+        self.snapshot_targets(path, language, "snapshot formatting", |c| c.has("documentFormattingProvider")).await
+    }
+
+    pub async fn can_format_text(&self, path: &Path, language: &LanguageId) -> bool {
+        self.text_format_targets(path, language).await.is_ok()
+    }
+
+    /// Use a transient URI so requests in the editor still see the working buffer.
+    pub async fn format_text(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+        options: FormatOptions,
+    ) -> IdeResult<Vec<TextEdit>> {
+        let path_to_snapshot = scope::snapshot_path(path, "format")?;
+        let targets = self.text_format_targets(path, language).await?;
+        let target = &targets[0];
+        let mut opened = scope::TransientFiles::empty(self, target);
+        opened.hold(&path_to_snapshot, language, text);
+        let params = json!({
+            "textDocument": { "uri": opened.files[0].1 },
+            "options": { "tabSize": options.tab_size, "insertSpaces": options.insert_spaces },
+        });
+        let edits: Option<Vec<lsp::TextEdit>> =
+            self.call(target, "textDocument/formatting", params, None, DEFAULT_TIMEOUT).await?;
+        let text = Arc::new(DocText::new(text));
+        let converter = Conv::new(target.enc(), |_| Some(text.clone()));
+        Ok(converter.text_edits(&path_to_snapshot, edits.unwrap_or_default()))
+    }
+
     pub async fn format(&self, doc: DocId, range: Option<Range>, options: FormatOptions) -> IdeResult<Vec<TextEdit>> {
         let (method, cap, feature) = match range {
             None => ("textDocument/formatting", "documentFormattingProvider", "formatting"),
@@ -2704,11 +3291,10 @@ impl LspManager {
             async move {
                 (
                     t,
-                    self.call::<_, Option<Vec<lsp::InlayHint>>>(
+                    self.call_retrying::<_, Option<Vec<lsp::InlayHint>>>(
                         t,
                         "textDocument/inlayHint",
                         params,
-                        None,
                         DEFAULT_TIMEOUT,
                     )
                     .await,
@@ -2739,9 +3325,10 @@ impl LspManager {
             self.ready_targets(&snap.servers, |c| c.semantic_tokens_full() && c.semantic_legend.is_some()).await;
         let Some(t) = targets.first() else { return Ok(None) };
         let params = json!({ "textDocument": snap.ident() });
-        let r: Option<Value> = self.call(t, "textDocument/semanticTokens/full", params, None, DEFAULT_TIMEOUT).await?;
+        let r: Option<Value> =
+            self.call_retrying(t, "textDocument/semanticTokens/full", params, DEFAULT_TIMEOUT).await?;
         let Some(data) = r.as_ref().and_then(|v| v.get("data")).and_then(Value::as_array) else { return Ok(None) };
-        let data: Vec<u32> = data.iter().map(|n| n.as_u64().unwrap_or(0) as u32).collect();
+        let data: Vec<i64> = data.iter().map(|n| n.as_i64().unwrap_or(0)).collect();
         let (enc, legend) = {
             let caps = t.caps();
             (caps.encoding, caps.semantic_legend.clone().unwrap_or_default())
@@ -2760,7 +3347,7 @@ impl LspManager {
             let params = json!({ "textDocument": snap.ident() });
             async move {
                 let lenses = self
-                    .call::<_, Option<Vec<lsp::CodeLens>>>(t, "textDocument/codeLens", params, None, DEFAULT_TIMEOUT)
+                    .call_retrying::<_, Option<Vec<lsp::CodeLens>>>(t, "textDocument/codeLens", params, DEFAULT_TIMEOUT)
                     .await?;
                 let lenses = lenses.unwrap_or_default();
                 if !t.caps().has_sub("codeLensProvider", "resolveProvider") {
@@ -2839,6 +3426,71 @@ impl LspManager {
         out.finish(Vec::new())
     }
 
+    /// The colors the servers find in the document (`textDocument/documentColor`), each tagged with
+    /// its server for [`Self::color_presentations`]. An answer for an older version is dropped.
+    pub async fn document_colors(&self, doc: DocId) -> IdeResult<Vec<DocumentColor>> {
+        let (snap, targets) = self.doc_targets(doc, "document colors", |c| c.has("colorProvider")).await?;
+        let requests = targets.iter().map(|t| {
+            let params = json!({ "textDocument": snap.ident() });
+            async move {
+                let colors = self
+                    .call_retrying::<_, Option<Vec<lsp::ColorInformation>>>(
+                        t,
+                        "textDocument/documentColor",
+                        params,
+                        DEFAULT_TIMEOUT,
+                    )
+                    .await;
+                (t, colors)
+            }
+        });
+        let mut out = Outcome::new();
+        for (t, r) in join_all(requests).await {
+            match r {
+                Ok(colors) => {
+                    let conv = self.conv(t.enc());
+                    let acc = out.value.get_or_insert_with(Vec::new);
+                    acc.extend(
+                        colors
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|c| convert::document_color(&conv, &snap.path, t.server.id, c)),
+                    );
+                }
+                Err(e) => out.fail(e),
+            }
+        }
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        out.finish(Vec::new())
+    }
+
+    /// How `color.server` would write `color` at its range (`textDocument/colorPresentation`).
+    pub async fn color_presentations(&self, doc: DocId, color: DocumentColor) -> IdeResult<Vec<ColorPresentation>> {
+        let snap = self.snapshot(doc)?;
+        let Some(server) = snap.servers.iter().find(|s| s.id == color.server) else { return Ok(Vec::new()) };
+        let Some(t) = self.ready_targets(std::slice::from_ref(server), |c| c.has("colorProvider")).await.pop() else {
+            return Ok(Vec::new());
+        };
+        let params = json!({
+            "textDocument": snap.ident(),
+            "color": { "red": color.red, "green": color.green, "blue": color.blue, "alpha": color.alpha },
+            "range": snap.range(&t, color.range),
+        });
+        let list: Option<Vec<lsp::ColorPresentation>> =
+            self.call(&t, "textDocument/colorPresentation", params, None, DEFAULT_TIMEOUT).await?;
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        let conv = self.conv(t.enc());
+        Ok(list
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| convert::color_presentation(&conv, &snap.path, color.range, p))
+            .collect())
+    }
+
     pub async fn call_hierarchy(
         &self,
         doc: DocId,
@@ -2853,6 +3505,7 @@ impl LspManager {
             .call(t, "textDocument/prepareCallHierarchy", snap.pos_params(t, pos), Some(cancel), DEFAULT_TIMEOUT)
             .await?;
         let items = items.filter(|i| !i.is_empty()).ok_or_else(no_hierarchy_target)?;
+        let root = convert::call_item(&self.conv(t.enc()), &items[0], Vec::new());
         let query = || async {
             let mut out = Vec::new();
             for item in &items {
@@ -2875,7 +3528,10 @@ impl LspManager {
                         let (src, _) = uri_target(item.uri.as_str());
                         for c in calls.unwrap_or_default() {
                             let ranges = c.from_ranges.iter().map(|r| conv.range(&src, *r)).collect();
-                            out.extend(convert::call_item(&conv, &c.to, ranges));
+                            out.extend(
+                                convert::call_item(&conv, &c.to, ranges)
+                                    .map(|to| HierarchyItem { from_path: Some(src.clone().into()), ..to }),
+                            );
                         }
                     }
                 }
@@ -2905,8 +3561,23 @@ impl LspManager {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        self.note_virtual(&t.server, out.iter().map(|i| i.uri.as_deref()));
-        Ok(CallHierarchy { items: out, incomplete })
+        self.note_virtual(&t.server, out.iter().chain(&root).map(|i| i.uri.as_deref()));
+        Ok(CallHierarchy { root, items: out, incomplete })
+    }
+
+    /// The type at `pos` as the server's type hierarchy names it (with its `detail`, the
+    /// package for Java); `None` when there is no type there.
+    pub async fn prepare_type_hierarchy(&self, doc: DocId, pos: Pos) -> IdeResult<Option<HierarchyItem>> {
+        let (snap, targets) = self.doc_targets(doc, "type hierarchy", |c| c.has("typeHierarchyProvider")).await?;
+        let t = &targets[0];
+        let items: Option<Vec<serde_json::Value>> =
+            self.call(t, "textDocument/prepareTypeHierarchy", snap.pos_params(t, pos), None, DEFAULT_TIMEOUT).await?;
+        let conv = self.conv(t.enc());
+        Ok(items
+            .unwrap_or_default()
+            .iter()
+            .filter_map(convert::type_item_from_json)
+            .find_map(|i| convert::type_item(&conv, &i)))
     }
 
     pub async fn type_hierarchy(
@@ -2988,8 +3659,9 @@ impl LspManager {
         let original = uri.to_owned();
         let archive = sources.clone();
         let found = tokio::task::spawn_blocking(move || {
-            library_source::source_in_archive(&original, &archive).map(|(uri, text)| {
-                let range = name.as_deref().map(|n| library_source::declaration_range(&text, n)).unwrap_or_default();
+            library_source::source_in_archive(&original, &archive, None).map(|(uri, loaded)| {
+                let range =
+                    name.as_deref().map(|n| library_source::declaration_range(&loaded.text, n)).unwrap_or_default();
                 Location { path: uri.clone().into(), uri: Some(uri), range }
             })
         })
@@ -3017,42 +3689,64 @@ impl LspManager {
         Ok(found)
     }
 
+    /// Whether the archive behind a cached library class changed since it was read.
+    /// Stats the archive: call from a blocking worker.
+    pub fn library_class_changed(&self, uri: &str) -> bool {
+        let Some(stamp) = self.virtual_stamps.lock().get(uri).copied() else { return false };
+        virtual_doc::archive_modified(uri) != Some(stamp)
+    }
+
+    /// Archives behind cached library classes that changed since they were read.
+    /// Stats each archive: call from a blocking worker.
+    pub fn changed_library_archives(&self) -> Vec<PathBuf> {
+        let uris: Vec<String> = self.virtual_stamps.lock().keys().cloned().collect();
+        let mut archives: Vec<PathBuf> = uris
+            .iter()
+            .filter(|uri| self.library_class_changed(uri))
+            .filter_map(|uri| virtual_doc::archive(uri))
+            .collect();
+        archives.sort();
+        archives.dedup();
+        archives
+    }
+
+    /// Drop cached text after JDT LS reopens the archives. A request could have
+    /// read the old attachment while the binary already had its new timestamp.
+    pub fn invalidate_library_archives(&self, archives: &std::collections::HashSet<PathBuf>) {
+        if !archives.is_empty() {
+            self.virtual_docs
+                .lock()
+                .retain(|uri, _| !virtual_doc::archive(uri).is_some_and(|archive| archives.contains(&archive)));
+        }
+    }
+
     /// Contents of a virtual document, from the server that owns `uri`:
     /// `workspace/textDocumentContent` (LSP 3.18) when the server serves the
     /// scheme, jdtls' `java/classFileContents` for `jdt:` URIs. A `jar:` entry
     /// is read from its archive, a `jar:` class shown as its library source
     /// (see [`library_source`]) or else decompiled by the server. Cached.
     pub async fn virtual_document(&self, uri: &str) -> IdeResult<VirtualDocument> {
-        if let Some(d) = self.virtual_docs.lock().get(uri) {
-            return Ok(d.clone());
+        let cached = self.virtual_docs.lock().get(uri).cloned();
+        if let Some(d) = cached {
+            let stamp = self.virtual_stamps.lock().get(uri).copied();
+            let current = {
+                let uri = uri.to_owned();
+                tokio::task::spawn_blocking(move || virtual_doc::archive_modified(&uri)).await.ok().flatten()
+            };
+            if stamp.is_none() || stamp == current {
+                return Ok(d);
+            }
+            self.virtual_docs.lock().remove(uri);
         }
         let scheme = virtual_doc::scheme(uri).to_owned();
         let jar_class = scheme == "jar" && library_source::parse(uri).is_some_and(|e| e.entry.ends_with(".class"));
         if scheme == "jar" {
             let found = {
                 let uri = uri.to_owned();
-                tokio::task::spawn_blocking(move || match library_source::parse(&uri) {
-                    Some(e) if !e.entry.ends_with(".class") => {
-                        library_source::read_entry(&e.jar, &e.entry).map(|text| (e.entry, text))
-                    }
-                    Some(_) => library_source::class_source(&uri)
-                        .and_then(|(source, text)| Some((library_source::parse(&source)?.entry, text))),
-                    None => None,
-                })
-                .await
-                .ok()
-                .flatten()
+                tokio::task::spawn_blocking(move || read_jar_source(&uri, None)).await.ok().flatten()
             };
-            if let Some((entry, text)) = found {
-                let title = entry.rsplit('/').next().unwrap_or(&entry).to_owned();
-                return Ok(self.store_virtual(
-                    uri,
-                    text,
-                    Some(title),
-                    None,
-                    &[],
-                    self.origin_server(uri).map(|s| s.id),
-                ));
+            if let Some((entry, loaded)) = found {
+                return Ok(self.store_jar_entry(uri, entry, loaded));
             }
         }
         let class_file = scheme == "jdt" || (scheme == "file" && uri.ends_with(".class"));
@@ -3123,7 +3817,21 @@ impl LspManager {
                     continue;
                 }
             };
-            return Ok(self.store_virtual(uri, text, None, description, &languages, Some(t.server.id)));
+            // jdtls decodes attached sources itself: its attachment encoding is
+            // the document's real charset, and editable ones can be re-decoded.
+            let decoding = if scheme == "jdt" && t.server.name == jdtls::SERVER && !virtual_doc::is_decompiled(&text) {
+                match self.jdt_source_attachment(uri).await {
+                    Some(att) if att.path.is_some() => Decoding {
+                        encoding: att.encoding.unwrap_or_else(|| "utf-8".into()),
+                        has_bom: false,
+                        can_reload: att.can_edit_encoding,
+                    },
+                    _ => Decoding::server_text(),
+                }
+            } else {
+                Decoding::server_text()
+            };
+            return Ok(self.store_virtual(uri, text, None, description, &languages, Some(t.server.id), decoding));
         }
         if jar_class && error.is_none() {
             return Err(IdeError::not_found(format!(
@@ -3135,6 +3843,7 @@ impl LspManager {
     }
 
     /// Caches `text` as the virtual document `uri`, titled `title` (else after the URI).
+    #[allow(clippy::too_many_arguments)]
     fn store_virtual(
         &self,
         uri: &str,
@@ -3143,6 +3852,7 @@ impl LspManager {
         description: Option<String>,
         languages: &[LanguageId],
         server: Option<ide_core::ServerId>,
+        decoding: Decoding,
     ) -> VirtualDocument {
         let decompiled = if virtual_doc::scheme(uri) == "csharp" {
             virtual_doc::is_csharp_decompiled(uri)
@@ -3150,7 +3860,10 @@ impl LspManager {
             virtual_doc::is_decompiled(&text)
         };
         let title = title.unwrap_or_else(|| virtual_doc::title(uri, decompiled));
-        let detected = self.languages.detect(Path::new(&title), None);
+        let mut detected = self.languages.detect(Path::new(&title), None);
+        if let Some(stem) = title.strip_suffix(".class").filter(|_| virtual_doc::is_java_class_stub(&text)) {
+            detected = self.languages.detect(Path::new(&format!("{stem}.java")), None);
+        }
         let language_id = if detected == LanguageId::plain_text() {
             languages.first().cloned().unwrap_or(detected)
         } else {
@@ -3163,16 +3876,183 @@ impl LspManager {
             title,
             description: description.or_else(|| virtual_doc::description(uri)),
             decompiled,
+            encoding: decoding.encoding,
+            has_bom: decoding.has_bom,
+            can_reload_encoding: decoding.can_reload,
         };
         if let Some(server) = server {
             self.virtual_origins.lock().entry(uri.to_owned()).or_insert(server);
         }
+        let stamp = virtual_doc::archive_modified(uri);
         let mut cache = self.virtual_docs.lock();
+        let mut stamps = self.virtual_stamps.lock();
         if cache.len() >= VIRTUAL_CACHE_LIMIT {
             cache.clear();
+            stamps.clear();
         }
         cache.insert(uri.to_owned(), doc.clone());
+        match stamp {
+            Some(stamp) => stamps.insert(uri.to_owned(), stamp),
+            None => stamps.remove(uri),
+        };
         doc
+    }
+
+    /// Caches a decoded `jar:` entry under the document's original URI, titled
+    /// after the entry; the backend owns these bytes, so they can be re-decoded.
+    fn store_jar_entry(&self, uri: &str, entry: String, loaded: ide_vfs::LoadedText) -> VirtualDocument {
+        let title = entry.rsplit('/').next().unwrap_or(&entry).to_owned();
+        self.store_virtual(
+            uri,
+            loaded.text,
+            Some(title),
+            None,
+            &[],
+            self.origin_server(uri).map(|s| s.id),
+            Decoding { encoding: loaded.encoding, has_bom: loaded.has_bom, can_reload: true },
+        )
+    }
+
+    /// The source attachment jdtls resolves for a `jdt:` class; `None` when the
+    /// command is unavailable or the class's container cannot be queried.
+    async fn jdt_source_attachment(&self, uri: &str) -> Option<SourceAttachment> {
+        let result = self
+            .jdtls_command(
+                &self.project_root,
+                "java.project.resolveSourceAttachment",
+                vec![json!({ "classFileUri": uri })],
+            )
+            .await
+            .ok()?;
+        if result.get("errorMessage").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+            return None;
+        }
+        let attrs = result.get("attributes")?;
+        let non_empty = |key: &str| attrs.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        Some(SourceAttachment {
+            path: non_empty("sourceAttachmentPath"),
+            encoding: non_empty("sourceAttachmentEncoding"),
+            can_edit_encoding: attrs.get("canEditEncoding").and_then(Value::as_bool).unwrap_or(true),
+        })
+    }
+
+    /// Updates a `jdt:` class's source attachment encoding. The command drops
+    /// the attachment when the path is omitted, so the resolved path is always
+    /// sent along with the encoding.
+    async fn update_jdt_source_encoding(&self, uri: &str, path: &str, encoding: &str) -> IdeResult<()> {
+        let result = self
+            .jdtls_command(
+                &self.project_root,
+                "java.project.updateSourceAttachment",
+                vec![json!({
+                    "classFileUri": uri,
+                    "attributes": { "sourceAttachmentPath": path, "sourceAttachmentEncoding": encoding },
+                })],
+            )
+            .await?;
+        if let Some(error) = result.get("errorMessage").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            return Err(IdeError::unavailable(error));
+        }
+        Ok(())
+    }
+
+    /// Waits until the resolved attachment reports `encoding`; `false` once
+    /// `until` passes. Maven applies attachment updates in a background job,
+    /// so the new encoding is not visible immediately after the update.
+    async fn wait_for_jdt_source_encoding(&self, uri: &str, encoding: &str, until: tokio::time::Instant) -> bool {
+        loop {
+            match self.jdt_source_attachment(uri).await {
+                Some(att) if att.encoding.as_deref() == Some(encoding) => return true,
+                _ if tokio::time::Instant::now() < until => {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    /// "Reload with Encoding" for a virtual document: re-reads its origin with
+    /// `encoding` and replaces the cached content. `jar:` entries are re-read
+    /// here; `jdt:` sources are decoded by jdtls, so its source attachment
+    /// encoding is updated and the contents fetched again (keeping the server's
+    /// text and positions in sync). Server-generated content cannot be re-decoded.
+    pub async fn reload_virtual(&self, uri: &str, encoding: &str) -> IdeResult<VirtualDocument> {
+        ide_vfs::encode("", encoding, false)?;
+        match virtual_doc::scheme(uri) {
+            "jar" => {
+                let (owned_uri, owned_encoding) = (uri.to_owned(), encoding.to_owned());
+                let found = tokio::task::spawn_blocking(move || read_jar_source(&owned_uri, Some(&owned_encoding)))
+                    .await
+                    .map_err(|e| IdeError::internal(e.to_string()))?;
+                let Some((entry, loaded)) = found else {
+                    return Err(IdeError::not_found(format!(
+                        "no source is available for {}",
+                        virtual_doc::title(uri, false)
+                    )));
+                };
+                Ok(self.store_jar_entry(uri, entry, loaded))
+            }
+            "jdt" if self.origin_server(uri).is_none_or(|s| s.name == jdtls::SERVER) => {
+                let Some(att) = self.jdt_source_attachment(uri).await else {
+                    return Err(IdeError::unavailable("jdtls cannot resolve the source attachment of this class"));
+                };
+                let Some(path) = att.path else {
+                    return Err(IdeError::invalid("this class has no attached sources to re-decode"));
+                };
+                if !att.can_edit_encoding {
+                    return Err(IdeError::invalid("the source attachment encoding of this library cannot be changed"));
+                }
+                self.update_jdt_source_encoding(uri, &path, encoding).await?;
+                // Maven containers apply the update in a background job (persist
+                // attached sources, then refresh the classpath): wait until the
+                // resolved attachment reports the new encoding, else the refetch
+                // below would still decode with the old one.
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                let first_try = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+                if !self.wait_for_jdt_source_encoding(uri, encoding, first_try).await {
+                    // jdtls matches the existing encoding attribute by reference
+                    // (`==`), so an entry restored from the saved container state
+                    // gains a duplicate attribute and keeps the old value. That
+                    // update still refreshes the container, after which a second
+                    // update replaces the value correctly.
+                    self.update_jdt_source_encoding(uri, &path, encoding).await?;
+                    if !self.wait_for_jdt_source_encoding(uri, encoding, deadline).await {
+                        return Err(IdeError::unavailable(
+                            "jdtls did not apply the source attachment encoding; try reloading again",
+                        ));
+                    }
+                }
+                // JDT keeps the class file's decoded buffer cached, so
+                // classFileContents would still return the old decoding: re-read
+                // the attached source entry here, like `jar:` documents. The
+                // server's open document is kept in sync by the regular
+                // document change flow.
+                let (owned_uri, owned_path, owned_encoding) = (uri.to_owned(), path.clone(), encoding.to_owned());
+                let found = tokio::task::spawn_blocking(move || {
+                    library_source::source_in_archive(&owned_uri, Path::new(&owned_path), Some(&owned_encoding))
+                })
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))?;
+                if let Some((_source_uri, loaded)) = found {
+                    return Ok(self.store_virtual(
+                        uri,
+                        loaded.text,
+                        None,
+                        None,
+                        &[],
+                        self.origin_server(uri).map(|s| s.id),
+                        Decoding { encoding: loaded.encoding, has_bom: loaded.has_bom, can_reload: true },
+                    ));
+                }
+                // Attachments that are not readable archives (e.g. folders):
+                // fall back to the server's contents.
+                self.virtual_docs.lock().remove(uri);
+                self.virtual_document(uri).await
+            }
+            _ => Err(IdeError::invalid(
+                "this document's content is generated by a language server and cannot be re-decoded with another encoding",
+            )),
+        }
     }
 
     /// Called when a server sends `workspace/applyEdit`; installed by `src-tauri`
@@ -3203,6 +4083,9 @@ impl LspManager {
         if cfg.name == compose::SERVER {
             compose::configure_yaml_compose_schemas(&mut cfg, &self.open_compose_files());
         }
+        if cfg.name == xml_catalog::SERVER {
+            xml_catalog::configure_lemminx_catalogs(&mut cfg);
+        }
         cfg
     }
 
@@ -3221,6 +4104,7 @@ impl LspManager {
     pub fn set_execution_allowed(&self, allowed: bool) {
         let previous = self.execution_allowed.swap(allowed, Ordering::AcqRel);
         if !allowed {
+            self.go_mod_queries.lock().cancel_all();
             for server in self.servers.lock().iter() {
                 server.start_token().cancel();
             }
@@ -3250,11 +4134,17 @@ impl LspManager {
             join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;
             return;
         }
+        let existing: Vec<ide_core::ServerId> = self.servers.lock().iter().map(|s| s.id).collect();
         self.reconfigure_jdtls_workspace().await;
         self.stop_unlisted().await;
         let Some(me) = self.me.upgrade() else { return };
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         for s in servers {
+            // Created in this pass (the jdtls of a new workspace layout): it starts with the
+            // current configuration, though it may not have recorded it yet.
+            if !existing.contains(&s.id) {
+                continue;
+            }
             // The settings hook may run tools (`npm root -g`), as when the server starts.
             let next = match tokio::task::spawn_blocking({
                 let (me, s) = (me.clone(), s.clone());
@@ -3341,8 +4231,16 @@ impl LspManager {
         }
     }
 
-    /// A server enabled again shadows the fallbacks attached in its place: they
-    /// leave the open documents, and stop once no document uses them.
+    /// A server gave up: its fallbacks take over the open documents, and the servers
+    /// they replace leave.
+    async fn fallbacks_take_over(&self) {
+        self.attach_fallbacks();
+        self.detach_shadowed_fallbacks().await;
+    }
+
+    /// A server enabled again shadows the fallbacks attached in its place, and a
+    /// fallback that took over may replace a server attached earlier: they leave the
+    /// open documents, and stop once no document uses them.
     async fn detach_shadowed_fallbacks(&self) {
         let open: Vec<(DocId, LanguageId, PathBuf)> =
             self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
@@ -3358,6 +4256,7 @@ impl LspManager {
                 .filter(|a| {
                     !wanted.iter().any(|w| w.id == a.server.id)
                         && (configs.iter().any(|c| c.fallback && c.name == a.server.name)
+                            || configs.iter().any(|c| c.replaces.contains(&a.server.name))
                             || (a.server.name == "clangd" && wanted.iter().any(|s| s.name == arduino::SERVER)))
                 })
                 .map(|a| a.server.id)
@@ -3465,31 +4364,41 @@ impl LspManager {
                 languages: s.languages(),
                 status: s.status(),
                 pid: s.running().and_then(|r| r.peer.pid()),
+                label: s.display_name(),
             })
             .collect()
     }
 
     pub async fn restart(&self, server: ide_core::ServerId) -> IdeResult<()> {
-        let _reconfigure = self.reconfigure_lock.lock().await;
-        let s = self
-            .servers
-            .lock()
-            .iter()
-            .find(|s| s.id == server)
-            .cloned()
-            .ok_or_else(|| IdeError::not_found(format!("unknown language server {server}")))?;
-        if !s.root.is_dir() {
-            return Err(IdeError::unavailable(format!(
-                "the workspace root of {} is gone: {}",
-                s.name,
-                s.root.display()
-            )));
-        }
-        self.stop_instance(&s, false).await;
-        s.reset_for_restart();
-        self.ensure_started(&s);
+        let s = {
+            // Only the restart itself holds the lock: a start can take minutes (a Gradle or
+            // Maven import), and `reconfigure` and `shutdown_all` wait for it.
+            let _reconfigure = self.reconfigure_lock.lock().await;
+            let s = self
+                .servers
+                .lock()
+                .iter()
+                .find(|s| s.id == server)
+                .cloned()
+                .ok_or_else(|| IdeError::not_found(format!("unknown language server {server}")))?;
+            if !s.root.is_dir() {
+                return Err(IdeError::unavailable(format!(
+                    "the workspace root of {} is gone: {}",
+                    s.name,
+                    s.root.display()
+                )));
+            }
+            self.stop_instance(&s, false).await;
+            s.reset_for_restart();
+            self.ensure_started(&s);
+            // Started again: it shadows the fallbacks that took over while it was down.
+            self.detach_shadowed_fallbacks().await;
+            s
+        };
         match s.wait_ready(Duration::from_secs(60)).await {
             Some(_) => Ok(()),
+            // Still importing the project: the restart worked, the server is just not ready yet.
+            None if s.is_starting() => Ok(()),
             None => {
                 Err(IdeError::unavailable(s.status_message().unwrap_or_else(|| format!("{} failed to start", s.name))))
             }
@@ -3540,6 +4449,7 @@ impl LspManager {
 
     pub async fn shutdown_all(&self) {
         self.shutting_down.store(true, Ordering::Release);
+        self.go_mod_queries.lock().cancel_all();
         let _reconfigure = self.reconfigure_lock.lock().await;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;
@@ -3630,5 +4540,116 @@ mod code_action_tests {
         assert!(!source_actions_only(&kinds(&["quickfix"])));
         assert!(!source_actions_only(&kinds(&["source.organizeImports", "refactor"])));
         assert!(!source_actions_only(&kinds(&["sourcefoo"])));
+    }
+}
+
+#[cfg(test)]
+mod did_change_content_tests {
+    use super::*;
+
+    #[test]
+    fn incremental_content_does_not_build_the_full_document() {
+        let full = OnceLock::new();
+        let key = 16;
+        let events = HashMap::from([(
+            key,
+            vec![json!({
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "text": "x"
+            })],
+        )]);
+
+        let content = did_change_content(SyncKind::Incremental, true, key, &events, &full, "1 MB document");
+
+        assert_eq!(content, Value::Array(events[&key].clone()));
+        assert!(full.get().is_none(), "incremental sync must not materialize the full document");
+    }
+
+    #[test]
+    fn full_sync_reuses_the_full_document_payload() {
+        let full = OnceLock::new();
+        let key = 16;
+        let events = HashMap::new();
+
+        let first = did_change_content(SyncKind::Full, true, key, &events, &full, "whole document");
+        let second = did_change_content(SyncKind::Full, true, key, &events, &full, "whole document");
+
+        assert_eq!(first, json!([{ "text": "whole document" }]));
+        assert_eq!(second, first);
+        assert!(full.get().is_some());
+    }
+
+    #[test]
+    fn out_of_sync_incremental_change_sends_the_full_document() {
+        let full = OnceLock::new();
+        let events = HashMap::new();
+
+        let content = did_change_content(SyncKind::Incremental, false, 16, &events, &full, "whole document");
+
+        assert_eq!(content, json!([{ "text": "whole document" }]));
+    }
+}
+
+#[cfg(test)]
+mod external_go_routing_tests {
+    use super::*;
+
+    fn manager(root: &Path) -> Arc<LspManager> {
+        LspManager::new(
+            root.to_owned(),
+            Arc::new(LanguageRegistry::load(None).unwrap()),
+            Arc::new(|_: ide_core::IdeEvent| {}),
+        )
+    }
+
+    fn route(manager: &LspManager, path: &Path) -> Arc<Server> {
+        let language = LanguageId::new("go");
+        let config = manager.languages.get(&language).unwrap();
+        manager.server_for(&config.language_servers[0], &language, path)
+    }
+
+    fn module(root: &Path, name: &str) -> PathBuf {
+        let root = root.join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("go.mod"), format!("module example.test/{name}\n")).unwrap();
+        root.join("main.go")
+    }
+
+    // Characterize the fallback, not a promise that this is the correct consumer
+    // context for a shared dependency. No gopls process is launched in these tests.
+    #[tokio::test]
+    async fn external_go_file_reuses_first_module_without_creating_another_server() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let a = module(workspace.path(), "a");
+        let b = module(workspace.path(), "b");
+        let dependency = cache.path().join("dependency.go");
+        for order in [[&a, &b], [&b, &a]] {
+            let manager = manager(workspace.path());
+            let first = route(&manager, order[0]);
+            let second = route(&manager, order[1]);
+            assert_ne!(first.id, second.id);
+            assert_eq!(route(&manager, &dependency).id, first.id);
+            assert_eq!(route(&manager, &dependency).id, first.id);
+            assert_eq!(manager.servers.lock().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn external_go_file_restored_first_keeps_project_root_fallback() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let a = module(workspace.path(), "a");
+        let dependency = cache.path().join("dependency.go");
+        let manager = manager(workspace.path());
+        let restored = route(&manager, &dependency);
+        assert_eq!(restored.root, workspace.path());
+        let consumer = route(&manager, &a);
+        assert_ne!(restored.id, consumer.id);
+        assert_eq!(route(&manager, &dependency).id, restored.id);
+        assert_eq!(manager.servers.lock().len(), 2);
     }
 }

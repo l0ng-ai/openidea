@@ -1,5 +1,5 @@
 /** Three-pane merge editor: Yours | Result | Theirs, after IntelliJ's merge tool. */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Transaction, type EditorState, type Extension, type TransactionSpec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { history, historyKeymap, undoDepth } from "@codemirror/commands";
@@ -11,14 +11,17 @@ import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { copyText } from "@/ui/selectableText";
-import { Button, Spinner, T } from "@/ui";
+import { Button, Spinner, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { blameSlot, toggleAnnotations } from "./blame";
-import { languageFor, viewerBase } from "./cm";
+import { firstLineOf, languageFor, viewerBase } from "./cm";
+import { ideaDiffConfig } from "./diffOptions";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
+import { mergeDividers } from "./mergeDividers";
 import { syncMergeScroll } from "./mergeScroll";
 import { mergeTitles } from "./conflicts";
+import { acceptConflictSide } from "./conflictsUi";
 import {
   mergeChanged,
   mergeStripe,
@@ -62,6 +65,7 @@ import { refreshNow } from "./store";
 import styles from "./MergeEditor.module.css";
 
 import type { MergeData } from "./mergeKind";
+import { readClipboardPlainText } from "@/platform/clipboard";
 export { MERGE_KIND, mergeInput, type MergeData } from "./mergeKind";
 
 const NOTHING_LEFT: MergeSummary = {
@@ -91,6 +95,12 @@ const writeAutoApply = (on: boolean) => {
   }
 };
 
+// Each side against the base is compared line by line, as in the diff viewer. The default diff
+// gives up on long files and marks the whole file as one changed block.
+const SIDE_DIFF = ideaDiffConfig("none", "words");
+/** A file without a language; one value, so finding none again doesn't rebuild the panes. */
+const NO_LANGUAGE: Extension = [];
+
 export function MergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
   const [state, setState] = useState<{
@@ -98,13 +108,15 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     theirs: string;
     base: string | null;
     sides: MergeSides;
-    deleted: Record<MergeSide, boolean>;
   } | null>(null);
+  const [binary, setBinary] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lang, setLang] = useState<Extension | null>(null);
   const [summary, setSummary] = useState<MergeSummary>(NOTHING_LEFT);
   const [autoApply, setAutoApply] = useState(readAutoApply);
   const [resolved, setResolved] = useState(false);
+  const accepting = useRef(false);
+  const paneId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<MergeSide | "result">("result");
   const [actionHost] = useState<MergeActionHost>(() => ({
@@ -115,6 +127,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const oursRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const theirsRef = useRef<HTMLDivElement>(null);
+  const leftDividerRef = useRef<HTMLDivElement>(null);
+  const rightDividerRef = useRef<HTMLDivElement>(null);
   const resultView = useRef<EditorView | null>(null);
   const oursView = useRef<EditorView | null>(null);
   const theirsView = useRef<EditorView | null>(null);
@@ -128,18 +142,21 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const load = useCallback(async () => {
     try {
       const v = await call(commands.vcsConflictVersions(path));
-      if ([v.base, v.ours, v.theirs].some((text) => text?.includes("\0"))) {
-        throw new Error(tx("Binary files cannot be resolved in the merge editor."));
+      const binaryContent = !!v.binary || [v.base, v.ours, v.theirs].some((text) => text?.includes("\0"));
+      setBinary(binaryContent);
+      setError(null);
+      if (binaryContent) {
+        setState(null);
+        return;
       }
       setState({
         ours: v.ours ?? "",
         theirs: v.theirs ?? "",
         base: v.base,
         sides: v.sides,
-        deleted: { left: v.ours === null, right: v.theirs === null },
       });
-      setError(null);
     } catch (e) {
+      setBinary(false);
       setError(errorMessage(e));
     }
   }, [path]);
@@ -147,13 +164,16 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   useEffect(() => {
     void Promise.resolve().then(load);
   }, [load]);
+  // From a side's first line (hashbang-only scripts): the file on disk may start with a conflict marker.
+  const firstLine = state ? firstLineOf(state.ours || state.theirs) : undefined;
   useEffect(() => {
+    if (firstLine === undefined) return;
     let alive = true;
-    void languageFor(path).then((l) => alive && setLang(() => l ?? []));
+    void languageFor(path, firstLine).then((l) => alive && setLang(() => l ?? NO_LANGUAGE));
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, [path, firstLine]);
 
   useEffect(() => {
     if (!state || lang === null || !oursRef.current || !resultRef.current || !theirsRef.current) return;
@@ -175,7 +195,9 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       EditorView.updateListener.of((u) => {
         if (u.selectionSet) refreshMergeActions(actionHost);
       }),
-      state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
+      state.base !== null
+        ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true, diffConfig: SIDE_DIFF })
+        : [],
       sideControls(which, controls),
       mergeStripe(which),
       mergeTheme,
@@ -220,8 +242,12 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     }
     // Scroll the three panes together, lined up through their changes.
     const stopSync = syncMergeScroll({ ours, result, theirs });
+    const left = leftDividerRef.current;
+    const right = rightDividerRef.current;
+    const stopDividers = left && right ? mergeDividers({ ours, result, theirs }, { left, right }) : () => {};
     return () => {
       stopSync();
+      stopDividers();
       ours.destroy();
       theirs.destroy();
       result.destroy();
@@ -263,23 +289,24 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     if (first) moveTo(v, first.from);
   };
 
-  /** Saves `text` as the resolved file and stages it; like IDEA, that closes the merge editor. */
-  const writeResolved = async (text: string | null) => {
+  const closeResolved = async () => {
+    setResolved(true);
+    await refreshNow();
+    await editorService().closeInput?.(input.key);
+  };
+
+  /** Saves the edited merge result as text and stages it. */
+  const writeResolved = async (text: string) => {
     const ok = await runOp(
       tx`Resolve ${baseName(path)}`,
       async () => {
-        if (text === null) await call(commands.fsDelete(path));
-        else await writeFileText(path, text, { save: true, exact: true });
+        await writeFileText(path, text, { save: true, exact: true });
         await call(commands.vcsStage([path]));
         return true;
       },
       { success: tx`${baseName(path)}: conflicts resolved` },
     );
-    if (ok) {
-      setResolved(true);
-      await refreshNow();
-      await editorService().closeInput?.(input.key);
-    }
+    if (ok) await closeResolved();
   };
 
   const apply = async () => {
@@ -310,18 +337,23 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   /** Accept Yours / Accept Theirs: that version as it is, whatever was done in the result. */
   const acceptSide = async (side: MergeSide) => {
-    if (!state) return;
-    if (
-      modified() &&
-      !(await confirmDialog({
-        title: side === "left" ? "Accept Yours" : "Accept Theirs",
-        message: "The result was changed. Discard the changes and take this version as it is?",
-        okLabel: "Discard Changes",
-        danger: true,
-      }))
-    )
-      return;
-    await writeResolved(state.deleted[side] ? null : side === "left" ? state.ours : state.theirs);
+    if ((!state && !binary) || accepting.current) return;
+    accepting.current = true;
+    try {
+      if (
+        modified() &&
+        !(await confirmDialog({
+          title: side === "left" ? "Accept Yours" : "Accept Theirs",
+          message: "The result was changed. Discard the changes and take this version as it is?",
+          okLabel: "Discard Changes",
+          danger: true,
+        }))
+      )
+        return;
+      if (await acceptConflictSide([path], side === "left" ? "ours" : "theirs")) await closeResolved();
+    } finally {
+      accepting.current = false;
+    }
   };
 
   const cancel = async () => {
@@ -348,6 +380,10 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     applyChange: () => false,
     file: () => {},
     showSettings: () => void actionHost.run("settings"),
+    focusOpposite: () => false,
+    close: () => false,
+    swapSides: () => false,
+    showInExternalTool: () => false,
   }));
   useEffect(
     () => () => {
@@ -392,6 +428,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   const enabled = (id: MergeCommand) => {
     if (id === "reload" || id === "cancel") return !resolved;
+    if (binary && !resolved) return id === "acceptYours" || id === "acceptTheirs";
     const v = resultView.current;
     if (!v || error || resolved) return false;
     const available = summarize(v.state);
@@ -497,7 +534,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         const { from, to } = view.state.selection.main;
         if (id === "selectAll") view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
         else if (id === "paste") {
-          const text = await navigator.clipboard?.readText().catch(() => undefined);
+          const text = await readClipboardPlainText().catch(() => undefined);
           if (text !== undefined) view.dispatch({ ...view.state.replaceSelection(text), userEvent: "input.paste" });
         } else {
           await copyText(view.state.sliceDoc(from, to));
@@ -540,6 +577,10 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   }, [actionHost]);
 
   const focusProps = {
+    // WebKit doesn't focus a clicked button: focus then moves to the nearest focusable
+    // ancestor, which must be this editor for the footer and toolbar buttons to keep it the
+    // focused merge editor their actions run in.
+    tabIndex: -1,
     onFocusCapture: (e: React.FocusEvent<HTMLDivElement>) => {
       const target = e.target as Node;
       if (oursRef.current?.contains(target)) paneRef.current = "left";
@@ -578,46 +619,90 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         </Button>
       </div>
     );
+  if (binary)
+    return (
+      <div ref={rootRef} className={styles.message} {...focusProps}>
+        <T>Binary file. Choose which version to keep.</T>
+        <div className={styles.binaryActions}>
+          <Button onClick={() => void runAction("acceptYours")}>
+            <T>Accept Yours</T>
+          </Button>
+          <Button onClick={() => void runAction("acceptTheirs")}>
+            <T>Accept Theirs</T>
+          </Button>
+          <Button onClick={() => void runAction("cancel")}>
+            <T>Cancel</T>
+          </Button>
+        </div>
+      </div>
+    );
 
+  const yourTitle = txt(titles.yours);
+  const resultTitle = tx("Result");
+  const theirTitle = txt(titles.theirs);
   return (
     <div ref={rootRef} className={styles.root} {...focusProps}>
-      <MergeToolbar summary={summary} />
-      <div className={styles.labels}>
-        <span>{txt(titles.yours)}</span>
-        <span>
-          <T>Result</T>
-        </span>
-        <span>{txt(titles.theirs)}</span>
-      </div>
+      <MergeToolbar summary={summary} step={goto} run={(c) => void runAction(c)} />
       {!state || lang === null ? (
         <div className={styles.message}>
           <Spinner size={14} />
         </div>
       ) : null}
       <div className={styles.panes} hidden={!state || lang === null}>
-        <div
-          ref={oursRef}
-          className={styles.pane}
-          aria-label={tx("Your version")}
-          role="region"
-          onContextMenu={(e) => oursView.current && showSideMenu(e, oursView.current, "left")}
-        />
-        <div
-          ref={resultRef}
-          className={styles.pane}
-          aria-label={tx("Result")}
-          role="region"
-          onContextMenu={(e) => resultView.current && showResultMenu(e, resultView.current)}
-        />
-        <div
-          ref={theirsRef}
-          className={styles.pane}
-          aria-label={tx("Their version")}
-          role="region"
-          onContextMenu={(e) => theirsView.current && showSideMenu(e, theirsView.current, "right")}
-        />
+        <SplitGroup className={styles.paneGroup} orientation="horizontal">
+          <SplitPanel
+            id={`${paneId}-yours`}
+            role="region"
+            aria-label={tx("Your version")}
+            className={styles.sideColumn}
+            minSize="18%"
+            defaultSize="30%"
+          >
+            <div className={styles.paneTitle} title={yourTitle}>
+              <span className={styles.branchTitle}>{yourTitle}</span>
+              <span className={styles.sideTitle}>{tx("Your version")}</span>
+            </div>
+            <div
+              ref={oursRef}
+              className={styles.pane}
+              onContextMenu={(e) => oursView.current && showSideMenu(e, oursView.current, "left")}
+            />
+          </SplitPanel>
+          <SplitHandle className={styles.divider} aria-label={tx("Resize left merge pane")}>
+            <div ref={leftDividerRef} className={styles.band} aria-hidden />
+          </SplitHandle>
+          <SplitPanel id={`${paneId}-result`} role="region" aria-label={resultTitle} minSize="24%" defaultSize="40%">
+            <div className={styles.resultTitle}>{resultTitle}</div>
+            <div
+              ref={resultRef}
+              className={styles.pane}
+              onContextMenu={(e) => resultView.current && showResultMenu(e, resultView.current)}
+            />
+          </SplitPanel>
+          <SplitHandle className={styles.divider} aria-label={tx("Resize right merge pane")}>
+            <div ref={rightDividerRef} className={styles.band} aria-hidden />
+          </SplitHandle>
+          <SplitPanel
+            id={`${paneId}-theirs`}
+            role="region"
+            aria-label={tx("Their version")}
+            className={styles.sideColumn}
+            minSize="18%"
+            defaultSize="30%"
+          >
+            <div className={styles.paneTitle} title={theirTitle}>
+              <span className={styles.branchTitle}>{theirTitle}</span>
+              <span className={styles.sideTitle}>{tx("Their version")}</span>
+            </div>
+            <div
+              ref={theirsRef}
+              className={styles.pane}
+              onContextMenu={(e) => theirsView.current && showSideMenu(e, theirsView.current, "right")}
+            />
+          </SplitPanel>
+        </SplitGroup>
       </div>
-      <MergeFooter />
+      <MergeFooter run={(c) => void runAction(c)} />
     </div>
   );
 }

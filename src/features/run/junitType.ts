@@ -7,6 +7,7 @@ import type { RunConfig } from "@/platform/ipc";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
 import { jvmTestConfig } from "./application";
 import { testBasesFor, testConfigFor } from "./context";
+import { inGradleModule } from "./gradleModuleTests";
 import {
   ROOT_MODULE,
   buildModuleOptions,
@@ -15,6 +16,7 @@ import {
   splitJvmArgs,
   vmOptionsField,
 } from "./jvmTypes";
+import { withMavenTests } from "./mavenTests";
 import { useRun } from "./store";
 
 type TestKind = "all" | "package" | "class" | "method" | "pattern";
@@ -37,11 +39,10 @@ export function junitCommandLine(
   p: Readonly<Record<string, string>>,
   configs: RunConfig[],
 ): { command: string; args: string[]; cwd: string | null } {
-  const base = baseFor(p, configs);
-  if (!base) return { command: "", args: [], cwd: null };
+  const detected = baseFor(p, configs);
+  if (!detected) return { command: "", args: [], cwd: null };
+  const base = inGradleModule(detected, moduleDir(p));
   const maven = base.kind === "maven";
-  const select = (pattern: string): string[] =>
-    maven ? [`-Dtest=${pattern}`, "-Dsurefire.failIfNoSpecifiedTests=false"] : ["--tests", pattern];
   let args = [...base.args];
   const cls = p.className?.trim() ?? "";
   switch (kindOf(p)) {
@@ -49,14 +50,14 @@ export function junitCommandLine(
     case "method": {
       if (!cls) break;
       const method = kindOf(p) === "method" ? p.methodName?.trim() || undefined : undefined;
-      const file = testConfigFor(inModule(p, `src/test/java/${cls.replace(/\./g, "/")}.java`), configs, base);
+      const file = testConfigFor(inModule(p, `src/test/java/${cls.replace(/\./g, "/")}.java`), configs, detected);
       const narrowed = file && jvmTestConfig(file, cls, method);
       if (narrowed) args = narrowed.args;
       break;
     }
     case "package": {
       const pkg = p.packageName?.trim();
-      if (pkg) args.push(...select(maven ? `${pkg}.**.*` : `${pkg}.*`));
+      if (pkg) args = maven ? withMavenTests(args, `${pkg}.**.*`) : [...args, "--tests", `${pkg}.*`];
       break;
     }
     case "pattern": {
@@ -64,7 +65,8 @@ export function junitCommandLine(
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      if (patterns.length) args.push(...(maven ? select(patterns.join(",")) : patterns.flatMap(select)));
+      if (patterns.length)
+        args = maven ? withMavenTests(args, patterns.join(",")) : [...args, ...patterns.flatMap((p) => ["--tests", p])];
       break;
     }
     case "all":

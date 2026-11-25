@@ -80,7 +80,7 @@ pub(crate) struct Widened<R> {
 impl<R> Widened<R> {
     /// An answer from the server's analysis scope alone; `empty`: it found nothing.
     pub fn only(first: R, empty: bool, server: &Server) -> Self {
-        let incomplete = (empty && server.is_busy()).then_some(ReferencesIncomplete::Indexing);
+        let incomplete = (empty && server.indexing()).then_some(ReferencesIncomplete::Indexing);
         Self { first, second: None, incomplete }
     }
 }
@@ -130,7 +130,7 @@ impl LspManager {
         F: Fn() -> Fut,
         Fut: Future<Output = IdeResult<R>>,
     {
-        let busy = t.server.is_busy();
+        let indexing = t.server.indexing();
         // gopls searches the view of the file asked about; files opened for it only get views of
         // their own (see `go_scope`).
         let word = search_word(snap, pos).filter(|_| t.caps().open_close && snap.language.as_str() != "go");
@@ -143,7 +143,7 @@ impl LspManager {
         };
         let (first, candidates) = futures::join!(query(), candidates);
         let mut first = first?;
-        if busy && covered(&first).is_empty() && t.server.wait_idle(INDEX_WAIT, cancel).await {
+        if indexing && covered(&first).is_empty() && t.server.wait_indexed(INDEX_WAIT, cancel).await {
             first = query().await?;
         }
         if cancel.is_cancelled() {
@@ -151,7 +151,7 @@ impl LspManager {
         }
         // Servers report analysis progress often; only "nothing found" while it lasts is suspect.
         let mut incomplete =
-            (t.server.is_busy() && covered(&first).is_empty()).then_some(ReferencesIncomplete::Indexing);
+            (t.server.indexing() && covered(&first).is_empty()).then_some(ReferencesIncomplete::Indexing);
         let Some(candidates) = candidates else { return Ok(Widened { first, second: None, incomplete }) };
         if candidates.limit_hit {
             incomplete = incomplete.or(Some(ReferencesIncomplete::TooManyFiles));
@@ -397,6 +397,7 @@ impl LspManager {
                     range: *r,
                     selection_range: *selection,
                     from_ranges: vec![*call],
+                    from_path: None,
                 }),
             }
         }
@@ -463,6 +464,22 @@ impl LspManager {
     }
 }
 
+/// A separate URI in the source directory, with the language's existing extension.
+pub(crate) fn snapshot_path(path: &Path, purpose: &str) -> IdeResult<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let name = path.file_name().ok_or_else(|| IdeError::invalid("a text snapshot requires a file path"))?;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        let mut unique = std::ffi::OsString::from(format!(".openidea-{purpose}-{}-{serial}-", std::process::id()));
+        unique.push(name);
+        let candidate = path.with_file_name(unique);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+}
+
 /// Files opened by [`LspManager::open_transient`]; closed on drop.
 pub(crate) struct TransientFiles<'a> {
     mgr: &'a LspManager,
@@ -476,9 +493,30 @@ pub(crate) struct TransientFiles<'a> {
 impl TransientFiles<'_> {
     /// Opens one file outside a references search (a file operation needs a loaded project).
     pub(crate) fn hold(&mut self, path: &Path, language: &LanguageId, text: &str) {
+        self.hold_file(path, language, text, false);
+    }
+
+    pub(crate) fn hold_for_diagnostics(
+        &mut self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+    ) -> tokio::sync::watch::Receiver<Vec<lsp::Diagnostic>> {
+        self.hold_file(path, language, text, true).expect("diagnostics subscription")
+    }
+
+    fn hold_file(
+        &mut self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+        diagnostics: bool,
+    ) -> Option<tokio::sync::watch::Receiver<Vec<lsp::Diagnostic>>> {
         let _docs = self.mgr.docs.lock();
         let uri = crate::uri::path_to_uri(path);
-        if self.server.hold_transient(path, self.run.generation) {
+        let open = self.server.hold_transient(path, self.run.generation);
+        let receiver = diagnostics.then(|| self.server.watch_transient_diagnostics(path));
+        if open {
             let params =
                 json!({ "textDocument": { "uri": uri, "languageId": language.as_str(), "version": 0, "text": text } });
             if let Err(e) = self.run.peer.notify("textDocument/didOpen", params) {
@@ -486,6 +524,7 @@ impl TransientFiles<'_> {
             }
         }
         self.files.push((path.to_owned(), uri));
+        receiver
     }
 }
 

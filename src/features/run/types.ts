@@ -21,13 +21,16 @@ import {
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
+import { flutterType } from "./flutterType";
 import { tomcatType } from "./tomcat";
 import { goBuildType, goTestType } from "./goTypes";
 
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
+import { pythonType } from "./pythonTypes";
 import { phpunitType } from "./phpunitTypes";
+import { UNITY_CONFIG_KIND } from "./unity";
 
 export const COMPOUND = "compound";
 
@@ -240,7 +243,7 @@ const npm: RunConfigTypeContribution = {
       mono: true,
       browse: "file",
       placeholder: "Project default",
-      hint: "The node executable this script runs on; empty uses Settings › Languages & Frameworks › Node.js.",
+      hint: "The node executable this script runs on; empty uses Settings › Languages & Frameworks › JavaScript Runtime.",
     },
   ],
   commandLine(p) {
@@ -253,6 +256,50 @@ const npm: RunConfigTypeContribution = {
   paramsFrom(c) {
     const [command, ...rest] = c.args;
     if (!PACKAGE_MANAGERS.includes(commandName(c.command)) || !command || !NPM_COMMANDS.includes(command)) return null;
+    const script = command === "run" ? (rest.shift() ?? "") : "";
+    return {
+      packageManager: commandName(c.command),
+      command,
+      script,
+      arguments: formatArgs(rest),
+      packageDir: dirOf(c.cwd),
+      ...(c.command !== commandName(c.command) ? { executable: c.command } : {}),
+    };
+  },
+};
+
+const BUN_COMMANDS = ["run", "test"];
+
+const bun: RunConfigTypeContribution = {
+  id: "bun",
+  label: "Bun",
+  icon: "file-bun",
+  description: "Run a TypeScript or JavaScript file with Bun",
+  defaults: { packageManager: "bun", command: "run" },
+  ownsWorkingDirectory: true,
+  fields: [
+    { key: "packageDir", label: "Working directory", mono: true, browse: "directory", placeholder: "Project root" },
+    { key: "command", label: "Command", control: "select", options: BUN_COMMANDS.map((v) => ({ value: v, label: v })) },
+    {
+      key: "script",
+      label: "Script",
+      mono: true,
+      required: true,
+      visible: (p) => p.command === "run",
+      suggestions: (configs) => argsOf(configs, "bun", 1),
+    },
+    { key: "arguments", label: "Arguments", mono: true },
+  ],
+  commandLine(p) {
+    const command = p.command || "run";
+    const args = [command, ...(command === "run" ? [p.script ?? ""] : []), ...parseArgs(p.arguments ?? "")];
+    const manager = p.packageManager || "bun";
+    const executable = p.executable && commandName(p.executable) === manager ? p.executable : manager;
+    return { command: executable, args, cwd: p.packageDir?.trim() || null };
+  },
+  paramsFrom(c) {
+    const [command, ...rest] = c.args;
+    if (commandName(c.command) !== "bun" || !command || !BUN_COMMANDS.includes(command)) return null;
     const script = command === "run" ? (rest.shift() ?? "") : "";
     return {
       packageManager: commandName(c.command),
@@ -431,12 +478,23 @@ const pytest: RunConfigTypeContribution = {
 };
 
 export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
+  {
+    id: UNITY_CONFIG_KIND,
+    label: "Unity Editor",
+    icon: "attach-to-process",
+    debugOnly: true,
+    fields: [],
+    commandLine: () => null,
+  },
   shell,
   program,
   npm,
+  bun,
   gradle,
   maven,
   godot,
+  flutterType,
+  pythonType,
   pytest,
   rubyScriptType,
   rakeType,
@@ -615,6 +673,8 @@ export function newConfigOfType(
     local: true,
     ...(folder ? { folder } : {}),
   };
+  // A new Shell Script runs in a terminal, as IDEA's "Execute in the terminal" does by default.
+  if (type.id === "shell") base.emulateTerminal = true;
   const copied: Partial<RunConfig> = {};
   if (template) {
     for (const key of TEMPLATE_KEYS) {

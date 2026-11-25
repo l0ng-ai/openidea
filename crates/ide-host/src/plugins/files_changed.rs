@@ -507,7 +507,13 @@ mod tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit]) -> Result<u64, ide_plugin::HostError> {
+        fn apply_edits(
+            &self,
+            _: &Path,
+            _: u64,
+            _: &[ide_core::TextEdit],
+            _: bool,
+        ) -> Result<u64, ide_plugin::HostError> {
             unreachable!()
         }
         fn trusted(&self, _: &Path) -> bool {
@@ -536,17 +542,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
         std::fs::create_dir(&root).unwrap();
-        let backend = crate::Host::new(crate::HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-            owner: |window| window,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let backend = crate::Host::new(crate::HostConfig::for_test(tmp.path()));
         backend.open_project("main", &root).unwrap();
         let active = backend.project("main").unwrap().files_events_active.clone();
         let plugins =

@@ -1,29 +1,32 @@
 //! Web browsers: the built-in server's URLs and launching browsers.
 
-use super::coverage::blocking;
-use crate::state::AppState;
-use ide_core::{IdeResult, IpcPath};
+use ide_command::desktop_command;
+use ide_core::IdeResult;
+use ide_host::ops::blocking;
 use ide_web::Browser;
-use tauri::{State, Window};
 
 /// The browsers installed on this machine.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn web_browsers() -> IdeResult<Vec<Browser>> {
     blocking(|| Ok(ide_web::installed())).await
 }
 
-/// The built-in server's URL for `path` (started on first use).
+/// Whether `url` (a server on this machine) answers with an HTML document, i.e. has a page to open.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub async fn web_url(window: Window, state: State<'_, AppState>, path: IpcPath) -> IdeResult<String> {
-    let root = state.project(window.label()).ok().map(|p| p.root.clone());
-    state.web.url_for(root.as_deref(), &path).await
+pub async fn web_serves_page(url: String) -> IdeResult<bool> {
+    Ok(ide_host::ops::web::serves_page(&url).await)
 }
 
 /// Opens `url` in `browser` (an id from `web_browsers`), or the default browser.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn web_open(url: String, browser: Option<String>) -> IdeResult<()> {
     blocking(move || ide_web::open(&url, browser.as_deref())).await
 }
+
+ide_command::desktop_domain!(web_browsers, web_open, web_serves_page);

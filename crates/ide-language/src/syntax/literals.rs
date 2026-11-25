@@ -73,6 +73,33 @@ pub struct SpellingRegion {
     pub start: usize,
     pub end: usize,
     pub kind: SpellingKind,
+    /// A raw / verbatim string: backslashes are literal text, not escapes
+    /// (`r"\user"`, `r#"…"#`, `` `…` ``, `@"…"`). The spelling layer must not
+    /// skip the character after a `\` in one of these.
+    pub raw: bool,
+}
+
+/// Whether `node` is a string literal whose backslashes are not escapes.
+fn is_raw_string(node: &Node<'_>, text: &str) -> bool {
+    let kind = node.kind();
+    // Rust/C++/C# grammars name the node directly.
+    if kind == "raw_string_literal" || kind == "verbatim_string_literal" || kind.contains("raw_string") {
+        return true;
+    }
+    // Go backtick strings and Python `r`/`fr`/`rb` prefixes: the grammar uses
+    // the generic `string` node, so inspect the literal's own prefix.
+    if kind == "string" || kind == "string_literal" {
+        let literal = &text[node.start_byte()..node.end_byte()];
+        if literal.starts_with('`') {
+            return true;
+        }
+        let quote = literal.find(['"', '\'']);
+        let prefix = quote.map_or("", |i| &literal[..i]);
+        return !prefix.is_empty()
+            && prefix.chars().any(|c| c == 'r' || c == 'R')
+            && prefix.chars().all(|c| matches!(c, 'r' | 'R' | 'b' | 'B' | 'f' | 'F' | 'u' | 'U'));
+    }
+    false
 }
 
 fn is_name_leaf(kind: &str) -> bool {
@@ -101,16 +128,20 @@ fn declares(cursor: &TreeCursor<'_>, node: &Node<'_>) -> bool {
 }
 
 /// Comments, string literals and declared names, for spell checking.
-pub(crate) fn spelling_regions(tree: &Tree) -> Vec<SpellingRegion> {
+pub(crate) fn spelling_regions(tree: &Tree, text: &str) -> Vec<SpellingRegion> {
     let mut out = Vec::new();
     let mut cursor = tree.walk();
     loop {
         let node = cursor.node();
         let literal = kind_of(&node);
-        let region = |kind| SpellingRegion { start: node.start_byte(), end: node.end_byte(), kind };
+        let region = |kind| SpellingRegion { start: node.start_byte(), end: node.end_byte(), kind, raw: false };
         match literal {
             Some(LiteralKind::Comment) => out.push(region(SpellingKind::Comment)),
-            Some(LiteralKind::String) => out.push(region(SpellingKind::String)),
+            Some(LiteralKind::String) => {
+                let mut r = region(SpellingKind::String);
+                r.raw = is_raw_string(&node, text);
+                out.push(r);
+            }
             None if node.is_named()
                 && node.child_count() == 0
                 && is_name_leaf(node.kind())

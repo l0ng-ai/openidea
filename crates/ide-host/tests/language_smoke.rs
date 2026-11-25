@@ -8,6 +8,8 @@
 //! pinned versions and runs one language per job:
 //! `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>`.
 
+mod common;
+
 use ide_core::{ChangeSet, DocId, IdeEvent, Pos, Range, RequestId, TextChange};
 use ide_host::{Host, HostConfig, ops};
 use ide_lsp::types::{FormatOptions, GotoKind};
@@ -126,7 +128,9 @@ struct Smoke {
 }
 
 fn fixture_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(name)
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    manifest_dir.join("../../fixtures").join(name)
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -182,11 +186,6 @@ impl Smoke {
         let events: Events = Arc::default();
         let app = tmp.path().join("app");
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: app.join("config"),
-            data_dir: app.join("data"),
-            local_data_dir: app.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new({
                 let events = events.clone();
                 move |_| {
@@ -194,9 +193,7 @@ impl Smoke {
                     Arc::new(move |e: IdeEvent| events.lock().unwrap().push(e))
                 }
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..common::host_config(&app)
         }));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project(WINDOW, &root).unwrap();
@@ -231,8 +228,8 @@ impl Smoke {
     }
 
     async fn doc(&self, file: &str) -> (DocId, String) {
-        let info = ops::doc::open(&self.host, WINDOW, self.root.join(file)).await.unwrap();
-        let info = ops::doc::snapshot(&self.host, WINDOW, info.id).await.unwrap();
+        let info = ops::doc::doc_open(&self.host, WINDOW, self.root.join(file)).await.unwrap();
+        let info = ops::doc::doc_snapshot(&self.host, WINDOW, info.id).await.unwrap();
         (info.id, info.text)
     }
 
@@ -260,13 +257,13 @@ impl Smoke {
     }
 
     async fn replace(&self, doc: DocId, from: u32, to: u32, insert: &str) {
-        let version = ops::doc::snapshot(&self.host, WINDOW, doc).await.unwrap().version;
+        let version = ops::doc::doc_snapshot(&self.host, WINDOW, doc).await.unwrap().version;
         let changes = ChangeSet { changes: vec![TextChange { from, to, insert: insert.into() }] };
-        ops::doc::edit(&self.host, WINDOW, doc, version, changes).unwrap();
+        ops::doc::doc_edit(&self.host, WINDOW, doc, version, changes).await.unwrap();
     }
 
     async fn restore(&self, doc: DocId, text: &str) {
-        let current = ops::doc::snapshot(&self.host, WINDOW, doc).await.unwrap().text;
+        let current = ops::doc::doc_snapshot(&self.host, WINDOW, doc).await.unwrap().text;
         self.replace(doc, 0, utf16_len(&current), text).await;
     }
 
@@ -742,8 +739,8 @@ const PYTHON: Checks = Checks {
         typed("src/tasks/models.py", "from enum import IntEnum", "import abc"),
         Imports::Before("import os"),
     )),
-    // basedpyright has no `workspace/willRenameFiles`.
-    file_move: None,
+    // basedpyright has no `workspace/willRenameFiles`: the IDE rewrites the imports.
+    file_move: Some(("src/tasks/models.py", "src/tasks/domain.py", "src/tasks/cli.py", "from .domain import")),
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

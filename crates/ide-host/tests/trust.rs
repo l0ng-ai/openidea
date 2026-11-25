@@ -1,138 +1,60 @@
-use ide_core::NullSink;
+mod common;
+
 #[cfg(unix)]
 use ide_host::ops;
-use ide_host::{Host, HostConfig, trust::TrustStore};
+use ide_host::{Host, HostConfig, catalogue::TrustClass, trust::TrustStore};
 use std::path::Path;
 use std::sync::Arc;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
 fn host(base: &Path, environment: bool) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: environment,
-    }))
+    Arc::new(Host::new(HostConfig { project_environment: environment, ..common::host_config(base) }))
 }
 
+/// Each class against each window state: a trusted project, a Restricted one, and no project.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn application_commands_work_in_restricted_projects_and_without_a_project() {
+async fn a_commands_trust_class_decides_where_it_runs() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("project");
-    std::fs::create_dir(&root).unwrap();
+    let restricted = tmp.path().join("restricted");
+    let trusted = tmp.path().join("trusted");
+    std::fs::create_dir(&restricted).unwrap();
+    std::fs::create_dir(&trusted).unwrap();
     let host = host(&tmp.path().join("app"), false);
     assert!(host.project("welcome").is_err());
-    assert!(ide_host::ops::project::roots(&host, "welcome").is_err());
-    assert!(!host.open_project("main", &root).unwrap().is_trusted());
-    for command in [
-        "app_info",
-        "workspace_discover_projects",
-        "app_build_info",
-        "app_cli_install",
-        "app_cli_uninstall",
-        "app_log_location",
-        "app_check_update",
-        "app_update_window_ready",
-        "app_update_status",
-        "app_update_announcement",
-        "app_install_update",
-        "caches_schedule_invalidation",
-        "clear_caches",
-        "clipboard_file_list",
-        "clipboard_has_files",
-        "clipboard_image",
-        "clipboard_set_file_list",
-        "clipboard_write_text",
-        "jdk_download_vendors",
-        "jdk_download_releases",
-        "jdk_download_location",
-        "jdk_download",
-        "run_system_env",
-        "run_gradle_jvm_args_script",
-        "proxy_check_connection",
-        "docker_settings",
-        "docker_save_settings",
-        "docker_set_registry_password",
-        "docker_run_env",
-        "db_console_path",
-        "db_export_file",
-        "vcs_write_patch",
-        "remote_bootstrap_list",
-        "deploy_test_connection",
-        "plugin_market",
-        "plugin_market_url",
-        "plugin_set_market_url",
-        "plugin_market_download",
-        "plugin_preview_install",
+    assert!(ide_host::ops::project::project_roots(&host, "welcome").is_err());
+    assert!(!host.open_project("main", &restricted).unwrap().is_trusted());
+    host.set_project_trust(&trusted, true, false).await.unwrap();
+    assert!(host.open_project("other", &trusted).unwrap().is_trusted());
+    let allowed = |window, class| host.authorize(window, class).is_ok();
+    for (class, in_trusted, in_restricted, without_project) in [
+        (TrustClass::Always, true, true, true),
+        (TrustClass::OutsideRestricted, true, false, true),
+        (TrustClass::Trusted, true, false, false),
     ] {
-        assert!(ide_host::trust::restricted_command_allowed(command), "{command}");
-        for window in ["main", "welcome"] {
-            assert!(host.authorize_command(window, command).is_ok(), "{window}: {command}");
-        }
+        assert_eq!(allowed("other", class), in_trusted, "{class:?} in a trusted project");
+        assert_eq!(allowed("main", class), in_restricted, "{class:?} in Restricted Mode");
+        assert_eq!(allowed("welcome", class), without_project, "{class:?} without a project");
     }
-    for command in [
-        "run_start",
-        "build_sync",
-        "debug_start",
-        "sdk_detect",
-        "tools_list",
-        "tools_install",
-        "tools_uninstall",
-        "vcs_git_version",
-        "docker_compose_op",
-        "db_execute",
-        "remote_delete",
-        "remote_mkdir",
-        "remote_rename",
-        "remote_import_local",
-        "remote_bootstrap_exec",
-        "deploy_upload",
-        "deploy_download",
-        "deploy_delete_remote",
-        "deploy_sync",
-        "unknown_command",
-    ] {
-        assert!(!ide_host::trust::restricted_command_allowed(command), "{command}");
-        for window in ["main", "welcome"] {
-            assert!(host.authorize_command(window, command).is_err(), "{window}: {command}");
-        }
-    }
-    // Plugin installs run plugin code: from the welcome screen, but not in an untrusted project.
-    for command in ["plugin_install_dir", "plugin_uninstall", "plugin_set_enabled", "plugin_reload"] {
-        assert!(!ide_host::trust::restricted_command_allowed(command), "{command}");
-        assert!(host.authorize_command("main", command).is_err(), "{command}");
-        assert!(host.authorize_command("welcome", command).is_ok(), "{command}");
-    }
+    // Toolchain detection runs from Settings opened on the Welcome screen, but not in Restricted Mode.
+    assert!(ide_host::ops::sdk::sdk_detect(&host, "welcome", ide_sdk::SdkKind::Zig).await.is_ok());
+    assert!(ide_host::ops::sdk::sdk_detect(&host, "main", ide_sdk::SdkKind::Zig).await.is_err());
     // These requests validate the vendor before any network access, independently of project trust.
-    for window in ["main", "welcome"] {
-        let error = ide_host::ops::tools::jdk_download_releases(
-            &host,
-            window,
-            "unknown-vendor".into(),
-            ide_core::RequestId(901),
-        )
+    let error = ide_host::ops::tools::jdk_download_releases(&host, "unknown-vendor".into(), ide_core::RequestId(901))
         .await
         .unwrap_err();
-        assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
-        let error = ide_host::ops::tools::jdk_download(
-            &host,
-            window,
-            "unknown-vendor".into(),
-            25,
-            None,
-            ide_core::RequestId(902),
-            ide_host::ops::Channel::new(|_| {}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
-    }
+    assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
+    let error = ide_host::ops::tools::jdk_download(
+        &host,
+        "unknown-vendor".into(),
+        25,
+        None,
+        ide_core::RequestId(902),
+        ide_host::ops::Channel::new(|_| {}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
     host.shutdown().await;
 }
 
@@ -167,17 +89,15 @@ async fn welcome_window_browses_selected_ssh_host_without_executing_commands() {
     state.ssh = ssh;
     state.remote = Arc::new(ide_remote::RemoteService::new(state.ssh.clone(), tmp.path().join("cache")));
     assert!(host.project("welcome").is_err());
-    host.authorize_command("welcome", "remote_bootstrap_list").unwrap();
     let connection = FsConnection::Sftp { ssh: "selected-host".into() };
     let entries = host.remote.list(&connection, "/projects").await.unwrap();
     assert!(entries.iter().any(|e| e.path == "/projects/demo" && e.is_dir));
     assert!(entries.iter().any(|e| e.name == "README.md" && !e.is_dir));
     assert!(host.remote.list(&connection, "/projects/demo").await.unwrap().is_empty());
-    host.authorize_command("welcome", "deploy_test_connection").unwrap();
     host.remote.test_connection(&connection, "/projects").await.unwrap();
     let local = tmp.path().join("local-deployment");
     std::fs::create_dir(&local).unwrap();
-    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into())
+    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into(), None)
         .await
         .unwrap();
     assert_eq!(std::fs::read_dir(local).unwrap().count(), 0, "write probe is cleaned up");
@@ -262,8 +182,8 @@ async fn malicious_project_stays_editable_then_starts_in_place_after_trust() {
     let host = host(&tmp.path().join("app"), true);
     let project = host.open_project("main", &root).unwrap();
     assert!(!project.is_trusted());
-    let doc = ops::doc::open(&host, "main", root.join("main.py")).await.unwrap();
-    ops::doc::save(&host, "main", doc.id).await.unwrap();
+    let doc = ops::doc::doc_open(&host, "main", root.join("main.py")).await.unwrap();
+    ops::doc::doc_save(&host, "main", doc.id).await.unwrap();
     assert!(project.index.wait_idle(Duration::from_secs(10)));
     assert!(project.index.status().files > 0);
     let sync = || {
@@ -282,20 +202,7 @@ async fn malicious_project_stays_editable_then_starts_in_place_after_trust() {
     assert!(
         ops::sdk::sdk_locate_tools(&host, "missing-window", vec!["server".into()], Some(root.clone())).await.is_err()
     );
-    for command in [
-        "run_start",
-        "debug_start",
-        "notebook_execute",
-        "coverage_collect",
-        "profiler_collect",
-        "docker_compose_op",
-        "agent_prompt",
-        "sdk_detect",
-        "build_sync",
-    ] {
-        assert!(host.authorize_command("main", command).is_err(), "{command}");
-        assert!(host.authorize_command("missing-window", command).is_err(), "{command}");
-    }
+    assert!(host.authorize("main", TrustClass::Trusted).is_err());
     tokio::time::sleep(Duration::from_millis(200)).await;
     for marker in ["hook.marker", "lsp.marker", "build.marker"] {
         assert!(!root.join(marker).exists(), "{marker}");
@@ -313,7 +220,7 @@ async fn malicious_project_stays_editable_then_starts_in_place_after_trust() {
     host.set_project_trust(&root, false, false).await.unwrap();
     assert!(!project.is_trusted());
     assert!(sync().await.is_err());
-    ops::doc::save(&host, "main", doc.id).await.unwrap();
+    ops::doc::doc_save(&host, "main", doc.id).await.unwrap();
     host.shutdown().await;
 }
 
@@ -332,7 +239,7 @@ async fn restricted_terminal_keeps_user_input_but_ignores_project_startup_comman
         )
         .unwrap();
     host.open_project("main", &root).unwrap();
-    let terminal = ops::term::spawn(
+    let terminal = ops::term::term_spawn(
         &host,
         "main",
         ide_terminal::TerminalOptions {
@@ -344,8 +251,9 @@ async fn restricted_terminal_keeps_user_input_but_ignores_project_startup_comman
             rows: 24,
             shell_integration: false,
         },
-        Arc::new(|_| {}),
+        ops::Channel::new(|_| {}),
     )
+    .await
     .unwrap();
     host.terminals.write(terminal.id, "printf user > terminal.marker; exit\n").unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -435,7 +343,6 @@ async fn restricted_git_views_ignore_project_executables_and_mutations_cannot_ru
     project.with_repo(|repo| repo.commit("trusted", false, false)).unwrap();
     assert!(root.join("git-executable.marker").exists());
     assert!(root.join("git-hook.marker").exists());
-    ide_vcs::set_git_executable(None);
     host.shutdown().await;
 }
 
@@ -481,4 +388,32 @@ fn attached_member_trust_is_required_after_restart_and_revocation() {
     assert!(!trust.window_trusted(&root).unwrap());
     trust.decide(&other, true, false).unwrap();
     assert!(trust.window_trusted(&root).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_created_with_new_project_is_trusted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host(&tmp.path().join("app"), false);
+    let req: ide_scaffold::CreateRequest = serde_json::from_value(serde_json::json!({
+        "generator": "empty",
+        "location": tmp.path().join("projects").to_string_lossy(),
+        "name": "fresh",
+        "git": false,
+        "values": {},
+    }))
+    .unwrap();
+    let dir = ide_host::ops::scaffold::scaffold_create(
+        &host,
+        req,
+        ide_core::RequestId(902),
+        ide_host::ops::Channel::new(|_| {}),
+    )
+    .await
+    .unwrap();
+    let dir = std::path::PathBuf::from(dir);
+    assert!(host.trust.status(&dir).unwrap().trusted);
+    // Its siblings are not.
+    let sibling = tmp.path().join("projects/other");
+    std::fs::create_dir(&sibling).unwrap();
+    assert!(!host.trust.status(&sibling).unwrap().trusted);
 }

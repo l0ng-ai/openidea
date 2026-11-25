@@ -251,18 +251,12 @@ impl KotlinBridge {
                     }
                 }
                 other => {
-                    let text = match other {
-                        Ok(Ok(outcome)) => outcome
-                            .messages
-                            .iter()
-                            .filter(|m| m.severity == Severity::Error)
-                            .map(|m| m.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                        Ok(Err(error)) => error.message,
-                        Err(error) => error.to_string(),
+                    let (text, notify) = match other {
+                        Ok(Ok(outcome)) => failed_build(&outcome),
+                        Ok(Err(error)) => (error.message, true),
+                        Err(error) => (error.to_string(), true),
                     };
-                    self.failure(text, &mut diagnostics, &mut last_failure);
+                    self.report(text, notify, &mut diagnostics, &mut last_failure);
                     remove_directory(directory).await;
                 }
             }
@@ -276,6 +270,12 @@ impl KotlinBridge {
     }
 
     fn failure(&self, text: String, paths: &mut BTreeSet<PathBuf>, previous: &mut String) {
+        self.report(text, true, paths, previous);
+    }
+
+    /// Publishes a failed build in Problems (on `pom.xml`) and, when `notify`, as a
+    /// notification once per distinct message.
+    fn report(&self, text: String, notify: bool, paths: &mut BTreeSet<PathBuf>, previous: &mut String) {
         let text = if text.is_empty() { "Kotlin compilation failed".to_owned() } else { text };
         let text = format!("{text}\nJava temporarily uses the last successfully compiled Kotlin API.");
         self.clear_diagnostics(paths);
@@ -295,7 +295,7 @@ impl KotlinBridge {
                 deprecated: false,
             }],
         });
-        if previous != &text {
+        if notify && previous != &text {
             self.sink.emit(IdeEvent::Notify {
                 level: NotifyLevel::Error,
                 title: "Kotlin editor compilation failed".into(),
@@ -304,6 +304,15 @@ impl KotlinBridge {
             *previous = text;
         }
     }
+}
+
+/// The error text of a failed bridge build, and whether to notify about it. Compiler errors
+/// in the user's own Kotlin already show in its editor and stay in Problems; only a build
+/// that failed without one (Maven itself, a missing plugin) is worth a notification.
+fn failed_build(outcome: &Outcome) -> (String, bool) {
+    let errors: Vec<_> = outcome.messages.iter().filter(|m| m.severity == Severity::Error).collect();
+    let text = errors.iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join("\n");
+    (text, !errors.iter().any(|m| m.path.is_some()))
 }
 
 fn relevant_change(root: &Path, path: &Path, settings: &ide_core::settings::Settings) -> bool {
@@ -381,6 +390,23 @@ mod tests {
         settings.project_structure.excluded.push("module/src/main/kotlin".into());
         assert!(!relevant_change(dir.path(), &path, &settings));
         assert!(!relevant_change(dir.path(), &dir.path().join("module/src/build/pkg"), &Default::default()));
+    }
+
+    #[test]
+    fn source_errors_stay_out_of_notifications() {
+        let message = |text: &str, path: Option<&str>| ide_build::compile::BuildMessage {
+            severity: Severity::Error,
+            text: text.into(),
+            path: path.map(|p| PathBuf::from(p).into()),
+            range: None,
+            code: None,
+        };
+        let outcome = |messages| Outcome { projects: Vec::new(), messages, success: false };
+        let (text, notify) = failed_build(&outcome(vec![message("No value passed", Some("/p/src/A.kt"))]));
+        assert_eq!((text.as_str(), notify), ("No value passed", false));
+        let (text, notify) = failed_build(&outcome(vec![message("Plugin not found", None)]));
+        assert_eq!((text.as_str(), notify), ("Plugin not found", true));
+        assert!(failed_build(&outcome(Vec::new())).1);
     }
 
     #[test]

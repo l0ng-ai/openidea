@@ -1,0 +1,25 @@
+# Test fixture: `ui.read-clipboard` (API 1.11) from a command, a view's button,
+# a web view message and an event handler; only the first two are the user's.
+id = "test.clipboard"
+name = "Clipboard fixture"
+version = "0.1.0"
+engines.openidea = "^1.11"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*", "on-view:clipboard", "on-event:editor-focused"]
+
+[capabilities]
+optional = ["clipboard.read", "events"]
+
+[[contributes.commands]]
+id = "read"
+title = "Read the clipboard"
+
+[[contributes.commands]]
+id = "last"
+title = "What the last view action or event read"
+
+[[contributes.views]]
+id = "clipboard"
+title = "Clipboard"
+icon = "toolwindow-services"
+location = "right"

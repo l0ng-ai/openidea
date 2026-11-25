@@ -37,7 +37,12 @@ impl Call {
             .collect()
     }
     pub fn resolve_inside(&self, path: &str) -> IdeResult<PathBuf> {
-        resolve_inside(self.root(), path)
+        resolve_inside(self.root(), path).or_else(|e| {
+            // An absolute path may name a trusted attached project, wherever it is.
+            let absolute = path.starts_with("file://") || Path::new(path).is_absolute();
+            let attached = if absolute { self.trusted_attachments() } else { Vec::new() };
+            attached.iter().find_map(|root| resolve_inside(root, path).ok()).ok_or(e)
+        })
     }
     pub async fn resolve_writable(&self, path: &str) -> IdeResult<PathBuf> {
         let path = self.resolve_inside(path)?;
@@ -46,12 +51,31 @@ impl Call {
     }
     pub async fn check_writable(&self, path: &Path) -> IdeResult<()> {
         self.project.require_trust()?;
-        ensure_inside(self.root(), path)
+        self.ensure_writable_place(path)
+    }
+    /// `path` is inside the project or a trusted project attached to it.
+    pub fn ensure_writable_place(&self, path: &Path) -> IdeResult<()> {
+        ensure_inside(self.root(), path).or_else(|e| {
+            if self.trusted_attachments().iter().any(|root| ensure_inside(root, path).is_ok()) {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })
+    }
+    /// The projects attached to this one that the user trusts (each is trusted on its own).
+    fn trusted_attachments(&self) -> Vec<PathBuf> {
+        trusted_attachments(&self.host.trust, self.root())
     }
     pub async fn ask(&self, request: ide_core::event::McpUiRequest) -> IdeResult<()> {
         self.host.mcp_requests.ask(self, request).await
     }
+    /// Asks the user before a tool changes the project or starts a process, unless brave mode
+    /// is on — read from the IDE's own settings only, which a project's settings can't set.
     pub async fn confirm(&self, subject: &str, detail: Option<String>) -> IdeResult<()> {
+        if self.host.global_settings.effective().mcp_server.run_without_confirmation {
+            return self.project.require_trust();
+        }
         self.ask(ide_core::event::McpUiRequest::Confirm {
             client: self.client.clone(),
             tool: self.tool.clone(),
@@ -149,7 +173,9 @@ impl Call {
                     let r = ide_vfs::split_archive_path(&r).map_or(r.clone(), |(archive, _)| archive);
                     dunce::canonicalize(r).is_ok_and(|r| real.starts_with(r))
                 }) {
-                    return Err(IdeError::invalid("path is outside the project's content roots"));
+                    return Err(IdeError::invalid(
+                        "path is outside the project's content roots: ask the user before reading anything else outside the project",
+                    ));
                 }
                 Ok(entry.map_or_else(|| real.clone(), |entry| PathBuf::from(format!("{}!/{entry}", real.display()))))
             })
@@ -209,7 +235,7 @@ impl Tool {
                 destructive: false,
                 output_schema: None,
                 input_schema: json!({ "type": "object", "properties": {
-                    "projectPath": { "type": "string", "description": "Any directory inside an open project. Optional when only one project is open." }
+                    "projectPath": { "type": "string", "description": "Any directory inside a project that is open in a window or served in the background. Defaults to the connection's project (`?project=`) or the only one open in a window." }
                 }, "required": [] }),
             },
             handler: Arc::new(move |call| Box::pin(handler(call))),
@@ -280,7 +306,9 @@ pub fn resolve_inside(root: &Path, raw: &str) -> IdeResult<PathBuf> {
     }
     let root = dunce::canonicalize(root)?;
     if !real.starts_with(&root) {
-        return Err(IdeError::invalid("path is outside the project"));
+        return Err(IdeError::invalid(
+            "path is outside the project: these tools change files inside it only; ask the user before touching anything outside it",
+        ));
     }
     if real
         .strip_prefix(&root)
@@ -294,4 +322,18 @@ pub fn resolve_inside(root: &Path, raw: &str) -> IdeResult<PathBuf> {
 }
 pub fn ensure_inside(root: &Path, path: &Path) -> IdeResult<()> {
     resolve_inside(root, &path.to_string_lossy()).map(|_| ())
+}
+
+/// The projects attached to the one at `root` that the user trusts (each is trusted on its own).
+pub(crate) fn trusted_attachments(trust: &crate::trust::TrustStore, root: &Path) -> Vec<PathBuf> {
+    attached_projects(root).into_iter().filter(|p| trust.trusted(p).unwrap_or(false)).collect()
+}
+
+/// The projects attached to the one at `root` (its workspace members), `root` itself left out.
+pub(crate) fn attached_projects(root: &Path) -> Vec<PathBuf> {
+    ide_workspace::workspace::Workspace::load(root)
+        .ok()
+        .flatten()
+        .map(|w| w.projects.into_iter().filter(|p| p != root).collect())
+        .unwrap_or_default()
 }

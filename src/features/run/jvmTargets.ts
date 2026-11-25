@@ -21,6 +21,9 @@ export interface JvmTarget {
   instance?: boolean;
 }
 
+const BOOT_ANNOTATIONS = ["SpringBootApplication", "SpringCloudApplication"];
+const isBootApplication = (annotations: readonly string[]) => annotations.some((a) => BOOT_ANNOTATIONS.includes(a));
+
 /** A class with `extends X` and no `main` of its own: it may inherit one. */
 export interface JvmMainCandidate {
   /** Position of the class name (0-based line, UTF-16 column). */
@@ -196,7 +199,7 @@ function scan(src: string, relPath: string, kotlin: boolean) {
             col: frame.inheritsFrom.col,
             className: qualify(binaryName([...classes, frame])),
             base: frame.inheritsFrom.base,
-            spring: frame.annotations.includes("SpringBootApplication") || undefined,
+            spring: isBootApplication(frame.annotations) || undefined,
           });
         classes.push(frame);
         pendingClass = null;
@@ -290,7 +293,7 @@ function scan(src: string, relPath: string, kotlin: boolean) {
               line: tokens[i]!.line,
               kind: "main",
               className: qualify(binaryName(launch)),
-              spring: cls.annotations.includes("SpringBootApplication") || undefined,
+              spring: isBootApplication(cls.annotations) || undefined,
             });
           }
         }
@@ -298,7 +301,7 @@ function scan(src: string, relPath: string, kotlin: boolean) {
         const isStatic = modifiers.includes("static");
         // Java 25 instance main methods (JEP 512) need no `static` / arguments.
         if (isStatic || owner.kind === "class" || owner.kind === "record") {
-          const spring = classes.some((c) => c.annotations.includes("SpringBootApplication"));
+          const spring = classes.some((c) => isBootApplication(c.annotations));
           out.push({
             line: tokens[i]!.line,
             kind: "main",

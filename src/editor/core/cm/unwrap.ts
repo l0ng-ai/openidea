@@ -17,8 +17,10 @@ export interface ChainNode {
 
 export interface UnwrapOption {
   label: string;
-  /** The statement that goes away (highlighted while choosing). */
+  /** The statement affected by the unwrap. */
   target: { from: number; to: number };
+  /** Original range of the body that will be kept. */
+  retained: { from: number; to: number } | null;
   from: number;
   to: number;
   insert: string;
@@ -86,8 +88,8 @@ function isBody(n: ChainNode): boolean {
 
 const leading = (s: string) => /^[ \t]*/.exec(s)![0];
 
-/** Body text without its braces, re-indented to `base`, one string per line. */
-function bodyLines(doc: Text, body: ChainNode, base: string): string[] {
+/** Body text without its braces, re-indented to `base`, and its original range. */
+function unwrapBody(doc: Text, body: ChainNode, base: string) {
   let from = body.from;
   let to = body.to;
   const raw = doc.sliceString(from, to);
@@ -97,15 +99,16 @@ function bodyLines(doc: Text, body: ChainNode, base: string): string[] {
   }
   const first = doc.lineAt(from);
   if (!doc.sliceString(first.from, from).trim()) from = first.from;
-  const lines = doc
-    .sliceString(from, to)
-    .split("\n")
-    .map((l) => l.trimEnd());
+  const text = doc.sliceString(from, to);
+  const lines = text.split("\n").map((l) => l.trimEnd());
   while (lines.length && !lines[0]!.trim()) lines.shift();
   while (lines.length && !lines[lines.length - 1]!.trim()) lines.pop();
   const indents = lines.filter((l) => l.trim()).map((l) => leading(l).length);
   const strip = indents.length ? Math.min(...indents) : 0;
-  return lines.map((l) => (l.trim() ? base + l.slice(strip) : ""));
+  const retained = lines.length
+    ? { from: from + text.length - text.trimStart().length, to: from + text.trimEnd().length }
+    : null;
+  return { insert: lines.map((l) => (l.trim() ? base + l.slice(strip) : "")).join("\n"), retained };
 }
 
 function keyword(doc: Text, n: ChainNode): string {
@@ -115,23 +118,32 @@ function keyword(doc: Text, n: ChainNode): string {
   );
 }
 
-function replacement(doc: Text, target: ChainNode, body: ChainNode): { from: number; to: number; insert: string } {
+function replacement(
+  doc: Text,
+  target: ChainNode,
+  body: ChainNode,
+): Pick<UnwrapOption, "from" | "to" | "insert" | "retained"> {
   const startLine = doc.lineAt(target.from);
   const endLine = doc.lineAt(target.to);
   const wholeLines =
     !doc.sliceString(startLine.from, target.from).trim() && !doc.sliceString(target.to, endLine.to).trim();
   if (wholeLines) {
-    const lines = bodyLines(doc, body, leading(startLine.text));
+    const { insert, retained } = unwrapBody(doc, body, leading(startLine.text));
     // An empty body removes the statement's lines altogether.
-    if (!lines.length) {
+    if (!retained) {
       const to = endLine.number < doc.lines ? endLine.to + 1 : endLine.to;
       const from = to === endLine.to && startLine.number > 1 ? startLine.from - 1 : startLine.from;
-      return { from, to, insert: "" };
+      return { from, to, insert, retained };
     }
-    return { from: startLine.from, to: endLine.to, insert: lines.join("\n") };
+    return { from: startLine.from, to: endLine.to, insert, retained };
   }
   // Mid-line (`} else if (…) {…}`): the branch stays a braced block.
-  return { from: target.from, to: target.to, insert: doc.sliceString(body.from, body.to) };
+  return {
+    from: target.from,
+    to: target.to,
+    insert: doc.sliceString(body.from, body.to),
+    retained: { from: body.from, to: body.to },
+  };
 }
 
 /**

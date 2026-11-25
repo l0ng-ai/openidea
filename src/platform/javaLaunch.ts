@@ -14,7 +14,9 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { useBuildPresentation } from "@/platform/projectPresentation";
+import { isRemoteWindow } from "@/platform/remote";
 
 export const CLASSPATH = "${classpath}";
 export const TEST_CLASSPATH = "${testClasspath}";
@@ -23,6 +25,25 @@ export const JVM_APPLICATION_KINDS = ["application", "spring-boot"];
 
 export function isJvmApplication(config: Pick<RunConfig, "kind">): boolean {
   return JVM_APPLICATION_KINDS.includes(config.kind);
+}
+
+/** Run configuration kinds whose JVM gets the plugins' Java agents (`[[contributes.javaAgents]]`). */
+const JAVA_AGENT_KINDS = ["application", "spring-boot", "jar-application"];
+
+/**
+ * The console line of a Java launch in a remote project, when plugins with a granted
+ * `java.agent` would have added their agent: the JVM runs on the server, and agents load
+ * only into JVMs on this machine. `null` otherwise. Plugins are the desktop's own.
+ */
+export async function remoteJavaAgentNote(config: Pick<RunConfig, "kind">): Promise<string | null> {
+  if (!JAVA_AGENT_KINDS.includes(config.kind) || !isRemoteWindow()) return null;
+  const snapshot = await call(commands.pluginList()).catch(() => null);
+  const names = (snapshot?.plugins ?? [])
+    .filter((p) => p.enabled && p.capabilities.some((c) => c.id === "java.agent" && c.granted))
+    .map((p) => p.name);
+  if (!names.length) return null;
+  const list = names.join(", ");
+  return tx`Java agents of ${list} were not added: they load only in local projects.` + "\n";
 }
 
 /** `java` options whose value is the next argument. */
@@ -129,6 +150,14 @@ export function joinJavaArgs(args: readonly string[]): string {
 /** JDWP agent options: listen on a free local port and wait for the debugger. */
 export const JDWP_AGENT = "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0";
 
+/** Makes a HotSpot JVM open its attach socket at start-up; the memory view finds the debuggee through it. */
+export const ATTACH_LISTENER = "-XX:+StartAttachListener";
+
+/** True when VM options already decide about the attach mechanism, so the IDE must not override them. */
+export function optsOutOfAttach(text: string): boolean {
+  return /StartAttachListener|DisableAttachMechanism/.test(text);
+}
+
 /** The port of `Listening for transport dt_socket at address: 5005` (JDWP's start-up line). */
 export function jdwpListeningPort(line: string): number | null {
   const m = /Listening for transport dt_socket at address:\s*(?:[\w.[\]:-]*:)?(\d+)\s*$/.exec(line.trim());
@@ -164,7 +193,14 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
   if (config.module != null) return config.module;
   const main = parseJavaArgs(config.args).mainClass;
   if (!main) return null;
-  const outer = main.split("$")[0]!;
+  const modules = await classModules(main);
+  return modules.length === 1 ? modules[0]! : null;
+}
+
+/** Module directories (as {@link jvmModuleDir}) of the project's sources declaring the class `binaryName`. */
+export async function classModules(binaryName: string): Promise<string[]> {
+  const root = useProject.getState().project?.root;
+  const outer = binaryName.split("$")[0]!;
   const simple = outer.slice(outer.lastIndexOf(".") + 1);
   const pkg = outer.slice(0, Math.max(0, outer.lastIndexOf(".")));
   const names = [`${simple}.java`, `${simple}.kt`, ...(simple.endsWith("Kt") ? [`${simple.slice(0, -2)}.kt`] : [])];
@@ -176,9 +212,9 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
   for (const file of matches) {
     const text = await call(commands.fsReadText(file.path));
     const sourcePackage = /^\s*package\s+([\w.]+)\s*[;\r\n]/m.exec(text)?.[1] ?? "";
-    if (sourcePackage === pkg) modules.add(jvmModuleDir(file.relPath, configs));
+    if (sourcePackage === pkg) modules.add(jvmModuleDir(root ? relativePath(root, file.path) : file.relPath, configs));
   }
-  return modules.size === 1 ? [...modules][0]! : null;
+  return [...modules];
 }
 
 export async function resolveJavaModule(config: RunConfig): Promise<string> {
@@ -230,6 +266,12 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   const info = await call(
     commands.javaResolveLaunch(module, parsed.classpath === "test", policy, preparation.request),
   ).catch((error: unknown) => {
+    if (error instanceof IpcError && error.data?.type === "javaBuildProblems") {
+      const problems = error.data.problems.join("; ");
+      throw new Error(
+        tx`Java module '${module || "."}' could not be imported because its build has errors: ${problems}. Fix them, then reload the Maven or Gradle project.`,
+      );
+    }
     if (
       error instanceof IpcError &&
       error.kind !== "cancelled" &&
@@ -257,5 +299,12 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   }
   if (parsed.classpath && !info.classPaths.length)
     throw new Error(tx("The classpath is empty: is the module imported by the Java language server?"));
-  return { module, info, resolved: resolveJavaCommand(config, info) };
+  const resolved = resolveJavaCommand({ ...config, module }, info);
+  const project = useProject.getState().project;
+  if (resolved.cwd == null && project?.workspace) {
+    const path = /^(?:[A-Za-z]:)?\//.test(module) ? module : `${project.root}/${module}`;
+    const owner = projectFolder(project, path);
+    if (owner && owner.root !== project.root) resolved.cwd = path;
+  }
+  return { module, info, resolved };
 }

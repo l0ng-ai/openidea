@@ -24,23 +24,35 @@ describe("JUnit configurations", () => {
     const line = (p: Record<string, string>) => junitCommandLine({ module: ".", ...p }, maven);
     expect(line({ testKind: "class", className: "a.OrderTest" })).toEqual({
       command: "./mvnw",
-      args: ["test", "-Dtest=a.OrderTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      args: [
+        "test",
+        "-Dtest=a.OrderTest",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ],
       cwd: null,
     });
     expect(line({ testKind: "method", className: "a.OrderTest", methodName: "ships" }).args).toEqual([
       "test",
       "-Dtest=a.OrderTest#ships",
       "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
     ]);
     expect(line({ testKind: "package", packageName: "a.b" }).args).toEqual([
       "test",
       "-Dtest=a.b.**.*",
       "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
     ]);
     expect(line({ testKind: "pattern", pattern: "*IT, a.**.*Test" }).args).toEqual([
       "test",
       "-Dtest=*IT,a.**.*Test",
       "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
     ]);
     expect(line({ testKind: "all", vmOptions: "-Xmx1g -Da=b" }).args).toEqual(["test", "-DargLine=-Xmx1g -Da=b"]);
   });
@@ -61,6 +73,25 @@ describe("JUnit configurations", () => {
     ]);
     // Gradle takes VM options from an init script at launch, not from the command line.
     expect(line({ testKind: "all", vmOptions: "-Xmx1g" }).args).toEqual([":api:test"]);
+  });
+
+  it("run a subproject's tests with its own task when the build's test configuration is the root's", () => {
+    const root = [cfg({ id: "gradle:test", kind: "gradle", args: ["test"], isTest: true })];
+    const line = (p: Record<string, string>) => junitCommandLine({ module: "services/api", ...p }, root);
+    expect(line({ testKind: "method", className: "a.OrderTest", methodName: "ships" })).toEqual({
+      command: "./gradlew",
+      args: [":services:api:test", "--tests", "a.OrderTest.ships"],
+      cwd: null,
+    });
+    expect(line({ testKind: "class", className: "a.OrderTest" }).args).toEqual([
+      ":services:api:test",
+      "--tests",
+      "a.OrderTest",
+    ]);
+    expect(line({ testKind: "package", packageName: "a.b" }).args).toEqual([":services:api:test", "--tests", "a.b.*"]);
+    expect(line({ testKind: "pattern", pattern: "*IT" }).args).toEqual([":services:api:test", "--tests", "*IT"]);
+    expect(line({ testKind: "all" }).args).toEqual([":services:api:test"]);
+    expect(junitCommandLine({ module: ".", testKind: "all" }, root).args).toEqual(["test"]);
   });
 
   it("run nothing without a Maven or Gradle build, and debug and report like build runs", () => {

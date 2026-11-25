@@ -3,7 +3,7 @@
  * the diagram's top-right. `./mermaid` attaches them after every drawing; they
  * are plain DOM, like the rest of the renderer, so both Markdown hosts get them.
  */
-import { iconNode } from "@/editor/lsp/iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 import { tx } from "@/platform/i18n";
 import { invokeLocal } from "@/platform/tauriCore";
@@ -11,6 +11,7 @@ import { openLayer, trapTab } from "@/ui/popupState";
 import { notifications } from "@/workbench/contributions";
 import { attachPanZoom } from "../panZoom";
 import { reid } from "./svgIds";
+import { svgElementSize } from "@/ui/svgSize";
 import styles from "./MermaidTools.module.css";
 
 /** Marks the tool strip, so a redrawing block replaces it rather than stacking one. */
@@ -27,10 +28,12 @@ export function attachDiagramTools(block: HTMLElement, svg: SVGSVGElement): void
   tools.className = styles.tools!;
   tools.setAttribute(TOOLS_ATTR, "");
   tools.append(
-    toolButton("fullscreen", tx("Full screen"), (button) => openDiagramPreview(svg, button)),
+    toolButton("fullscreen", tx("Full screen"), (button) => openDiagramPreview(block, svg, button)),
     toolButton("download", tx("Download image"), () => void saveDiagram(svg)),
   );
   block.append(tools);
+  // Redrawn (a theme change, an edit) while shown full screen: the preview follows.
+  if (preview?.block === block) preview.redraw(svg);
 }
 
 function toolButton(icon: ToolIcon, label: string, onClick: (button: HTMLButtonElement) => void): HTMLButtonElement {
@@ -49,13 +52,15 @@ function toolButton(icon: ToolIcon, label: string, onClick: (button: HTMLButtonE
 }
 
 let closeActive: (() => void) | null = null;
+/** The block shown full screen, and how to show its newest drawing. */
+let preview: { block: HTMLElement; redraw: (svg: SVGSVGElement) => void } | null = null;
 
 /**
  * The diagram over the whole window, fitted and centered: drag pans it anywhere,
  * ⌘/Ctrl+wheel zooms, double-click resets. Escape (or a click outside, or Close)
  * returns to the page, with focus back on the button that opened it.
  */
-function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
+function openDiagramPreview(block: HTMLElement, svg: SVGSVGElement, returnTo?: HTMLElement): void {
   closeActive?.();
   const returnFocus = returnTo ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const overlay = document.createElement("div");
@@ -71,6 +76,7 @@ function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
     if (closed) return;
     closed = true;
     if (closeActive === close) closeActive = null;
+    if (preview?.redraw === redraw) preview = null;
     document.removeEventListener("keydown", onKey, true);
     layer.release();
     overlay.remove();
@@ -93,7 +99,7 @@ function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
 
   const tools = document.createElement("div");
   tools.className = styles.previewTools!;
-  const download = toolButton("download", tx("Download image"), () => void saveDiagram(svg));
+  const download = toolButton("download", tx("Download image"), () => void saveDiagram(current));
   tools.append(download, toolButton("close", tx("Close"), close));
   overlay.append(tools);
 
@@ -106,7 +112,10 @@ function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
   // The canvas fills the window: the fitted drawing is centred in it, and the
   // whole window stays a drag surface once zoomed in. Top rows stay free of it
   // so the Close and Download buttons never cover the drawing.
-  const fitted = fittedCopy(svg, canvas.clientWidth, Math.max(1, canvas.clientHeight - 32));
+  const fit = (next: SVGSVGElement) => fittedCopy(next, canvas.clientWidth, Math.max(1, canvas.clientHeight - 32));
+  let current = svg;
+  let shown = fit(svg);
+  const fitted = shown;
   canvas.append(fitted);
   const width = Number(fitted.getAttribute("width"));
   const height = Number(fitted.getAttribute("height"));
@@ -118,6 +127,14 @@ function openDiagramPreview(svg: SVGSVGElement, returnTo?: HTMLElement): void {
       y: (canvas.clientHeight - height) / 2,
     },
   });
+  // In place, inside the pan/zoom layer, so the current pan and zoom stay.
+  const redraw = (next: SVGSVGElement) => {
+    current = next;
+    const copy = fit(next);
+    shown.replaceWith(copy);
+    shown = copy;
+  };
+  preview = { block, redraw };
   closeActive = close;
   download.focus({ preventScroll: true });
 }
@@ -145,18 +162,15 @@ function fittedCopy(svg: SVGSVGElement, availW: number, availH: number): SVGSVGE
 }
 
 function naturalSize(svg: SVGSVGElement): { w: number; h: number } {
-  const box = (svg as SVGSVGElement & { viewBox?: SVGAnimatedRect }).viewBox?.baseVal;
-  if (box && box.width > 0 && box.height > 0) return { w: box.width, h: box.height };
-  const width = Number(svg.getAttribute("width"));
-  const height = Number(svg.getAttribute("height"));
-  if (width > 0 && height > 0) return { w: width, h: height };
+  const declared = svgElementSize(svg);
+  if (declared) return declared;
   const rect = svg.getBoundingClientRect();
   return { w: rect.width > 0 ? rect.width : 800, h: rect.height > 0 ? rect.height : 600 };
 }
 
 async function saveDiagram(svg: SVGSVGElement): Promise<void> {
   try {
-    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { save } = await import("@/platform/dialog");
     const path = await save({
       title: tx("Save diagram"),
       defaultPath: "mermaid-diagram.png",

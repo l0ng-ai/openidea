@@ -79,9 +79,20 @@ export async function claimSession(
   throw new Error("No available development session port");
 }
 
+/** `tauri dev` options that take a value as the next argument. */
+const VALUE_OPTIONS = new Set(["-c", "--config", "-t", "--target", "-f", "--features", "-r", "--runner", "--port"]);
+
+/**
+ * `args` with the session's Vite URL as the last `--config`, placed before the first
+ * positional argument: `tauri dev` passes everything from there on to the app, so a config
+ * after `pnpm dev:app <project path>` would be ignored.
+ */
 export function withDevConfig(args: string[], devUrl: string): string[] {
-  const separator = args.indexOf("--");
-  const index = separator < 0 ? args.length : separator;
+  let index = 1;
+  while (index < args.length && args[index] !== "--" && args[index]!.startsWith("-")) {
+    index += VALUE_OPTIONS.has(args[index]!) ? 2 : 1;
+  }
+  index = Math.min(index, args.length);
   return [
     ...args.slice(0, index),
     "--config",

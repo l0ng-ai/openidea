@@ -4,7 +4,7 @@
  */
 import { openPolicy } from "./projectWindow";
 import { setContext } from "@/platform/context";
-import { isRemoteWindow, useRemote } from "@/platform/remote";
+import { isRemoteWindow, projectLocation, useRemote } from "@/platform/remote";
 import { useProject } from "@/platform/project";
 import {
   provideNotificationService,
@@ -15,15 +15,12 @@ import {
 } from "./contributions";
 import { installBrowserGuards } from "./browserGuards";
 import { installDistractionFree } from "./distractionFree";
+import { installNarrowWindow } from "./narrowWindow";
 import { installFileDrop } from "./fileDrop";
 import { installFocusTracking } from "./focus";
+import { installFocusScopeTracking } from "@/ui/focusScope";
 import { clearProjectNotifications, installNotifyEvents, notificationServiceImpl } from "./notificationStore";
-import {
-  NOTIFICATIONS_TOOL_WINDOW,
-  NotificationsHeaderActions,
-  NotificationsToolWindow,
-  useUnreadNotifications,
-} from "./Notifications";
+import { NOTIFICATIONS_TOOL_WINDOW, NotificationsToolWindow, useUnreadNotifications } from "./Notifications";
 import { loadPlatformInfo } from "@/platform/platformInfo";
 import { registerShellActions } from "./shellActions";
 import { MainToolbarDialogHost } from "./MainToolbarDialog";
@@ -36,6 +33,7 @@ import {
   setFocusedToolWindow,
   toolWindowServiceImpl,
 } from "./toolwindows/store";
+import { TabColorPicker } from "./TabColorPicker";
 
 export function activateWorkbench(): () => void {
   provideToolWindowService(toolWindowServiceImpl);
@@ -45,25 +43,29 @@ export function activateWorkbench(): () => void {
   const syncProjectContext = () => {
     const project = useProject.getState().project;
     setContext("projectLocal", !!project && !isRemoteWindow() && !useProject.getState().lightEdit);
+    setContext("projectRemote", !!project && isRemoteWindow());
     setContext("workspaceOpen", !!project?.workspace);
     setContext("projectAttached", !!project?.workspace && project.workspace.projects[0] === project.root);
     setContext("workspaceContainer", !!project?.workspace && project.workspace.projects[0] !== project.root);
     setContext("projectOpenAsk", openPolicy() === "ask");
   };
   // Synchronous so the frame's first render after opening already has the project's layout.
-  const onProject = (root: string | null) => {
-    setContext("projectOpen", root !== null);
+  let prevLocation = projectLocation(useProject.getState().project?.root);
+  const onProject = (scope: string | null) => {
+    setContext("projectOpen", scope !== null);
     syncProjectContext();
     setContext("lightEdit", useProject.getState().lightEdit);
-    if (root !== null) loadToolWindowLayout(root);
+    if (scope !== null) loadToolWindowLayout(scope);
   };
-  onProject(useProject.getState().project?.root ?? null);
+  onProject(prevLocation);
   const unsubProject = useProject.subscribe((s, prev) => {
     syncProjectContext();
-    if (s.project?.root === prev.project?.root && s.lightEdit === prev.lightEdit) return;
+    const nextLocation = projectLocation(s.project?.root);
+    if (nextLocation === prevLocation && s.lightEdit === prev.lightEdit) return;
+    prevLocation = nextLocation;
     // The previous project's notifications (and their actions) no longer apply.
     if (prev.project) clearProjectNotifications();
-    onProject(s.project?.root ?? null);
+    onProject(nextLocation);
   });
 
   const disposers = [
@@ -73,13 +75,16 @@ export function activateWorkbench(): () => void {
     installToolWindowActions(),
     installToolWindowLayoutSync(),
     installDistractionFree(),
+    installNarrowWindow(),
     installFocusTracking(setFocusedToolWindow),
+    installFocusScopeTracking(),
     installTaskEvents(),
     installNotifyEvents(),
     installBrowserGuards(),
     installFileDrop(),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),
     registerOverlay({ id: "workbench.backgroundTasks", component: BackgroundTasksHost }),
+    registerOverlay({ id: "workbench.projectColor", component: TabColorPicker }),
     registerStatusItem({ id: "workbench.tasks", align: "right", priority: 0, component: TaskStatus, lightEdit: true }),
     registerStatusItem({ id: "workbench.info", align: "left", priority: 5, component: StatusInfo, lightEdit: true }),
     registerToolWindow({
@@ -89,16 +94,8 @@ export function activateWorkbench(): () => void {
       anchor: "right",
       order: 0,
       component: NotificationsToolWindow,
-      headerActions: NotificationsHeaderActions,
       useBadge: useUnreadNotifications,
     }),
   ];
   return () => disposers.reverse().forEach((d) => d());
-}
-
-/** Shell services for a secondary window (Settings): notifications, platform info, browser guards. */
-export function activateSecondaryWindow(): () => void {
-  provideNotificationService(notificationServiceImpl);
-  void loadPlatformInfo();
-  return installBrowserGuards();
 }

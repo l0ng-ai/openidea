@@ -36,6 +36,10 @@ body,
   opacity: 0;
   pointer-events: none;
 }
+/* A question asked while the window opens (Trust Project?) shows over the splash (platform/splash.ts). */
+.splash.splash-under-dialogs {
+  z-index: calc(var(--z-dialog, 900) - 1);
+}
 :root[data-theme^="dark"] .splash {
   color: var(--fg-muted, var(--boot-fg, #8c8f95));
 }

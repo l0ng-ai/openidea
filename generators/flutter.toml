@@ -1,0 +1,62 @@
+id = "flutter"
+name = "Flutter"
+group = "Dart"
+icon = "project-flutter"
+order = 1
+description = "A Flutter app, plugin or package from flutter create."
+
+[[requires]]
+program = "flutter"
+hint = "Install Flutter: https://docs.flutter.dev/get-started/install"
+
+[[fields]]
+id = "template"
+label = "Template:"
+type = "choice"
+segmented = true
+options = [
+    { value = "app", label = "Application" },
+    { value = "package", label = "Package" },
+    { value = "plugin", label = "Plugin" },
+]
+default = "app"
+
+[[fields]]
+id = "package"
+label = "Package name:"
+type = "text"
+pattern = '^[a-z][a-z0-9_]*$'
+default = "{{name|snake}}"
+
+[[fields]]
+id = "org"
+label = "Organization:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "com.example"
+visible = { template = ["app", "plugin"] }
+
+[[fields]]
+id = "sample"
+label = "Empty application"
+type = "checkbox"
+default = "false"
+visible = { template = "app" }
+hint = "Hello World instead of the counter sample."
+
+[[steps]]
+label = "Running flutter create"
+program = "flutter"
+args = [
+    "create", "--template", "{{template}}", "--project-name", "{{package}}", "--no-pub",
+    { when = { template = ["app", "plugin"] }, args = ["--org", "{{org}}"] },
+    { when = { template = "app", sample = "true" }, args = ["--empty"] },
+    ".",
+]
+env = { FLUTTER_SUPPRESS_ANALYTICS = "true" }
+
+[[after]]
+label = "Running flutter pub get"
+program = "flutter"
+args = ["pub", "get"]
+optional = true

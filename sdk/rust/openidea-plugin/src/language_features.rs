@@ -88,6 +88,21 @@ pub struct GutterAction {
     pub command: String,
     pub argument: Option<String>,
 }
+/// An action rendered at the left edge of a line and revealed by hover.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoverAction {
+    /// The line the button is drawn on; normally the declaration line.
+    pub line: u32,
+    /// First line whose leftmost strip reveals this action, inclusive.
+    pub start_line: u32,
+    /// Last line whose leftmost strip reveals this action, inclusive.
+    pub end_line: u32,
+    pub icon: Option<String>,
+    pub label: String,
+    pub tooltip: Option<String>,
+    pub command: String,
+    pub argument: Option<String>,
+}
 /// Injection data.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Injection {
@@ -95,6 +110,15 @@ pub struct Injection {
     pub language: String,
 }
 /// Implement only the kinds declared under contributes.providers.
+/// Optional API 1.12 export: actions rendered at the left edge of a line and
+/// revealed while the pointer is in the leftmost editing-area strip of their
+/// `range`. Export with `register_plugin!(Plugin, hover_actions)`.
+pub trait HoverActions {
+    fn hover_actions(&mut self, _doc: &Document) -> Vec<HoverAction> {
+        Vec::new()
+    }
+}
+
 pub trait LanguageFeatures {
     fn format(
         &mut self,

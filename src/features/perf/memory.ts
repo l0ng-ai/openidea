@@ -1,6 +1,6 @@
 /** Memory breakdown from `AppMetrics.memory`: totals per group and the popup sections. */
 import type { AppMetrics, MemoryCategory, ProcessMemory } from "@/platform/ipc";
-import { formatBytes, formatSize } from "./format";
+import { formatBytes, formatPercent, formatSize } from "./format";
 
 export interface MemorySummary {
   /** Backend + its WebView processes. */
@@ -45,13 +45,23 @@ export interface BreakdownRow {
   /** Project, windows, run kind… */
   detail: string | null;
   value: string;
+  cpu: string;
+  pid: number;
   processes: number;
+  /** A language server, run, terminal or other child the user may end (never OpenIDEA's own processes). */
+  endable: boolean;
 }
 
 export interface BreakdownSection {
   title: string;
   total: string;
+  cpu: string;
   rows: BreakdownRow[];
+}
+
+function cpuSum(rows: ProcessMemory[]): number | null {
+  const known = rows.filter((r) => r.cpuPercent != null);
+  return known.length ? known.reduce((n, r) => n + r.cpuPercent!, 0) : null;
 }
 
 const SECTIONS: Array<{ category: MemoryCategory; title: string }> = [
@@ -69,12 +79,16 @@ export function memorySections(rows: ProcessMemory[]): BreakdownSection[] {
       {
         title,
         total: formatSize(sum(items)),
+        cpu: formatPercent(cpuSum(items)),
         rows: items.map((r, i) => ({
           key: `${category}:${i}:${r.label}`,
           label: r.label,
           detail: r.detail,
           value: formatSize(r.bytes),
+          cpu: formatPercent(r.cpuPercent),
+          pid: r.pid,
           processes: r.processes,
+          endable: category !== "app",
         })),
       },
     ];

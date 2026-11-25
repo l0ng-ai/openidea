@@ -1,0 +1,21 @@
+id = "laravel"
+name = "Laravel"
+group = "PHP"
+icon = "project-laravel"
+order = 1
+description = "A Laravel application from composer create-project."
+
+[[requires]]
+program = "php"
+min = "8.2"
+hint = "Install PHP 8.2 or later: https://www.php.net/downloads"
+
+[[requires]]
+program = "composer"
+hint = "Install Composer: https://getcomposer.org/download/"
+
+[[steps]]
+label = "Running composer create-project laravel/laravel"
+program = "composer"
+cwd = "parent"
+args = ["create-project", "laravel/laravel", "{{name}}", "--prefer-dist", "--no-interaction"]

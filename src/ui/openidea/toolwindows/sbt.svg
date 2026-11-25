@@ -1,0 +1,4 @@
+<!-- OpenIDEA: sbt tool window (three stacked slanted bands) -->
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M3.5 2.9L12.5 2V5.1L3.5 6V2.9Z" stroke="#6C707E" stroke-linejoin="round"/><path d="M3.5 6.9L12.5 6V9.1L3.5 10V6.9Z" stroke="#6C707E" stroke-linejoin="round"/><path d="M3.5 10.9L12.5 10V13.1L3.5 14V10.9Z" stroke="#6C707E" stroke-linejoin="round"/>
+</svg>

@@ -2,7 +2,8 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { RemoteSession } from "@/platform/ipc";
 import { useRemote } from "@/platform/remote";
-import { BarButton } from "@/ui";
+import { BarButton, Icon, showContextMenu, Spinner } from "@/ui";
+import styles from "./RemoteDev.module.css";
 
 const BADGE: Record<RemoteSession["target"]["kind"], string> = {
   ssh: "SSH",
@@ -17,13 +18,46 @@ export function remoteBadge(session: Pick<RemoteSession, "target" | "host">): st
 
 export function RemoteStatus() {
   const session = useRemote((s) => s.session);
+  const lost = useRemote((s) => s.lost !== null);
+  const takenOver = useRemote((s) => s.takenOver);
+  const reconnecting = useRemote((s) => s.reconnecting);
   if (!session) return null;
   const label = remoteBadge(session);
+  if (lost)
+    return (
+      <BarButton
+        tooltip={
+          reconnecting
+            ? tx`Reconnecting to ${session.host}…`
+            : takenOver
+              ? tx("Another window took over this remote session")
+              : tx`Lost the connection to ${session.host}. Click to reconnect.`
+        }
+        aria-label={tx`${label} (disconnected)`}
+        disabled={reconnecting}
+        onClick={() => void executeAction("remote.reconnect")}
+      >
+        <span className={styles.lost}>
+          {reconnecting ? <Spinner size={10} /> : <Icon name="warning" size={13} />}
+          {label}
+        </span>
+      </BarButton>
+    );
   return (
     <BarButton
       tooltip={tx`Project runs on ${label}`}
       aria-label={label}
       onClick={() => void executeAction("remote.connect")}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        showContextMenu(e, [
+          { kind: "action", action: "remote.connect" },
+          { kind: "action", action: "remote.reloadEnvironment" },
+          { kind: "separator" },
+          { kind: "action", action: "remote.disconnect" },
+          { kind: "action", action: "remote.stopBackend" },
+        ]);
+      }}
     >
       {label}
     </BarButton>

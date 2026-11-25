@@ -102,6 +102,14 @@ fn parse<T>(r: serde_json::Result<T>) -> IdeResult<T> {
     r.map_err(|e| IdeError::new(ide_core::error::ErrorKind::Protocol, format!("unexpected gh output: {e}")))
 }
 
+/// The repository of `root`, free to execute: the host runs the `gh_*` commands only in a
+/// trusted project.
+fn trusted_repo(root: &Path) -> IdeResult<Repo> {
+    let repo = Repo::discover(root)?.ok_or_else(|| IdeError::invalid("not a git repository"))?;
+    repo.set_execution_allowed(true);
+    Ok(repo)
+}
+
 /// Whether gh is installed and signed in, and which GitHub repository `root` maps to.
 pub fn availability(root: &Path) -> GhAvailability {
     if gh_executable().is_none() {
@@ -233,7 +241,7 @@ pub fn create(
         return Err(IdeError::invalid("choose a base branch"));
     }
     if req.push {
-        let repo = Repo::discover(root)?.ok_or_else(|| IdeError::invalid("not a git repository"))?;
+        let repo = trusted_repo(root)?;
         repo.push(false, true, cancel, on_output)?;
     }
     let mut args = vec!["pr", "create", "--title", req.title.trim(), "--body", &req.body, "--base", req.base.trim()];
@@ -354,7 +362,7 @@ pub fn prepare_diff(
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
 ) -> IdeResult<PrDiffRevisions> {
-    let repo = Repo::discover(root)?.ok_or_else(|| IdeError::invalid("not a git repository"))?;
+    let repo = trusted_repo(root)?;
     if !repo.has_commit(head_oid) || !repo.has_commit(base_oid) {
         let remotes = repo.remotes()?;
         let remote = remote_for(&remotes, name_with_owner)

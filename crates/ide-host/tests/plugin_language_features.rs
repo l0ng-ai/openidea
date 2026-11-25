@@ -1,4 +1,6 @@
 //! The API 1.4 fixture exercises every kind through the real component runtime and editor ops.
+mod common;
+
 use ide_core::{CancellationToken, Pos, Range, RequestId};
 use ide_host::plugins::{Consent, HostWorkspace, PluginHost, set_editor_providers};
 use ide_host::{Host, HostConfig, ops};
@@ -78,17 +80,8 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     let tmp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
     std::fs::create_dir(&root).unwrap();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host =
+        Arc::new(Host::new(HostConfig { local_data_dir: tmp.path().join("local"), ..common::host_config(tmp.path()) }));
     host.open_project("main", &root).unwrap();
     let p = plugins(tmp.path());
     p.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
@@ -98,7 +91,22 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     assert_eq!(host.project("main").unwrap().lsp.injection_generation(), generation);
     let path = root.join("a.txt");
     std::fs::write(&path, "value\nnext\nend").unwrap();
-    let doc = ops::doc::open(&host, "main", path.clone()).await.unwrap();
+    let doc = ops::doc::doc_open(&host, "main", path.clone()).await.unwrap();
+    // `a.toml` has neither a language server, a completion plugin, nor an injection plugin, so `Unavailable` is preserved.
+    let toml_path = root.join("a.toml");
+    std::fs::write(&toml_path, "k = 1\n").unwrap();
+    let toml_doc = ops::doc::doc_open(&host, "main", toml_path).await.unwrap();
+    assert_eq!(
+        ops::lsp::lsp_completion(&host, "main", RequestId(89), toml_doc.id, Pos::default(), None)
+            .await
+            .unwrap_err()
+            .kind,
+        ide_core::error::ErrorKind::Unavailable
+    );
+    let sql_path = root.join("q.sql");
+    std::fs::write(&sql_path, "SELECT 1;").unwrap();
+    let sql_doc = ops::doc::doc_open(&host, "main", sql_path).await.unwrap();
+    assert!(ops::lsp::lsp_completion(&host, "main", RequestId(90), sql_doc.id, Pos::default(), None).await.is_ok());
     assert_eq!(
         ops::lsp::lsp_signature_help(&host, "main", doc.id, Pos::default()).await.unwrap().unwrap().signatures[0]
             .parameters,
@@ -137,6 +145,9 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     let visuals = ops::lsp::plugin_language_visuals(&host, "main", doc.id).await.unwrap();
     assert_eq!(visuals.colors.len(), 1);
     assert_eq!(visuals.gutter_actions.len(), 1);
+    assert_eq!(visuals.hover_actions.len(), 1);
+    assert_eq!(visuals.hover_actions[0].1.command, "run");
+    assert_eq!(visuals.hover_actions[0].1.end_line, 2);
     assert_eq!(
         ops::lsp::plugin_color_presentations(&host, "main", doc.id, ID.into(), visuals.colors[0].1.clone())
             .await
@@ -206,7 +217,7 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     set_editor_providers(Some(&p));
     injected_lsp(&host, &p, &root, &peer).await;
     p.set_enabled(ID, false).unwrap();
-    assert!(ops::lsp::plugin_formatters().is_empty());
+    assert!(ops::lsp::plugin_formatters().unwrap().is_empty());
     set_editor_providers(None);
 }
 
@@ -304,7 +315,7 @@ async fn injected_lsp(host: &Host, plugins: &PluginHost, root: &Path, remote: &i
     ));
     let path = root.join("injection.txt");
     std::fs::write(&path, "😀[[sql]] tail").unwrap();
-    let doc = ops::doc::open(host, "main", path.clone()).await.unwrap();
+    let doc = ops::doc::doc_open(host, "main", path.clone()).await.unwrap();
     let items = ops::lsp::lsp_completion(host, "main", RequestId(91), doc.id, Pos::new(0, 5), None).await.unwrap();
     let item = items.items.into_iter().find(|i| i.label == "embedded-server").unwrap();
     assert_eq!(
@@ -335,13 +346,14 @@ async fn injected_lsp(host: &Host, plugins: &PluginHost, root: &Path, remote: &i
         .await
         .unwrap();
     assert!(hover.to_string().contains("embedded hover"), "{hover}");
-    ops::doc::edit(
+    ops::doc::doc_edit(
         host,
         "main",
         doc.id,
         doc.version,
         ide_core::ChangeSet { changes: vec![ide_core::TextChange { from: 4, to: 7, insert: "SQL".into() }] },
     )
+    .await
     .unwrap();
     ops::lsp::lsp_completion(host, "main", RequestId(94), doc.id, Pos::new(0, 5), None).await.unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -355,7 +367,7 @@ async fn injected_lsp(host: &Host, plugins: &PluginHost, root: &Path, remote: &i
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(project.lsp.injected_document(doc.id, Pos::new(0, 5)), doc.id);
-    ops::doc::close(host, "main", doc.id).unwrap();
+    ops::doc::doc_close(host, "main", doc.id).await.unwrap();
     project.lsp.shutdown_all().await;
     project.lsp.set_servers_hook(Box::new(|_, _| Vec::new()));
     task.abort();

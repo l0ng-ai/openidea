@@ -1,3 +1,6 @@
 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-<g stroke-linejoin="round"><path d="M14 4C14 2.89543 13.1046 2 12 2H4C2.89543 2 2 2.89543 2 4V12C2 13.1046 2.89543 14 4 14H12C13.1046 14 14 13.1046 14 12V4Z" fill="#3FB4D0"/><path transform="translate(4 6)" d="M3.5 1.4C3.2 0.8 2.6 0.5 2 0.5C1.1 0.5 0.5 1.3 0.5 2.3V3.7C0.5 4.7 1.1 5.5 2 5.5C2.9 5.5 3.5 4.9 3.5 4V3.5H2" stroke="white"/><path transform="translate(9 6)" d="M2 0.5C2.9 0.5 3.5 1.3 3.5 2.3V3.7C3.5 4.7 2.9 5.5 2 5.5C1.1 5.5 0.5 4.7 0.5 3.7V2.3C0.5 1.3 1.1 0.5 2 0.5Z" stroke="white"/></g>
+<ellipse cx="3.1" cy="8.6" rx="1" ry="0.8" fill="#D6A67E"/><ellipse cx="12.9" cy="8.6" rx="1" ry="0.8" fill="#D6A67E"/><ellipse cx="5.4" cy="14.3" rx="1.1" ry="0.7" fill="#D6A67E"/><ellipse cx="10.6" cy="14.3" rx="1.1" ry="0.7" fill="#D6A67E"/>
+<path d="M3.6 3.4L3.7 1.1L5.5 2.2C6.2 1.8 7.1 1.6 8 1.6C8.9 1.6 9.8 1.8 10.5 2.2L12.3 1.1L12.4 3.4C12.8 4.1 13 4.9 13 5.8V11.2C13 13.2 10.9 14.6 8 14.6C5.1 14.6 3 13.2 3 11.2V5.8C3 4.9 3.2 4.1 3.6 3.4Z" fill="#5D95F0"/>
+<circle cx="6" cy="5.4" r="1.7" fill="white"/><circle cx="10" cy="5.4" r="1.7" fill="white"/><circle cx="6" cy="5.5" r="0.7" fill="#1E1F22"/><circle cx="10" cy="5.5" r="0.7" fill="#1E1F22"/>
+<ellipse cx="8" cy="7.5" rx="0.9" ry="0.6" fill="#1E1F22"/><path d="M7.3 8H8.7V8.9C8.7 9.1 8.5 9.2 8.4 9.2H7.6C7.4 9.2 7.3 9.1 7.3 8.9V8Z" fill="white"/>
 </svg>

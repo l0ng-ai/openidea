@@ -11,4 +11,12 @@
       />
     </dependentAssembly>
   </dependency>
+  <!-- Win32 calls in dependencies (gitoxide's ownership check of a submodule's
+       `<worktree>/../../.git/modules/…` path) accept paths past MAX_PATH when
+       the system enables long paths. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
 </assembly>

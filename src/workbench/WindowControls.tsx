@@ -1,12 +1,16 @@
 /**
  * Caption buttons (minimise, maximise / restore, close) for the frameless
- * title bar. Dialog windows (Settings) only have close, as in IDEA.
+ * title bar, on each side as the desktop lays them out (GTK's decoration
+ * layout on Linux). Dialog windows (Settings) only have close, as in IDEA.
  */
-import { useEffect, useState } from "react";
+import { type ComponentType, useEffect, useState } from "react";
 import clsx from "clsx";
 import { t } from "@/platform/i18n";
+import type { WindowButton } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import { Icon } from "@/ui";
 import styles from "./TitleBar.module.css";
+import { captionButtons, type Side } from "./windowButtons";
 
 type AppWindow = import("@tauri-apps/api/window").Window;
 
@@ -28,7 +32,21 @@ function CloseButton() {
   );
 }
 
-function SizeButtons() {
+function MinimizeButton() {
+  return (
+    <button
+      type="button"
+      className={styles.caption}
+      aria-label={t("window.caption.minimize")}
+      title={t("window.caption.minimize")}
+      onClick={() => withWindow((w) => w.minimize())}
+    >
+      <Icon name="window-minimize" size={16} />
+    </button>
+  );
+}
+
+function MaximizeButton() {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -47,36 +65,36 @@ function SizeButtons() {
     };
   }, []);
 
-  const maximizeLabel = maximized ? t("window.caption.restore") : t("window.caption.maximize");
+  const label = maximized ? t("window.caption.restore") : t("window.caption.maximize");
   return (
-    <>
-      <button
-        type="button"
-        className={styles.caption}
-        aria-label={t("window.caption.minimize")}
-        title={t("window.caption.minimize")}
-        onClick={() => withWindow((w) => w.minimize())}
-      >
-        <Icon name="window-minimize" size={16} />
-      </button>
-      <button
-        type="button"
-        className={styles.caption}
-        aria-label={maximizeLabel}
-        title={maximizeLabel}
-        onClick={() => withWindow((w) => w.toggleMaximize())}
-      >
-        <Icon name={maximized ? "window-restore" : "window-maximize"} size={16} />
-      </button>
-    </>
+    <button
+      type="button"
+      className={styles.caption}
+      aria-label={label}
+      title={label}
+      onClick={() => withWindow((w) => w.toggleMaximize())}
+    >
+      <Icon name={maximized ? "window-restore" : "window-maximize"} size={16} />
+    </button>
   );
 }
 
-export function WindowControls({ dialog = false }: { dialog?: boolean }) {
+const BUTTONS: Record<WindowButton, ComponentType> = {
+  minimize: MinimizeButton,
+  maximize: MaximizeButton,
+  close: CloseButton,
+};
+
+export function WindowControls({ side, dialog = false }: { side: Side; dialog?: boolean }) {
+  const layout = usePlatform((s) => s.windowButtons);
+  const buttons = captionButtons(layout, side, dialog);
+  if (buttons.length === 0) return null;
   return (
-    <div className={styles.captions}>
-      {!dialog && <SizeButtons />}
-      <CloseButton />
+    <div className={clsx(styles.captions, side === "left" && styles.captionsLeft)}>
+      {buttons.map((button) => {
+        const Button = BUTTONS[button];
+        return <Button key={button} />;
+      })}
     </div>
   );
 }

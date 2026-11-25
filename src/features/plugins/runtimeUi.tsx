@@ -4,41 +4,51 @@
  * workbench events it subscribed to (`events.subscribe`), reported in
  * batches.
  */
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, readClipboardPng, writeClipboardText } from "@/platform/clipboard";
+import { choosePath, chooseSavePath } from "@/platform/choosePath";
 import { providePluginTestParser, providePluginTestSelector } from "@/workbench/contributions";
 import {
   contentTabData,
   contentTabKey,
   handleContentTabReplyText,
+  openPluginDiffRequest,
   PLUGIN_CONTENT_EDITOR_KIND,
   WASM_CONTENT_VIEW,
 } from "./views/contentTab";
 import { create } from "zustand";
 import { refreshRunTargets, startRunTargets } from "./runTargets";
 import type {
+  ClipboardAnswer,
   CommitAnswer,
   CommandAnswer,
   CommitRequest,
   EventKind,
   PluginContextKey,
   PluginEvent,
+  ProjectInfo,
   Prompt,
   StatusItem,
+  StatusMenuEntry,
   WorkbenchEvent,
 } from "@/bindings";
+import { useRef, useState } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setPluginDecorations } from "./decorations";
-import { editorsFor, onEditorEvent } from "@/editor/api";
+import { setPluginConsoleRules } from "./consoleRules";
+import { editorsFor, onEditorEvent, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
-import { onIdeEvent } from "@/platform/ipc";
-import { openExternalUrl } from "@/platform/openUrl";
+import { isTauri, onIdeEvent } from "@/platform/ipc";
+import { onLocalDiagnostics } from "@/platform/localDiagnostics";
+import { isOpenable, openExternalUrl } from "@/platform/openUrl";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { ipcPath } from "@/platform/paths";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
+import { Menu, type MenuItem } from "@/ui";
 import { notifications, maybeCommitService, maybeEditorService, registerStatusItem } from "@/workbench/contributions";
 import { pickItems, promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
@@ -46,6 +56,7 @@ import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { editorContext } from "./editorContext";
 import { pluginsBackend } from "./backend";
 import { askNetPermission } from "./netAsk";
+import { confirmRemoteClipboardRead, confirmRemoteCopy, confirmRemoteOpen } from "./remoteAsk";
 import { usePluginT } from "./pluginText";
 import { setPluginOutput } from "./views/outputStore";
 import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
@@ -111,6 +122,8 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const declared = useDeclaredStatusItems((s) => s.items.get(itemKey));
   const entry = running ?? declared;
   const t = usePluginT(entry?.pluginId ?? "");
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
   if (!entry) return null;
   const { pluginId, item } = entry;
   const command = item.command;
@@ -118,17 +131,59 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const translate = running ? t : (text: string) => text;
   const tooltip = item.tooltip ? translate(item.tooltip) : undefined;
   const text = translate(item.text);
+  const menu = running ? (item.menu ?? []) : [];
+  const onClick = menu.length
+    ? () => setOpen((o) => !o)
+    : command
+      ? () => void runPluginCommand(pluginId, command)
+      : undefined;
   return (
     <VerbatimTextContext.Provider value={true}>
       <BarButton
+        ref={anchor}
         tooltip={tooltip}
         aria-label={tooltip ?? text}
-        onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
+        aria-haspopup={menu.length ? "menu" : undefined}
+        aria-expanded={menu.length ? open : undefined}
+        onClick={onClick}
       >
         {text}
       </BarButton>
+      {menu.length > 0 && (
+        <Menu
+          open={open}
+          onClose={() => setOpen(false)}
+          anchor={anchor}
+          placement="top-end"
+          items={statusMenuItems(pluginId, menu, translate)}
+          aria-label={tooltip ?? text}
+        />
+      )}
     </VerbatimTextContext.Provider>
   );
+}
+
+/** A status item's menu (`ui.set-status-item-menu`): an action runs its plugin command with its argument. */
+export function statusMenuItems(
+  pluginId: string,
+  menu: readonly StatusMenuEntry[],
+  translate: (text: string) => string,
+): MenuItem[] {
+  return menu.map((entry): MenuItem => {
+    switch (entry.kind) {
+      case "separator":
+        return { kind: "separator" };
+      case "header":
+        return { kind: "header", label: translate(entry.label) };
+      case "action":
+        return {
+          label: translate(entry.label),
+          verbatim: true,
+          shortcut: entry.description ?? undefined,
+          run: () => void runPluginCommand(pluginId, entry.command, entry.argument),
+        };
+    }
+  });
 }
 
 /** The item's name in the status bar menu: its plugin's, plus what it declares (tooltip or text). */
@@ -298,10 +353,45 @@ function onTaskEvent(e: Extract<PluginEvent, { type: "taskStarted" | "taskProgre
 
 /** Batches are sent at most this often; the backend batches again per plugin. */
 const POST_INTERVAL_MS = 500;
+/** Caret events keep labels responsive instead of waiting for the batch. */
+const CARET_FLUSH_MS = 120;
+/** The caret is at rest after this long; conversation loads wait for it. */
+const CARET_SETTLE_MS = 600;
 
 let wanted = new Set<EventKind>();
 let queue: WorkbenchEvent[] = [];
 let postTimer: ReturnType<typeof setTimeout> | null = null;
+let postDue = 0;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingCaret: { editor: TextEditorHandle; project: ProjectInfo | null; doc: number; path: string } | null = null;
+
+function invalidateCaret() {
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = null;
+  pendingCaret = null;
+  queue = queue.filter((event) => event.kind !== "caretMoved");
+}
+
+function isCurrentCaret(caret: NonNullable<typeof pendingCaret>): boolean {
+  return (
+    pendingCaret === caret &&
+    useEditorRegistry.getState().active === caret.editor &&
+    caret.editor.ctx.doc === caret.doc &&
+    caret.editor.ctx.path === caret.path &&
+    useProject.getState().project === caret.project
+  );
+}
+
+function flush() {
+  postTimer = null;
+  if (pendingCaret && !isCurrentCaret(pendingCaret)) invalidateCaret();
+  const batch = queue;
+  queue = [];
+  if (!batch.length) return;
+  void pluginsBackend()
+    .postEvents(batch)
+    .catch(() => {});
+}
 
 /**
  * Re-reads the event kinds plugins want. Besides `subscriptionsChanged`
@@ -319,27 +409,62 @@ export function refreshEventKinds() {
 }
 
 function post(event: WorkbenchEvent) {
+  // A caret event replaces the queued one for the same file: only the latest
+  // position matters, and moving the caret must not flood every plugin batch.
+  if (event.kind === "caretMoved") {
+    const queued = queue.findIndex((queued) => queued.kind === "caretMoved" && queued.value.path === event.value.path);
+    if (queued >= 0) queue.splice(queued, 1);
+  }
   queue.push(event);
-  if (postTimer) return;
-  postTimer = setTimeout(() => {
-    postTimer = null;
-    const batch = queue;
-    queue = [];
-    void pluginsBackend()
-      .postEvents(batch)
-      .catch(() => {});
-  }, POST_INTERVAL_MS);
+  const delay = event.kind === "caretMoved" ? CARET_FLUSH_MS : POST_INTERVAL_MS;
+  const due = Date.now() + delay;
+  // Keep whichever timer fires first (a caret event shortens a pending batch).
+  if (postTimer) {
+    if (due >= postDue) return;
+    clearTimeout(postTimer);
+  }
+  postDue = due;
+  postTimer = setTimeout(flush, delay);
 }
 
 /** Reports the events plugins subscribed to: files opened and saved, actions run, repositories changed. */
 function trackWorkbenchEvents(): () => void {
   refreshEventKinds();
+  const offActive = useEditorRegistry.subscribe((s, prev) => {
+    if (s.active !== prev.active) invalidateCaret();
+  });
+  const offProject = useProject.subscribe((s, prev) => {
+    if (s.project !== prev.project) invalidateCaret();
+  });
   const offEditor = onEditorEvent((e) => {
+    if (e.type === "docClosed" && e.doc === pendingCaret?.doc) invalidateCaret();
     if (e.type === "docOpened" && wanted.has("file-opened")) post({ kind: "fileOpened", value: e.path });
     if (e.type === "docClosed" && wanted.has("file-closed")) post({ kind: "fileClosed", value: e.path });
     if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
       post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
+    if (e.type === "caretMoved" && wanted.has("caret-moved")) {
+      const editor = useEditorRegistry.getState().active;
+      if (!editor || editor.ctx.doc !== e.doc || editor.ctx.path !== e.path) return;
+      if (pendingCaret && !isCurrentCaret(pendingCaret)) invalidateCaret();
+      const identity = { editor, project: useProject.getState().project, doc: e.doc, path: e.path };
+      pendingCaret = identity;
+      const caret = { path: e.path, line: e.line, col: e.col, settled: false };
+      post({ kind: "caretMoved", value: caret });
+      // Once the caret rests, send one settled event: a plugin may then load the
+      // conversation behind the label. Movement keeps postponing it.
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        if (!isCurrentCaret(identity)) return;
+        settleTimer = null;
+        post({ kind: "caretMoved", value: { ...caret, settled: true } });
+      }, CARET_SETTLE_MS);
+    }
+    if (e.type === "docChanged" && wanted.has("document-changed"))
+      post({
+        kind: "documentChanged",
+        value: { path: e.path, project: null, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
+      });
   });
   const offActions = onActionExecuted((id, _arg, source) => {
     if (!wanted.has("action-performed")) return;
@@ -355,13 +480,27 @@ function trackWorkbenchEvents(): () => void {
   const offVcs = onIdeEvent("vcsChanged", (e) => {
     if (wanted.has("vcs-changed")) post({ kind: "vcsChanged", value: e.root });
   });
+  // Diagnostics arrive from language servers and builds without a file event; plugins
+  // that draw them (Inspection Lens) re-read the snapshot when this fires. Typo and
+  // other UI-side inspections publish through localDiagnostics instead, without an
+  // `IdeEvent::diagnostics`, so wire both sources to the same notification.
+  const problemsChanged = () => {
+    if (wanted.has("problems-changed")) post({ kind: "problemsChanged" });
+  };
+  const offProblems = onIdeEvent("diagnostics", problemsChanged);
+  const offLocalProblems = onLocalDiagnostics(problemsChanged);
   return () => {
     offEditor();
+    offActive();
+    offProject();
     offActions();
     offVcs();
     offSettings();
+    offProblems();
+    offLocalProblems();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
+    invalidateCaret();
     queue = [];
   };
 }
@@ -371,23 +510,31 @@ const openPrompts = new Map<string, AbortController>();
 /** The user's answer in the shape `plugin_answer_prompt` takes: `null` when dismissed. */
 async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | null> {
   switch (prompt.kind) {
+    case "pickFile":
     case "pickDirectory": {
       if (signal.aborted) return null;
       try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        let path: string | null;
+        if (prompt.kind === "pickDirectory") {
+          path = await choosePath(
+            { directory: true, title: prompt.title, defaultPath: prompt.initial ?? undefined },
+            signal,
+          );
+        } else {
+          const options = { title: prompt.title, filters: prompt.filters };
+          path = prompt.save
+            ? await chooseSavePath({ ...options, defaultPath: prompt.name ?? undefined }, signal)
+            : await choosePath({ ...options, directory: false }, signal);
+        }
         if (signal.aborted) return null;
-        const selected = await open({
-          directory: true,
-          multiple: false,
-          title: prompt.title,
-          defaultPath: prompt.initial ?? undefined,
-        });
-        if (signal.aborted) return null;
-        const path = Array.isArray(selected) ? selected[0] : selected;
         return path ? [ipcPath(path)] : null;
       } catch (error) {
         if (!signal.aborted)
-          notifications().notify({ level: "error", title: tx("Cannot choose a directory"), body: String(error) });
+          notifications().notify({
+            level: "error",
+            title: prompt.kind === "pickDirectory" ? tx("Cannot choose a directory") : tx("Cannot choose a file"),
+            body: String(error),
+          });
         return null;
       }
     }
@@ -451,6 +598,37 @@ async function answerCommit(requestId: string, request: CommitRequest) {
     .catch(() => {});
 }
 
+/**
+ * Reads this machine's clipboard for a plugin command the user ran (`ui.read-clipboard`). A remote
+ * window's plugin runs on its server, so the user confirms first. A read that fails is reported, not
+ * sent as an empty clipboard.
+ */
+async function answerClipboard(requestId: string, pluginId: string) {
+  const controller = new AbortController();
+  openPrompts.set(requestId, controller);
+  let answer: ClipboardAnswer;
+  try {
+    if (isRemoteWindow() && !(await confirmRemoteClipboardRead(pluginId, controller.signal))) {
+      answer = { kind: "refused" };
+    } else {
+      const [text, png] = await Promise.allSettled([readClipboardPlainText(), readClipboardPng()]);
+      const plain = (text.status === "fulfilled" && text.value) || null;
+      const image = png.status === "fulfilled" ? png.value : null;
+      // Either kind read is an answer; nothing read and a failure is not an empty clipboard.
+      if (text.status === "rejected" && !image) throw text.reason;
+      if (png.status === "rejected" && !plain) throw png.reason;
+      answer = { kind: "content", text: plain, png: image };
+    }
+  } catch (error) {
+    answer = { kind: "failed", message: error instanceof Error ? error.message : String(error) };
+  }
+  openPrompts.delete(requestId);
+  if (controller.signal.aborted) return;
+  await pluginsBackend()
+    .answerClipboard(requestId, answer)
+    .catch(() => {});
+}
+
 async function answerCommand(e: Extract<PluginEvent, { type: "executeCommand" }>) {
   let answer: CommandAnswer;
   try {
@@ -488,6 +666,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       return true;
     case "decorationsChanged":
       setPluginDecorations(e.pluginId, e.sets);
+      return true;
+    case "consoleRulesChanged":
+      setPluginConsoleRules(e.pluginId, e.rules);
       return true;
     case "editorOpen": {
       const r = e.selection;
@@ -534,6 +715,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "subscriptionsChanged":
       refreshEventKinds();
       return true;
+    case "websocketReady":
+      post({ kind: "websocketReady", value: { pluginId: e.pluginId, connection: e.connection } });
+      return true;
     case "viewChanged":
       bumpView(e.pluginId, e.view);
       return true;
@@ -552,6 +736,23 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
           ...JSON.parse(JSON.stringify(e.reply), (_k, v: unknown) => (v === null ? undefined : v)),
         }),
       );
+      return true;
+    case "openDiff":
+      try {
+        const { diff, fileName } = e;
+        openPluginDiffRequest(
+          {
+            ...diff,
+            leftLabel: diff.leftLabel ?? undefined,
+            rightLabel: diff.rightLabel ?? undefined,
+            title: diff.title ?? undefined,
+            fileName: fileName ?? undefined,
+          },
+          (diff.left?.length ?? 0) + (diff.right?.length ?? 0),
+        );
+      } catch (err) {
+        console.warn(`plugin ${e.pluginId} diff:`, err);
+      }
       return true;
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
@@ -597,13 +798,15 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });
       return true;
     case "copyToClipboard":
-      void writeClipboardText(e.text);
+      if (isRemoteWindow()) void copyRemoteText(e.pluginId, e.text);
+      else void writeClipboardText(e.text);
       return true;
     case "openProject":
       void executeAction("file.openProjectPath", { path: e.path, newWindow: e.newWindow });
       return true;
     case "openUrl":
-      void openExternalUrl(e.url);
+      if (isRemoteWindow()) void openRemoteUrl(e.pluginId, e.url);
+      else void openExternalUrl(e.url);
       return true;
     case "promptRequested":
       void answerPrompt(e.promptId, e.prompt, e.pluginId);
@@ -612,8 +815,14 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       openPrompts.get(e.promptId)?.abort();
       openPrompts.delete(e.promptId);
       return true;
+    case "promptWaiting":
+      bringWindowToFront();
+      return true;
     case "commitRequested":
       void answerCommit(e.requestId, e.request);
+      return true;
+    case "clipboardRequested":
+      void answerClipboard(e.requestId, e.pluginId);
       return true;
     case "revealView":
       revealWindowView(e.pluginId, e.view);
@@ -621,6 +830,28 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     default:
       return false;
   }
+}
+
+/** A remote window's plugin code runs on its server: what it opens here, the user confirms first. */
+async function openRemoteUrl(pluginId: string, url: string) {
+  if (isOpenable(url) && (await confirmRemoteOpen(pluginId, url))) await openExternalUrl(url);
+}
+
+/** A remote window's plugin code runs on its server: what it copies here, the user confirms first. */
+async function copyRemoteText(pluginId: string, text: string) {
+  if (await confirmRemoteCopy(pluginId, text)) await writeClipboardText(text).catch(() => {});
+}
+
+/** Another window ran a command of a plugin whose prompt is open here: show this window. */
+function bringWindowToFront() {
+  if (!isTauri()) return;
+  void import("@tauri-apps/api/window")
+    .then(async ({ getCurrentWindow }) => {
+      const w = getCurrentWindow();
+      if (await w.isMinimized()) await w.unminimize();
+      await w.setFocus();
+    })
+    .catch(() => undefined);
 }
 
 /**

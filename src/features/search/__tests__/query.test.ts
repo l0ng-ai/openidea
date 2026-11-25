@@ -31,10 +31,39 @@ describe("parseLocationQuery", () => {
     expect(parseLocationQuery("/elsewhere/x.kt", "/dev/acme").text).toBe("/elsewhere/x.kt");
   });
 
+  it("reduces a pasted Windows absolute path to the project-relative one", () => {
+    expect(parseLocationQuery(String.raw`E:\work\sample\pkg\service\Config.go`, "E:/work/sample").text).toBe(
+      "pkg/service/Config.go",
+    );
+    // A drive-letter path is case-insensitive on Windows, its drive letter included.
+    expect(parseLocationQuery(String.raw`e:\work\sample\pkg\Config.go`, "E:/work/sample").text).toBe("pkg/Config.go");
+    expect(parseLocationQuery(String.raw`E:\WORK\Sample\pkg\Config.go`, "e:/work/sample").text).toBe("pkg/Config.go");
+    // Mixed separators and the `\\?\` verbatim prefix.
+    expect(parseLocationQuery(String.raw`E:/work\sample\pkg/Config.go`, "E:/work/sample").text).toBe("pkg/Config.go");
+    expect(parseLocationQuery(String.raw`\\?\E:\work\sample\pkg\Config.go`, "E:/work/sample").text).toBe(
+      "pkg/Config.go",
+    );
+    expect(parseLocationQuery(String.raw`E:\work\sample\pkg\Config.go:12:3`, "E:/work/sample")).toEqual({
+      text: "pkg/Config.go",
+      line: 11,
+      col: 2,
+    });
+  });
+
+  it("keeps POSIX and out-of-project paths as they are", () => {
+    // POSIX paths stay case-sensitive: `/Users/me/Src` is not `/Users/me/src`.
+    expect(parseLocationQuery("/Users/me/src/a.ts", "/Users/me/src").text).toBe("a.ts");
+    expect(parseLocationQuery("/Users/me/Src/a.ts", "/Users/me/src").text).toBe("/Users/me/Src/a.ts");
+    expect(parseLocationQuery(String.raw`E:\elsewhere\x.go`, "E:/work/sample").text).toBe("E:/elsewhere/x.go");
+  });
+
   it("handles quotes, file:// URLs and Windows separators", () => {
     expect(parseLocationQuery('"src/a.ts"').text).toBe("src/a.ts");
     expect(parseLocationQuery("file:///dev/acme/My%20File.kt", "/dev/acme").text).toBe("My File.kt");
     expect(parseLocationQuery("src\\main\\App.kt").text).toBe("src/main/App.kt");
+    expect(parseLocationQuery("src/main\\App.kt").text).toBe("src/main/App.kt");
+    // Windows file URLs, with a space and an encoded `#` in the name (#4079).
+    expect(parseLocationQuery("file:///C:/work/sample/src/a%20b%23c.txt", "C:/work/sample").text).toBe("src/a b#c.txt");
   });
 
   it("selectionOf maps to an editor selection", () => {

@@ -229,7 +229,12 @@ fn nextjs_recipes() {
     assert_eq!(server.args, s(&["run", "dev"]));
     assert_eq!(server.debug_adapter.as_deref(), Some("js-debug"));
 
-    assert_eq!(reason(&r, "Next.js: debug client-side"), &SkipReason::UnsupportedType { type_: "chrome".into() });
+    let client = get(&r, "Next.js: debug client-side");
+    assert_eq!((client.kind.as_str(), client.command.as_str()), ("js-browser", ""));
+    assert_eq!(client.debug_adapter.as_deref(), Some("js-debug"));
+    assert_eq!(client.extras.params["url"], "http://localhost:3000");
+    assert_eq!(client.extras.params["browser"], "chrome");
+    assert!(ignored(&r, "Next.js: debug client-side").is_empty());
 
     let full = get(&r, "Next.js: debug full stack");
     assert_eq!((full.kind.as_str(), full.command.as_str()), ("node", "node"));
@@ -404,6 +409,37 @@ fn attach_requests_become_remote_debug_configurations() {
 }
 
 #[test]
+fn browser_launches_become_javascript_debug_configurations() {
+    let (_dir, r) = run(r#"{
+        "configurations": [
+            { "name": "Edge", "type": "pwa-msedge", "request": "launch", "url": "http://localhost:5173/app",
+              "webRoot": "${workspaceFolder}/web", "sourceMaps": true, "userDataDir": false },
+            { "name": "Root", "type": "chrome", "request": "launch", "url": "http://localhost:8080",
+              "webRoot": "${workspaceFolder}" },
+            { "name": "Page file", "type": "chrome", "request": "launch", "file": "${workspaceFolder}/index.html" },
+            { "name": "Running browser", "type": "chrome", "request": "attach", "port": 9222 }
+        ]
+    }"#);
+    let edge = get(&r, "Edge");
+    assert_eq!((edge.kind.as_str(), edge.debug_adapter.as_deref()), ("js-browser", Some("js-debug")));
+    assert_eq!(
+        edge.extras.params,
+        BTreeMap::from([
+            ("browser".into(), "edge".into()),
+            ("url".into(), "http://localhost:5173/app".into()),
+            ("webRoot".into(), "web".into())
+        ])
+    );
+    assert_eq!(ignored(&r, "Edge"), ["userDataDir"]);
+
+    // The project root is the default web root.
+    assert!(!get(&r, "Root").extras.params.contains_key("webRoot"));
+
+    assert_eq!(reason(&r, "Page file"), &SkipReason::NothingToRun);
+    assert_eq!(reason(&r, "Running browser"), &SkipReason::UnsupportedRequest { request: "attach".into() });
+}
+
+#[test]
 fn the_block_for_this_os_overrides_the_entry() {
     let os = if cfg!(windows) {
         "windows"
@@ -518,4 +554,109 @@ fn existing_names_match_without_surrounding_spaces() {
     };
     let r = import_from(dir.path(), &[existing]);
     assert_eq!(reason(&r, "Django"), &SkipReason::NameTaken);
+}
+
+const PUBSPEC_FLUTTER: &str = "name: my_app\ndependencies:\n  flutter:\n    sdk: flutter\n";
+
+fn write(root: &Path, rel: &str, text: &str) {
+    let path = root.join(rel);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+// The configurations Dart Code adds to a Flutter app's launch.json.
+const FLUTTER: &str = r#"{
+    "version": "0.2.0",
+    "configurations": [
+        { "name": "my_app", "request": "launch", "type": "dart" },
+        { "name": "my_app (profile mode)", "request": "launch", "type": "dart", "flutterMode": "profile" },
+        { "name": "my_app (release mode)", "request": "launch", "type": "dart", "flutterMode": "release" },
+        { "name": "Attach", "request": "attach", "type": "dart" }
+    ],
+    "compounds": [{ "name": "Both", "configurations": ["my_app", "my_app (profile mode)"] }]
+}"#;
+
+#[test]
+fn flutter_launches_from_dart_code_next_to_the_detected_configuration() {
+    let dir = project(FLUTTER);
+    let root = dir.path();
+    write(root, "pubspec.yaml", PUBSPEC_FLUTTER);
+    write(root, "lib/main.dart", "void main() {}\n");
+    let r = import_from(root, &ide_run::detect(root));
+    assert_eq!(reason(&r, "my_app"), &SkipReason::SameAs { existing: "flutter run".into() });
+    for (name, mode) in [("my_app (profile mode)", "--profile"), ("my_app (release mode)", "--release")] {
+        let c = get(&r, name);
+        assert_eq!(
+            (c.kind.as_str(), c.command.as_str(), c.debug_adapter.as_deref()),
+            ("flutter", "flutter", Some("dart"))
+        );
+        assert_eq!(c.args, s(&["run", "-t", "lib/main.dart", mode]));
+        assert_eq!(cwd(c), None);
+    }
+    assert_eq!(reason(&r, "Attach"), &SkipReason::UnsupportedRequest { request: "attach".into() });
+    // A compound naming the left-out entry starts the detected configuration.
+    assert_eq!(
+        get(&r, "Both").extras.compound,
+        ["flutter:run".to_owned(), get(&r, "my_app (profile mode)").id.clone()]
+    );
+}
+
+#[test]
+fn flutter_entry_device_tool_and_app_arguments_in_a_subfolder() {
+    let dir = project(
+        r#"{ "configurations": [
+            { "name": "Dev", "request": "launch", "type": "dart", "cwd": "${workspaceFolder}/app",
+              "program": "lib/main_dev.dart", "deviceId": "chrome", "args": ["--seed", "1"],
+              "toolArgs": ["--flavor", "dev", "--dart-define=ENV=dev"], "vmAdditionalArgs": ["--x"] },
+            { "name": "From the root", "request": "launch", "type": "dart", "program": "app/lib/main_dev.dart" }
+        ] }"#,
+    );
+    let root = dir.path();
+    write(root, "app/pubspec.yaml", PUBSPEC_FLUTTER);
+    write(root, "app/lib/main_dev.dart", "void main() {}\n");
+    let r = import_from(root, &[]);
+    let c = get(&r, "Dev");
+    assert_eq!(
+        c.args,
+        s(&[
+            "run",
+            "-t",
+            "lib/main_dev.dart",
+            "-d",
+            "chrome",
+            "--flavor",
+            "dev",
+            "--dart-define=ENV=dev",
+            "--dart-entrypoint-args",
+            "--seed",
+            "--dart-entrypoint-args",
+            "1",
+        ])
+    );
+    assert_eq!(cwd(c), Some(PathBuf::from("app")));
+    assert_eq!(ignored(&r, "Dev"), ["vmAdditionalArgs"]);
+    // A program path from the workspace folder runs in its package too.
+    let c = get(&r, "From the root");
+    assert_eq!((c.args.clone(), cwd(c)), (s(&["run", "-t", "lib/main_dev.dart"]), Some(PathBuf::from("app"))));
+}
+
+#[test]
+fn dart_programs_outside_flutter_run_with_dart() {
+    let dir = project(
+        r#"{ "configurations": [
+            { "name": "Server", "request": "launch", "type": "dart", "program": "bin/server.dart",
+              "args": ["--port", "8080"], "toolArgs": ["--enable-asserts"] },
+            { "name": "Server (absolute)", "request": "launch", "type": "dart", "program": "${workspaceFolder}/bin/server.dart" },
+            { "name": "Nothing", "request": "launch", "type": "dart" }
+        ] }"#,
+    );
+    let root = dir.path();
+    write(root, "pubspec.yaml", "name: server\n");
+    write(root, "bin/server.dart", "void main() {}\n");
+    let r = import_from(root, &[]);
+    let c = get(&r, "Server");
+    assert_eq!((c.kind.as_str(), c.command.as_str(), c.debug_adapter.as_deref()), ("dart", "dart", Some("dart")));
+    assert_eq!(c.args, s(&["run", "--enable-asserts", "bin/server.dart", "--port", "8080"]));
+    assert_eq!(get(&r, "Server (absolute)").args, s(&["run", "bin/server.dart"]));
+    assert_eq!(reason(&r, "Nothing"), &SkipReason::NothingToRun);
 }

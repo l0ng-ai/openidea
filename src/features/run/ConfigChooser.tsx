@@ -2,7 +2,21 @@ import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
-import { HighlightedText, Icon, IconButton, List, Popup, SearchField, fuzzyMatch, listNavigate, T } from "@/ui";
+import {
+  HighlightedText,
+  Icon,
+  IconButton,
+  List,
+  Menu,
+  Popup,
+  SearchField,
+  firstSelectable,
+  fuzzyMatch,
+  listNavigate,
+  T,
+  type MenuItem,
+} from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import type { RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useDebugRunSessions } from "@/workbench/contributions";
@@ -12,25 +26,35 @@ import {
   canDeleteConfig,
   CURRENT_FILE,
   deleteConfig,
+  MAX_RECENT,
   saveTemporary,
   selectConfig,
   startRun,
+  toggleAllConfigurations,
   togglePinned,
   useRun,
 } from "./store";
 import { selectedTarget } from "./sessionTargets";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+import { confirm } from "@/workbench/messages";
 
 type Row =
+  /** A labelled group, or a thin separator when `label` is empty. */
   | { type: "section"; key: string; label: string }
   | { type: "config"; key: string; config: RunConfig; indices: number[] | null }
+  | { type: "all"; key: string; count: number; expanded: boolean }
   | { type: "edit"; key: string }
   | { type: "current"; key: string; indices: number[] | null }
   | { type: "save"; key: string; config: RunConfig };
 
 const ROW = 24;
+const SEPARATOR = 9;
 const CURRENT_FILE_LABEL = "Current File";
+const MIN_WIDTH = 310;
+const MAX_WIDTH = 500;
+// Space beside a name for the icon, metadata, inline actions and list insets.
+const ROW_CHROME_WIDTH = 160;
 
 export function buildRows(
   configs: readonly RunConfig[],
@@ -39,39 +63,48 @@ export function buildRows(
   temporary: readonly string[] = [],
   pinned: readonly string[] = [],
   recent: readonly string[] = [],
+  allExpanded = false,
 ): Row[] {
   const rows: Row[] = [];
   // IDEA: "Save '<name>' Configuration" first while a temporary configuration is selected.
   if (!query && selected && temporary.includes(selected.id)) rows.push({ type: "save", key: "save", config: selected });
-  // IDEA: the permanent "Current File" entry runs the active file's context.
-  const currentIndices = query ? fuzzyMatch(CURRENT_FILE_LABEL, query) : null;
-  if (!query || currentIndices) rows.push({ type: "current", key: "current", indices: currentIndices });
   const matching = (list: readonly RunConfig[]) =>
     list.map((c) => ({ c, indices: query ? fuzzyMatch(c.name, query) : null })).filter((x) => !query || x.indices);
+  const pushGroup = (label: string, key: string, list: readonly RunConfig[], prefix = "c") => {
+    const matched = matching(list);
+    if (matched.length === 0) return;
+    rows.push({ type: "section", key, label });
+    for (const { c, indices } of matched) rows.push({ type: "config", key: `${prefix}:${c.id}`, config: c, indices });
+  };
   // IDEA: pinned configurations come first, in the order they were pinned.
   const pinnedConfigs = pinned.flatMap((id) => configs.find((c) => c.id === id) ?? []);
-  const pinnedRows = matching(pinnedConfigs);
-  if (pinnedRows.length) {
-    rows.push({ type: "section", key: "s:pinned", label: tx("Pinned") });
-    for (const { c, indices } of pinnedRows) rows.push({ type: "config", key: `c:${c.id}`, config: c, indices });
-  }
+  pushGroup(tx("Pinned"), "s:pinned", pinnedConfigs);
   // Then the ones started last, newest first.
   const recentConfigs = recent.flatMap((id) => configs.find((c) => c.id === id && !pinned.includes(id)) ?? []);
-  const recentRows = matching(recentConfigs);
-  if (recentRows.length) {
-    rows.push({ type: "section", key: "s:recent", label: tx("Recent") });
-    for (const { c, indices } of recentRows) rows.push({ type: "config", key: `c:${c.id}`, config: c, indices });
-  }
+  pushGroup(tx("Recent"), "s:recent", recentConfigs);
   const rest = configs.filter((c) => !pinnedConfigs.includes(c) && !recentConfigs.includes(c));
-  for (const group of groupConfigs(rest)) {
-    const matched = matching(group.configs);
-    if (matched.length === 0) continue;
-    rows.push({ type: "section", key: `s:${group.kind}`, label: group.label });
-    for (const { c, indices } of matched) rows.push({ type: "config", key: `c:${c.id}`, config: c, indices });
+  // IDEA: once there are pinned or recent configurations, the others fold under "All Configurations"
+  // (collapsed by default). Expanded, it lists every configuration by type; a search finds the folded ones.
+  const folded = (pinnedConfigs.length > 0 || recentConfigs.length > 0) && configs.length >= MAX_RECENT;
+  if (folded && !query) {
+    rows.push({ type: "all", key: "all", count: configs.length, expanded: allExpanded });
+    if (allExpanded)
+      for (const group of groupConfigs(configs)) pushGroup(group.label, `a:${group.kind}`, group.configs, "a");
+  } else {
+    for (const group of groupConfigs(rest)) pushGroup(group.label, `s:${group.kind}`, group.configs);
   }
+  // IDEA: the permanent "Current File" entry (runs the active file's context) follows the configurations.
+  const currentIndices = query ? fuzzyMatch(CURRENT_FILE_LABEL, query) : null;
+  if (!query || currentIndices) {
+    if (rows.length) rows.push({ type: "section", key: "sep:current", label: "" });
+    rows.push({ type: "current", key: "current", indices: currentIndices });
+  }
+  if (rows.length) rows.push({ type: "section", key: "sep:edit", label: "" });
   rows.push({ type: "edit", key: "edit" });
   return rows;
 }
+
+const heightOf = (r: Row, rowHeight: number) => (r.type === "section" && !r.label ? SEPARATOR : rowHeight);
 
 let closedAt = 0;
 /** The chooser closed within the last moment (a click on its own anchor shouldn't reopen it). */
@@ -83,17 +116,46 @@ function anchorElement(): Element | { x: number; y: number } {
   return document.querySelector("[data-run-chooser]") ?? { x: Math.round(window.innerWidth / 2) - 150, y: 40 };
 }
 
+function chooserWidth(configs: readonly RunConfig[], anchor: ReturnType<typeof anchorElement>): number {
+  const ownerWidth = anchor instanceof Element ? Math.ceil(anchor.getBoundingClientRect().width) : 0;
+  const context = document.createElement("canvas").getContext("2d");
+  let nameWidth = 0;
+  if (context) {
+    const { fontSize, fontFamily } = getComputedStyle(document.body);
+    context.font = `500 ${fontSize} ${fontFamily}`;
+    nameWidth = configs.reduce((widest, config) => Math.max(widest, context.measureText(config.name).width), 0);
+  }
+  return Math.min(
+    Math.max(MAX_WIDTH, ownerWidth),
+    Math.max(MIN_WIDTH, ownerWidth, Math.ceil(nameWidth) + ROW_CHROME_WIDTH),
+  );
+}
+
 /** Run/Debug configuration chooser popup (⌃⌥R), anchored to the title bar widget. */
+/** Deletes a configuration from the chooser once the user confirms, as IDEA's popup asks first. */
+async function askDeleteConfig(config: RunConfig) {
+  const ok = await confirm({
+    title: "Confirmation",
+    message: tx`Are you sure you want to delete ${config.name}?`,
+    ok: "Delete",
+  });
+  if (ok) await deleteConfig(config.id);
+}
+
 export function ConfigChooserOverlay() {
   const open = useRun((s) => s.chooserOpen);
   if (!open) return null;
   return <ConfigChooser />;
 }
 
-/** Numeric mnemonics (IDEA: 1–9 run the Nth configuration while the search is empty). */
+/**
+ * Numeric mnemonics (IDEA: 1–9 run the Nth configuration while the search is empty), for the
+ * configurations above "All Configurations".
+ */
 export function mnemonics(rows: readonly Row[]): Map<string, number> {
   const out = new Map<string, number>();
   for (const r of rows) {
+    if (r.type === "all") break;
     if (r.type !== "config") continue;
     if (out.size >= 9) break;
     out.set(r.key, out.size + 1);
@@ -103,11 +165,13 @@ export function mnemonics(rows: readonly Row[]): Map<string, number> {
 
 function ConfigChooser() {
   const mode = useRun((s) => s.chooserMode);
+  const rowHeight = useRowHeight(ROW);
   const configs = useRun((s) => s.configs);
   const selectedId = useRun((s) => s.selectedId);
   const temporary = useRun((s) => s.temporary);
   const pinned = useRun((s) => s.pinned);
   const recent = useRun((s) => s.recent);
+  const allExpanded = useRun((s) => s.allExpanded);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
   const sessions = useRun((s) => s.sessions);
   const debugSessions = useDebugRunSessions((s) => s.sessions);
@@ -121,24 +185,27 @@ function ConfigChooser() {
         temporary,
         pinned,
         recent,
+        allExpanded,
       ),
-    [configs, query, selectedId, temporary, pinned, recent],
+    [configs, query, selectedId, temporary, pinned, recent, allExpanded],
   );
   const isSection = (r: Row) => r.type === "section";
-  const initial = Math.max(
-    0,
+  const [active, setActive] = useState(() =>
     rows.findIndex(
       (r) =>
         (r.type === "config" && r.config.id === selectedId) || (r.type === "current" && selectedId === CURRENT_FILE),
     ),
   );
-  const [active, setActive] = useState(initial);
+  // The configuration whose actions menu (⋮) is open.
+  const [menu, setMenu] = useState<{ name: string; anchor: Element; items: MenuItem[] } | null>(null);
   const [anchor] = useState(anchorElement);
+  const width = useMemo(() => chooserWidth(configs, anchor), [configs, anchor]);
   const close = () => {
     closedAt = Date.now();
     useRun.setState({ chooserOpen: false });
   };
-  const clamped = Math.min(active, rows.length - 1);
+  // Negative: the first row that can be selected (on opening without a visible selection, after a search).
+  const clamped = active < 0 ? firstSelectable(rows, isSection) : Math.min(active, rows.length - 1);
   const numbers = useMemo(
     () => (mode === "select" || query ? new Map<string, number>() : mnemonics(rows)),
     [mode, query, rows],
@@ -161,6 +228,10 @@ function ConfigChooser() {
 
   const activate = (row: Row | undefined, how: "select" | "run" | "debug" | "edit" = executor) => {
     if (!row) return;
+    if (row.type === "all") {
+      toggleAllConfigurations();
+      return;
+    }
     close();
     if (row.type === "edit") {
       void executeAction("run.editConfigs");
@@ -187,26 +258,36 @@ function ConfigChooser() {
 
   const onKeyDown = (e: KeyboardEvent) => {
     const row = rows[clamped];
+    const input = () => e.target as HTMLInputElement;
     if (e.key === "Enter") {
       e.preventDefault();
       // The widget (select mode) keeps Shift+Enter = Debug and Alt/⌘+Enter = Run.
       activate(row, mode !== "select" ? executor : e.shiftKey ? "debug" : e.altKey || e.metaKey ? "run" : "select");
       return;
     }
+    // IDEA: → opens the configuration's actions, as its ⋮ button does.
+    if (e.key === "ArrowRight" && row?.type === "config" && input().selectionStart === query.length) {
+      const anchor = document.querySelector("[data-chooser-more]")?.closest("[role='option']");
+      if (anchor) {
+        e.preventDefault();
+        openMenu(row.config, anchor);
+        return;
+      }
+    }
     if (e.key === "F4" && row?.type === "config") {
       e.preventDefault();
       activate(row, "edit");
       return;
     }
-    const input = e.target as HTMLInputElement;
     if (
       e.key === "Delete" &&
       row?.type === "config" &&
       canDeleteConfig(row.config.id) &&
-      input.selectionStart === query.length
+      input().selectionStart === query.length &&
+      input().selectionEnd === query.length
     ) {
       e.preventDefault();
-      void deleteConfig(row.config.id);
+      void askDeleteConfig(row.config);
       return;
     }
     if (numbers.size && !e.altKey && !e.ctrlKey && !e.metaKey && /^Digit[1-9]$|^Numpad[1-9]$/.test(e.code)) {
@@ -225,7 +306,39 @@ function ConfigChooser() {
     }
   };
 
-  const height = Math.min(rows.length * ROW, 14 * ROW);
+  const height = Math.min(
+    rows.reduce((sum, r) => sum + heightOf(r, rowHeight), 0),
+    14 * rowHeight,
+  );
+
+  // IDEA: a configuration's submenu lists its executors, then Edit and Pin.
+  const menuItems = (c: RunConfig): MenuItem[] => {
+    const row: Row = { type: "config", key: `c:${c.id}`, config: c, indices: null };
+    return [
+      { label: "Run", icon: "run", run: () => activate(row, "run") },
+      { label: "Debug", icon: "debug", run: () => activate(row, "debug") },
+      { kind: "header", label: "Configuration" },
+      { label: "Edit…", icon: "edit", run: () => activate(row, "edit") },
+      { label: pinned.includes(c.id) ? "Unpin" : "Pin", icon: "pin", run: () => togglePinned(c.id) },
+      ...(canDeleteConfig(c.id) ? [{ label: "Delete", danger: true, run: () => void askDeleteConfig(c) }] : []),
+    ];
+  };
+  const openMenu = (c: RunConfig, at: Element) => setMenu({ name: c.name, anchor: at, items: menuItems(c) });
+  const more = (c: RunConfig) => (
+    <IconButton
+      icon="more"
+      size="small"
+      iconSize={13}
+      title={tx("More Actions")}
+      data-chooser-more=""
+      tabIndex={-1}
+      onClick={(e) => {
+        e.stopPropagation();
+        // On the row, like IDEA's submenus: the button goes away when the pointer leaves the row.
+        openMenu(c, e.currentTarget.closest("[role='option']") ?? e.currentTarget);
+      }}
+    />
+  );
 
   return (
     <Popup
@@ -235,6 +348,7 @@ function ConfigChooser() {
       placement="bottom-start"
       aria-label="Run/Debug Configurations"
       className={styles.chooser}
+      style={{ width }}
       trapFocus
     >
       {mode !== "select" && (
@@ -247,7 +361,7 @@ function ConfigChooser() {
           value={query}
           onChange={(v) => {
             setQuery(v);
-            setActive(1);
+            setActive(-1);
           }}
           placeholder="Search configurations"
           aria-label="Search configurations"
@@ -256,19 +370,26 @@ function ConfigChooser() {
           variant="bare"
         />
       </div>
-      <div style={{ height }}>
+      <div className={styles.chooserViewport} style={{ height }}>
         <List<Row>
           aria-label="Configurations"
           className={styles.chooserList}
           items={rows}
           getKey={(r) => r.key}
           isSection={isSection}
-          renderSection={(r) => (r.type === "section" ? <T>{r.label}</T> : null)}
+          sectionHeightOf={(r) => (r.type === "section" && !r.label ? SEPARATOR : undefined)}
+          renderSection={(r) =>
+            r.type === "section" && r.label ? (
+              <T>{r.label}</T>
+            ) : (
+              <span className={styles.chooserSeparator} role="separator" />
+            )
+          }
           activeIndex={clamped}
           onActiveChange={setActive}
           focusable={false}
           hoverSelects
-          rowHeight={ROW}
+          rowHeight={rowHeight}
           onActivate={(r) => activate(r)}
           renderItem={(r, { active: isActive }) => {
             if (r.type === "save") {
@@ -293,6 +414,17 @@ function ConfigChooser() {
                 </span>
               );
             }
+            if (r.type === "all") {
+              return (
+                <span className={clsx(styles.chooserRow, styles.chooserEdit)} aria-expanded={r.expanded}>
+                  <Icon name={r.expanded ? "chevron-down" : "chevron-right"} size={13} />
+                  <span className={styles.chooserName}>
+                    <T>All Configurations</T>
+                    <span className={styles.chooserCount}>{r.count}</span>
+                  </span>
+                </span>
+              );
+            }
             if (r.type === "edit") {
               return (
                 <span className={clsx(styles.chooserRow, styles.chooserEdit)}>
@@ -306,6 +438,7 @@ function ConfigChooser() {
             }
             if (r.type !== "config") return null;
             const c = r.config;
+            const target = c.target ? targetName(c, runTargets) : null;
             const running = selectedTarget(c.id, sessions, debugSessions);
             return (
               <span className={styles.chooserRow} title={commandLine(c)}>
@@ -317,10 +450,17 @@ function ConfigChooser() {
                   />
                 </span>
                 {numbers.size > 0 && <span className={styles.chooserMnemonic}>{numbers.get(r.key) ?? ""}</span>}
-                <span className={clsx(styles.chooserName, c.id === selectedId && styles.chooserSelected)}>
+                <span
+                  className={clsx(styles.chooserName, c.id === selectedId && styles.chooserSelected)}
+                  title={c.name}
+                >
                   {r.indices ? <HighlightedText text={c.name} indices={r.indices} /> : c.name}
                 </span>
-                {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
+                {target && (
+                  <span className={styles.chooserMuted} title={target}>
+                    @ {target}
+                  </span>
+                )}
                 {c.isTest && (
                   <span className={styles.badge}>
                     <T>test</T>
@@ -338,17 +478,6 @@ function ConfigChooser() {
                 )}
                 {isActive && running && (
                   <span className={styles.chooserActions}>
-                    <IconButton
-                      icon="pin"
-                      size="small"
-                      iconSize={12}
-                      title={pinned.includes(c.id) ? tx("Unpin") : tx("Pin")}
-                      tabIndex={-1}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        togglePinned(c.id);
-                      }}
-                    />
                     <IconButton
                       icon={running.debug ? "restart-debug-filled" : "rerun-filled"}
                       size="small"
@@ -373,21 +502,11 @@ function ConfigChooser() {
                         running.stop();
                       }}
                     />
+                    {more(c)}
                   </span>
                 )}
                 {isActive && !running && (
                   <span className={styles.chooserActions}>
-                    <IconButton
-                      icon="pin"
-                      size="small"
-                      iconSize={12}
-                      title={pinned.includes(c.id) ? tx("Unpin") : tx("Pin")}
-                      tabIndex={-1}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        togglePinned(c.id);
-                      }}
-                    />
                     <IconButton
                       icon="run"
                       size="small"
@@ -410,6 +529,7 @@ function ConfigChooser() {
                         activate(r, "debug");
                       }}
                     />
+                    {more(c)}
                   </span>
                 )}
               </span>
@@ -425,6 +545,16 @@ function ConfigChooser() {
               : "Hold Shift to Run, F4 to edit, Delete to remove"}
           </T>
         </div>
+      )}
+      {menu && (
+        <Menu
+          open
+          anchor={menu.anchor}
+          placement="right-start"
+          items={menu.items}
+          onClose={() => setMenu(null)}
+          aria-label={tx`Actions for ${menu.name}`}
+        />
       )}
     </Popup>
   );

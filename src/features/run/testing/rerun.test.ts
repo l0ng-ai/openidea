@@ -167,6 +167,41 @@ describe("rerunFailedConfig", () => {
     expect(new Set(configs.map((config) => config.id)).size).toBe(2);
   });
 
+  it("zig: --test-filter per failed test, straight for `zig test` and via the module root for `zig build`", async () => {
+    expect(
+      (await rerunFailedConfig(cfg("zig", "zig", ["test", "src/calc.zig"]), [
+        ["calc", "adds"],
+        ["calc", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/calc.zig", "--test-filter", "adds", "--test-filter", "subs"]);
+    // Existing filters are replaced, not stacked.
+    expect(
+      (await rerunFailedConfig(cfg("zig", "zig", ["test", "src/calc.zig", "--test-filter", "adds"]), [
+        ["calc", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/calc.zig", "--test-filter", "subs"]);
+    // `zig build` forwards no args to the test binary: rerun goes through the module root
+    // the detection recorded.
+    expect(
+      (await rerunFailedConfig({ ...cfg("zig", "zig", ["build", "test"]), params: { testRoot: "src/tally.zig" } }, [
+        ["tally", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/tally.zig", "--test-filter", "subs"]);
+    // Without a recorded root a build-based run can't narrow.
+    expect(await rerunFailedConfig(cfg("zig", "zig", ["build", "test"]), [["tally", "subs"]])).toBeNull();
+  });
+
+  it("gradle: reruns and tree selections of a subproject's run keep its test task", async () => {
+    const run = cfg("gradle", "./gradlew", [":services:api:test", "--tests", "com.a.FooTest"]);
+    expect((await rerunFailedConfig(run, [["com.a.FooTest", "bar()"]]))!.args).toEqual([
+      ":services:api:test",
+      "--tests",
+      "com.a.FooTest.bar",
+    ]);
+    const [selected] = await testsConfigs(run, [["com.a.FooTest", "baz"]], "FooTest.baz");
+    expect(selected!.args).toEqual([":services:api:test", "--tests", "com.a.FooTest.baz"]);
+  });
+
   it("gradle and maven filters", async () => {
     expect((await rerunFailedConfig(cfg("gradle", "./gradlew", ["test"]), [["com.a.FooTest", "bar()"]]))!.args).toEqual(
       ["test", "--tests", "com.a.FooTest.bar"],
@@ -177,7 +212,55 @@ describe("rerunFailedConfig", () => {
         ["com.a.FooTest", "baz"],
         ["com.a.BarTest"],
       ]))!.args,
-    ).toEqual(["test", "-Dtest=com.a.FooTest#bar+baz,com.a.BarTest"]);
+    ).toEqual([
+      "test",
+      "-Dtest=com.a.FooTest#bar+baz,com.a.BarTest",
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
+    ]);
+  });
+
+  it("maven: a rerun replaces the previous selection and lets modules without the tests pass", async () => {
+    const narrowed = cfg("maven", "./mvnw", [
+      "test",
+      "-Dtest=Old",
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
+    ]);
+    expect((await rerunFailedConfig(narrowed, [["com.a.FooTest", "bar"]]))!.args).toEqual([
+      "test",
+      "-Dtest=com.a.FooTest#bar",
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
+    ]);
+    const [selected] = await testsConfigs(cfg("maven", "mvn", ["test"]), [["com.a.FooTest", "baz"]], "FooTest.baz");
+    expect(selected!.args).toEqual([
+      "test",
+      "-Dtest=com.a.FooTest#baz",
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
+    ]);
+  });
+
+  it("zig: --test-filter per failed test for `zig test`, null for build-based runs", async () => {
+    expect(
+      (await rerunFailedConfig(cfg("zig", "zig", ["test", "src/calc.zig"]), [
+        ["calc", "adds"],
+        ["calc", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/calc.zig", "--test-filter", "adds", "--test-filter", "subs"]);
+    // Existing filters are replaced, not stacked.
+    expect(
+      (await rerunFailedConfig(cfg("zig", "zig", ["test", "src/calc.zig", "--test-filter", "adds"]), [
+        ["calc", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/calc.zig", "--test-filter", "subs"]);
+    // `zig build` forwards no args to the test binary, so a build-based run can't narrow.
+    expect(await rerunFailedConfig(cfg("zig", "zig", ["build", "test"]), [["tally", "subs"]])).toBeNull();
   });
 
   it("returns null when nothing failed or the framework is unknown", async () => {

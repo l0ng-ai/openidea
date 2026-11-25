@@ -2,11 +2,11 @@ import { expect, test } from "./fixtures";
 
 for (const [id, selector] of [
   ["general", "[class*='radios'] label"],
-  ["notifications", "table tbody td:first-child"],
+  ["notifications", "[role='listbox'] [role='option'] > [class*='notificationGroupLabel']"],
   ["keymap", "[class*='presetLabel']"],
-  ["editor.inspections", "[class*='profileRow'] > span:first-child"],
+  ["editor.inspections", "[class*='profileControls'] > span:first-child"],
   ["vcs.issueNavigation", "[class*='pageBody'] button:not([aria-label])"],
-]) {
+] as const) {
   test(`${id} keeps compact labels inside their controls`, async ({ workbench: page }) => {
     await page.keyboard.press("Meta+,");
     const dialog = page.getByRole("dialog");
@@ -41,7 +41,7 @@ for (const [id, selector] of [
 for (const [id, selector] of [
   ["general", "[class*='fontRow'] > label"],
   ["build.console", "[class*='inlineRow'] > label"],
-]) {
+] as const) {
   test(`${id} keeps a readable width for inline text`, async ({ workbench: page }) => {
     await page.keyboard.press("Meta+,");
     await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toBeVisible();

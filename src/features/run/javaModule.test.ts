@@ -68,6 +68,7 @@ beforeEach(() => {
 afterEach(() => {
   resetRuns();
   _resetI18nForTests();
+  useProject.setState({ project: null });
 });
 
 it.each(["sibling", "/outside/modules"])("runs from %s using the stored module's classpath", async (cwd) => {
@@ -137,6 +138,27 @@ it("finds the source module for an old saved configuration without a module", as
   expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
   expect(ipc.runStart).toHaveBeenCalledWith(
     expect.objectContaining({ cwd: "/outside/modules" }),
+    expect.anything(),
+    expect.any(Number),
+  );
+});
+
+it.each([null, "/elsewhere"])("recovers an attached module from its indexed path with cwd %s", async (cwd) => {
+  const root = "/p";
+  const member = "/other/spring";
+  const module = `${member}/web`;
+  useProject.setState({
+    project: { root, workspace: { version: 1, name: "demo", projects: [root, member] } } as never,
+  });
+  ipc.findFiles.mockResolvedValueOnce({
+    status: "ok",
+    data: [{ path: `${module}/src/main/java/a/Main.java`, relPath: "spring/web/src/main/java/a/Main.java" }],
+  });
+  const session = await startRun({ ...config, cwd });
+  expect(session?.status).toBe("running");
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith(module, false, "automatic", expect.any(Number));
+  expect(ipc.runStart).toHaveBeenCalledWith(
+    expect.objectContaining({ cwd: cwd ?? module, module }),
     expect.anything(),
     expect.any(Number),
   );
@@ -225,6 +247,26 @@ it.each([
   expect(output).toContain("Java module 'web' is not imported.");
   expect(output).toContain("parent Maven or Gradle build");
   expect(output).toContain("open its folder as a project");
+  expect(ipc.runStart).not.toHaveBeenCalled();
+});
+
+it("says which build errors kept a module from being imported", async () => {
+  const problems = ["web/pom.xml: Plugin org.apache.maven.plugins:maven-compiler-plugin:9.9.9 could not be resolved"];
+  ipc.javaResolveLaunch.mockResolvedValueOnce({
+    status: "error",
+    error: {
+      kind: "invalidInput",
+      message: "jdtls: /p/web is not a Java project",
+      data: { type: "javaBuildProblems", problems },
+    },
+  } as never);
+  const session = await startRun({ ...config, module: "web" });
+  expect(session?.status).toBe("failed");
+  const output = runtime(session!.id)!
+    .console.lines.map((line) => line.text)
+    .join("\n");
+  expect(output).toContain(`Java module 'web' could not be imported because its build has errors: ${problems[0]}.`);
+  expect(output).not.toContain("Wait for Java project import");
   expect(ipc.runStart).not.toHaveBeenCalled();
 });
 

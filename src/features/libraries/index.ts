@@ -2,21 +2,54 @@
  * External Libraries: the project's SDK / library source folders (the Python
  * interpreter's standard library and site-packages, the JDK, node_modules
  * packages, Cargo crates and the Rust standard library, GOROOT and Go modules,
- * Maven / Gradle dependency jars) as a Project view root. Their files open
- * read-only, like IDEA's library sources. Archives (the JDK's `src.zip`, jars)
- * are browsed through the backend's `<archive>!/<entry>` paths.
+ * the Zig standard library and its fetched build.zig.zon packages, Maven /
+ * Gradle dependency jars) as a Project view root. Their files open read-only,
+ * like IDEA's library sources. Archives (the JDK's `src.zip`, jars, Zig
+ * package tarballs) are browsed through the backend's `<archive>!/<entry>` paths.
  */
 import { Channel } from "@tauri-apps/api/core";
 import { commands, type LibraryGroup, type RequestId } from "@/bindings";
 import { mergeLibraryGroups } from "@/platform/libraries";
 import { isGradleBuildInput } from "@/platform/buildFiles";
 import { registerActions } from "@/platform/actions";
-import { setLibraryRoots } from "@/editor/api";
+import {
+  invalidateNavigationProviders,
+  isLibraryPath,
+  registerEditorContribution,
+  setLibraryRoots,
+  useEditorRegistry,
+} from "@/editor/api";
 import { call, isCancelled, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { libraryArchiveRoot } from "@/platform/virtualDocs";
 import { registerProjectViewRoot, type ProjectViewRootContribution } from "@/workbench/contributions";
+import { goModNavigationExtension } from "./goModNavigation";
 
 export const EXTERNAL_LIBRARIES_LABEL = "External Libraries";
+
+/** A jdtls URI's `maven.*` attributes, as the group label used by build dependencies. */
+function archiveGroupName(uri: string, fallback: string): string {
+  let query = uri.split("?")[1] ?? "";
+  try {
+    query = decodeURIComponent(query);
+  } catch {
+    return fallback;
+  }
+  const field = (name: string) => new RegExp(`maven\\.${name}=/([^=]+)=`).exec(query)?.[1];
+  const [group, artifact, version] = [field("groupId"), field("artifactId"), field("version")];
+  if (!group || !artifact || !version) return fallback;
+  const classifier = field("classifier");
+  return `Maven: ${group}:${artifact}:${version}${classifier ? `:${classifier}` : ""}`;
+}
+
+/** A class opened from a jar the build model has not listed yet; show its exact archive. */
+export function openedLibraryGroup(uri: string, groups: readonly LibraryGroup[]): LibraryGroup | null {
+  const archive = libraryArchiveRoot(uri);
+  if (!archive || groups.some((group) => group.roots.some((root) => root.path === archive))) return null;
+  const separator = Math.max(archive.lastIndexOf("/"), archive.lastIndexOf("\\"));
+  const name = archive.slice(separator + 1, -1) || archive;
+  return { name: archiveGroupName(uri, name), kind: "classpath", roots: [{ name, path: archive }] };
+}
 
 const GROUP_ICONS: Record<string, string> = {
   python: "file-python",
@@ -32,7 +65,12 @@ const GROUP_ICONS: Record<string, string> = {
   classpath: "file-java",
   ruby: "file-ruby",
   gems: "file-ruby",
+  zig: "file-zig",
+  zigPackages: "file-zig",
 };
+
+/** SDK groups, which IDEA writes in angle brackets (`< 21 >`); library groups (`Maven: g:a:v`) go without. */
+const SDK_KINDS = new Set(["jdk", "python", "ruby", "go", "rust", "zig"]);
 
 /** An archive's root (`/jdk/lib/src.zip!`): its entries live below `<archive>!/`. */
 const isArchiveRoot = (path: string) => path.endsWith("!");
@@ -59,6 +97,7 @@ const MANIFESTS = new Set([
   "go.mod",
   "go.sum",
   "go.work",
+  "build.zig.zon",
   ".classpath",
   "pyproject.toml",
   "setup.py",
@@ -80,6 +119,14 @@ export function touchesManifest(paths: readonly string[]): boolean {
   );
 }
 
+/** IDEA's order, whatever order the ecosystems were detected in: SDKs first, then libraries, each by name. */
+function sortedGroups(groups: readonly LibraryGroup[]): LibraryGroup[] {
+  const rank = (g: LibraryGroup) => (SDK_KINDS.has(g.kind) ? 0 : 1);
+  return [...groups].sort(
+    (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }),
+  );
+}
+
 /** The "External Libraries" node for `groups` (`< Python 3.12 (.venv) >` › `python3.12`, `site-packages`). */
 export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootContribution | null {
   if (!groups.length) return null;
@@ -90,8 +137,8 @@ export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootC
     // After the project, before Scratches and Consoles (IDEA's order).
     order: 5,
     readOnly: true,
-    children: groups.map((g) => ({
-      label: `< ${g.name} >`,
+    children: sortedGroups(groups).map((g) => ({
+      label: SDK_KINDS.has(g.kind) ? `< ${g.name} >` : g.name,
       icon: GROUP_ICONS[g.kind] ?? "library",
       children: g.roots.map((r) => ({
         label: r.name,
@@ -103,6 +150,24 @@ export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootC
   };
 }
 
+/**
+ * The External Libraries folder of Go module `path` in `groups`: `path@version` in the module
+ * cache (any version when `version` is null), or `path` when vendored.
+ */
+export function goModuleRoot(groups: readonly LibraryGroup[], path: string, version: string | null): string | null {
+  for (const g of groups) {
+    if (g.kind !== "goModules") continue;
+    const versioned = version ? `${path}@${version}` : `${path}@`;
+    const root = g.roots.find(
+      (r) => r.name === path || (version ? r.name === versioned : r.name.startsWith(versioned)),
+    );
+    if (root) return root.path;
+  }
+  return null;
+}
+
+const goModules = (groups: readonly LibraryGroup[]) => JSON.stringify(groups.filter((g) => g.kind === "goModules"));
+
 /** Settings that change which SDKs the project uses. */
 const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
   const l = s.settings?.languages;
@@ -110,6 +175,7 @@ const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
     s.project?.root ?? null,
     s.project?.trusted,
     l?.python?.interpreter,
+    l?.python?.interpreterPaths,
     l?.ruby?.interpreter,
     l?.java?.jdk,
     l?.node?.interpreter,
@@ -118,6 +184,7 @@ const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
     l?.go?.goroot,
     l?.go?.gopath,
     l?.go?.modules,
+    l?.zig?.zig,
     s.settings?.projectStructure?.libraries,
     s.settings?.projectStructure?.sourceRoots,
   ]);
@@ -129,44 +196,82 @@ export function activate(): () => void {
   let disposeRoot = () => {};
   let disposeReadOnly = () => {};
   let seq = 0;
+  /** The groups shown now. */
+  let shownGroups: LibraryGroup[] = [];
   let shown = "";
+  /** The last complete result: what a refresh shows for ecosystems that haven't reported yet. */
+  let settled: LibraryGroup[] = [];
+  /** The last build/SDK result, before archives opened from the editor are added. */
+  let backendGroups: LibraryGroup[] = [];
+  /** One group per opened archive, so the build model can replace each archive independently. */
+  let openedGroups: LibraryGroup[] = [];
   let request: RequestId | undefined;
+  /** The project whose libraries are shown (and `settled`). */
+  let shownFor: string | null = null;
   const clear = () => {
     disposeRoot();
     disposeReadOnly();
     disposeRoot = disposeReadOnly = () => {};
     shown = "";
+    shownGroups = [];
+    settled = [];
+    backendGroups = [];
+    openedGroups = [];
+    shownFor = null;
+  };
+  const render = (groups: LibraryGroup[]) => {
+    backendGroups = groups;
+    const covered = new Set(groups.flatMap((g) => g.roots.map((r) => r.path)));
+    openedGroups = openedGroups.filter((g) => !g.roots.some((r) => covered.has(r.path)));
+    const all = mergeLibraryGroups([...groups, ...openedGroups]);
+    const key = JSON.stringify(all);
+    if (key === shown) return;
+    // The new node replaces the old one in place: removing it first would drop it from the tree
+    // until the new one renders, and collapse it.
+    const [oldRoot, oldReadOnly] = [disposeRoot, disposeReadOnly];
+    disposeRoot = disposeReadOnly = () => {};
+    shown = key;
+    // ⌘-hover may have probed a go.mod entry before its module was listed.
+    if (goModules(all) !== goModules(shownGroups)) invalidateNavigationProviders();
+    shownGroups = all;
+    const root = librariesRoot(all);
+    if (root) {
+      disposeReadOnly = setLibraryRoots(
+        "externalLibraries",
+        all.flatMap((g) => g.roots.map((r) => r.path)),
+      );
+      disposeRoot = registerProjectViewRoot(root);
+    }
+    oldRoot();
+    oldReadOnly();
   };
   const refresh = () => {
     const id = ++seq;
     if (request !== undefined) void commands.cancelRequest(request).catch(() => {});
     request = undefined;
-    if (!useProject.getState().project || useProject.getState().project?.trusted === false || !isTauri())
-      return clear();
+    const project = useProject.getState().project;
+    if (!project || project.trusted === false || !isTauri()) return clear();
+    // Another project's libraries must not show (or fill in) while this one's are discovered.
+    if (shownFor !== project.root) {
+      clear();
+      shownFor = project.root;
+    }
     let collected: LibraryGroup[] = [];
     const show = (groups: LibraryGroup[]) => {
       if (id !== seq) return;
-      const key = JSON.stringify(groups);
-      if (key === shown) return;
-      clear();
-      shown = key;
-      const root = librariesRoot(groups);
-      if (!root) return;
-      disposeReadOnly = setLibraryRoots(
-        "externalLibraries",
-        groups.flatMap((g) => g.roots.map((r) => r.path)),
-      );
-      disposeRoot = registerProjectViewRoot(root);
+      render(groups);
     };
     const channel = new Channel<LibraryGroup[]>();
     channel.onmessage = (groups) => {
       collected = mergeLibraryGroups([...collected, ...groups]);
-      show(collected);
+      const reported = new Set(collected.map((g) => g.kind));
+      show(mergeLibraryGroups([...collected, ...settled.filter((g) => !reported.has(g.kind))]));
     };
     const current = (request = nextRequestId());
     call(commands.sdkProjectLibraries(current, channel))
       .then((groups) => {
-        collected = groups;
+        if (id !== seq) return;
+        collected = settled = groups;
         show(groups);
       })
       .catch((e: unknown) => {
@@ -177,15 +282,36 @@ export function activate(): () => void {
       });
   };
   refresh();
+  const showOpenedLibrary = (path: string | null) => {
+    if (!path || !shownFor) return;
+    const group = openedLibraryGroup(path, shownGroups);
+    if (!group) return;
+    openedGroups.push(group);
+    render(backendGroups);
+  };
+  const disposeGoMod = registerEditorContribution({
+    id: "libraries.goModNavigation",
+    extensions: goModNavigationExtension((path, version) => goModuleRoot(shownGroups, path, version), isLibraryPath),
+  });
   const disposeActions = registerActions([
     { id: "libraries.reload", title: "Reload External Libraries", category: "Go", hidden: true, run: refresh },
   ]);
   const unsub = useProject.subscribe((s, prev) => {
     if (sdkKey(s) !== sdkKey(prev)) refresh();
   });
+  const unsubEditor = useEditorRegistry.subscribe((s, prev) => {
+    const path = s.active?.ctx.path ?? null;
+    if (path !== (prev.active?.ctx.path ?? null)) showOpenedLibrary(path);
+  });
+  showOpenedLibrary(useEditorRegistry.getState().active?.ctx.path ?? null);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const unsubFs = onIdeEvent("fsChanged", (e) => {
     if (!touchesManifest([...e.created, ...e.modified, ...e.removed])) return;
+    clearTimeout(timer);
+    timer = setTimeout(refresh, MANIFEST_REFRESH_DELAY);
+  });
+  // A Maven / Gradle sync changes the dependency versions without touching a manifest.
+  const unsubRoots = onIdeEvent("projectRootsChanged", () => {
     clearTimeout(timer);
     timer = setTimeout(refresh, MANIFEST_REFRESH_DELAY);
   });
@@ -194,8 +320,11 @@ export function activate(): () => void {
     if (request !== undefined) void commands.cancelRequest(request).catch(() => {});
     clearTimeout(timer);
     unsub();
+    unsubEditor();
     unsubFs();
+    unsubRoots();
     disposeActions();
+    disposeGoMod();
     clear();
   };
 }

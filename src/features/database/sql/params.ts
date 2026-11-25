@@ -36,6 +36,8 @@ export function findParams(text: string, driver: DbDriver, numbered = 0): SqlPar
     if (t.kind === "param") {
       // MySQL `@var` / `@@var` are session variables.
       if (driver === "mysql" && t.text.startsWith("@")) return;
+      // Snowflake `@stage` references, `$1` columns, `$name` session variables and `file://` locations.
+      if (driver === "snowflake" && /^[@$]|^\w+:\/\//.test(t.text)) return;
       if (toks[i - 1]?.text === "@") return;
       out.push({ name: t.text, from: t.from, to: t.to });
     } else if (t.kind === "punct" && t.text === "?" && driver !== "postgres") {

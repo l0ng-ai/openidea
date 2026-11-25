@@ -5,6 +5,7 @@ import {
   commands,
   IpcError,
   isCancelled,
+  isErrorKind,
   isTauri,
   type RecentProject,
   type RecentProjectGroup,
@@ -25,7 +26,7 @@ import { tx } from "@/platform/i18n";
 import { fuzzyMatch } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
-import { openRemoteProject } from "@/workbench/projectWindow";
+import { openRemoteProject, type ProjectWindowOverride } from "@/workbench/projectWindow";
 
 interface RecentState {
   projects: RecentProject[];
@@ -91,13 +92,12 @@ function withRemotes(local: RecentProject[]): RecentProject[] {
   return [...local, ...remote].sort((a, b) => (b.openedAtMs ?? 0) - (a.openedAtMs ?? 0));
 }
 
-/** `host:path` of a remote project location, else `null`. */
-export function remoteDisplay(location: string): string | null {
+function remoteDetails(location: string): { host: string; path: string } | null {
   const r = parseRemoteLocation(location);
   if (!r) return null;
   const host =
     recentRemotes().find((x) => sameTarget(x.target, r.target) && x.path === r.path)?.host || targetName(r.target);
-  return `${host}:${r.path}`;
+  return { host, path: r.path };
 }
 
 export async function removeRecent(path: string) {
@@ -117,15 +117,35 @@ export async function removeRecent(path: string) {
 }
 
 /** An open failure's kind and message, whether it is an `IpcError` or a raw rejected invoke. */
-function failure(e: unknown): { kind?: string; message: string } {
+function failure(e: unknown): { kind?: unknown; message: string } {
   if (e instanceof IpcError) return { kind: e.kind, message: e.message };
   if (e && typeof e === "object" && "message" in e)
-    return { kind: (e as { kind?: string }).kind, message: String((e as { message: unknown }).message) };
+    return { kind: "kind" in e ? e.kind : undefined, message: String(e.message) };
   return { message: e instanceof Error ? e.message : String(e) };
 }
 
-/** Opens a project from the recent list; offers to remove entries whose folder is gone. */
-export async function openRecent(project: Pick<RecentProject, "path" | "name">): Promise<boolean> {
+const openingRecent = new Map<string, Promise<boolean>>();
+
+/**
+ * Opens a project from the recent list; offers to remove entries whose folder is gone.
+ * `override` is the window a modifier key picked ({@link projectWindowOverride}), else "Open project in" decides.
+ * A second click (or double click) while the same project is still opening joins that attempt instead of connecting again.
+ */
+export function openRecent(
+  project: Pick<RecentProject, "path" | "name">,
+  override?: ProjectWindowOverride | null,
+): Promise<boolean> {
+  const pending = openingRecent.get(project.path);
+  if (pending) return pending;
+  const attempt = openRecentNow(project, override).finally(() => openingRecent.delete(project.path));
+  openingRecent.set(project.path, attempt);
+  return attempt;
+}
+
+async function openRecentNow(
+  project: Pick<RecentProject, "path" | "name">,
+  override?: ProjectWindowOverride | null,
+): Promise<boolean> {
   if (!isTauri()) {
     notifications().notify({
       level: "warning",
@@ -135,12 +155,13 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
     return false;
   }
   const remote = await resolveRemoteLocation(project.path);
-  if (remote) return openRemote(project, remote);
+  if (remote) return openRemote(project, remote, override);
   const current = useProject.getState().project;
   if (current?.root === project.path) return true;
-  // With a project open, the app feature applies "Open project in" (new / this window / ask).
-  if (current && getAction("file.openRecentProject")) {
-    await executeAction("file.openRecentProject", project.path);
+  // With a project open, the app feature applies "Open project in" (new / this window / ask). A modifier key
+  // picks the window of this open instead, with or without a project open.
+  if ((current || override) && getAction("file.openRecentProject")) {
+    await executeAction("file.openRecentProject", override ? { path: project.path, window: override } : project.path);
     return true;
   }
   useRecent.setState({ opening: project.path });
@@ -149,8 +170,9 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
     return true;
   } catch (e) {
     if (isCancelled(e)) return false;
-    const { kind, message } = failure(e);
-    if (kind === "notFound" || (!kind && /not found|no such/i.test(message))) {
+    const error = failure(e);
+    const { message } = error;
+    if (isErrorKind(error, "notFound") || (!error.kind && /not found|no such/i.test(message))) {
       // A balloon can be switched off for this group and the welcome screen has no log to open.
       const remove = await confirm({
         title: tx`Project folder not found: ${project.name}`,
@@ -176,12 +198,16 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
 async function openRemote(
   project: Pick<RecentProject, "path" | "name">,
   remote: { target: RemoteTarget; path: string },
+  override?: ProjectWindowOverride | null,
 ): Promise<boolean> {
+  const here = async () => {
+    useRecent.setState({ opening: project.path });
+    await connectRemote(remote.target, remote.path);
+  };
   try {
-    return await openRemoteProject(remote.target, remote.path, async () => {
-      useRecent.setState({ opening: project.path });
-      await connectRemote(remote.target, remote.path);
-    });
+    return override
+      ? await openRemoteProject(remote.target, remote.path, here, override)
+      : await openRemoteProject(remote.target, remote.path, here);
   } catch (e) {
     if (isCancelled(e)) return false;
     notifications().notify({
@@ -212,9 +238,10 @@ export interface RecentMatch {
   project: RecentProject;
   /** Matched indices in the name, if the name matched. */
   nameMatch: number[] | null;
-  /** Matched indices in the displayed (tildified) path. */
+  /** Matched indices in displayPath, including the host for remote projects. */
   pathMatch: number[] | null;
   displayPath: string;
+  remote: ReturnType<typeof remoteDetails>;
 }
 
 /**
@@ -223,12 +250,16 @@ export interface RecentMatch {
  */
 export function filterRecent(projects: readonly RecentProject[], query: string, home?: string | null): RecentMatch[] {
   const q = query.trim();
-  const all = projects.map((project) => ({
-    project,
-    nameMatch: null as number[] | null,
-    pathMatch: null as number[] | null,
-    displayPath: remoteDisplay(project.path) ?? tildify(project.path, home),
-  }));
+  const all = projects.map<RecentMatch>((project) => {
+    const remote = remoteDetails(project.path);
+    return {
+      project,
+      nameMatch: null,
+      pathMatch: null,
+      displayPath: remote ? `${remote.host}:${remote.path}` : tildify(project.path, home),
+      remote,
+    };
+  });
   if (!q) return all;
   const byName: RecentMatch[] = [];
   const byPath: RecentMatch[] = [];

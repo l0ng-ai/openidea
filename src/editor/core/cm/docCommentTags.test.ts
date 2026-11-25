@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
 import { codeFolding, foldEffect, HighlightStyle, highlightingFor, syntaxHighlighting } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import { completedSyntaxState } from "@/test/syntax";
 import { docCommentMarkup, docCommentTag, docCommentTagValue, openideaHighlightStyle } from "./highlight";
 import { findLanguageDescription, loadSupport } from "./languages";
@@ -93,19 +94,22 @@ describe("doc comment tags", () => {
       "/* @param plain */",
       "const s = '/** @param x */';",
     ].join("\n");
-    for (const [language, path] of [
+    const cases = [
       ["JavaScript", "/p/a.js"],
       ["TypeScript", "/p/a.ts"],
       ["JSX", "/p/a.jsx"],
       ["TSX", "/p/a.tsx"],
-    ] as const) {
-      const s = await state(language, path, doc);
-      expect(ranges(s, language), language).toEqual([
-        ["@link", "tag"],
-        ["@param", "tag"],
-        ["@returns", "tag"],
-      ]);
-    }
+    ] as const;
+    await Promise.all(
+      cases.map(async ([language, path]) => {
+        const s = await state(language, path, doc);
+        expect(ranges(s, language), language).toEqual([
+          ["@link", "tag"],
+          ["@param", "tag"],
+          ["@returns", "tag"],
+        ]);
+      }),
+    );
   });
 
   it("marks PHPDoc tags and the variable of @param and @var", async () => {
@@ -282,6 +286,38 @@ describe("doc comment tags", () => {
         expect(span?.children.length).toBe(0);
       }
     }
+  });
+
+  it("gives a doc comment's text the doc comment style, as IntelliJ does, and a plain comment none", async () => {
+    // Lezer grammars have one node for `/* */` and `/** */` alike, so without this a JavaDoc
+    // would take the plain comment colour.
+    const cases = [
+      ["Java", "/p/A.java", ""],
+      ["JavaScript", "/p/a.js", ""],
+      ["TypeScript", "/p/a.ts", ""],
+      ["PHP", "/p/a.php", "<?php\n"],
+    ] as const;
+    await Promise.all(
+      cases.map(async ([language, path, prefix]) => {
+        const support = await loadSupport(findLanguageDescription(language, path)!);
+        const doc = `${prefix}/**\n * Books a room.\n * @param id the id\n */\n/* Plain note. */\n`;
+        const view = new EditorView({
+          parent: document.body,
+          state: completedSyntaxState(
+            EditorState.create({ doc, extensions: [support!, syntaxHighlighting(openideaHighlightStyle)] }),
+          ),
+        });
+        views.push(view);
+        const cls = highlightingFor(view.state, [tags.docComment])!;
+        const styled = [...view.contentDOM.querySelectorAll(`.${cls}`)].map((e) => e.textContent).join("|");
+        expect(styled, language).toContain("Books a room.");
+        expect(styled, language).not.toContain("Plain note.");
+        // The tags keep their own style, nested inside the doc comment's.
+        const tag = view.contentDOM.querySelector(`.${highlightingFor(view.state, [docCommentTag])!}`);
+        expect(tag?.textContent, language).toBe("@param");
+        expect(tag?.closest(`.${cls}`), language).not.toBeNull();
+      }),
+    );
   });
 
   it("keeps the tags of a line that a fold splits into two visible ranges", async () => {

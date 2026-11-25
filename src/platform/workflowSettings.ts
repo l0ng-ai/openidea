@@ -3,11 +3,20 @@
  * consume them: every field present and in range (mirrors
  * `ide-core::workflow_settings` defaults). Normalisation never throws.
  */
+import type {
+  EmptyCherryPickAction,
+  FetchTagsMode,
+  GitAnnotateMovement,
+  GitSaveChangesPolicy,
+  HotSwapPolicy,
+  StashDiffTarget,
+} from "@/bindings";
 import { useProject } from "./project";
 import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSettings";
 
 export type UpdateMethod = "merge" | "rebase";
-export type IncomingCheck = "auto" | "always" | "never";
+export type IncomingCheck = "auto" | "always" | "check" | "never";
+export type BuildToolWindowWhen = "always" | "onError" | "never";
 export type VcsConfirm = "ask" | "silently" | "never";
 export type PatchCreated = "ask" | "no" | "reveal";
 export type CursorShape = "block" | "underline" | "bar";
@@ -18,28 +27,44 @@ export interface IssueLinkValid {
 }
 
 export interface GitSettingsValid {
+  annotate: { ignoreWhitespace: boolean; movement: GitAnnotateMovement };
   inlineBlame: boolean;
+  inlineBlameClickable: boolean;
   showBranchInProjectView: boolean;
+  syncBranchOperations: boolean;
   executable: string;
+  cloneSubmodules: boolean;
   updateMethod: UpdateMethod;
+  saveChangesPolicy: GitSaveChangesPolicy;
   autoUpdateOnPushRejected: boolean;
   warnCrlf: boolean;
   warnDetachedHead: boolean;
   incomingCheck: IncomingCheck;
+  /** Minutes between background checks for incoming commits. */
+  incomingCheckInterval: number;
+  fetchTagsMode: FetchTagsMode;
   protectedBranches: string;
   signOff: boolean;
+  addCherryPickOrigin: boolean;
+  emptyCherryPick: EmptyCherryPickAction;
   warnLargeFiles: boolean;
   largeFileMb: number;
   warnBadFileNames: boolean;
   showPushDialog: boolean;
   pushDialogOnlyProtected: boolean;
   combineStashAndShelf: boolean;
+  stashDiffTarget: StashDiffTarget;
+  stagingArea: boolean;
+  cliStatus: boolean;
 }
 
 export interface CommitSettingsValid {
   nonModal: boolean;
+  includeChangesByDefault: boolean;
+  commitAllWhenNothingStaged: boolean;
   clearInitialMessage: boolean;
   analyzeCode: boolean;
+  postponeSlowChecks: boolean;
   checkTodo: boolean;
   reformat: boolean;
   optimizeImports: boolean;
@@ -55,10 +80,23 @@ export interface CommitSettingsValid {
   disabledPluginChecks: string[];
   /** Double-click opens the diff (`true`), the source file (`false`), or follows the interface (`null`). */
   doubleClickOpensDiff: boolean | null;
+  /** Team conventions for Generate Commit Message with Agent, added to its prompt. */
+  agentInstructions: string;
+  /** The agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+  agent: string;
+  /** That agent's model for commit messages; empty keeps the model the agent would use. */
+  agentModel: string;
+  /** That model's thinking level for commit messages; empty keeps the agent's. */
+  agentEffort: string;
+  /** Show the Generate Commit Message with Agent button above the commit message. */
+  agentButton: boolean;
 }
 
 export interface VcsSettingsValid {
   showDirtyDirectories: boolean;
+  createChangelistsAutomatically: boolean;
+  /** Off: diffs the user opens show in a separate window. */
+  diffAsEditorTab: boolean;
   limitHistory: boolean;
   historyLimit: number;
   git: GitSettingsValid;
@@ -72,6 +110,23 @@ export interface VcsSettingsValid {
   };
   shelf: { removeApplied: boolean };
   issueNavigation: IssueLinkValid[];
+  /** Directory Mappings: repository roots excluded from / added to the detected ones. */
+  mappings: { excluded: string[]; added: string[] };
+}
+
+/** Mirrors `ide-core::workflow_settings::LogLevelColors` defaults. */
+export interface LogLevelColorsValid {
+  enabled: boolean;
+  error: string;
+  warn: string;
+  info: string;
+  debug: string;
+  trace: string;
+}
+
+export interface BuildSettingsValid {
+  openToolWindow: BuildToolWindowWhen;
+  focusToolWindow: BuildToolWindowWhen;
 }
 
 export interface ConsoleSettingsValid {
@@ -80,20 +135,26 @@ export interface ConsoleSettingsValid {
   bufferKb: number;
   encoding: string;
   foldPatterns: string[];
+  logColors: LogLevelColorsValid;
 }
 
 export interface DebuggerSettingsValid {
   showOnBreakpoint: boolean;
   focusAppOnBreakpoint: boolean;
   hideOnTermination: boolean;
+  variablesOnBreakpoint: boolean;
   breakpointsAnyFile: boolean;
   runToCursorInlay: boolean;
   inlineValues: boolean;
   sortValues: boolean;
+  liveWatches: boolean;
   valueTooltip: boolean;
   valueTooltipOnSelection: boolean;
   valueTooltipDelay: number;
   skipLibraryCode: boolean;
+  debugServerPage: boolean;
+  flutterHotReloadOnSave: boolean;
+  hotSwapAfterCompile: HotSwapPolicy;
   python: { attachSubprocess: boolean; gevent: boolean };
 }
 
@@ -102,14 +163,37 @@ export interface RunSettingsValid {
   confirmRerun: boolean;
   confirmTerminate: boolean;
   showOnStart: boolean;
+  /** New Run/Debug tabs start pinned, so a later run doesn't take their place (IDEA's advanced setting). */
+  pinTabs: boolean;
   terminationTimeoutMs: number;
 }
+
+/** Tools › External Diff Tools: the program Show Diff in External Tool starts. */
+export interface ExternalDiffValid {
+  enabled: boolean;
+  path: string;
+  /** `%1` the left file, `%2` the right file, `%3` the title. */
+  parameters: string;
+}
+
+export type TerminalMaxFps = "unlimited" | "60" | "30" | "15" | "10";
+/** When a title the program sets (OSC 0/2) names the terminal tab, as IDEA's option. */
+export type TerminalAppTitle = "running" | "always" | "off";
+
+export const TERMINAL_MAX_FPS_OPTIONS: readonly { value: TerminalMaxFps; label: string }[] = [
+  { value: "unlimited", label: "Unlimited" },
+  { value: "60", label: "60 FPS" },
+  { value: "30", label: "30 FPS" },
+  { value: "15", label: "15 FPS" },
+  { value: "10", label: "10 FPS" },
+];
 
 export interface TerminalSettingsValid {
   startDirectory: string;
   env: Record<string, string>;
   shellPath: string;
   tabName: string;
+  appTitleAsTabName: TerminalAppTitle;
   audibleBell: boolean;
   closeOnExit: boolean;
   mouseReporting: boolean;
@@ -118,10 +202,16 @@ export interface TerminalSettingsValid {
   overrideIdeShortcuts: boolean;
   shellIntegration: boolean;
   highlightHyperlinks: boolean;
+  highlightSelection: boolean;
   optionAsMeta: boolean;
   escapeToEditor: boolean;
   cursorShape: CursorShape;
   cursorBlink: boolean;
+  /**
+   * Cap how often PTY output is painted. `unlimited` writes every chunk;
+   * while the document is hidden a slower floor always applies (#4216).
+   */
+  maxFps: TerminalMaxFps;
   useEditorFont: boolean;
   fontFamily: string;
   fontSize: number;
@@ -148,23 +238,42 @@ export interface ExternalToolValid {
   openConsole: boolean;
 }
 
+export interface AgentSecurityValid {
+  allowedCommands: string[];
+  blockedCommands: string[];
+}
+
+/** Agents › IDE MCP Server: the Run tool window's agent tabs (`run_command`). */
+export interface AgentRunSettingsValid {
+  /** Finished agent tabs shown; older ones go to the archive. */
+  tabLimit: number;
+  /** Archived agent tabs kept; older ones are closed. */
+  archiveLimit: number;
+}
+
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
+  build: BuildSettingsValid;
   console: ConsoleSettingsValid;
   debugger: DebuggerSettingsValid;
   run: RunSettingsValid;
   terminal: TerminalSettingsValid;
   actionsOnSave: ActionsOnSaveValid;
   externalTools: ExternalToolValid[];
+  externalDiff: ExternalDiffValid;
+  agentSecurity: AgentSecurityValid;
 }
 
 export const WORKFLOW_LIMITS = {
   historyLimit: { min: 10, max: 100_000 },
   messageLimit: { min: 20, max: 500 },
   largeFileMb: { min: 1, max: 100_000 },
+  incomingCheckInterval: { min: 1, max: 1440 },
   bufferKb: { min: 16, max: 1_048_576 },
   tooltipDelay: { min: 0, max: 10_000 },
   terminationTimeoutMs: { min: 0, max: 600_000 },
+  agentTabLimit: { min: 0, max: 1000 },
+  agentArchiveLimit: { min: 0, max: 100_000 },
   terminalFontSize: { min: 6, max: 72 },
   terminalLineHeight: { min: 0.5, max: 3 },
   terminalColumnWidth: { min: 0.5, max: 2 },
@@ -187,30 +296,47 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   vcs: {
     // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
     showDirtyDirectories: false,
+    createChangelistsAutomatically: false,
+    diffAsEditorTab: true,
     limitHistory: true,
     historyLimit: 1000,
     git: {
+      annotate: { ignoreWhitespace: true, movement: "none" },
       inlineBlame: false,
+      inlineBlameClickable: true,
       showBranchInProjectView: false,
+      syncBranchOperations: true,
       executable: "",
+      cloneSubmodules: true,
       updateMethod: "merge",
+      saveChangesPolicy: "shelve",
       autoUpdateOnPushRejected: false,
       warnCrlf: true,
       warnDetachedHead: true,
       incomingCheck: "auto",
+      incomingCheckInterval: 15,
+      fetchTagsMode: "auto",
       protectedBranches: "master; main",
       signOff: false,
+      addCherryPickOrigin: true,
+      emptyCherryPick: "skip",
       warnLargeFiles: true,
       largeFileMb: 50,
       warnBadFileNames: true,
       showPushDialog: true,
       pushDialogOnlyProtected: false,
       combineStashAndShelf: false,
+      stashDiffTarget: "local",
+      stagingArea: false,
+      cliStatus: false,
     },
     commit: {
       nonModal: true,
+      includeChangesByDefault: true,
+      commitAllWhenNothingStaged: true,
       clearInitialMessage: false,
       analyzeCode: true,
+      postponeSlowChecks: true,
       checkTodo: true,
       reformat: false,
       optimizeImports: false,
@@ -224,6 +350,11 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       wrapAtMargin: false,
       disabledPluginChecks: [],
       doubleClickOpensDiff: null,
+      agentInstructions: "",
+      agent: "",
+      agentModel: "",
+      agentEffort: "",
+      agentButton: true,
     },
     confirmation: {
       onCreate: "ask",
@@ -234,6 +365,11 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     },
     shelf: { removeApplied: false },
     issueNavigation: [],
+    mappings: { excluded: [], added: [] },
+  },
+  build: {
+    openToolWindow: "always",
+    focusToolWindow: "never",
   },
   console: {
     softWrap: false,
@@ -247,27 +383,48 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       "at node:internal/",
       "<frozen importlib._bootstrap",
     ],
+    logColors: {
+      enabled: false,
+      error: "var(--ansi-red)",
+      warn: "var(--ansi-yellow)",
+      info: "var(--ansi-green)",
+      debug: "var(--ansi-cyan)",
+      trace: "var(--ansi-magenta)",
+    },
   },
   debugger: {
     showOnBreakpoint: true,
     focusAppOnBreakpoint: false,
     hideOnTermination: false,
+    variablesOnBreakpoint: true,
     breakpointsAnyFile: false,
     runToCursorInlay: true,
     inlineValues: true,
     sortValues: false,
+    liveWatches: false,
     valueTooltip: true,
     valueTooltipOnSelection: true,
     valueTooltipDelay: 700,
     skipLibraryCode: true,
+    debugServerPage: false,
+    flutterHotReloadOnSave: true,
+    hotSwapAfterCompile: "ask",
     python: { attachSubprocess: true, gevent: false },
   },
-  run: { defaultTarget: "", confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
+  run: {
+    defaultTarget: "",
+    confirmRerun: true,
+    confirmTerminate: true,
+    showOnStart: true,
+    pinTabs: false,
+    terminationTimeoutMs: 3000,
+  },
   terminal: {
     startDirectory: "",
     env: {},
     shellPath: "",
     tabName: "Local",
+    appTitleAsTabName: "running",
     audibleBell: true,
     closeOnExit: true,
     mouseReporting: true,
@@ -276,10 +433,12 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     overrideIdeShortcuts: true,
     shellIntegration: true,
     highlightHyperlinks: true,
+    highlightSelection: true,
     optionAsMeta: false,
     escapeToEditor: false,
     cursorShape: "block",
     cursorBlink: true,
+    maxFps: "unlimited",
     useEditorFont: true,
     fontFamily: "JetBrains Mono",
     fontSize: 13,
@@ -289,6 +448,11 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   },
   actionsOnSave: { optimizeImports: false, cleanup: false },
   externalTools: [],
+  externalDiff: { enabled: false, path: "", parameters: "%1 %2 %3" },
+  agentSecurity: {
+    allowedCommands: [],
+    blockedCommands: ["rm -rf *", "rm -rf /", "mkfs*", "dd *", ":(){ :|:& };:", "shutdown*", "reboot*"],
+  },
   ...DEFAULT_REMOTE,
 };
 
@@ -313,36 +477,57 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
   const d = DEFAULT_WORKFLOW.vcs;
   const v = obj(raw);
   const g = obj(v.git);
+  const annotate = obj(g.annotate);
   const c = obj(v.commit);
   const conf = obj(v.confirmation);
   const L = WORKFLOW_LIMITS;
   const confirm = ["ask", "silently", "never"] as const;
   return {
     showDirtyDirectories: bool(v.showDirtyDirectories, d.showDirtyDirectories),
+    createChangelistsAutomatically: bool(v.createChangelistsAutomatically, d.createChangelistsAutomatically),
+    diffAsEditorTab: bool(v.diffAsEditorTab, d.diffAsEditorTab),
     limitHistory: bool(v.limitHistory, d.limitHistory),
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
+      annotate: {
+        ignoreWhitespace: bool(annotate.ignoreWhitespace, d.git.annotate.ignoreWhitespace),
+        movement: oneOf(annotate.movement, ["none", "withinFile", "acrossFiles"], d.git.annotate.movement),
+      },
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
+      inlineBlameClickable: bool(g.inlineBlameClickable, d.git.inlineBlameClickable),
       showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
+      syncBranchOperations: bool(g.syncBranchOperations, d.git.syncBranchOperations),
       executable: text(g.executable, d.git.executable).trim(),
+      cloneSubmodules: bool(g.cloneSubmodules, d.git.cloneSubmodules),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
+      saveChangesPolicy: oneOf(g.saveChangesPolicy, ["shelve", "stash"] as const, d.git.saveChangesPolicy),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
       warnCrlf: bool(g.warnCrlf, d.git.warnCrlf),
       warnDetachedHead: bool(g.warnDetachedHead, d.git.warnDetachedHead),
-      incomingCheck: oneOf(g.incomingCheck, ["auto", "always", "never"] as const, d.git.incomingCheck),
+      incomingCheck: oneOf(g.incomingCheck, ["auto", "always", "check", "never"] as const, d.git.incomingCheck),
+      incomingCheckInterval: num(g.incomingCheckInterval, d.git.incomingCheckInterval, L.incomingCheckInterval, true),
+      fetchTagsMode: oneOf(g.fetchTagsMode, ["auto", "sync", "always", "never"] as const, d.git.fetchTagsMode),
       protectedBranches: text(g.protectedBranches, d.git.protectedBranches),
       signOff: bool(g.signOff, d.git.signOff),
+      addCherryPickOrigin: bool(g.addCherryPickOrigin, d.git.addCherryPickOrigin),
+      emptyCherryPick: oneOf(g.emptyCherryPick, ["skip", "createEmpty"] as const, d.git.emptyCherryPick),
       warnLargeFiles: bool(g.warnLargeFiles, d.git.warnLargeFiles),
       largeFileMb: num(g.largeFileMb, d.git.largeFileMb, L.largeFileMb, true),
       warnBadFileNames: bool(g.warnBadFileNames, d.git.warnBadFileNames),
       showPushDialog: bool(g.showPushDialog, d.git.showPushDialog),
       pushDialogOnlyProtected: bool(g.pushDialogOnlyProtected, d.git.pushDialogOnlyProtected),
       combineStashAndShelf: bool(g.combineStashAndShelf, d.git.combineStashAndShelf),
+      stashDiffTarget: oneOf(g.stashDiffTarget, ["local", "parent"] as const, d.git.stashDiffTarget),
+      stagingArea: bool(g.stagingArea, d.git.stagingArea),
+      cliStatus: bool(g.cliStatus, d.git.cliStatus),
     },
     commit: {
       nonModal: bool(c.nonModal, d.commit.nonModal),
+      includeChangesByDefault: bool(c.includeChangesByDefault, d.commit.includeChangesByDefault),
+      commitAllWhenNothingStaged: bool(c.commitAllWhenNothingStaged, d.commit.commitAllWhenNothingStaged),
       clearInitialMessage: bool(c.clearInitialMessage, d.commit.clearInitialMessage),
       analyzeCode: bool(c.analyzeCode, d.commit.analyzeCode),
+      postponeSlowChecks: bool(c.postponeSlowChecks, d.commit.postponeSlowChecks),
       checkTodo: bool(c.checkTodo, d.commit.checkTodo),
       reformat: bool(c.reformat, d.commit.reformat),
       optimizeImports: bool(c.optimizeImports, d.commit.optimizeImports),
@@ -356,6 +541,11 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       wrapAtMargin: bool(c.wrapAtMargin, d.commit.wrapAtMargin),
       disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
       doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
+      agentInstructions: text(c.agentInstructions, d.commit.agentInstructions),
+      agent: text(c.agent, d.commit.agent),
+      agentModel: text(c.agentModel, d.commit.agentModel),
+      agentEffort: text(c.agentEffort, d.commit.agentEffort),
+      agentButton: bool(c.agentButton, d.commit.agentButton),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),
@@ -371,18 +561,42 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
           .map((x) => ({ pattern: text(x.pattern, ""), link: text(x.link, "") }))
           .filter((x) => x.pattern.trim())
       : [],
+    mappings: {
+      excluded: strings(obj(v.mappings).excluded, d.mappings.excluded),
+      added: strings(obj(v.mappings).added, d.mappings.added),
+    },
+  };
+}
+
+export function validateBuild(raw: unknown): BuildSettingsValid {
+  const d = DEFAULT_WORKFLOW.build;
+  const v = obj(raw);
+  const when = ["always", "onError", "never"] as const;
+  return {
+    openToolWindow: oneOf(v.openToolWindow, when, d.openToolWindow),
+    focusToolWindow: oneOf(v.focusToolWindow, when, d.focusToolWindow),
   };
 }
 
 export function validateConsole(raw: unknown): ConsoleSettingsValid {
   const d = DEFAULT_WORKFLOW.console;
   const v = obj(raw);
+  const lc = obj(v.logColors);
+  const dl = d.logColors;
   return {
     softWrap: bool(v.softWrap, d.softWrap),
     overrideBuffer: bool(v.overrideBuffer, d.overrideBuffer),
     bufferKb: num(v.bufferKb, d.bufferKb, WORKFLOW_LIMITS.bufferKb, true),
     encoding: nonEmpty(v.encoding, d.encoding),
     foldPatterns: strings(v.foldPatterns, d.foldPatterns),
+    logColors: {
+      enabled: bool(lc.enabled, dl.enabled),
+      error: nonEmpty(lc.error, dl.error),
+      warn: nonEmpty(lc.warn, dl.warn),
+      info: nonEmpty(lc.info, dl.info),
+      debug: nonEmpty(lc.debug, dl.debug),
+      trace: nonEmpty(lc.trace, dl.trace),
+    },
   };
 }
 
@@ -394,14 +608,19 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     showOnBreakpoint: bool(v.showOnBreakpoint, d.showOnBreakpoint),
     focusAppOnBreakpoint: bool(v.focusAppOnBreakpoint, d.focusAppOnBreakpoint),
     hideOnTermination: bool(v.hideOnTermination, d.hideOnTermination),
+    variablesOnBreakpoint: bool(v.variablesOnBreakpoint, d.variablesOnBreakpoint),
     breakpointsAnyFile: bool(v.breakpointsAnyFile, d.breakpointsAnyFile),
     runToCursorInlay: bool(v.runToCursorInlay, d.runToCursorInlay),
     inlineValues: bool(v.inlineValues, d.inlineValues),
     sortValues: bool(v.sortValues, d.sortValues),
+    liveWatches: bool(v.liveWatches, d.liveWatches),
     valueTooltip: bool(v.valueTooltip, d.valueTooltip),
     valueTooltipOnSelection: bool(v.valueTooltipOnSelection, d.valueTooltipOnSelection),
     valueTooltipDelay: num(v.valueTooltipDelay, d.valueTooltipDelay, WORKFLOW_LIMITS.tooltipDelay, true),
     skipLibraryCode: bool(v.skipLibraryCode, d.skipLibraryCode),
+    debugServerPage: bool(v.debugServerPage, d.debugServerPage),
+    flutterHotReloadOnSave: bool(v.flutterHotReloadOnSave, d.flutterHotReloadOnSave),
+    hotSwapAfterCompile: oneOf(v.hotSwapAfterCompile, ["ask", "always", "never"] as const, d.hotSwapAfterCompile),
     python: {
       attachSubprocess: bool(py.attachSubprocess, d.python.attachSubprocess),
       gevent: bool(py.gevent, d.python.gevent),
@@ -417,12 +636,23 @@ export function validateRun(raw: unknown): RunSettingsValid {
     confirmRerun: bool(v.confirmRerun, d.confirmRerun),
     confirmTerminate: bool(v.confirmTerminate, d.confirmTerminate),
     showOnStart: bool(v.showOnStart, d.showOnStart),
+    pinTabs: bool(v.pinTabs, d.pinTabs),
     terminationTimeoutMs: num(
       v.terminationTimeoutMs,
       d.terminationTimeoutMs,
       WORKFLOW_LIMITS.terminationTimeoutMs,
       true,
     ),
+  };
+}
+
+export function validateExternalDiff(raw: unknown): ExternalDiffValid {
+  const d = DEFAULT_WORKFLOW.externalDiff;
+  const v = obj(raw);
+  return {
+    enabled: bool(v.enabled, d.enabled),
+    path: text(v.path, d.path).trim(),
+    parameters: text(v.parameters, d.parameters),
   };
 }
 
@@ -436,6 +666,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     env,
     shellPath: text(v.shellPath, d.shellPath).trim(),
     tabName: nonEmpty(v.tabName, d.tabName),
+    appTitleAsTabName: oneOf(v.appTitleAsTabName, ["running", "always", "off"] as const, d.appTitleAsTabName),
     audibleBell: bool(v.audibleBell, d.audibleBell),
     closeOnExit: bool(v.closeOnExit, d.closeOnExit),
     mouseReporting: bool(v.mouseReporting, d.mouseReporting),
@@ -444,10 +675,12 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     overrideIdeShortcuts: bool(v.overrideIdeShortcuts, d.overrideIdeShortcuts),
     shellIntegration: bool(v.shellIntegration, d.shellIntegration),
     highlightHyperlinks: bool(v.highlightHyperlinks, d.highlightHyperlinks),
+    highlightSelection: bool(v.highlightSelection, d.highlightSelection),
     optionAsMeta: bool(v.optionAsMeta, d.optionAsMeta),
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),
     cursorBlink: bool(v.cursorBlink, d.cursorBlink),
+    maxFps: oneOf(v.maxFps, ["unlimited", "60", "30", "15", "10"] as const, d.maxFps),
     useEditorFont: bool(v.useEditorFont, d.useEditorFont),
     fontFamily: nonEmpty(v.fontFamily, d.fontFamily),
     fontSize: num(v.fontSize, d.fontSize, WORKFLOW_LIMITS.terminalFontSize),
@@ -491,16 +724,40 @@ export function validateExternalTools(raw: unknown): ExternalToolValid[] {
   return out;
 }
 
+export function validateAgentSecurity(raw: unknown): AgentSecurityValid {
+  const v = obj(raw);
+  const d = DEFAULT_WORKFLOW.agentSecurity;
+  return {
+    allowedCommands: strings(v.allowedCommands, d.allowedCommands),
+    blockedCommands: strings(v.blockedCommands, d.blockedCommands),
+  };
+}
+
+export const DEFAULT_AGENT_RUNS: AgentRunSettingsValid = { tabLimit: 1, archiveLimit: 999 };
+
+/** From `mcpServer` (Agents › IDE MCP Server). */
+export function validateAgentRuns(raw: unknown): AgentRunSettingsValid {
+  const v = obj(raw);
+  const d = DEFAULT_AGENT_RUNS;
+  return {
+    tabLimit: num(v.agentTabLimit, d.tabLimit, WORKFLOW_LIMITS.agentTabLimit, true),
+    archiveLimit: num(v.agentArchiveLimit, d.archiveLimit, WORKFLOW_LIMITS.agentArchiveLimit, true),
+  };
+}
+
 export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
     vcs: validateVcs(root.vcs),
+    build: validateBuild(root.build),
     console: validateConsole(root.console),
     debugger: validateDebugger(root.debugger),
     run: validateRun(root.run),
     terminal: validateTerminal(root.terminal),
     actionsOnSave: validateActionsOnSave(root.actionsOnSave),
     externalTools: validateExternalTools(root.externalTools),
+    externalDiff: validateExternalDiff(root.externalDiff),
+    agentSecurity: validateAgentSecurity(root.agentSecurity),
     ...validateRemote(root),
   };
 }
@@ -567,3 +824,14 @@ export const EXTERNAL_TOOL_MACROS: ReadonlyArray<{ name: string; description: st
   { name: "$SelectedText$", description: "Text selected in the editor" },
   { name: "$Prompt$", description: "Asks for a value when the tool runs" },
 ];
+
+/** Agents › IDE MCP Server limits on the Run tool window's agent tabs. */
+export function agentRunSettings(): AgentRunSettingsValid {
+  return validateAgentRuns(obj(useProject.getState().settings).mcpServer);
+}
+
+/** React hook over {@link agentRunSettings}. */
+export function useAgentRunSettings(): AgentRunSettingsValid {
+  const raw = useProject((p) => obj(p.settings).mcpServer);
+  return validateAgentRuns(raw);
+}

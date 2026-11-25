@@ -51,7 +51,9 @@ class CornerInset {
 
   private measure() {
     const corner = this.corner;
-    if (!corner) return;
+    // A hidden tab's view is detached and measures 0: keeping the inset spares every line
+    // a restyle when the tab hides and another when it shows again.
+    if (!corner || !this.view.dom.isConnected) return;
     const width = corner.getBoundingClientRect().width;
     let inset = width > 0 ? round(width) + CORNER_GAP : 0;
     // A narrow window or a wide corner: keep at least half of the width for text.

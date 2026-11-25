@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
+import { iconAreaExtension } from "@/editor/core/cm/iconArea";
 import { commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
@@ -248,7 +249,10 @@ describe("scriptMenuItems", () => {
     const view = new EditorView({
       doc: text,
       parent: document.body,
-      extensions: npmGutter({ doc: 1, path: "/project/package.json", language: "json", uiMode: null, readOnly: false }),
+      extensions: [
+        iconAreaExtension,
+        npmGutter({ doc: 1, path: "/project/package.json", language: "json", uiMode: null, readOnly: false }),
+      ],
     });
     try {
       await vi.waitFor(() => expect(view.dom.querySelector("button[aria-label=\"Run 'dev'\"]")).not.toBeNull());

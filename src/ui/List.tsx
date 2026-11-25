@@ -16,6 +16,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useRowHeight } from "./density";
 import { rowSelectionMode } from "./rowSelection";
 import styles from "./List.module.css";
 
@@ -49,7 +50,15 @@ export interface ListProps<T> {
   focusable?: boolean;
   /** Move the active row with the pointer (popup choosers). */
   hoverSelects?: boolean;
+  /** The list takes the focus when its popup opens, before any button in the popup's header. */
+  autoFocus?: boolean;
   empty?: ReactNode;
+  /**
+   * Body of a `role="grid"`: a `rowgroup` of `row`s numbered after the grid's `headerRows`,
+   * instead of a listbox of options. `renderItem` then renders the row's `gridcell`s. Rows carry
+   * `aria-selected`, which only a grid's rows may, and the rowgroup names the active one.
+   */
+  tableBody?: { headerRows: number };
   className?: string;
   "aria-label"?: string;
   "aria-labelledby"?: string;
@@ -125,12 +134,14 @@ export function List<T>({
   isSelected,
   onActivate,
   onContextMenu,
-  rowHeight = 24,
-  sectionHeight = 24,
+  rowHeight: fixedRowHeight,
+  sectionHeight: fixedSectionHeight,
   sectionHeightOf,
   focusable = true,
   hoverSelects = false,
+  autoFocus = false,
   empty,
+  tableBody,
   className,
   overscan = 8,
   ...aria
@@ -144,6 +155,9 @@ export function List<T>({
   const scrollRef = useRef<HTMLDivElement>(null);
   const generatedId = useId();
   const baseId = id ?? generatedId;
+  const defaultRowHeight = useRowHeight();
+  const rowHeight = fixedRowHeight ?? defaultRowHeight;
+  const sectionHeight = fixedSectionHeight ?? defaultRowHeight;
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
@@ -151,13 +165,15 @@ export function List<T>({
     overscan,
     getItemKey: (i) => getKey(items[i]!, i),
   });
+  useEffect(() => virtualizer.measure(), [virtualizer, rowHeight, sectionHeight]);
 
   const viewportHeight = virtualizer.scrollRect?.height;
   useEffect(() => {
     if (active >= 0 && active < items.length) virtualizer.scrollToIndex(active, { align: "auto" });
   }, [active, items.length, viewportHeight, virtualizer]);
 
-  // Options are virtualised: expose position / count of selectable rows to assistive tech.
+  // Options are virtualised: expose position / count of selectable rows (or the table row index)
+  // to assistive tech.
   const optionIndex = useMemo(() => {
     const idx: number[] = [];
     let n = 0;
@@ -182,14 +198,15 @@ export function List<T>({
     else if (next !== active) setActive(next);
   };
 
-  if (!items.length && empty) return <div className={clsx(styles.list, styles.emptyWrap, className)}>{empty}</div>;
+  // The empty state stays in the focusable list, so a speed search that matches nothing keeps the keyboard.
+  const showEmpty = !items.length && !!empty;
 
   return (
     <div
       ref={scrollRef}
       id={id}
-      role="listbox"
-      aria-multiselectable={onSelect ? true : undefined}
+      role={tableBody ? "rowgroup" : "listbox"}
+      aria-multiselectable={onSelect && !tableBody ? true : undefined}
       aria-label={aria["aria-label"]}
       aria-labelledby={aria["aria-labelledby"]}
       aria-activedescendant={
@@ -198,51 +215,57 @@ export function List<T>({
           : undefined
       }
       tabIndex={focusable ? 0 : -1}
-      className={clsx(styles.list, className)}
+      data-autofocus={autoFocus ? "" : undefined}
+      className={clsx(styles.list, showEmpty && styles.emptyWrap, className)}
       onKeyDown={focusable ? onKeyDown : undefined}
     >
-      <div className={styles.sizer} style={{ height: virtualizer.getTotalSize() }}>
-        {virtualizer.getVirtualItems().map((v) => {
-          const item = items[v.index]!;
-          const section = isSection?.(item) ?? false;
-          const style = { transform: `translateY(${v.start}px)`, height: v.size };
-          if (section) {
+      {showEmpty ? (
+        empty
+      ) : (
+        <div className={styles.sizer} style={{ height: virtualizer.getTotalSize() }}>
+          {virtualizer.getVirtualItems().map((v) => {
+            const item = items[v.index]!;
+            const section = isSection?.(item) ?? false;
+            const style = { transform: `translateY(${v.start}px)`, height: v.size };
+            if (section) {
+              return (
+                <div key={v.key} role="presentation" className={styles.section} style={style}>
+                  {renderSection ? renderSection(item) : String(item)}
+                </div>
+              );
+            }
+            const isActive = v.index === active;
+            const selected = isActive || (isSelected?.(item, v.index) ?? false);
             return (
-              <div key={v.key} role="presentation" className={styles.section} style={style}>
-                {renderSection ? renderSection(item) : String(item)}
+              <div
+                key={v.key}
+                id={`${baseId}-${v.index}`}
+                role={tableBody ? "row" : "option"}
+                aria-selected={selected}
+                data-lead={isActive || undefined}
+                aria-posinset={tableBody ? undefined : optionIndex.idx[v.index]}
+                aria-setsize={tableBody ? undefined : optionIndex.count}
+                aria-rowindex={tableBody ? tableBody.headerRows + optionIndex.idx[v.index]! : undefined}
+                className={clsx(styles.row, selected && styles.active)}
+                style={style}
+                onPointerMove={hoverSelects && !isActive ? () => setActive(v.index) : undefined}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  if (!focusable) e.preventDefault();
+                  if (!onSelect) setActive(v.index);
+                }}
+                onClick={(e) => {
+                  onSelect?.(v.index, e);
+                  if (!onSelect || rowSelectionMode(e) === "single") onActivate?.(item, v.index, e);
+                }}
+                onContextMenu={onContextMenu ? (e) => onContextMenu(item, v.index, e) : undefined}
+              >
+                {renderItem(item, { active: isActive, index: v.index })}
               </div>
             );
-          }
-          const isActive = v.index === active;
-          const selected = isActive || (isSelected?.(item, v.index) ?? false);
-          return (
-            <div
-              key={v.key}
-              id={`${baseId}-${v.index}`}
-              role="option"
-              aria-selected={selected}
-              data-lead={isActive || undefined}
-              aria-posinset={optionIndex.idx[v.index]}
-              aria-setsize={optionIndex.count}
-              className={clsx(styles.row, selected && styles.active)}
-              style={style}
-              onPointerMove={hoverSelects && !isActive ? () => setActive(v.index) : undefined}
-              onMouseDown={(e) => {
-                if (e.button !== 0) return;
-                if (!focusable) e.preventDefault();
-                if (!onSelect) setActive(v.index);
-              }}
-              onClick={(e) => {
-                onSelect?.(v.index, e);
-                if (!onSelect || rowSelectionMode(e) === "single") onActivate?.(item, v.index, e);
-              }}
-              onContextMenu={onContextMenu ? (e) => onContextMenu(item, v.index, e) : undefined}
-            >
-              {renderItem(item, { active: isActive, index: v.index })}
-            </div>
-          );
-        })}
-      </div>
+          })}
+        </div>
+      )}
     </div>
   );
 }

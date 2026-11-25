@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -22,6 +23,7 @@ import { revealRange, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { isTauri } from "@/platform/ipc";
+import { canDragOut, dragOut, isDraggingOut } from "@/platform/dragOut";
 import { nativeDropPoint } from "@/platform/nativeDrop";
 import type { RootFolder } from "@/platform/languageSettings";
 import { useDetectedRoots, useEffectiveRoots } from "@/platform/projectRoots";
@@ -32,12 +34,17 @@ import {
   useFileDecoration,
   type DecorationSegment,
 } from "@/workbench/contributions";
+import { useFileColors } from "@/workbench/fileColors";
 import {
   FILES_DRAG,
+  REMOTE_FILES_DRAG,
   HighlightedText,
   Icon,
   Popup,
+  beginDrag,
   dragSession,
+  isOutsideWindow,
+  registerDropTarget,
   Tree,
   acquirePopup,
   fileIconName,
@@ -53,7 +60,7 @@ import {
 import { badgeKind } from "@/ui/symbolKind";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
-import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
+import { presentationIcon, useJvmPresentation } from "@/ui/filePresentation";
 import {
   isModuleFolder,
   moduleFolderIcon,
@@ -62,23 +69,16 @@ import {
 } from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
-import { PROJECT_TYPES } from "./projectType";
+import { PROJECT_TYPES } from "@/ui/projectType";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import {
   cancelEditing,
   checkEditingName,
   commitEditing,
-  copyPaths,
-  copySelection,
-  deleteSelection,
   dropPaths,
   importExternal,
   openFile,
-  openMoveDialog,
-  openRenameDialog,
-  openSelection,
-  paste,
   refreshOsClipboard,
   targetFolder,
   undoLastFileOperation,
@@ -88,8 +88,10 @@ import {
   VIEW_MODES,
   autoExpand,
   clearRevealRequest,
+  explainHiddenPath,
   loadDir,
   loadOutline,
+  previewTabEnabled,
   revealPath,
   selectModel,
   setDropTarget,
@@ -289,7 +291,9 @@ const Row = memo(function Row({
   const root = useProjectTree((s) => s.root);
   const detected = useDetectedRoots();
   const build = useProjectPresentation();
-  const projectType = useProjectTree((s) => (node.root && !node.icon ? s.projectTypes.get(node.path) : undefined));
+  const projectType = useProjectTree((s) =>
+    s.members && node.root && !node.icon ? s.projectTypes.get(node.path) : undefined,
+  );
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
   const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
   const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
@@ -310,6 +314,7 @@ const Row = memo(function Row({
       className={clsx(styles.content, cut && styles.cut, dropTarget && styles.dropTarget)}
       data-project-path={node.placeholder ? undefined : node.path}
       data-project-key={node.key}
+      data-project-icon={icon}
       data-dir={node.dir || undefined}
       title={deco.tooltip ?? hint ?? undefined}
       onClick={(e) => onClick(node, e)}
@@ -322,8 +327,10 @@ const Row = memo(function Row({
           size={16}
           className={clsx(styles.icon, node.dir && styles.folderIcon, dimIcon && styles.faded)}
         />
+        {/* IDEA's symlink arrow, on file and folder links (the entry kind comes with the listing). */}
+        {node.symlink && <Icon name="symlink-mark" size={16} className={styles.overlay} label="Symbolic link" />}
         {!!file?.runnable && icon !== "spring-boot" && icon !== "jvm-test" && (
-          <Icon name="runnable-mark" size={16} className={styles.runnable} />
+          <Icon name="runnable-mark" size={16} className={styles.overlay} />
         )}
       </span>
       {isEditing && editing ? (
@@ -334,24 +341,29 @@ const Row = memo(function Row({
         />
       ) : (
         <>
-          <HighlightedText
-            className={clsx(
-              styles.label,
-              node.root && styles.rootName,
-              // Only the project itself is bold (IDEA); contributed roots like Scratches are not.
-              node.root && !node.icon && styles.rootLabel,
-              // Maven / Gradle module folders are bold too, as in IDEA.
-              moduleFolder && styles.moduleLabel,
-              faded && !deco.color && styles.excluded,
-              deco.error && styles.error,
+          <span className={styles.labelGroup}>
+            <HighlightedText
+              className={clsx(
+                styles.label,
+                // Project and module roots use semibold labels.
+                node.root && !node.icon && styles.rootLabel,
+                moduleFolder && styles.moduleLabel,
+                faded && !deco.color && styles.excluded,
+                file?.deprecated && styles.deprecated,
+                deco.error && styles.error,
+              )}
+              style={deco.color ? { color: deco.color } : undefined}
+              text={node.label}
+              indices={matches}
+              tone="accent"
+            />
+            {deco.suffix && <DecorationSuffix segments={deco.suffix} color={deco.suffixColor} />}
+            {detail && (
+              <span className={styles.detail} title={detail}>
+                {detail}
+              </span>
             )}
-            style={deco.color ? { color: deco.color } : undefined}
-            text={node.label}
-            indices={matches}
-            tone="accent"
-          />
-          {deco.suffix && <DecorationSuffix segments={deco.suffix} color={deco.suffixColor} />}
-          {detail && <span className={styles.detail}>{detail}</span>}
+          </span>
           {deco.badge && <span className={styles.badge}>{deco.badge}</span>}
         </>
       )}
@@ -369,13 +381,24 @@ function DecorationSuffix({ segments, color }: DecorationSuffixProps) {
     <span className={styles.suffix} style={color ? { color } : undefined}>
       {segments.map((s, i) => {
         const text = s.strike ? <s>{s.text}</s> : s.text;
+        const style: CSSProperties | undefined =
+          s.color || s.fontWeight || s.fontStyle || s.textDecoration
+            ? {
+                ...(s.color ? { color: s.color } : null),
+                ...(s.fontWeight ? { fontWeight: s.fontWeight } : null),
+                ...(s.fontStyle ? { fontStyle: s.fontStyle } : null),
+                ...(s.textDecoration ? { textDecoration: s.textDecoration } : null),
+              }
+            : undefined;
         return (
           <span
+            // oxlint-disable-next-line react/no-array-index-key -- decoration segments can repeat; position is the identity
             key={i}
             className={styles.suffixSegment}
             role={s.label ? "img" : undefined}
             aria-label={s.label}
             title={s.label}
+            style={style}
           >
             {text}
             {s.icon && <Icon name={s.icon} size={12} />}
@@ -405,8 +428,14 @@ const MemberRow = memo(function MemberRow({
       onPointerDown={(e) => onPointerDown(node, e)}
     >
       <SymbolBadge kind={badgeKind(item.kind)} className={styles.icon} />
-      <HighlightedText className={styles.label} text={item.name} indices={matches} tone="accent" />
-      {item.detail && <span className={styles.detail}>{item.detail}</span>}
+      <span className={styles.labelGroup}>
+        <HighlightedText className={styles.label} text={item.name} indices={matches} tone="accent" />
+        {item.detail && (
+          <span className={styles.detail} title={item.detail}>
+            {item.detail}
+          </span>
+        )}
+      </span>
     </span>
   );
 });
@@ -423,6 +452,8 @@ interface DragState {
 }
 
 const DRAG_THRESHOLD = 4;
+/** IDEA's "excluded" look: excluded folders and what is under them get a muted band. */
+const EXCLUDED_TINT = "var(--vcs-ignored)";
 
 /** Folder under a viewport point inside `container` (a file row resolves to its folder). */
 function folderAt(container: HTMLElement | null, x: number, y: number): { key: string; path: string } | null {
@@ -449,6 +480,7 @@ export function ProjectView() {
   useFileIconRevision();
   const root = useProjectTree((s) => s.root);
   const model = useProjectTree(selectModel);
+  const fileColors = useFileColors("projectView");
   const expanded = useProjectTree((s) => s.expanded);
   const selected = useProjectTree((s) => s.selected);
   const editing = useProjectTree((s) => s.editing);
@@ -501,7 +533,7 @@ export function ProjectView() {
   // Select a revealed path once its row exists.
   useEffect(() => {
     if (!revealRequest) return;
-    const { path, focus, seq } = revealRequest;
+    const { path, focus, seq, explain } = revealRequest;
     const exact = model.keyOfPath.get(path);
     const loadingAncestors = info.pending.some((p) => p === path || isInside(path, p));
     if (!exact && loadingAncestors) return;
@@ -512,6 +544,8 @@ export function ProjectView() {
     handle.current?.reveal(key);
     revealing.current = false;
     if (focus) handle.current?.focus();
+    const shown = model.byKey.get(key)?.path;
+    if (explain && !exact && shown) explainHiddenPath(path, shown);
   }, [revealRequest, model, info]);
 
   // Autoscroll from source: follow the active editor.
@@ -552,13 +586,10 @@ export function ProjectView() {
     setSelection(next, lead?.key ?? null);
     const { options: o } = useProjectTree.getState();
     if (revealing.current || !o.autoscrollToSource || !lead || lead.dir || lead.placeholder || next.size !== 1) return;
+    const opts = { preview: previewTabEnabled(), focus: false, external: false };
     if (lead.member) {
-      void revealRange(
-        lead.path,
-        { start: lead.member.selection_range.start },
-        { preview: o.previewTab, focus: false },
-      );
-    } else void openFile(lead.path, { preview: o.previewTab, focus: false });
+      void revealRange(lead.path, { start: lead.member.selection_range.start }, opts);
+    } else void openFile(lead.path, opts);
   }, []);
 
   const onActivate = useCallback((node: ProjectNode) => {
@@ -601,7 +632,7 @@ export function ProjectView() {
       if (o.singleClickExpand) toggleExpanded(node);
       return;
     }
-    if (!o.singleClickOpen && !o.previewTab) return;
+    if (!o.singleClickOpen && !previewTabEnabled()) return;
     const opts = { preview: o.singleClickOpen ? undefined : true, focus: false };
     if (node.member) void revealRange(node.path, { start: node.member.selection_range.start }, opts);
     else void openFile(node.path, opts);
@@ -630,10 +661,47 @@ export function ProjectView() {
       startY = e.clientY;
     let active = false;
     let paths: string[] = [];
+    // What an OS drag out of the window carries: groups ("External Libraries") have no folder.
+    let outPaths: string[] = [];
     // Files and folders can be dropped on the agent composer as references; an
     // editor opens only files, so folders carry the trailing slash `findDirs`
     // uses and the editor leaves them out.
     let files: DragSession | null = null;
+    let endDrag: (() => void) | null = null;
+    // While dragging, the tree scrolls only when the pointer is near its top or bottom edge
+    // (IDEA's DnD autoscroll). Leaving the tree toward a drop target elsewhere (the terminal,
+    // an editor) keeps it where it is: WebKit's own autoscroll of the pressed scroll container
+    // would otherwise keep scrolling it toward the pointer. It never scrolls sideways: a pointer
+    // right of the tree would scroll its long rows out of view.
+    const scroller = containerRef.current?.querySelector<HTMLElement>('[role="tree"]') ?? null;
+    let held = scroller?.scrollTop ?? 0;
+    const heldLeft = scroller?.scrollLeft ?? 0;
+    let pointer: { x: number; y: number } | null = null;
+    let frame = 0;
+    const inside = (p: { x: number; y: number }) => {
+      const r = scroller?.getBoundingClientRect();
+      return !!r && p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+    };
+    const keep = () => {
+      if (!scroller) return;
+      if (pointer && !inside(pointer)) scroller.scrollTop = held;
+      else held = scroller.scrollTop;
+      if (scroller.scrollLeft !== heldLeft) scroller.scrollLeft = heldLeft;
+    };
+    const edgeScroll = () => {
+      frame = 0;
+      if (!scroller || !pointer || !inside(pointer)) return;
+      const r = scroller.getBoundingClientRect();
+      const delta = pointer.y < r.top + 24 ? -8 : pointer.y > r.bottom - 24 ? 8 : 0;
+      const before = scroller.scrollTop;
+      scroller.scrollTop = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight, before + delta));
+      held = scroller.scrollTop;
+      if (held !== before) {
+        const target = folderAt(containerRef.current, pointer.x, pointer.y);
+        setDropTarget(target && !paths.some((p) => target.path === p || isInside(target.path, p)) ? target.key : null);
+        frame = requestAnimationFrame(edgeScroll);
+      }
+    };
     const move = (ev: PointerEvent) => {
       // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
       if (!(ev.buttons & 1)) {
@@ -644,17 +712,31 @@ export function ProjectView() {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
         dragged.current = true;
+        endDrag = beginDrag();
         const m = selectModel(useProjectTree.getState());
         const keys = before.has(node.key) ? [...before] : [node.key];
         if (before.has(node.key)) setSelection(before, lead);
         const nodes = keys.map((k) => m.byKey.get(k)).filter((n): n is ProjectNode => !!n && !n.root && !n.placeholder);
         paths = nodes.map((n) => n.path);
+        outPaths = nodes.filter((n) => !n.group).map((n) => n.path);
         if (!paths.length) return cleanup();
         files = dragSession({
           type: FILES_DRAG,
           payload: nodes.map((n) => (n.dir ? `${n.path}/` : n.path)).join("\n"),
         });
       }
+      // Leaving the window hands the files to an OS drag: the app they land on copies them.
+      const viewport = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+      if (outPaths.length && canDragOut() && isOutsideWindow(viewport, ev.clientX, ev.clientY)) {
+        const out = outPaths;
+        cleanup();
+        void dragOut(out);
+        return;
+      }
+      if (!pointer) scroller?.addEventListener("scroll", keep, { passive: true });
+      pointer = { x: ev.clientX, y: ev.clientY };
+      keep();
+      if (!frame) frame = requestAnimationFrame(edgeScroll);
       const target = folderAt(containerRef.current, ev.clientX, ev.clientY);
       const valid = target && !paths.some((p) => target.path === p || isInside(target.path, p));
       setDropTarget(valid ? target.key : null);
@@ -685,11 +767,16 @@ export function ProjectView() {
       }
     };
     const cleanup = () => {
+      scroller?.removeEventListener("scroll", keep);
+      cancelAnimationFrame(frame);
+      frame = 0;
+      pointer = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cleanup);
       window.removeEventListener("keydown", key, true);
       files?.cancel();
+      endDrag?.();
       setDropTarget(null);
       setDrag(null);
     };
@@ -707,6 +794,7 @@ export function ProjectView() {
     void import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
       getCurrentWebview()
         .onDragDropEvent((event) => {
+          if (isDraggingOut()) return;
           const p = event.payload;
           if (p.type === "leave") return setDropTarget(null);
           const { x, y } = nativeDropPoint(p.position);
@@ -729,6 +817,24 @@ export function ProjectView() {
     };
   }, []);
 
+  // Files and folders dragged from Remote Host download into the folder they are dropped on.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === REMOTE_FILES_DRAG,
+      over: (_, x, y) => setDropTarget(folderAt(el, x, y)?.key ?? null),
+      leave: () => setDropTarget(null),
+      drop: (data, x, y) => {
+        setDropTarget(null);
+        const target = folderAt(el, x, y);
+        if (!target) return;
+        const { server, paths } = JSON.parse(data.payload) as { server: string; paths: string[] };
+        void executeAction("deployment.downloadRemoteInto", { server, paths, target: target.path });
+      },
+    });
+  }, []);
+
   // Reconcile external files and expired Copy/Cut state when returning from another app.
   useEffect(() => {
     void refreshOsClipboard();
@@ -737,43 +843,20 @@ export function ProjectView() {
     return () => window.removeEventListener("focus", refresh);
   }, []);
 
+  // The keymap owns the action keys (Delete, Shift+F6, F6, F4, copy/paste, New …):
+  // the global dispatcher runs them from the presets in the capture phase, so a
+  // cleared binding stays cleared and a rebound one follows the user (issue #2801).
+  // Only the strokes no preset binds stay local: ⌘Z undoing the last file
+  // refactoring (`project.undoMove` is unbound) and ⌃Enter's New popup on macOS.
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).tagName === "INPUT") return;
     const stroke = strokeOf(e.nativeEvent);
     let handled = true;
     switch (stroke && macStroke(stroke)) {
-      case "Delete":
-      case "Meta+Backspace":
-        void deleteSelection();
-        break;
-      case "Shift+F6":
-        void openRenameDialog();
-        break;
-      case "F6":
-        openMoveDialog();
-        break;
       case "Meta+Z":
         handled = undoLastFileOperation();
         break;
-      case "Meta+C":
-        copySelection(false);
-        break;
-      case "Meta+X":
-        copySelection(true);
-        break;
-      case "Meta+V":
-        void paste();
-        break;
-      case "Shift+Meta+C":
-        void copyPaths("absolute");
-        break;
-      case "F4":
-      case "Meta+Down":
-        openSelection();
-        break;
-      case "Meta+N":
       case "Ctrl+Enter":
-      case "Alt+Insert":
         showNewPopup();
         break;
       default:
@@ -849,7 +932,8 @@ export function ProjectView() {
         </div>
       )}
       <Tree<ProjectNode>
-        horizontalScroll
+        horizontalScroll={options.horizontalScroll}
+        speedSearchAbove
         aria-label="Project"
         focusContext="projectViewFocus"
         handleRef={setTreeHandle}
@@ -861,7 +945,9 @@ export function ProjectView() {
         isExpandable={isExpandable}
         loadChildren={loadChildren}
         renderNode={renderNode}
-        rowClassName={(n) => (n.excluded ? styles.excludedRow : undefined)}
+        rowTint={(n) =>
+          n.excluded ? EXCLUDED_TINT : n.group || n.placeholder ? undefined : fileColors?.(n.path, n.dir)
+        }
         expanded={expanded}
         onExpandedChange={onExpandedChange}
         selected={selected}

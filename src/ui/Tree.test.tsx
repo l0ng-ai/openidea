@@ -3,6 +3,9 @@ import { createRef } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { Tree, type TreeHandle } from "./Tree";
 import { getContext } from "@/platform/context";
+import { registerAction } from "@/platform/actions";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { usePlatform } from "@/platform/platformInfo";
 
 interface N {
   id: string;
@@ -45,6 +48,35 @@ const labels = (tree: HTMLElement) =>
   within(tree)
     .queryAllByRole("treeitem")
     .map((el) => el.textContent);
+
+describe("Tree context-menu selection", () => {
+  it.each([
+    { os: "windows", gesture: { button: 2 } },
+    { os: "macos", gesture: { button: 0, ctrlKey: true } },
+  ])("marks $os context-menu selection without changing ordinary activation", ({ os, gesture }) => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os });
+    try {
+      const selection = vi.fn();
+      const menu = vi.fn();
+      const { tree, key, onActivate } = setup({ onSelectionChange: selection, onContextMenu: menu });
+      const readme = within(tree).getByRole("treeitem", { name: "README.md" });
+      fireEvent.mouseDown(readme, gesture);
+      fireEvent.contextMenu(readme, gesture);
+      expect(selection).toHaveBeenLastCalledWith(new Set(["README.md"]), data[1], "contextMenu");
+      expect(menu).toHaveBeenCalledWith(data[1], new Set(["README.md"]), expect.anything());
+      expect(onActivate).not.toHaveBeenCalled();
+      key("Home");
+      expect(selection).toHaveBeenLastCalledWith(new Set(["src"]), data[0]);
+      fireEvent.mouseDown(readme, { button: 0 });
+      expect(selection).toHaveBeenLastCalledWith(new Set(["README.md"]), data[1]);
+      key("Enter");
+      expect(onActivate).toHaveBeenCalledWith(data[1], expect.anything());
+    } finally {
+      usePlatform.setState({ os: previousOs });
+    }
+  });
+});
 
 describe("Tree directory context", () => {
   it("does not contribute virtual document URIs as filesystem directories", () => {
@@ -160,6 +192,18 @@ describe("Tree keyboard navigation", () => {
     expect(lead()).toBe("src");
   });
 
+  it("collapsing a node collapses everything expanded below it", () => {
+    const onExpandedChange = vi.fn();
+    const { tree, key } = setup({ defaultExpanded: ["src", "main"], onExpandedChange });
+    expect(labels(tree)).toEqual(["src", "main", "App.tsx", "index.ts", "util.ts", "README.md"]);
+    key("Home");
+    key("ArrowLeft");
+    expect(labels(tree)).toEqual(["src", "README.md"]);
+    expect([...onExpandedChange.mock.calls[0]![0]]).toEqual([]);
+    key("ArrowRight");
+    expect(labels(tree)).toEqual(["src", "main", "util.ts", "README.md"]);
+  });
+
   it("Enter toggles folders and activates leaves", () => {
     const { tree, lead, key, onActivate } = setup();
     key("ArrowDown");
@@ -179,6 +223,17 @@ describe("Tree keyboard navigation", () => {
     key("ArrowDown", { metaKey: true });
     expect(onActivate).toHaveBeenCalledTimes(2);
     expect(onActivate).toHaveBeenLastCalledWith(expect.objectContaining({ id: "README.md" }), expect.anything());
+  });
+
+  it("F4 and ⌘↓ go to onJumpToSource instead of activating when the tree has one", () => {
+    const onJumpToSource = vi.fn();
+    const { key, onActivate } = setup({ onJumpToSource });
+    key("End");
+    key("F4");
+    key("ArrowDown", { metaKey: true });
+    expect(onActivate).not.toHaveBeenCalled();
+    expect(onJumpToSource).toHaveBeenCalledTimes(2);
+    expect(onJumpToSource).toHaveBeenLastCalledWith(expect.objectContaining({ id: "README.md" }), expect.any(Set));
   });
 
   it("extends the selection with Shift+Arrow", () => {
@@ -240,11 +295,136 @@ describe("Tree speed search", () => {
     expect(labels(tree)).toContain("App.tsx");
   });
 
+  it("⌘⌫ erases the query and ⌥⌫ its last word instead of running the view's ⌘⌫ action", () => {
+    const drop = vi.fn();
+    useKeymap.setState({ preset: "intellij-macos", overrides: { "test.drop": ["Meta+Backspace", "Alt+Backspace"] } });
+    const dispose = [registerAction({ id: "test.drop", title: "Drop", run: drop }), installKeyboardDispatcher()];
+    try {
+      const { tree, lead, key } = setup({ defaultExpanded: ["src", "main"] });
+      key("ArrowDown");
+      for (const c of "index.t") key(c);
+      expect(lead()).toBe("index.ts");
+      key("Backspace", { altKey: true });
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.$/);
+      key("Backspace", { metaKey: true });
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(drop).not.toHaveBeenCalled();
+      // Without a query the shortcut reaches the view again.
+      key("Backspace", { metaKey: true });
+      expect(drop).toHaveBeenCalledOnce();
+      expect(tree).toHaveFocus();
+    } finally {
+      dispose.forEach((d) => d());
+      useKeymap.setState({ overrides: {} });
+    }
+  });
+
+  it.each([
+    { os: "macos", preset: "intellij-macos", binding: "Meta+V", key: "v", modifiers: { metaKey: true } },
+    { os: "windows", preset: "intellij-windows", binding: "Ctrl+V", key: "v", modifiers: { ctrlKey: true } },
+    {
+      os: "windows",
+      preset: "intellij-windows",
+      binding: "Shift+Insert",
+      key: "Insert",
+      modifiers: { shiftKey: true },
+    },
+  ])("$binding routes clipboard text to speed search", ({ os, preset, binding, key, modifiers }) => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os });
+    const pasteFiles = vi.fn();
+    useKeymap.setState({ preset, overrides: { "test.paste": [binding] } });
+    const find = os === "macos" ? { metaKey: true } : { ctrlKey: true };
+    const dispose = [
+      registerAction({ id: "test.paste", title: "Paste", run: pasteFiles }),
+      installKeyboardDispatcher(),
+    ];
+    try {
+      const view = setup({
+        defaultExpanded: ["src", "main"],
+        roots: [...data, { id: "notes v1" }, { id: "notes  v1" }],
+      });
+      const tree = view.tree;
+      const paste = (text: string) =>
+        fireEvent.paste(tree, { clipboardData: { getData: () => text } } as unknown as ClipboardEventInit);
+      view.key("ArrowDown");
+      // Find arms the search with an empty query; the clipboard text becomes the query.
+      view.key("f", find);
+      expect(screen.getByRole("status").textContent).toBe("");
+      paste("index.t");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.t$/);
+      expect(view.lead()).toBe("index.ts");
+      // A line of pasted text joins the query as typing it would; a wrapped name stays one line.
+      paste("s");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.ts$/);
+      // Paste is the query's, not the view's file Paste, while the search is active.
+      view.key(key, modifiers);
+      expect(pasteFiles).not.toHaveBeenCalled();
+      // A blank clipboard changes nothing.
+      paste("   ");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.ts$/);
+      // Closed, the view's Paste owns the shortcut again.
+      view.key("Escape");
+      view.key(key, modifiers);
+      expect(pasteFiles).toHaveBeenCalledOnce();
+      expect(view.tree).toHaveFocus();
+      // A multi-line clipboard is flattened into the one-line query.
+      view.key("f", find);
+      paste("App\n.tsx");
+      expect(screen.getByRole("status")).toHaveTextContent(/^App \.tsx$/);
+      view.key("Escape");
+      view.key("f", find);
+      paste("notes  v1");
+      expect(screen.getByRole("status").textContent).toBe("notes  v1");
+      expect(view.lead()).toBe("notes  v1");
+    } finally {
+      dispose.forEach((d) => d());
+      useKeymap.setState({ overrides: {} });
+      usePlatform.setState({ os: previousOs });
+    }
+  });
+
   it("filter mode hides non-matching rows but keeps ancestors", () => {
     const { tree, key } = setup({ defaultExpanded: ["src", "main"], speedSearchMode: "filter" });
     key("ArrowDown");
     for (const c of "App") key(c);
     expect(labels(tree)).toEqual(["src", "main", "App.tsx"]);
+  });
+
+  it("the field's toggle switches to showing only matches without ending the search", () => {
+    const { tree, key } = setup({ defaultExpanded: ["src", "main"], speedSearchField: true });
+    for (const c of "App") key(c);
+    expect(labels(tree)).toEqual(["src", "main", "App.tsx", "index.ts", "util.ts", "README.md"]);
+    const toggle = screen.getByRole("button", { name: "Show Only Matches" });
+    expect(fireEvent.mouseDown(toggle)).toBe(false);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(labels(tree)).toEqual(["src", "main", "App.tsx"]);
+    fireEvent.click(toggle);
+    expect(labels(tree)).toHaveLength(6);
+  });
+
+  it("⌘F / Ctrl+F opens the field before anything is typed, and Escape closes it", () => {
+    const os = usePlatform.getState().os;
+    try {
+      for (const [platform, init] of [
+        ["macos", { metaKey: true }],
+        ["windows", { ctrlKey: true }],
+      ] as const) {
+        usePlatform.setState({ os: platform });
+        const { key, unmount } = setup({ speedSearchField: true });
+        expect(screen.queryByRole("status")).toBeNull();
+        key("f", init);
+        expect(screen.getByRole("status")).toHaveTextContent("");
+        key("u");
+        expect(screen.getByRole("status")).toHaveTextContent("u");
+        key("Escape");
+        expect(screen.queryByRole("status")).toBeNull();
+        unmount();
+      }
+    } finally {
+      usePlatform.setState({ os });
+    }
   });
 });
 
@@ -522,5 +702,35 @@ describe("Tree indents", () => {
     // Loading placeholders are `role="presentation"`, not tree items.
     const placeholder = tree.querySelector<HTMLElement>('[role="presentation"]');
     expect(placeholder?.style.paddingLeft).toBe("calc(24px + 1 * var(--tree-indent, 20px))");
+  });
+});
+
+describe("Tree double-click", () => {
+  it("selects on the first press without cancelling its default", () => {
+    const { tree } = setup();
+    const row = within(tree).getByRole("treeitem", { name: "README.md" });
+    expect(fireEvent.mouseDown(row, { button: 0, detail: 1 })).toBe(true);
+    expect(row).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("cancels the second press so double-clicking cannot select label text, and still activates", () => {
+    const { tree, onActivate } = setup();
+    const row = within(tree).getByRole("treeitem", { name: "README.md" });
+    fireEvent.mouseDown(row, { button: 0, detail: 1 });
+    // The browser starts its word selection on this press; cancelling it keeps
+    // the labels unselected (jsdom reports cancellation through dispatchEvent).
+    expect(fireEvent.mouseDown(row, { button: 0, detail: 2 })).toBe(false);
+    fireEvent.doubleClick(row);
+    expect(onActivate).toHaveBeenCalledWith(expect.objectContaining({ id: "README.md" }), expect.anything());
+    expect(row).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("still expands a folder on double-click", () => {
+    const { tree } = setup();
+    const row = within(tree).getByRole("treeitem", { name: "src" });
+    fireEvent.mouseDown(row, { button: 0, detail: 1 });
+    fireEvent.mouseDown(row, { button: 0, detail: 2 });
+    fireEvent.doubleClick(row);
+    expect(labels(tree)).toEqual(["src", "main", "util.ts", "README.md"]);
   });
 });

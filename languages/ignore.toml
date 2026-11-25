@@ -1,6 +1,6 @@
 id = "ignore"
 name = "Ignore File"
 extensions = ["gitignore", "dockerignore"]
-filenames = [".gitignore", ".gitignore_global", ".dockerignore", ".npmignore", ".prettierignore", ".eslintignore", ".stylelintignore", ".hgignore", ".ignore", ".rgignore", ".fdignore", ".helmignore", ".vscodeignore", ".gcloudignore", ".slugignore", ".cfignore", ".bzrignore", ".containerignore"]
+filenames = [".gitignore", ".gitignore_global", ".worktreeinclude", ".dockerignore", ".npmignore", ".prettierignore", ".eslintignore", ".stylelintignore", ".hgignore", ".ignore", ".rgignore", ".fdignore", ".helmignore", ".vscodeignore", ".gcloudignore", ".slugignore", ".cfignore", ".bzrignore", ".containerignore"]
 line-comment = "#"
 indent = { tab-size = 2, insert-spaces = true }

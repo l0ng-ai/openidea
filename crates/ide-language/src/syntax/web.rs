@@ -129,7 +129,7 @@ pub(crate) fn definitions(g: &Grammar, css: Option<&Grammar>, tree: &Tree, text:
             };
             if let Some((name, kind)) = def {
                 let range = idx.range(base + n.start_byte(), base + n.end_byte());
-                out.push(SymbolTag { name, kind, container: None, range });
+                out.push(SymbolTag { name, kind, container: None, range, bases: Vec::new() });
             }
             true
         });

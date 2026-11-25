@@ -511,6 +511,7 @@ function EditConfigsDialog() {
                           aria-expanded={!collapsed.has(r.key)}
                           className={styles.editItem}
                           style={{ paddingLeft: 6 }}
+                          title={tx(r.label)}
                           onClick={() => toggle(r.key)}
                           onDragOver={(e) => e.preventDefault()}
                           onDrop={(e) => onDrop(e, r.kind, null)}
@@ -534,6 +535,7 @@ function EditConfigsDialog() {
                           aria-expanded={!collapsed.has(r.key)}
                           className={clsx(styles.editItem, sel && styles.editItemSelected)}
                           style={{ paddingLeft: 22 }}
+                          title={r.name}
                           onClick={() => setSelection({ type: "folder", kind: r.kind, name: r.name })}
                           onDoubleClick={() => toggle(r.key)}
                           onDragOver={(e) => e.preventDefault()}
@@ -547,6 +549,9 @@ function EditConfigsDialog() {
                     }
                     const c = r.config;
                     const isTomcat = c.kind === "tomcat";
+                    const name = c.name || tx("Unnamed");
+                    const target = c.target ? targetName(c, runTargets) : null;
+                    const scope = !c.detected && !isTomcat ? (c.local ? "local" : "user") : null;
                     const tomcatNoArtifact =
                       isTomcat &&
                       ((c.params?.deployment ?? "artifact") === "artifact"
@@ -561,7 +566,9 @@ function EditConfigsDialog() {
                         className={clsx(styles.editItem, current?.id === c.id && styles.editItemSelected)}
                         style={{ paddingLeft: r.depth === 2 ? 50 : 34 }}
                         onClick={() => setSelection({ type: "config", id: c.id })}
-                        title={commandLine(c)}
+                        title={[name + (target ? ` @ ${target}` : "") + (scope ? ` (${scope})` : ""), commandLine(c)]
+                          .filter(Boolean)
+                          .join("\n")}
                         draggable
                         onDragStart={(e) => {
                           dragged.current = c.id;
@@ -579,11 +586,9 @@ function EditConfigsDialog() {
                           )}
                         </span>
                         <span className={styles.chooserName}>{c.name || <T>Unnamed</T>}</span>
-                        {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
+                        {target && <span className={clsx(styles.chooserMuted, styles.editTarget)}>@ {target}</span>}
                         {errorsById[c.id] && <Icon name="error" size={12} className={styles.failed} label="Invalid" />}
-                        {!c.detected && !isTomcat && (
-                          <span className={styles.chooserMuted}>{c.local ? "local" : "user"}</span>
-                        )}
+                        {scope && <span className={styles.chooserMuted}>{scope}</span>}
                       </button>
                     );
                   })}

@@ -12,17 +12,19 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type FocusEvent,
   type KeyboardEvent,
   type MouseEvent,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
-import { Checkbox, Dialog, Icon, lockDragCursor, Popup, SelectListbox, showContextMenu, type MenuItem } from "@/ui";
+import { Checkbox, Dialog, Icon, lockDragCursor, Popup, SelectListbox, showContextMenu, T, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
 import { initialJsonText, isJsonColumn, isJsonValue } from "./jsonValue";
 import { JsonValueWindow } from "./JsonValueEditor";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { hasPrimaryModifier } from "@/platform/keymap";
 import { CELL_PREVIEW_LIMIT, cellPreview, hasLineBreak } from "./cellPreview";
 import {
   booleanLiterals,
@@ -48,7 +50,7 @@ export interface GridColumn {
   enumValues?: readonly string[];
 }
 
-const NUMERIC_TYPE = /int|num|dec|real|float|double|money|serial|^bit$/i;
+const NUMERIC_TYPE = /int|num|dec|real|float|double|money|serial|^bit$|^fixed\b/i;
 const NUMBER = /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i;
 
 /** Numbers are right-aligned (IDEA): by type, else when every sampled value is one. */
@@ -66,6 +68,10 @@ export interface GridProps {
   rowCount: number;
   /** Displayed value (pending edits applied). */
   value: (row: number, col: number) => Cell;
+  /** The whole length (UTF-16 units) of a cell shown cut short (a page carries only the start of a large value); `null` when it is whole. */
+  truncated?: (row: number, col: number) => number | null;
+  /** Reads the whole values of cut cells (the resolved values follow `cells`); `null` when they could not be read. */
+  loadFull?: (cells: ReadonlyArray<{ row: number; col: number }>) => Promise<Cell[] | null>;
   /** The format plain ⌘C copies in (the toolbar's extractor; TSV by default). */
   copyFormat?: CopyFormat;
   rowState?: (row: number) => "deleted" | "inserted" | null;
@@ -97,6 +103,10 @@ export interface GridProps {
   onFind?: () => void;
   /** Go to Column: a new object selects that column's cell in the current row, scrolls to it and focuses the grid. */
   revealColumn?: { col: number } | null;
+  /** Horizontal scroll offset to restore on mount, when a caller keeps view state across mounts. */
+  initialScrollLeft?: number;
+  /** Reports horizontal scroll changes to a caller that keeps view state across mounts. */
+  onHorizontalScroll?: (left: number) => void;
   "aria-label"?: string;
 }
 
@@ -107,6 +117,8 @@ export interface GridRange {
   left: number;
   right: number;
   lead: { row: number; col: number };
+  /** Further whole rows selected with ⌘/Ctrl-click, besides `top`..`bottom`. */
+  rows?: number[];
 }
 
 interface Sel {
@@ -114,10 +126,11 @@ interface Sel {
   c0: number;
   r1: number;
   c1: number;
+  /** Whole rows added with ⌘/Ctrl-click on their numbers, besides the block above. */
+  rows?: number[];
 }
 
 const ROW_H = 24;
-const NUM_W = 48;
 
 /** Wide enough for the whole header (icon, name, filter, sort) and the longest sampled value. */
 function initialWidth(c: GridColumn, sample: Cell[], decorations: number): number {
@@ -137,12 +150,36 @@ function cellText(value: string) {
     i === 0
       ? [part]
       : [
+          // oxlint-disable-next-line react/no-array-index-key -- repeated blank lines produce identical markers; position is the identity
           <span key={i} className={styles.lineBreak}>
             ↵
           </span>,
           part,
         ],
   );
+}
+
+/**
+ * The selection after a click on row `r`'s number: the whole row, a range of whole rows with
+ * Shift, or (⌘/Ctrl) that row added to or removed from the selected rows.
+ */
+export function rowNumberClick(
+  sel: Sel | null,
+  r: number,
+  last: number,
+  mods: { shift: boolean; add: boolean },
+): Sel | null {
+  if (mods.shift && sel) return { ...sel, r1: r, c1: last };
+  if (!mods.add || !sel) return { r0: r, c0: 0, r1: r, c1: last };
+  const n = norm(sel);
+  const block = Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
+  const rows = [...new Set([...(sel.rows ?? []), ...block])];
+  if (!rows.includes(r)) return { r0: r, c0: 0, r1: r, c1: last, rows };
+  // ⌘-click on a selected row deselects it; the last remaining row leads.
+  const rest = rows.filter((x) => x !== r);
+  const lead = rest.at(-1);
+  if (lead === undefined) return null;
+  return { r0: lead, c0: 0, r1: lead, c1: last, rows: rest.slice(0, -1) };
 }
 
 function norm(s: Sel) {
@@ -168,8 +205,10 @@ export function Grid(props: GridProps) {
     copyFormat = "tsv",
   } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
+  const numberWidth = Math.max(40, String(firstRowNumber + rowCount - 1).length * 8 + 8);
   const [sel, setSel] = useState<Sel | null>(null);
-  const dragging = useRef(false);
+  /** A drag that started on a cell extends the block; one on a row number extends whole rows. */
+  const dragging = useRef<"cells" | "rows" | false>(false);
   useEffect(() => {
     const stop = () => {
       dragging.current = false;
@@ -210,7 +249,9 @@ export function Grid(props: GridProps) {
   const { onSelectionChange } = props;
   useEffect(() => {
     onSelectionChange?.(
-      sel && rowCount ? { ...norm(sel), lead: { row: Math.min(sel.r1, rowCount - 1), col: sel.c1 } } : null,
+      sel && rowCount
+        ? { ...norm(sel), lead: { row: Math.min(sel.r1, rowCount - 1), col: sel.c1 }, rows: sel.rows }
+        : null,
     );
   }, [sel, rowCount, onSelectionChange]);
 
@@ -224,8 +265,8 @@ export function Grid(props: GridProps) {
   const scrollColumnIntoView = (c: number) => {
     const el = scrollRef.current;
     if (!el || c < 0 || c >= widths.length) return;
-    const left = c ? NUM_W + widths.slice(0, c).reduce((a, b) => a + b, 0) : 0;
-    const right = NUM_W + widths.slice(0, c + 1).reduce((a, b) => a + b, 0);
+    const left = c ? numberWidth + widths.slice(0, c).reduce((a, b) => a + b, 0) : 0;
+    const right = numberWidth + widths.slice(0, c + 1).reduce((a, b) => a + b, 0);
     if (left < el.scrollLeft) el.scrollLeft = left;
     else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = Math.min(left, right - el.clientWidth);
   };
@@ -251,28 +292,54 @@ export function Grid(props: GridProps) {
     // Runs once per request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealColumn]);
-  const totalWidth = useMemo(() => NUM_W + widths.reduce((a, b) => a + b, 0), [widths]);
-  const template = `${NUM_W}px ${widths.map((w) => `${w}px`).join(" ")}`;
+  const totalWidth = useMemo(() => numberWidth + widths.reduce((a, b) => a + b, 0), [numberWidth, widths]);
+  const template = `${numberWidth}px ${widths.map((w) => `${w}px`).join(" ")}`;
+  // Retried as columns are measured, until the content is wide enough to reach the offset.
+  const pendingScrollLeft = useRef(props.initialScrollLeft);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const left = pendingScrollLeft.current;
+    if (!el || !left) return;
+    el.scrollLeft = left;
+    if (el.scrollLeft >= left - 1) pendingScrollLeft.current = undefined;
+  }, [totalWidth]);
 
   const selected = (r: number, c: number) => {
     if (!sel) return false;
     const n = norm(sel);
-    return r >= n.top && r <= n.bottom && c >= n.left && c <= n.right;
+    return (r >= n.top && r <= n.bottom && c >= n.left && c <= n.right) || !!sel.rows?.includes(r);
   };
 
   const selectedRows = (): number[] => {
     if (!sel) return [];
     const n = norm(sel);
-    return Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
+    const block = Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
+    if (!sel.rows?.length) return block;
+    return [...new Set([...sel.rows, ...block])].sort((a, b) => a - b);
   };
+  const rowSelected = (() => {
+    const rows = new Set(selectedRows());
+    return (r: number) => rows.has(r);
+  })();
 
-  const copy = (format: CopyFormat, header: boolean, wholeRows = false) => {
+  const copy = async (format: CopyFormat, header: boolean, wholeRows = false) => {
     if (!sel) return;
     const n = norm(sel);
-    const cols = wholeRows
-      ? columns.map((_, i) => i)
-      : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
-    const rows = selectedRows().map((r) => cols.map((c) => value(r, c)));
+    const cols =
+      wholeRows || sel.rows?.length
+        ? columns.map((_, i) => i)
+        : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
+    const picked = selectedRows();
+    const rows = picked.map((r) => cols.map((c) => value(r, c)));
+    // A cut cell copies as its whole value.
+    const cut = picked.flatMap((row, i) =>
+      cols.flatMap((col, j) => (props.truncated?.(row, col) != null ? [{ row, col, i, j }] : [])),
+    );
+    if (cut.length) {
+      const full = await props.loadFull?.(cut);
+      if (!full) return;
+      cut.forEach(({ i, j }, k) => (rows[i]![j] = full[k]!));
+    }
     const head = header ? cols.map((c) => columns[c]!.name) : null;
     const text =
       format === "onerow"
@@ -310,7 +377,15 @@ export function Grid(props: GridProps) {
   /** `maximized` (⇧Enter): the multi-line editor, which multi-line and long values always use. */
   const startEdit = (row: number, col: number, maximized = false) => {
     if (!editable || props.rowState?.(row) === "deleted") return;
-    const cell = value(row, col);
+    // A cut value is read whole first: editing its start would write that back.
+    if (props.truncated?.(row, col) != null) {
+      void props.loadFull?.([{ row, col }]).then((full) => full && openEditor(row, col, full[0]!, maximized));
+      return;
+    }
+    openEditor(row, col, value(row, col), maximized);
+  };
+
+  const openEditor = (row: number, col: number, cell: Cell, maximized: boolean) => {
     const text = cell ?? "";
     // JSON cells (type or content) edit in the JSON value editor when the dialog opens (#2333).
     const json = isJsonValue(columns[col]?.type ?? "", cell);
@@ -392,6 +467,7 @@ export function Grid(props: GridProps) {
       canToggle: () => canEdit() && !!bools[sel!.c1] && props.rowState?.(sel!.r1) !== "deleted",
       canSetNull: () => canEdit() && nullOk(norm(sel!)),
       canSetDefault: () => canEdit() && defaultable(norm(sel!)),
+      canFilter: () => !!props.onFilter && !!sel && !editing,
       toggle: () => {
         if (actions.canToggle()) toggleBoolean(sel!.r1, sel!.c1, booleanLiterals(props.driver));
       },
@@ -401,6 +477,29 @@ export function Grid(props: GridProps) {
       setDefault: () => {
         if (actions.canSetDefault()) setDefaults(norm(sel!));
       },
+      filter: () => {
+        if (!actions.canFilter()) return;
+        scrollColumnIntoView(sel!.c1);
+        const anchor = scrollRef.current?.querySelectorAll<HTMLElement>("[data-column-filter]")[sel!.c1];
+        if (anchor) props.onFilter!(sel!.c1, anchor);
+      },
+      canEditCell: () => {
+        if (!canEdit()) return false;
+        const n = norm(sel!);
+        return n.top === n.bottom && n.left === n.right && props.rowState?.(n.top) !== "deleted";
+      },
+      editCell: () => {
+        if (actions.canEditCell()) startEdit(sel!.r1, sel!.c1);
+      },
+      hasSelection: () => !!sel && !editing,
+      copy: (kind) => {
+        if (!actions.hasSelection()) return;
+        if (kind === "header") copy("tsv", true);
+        else if (kind === "rowsTsv") copy("tsv", true, true);
+        else if (kind === "rowsCsv") copy("csv", true, true);
+        else copy(kind, false);
+      },
+      selectedRows,
     };
     Object.assign((cellActions.current ??= {} as CellActions), actions);
   });
@@ -430,6 +529,14 @@ export function Grid(props: GridProps) {
       startEdit(sel.r1, sel.c1, e.key === "Enter" && e.shiftKey);
       return;
     }
+    if (e.key === "Tab") {
+      // IDEA's tables: Tab moves between cells, leaving the grid after the last one.
+      const next = mod || e.altKey ? null : nextCell(sel.r1, sel.c1, e.shiftKey ? -1 : 1);
+      if (!next) return;
+      e.preventDefault();
+      moveTo(next[0], next[1], false);
+      return;
+    }
     const moves: Record<string, [number, number]> = {
       ArrowUp: [-1, 0],
       ArrowDown: [1, 0],
@@ -439,11 +546,30 @@ export function Grid(props: GridProps) {
     const m = moves[e.key];
     if (!m) return;
     e.preventDefault();
-    const r = Math.max(0, Math.min(rowCount - 1, sel.r1 + m[0]));
-    const c = Math.max(0, Math.min(columns.length - 1, sel.c1 + m[1]));
-    setSel(e.shiftKey ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
+    moveTo(
+      Math.max(0, Math.min(rowCount - 1, sel.r1 + m[0])),
+      Math.max(0, Math.min(columns.length - 1, sel.c1 + m[1])),
+      e.shiftKey,
+    );
+  };
+
+  /** The cell Tab (`step` 1) or Shift+Tab (-1) goes to, row by row; null past either end. */
+  const nextCell = (r: number, c: number, step: 1 | -1): [number, number] | null => {
+    const i = Math.min(r, rowCount - 1) * columns.length + c + step;
+    return i < 0 || i >= rowCount * columns.length ? null : [Math.floor(i / columns.length), i % columns.length];
+  };
+
+  const moveTo = (r: number, c: number, extend: boolean) => {
+    setSel(extend && sel ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
     virtualizer.scrollToIndex(r, { align: "auto" });
     scrollColumnIntoView(c);
+  };
+
+  /** Focus from a click lands on the clicked cell; from the keyboard, on the first cell. */
+  const pointerFocus = useRef(false);
+  const onFocus = (e: FocusEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || pointerFocus.current || sel || editing) return;
+    if (rowCount && columns.length) moveTo(0, 0, false);
   };
 
   const onCellMouseDown = (e: MouseEvent, r: number, c: number) => {
@@ -454,7 +580,7 @@ export function Grid(props: GridProps) {
     if (editing) commit();
     e.preventDefault();
     scrollRef.current?.focus();
-    dragging.current = true;
+    dragging.current = "cells";
     setSel(e.shiftKey && sel ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
   };
 
@@ -481,9 +607,15 @@ export function Grid(props: GridProps) {
   };
 
   const onRowNumberMouseDown = (e: MouseEvent, r: number) => {
-    if (e.button !== 0 && sel && selected(r, 0)) return;
-    const last = columns.length - 1;
-    setSel(e.shiftKey && sel ? { ...sel, r1: r, c1: last } : { r0: r, c0: 0, r1: r, c1: last });
+    if (e.button !== 0) {
+      if (!sel || !selected(r, 0)) setSel({ r0: r, c0: 0, r1: r, c1: columns.length - 1 });
+      return;
+    }
+    if (editing) commit();
+    e.preventDefault();
+    scrollRef.current?.focus();
+    dragging.current = "rows";
+    setSel(rowNumberClick(sel, r, columns.length - 1, { shift: e.shiftKey, add: hasPrimaryModifier(e) }));
   };
 
   const onContextMenu = (e: MouseEvent) => {
@@ -494,23 +626,25 @@ export function Grid(props: GridProps) {
       {
         label: "Copy as",
         submenu: [
-          { label: "TSV", verbatim: true, run: () => copy("tsv", false) },
-          { label: "CSV", verbatim: true, run: () => copy("csv", false) },
-          { label: "One-Row", run: () => copy("onerow", false) },
+          { kind: "action", action: "db.copyAsTsv", label: "TSV", arg: cellActions.current },
+          { kind: "action", action: "db.copyAsCsv", label: "CSV", arg: cellActions.current },
+          { kind: "action", action: "db.copyAsOneRow", label: "One-Row", arg: cellActions.current },
         ],
       },
-      { label: "Copy with Header", run: () => copy("tsv", true) },
-      { label: "Copy Rows as TSV", run: () => copy("tsv", true, true) },
-      { label: "Copy Rows as CSV", run: () => copy("csv", true, true) },
+      { kind: "action", action: "db.copyWithHeader", arg: cellActions.current },
+      { kind: "action", action: "db.copyRowsAsTsv", arg: cellActions.current },
+      { kind: "action", action: "db.copyRowsAsCsv", arg: cellActions.current },
     ];
     if (editable && onEdit) {
-      const n = norm(sel);
       items.push(
         { kind: "separator" },
-        { label: "Edit Cell", disabled: n.top !== n.bottom || n.left !== n.right, run: () => startEdit(n.top, n.left) },
+        { kind: "action", action: "db.editCell", arg: cellActions.current },
         { kind: "action", action: "db.setCellNull", arg: cellActions.current },
         { kind: "action", action: "db.setCellDefault", arg: cellActions.current },
       );
+    }
+    if (props.onFilter) {
+      items.push({ kind: "separator" }, { kind: "action", action: "db.localFilter", arg: cellActions.current });
     }
     const extra = rowMenu?.(selectedRows()) ?? [];
     if (extra.length) items.push({ kind: "separator" }, ...extra);
@@ -520,7 +654,7 @@ export function Grid(props: GridProps) {
   const startResize = (e: MouseEvent, col: number) => {
     e.preventDefault();
     e.stopPropagation();
-    const releaseCursor = lockDragCursor("ew-resize");
+    const releaseCursor = lockDragCursor("col-resize");
     const startX = e.clientX;
     const start = widths[col] ?? 100;
     const move = (ev: globalThis.MouseEvent) => {
@@ -546,6 +680,12 @@ export function Grid(props: GridProps) {
       aria-label={props["aria-label"] ?? "Results"}
       aria-rowcount={rowCount}
       onKeyDown={onKeyDown}
+      onFocus={onFocus}
+      onMouseDownCapture={() => {
+        pointerFocus.current = true;
+        setTimeout(() => (pointerFocus.current = false));
+      }}
+      onScroll={(e) => props.onHorizontalScroll?.(e.currentTarget.scrollLeft)}
       onPaste={onPaste}
       onContextMenu={onContextMenu}
     >
@@ -600,6 +740,7 @@ export function Grid(props: GridProps) {
             const s = sort?.find((k) => k.column === c.name);
             return (
               <div
+                // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; cells and selection use column positions
                 key={ci}
                 role="columnheader"
                 className={clsx(styles.headerCell, onSort && styles.sortable)}
@@ -615,6 +756,10 @@ export function Grid(props: GridProps) {
                 {props.onFilter && (
                   <button
                     type="button"
+                    data-column-filter=""
+                    // Not a Tab stop, like IDEA's table header: Tab past the last cell leaves the grid.
+                    // The keyboard opens it with the Local Filter action.
+                    tabIndex={-1}
                     className={clsx(styles.headerFilter, props.filtered?.(ci) && styles.headerFilterOn)}
                     aria-label={`Filter ${c.name}`}
                     title={tx("Local filter")}
@@ -655,12 +800,17 @@ export function Grid(props: GridProps) {
               )}
               style={{ gridTemplateColumns: template, transform: `translateY(${v.start + ROW_H}px)` }}
             >
-              <div className={styles.rowNumber} onMouseDown={(e) => onRowNumberMouseDown(e, r)}>
+              <div
+                className={clsx(styles.rowNumber, rowSelected(r) && styles.rowNumberSelected)}
+                onMouseDown={(e) => onRowNumberMouseDown(e, r)}
+                onMouseEnter={() => {
+                  if (dragging.current === "rows") setSel((s) => (s ? { ...s, r1: r } : s));
+                }}
+              >
                 {state === "inserted" ? "+" : (props.rowNumber?.(r) ?? firstRowNumber + r)}
               </div>
-              {columns.map((_, c) => {
+              {columns.map((col, c) => {
                 if (editing && !editing.dialog && editing.row === r && editing.col === c) {
-                  const col = columns[c]!;
                   const lit = bools[c] ? booleanLiterals(props.driver) : null;
                   const values = enums[c];
                   const cell = value(editing.row, editing.col);
@@ -675,6 +825,7 @@ export function Grid(props: GridProps) {
                     if (col.nullable !== false) options.push({ value: NULL_INPUT, label: "NULL" });
                     return (
                       <CellSelect
+                        // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; the editor belongs to this column position
                         key={c}
                         label={tx`Edit ${col.name}`}
                         value={cell === null ? NULL_INPUT : cell}
@@ -689,6 +840,7 @@ export function Grid(props: GridProps) {
                   }
                   return (
                     <input
+                      // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; the editor belongs to this column position
                       key={c}
                       className={styles.cellEditor}
                       data-cell-editor=""
@@ -709,6 +861,13 @@ export function Grid(props: GridProps) {
                           return;
                         }
                         if (e.key === "Enter") commit();
+                        if (e.key === "Tab") {
+                          // Like IDEA's table editor: Tab commits and selects the next cell.
+                          e.preventDefault();
+                          const next = nextCell(editing.row, editing.col, e.shiftKey ? -1 : 1);
+                          commit();
+                          if (next) moveTo(next[0], next[1], false);
+                        }
                         if (e.key === "Escape") {
                           skipBlurCommit.current = true;
                           setEditing(null);
@@ -719,13 +878,17 @@ export function Grid(props: GridProps) {
                   );
                 }
                 const val = value(r, c);
+                const cut = props.truncated?.(r, c) ?? null;
+                const [shown, total] = [val?.length ?? 0, cut ?? 0];
                 // Boolean cells show a checkbox while the grid is editable (DataGrip); Space toggles too.
                 const lit =
                   editable && onEdit && bools[c] && state !== "deleted" ? booleanLiterals(props.driver) : null;
                 return (
                   <div
+                    // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; cells and selection use column positions
                     key={c}
                     role="gridcell"
+                    aria-selected={selected(r, c)}
                     className={clsx(
                       styles.cell,
                       numeric[c] && styles.cellNumber,
@@ -736,11 +899,23 @@ export function Grid(props: GridProps) {
                     )}
                     onMouseDown={(e) => onCellMouseDown(e, r, c)}
                     onMouseEnter={() => {
-                      if (dragging.current) setSel((s) => (s ? { ...s, r1: r, c1: c } : s));
+                      if (dragging.current === "cells") setSel((s) => (s ? { ...s, r1: r, c1: c } : s));
+                      else if (dragging.current === "rows") setSel((s) => (s ? { ...s, r1: r } : s));
                     }}
                     onDoubleClick={() => startEdit(r, c)}
-                    title={val != null && val.length > 40 ? val.slice(0, 2000) : undefined}
+                    title={
+                      cut !== null
+                        ? tx`Only the first ${shown} of ${total} characters are shown. Double-click to load the whole value.`
+                        : val != null && val.length > 40
+                          ? val.slice(0, 2000)
+                          : undefined
+                    }
                   >
+                    {cut !== null && (
+                      <span className={styles.cellCutMark}>
+                        <T>truncated</T>
+                      </span>
+                    )}
                     {lit ? (
                       <>
                         <span
@@ -751,6 +926,7 @@ export function Grid(props: GridProps) {
                           onDoubleClick={(e) => e.stopPropagation()}
                         >
                           <Checkbox
+                            tabIndex={-1}
                             className={styles.cellCheckbox}
                             aria-label={tx`Toggle ${columns[c]!.name}`}
                             checked={val === lit.t}

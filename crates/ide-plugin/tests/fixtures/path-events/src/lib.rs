@@ -11,6 +11,7 @@ impl Plugin for Fixture {
         let globs: Vec<_> = glob.lines().collect();
         let _ = host::subscribe_paths("file-opened", &globs);
         let _ = host::subscribe_paths("file-saved", &["config/*.yaml"]);
+        let _ = host::subscribe_paths("document-changed", &["config/*.yaml"]);
         Ok(())
     }
     fn run_command(&mut self, id: &str, _: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
@@ -31,12 +32,20 @@ impl Plugin for Fixture {
                 Ok(None)
             }
             "count" => Ok(host::storage::get("count")?),
+            "document" => Ok(host::storage::get("document")?),
+            "document-project" => Ok(host::storage::get("document-project")?),
             _ => Err(Error::NotFound(id.into())),
         }
     }
     fn handle_events(&mut self, events: &[Event], _: &Invocation) {
         let count = host::storage::get("count").ok().flatten().and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
         host::storage::set("count", &(count + events.len()).to_string()).unwrap();
+        for event in events {
+            if let Event::DocumentChanged(change) = event {
+                host::storage::set("document", &change.path).unwrap();
+                host::storage::set("document-project", change.project.as_deref().unwrap_or_default()).unwrap();
+            }
+        }
     }
 }
 impl HoverProvider for Fixture {

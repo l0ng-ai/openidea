@@ -4,14 +4,15 @@
  * the selected entry, or the line itself: a provider that claims it, else the
  * shell in the project directory, its output in the Run tool window.
  */
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
-import { Icon, Input, List, Popup, T, listNavigate } from "@/ui";
+import { Icon, Kbd, List, Popup, SearchField, T, firstSelectable, listNavigate } from "@/ui";
 import { runAnythingProviderList } from "@/workbench/contributions";
+import { useRowHeight } from "@/ui/density";
 import { buildRows, clearHistory, pushHistory, readHistory, shellRunConfig, type Row } from "./model";
 import styles from "./RunAnything.module.css";
 
@@ -44,8 +45,13 @@ export function RunAnythingHost() {
 }
 
 const isSection = (r: Row) => r.kind === "section";
+const ROW_HEIGHT = 24;
+const commandAnchor = { getBoundingClientRect: () => new DOMRect(window.innerWidth / 2, 72, 0, 0) };
 
 function RunAnythingPopup({ root }: { root: string }) {
+  const field = useRef<HTMLInputElement>(null);
+  const rowHeight = useRowHeight(ROW_HEIGHT);
+  const listId = useId();
   const [line, setLine] = useState("");
   const [active, setActive] = useState(-1);
   const [history, setHistory] = useState(() => readHistory(root));
@@ -57,6 +63,10 @@ function RunAnythingPopup({ root }: { root: string }) {
       }),
     [line, history],
   );
+  const selected = rows[active];
+  const first = firstSelectable(rows, isSection);
+  const hasRows = first >= 0;
+  const command = selected?.kind === "item" ? (selected.item.completion ?? selected.item.label) : line;
 
   const run = (row: Row | undefined) => {
     if (!row || row.kind !== "item") return;
@@ -75,21 +85,25 @@ function RunAnythingPopup({ root }: { root: string }) {
     setActive(-1);
   };
 
-  const onKeyDown = (e: KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
     if (["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(e.key)) {
-      const next = listNavigate(e.key, { items: rows, active: Math.max(active, 0), wrap: true, isSection });
-      if (next !== null) {
+      const height = e.currentTarget.ownerDocument.getElementById(listId)?.clientHeight ?? rowHeight;
+      const pageSize = Math.max(1, Math.floor(height / rowHeight) - 1);
+      const next = listNavigate(e.key, { items: rows, active, wrap: true, isSection, pageSize });
+      if (next !== null && hasRows) {
         e.preventDefault();
-        setActive(active < 0 && e.key === "ArrowDown" ? rows.findIndex((r) => !isSection(r)) : next);
+        setActive(next < 0 ? first : next);
       }
       return;
     }
-    if (e.key === "Tab") {
+    if (e.key === "Tab" && !e.shiftKey && hasRows) {
       e.preventDefault();
-      complete(rows[active >= 0 ? active : rows.findIndex((r) => !isSection(r))]);
+      e.stopPropagation();
+      complete(selected ?? rows[first]);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (active >= 0) run(rows[active]);
+      if (selected) run(selected);
       else runLine();
     }
   };
@@ -97,7 +111,7 @@ function RunAnythingPopup({ root }: { root: string }) {
   return (
     <Popup
       open
-      anchor={{ x: window.innerWidth / 2, y: 72 }}
+      anchor={commandAnchor}
       placement="bottom"
       onClose={close}
       role="dialog"
@@ -117,59 +131,85 @@ function RunAnythingPopup({ root }: { root: string }) {
               onClick={() => {
                 clearHistory(root);
                 setHistory([]);
+                setActive(-1);
+                field.current?.focus();
               }}
             >
               <T>Clear History</T>
             </button>
           )}
         </div>
-        <div className={styles.inputRow}>
-          <Icon name="run-anything" size={16} className={styles.inputIcon} />
-          <Input
+        <div className={styles.query}>
+          <SearchField
+            ref={field}
             data-autofocus
+            leadingIcon="run-anything"
             variant="bare"
-            className={styles.input}
-            value={line}
+            className={styles.commandField}
+            clearable={false}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={hasRows}
+            aria-controls={hasRows ? listId : undefined}
+            aria-activedescendant={selected?.kind === "item" ? `${listId}-${active}` : undefined}
+            value={command}
             placeholder="Run a command, configuration or goal"
             aria-label="Command line"
-            onChange={(e) => {
-              setLine(e.target.value);
+            onChange={(value) => {
+              setLine(value);
               setActive(-1);
             }}
             onKeyDown={onKeyDown}
           />
         </div>
-        <List
-          items={rows}
-          getKey={(r) => r.key}
-          isSection={isSection}
-          renderSection={(r) => <div className={styles.section}>{r.kind === "section" && <T>{r.label}</T>}</div>}
-          activeIndex={active}
-          onActiveChange={setActive}
-          onActivate={(r) => run(r)}
-          focusable={false}
-          hoverSelects={false}
-          rowHeight={24}
-          className={styles.rows}
-          aria-label="Run Anything entries"
-          empty={
-            <div className={styles.empty}>
-              {line.trim() ? <T>Press Enter to run the command in the project directory</T> : <T>Type a command</T>}
+        {hasRows ? (
+          <>
+            <List
+              id={listId}
+              items={rows}
+              getKey={(r) => r.key}
+              isSection={isSection}
+              renderSection={(r) => <div className={styles.section}>{r.kind === "section" && <T>{r.label}</T>}</div>}
+              activeIndex={active}
+              onActiveChange={setActive}
+              onActivate={(r) => run(r)}
+              focusable={false}
+              hoverSelects={false}
+              rowHeight={rowHeight}
+              className={styles.rows}
+              aria-label="Run Anything entries"
+              renderItem={(r, state) =>
+                r.kind === "item" ? (
+                  <div className={clsx(styles.row, state.active && styles.activeRow)}>
+                    <Icon name={r.item.icon ?? "run"} size={16} className={styles.rowIcon} />
+                    <span className={styles.label} title={r.item.label}>
+                      {r.item.label}
+                    </span>
+                    {r.item.detail && (
+                      <span className={styles.detail} title={r.item.detail}>
+                        {r.item.detail}
+                      </span>
+                    )}
+                  </div>
+                ) : null
+              }
+            />
+            <div className={styles.footer}>
+              <span className={styles.navigationHint}>
+                <Kbd>↑</Kbd>
+                <Kbd>↓</Kbd>
+                <T>Navigate</T>
+              </span>
+              <T>Tab to complete, Enter to run</T>
             </div>
-          }
-          renderItem={(r, state) =>
-            r.kind === "item" ? (
-              <div className={clsx(styles.row, state.active && styles.activeRow)}>
-                <Icon name={r.item.icon ?? "run"} size={16} className={styles.rowIcon} />
-                <span className={styles.label}>{r.item.label}</span>
-                {r.item.detail && <span className={styles.detail}>{r.item.detail}</span>}
-              </div>
-            ) : null
-          }
-        />
-        <div className={styles.footer}>
-          <T>Enter to run, Tab to complete. Other commands run in the project directory.</T>
-        </div>
+          </>
+        ) : (
+          line.trim() && (
+            <div className={styles.empty}>
+              <T>Press Enter to run the command in the project directory</T>
+            </div>
+          )
+        )}
       </div>
     </Popup>
   );

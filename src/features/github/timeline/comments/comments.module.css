@@ -31,7 +31,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   max-width: var(--gh-content-width, 42em);
 }
@@ -41,7 +41,7 @@
 .header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 20px;
 }
 .title {
@@ -49,7 +49,7 @@
   flex: 1;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .author {
@@ -68,7 +68,7 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   margin-left: auto;
 }
 .tag {
@@ -109,7 +109,7 @@
 
 .status {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .status::before {
@@ -149,7 +149,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   max-width: var(--gh-content-width, 42em);
 }
@@ -182,19 +182,19 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .hints {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--space-3);
   min-width: 0;
   color: var(--fg-secondary);
   font-size: var(--fs-small);
 }
 .buttons {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .mentions {
   max-height: 240px;
@@ -205,7 +205,7 @@
 .mention {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 2px 8px;
   white-space: nowrap;
   cursor: pointer;
@@ -219,12 +219,12 @@
 .reactions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   height: 24px;
   padding: 0 8px 0 6px;
   border: 1px solid transparent;
@@ -279,7 +279,7 @@
 .threadContent {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .preview {
   display: -webkit-box;
@@ -300,7 +300,7 @@
 .fileHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 28px;
   padding: 2px 6px 2px 10px;
 }
@@ -364,7 +364,7 @@
 .foldedReplies {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .compactFooter {
   display: flex;
@@ -393,7 +393,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 4px 8px;
   border-bottom: 1px solid var(--gh-bubble-border);
   background: var(--bg-editor);
@@ -418,7 +418,7 @@
 .commitPopup {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   width: 450px;
   padding: 10px;
 }

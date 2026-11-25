@@ -1,71 +1,102 @@
 /**
- * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
- * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
+ * PyCharm's top-level "Python" group (Interpreter) and
+ * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript / Zig. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
-import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
-import { MarkdownPage } from "../languages/MarkdownPage";
-import { OxfmtPage, PrettierPage, RuffPage } from "../languages/FormatterPage";
-import { ProjectStructurePage } from "../languages/ProjectStructurePage";
-import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
-import { GoBuildTagsPage, GO_BUILD_TAG_SECTIONS } from "../languages/GoBuildTags";
-import { GoModulesPage, GO_MODULE_SECTIONS } from "../languages/GoModules";
+import { GO_BUILD_TAG_SECTIONS, GoBuildTagsPage } from "../languages/GoBuildTags";
+import { GO_MODULE_SECTIONS, GoModulesPage } from "../languages/GoModules";
+import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
+
+const PythonInterpreterPage = lazyPage("python.interpreter", () =>
+  import("../languages/PythonInterpreterPage").then((m) => m.PythonInterpreterPage),
+);
+const PythonInterpretersPage = lazyPage("python.interpreters", () =>
+  import("../languages/PythonInterpretersPage").then((m) => m.PythonInterpretersPage),
+);
+const GoPage = lazyPage("languages.go", () => import("../languages/LanguagePages").then((m) => m.GoPage));
+const JavaPage = lazyPage("languages.java", () => import("../languages/LanguagePages").then((m) => m.JavaPage));
+const NodePage = lazyPage("languages.node", () => import("../languages/LanguagePages").then((m) => m.NodePage));
+const MarkdownPage = lazyPage("languages.markdown", () =>
+  import("../languages/MarkdownPage").then((m) => m.MarkdownPage),
+);
+const PrettierPage = lazyPage("languages.prettier", () =>
+  import("../languages/FormatterPage").then((m) => m.PrettierPage),
+);
+const OxfmtPage = lazyPage("languages.oxfmt", () => import("../languages/FormatterPage").then((m) => m.OxfmtPage));
+const BiomePage = lazyPage("languages.biome", () => import("../languages/FormatterPage").then((m) => m.BiomePage));
+const DocstringsPage = lazyPage("python.docstrings", () =>
+  import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
+);
+const RuffPage = lazyPage("python.ruff", () => import("../languages/FormatterPage").then((m) => m.RuffPage));
+const BlackPage = lazyPage("python.black", () => import("../languages/FormatterPage").then((m) => m.BlackPage));
+const PhpPage = lazyPage("languages.php", () => import("../languages/LanguagePages").then((m) => m.PhpPage));
+const RubyPage = lazyPage("languages.ruby", () => import("../languages/LanguagePages").then((m) => m.RubyPage));
+const RustPage = lazyPage("languages.rust", () => import("../languages/LanguagePages").then((m) => m.RustPage));
+const TypeScriptPage = lazyPage("languages.typescript", () =>
+  import("../languages/LanguagePages").then((m) => m.TypeScriptPage),
+);
+const ZigPage = lazyPage("languages.zig", () => import("../languages/LanguagePages").then((m) => m.ZigPage));
 
 export const LANGUAGES_GROUP = "Languages & Frameworks";
 
 export const LANGUAGE_PAGES: PageSpec[] = [
   {
+    // PyCharm's "Python" settings folder: its pages nest under this id.
+    id: "python",
+    title: "Python",
+    group: LANGUAGES_GROUP,
+    order: 403,
+    keywords: ["python", "interpreters", "dependencies", "packages", "virtualenv", "venv", "ruff"],
+  },
+  {
     id: "python.interpreter",
     projectScope: true,
     defaultScope: "project",
-    title: "Python Interpreter",
+    title: "Dependencies",
     group: LANGUAGES_GROUP,
-    order: 403,
+    order: 403.1,
     keywords: [
       "python interpreter",
+      "project interpreter",
+      "interpreter",
       "sdk",
       "virtualenv",
       "venv",
       "conda",
       "pyenv",
+      "dependencies",
       "packages",
       "pip",
       "install package",
       "add interpreter",
       "activate virtualenv",
-      "docstrings",
-      "documentation string format",
-      "reStructuredText",
-      "Epytext",
-      "NumPy",
-      "Google",
     ],
     component: PythonInterpreterPage,
   },
   {
-    id: "projectStructure",
-    title: "Project Structure",
-    // IntelliJ IDEA order: … Version Control, Project Structure, Build, Execution, Deployment, Languages & Frameworks …
-    order: 350,
+    id: "python.interpreters",
+    title: "All Interpreters",
+    group: LANGUAGES_GROUP,
+    order: 403,
     keywords: [
-      "project structure",
-      "content root",
-      "sources root",
-      "test sources",
-      "resources",
-      "excluded",
-      "mark directory as",
-      "project sdk",
-      "language level",
-      "modules",
-      "dependencies",
-      "libraries",
-      "facets",
-      "artifacts",
-      "sdks",
+      "python interpreters",
+      "all interpreters",
+      "interpreter list",
+      "add interpreter",
+      "remove interpreter",
+      "delete interpreter",
+      "hide other projects",
+      "show interpreter paths",
+      "sdk",
+      "virtualenv",
+      "venv",
+      "conda",
+      "pyenv",
+      "poetry",
+      "uv",
     ],
-    component: ProjectStructurePage,
+    component: PythonInterpretersPage,
   },
   {
     id: "languages.go",
@@ -74,7 +105,7 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     title: "Go",
     group: LANGUAGES_GROUP,
     order: 390,
-    keywords: ["goroot", "gopath", "go sdk", "gopls"],
+    keywords: ["goroot", "gopath", "go sdk", "gopls", "gofumpt", "format"],
     component: GoPage,
   },
   {
@@ -128,10 +159,10 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     id: "languages.node",
     projectScope: true,
     defaultScope: "project",
-    title: "Node.js",
+    title: "JavaScript Runtime",
     group: LANGUAGES_GROUP,
-    order: 402,
-    keywords: ["node interpreter", "package manager", "npm", "pnpm", "yarn", "bun", "nvm"],
+    order: 397,
+    keywords: ["node.js", "node interpreter", "package manager", "npm", "pnpm", "yarn", "bun", "deno", "nvm"],
     component: NodePage,
   },
   {
@@ -140,7 +171,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     title: "Markdown",
     group: LANGUAGES_GROUP,
     order: 400,
-    keywords: ["markdown", "preview", "font size", "jupyter", "notebook"],
+    keywords: [
+      "markdown",
+      "preview layout",
+      "stacked",
+      "font size",
+      "jupyter",
+      "notebook",
+      "run commands",
+      "code block",
+    ],
     component: MarkdownPage,
   },
   {
@@ -164,12 +204,39 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     component: OxfmtPage,
   },
   {
-    id: "languages.ruff",
+    id: "languages.biome",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Biome",
+    group: LANGUAGES_GROUP,
+    order: 403.7,
+    keywords: ["formatter", "linter", "biome", "biome.json", "format on save", "node_modules"],
+    component: BiomePage,
+  },
+  {
+    id: "python.docstrings",
+    title: "Docstrings",
+    group: LANGUAGES_GROUP,
+    order: 403.2,
+    keywords: [
+      "docstrings",
+      "docstring format",
+      "documentation string format",
+      "restructuredtext",
+      "epytext",
+      "google",
+      "numpy",
+      "plain",
+    ],
+    component: DocstringsPage,
+  },
+  {
+    id: "python.ruff",
     projectScope: true,
     defaultScope: "project",
     title: "Ruff",
     group: LANGUAGES_GROUP,
-    order: 403.7,
+    order: 403.3,
     keywords: [
       "formatter",
       "ruff",
@@ -180,6 +247,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "format on save",
     ],
     component: RuffPage,
+  },
+  {
+    id: "python.black",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Black formatter",
+    group: LANGUAGES_GROUP,
+    order: 403.4,
+    keywords: ["formatter", "black", "python", "pyproject.toml", "tool.black", "format on save"],
+    component: BlackPage,
   },
   {
     id: "languages.php",
@@ -244,5 +321,15 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 405,
     keywords: ["typescript version", "tsdk", "tsserver", "node_modules", "vtsls"],
     component: TypeScriptPage,
+  },
+  {
+    id: "languages.zig",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Zig",
+    group: LANGUAGES_GROUP,
+    order: 406,
+    keywords: ["zig toolchain", "zls", "zig build", "build.zig", "build.zig.zon"],
+    component: ZigPage,
   },
 ];

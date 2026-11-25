@@ -10,20 +10,23 @@
  * - `views`: tool windows the plugin renders, or a web page of its package;
  * - `customEditors`: files opening in a plugin editor sharing the text document, in its own tab or
  *   beside the text editor;
+ * - `editorPanels`: a web page at the right edge of every editor group, following its text editor;
  * - `fileIcons`: icons for the files a plugin knows, whatever icon theme is in use;
  * - `fileTemplates`: entries of the New menu;
  * - `commitChecks`: before-commit checks listed in Commit Options, run by the plugin's code.
  */
 import type { PluginInfo } from "@/bindings";
+import { registerEditorContribution } from "@/editor/api";
 import { getAction } from "@/platform/actions";
 import { evaluateWhen, getContext, useContextKeys } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
-import { addFileIconProvider, fileIconName, registerExternalIcons, type MenuItem } from "@/ui";
+import { addFileIconProvider, bumpFileIconRevision, fileIconName, registerExternalIcons, type MenuItem } from "@/ui";
 import { addContributedFileTemplate } from "@/workbench/contributions";
 import {
   addContributedSnippets,
   registerEditorKind,
+  registerExternalOpenSuppression,
   registerFileEditorProvider,
   registerCommitCheckProvider,
   registerMenuGroup,
@@ -41,6 +44,7 @@ import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
 import { declareStatusItem } from "./runtimeUi";
+import { addEscapeBinding, escapeBindings } from "./escapeBindings";
 import { registerWindowView } from "./views/viewWindows";
 import {
   CUSTOM_EDITOR_KIND,
@@ -52,6 +56,7 @@ import {
   type CustomEditorDecl,
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
+import { editorPanelUpdates, projectEditorPanel, type EditorPanelDecl } from "./views/editorPanel";
 import { registerContentActions } from "./views/contentActions";
 import {
   PluginContentEditor,
@@ -258,6 +263,8 @@ interface KeymapDecl {
   command: string;
   key: string;
   mac?: string | null;
+  /** With an Escape binding (API 1.10). */
+  when?: string | null;
 }
 
 // --- status bar -------------------------------------------------------------------
@@ -273,7 +280,7 @@ interface StatusDecl {
 
 // --- settings ---------------------------------------------------------------------
 
-export { withPluginSetting, pluginSettingsPageId } from "./settings";
+export { withPluginSetting } from "./settings";
 
 // --- views and custom editors -----------------------------------------------------
 
@@ -294,6 +301,7 @@ interface FileIconDecl {
   patterns: string[];
   /** A dark-theme variant was given. */
   dark: boolean;
+  revision?: string;
 }
 
 interface FileTemplateDecl {
@@ -340,7 +348,10 @@ function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
             ]
           : [[name, light]],
       );
-      const remove = addFileIconProvider((file) => (decl.patterns.some((p) => matchesPattern(p, file)) ? name : null));
+      const remove =
+        decl.patterns.length > 0
+          ? addFileIconProvider((file) => (decl.patterns.some((p) => matchesPattern(p, file)) ? name : null))
+          : (bumpFileIconRevision(), () => bumpFileIconRevision());
       undo = () => {
         remove();
         unregister();
@@ -436,9 +447,12 @@ export function defineViewUiPoints(): () => void {
     defineUiPoint<KeymapDecl>("keymaps", {
       title: "Shortcuts",
       project: ({ pluginId, decl }) =>
-        registerExtensionBindings(pluginActionId(pluginId, decl.command), [
-          isMacHost() ? (decl.mac ?? decl.key) : decl.key,
-        ]),
+        // Escape (only ever with `when`) is the editor's last Escape handler, not a shortcut.
+        decl.key === "Escape" && decl.when
+          ? addEscapeBinding(pluginActionId(pluginId, decl.command), decl.when)
+          : registerExtensionBindings(pluginActionId(pluginId, decl.command), [
+              isMacHost() ? (decl.mac ?? decl.key) : decl.key,
+            ]),
     }),
     defineUiPoint<StatusDecl>("statusBar", {
       title: "Status Bar Items",
@@ -463,28 +477,39 @@ export function defineViewUiPoints(): () => void {
       project: ({ pluginId, decl }) => {
         const matches = (path: string) => decl.patterns.some((p) => matchesPattern(p, basename(path)));
         const beside = decl.layout === "split" || decl.layout === "preview";
+        const editorId = `plugin.${pluginId}.${decl.id}`;
         // A side-by-side editor wraps the text editor the file opens in; the others open their own tab.
+        // Default-priority editors beat Settings › Files opened in associated applications.
+        const suppressExternal =
+          decl.priority === "default" ? registerExternalOpenSuppression(editorId, matches) : () => {};
         const provider =
           decl.priority !== "default"
             ? () => {}
             : beside
               ? registerTextEditorWrapper({
-                  id: `plugin.${pluginId}.${decl.id}`,
+                  id: editorId,
                   matches,
                   component: layoutWrapper(pluginId, decl),
                   tabActions: layoutActions(pluginId, decl),
                 })
               : registerFileEditorProvider({
-                  id: `plugin.${pluginId}.${decl.id}`,
+                  id: editorId,
                   order: 40,
                   resolve: (path) => (matches(path) ? customEditorInput(pluginId, decl, path) : null),
                 });
         openWith.set(`${pluginId}/${decl.id}`, { pluginId, decl, matches });
         return () => {
+          suppressExternal();
           provider();
           openWith.delete(`${pluginId}/${decl.id}`);
         };
       },
+    }),
+    registerEditorContribution({ id: "plugins.editorPanels", extensions: () => editorPanelUpdates }),
+    registerEditorContribution({ id: "plugins.escapeBindings", extensions: () => escapeBindings }),
+    defineUiPoint<EditorPanelDecl>("editorPanels", {
+      title: "Editor Panels",
+      project: ({ pluginId, decl }) => projectEditorPanel(pluginId, decl),
     }),
     defineUiPoint<MarkerIconDecl>("markerIcons", {
       title: "Marker Icons",
@@ -562,6 +587,7 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
       kind: PLUGIN_CONTENT_EDITOR_KIND,
       component: PluginContentEditor,
       keepAlive: true,
+      restorable: true,
       title: pluginContentEditorTitle,
       icon: pluginContentEditorIcon,
       document: pluginContentEditorDocument,

@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 pub struct EditorGeneralSettings {
     /// Change font size with ⌘ + mouse wheel.
     pub wheel_zoom: bool,
+    /// Scope of ⌘ + mouse wheel font zoom: `active` editor | `all` editors.
+    pub wheel_zoom_scope: String,
     pub markdown_image_folder: String,
     pub markdown_image_name_pattern: String,
     /// Drag-and-drop of selected text inside the editor.
@@ -37,6 +39,7 @@ impl Default for EditorGeneralSettings {
     fn default() -> Self {
         Self {
             wheel_zoom: false,
+            wheel_zoom_scope: "active".into(),
             markdown_image_folder: "assets".into(),
             markdown_image_name_pattern: "image-{timestamp}".into(),
             drag_and_drop: true,
@@ -67,6 +70,8 @@ pub struct EditorAppearanceSettings {
     /// Smooth caret movement curve: `snappy` | `gliding`.
     pub caret_movement_style: String,
     pub line_numbers: bool,
+    /// Gutter numbering: `absolute` | `relative` | `hybrid` (absolute on the caret line, distances elsewhere).
+    pub line_number_mode: String,
     pub method_separators: bool,
     /// Sub-options of `editor.showWhitespace`.
     pub whitespace_leading: bool,
@@ -78,6 +83,10 @@ pub struct EditorAppearanceSettings {
     /// Right margin and visual guides from Code Style.
     pub hard_wrap_guides: bool,
     pub intention_bulb: bool,
+    /// Draw doc comments (Javadoc, KDoc, JSDoc, rustdoc) as rendered documentation
+    /// instead of their source, as IDEA's option of the same name. View › Active
+    /// Editor › Render Documentation Comments overrides this for one editor.
+    pub render_doc_comments: bool,
     /// Distraction Free Mode: width of the centred text column, in characters.
     pub distraction_free_width: u32,
 }
@@ -92,6 +101,7 @@ impl Default for EditorAppearanceSettings {
             smooth_caret_movement: false,
             caret_movement_style: "snappy".into(),
             line_numbers: true,
+            line_number_mode: "absolute".into(),
             method_separators: false,
             whitespace_leading: true,
             whitespace_inner: true,
@@ -100,6 +110,7 @@ impl Default for EditorAppearanceSettings {
             rainbow_indent_guides: false,
             hard_wrap_guides: true,
             intention_bulb: true,
+            render_doc_comments: false,
             distraction_free_width: 80,
         }
     }
@@ -186,6 +197,7 @@ pub enum ImportsOnPaste {
 #[serde(default, rename_all = "camelCase")]
 pub struct FoldingSettings {
     pub show_outline: bool,
+    pub outline_visibility: FoldingOutlineVisibility,
     pub file_header: bool,
     pub imports: bool,
     pub doc_comments: bool,
@@ -193,8 +205,22 @@ pub struct FoldingSettings {
 
 impl Default for FoldingSettings {
     fn default() -> Self {
-        Self { show_outline: true, file_header: true, imports: true, doc_comments: false }
+        Self {
+            show_outline: true,
+            outline_visibility: FoldingOutlineVisibility::Hover,
+            file_header: true,
+            imports: true,
+            doc_comments: false,
+        }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum FoldingOutlineVisibility {
+    #[default]
+    Hover,
+    Always,
 }
 
 /// Editor › General › Editor Tabs.
@@ -262,6 +288,10 @@ pub struct SmartKeysSettings {
     pub pair_quotes: bool,
     pub surround_selection: bool,
     pub tab_out_of_pair: bool,
+    /// A `;` typed before the closing `)` of a statement goes to the end of the statement.
+    pub semicolon_at_statement_end: bool,
+    /// Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag.
+    pub simultaneous_tag_editing: bool,
     /// Reformat on paste: `none` | `indentBlock` | `indentEachLine`.
     pub reformat_on_paste: String,
     pub escape_on_paste: bool,
@@ -281,6 +311,8 @@ impl Default for SmartKeysSettings {
             pair_quotes: true,
             surround_selection: true,
             tab_out_of_pair: true,
+            semicolon_at_statement_end: true,
+            simultaneous_tag_editing: true,
             reformat_on_paste: "indentEachLine".into(),
             escape_on_paste: true,
             smart_indent: true,
@@ -304,6 +336,7 @@ pub struct CodeEditingSettings {
     /// Next / previous error goes to errors only (skips warnings).
     pub next_error_errors_only: bool,
     pub sticky_lines_max: u32,
+    pub sticky_lines_disabled_languages: Vec<String>,
 }
 
 impl Default for CodeEditingSettings {
@@ -316,6 +349,7 @@ impl Default for CodeEditingSettings {
             quick_doc_delay: 500,
             next_error_errors_only: true,
             sticky_lines_max: 5,
+            sticky_lines_disabled_languages: Vec::new(),
         }
     }
 }
@@ -329,10 +363,29 @@ pub struct InlayHintsSettings {
     /// Hints of other kinds (chaining, closing labels…).
     pub other: bool,
     pub disabled_languages: Vec<String>,
+    /// Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on.
+    pub code_vision: bool,
     /// Code vision: usages above declarations.
     pub code_vision_usages: bool,
     /// Code vision: last author of a declaration (VCS blame) beside its usages.
     pub code_vision_author: bool,
+    /// Code vision: "no usages" on declarations nothing uses (IDEA shows it; clicking searches everywhere).
+    pub code_vision_no_usages: bool,
+    /// Code vision: where the usages go, above the declaration or at the end of its line.
+    pub code_vision_usages_position: CodeVisionPosition,
+    /// Code vision: where the author goes, above the declaration or at the end of its line.
+    pub code_vision_author_position: CodeVisionPosition,
+}
+
+/// Editor › Inlay Hints › Code Vision position (IDEA's "Default position for metrics").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CodeVisionPosition {
+    /// A row of its own above the declaration.
+    #[default]
+    Top,
+    /// After the end of the declaration's first line.
+    Right,
 }
 
 impl Default for InlayHintsSettings {
@@ -342,8 +395,12 @@ impl Default for InlayHintsSettings {
             parameters: true,
             other: true,
             disabled_languages: Vec::new(),
+            code_vision: true,
             code_vision_usages: true,
             code_vision_author: true,
+            code_vision_no_usages: true,
+            code_vision_usages_position: CodeVisionPosition::Top,
+            code_vision_author_position: CodeVisionPosition::Top,
         }
     }
 }
@@ -383,6 +440,9 @@ pub struct TextAttributesOverride {
     pub effect: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effect_color: Option<String>,
+    /// IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_stripe_color: Option<String>,
 }
 
 /// Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit).
@@ -409,6 +469,18 @@ pub struct LanguageCodeStyle {
     /// Comment Code › Add a space at line comment start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_comment_add_space: Option<bool>,
+    /// PHP: align `=>` in multi-line arrays after formatting (other languages ignore it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align_key_value_pairs: Option<bool>,
+    /// PHP: align `=` of consecutive assignment statements after formatting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align_consecutive_assignments: Option<bool>,
+    /// SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyword_case: Option<String>,
+    /// SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifier_case: Option<String>,
 }
 
 /// Editor › Code Style (General tab + per-language overrides).
@@ -498,5 +570,43 @@ mod auto_import_tests {
             let settings: AutoImportSettings = serde_json::from_value(json).unwrap();
             assert_eq!(serde_json::to_value(settings).unwrap()["importsOnPaste"], mode);
         }
+    }
+}
+
+#[cfg(test)]
+mod folding_tests {
+    use super::{FoldingOutlineVisibility, FoldingSettings};
+
+    #[test]
+    fn folding_outline_defaults_to_hover_for_existing_settings() {
+        let settings: FoldingSettings = serde_json::from_str(r#"{"showOutline":false}"#).unwrap();
+        assert!(!settings.show_outline);
+        assert_eq!(settings.outline_visibility, FoldingOutlineVisibility::Hover);
+    }
+
+    #[test]
+    fn folding_outline_visibility_round_trips() {
+        for mode in ["hover", "always"] {
+            let json = serde_json::json!({ "outlineVisibility": mode });
+            let settings: FoldingSettings = serde_json::from_value(json).unwrap();
+            assert_eq!(serde_json::to_value(settings).unwrap()["outlineVisibility"], mode);
+        }
+    }
+}
+
+#[cfg(test)]
+mod sticky_lines_tests {
+    use super::CodeEditingSettings;
+
+    #[test]
+    fn sticky_lines_language_exclusions_round_trip_and_default_to_empty() {
+        let old: CodeEditingSettings = serde_json::from_value(serde_json::json!({"stickyLinesMax": 3})).unwrap();
+        assert_eq!(old.sticky_lines_max, 3);
+        assert!(old.sticky_lines_disabled_languages.is_empty());
+        let json = serde_json::json!(["markdown", "rust"]);
+        let saved: CodeEditingSettings =
+            serde_json::from_value(serde_json::json!({"stickyLinesDisabledLanguages": json})).unwrap();
+        assert_eq!(saved.sticky_lines_disabled_languages, ["markdown", "rust"]);
+        assert_eq!(serde_json::to_value(saved).unwrap()["stickyLinesDisabledLanguages"], json);
     }
 }

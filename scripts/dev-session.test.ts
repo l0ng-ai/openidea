@@ -92,4 +92,17 @@ describe("development worktrees", () => {
     expect(args.slice(-5)).toEqual(["--", "--features", "test", "--", "/project"]);
     expect(JSON.parse(args[4]!)).toEqual({ build: { beforeDevCommand: "", devUrl: "http://localhost:54321/" } });
   });
+
+  it("puts the Vite URL before a project path, which tauri dev hands to the app with what follows", () => {
+    const config = JSON.stringify({ build: { beforeDevCommand: "", devUrl: "http://localhost:54321/" } });
+    expect(
+      withDevConfig(["dev", "--config", "custom.json", "/project", "--verbose"], "http://localhost:54321/"),
+    ).toEqual(["dev", "--config", "custom.json", "--config", config, "/project", "--verbose"]);
+    expect(withDevConfig(["dev", "--release"], "http://localhost:54321/")).toEqual([
+      "dev",
+      "--release",
+      "--config",
+      config,
+    ]);
+  });
 });

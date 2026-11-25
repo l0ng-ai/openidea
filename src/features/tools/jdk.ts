@@ -88,6 +88,8 @@ export function downloadJdkFor(args: DownloadJdkArgs): Promise<Sdk | null> {
   return p;
 }
 
+export const jdkRequiredKey = (name: string) => `jdk-required-${name}`;
+
 /** A language server that can't start without a newer JDK (jdtls): say so once, with the one-click download. */
 export function installJdkPrompts(): () => void {
   const prompted = new Set<string>();
@@ -99,7 +101,7 @@ export function installJdkPrompts(): () => void {
     notifications().notify({
       group: "lsp",
       level: "warning",
-      key: `jdk-required-${e.name}`,
+      key: jdkRequiredKey(e.name),
       sticky: true,
       title: `${e.name} needs JDK ${need.version} to run`,
       body: e.message ?? undefined,

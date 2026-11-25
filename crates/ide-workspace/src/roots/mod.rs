@@ -6,7 +6,8 @@
 //! project-relative and `/`-separated; `""` is the project root itself.
 
 mod detect;
-pub(crate) use detect::BUILD_FILES;
+pub mod eclipse;
+pub(crate) use detect::{BUILD_FILES, virtual_env_marker};
 mod gradle;
 mod java;
 mod maven;

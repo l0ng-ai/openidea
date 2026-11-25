@@ -150,6 +150,7 @@ describe("expansion", () => {
       expect(has("typescriptreact", a)).toBe(true);
     for (const a of ["main", "def", "class", "ifmain", "with", "try"]) expect(has("python", a)).toBe(true);
     for (const a of ["iferr", "fori", "func", "test"]) expect(has("go", a)).toBe(true);
+    for (const a of ["pfn", "test", "st", "iferr", "defer", "for"]) expect(has("zig", a)).toBe(true);
     for (const a of ["psvm", "sout", "fori", "iter", "main"]) expect(has("java", a)).toBe(true);
     for (const a of ["main", "fun", "val", "sout"]) expect(has("kotlin", a)).toBe(true);
     for (const a of ["todo", "fixme"]) expect(has("go", a)).toBe(true);

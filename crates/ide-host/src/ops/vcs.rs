@@ -1,29 +1,67 @@
-use crate::{Host, apply_git_executable};
+use crate::Host;
+use ide_command::command;
 use ide_core::IdeResult;
 use ide_vcs::FileStatus;
 
 /// Changes of every repository of the project.
-pub async fn status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
+#[command(trust = always)]
+pub async fn vcs_status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
     let project = host.project(window)?;
     host.blocking(move || {
         let settings = project.settings.effective();
-        if project.is_trusted() {
-            apply_git_executable(&settings);
-        }
         let repos = project.repos();
         if repos.is_empty() {
             return Err(ide_core::IdeError::unavailable("project is not a git repository"));
         }
         for r in repos.all() {
             r.set_ignored_names(settings.ignored_names());
+            r.set_cli_status(settings.vcs.git.cli_status);
         }
         repos.status()
     })
     .await
 }
 
-mod commands;
+#[command(trust = always)]
+pub async fn vcs_ignored_files(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
+    let project = host.project(window)?;
+    host.blocking(move || {
+        let settings = project.settings.effective();
+        let repos = project.repos();
+        let ignored = settings.ignored_names();
+        for repo in repos.all() {
+            repo.set_ignored_names(ignored.clone());
+        }
+        repos.ignored_files()
+    })
+    .await
+}
+
+/// Changes of `paths` only: the dirty-scope refresh after a watcher batch.
+#[command(trust = always)]
+pub async fn vcs_status_paths(host: &Host, window: &str, paths: Vec<std::path::PathBuf>) -> IdeResult<Vec<FileStatus>> {
+    // `paths` that belong to no repository are ignored, and an empty list is the full status.
+    let project = host.project(window)?;
+    host.blocking(move || {
+        let settings = project.settings.effective();
+        let repos = project.repos();
+        if repos.is_empty() {
+            return Err(ide_core::IdeError::unavailable("project is not a git repository"));
+        }
+        for r in repos.all() {
+            r.set_ignored_names(settings.ignored_names());
+            r.set_cli_status(settings.vcs.git.cli_status);
+        }
+        repos.status_paths(&paths)
+    })
+    .await
+}
+
+pub mod commands;
+mod rebase_editor;
+mod worktree_setup;
 pub use commands::*;
+pub(crate) use rebase_editor::RebaseEditors;
 
 /// Refuses (with `refusal`) to remove or move the worktree that holds the open project.
 fn check_worktree_away_from_project(
@@ -63,3 +101,5 @@ fn check_worktree_away_from_project(
     }
     Ok(())
 }
+
+ide_command::domain!(vcs: vcs_status, vcs_status_paths, vcs_ignored_files);

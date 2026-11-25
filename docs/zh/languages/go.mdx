@@ -15,10 +15,11 @@ gopls 负责 `.go`、`go.mod` 和 `go.work` 文件。工作区从最近的 `go.w
 
 ### Go SDK
 
-**设置 › 语言和框架 › Go** 有两项设置：
+**设置 › 语言和框架 › Go** 有三项设置：
 
 - **GOROOT**：gopls 以及 go run / test 运行配置使用的 Go SDK。选 **默认** 时使用 `PATH` 上的 `go`；如果项目通过 mise 或 asdf 固定了 Go 版本，则改用那个安装。
 - **项目 GOPATH**：留空时使用 `go env GOPATH`。
+- **使用 gofumpt 格式化**：重新格式化代码时，gopls 使用更严格的 [gofumpt](https://github.com/mvdan/gofumpt) 代替 gofmt（gopls 的 `gofumpt` 设置）。默认关闭。
 
 GOROOT 列表会显示 IDE 找到的 SDK：`PATH` 上的 `go`、`/usr/local/go`、Homebrew 和 `/usr/lib/go` 的安装、`~/sdk` 下的 SDK（通过 `golang.org/dl` 安装）、Go 自己下载的工具链（`~/go/pkg/mod/golang.org/toolchain@…`），以及 mise 和 asdf 的安装。
 

@@ -37,13 +37,15 @@ After editing the file, run **Reload .ideavimrc** (from the status bar widget or
 
 Supported lines:
 
-| Line                                                                              | Notes                                                                                                                                                              |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `map`, `noremap` and their `n`, `v`, `x`, `i`, `o` variants (`nnoremap`, `vmap`…) | `<silent>`, `<unique>`, `<nowait>`, `<buffer>`, `<expr>` and `<script>` flags are accepted and ignored. Key names such as `<esc>` and `<CR>` are case-insensitive. |
-| `let mapleader = "…"`                                                             | Also `g:mapleader`. `"\<Space>"` and `" "` both mean Space. The default leader is `\`.                                                                             |
-| `set …`                                                                           | Only the options codemirror-vim implements: `textwidth` (`tw`), `pcre`, `insertModeEscKeysTimeout` and `langmap` (`lmap`). Other options are reported as ignored.  |
-| `source <file>`                                                                   | Reads another file by the same rules. `~` is your home directory.                                                                                                  |
-| `" comment`                                                                       | Ignored.                                                                                                                                                           |
+| Line                                                                              | Notes                                                                                                                                                                         |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `map`, `noremap` and their `n`, `v`, `x`, `i`, `o` variants (`nnoremap`, `vmap`…) | `<silent>`, `<unique>`, `<nowait>`, `<buffer>`, `<expr>` and `<script>` flags are accepted and ignored. Key names such as `<esc>` and `<CR>` are case-insensitive.            |
+| `let mapleader = "…"`                                                             | Also `g:mapleader`. `"\<Space>"` and `" "` both mean Space. The default leader is `\`.                                                                                        |
+| `set …`                                                                           | `textwidth` (`tw`), `pcre`, `insertModeEscKeysTimeout`, `langmap` (`lmap`) and `clipboard` (`cb`). `+=`, `-=` and `^=` work as in Vim. Other options are reported as ignored. |
+| `source <file>`                                                                   | Reads another file by the same rules. `~` is your home directory.                                                                                                             |
+| `" comment`                                                                       | Ignored.                                                                                                                                                                      |
+
+`set clipboard+=unnamedplus` (or `unnamed`) also copies yanks, deletes and changes without a register to the system clipboard. The `"+` register always reads and writes the system clipboard.
 
 Anything else (functions, `if`, `autocmd`, plugin commands) is reported as ignored and never executed.
 

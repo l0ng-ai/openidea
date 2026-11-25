@@ -860,6 +860,38 @@ fn java_applications_and_spring_boot_keep_their_module() {
     assert_eq!(reason(&r, "NoMain"), &SkipReason::NothingToRun);
 }
 
+/// A checkout folder named like a child module's artifactId: IDEA's module is the child.
+#[test]
+fn maven_module_artifact_wins_over_a_folder_of_the_same_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap().join("demo-service");
+    write(
+        &root,
+        "pom.xml",
+        "<project><artifactId>demo-service-parent</artifactId><packaging>pom</packaging></project>",
+    );
+    write(
+        &root,
+        "app-web/pom.xml",
+        "<project><parent><artifactId>demo-service-parent</artifactId></parent><artifactId>demo-service</artifactId></project>",
+    );
+    write(
+        &root,
+        ".run/Demo.run.xml",
+        &run_file(
+            "Demo",
+            r#"<configuration name="Demo" type="Application" factoryName="Application">
+    <module name="demo-service" />
+    <option name="MAIN_CLASS_NAME" value="com.example.Demo" />
+  </configuration>"#,
+        ),
+    );
+
+    let r = import_from(&root, &[]);
+
+    assert_eq!(get(&r, "Demo").extras.module.as_deref(), Some("app-web"));
+}
+
 /// IDEA writes the working directory as a URL. On Windows `file://$PROJECT_DIR$`
 /// expands to `file://C:/project`, where the drive letter sits where the authority
 /// belongs; read as a path that is `C:project`, which resolves against the project
@@ -1149,4 +1181,68 @@ fn imports_go_application_and_test_configurations() {
     assert_eq!(test.extras.params["goKind"], "test");
     assert_eq!(test.extras.params["pattern"], "TestLogin");
     assert_eq!(test.extras.params["module"], "pkg");
+}
+
+// What `flutter create` writes to `.idea/runConfigurations/main_dart.xml`; the Flutter plugin's
+// `SdkFields` serializes `filePath`, `additionalArgs`, `buildFlavor`, `attachArgs` and `envs` as options:
+// https://github.com/flutter/flutter-intellij/blob/main/src/io/flutter/run/SdkFields.java
+const FLUTTER_MAIN: &str = r#"<configuration default="false" name="NAME" type="FlutterRunConfigurationType" factoryName="Flutter">
+    <option name="filePath" value="$PROJECT_DIR$/lib/main.dart" />
+    <method v="2" />
+  </configuration>"#;
+
+const PUBSPEC_FLUTTER: &str = "name: my_app\ndependencies:\n  flutter:\n    sdk: flutter\n";
+
+#[test]
+fn flutter_main_dart_from_flutter_create_is_the_detected_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "pubspec.yaml", PUBSPEC_FLUTTER);
+    write(root, "lib/main.dart", "void main() {}\n");
+    write(root, ".idea/runConfigurations/main_dart.xml", &run_file("main.dart", FLUTTER_MAIN));
+
+    let alone = import_from(root, &[]);
+    let c = get(&alone, "main.dart");
+    assert_eq!((c.kind.as_str(), c.command.as_str()), ("flutter", "flutter"));
+    assert_eq!(c.args, s(&["run", "-t", "lib/main.dart"]));
+    assert_eq!((cwd(c), c.debug_adapter.as_deref()), (None, Some("dart")));
+
+    // Next to the detected `flutter run`, the same run is not listed twice.
+    let r = import_from(root, &ide_run::detect(root));
+    assert!(r.imported.is_empty(), "{r:#?}");
+    assert_eq!(reason(&r, "main.dart"), &SkipReason::SameAs { existing: "flutter run".into() });
+}
+
+#[test]
+fn flutter_flavors_entry_points_arguments_and_envs() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "app/pubspec.yaml", PUBSPEC_FLUTTER);
+    write(root, "app/lib/main_dev.dart", "void main() {}\n");
+    let dev = r#"<configuration name="Dev" type="FlutterRunConfigurationType" factoryName="Flutter">
+      <option name="additionalArgs" value="--dart-define=API=&quot;https://dev.example&quot; --verbose" />
+      <option name="attachArgs" value="--debug-port 9000" />
+      <option name="buildFlavor" value="dev" />
+      <option name="envs"><map><entry key="FLUTTER_LOG" value="1" /></map></option>
+      <option name="filePath" value="$PROJECT_DIR$/app/lib/main_dev.dart" />
+      <method v="2" />
+    </configuration>
+    <configuration name="Gone" type="FlutterRunConfigurationType" factoryName="Flutter">
+      <option name="filePath" value="$PROJECT_DIR$/elsewhere/main.dart" />
+    </configuration>
+    <configuration name="No entry" type="FlutterRunConfigurationType" factoryName="Flutter" />"#;
+    write(root, ".idea/workspace.xml", &workspace(dev));
+
+    let r = import_from(root, &ide_run::detect(root));
+    let c = get(&r, "Dev");
+    assert_eq!(c.kind, "flutter");
+    assert_eq!(
+        c.args,
+        s(&["run", "-t", "lib/main_dev.dart", "--dart-define=API=https://dev.example", "--verbose", "--flavor=dev"])
+    );
+    assert_eq!(cwd(c), Some(PathBuf::from("app")));
+    assert_eq!(c.env, BTreeMap::from([("FLUTTER_LOG".into(), "1".into())]));
+    assert_eq!(ignored(&r, "Dev"), ["attachArgs"]);
+    assert_eq!(reason(&r, "Gone"), &SkipReason::MissingFile { file: "pubspec.yaml".into() });
+    assert_eq!(reason(&r, "No entry"), &SkipReason::NothingToRun);
 }

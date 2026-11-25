@@ -3,7 +3,10 @@ import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 
-/** The notification follows the same history state as editor Undo/Redo. */
+/**
+ * The notification follows the same history state as editor Undo/Redo. An agent's edits (the MCP
+ * server's tools) stay undoable from the editor but are not announced: an agent makes many.
+ */
 export function installWorkspaceEditUndo(): () => void {
   let current: { id: number; project: ReturnType<typeof useProject.getState>["project"]; undone: boolean } | null =
     null;
@@ -38,7 +41,8 @@ export function installWorkspaceEditUndo(): () => void {
       ],
     });
   };
-  const stopApplied = onIdeEvent("workspaceEditApplied", ({ id }) => {
+  const stopApplied = onIdeEvent("workspaceEditApplied", ({ id, byAgent }) => {
+    if (byAgent) return;
     current = { id, project: useProject.getState().project, undone: false };
     show();
   });

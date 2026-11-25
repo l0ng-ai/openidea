@@ -6,7 +6,8 @@ import type { Location } from "@/platform/ipc";
 export interface NavigationMatch {
   from: number;
   to: number;
-  targets: Location[];
+  /** `name`: what the chooser shows for a target (else the word at it). */
+  targets: Array<Location & { name?: string }>;
 }
 type Provider = (view: EditorView, offset: number) => Promise<NavigationMatch | null>;
 const providers = new Set<Provider>();
@@ -64,6 +65,7 @@ export async function contributedNavigation(view: EditorView, offset: number): P
   const current = cache;
   const query = (async () => {
     for (const provider of providers) {
+      // oxlint-disable-next-line no-await-in-loop -- first valid answer wins; epoch checked between providers
       const answer = await provider(view, offset);
       if (current.epoch !== epoch || view.state.doc !== text) return null;
       if (answer && answer.targets.length && answer.from >= 0 && answer.to <= text.length && answer.from < answer.to) {

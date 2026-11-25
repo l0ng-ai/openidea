@@ -55,6 +55,14 @@ export function imageRef(i: DockerImage): string {
   return !i.tag || i.tag === "<none>" ? i.repository : `${i.repository}:${i.tag}`;
 }
 
+/**
+ * The local key of an image node. `docker images` lists every tag of one image
+ * on its own row with the same id, so the reference keeps the keys unique.
+ */
+export function imageKey(i: DockerImage): string {
+  return `image:${i.id}:${imageRef(i)}`;
+}
+
 export function rootNodes(): ServiceNode[] {
   return [{ kind: "docker", key: DOCKER_KEY }];
 }
@@ -152,7 +160,13 @@ export function groupChildren(
         .map(containerNode);
     case "images": {
       const imgs = filters.showUntaggedImages ? snap.images : snap.images.filter((i) => !isUntaggedImage(i));
-      return imgs.map((image) => ({ kind: "image", key: `image:${image.id}`, image }));
+      const seen = new Set<string>();
+      return imgs.flatMap((image): ServiceNode[] => {
+        const key = imageKey(image);
+        if (seen.has(key)) return [];
+        seen.add(key);
+        return [{ kind: "image", key, image }];
+      });
     }
     case "volumes":
       return snap.volumes.map((volume) => ({ kind: "volume", key: `volume:${volume.name}`, volume }));
@@ -190,6 +204,20 @@ export function findImageForContainer(snap: DockerSnapshot, container: DockerCon
 /** Containers in `snap` mounting `volume`. */
 export function containersUsingVolume(snap: DockerSnapshot, volume: DockerVolume): DockerContainer[] {
   return snap.containers.filter((c) => c.mounts?.includes(volume.name));
+}
+
+/** Whether `volume` is an anonymous Docker volume rather than a named one. */
+export function isAnonymousVolume(volume: DockerVolume): boolean {
+  if (volume.labels && "com.docker.volume.anonymous" in volume.labels) return true;
+  if (volume.labels?.["com.docker.compose.volume"]) return false;
+  return /^[0-9a-f]{64}$/i.test(volume.name);
+}
+
+/** Named volumes in `snap` created by Compose `project`. */
+export function volumesInComposeProject(snap: DockerSnapshot, project: string): DockerVolume[] {
+  return snap.volumes
+    .filter((v) => v.composeProject === project && !isAnonymousVolume(v))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Containers in `snap` attached to `network`. */

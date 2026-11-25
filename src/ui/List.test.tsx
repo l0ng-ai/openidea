@@ -52,6 +52,40 @@ describe("List", () => {
       />,
     );
 
+  it("renders a table body of numbered rows instead of options", () => {
+    render(
+      <List
+        items={["a", "b"]}
+        getKey={(r) => r}
+        renderItem={(r) => <span role="gridcell">{r}</span>}
+        tableBody={{ headerRows: 1 }}
+      />,
+    );
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.queryByRole("option")).toBeNull();
+    const rows = screen.getAllByRole("row");
+    expect(rows.map((r) => r.getAttribute("aria-rowindex"))).toEqual(["2", "3"]);
+  });
+
+  it("tells assistive tech which row of a table body is selected", () => {
+    render(
+      <List
+        items={["a", "b"]}
+        getKey={(r) => r}
+        renderItem={(r) => <span role="gridcell">{r}</span>}
+        defaultActiveIndex={0}
+        tableBody={{ headerRows: 1 }}
+      />,
+    );
+    const body = screen.getByRole("rowgroup");
+    const rows = screen.getAllByRole("row");
+    expect(rows.map((r) => r.getAttribute("aria-selected"))).toEqual(["true", "false"]);
+    expect(body).toHaveAttribute("aria-activedescendant", rows[0]!.id);
+    fireEvent.keyDown(body, { key: "ArrowDown" });
+    expect(screen.getAllByRole("row").map((r) => r.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+    expect(body).toHaveAttribute("aria-activedescendant", rows[1]!.id);
+  });
+
   it("renders section headers that are skipped by keyboard navigation", () => {
     const onActivate = vi.fn();
     renderList(onActivate);
@@ -73,6 +107,20 @@ describe("List", () => {
     renderList();
     const first = screen.getAllByRole("option")[0]!;
     expect([...first.querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["Ord", "Con"]);
+  });
+
+  it("keeps the focused list when its items run out, showing the empty state inside it", () => {
+    const row = (r: string) => <span>{r}</span>;
+    const props = { "aria-label": "Results", getKey: (r: string) => r, renderItem: row, empty: <span>Nothing</span> };
+    const { rerender } = render(<List {...props} items={["a"]} />);
+    const list = screen.getByRole("listbox");
+    list.focus();
+    rerender(<List {...props} items={[]} />);
+    expect(screen.getByRole("listbox")).toBe(list);
+    expect(document.activeElement).toBe(list);
+    expect(list.textContent).toBe("Nothing");
+    rerender(<List {...props} items={["b"]} />);
+    expect(screen.getByRole("option").textContent).toBe("b");
   });
 
   it("listNavigate skips sections and clamps at the ends", () => {

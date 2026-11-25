@@ -50,12 +50,13 @@ function dropEditorCaret(e: FocusEvent) {
  * Tracks which workbench part holds focus and publishes `toolWindowFocus`,
  * `activeToolWindow` and `editorAreaFocus`. Returns an uninstaller.
  */
-export function installFocusTracking(onToolWindowFocus: (id: string | null) => void): () => void {
+export function installFocusTracking(onToolWindowFocus: (id: string | null, editor: boolean) => void): () => void {
   const onFocusIn = (e: FocusEvent) => {
     const el = e.target as Element | null;
     const tw = el?.closest?.("[data-toolwindow]");
-    onToolWindowFocus(tw?.getAttribute("data-toolwindow") ?? null);
-    setContext("editorAreaFocus", !!el?.closest?.(EDITOR_AREA_SELECTOR));
+    const editor = !!el?.closest?.(EDITOR_AREA_SELECTOR);
+    onToolWindowFocus(tw?.getAttribute("data-toolwindow") ?? null, editor);
+    setContext("editorAreaFocus", editor);
   };
   const onFocusOut = (e: FocusEvent) => {
     dropEditorCaret(e);
@@ -63,7 +64,7 @@ export function installFocusTracking(onToolWindowFocus: (id: string | null) => v
     // Focus left to nowhere (window blur keeps document.activeElement).
     queueMicrotask(() => {
       if (document.activeElement && document.activeElement !== document.body) return;
-      onToolWindowFocus(null);
+      onToolWindowFocus(null, false);
       setContext("editorAreaFocus", false);
     });
   };

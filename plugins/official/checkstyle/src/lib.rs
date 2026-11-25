@@ -106,8 +106,14 @@ fn project_of(path: &str) -> Option<Project> {
     host::projects()
         .ok()?
         .into_iter()
-        .filter(|p| p.root().is_ok_and(|r| path.starts_with(&r)))
+        .filter(|p| p.root().is_ok_and(|r| is_under(path, &r)))
         .max_by_key(|p| p.root().map(|r| r.len()).unwrap_or(0))
+}
+
+/// Whether `path` is `root` or inside it (`/proj-x/a` is not inside `/proj`).
+fn is_under(path: &str, root: &str) -> bool {
+    path.strip_prefix(root)
+        .is_some_and(|rest| rest.is_empty() || root.ends_with(['/', '\\']) || rest.starts_with(['/', '\\']))
 }
 
 fn windows_path(path: &str) -> String {
@@ -309,6 +315,14 @@ mod tests {
     fn unix_report_paths_preserve_backslashes() {
         assert!(report_matches_file("/project/A\\B.java", "/project/A\\B.java"));
         assert!(!report_matches_file("/project/A\\B.java", "/project/A/B.java"));
+    }
+
+    #[test]
+    fn a_project_contains_only_its_own_paths() {
+        assert!(is_under("/proj/A.java", "/proj"));
+        assert!(is_under("C:\\proj\\A.java", "C:\\proj"));
+        assert!(is_under("/A.java", "/"));
+        assert!(!is_under("/proj-x/A.java", "/proj"));
     }
 
     #[test]

@@ -2,13 +2,14 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useReducer,
   useRef,
   useState,
   useSyncExternalStore,
   type CSSProperties,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { NotebookCell } from "@/bindings";
+import type { NotebookCell, NotebookCellDoc } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
@@ -16,7 +17,7 @@ import { Button, Dialog, EmptyState, IconButton, Select, Spinner } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { CellEditor } from "./CellEditor";
 import { CellOutputs, MarkdownCell } from "./OutputView";
-import { notebookSession, type NotebookSession } from "./session";
+import { notebookSession, type CellReveal, type NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
 
 export function NotebookEditor({ input }: { input: EditorInput }) {
@@ -30,6 +31,19 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
   const scroll = useRef<HTMLDivElement>(null);
   const [selected, select] = useState<string | null>(session.selectedCell);
   const [reloadOpen, setReloadOpen] = useState(false);
+  // Fold state lives in the session (it outlives scrolled-away cells); this re-renders on a change.
+  const [, refold] = useReducer((n: number) => n + 1, 0);
+  const toggle = (folds: Set<string>, id: string) => {
+    if (!folds.delete(id)) folds.add(id);
+    refold();
+  };
+  const foldAll = (folded: boolean) => {
+    for (const cell of session.cells()) {
+      if (folded) session.collapsedCells.add(cell.id);
+      else session.collapsedCells.delete(cell.id);
+    }
+    refold();
+  };
   const cells = session.cells();
   const active = cells.find((cell) => cell.id === selected) ?? cells.find((cell) => cell.cellType === "code");
   const invoke = useCallback(
@@ -53,6 +67,16 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
   useEffect(() => {
     invoke(session.load());
   }, [session, invoke]);
+  const reveal = state.reveal;
+  useEffect(() => {
+    if (!reveal) return;
+    const index = session.cells().findIndex((cell) => cell.id === reveal.cell);
+    if (index < 0) return;
+    session.selectedCell = reveal.cell;
+    select(reveal.cell);
+    virtualizer.scrollToIndex(index, { align: reveal.align ?? "start" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per request; the virtualizer is a new object each render
+  }, [reveal, session]);
   useLayoutEffect(() => {
     const element = root.current;
     if (!element) return;
@@ -163,6 +187,19 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
         </span>
         <span className={styles.spacer} />
         <IconButton
+          icon="collapse-all"
+          title="Collapse All Cells"
+          disabled={!cells.length}
+          onClick={() => foldAll(true)}
+        />
+        <IconButton
+          icon="expand-all"
+          title="Expand All Cells"
+          disabled={!cells.length}
+          onClick={() => foldAll(false)}
+        />
+        <span className={styles.separator} />
+        <IconButton
           icon="undo"
           title="Undo"
           disabled={historyDisabled || (!state.snapshot?.canUndo && !state.pending)}
@@ -235,7 +272,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
               title="This notebook has no cells"
               actions={
                 <Button
-                  icon="add"
+                  icon="plus"
                   disabled={disabled}
                   onClick={() => session.edit({ type: "insertCell", after: null, cellType: "code" })}
                 >
@@ -263,7 +300,13 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
                       selected={active?.id === cell.id}
                       frozen={disabled}
                       running={state.running}
+                      doc={state.cellDocs.get(cell.id)}
+                      reveal={reveal?.cell === cell.id ? reveal : null}
+                      collapsed={session.collapsedCells.has(cell.id)}
+                      outputsHidden={session.hiddenOutputs.has(cell.id)}
                       onSelect={() => choose(cell.id)}
+                      onToggleCollapsed={() => toggle(session.collapsedCells, cell.id)}
+                      onToggleOutputs={() => toggle(session.hiddenOutputs, cell.id)}
                     />
                   </div>
                 );
@@ -273,7 +316,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
           <div className={styles.addBar}>
             <Button
               size="small"
-              icon="add"
+              icon="plus"
               disabled={disabled || state.running}
               onClick={() => session.edit({ type: "insertCell", after: cells.at(-1)?.id ?? null, cellType: "code" })}
             >
@@ -281,7 +324,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
             </Button>
             <Button
               size="small"
-              icon="add"
+              icon="plus"
               disabled={disabled || state.running}
               onClick={() =>
                 session.edit({ type: "insertCell", after: cells.at(-1)?.id ?? null, cellType: "markdown" })
@@ -323,7 +366,13 @@ function NotebookCellView({
   selected,
   frozen,
   running,
+  doc,
+  reveal,
+  collapsed,
+  outputsHidden,
   onSelect,
+  onToggleCollapsed,
+  onToggleOutputs,
 }: {
   session: NotebookSession;
   cell: NotebookCell;
@@ -332,7 +381,13 @@ function NotebookCellView({
   selected: boolean;
   frozen: boolean;
   running: boolean;
+  doc?: NotebookCellDoc;
+  reveal: CellReveal | null;
+  collapsed: boolean;
+  outputsHidden: boolean;
   onSelect: () => void;
+  onToggleCollapsed: () => void;
+  onToggleOutputs: () => void;
 }) {
   const [editing, setEditing] = useState(session.markdownEditing.has(cell.id));
   const known = cell.cellType === "code" || cell.cellType === "markdown";
@@ -345,6 +400,13 @@ function NotebookCellView({
       aria-label={`${tx("Cell")} ${index + 1}: ${cell.cellType}`}
     >
       <div className={styles.cellToolbar}>
+        <IconButton
+          icon={collapsed ? "chevron-right" : "chevron-down"}
+          size="small"
+          title={collapsed ? "Expand Cell" : "Collapse Cell"}
+          aria-expanded={!collapsed}
+          onClick={onToggleCollapsed}
+        />
         <span className={styles.executionCount}>
           {cell.cellType === "code" ? `[${cell.executionCount ?? " "}]` : `${index + 1}`}
         </span>
@@ -387,6 +449,14 @@ function NotebookCellView({
             }}
           />
         )}
+        {cell.cellType === "code" && cell.outputs.length > 0 && !collapsed && (
+          <IconButton
+            icon={outputsHidden ? "eye" : "hide"}
+            size="small"
+            title={outputsHidden ? "Show Output" : "Hide Output"}
+            onClick={onToggleOutputs}
+          />
+        )}
         <span className={styles.spacer} />
         <IconButton
           icon="arrow-up"
@@ -403,21 +473,23 @@ function NotebookCellView({
           onClick={() => session.edit({ type: "moveCell", cell: cell.id, before: cells[index + 2]?.id ?? null })}
         />
         <IconButton
-          icon="add"
+          icon="plus"
           size="small"
           title="Insert Code Cell Below"
           disabled={structuralDisabled}
           onClick={() => session.edit({ type: "insertCell", after: cell.id, cellType: "code" })}
         />
         <IconButton
-          icon="delete"
+          icon="trash"
           size="small"
           title="Delete Cell"
           disabled={structuralDisabled}
           onClick={() => session.edit({ type: "deleteCell", cell: cell.id })}
         />
       </div>
-      {!known ? (
+      {collapsed ? (
+        <CollapsedCell cell={cell} onExpand={onToggleCollapsed} />
+      ) : !known ? (
         <div className={styles.rawCell}>
           <p className={styles.notice}>{tx("Raw or unknown cell; original content is preserved read-only.")}</p>
           <pre>{cell.source}</pre>
@@ -447,9 +519,56 @@ function NotebookCellView({
           )}
         </div>
       ) : (
-        <CellEditor session={session} id={cell.id} source={cell.source} type={cell.cellType} frozen={frozen} />
+        <CellEditor
+          session={session}
+          id={cell.id}
+          source={cell.source}
+          type={cell.cellType}
+          frozen={frozen}
+          doc={doc}
+          reveal={reveal}
+        />
       )}
-      {cell.cellType === "code" && <CellOutputs outputs={cell.outputs} />}
+      {collapsed || cell.cellType !== "code" ? null : outputsHidden && cell.outputs.length > 0 ? (
+        <button type="button" className={styles.hiddenOutputs} onClick={onToggleOutputs}>
+          {cell.outputs.length === 1 ? tx("1 output hidden") : tx`${cell.outputs.length} outputs hidden`}
+        </button>
+      ) : (
+        <CellOutputs outputs={cell.outputs} />
+      )}
     </section>
+  );
+}
+
+/** What a folded cell shows: its first non-blank line (a Markdown heading without its marks) and its output count. */
+export function collapsedSummary(cell: Pick<NotebookCell, "cellType" | "source" | "outputs">): {
+  text: string;
+  outputs: number;
+} {
+  const line =
+    cell.source
+      .split("\n")
+      .find((l) => l.trim())
+      ?.trim() ?? "";
+  return {
+    text: cell.cellType === "markdown" ? line.replace(/^#+\s*/, "") : line,
+    outputs: cell.cellType === "code" ? cell.outputs.length : 0,
+  };
+}
+
+/** A folded cell: its first line and what it hides. */
+function CollapsedCell({ cell, onExpand }: { cell: NotebookCell; onExpand: () => void }) {
+  const { text, outputs } = collapsedSummary(cell);
+  return (
+    <button
+      type="button"
+      className={`${styles.collapsedCell} ${cell.cellType === "markdown" ? styles.collapsedMarkdown : ""}`}
+      onClick={onExpand}
+    >
+      <span className={styles.collapsedText}>{text || tx("Empty cell")}</span>
+      {outputs > 0 && (
+        <span className={styles.collapsedOutputs}>{outputs === 1 ? tx("1 output") : tx`${outputs} outputs`}</span>
+      )}
+    </button>
   );
 }

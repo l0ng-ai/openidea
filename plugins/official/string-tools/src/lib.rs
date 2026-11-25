@@ -230,7 +230,8 @@ fn step_numbers(s: &str, by: i64) -> String {
                         out.pop(); // the minus sign
                     }
                     let width = digits.len();
-                    let text = if next < 0 { format!("-{:0width$}", -next) } else { format!("{next:0width$}") };
+                    let text =
+                        if next < 0 { format!("-{:0width$}", next.unsigned_abs()) } else { format!("{next:0width$}") };
                     out.push_str(&text);
                 }
                 Err(_) => out.push_str(&digits),
@@ -338,7 +339,8 @@ fn html_unescape(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let Some(end) = rest[..rest.len().min(12)].find(';') else {
+        // `;` is ASCII, so where it is found is a char boundary.
+        let Some(end) = rest.bytes().take(12).position(|b| b == b';') else {
             out.push('&');
             rest = &rest[1..];
             continue;
@@ -416,6 +418,7 @@ mod tests {
         assert_eq!(base64_encode(b"Man"), "TWFu");
         assert_eq!(url_encode("a b&c"), "a%20b%26c");
         assert_eq!(html_unescape("&lt;a&gt; &#x41;&#66; &bogus; &"), "<a> AB &bogus; &");
+        assert_eq!(html_unescape("R&D部门的预算 &aaaaaaaaaa€"), "R&D部门的预算 &aaaaaaaaaa€");
         assert_eq!(json_escape("a\"b\n"), "a\\\"b\\n");
     }
 
@@ -426,6 +429,8 @@ mod tests {
         assert_eq!(t("unique-lines", "a\nb\na"), "a\nb");
         assert_eq!(t("increment", "v1.09 and -1"), "v2.10 and 0");
         assert_eq!(t("decrement", "x0"), "x-1");
+        assert_eq!(t("decrement", "-9223372036854775807"), "-9223372036854775808");
+        assert_eq!(t("decrement", "-9223372036854775808"), "-9223372036854775808");
     }
 
     #[test]

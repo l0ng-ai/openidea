@@ -7,8 +7,8 @@ license.workspace = true
 
 [dependencies]
 ide-core.workspace = true
+dirs.workspace = true
 open = "5"
-parking_lot.workspace = true
 percent-encoding = "2"
 serde.workspace = true
 specta.workspace = true

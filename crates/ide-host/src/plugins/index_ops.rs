@@ -1,4 +1,6 @@
 use super::PluginHost;
+use crate::ops::blocking;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::Invocation;
 use std::{path::PathBuf, sync::Arc};
@@ -9,13 +11,15 @@ pub struct NavigationFiles {
     pub extensions: Vec<String>,
 }
 
-/// File discovery is separate from clicking: the UI schedules small background
-/// batches after initial index completion and updates only changed files later.
+#[command(trust = trusted)]
 pub async fn plugin_navigation_files(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
 ) -> IdeResult<NavigationFiles> {
+    // File discovery is separate from clicking: the UI schedules small background
+    // batches after initial index completion and updates only changed files later.
+    let plugins = plugins.clone();
     let project = host.project(window)?;
     blocking(move || {
         let extensions = plugins.navigation_extensions(&project.root);
@@ -27,8 +31,12 @@ pub async fn plugin_navigation_files(
         if files.len() > 20_000 {
             return Err(IdeError::unavailable("plugin navigation supports up to 20,000 matching files"));
         }
+        // A project window group's members are project scope: their files are
+        // in the group's index (the group root holds none of them).
+        let members = crate::project::workspace_member_roots(&project.root);
+        let in_scope = |p: &PathBuf| p.starts_with(&project.root) || members.iter().any(|m| p.starts_with(m));
         Ok(NavigationFiles {
-            paths: files.into_iter().filter(|p| p.starts_with(&project.root)).map(Into::into).collect(),
+            paths: files.into_iter().filter(in_scope).map(Into::into).collect(),
             indexing,
             extensions,
         })
@@ -36,9 +44,10 @@ pub async fn plugin_navigation_files(
     .await
 }
 
+#[command(trust = trusted)]
 pub fn plugin_navigation_invalidate(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<()> {
@@ -47,9 +56,10 @@ pub fn plugin_navigation_invalidate(
     Ok(())
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_navigation_index(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     paths: Vec<PathBuf>,
     request: ide_core::RequestId,
@@ -57,6 +67,7 @@ pub async fn plugin_navigation_index(
     if paths.len() > 16 {
         return Err(IdeError::invalid("navigation batches are limited to 16 files"));
     }
+    let plugins = plugins.clone();
     let project = host.project(window)?;
     let cancel = host.begin_project_request(window, request);
     let client = window.to_owned();
@@ -64,11 +75,14 @@ pub async fn plugin_navigation_index(
         if !project.is_trusted() {
             return Err(IdeError::unavailable("project is not trusted"));
         }
+        // A project window group's members are project scope.
+        let mut roots = vec![project.root.clone()];
+        roots.extend(crate::project::workspace_member_roots(&project.root));
         for path in paths {
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }
-            let Ok(path) = ide_plugin::resolve_in_root(&project.root, &path.to_string_lossy()) else {
+            let Ok(path) = ide_plugin::resolve_in_roots(&roots, &path.to_string_lossy()) else {
                 continue;
             };
             let extensions = plugins.navigation_extensions(&project.root);
@@ -133,24 +147,28 @@ pub async fn plugin_navigation_index(
     result
 }
 
-/// The HTTP routes `plugin_id` reports for this window's project.
+#[command(trust = trusted)]
 pub async fn plugin_endpoints(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     plugin_id: String,
 ) -> IdeResult<Vec<crate::plugins::endpoints::PluginEndpoint>> {
+    // The HTTP routes `plugin_id` reports for this window's project.
+    let plugins = plugins.clone();
     let project = host.project(window)?;
     blocking(move || Ok(plugins.endpoints(&plugin_id, &project.root)?.as_ref().clone())).await
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_navigation_goto(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     doc: ide_core::DocId,
     pos: ide_core::Pos,
 ) -> IdeResult<Option<crate::plugins::navigation::NavigationResult>> {
+    let plugins = plugins.clone();
     let project = host.project(window)?;
     let client = window.to_owned();
     blocking(move || {
@@ -162,15 +180,17 @@ pub async fn plugin_navigation_goto(
     .await
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_navigation_markers(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     paths: Vec<PathBuf>,
 ) -> IdeResult<Vec<crate::plugins::navigation::FileMarkers>> {
     if paths.len() > 64 {
         return Err(IdeError::invalid("marker batches are limited to 64 files"));
     }
+    let plugins = plugins.clone();
     let project = host.project(window)?;
     let client = window.to_owned();
     blocking(move || {
@@ -181,6 +201,12 @@ pub async fn plugin_navigation_markers(
     .await
 }
 
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
-}
+ide_command::domain!(
+    plugins_index_ops:
+    plugin_endpoints,
+    plugin_navigation_files,
+    plugin_navigation_goto,
+    plugin_navigation_index,
+    plugin_navigation_invalidate,
+    plugin_navigation_markers,
+);

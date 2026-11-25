@@ -389,6 +389,12 @@ impl Documents {
         self.apply_workspace_edit_inner(edit, true, &mut |_| Ok(()))
     }
 
+    /// [`Self::apply_workspace_edit`] for an agent's edit (the MCP server's tools): undoable the
+    /// same way, announced as an agent's (`by_agent`) rather than as a refactoring.
+    pub fn apply_agent_workspace_edit(&self, edit: &WorkspaceEdit) -> IdeResult<()> {
+        self.apply_workspace_edit_as(edit, true, true, &mut |_| Ok(()))
+    }
+
     /// File moves already own a combined move/reference undo record.
     pub fn apply_file_move_edits(&self, edit: &WorkspaceEdit) -> IdeResult<()> {
         self.apply_workspace_edit_inner(edit, false, &mut |_| Ok(()))
@@ -400,12 +406,24 @@ impl Documents {
         remember: bool,
         before_operation: &mut dyn FnMut(usize) -> IdeResult<()>,
     ) -> IdeResult<()> {
+        self.apply_workspace_edit_as(edit, remember, false, before_operation)
+    }
+
+    fn apply_workspace_edit_as(
+        &self,
+        edit: &WorkspaceEdit,
+        remember: bool,
+        by_agent: bool,
+        before_operation: &mut dyn FnMut(usize) -> IdeResult<()>,
+    ) -> IdeResult<()> {
         let _operation = self.operations.lock();
         if edit.files.is_empty() {
             return Ok(());
         }
         // Validate project rules before path resolution can erase linked components.
         crate::file_ops::validate_workspace_edit_paths(edit)?;
+        // Editors know the paths as the edit named them, before link resolution.
+        let moves = edit.moves();
         let mut edit = normalize_edit(edit)?;
         let captured = !edit.preconditions.is_empty();
         crate::file_ops::expand_workspace_edit(&mut edit)?;
@@ -485,7 +503,7 @@ impl Documents {
                 });
             }
             history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
-            self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected });
+            self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected, moves, by_agent });
         }
         Ok(())
     }
@@ -748,6 +766,7 @@ impl Documents {
             let result = self.with_doc(*id, |state| {
                 self.replace_locked(*id, state, &before.doc.text())?;
                 state.encoding = before.encoding.clone();
+                state.encoding_chosen = before.encoding_chosen;
                 state.has_bom = before.has_bom;
                 state.doc.set_line_ending(before.doc.line_ending());
                 state.disk_mtime = fs::metadata(&state.path).map(|m| ide_vfs::mtime_ms(&m)).unwrap_or(0.0);
@@ -789,7 +808,13 @@ impl Documents {
                     return Err(stale(path));
                 }
                 let defaults = self.file_defaults();
-                let loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(path))?;
+                let native_to_ascii = defaults.native_to_ascii_for(path);
+                let loaded = if state.encoding_chosen {
+                    Self::load_as(path, &state.encoding, native_to_ascii)?
+                } else {
+                    Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?
+                };
+                state.native_to_ascii = native_to_ascii;
                 self.replace_locked(id, state, &loaded.text)?;
                 state.encoding = loaded.encoding;
                 state.has_bom = loaded.has_bom;

@@ -17,9 +17,17 @@ export const SEARCH_ENTRY = `${ACTION_PREFIX}navigate.searchEverywhere`;
 
 export interface ToolbarLayout {
   left: string[];
+  /** Centred in the toolbar, as IDEA's Center group; empty by default. */
+  center: string[];
   right: string[];
   hidden: string[];
 }
+
+export type ToolbarSide = "left" | "center" | "right";
+export const TOOLBAR_SIDES: readonly ToolbarSide[] = ["left", "center", "right"];
+
+/** The entries shown, per group. */
+export type ShownToolbar = Omit<ToolbarLayout, "hidden">;
 
 export const isActionEntry = (id: string) => id.startsWith(ACTION_PREFIX);
 export const entryAction = (id: string) => id.slice(ACTION_PREFIX.length);
@@ -43,7 +51,7 @@ function defaultWidgets(items: Iterable<TitleItemContribution>): { left: string[
 
 export function defaultToolbar(items: Iterable<TitleItemContribution>): ToolbarLayout {
   const { left, right } = defaultWidgets(items);
-  return { left, right: [...right, SEARCH_ENTRY], hidden: [] };
+  return { left, center: [], right: [...right, SEARCH_ENTRY], hidden: [] };
 }
 
 /**
@@ -53,19 +61,20 @@ export function defaultToolbar(items: Iterable<TitleItemContribution>): ToolbarL
 export function resolveToolbar(
   saved: MainToolbarSettings | null | undefined,
   items: Iterable<TitleItemContribution>,
-): { left: string[]; right: string[] } {
+): ShownToolbar {
   const list = [...items];
   if (!saved) {
     const d = defaultToolbar(list);
-    return { left: d.left, right: d.right };
+    return { left: d.left, center: d.center, right: d.right };
   }
   const left = [...(saved.left ?? [])];
+  const center = [...(saved.center ?? [])];
   const right = [...(saved.right ?? [])];
-  const known = new Set([...left, ...right, ...(saved.hidden ?? [])]);
+  const known = new Set([...left, ...center, ...right, ...(saved.hidden ?? [])]);
   const d = defaultWidgets(list);
   for (const id of d.left) if (!known.has(id)) left.push(id);
   for (const id of d.right) if (!known.has(id)) right.push(id);
-  return { left, right };
+  return { left, center, right };
 }
 
 /** The full editable layout (Customize Main Toolbar dialog). */
@@ -74,8 +83,7 @@ export function editableToolbar(
   items: Iterable<TitleItemContribution>,
 ): ToolbarLayout {
   const list = [...items];
-  const { left, right } = resolveToolbar(saved, list);
-  return { left, right, hidden: saved ? [...(saved.hidden ?? [])] : [] };
+  return { ...resolveToolbar(saved, list), hidden: saved ? [...(saved.hidden ?? [])] : [] };
 }
 
 export function widgetTitle(id: string, items: ReadonlyMap<string, TitleItemContribution>): string {
@@ -87,18 +95,15 @@ export function widgetTitle(id: string, items: ReadonlyMap<string, TitleItemCont
 
 /** Shows or removes a widget, keeping the rest of the layout. */
 export function toggleWidget(layout: ToolbarLayout, id: string, defaultSide: "left" | "right"): ToolbarLayout {
-  const shown = layout.left.includes(id) || layout.right.includes(id);
+  const shown = TOOLBAR_SIDES.some((side) => layout[side].includes(id));
   if (shown)
     return {
       left: layout.left.filter((x) => x !== id),
+      center: layout.center.filter((x) => x !== id),
       right: layout.right.filter((x) => x !== id),
       hidden: [...layout.hidden.filter((x) => x !== id), ...(isActionEntry(id) ? [] : [id])],
     };
-  const side =
-    defaultSide === "left"
-      ? { left: [...layout.left, id], right: layout.right }
-      : { left: layout.left, right: [...layout.right, id] };
-  return { ...side, hidden: layout.hidden.filter((x) => x !== id) };
+  return { ...layout, [defaultSide]: [...layout[defaultSide], id], hidden: layout.hidden.filter((x) => x !== id) };
 }
 
 export function useMainToolbarSettings(): MainToolbarSettings | null | undefined {

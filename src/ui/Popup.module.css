@@ -10,6 +10,13 @@
   opacity: 1;
   animation: popIn var(--dur-fast) var(--ease);
 }
+.centered {
+  position: fixed;
+  inset: 50% auto auto 50%;
+  translate: -50% -50%;
+  max-width: calc(100vw - 12px);
+  max-height: calc(100vh - 12px);
+}
 .popup::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -42,4 +49,33 @@
   .popup[data-positioned] {
     animation: none;
   }
+}
+/* `resizable`: the right and bottom edges and their corner, inside the border like IDEA's resize border. */
+.resizeRight,
+.resizeBottom,
+.resizeCorner {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+.resizeRight {
+  top: 0;
+  right: 0;
+  bottom: 8px;
+  width: 4px;
+  cursor: ew-resize;
+}
+.resizeBottom {
+  left: 0;
+  right: 8px;
+  bottom: 0;
+  height: 4px;
+  cursor: ns-resize;
+}
+.resizeCorner {
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nwse-resize;
 }

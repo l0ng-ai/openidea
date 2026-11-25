@@ -7,6 +7,7 @@ import { Chunk } from "@codemirror/merge";
 import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { bandAt, docOffset, extent, transferY } from "./diffScroll";
+import { ideaDiffConfig } from "./diffOptions";
 
 export type MergePane = "ours" | "result" | "theirs";
 const PANES: readonly MergePane[] = ["ours", "result", "theirs"];
@@ -32,6 +33,10 @@ export class ScrollEchoes<K> {
   }
 }
 
+// Lined up by IDEA's line comparison. `Chunk.build` with no config runs an unbounded
+// character diff, which takes minutes on a long file such as a lockfile.
+const LINES = ideaDiffConfig("none", "lines");
+
 /** Starts scrolling `views` together; returns the function that stops it. */
 export function syncMergeScroll(views: Record<MergePane, EditorView>): () => void {
   const built = new Map<MergePane, { a: Text; b: Text; chunks: readonly Chunk[] }>();
@@ -40,7 +45,7 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
     const b = views.result.state.doc;
     const hit = built.get(side);
     if (hit && hit.a === a && hit.b === b) return hit.chunks;
-    const fresh = Chunk.build(a, b);
+    const fresh = Chunk.build(a, b, LINES);
     built.set(side, { a, b, chunks: fresh });
     return fresh;
   };

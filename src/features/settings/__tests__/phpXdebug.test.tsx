@@ -34,6 +34,8 @@ import { detectSdks } from "../languages/api";
 import { DEFAULT_SETTINGS } from "../model/schema";
 import { openSettings, stage } from "../model/staging";
 
+const PHP_CONTEXT = { pageId: "languages.php", scope: "global" } as const;
+
 beforeEach(() => {
   mocks.xdebug.mockImplementation((php: string) =>
     php in XDEBUG
@@ -52,7 +54,7 @@ function page(interpreter: string) {
   useProject.setState({ settings, project: null });
   openSettings("languages.php");
   render(
-    <PageContext.Provider value={{ pageId: "languages.php", scope: "global" }}>
+    <PageContext.Provider value={PHP_CONTEXT}>
       <PhpPage />
     </PageContext.Provider>,
   );

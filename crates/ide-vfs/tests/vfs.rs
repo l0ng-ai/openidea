@@ -428,6 +428,54 @@ fn create_file_bytes_creates_parents() {
     assert_eq!(std::fs::read(path).unwrap(), [0, 255]);
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_file_operations_reject_ambiguous_destinations_before_mutating() {
+    let (_tmp, root) = root();
+    let source = root.join("source.txt");
+    write(&source, "original");
+
+    for name in ["example.txt.", "example.txt ", "first/nested./child", "first/nested /child"] {
+        let destination = root.join(name);
+        for result in [
+            create_file(&destination),
+            create_file_bytes(&destination, b"new"),
+            create_dir(&destination),
+            validate_rename(&source, &destination),
+            rename(&source, &destination),
+            copy(&source, &destination),
+        ] {
+            assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput, "{name:?}");
+        }
+        let names: Vec<_> = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(names, ["source.txt"], "{name:?}");
+        assert_eq!(fs::read(&source).unwrap(), b"original");
+    }
+
+    create_file(&root.join(".config.d/file.txt")).unwrap();
+    assert!(root.join(".config.d/file.txt").is_file());
+}
+
+#[cfg(windows)]
+#[test]
+fn create_file_preserves_literal_verbatim_path() {
+    let (_tmp, root) = root();
+    let path = fs::canonicalize(&root).unwrap().join("example.txt.");
+    create_file(&path).unwrap();
+    assert!(path.is_file());
+    assert!(!root.join("example.txt").exists());
+    fs::remove_file(path).unwrap();
+}
+
+#[cfg(not(windows))]
+#[test]
+fn create_file_preserves_trailing_dots_and_spaces() {
+    let (_tmp, root) = root();
+    let path = root.join("folder./example.txt ");
+    create_file(&path).unwrap();
+    assert!(path.is_file());
+}
+
 #[cfg(unix)]
 #[test]
 fn create_file_bytes_does_not_follow_existing_symlink() {
@@ -469,4 +517,92 @@ fn rule_changes_notify_the_affected_subtree() {
         )), "{rule}: {:?}", events.lock());
         drop(watcher);
     }
+}
+
+fn configured(encoding: &str) -> Option<Fallback<'_>> {
+    Some(Fallback { encoding, ascii: true })
+}
+
+#[test]
+fn ascii_text_takes_the_configured_encoding() {
+    let (_tmp, root) = root();
+    let path = root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let fallback = configured("iso-8859-15");
+
+    let loaded = load_text_with_fallback(&path, fallback).unwrap();
+    assert_eq!((loaded.text.as_str(), loaded.encoding.as_str()), ("class A {}\n", "iso-8859-15"));
+    let bounded = load_text_bounded(&path, fallback, 1024).unwrap();
+    assert_eq!((bounded.text.as_str(), bounded.encoding.as_str()), ("class A {}\n", "iso-8859-15"));
+    assert_eq!(detect_encoding(b"class A {}\n", fallback), encoding_rs::ISO_8859_15);
+    assert_eq!(decode_text(b"class A {}\n", Some("iso-8859-15")).as_deref(), Some("class A {}\n"));
+}
+
+fn configured_label(name: &str, bytes: &[u8], configured: Option<&str>) -> String {
+    let (_tmp, root) = root();
+    let path = root.join(name);
+    fs::write(&path, bytes).unwrap();
+    load_text_with_fallback(&path, configured.map(|encoding| Fallback { encoding, ascii: true })).unwrap().encoding
+}
+
+#[test]
+fn ascii_stays_utf8_without_a_configured_encoding() {
+    assert_eq!(configured_label("a.txt", b"abc\n", None), "utf-8");
+}
+
+#[test]
+fn ascii_ignores_a_configured_encoding_that_is_not_ascii_compatible() {
+    assert_eq!(configured_label("a.txt", b"abc\n", Some("utf-16le")), "utf-8");
+}
+
+#[test]
+fn utf8_with_accents_keeps_utf8() {
+    assert_eq!(configured_label("a.txt", "ação\n".as_bytes(), Some("iso-8859-15")), "utf-8");
+    assert_eq!(detect_encoding("ação".as_bytes(), configured("iso-8859-15")), encoding_rs::UTF_8);
+}
+
+#[test]
+fn a_utf8_bom_keeps_utf8() {
+    assert_eq!(configured_label("a.txt", b"\xef\xbb\xbfabc\n", Some("iso-8859-15")), "utf-8");
+}
+
+#[test]
+fn utf16_keeps_utf16_with_or_without_a_bom() {
+    assert_eq!(configured_label("a.txt", b"\xff\xfea\x00b\x00", Some("iso-8859-15")), "utf-16le");
+    let bomless = b"a\x00b\x00c\x00d\x00";
+    assert_eq!(configured_label("b.txt", bomless, Some("iso-8859-15")), "utf-16le");
+    assert_eq!(decode_text(bomless, Some("iso-8859-15")).as_deref(), Some("abcd"));
+}
+
+#[test]
+fn binary_content_keeps_its_label() {
+    let elf = b"\x7fELF\x00\x00\x01";
+    assert_eq!(configured_label("a.bin", elf, Some("iso-8859-15")), "utf-8");
+    assert_eq!(detect_encoding(elf, configured("iso-8859-15")), encoding_rs::UTF_8);
+}
+
+#[test]
+fn non_utf8_bytes_are_decoded_with_the_configured_encoding() {
+    let (_tmp, root) = root();
+    let path = root.join("latin.txt");
+    fs::write(&path, b"a\xe7\xe3o \xa4\n").unwrap();
+    let latin = load_text_with_fallback(&path, configured("iso-8859-15")).unwrap();
+    assert_eq!((latin.text.as_str(), latin.encoding.as_str()), ("ação €\n", "iso-8859-15"));
+}
+
+#[test]
+fn a_fallback_without_ascii_only_decodes_non_utf8_text() {
+    let (_tmp, root) = root();
+    let decode_only = Some(Fallback { encoding: "iso-8859-1", ascii: false });
+    let ascii = root.join("ascii.properties");
+    fs::write(&ascii, b"greeting=Hello\n").unwrap();
+    let latin = root.join("latin.properties");
+    fs::write(&latin, b"greeting=Ol\xe1\n").unwrap();
+
+    assert_eq!(load_text_with_fallback(&ascii, decode_only).unwrap().encoding, "utf-8");
+    assert_eq!(load_text_bounded(&ascii, decode_only, 1024).unwrap().encoding, "utf-8");
+    assert_eq!(detect_encoding(b"greeting=Hello\n", decode_only), encoding_rs::UTF_8);
+    let loaded = load_text_with_fallback(&latin, decode_only).unwrap();
+    assert_eq!((loaded.text.as_str(), loaded.encoding.as_str()), ("greeting=Ol\u{e1}\n", "windows-1252"));
+    assert_eq!(detect_encoding(b"greeting=Ol\xe1\n", decode_only), encoding_rs::WINDOWS_1252);
 }

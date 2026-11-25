@@ -1,16 +1,38 @@
 /* Remote Host tool window */
 .view {
+  position: relative;
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.dropTarget {
+  outline: 1px dashed var(--focus-ring);
+  outline-offset: -1px;
+  background: var(--bg-selected);
+}
+.uploadHint {
+  position: absolute;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  left: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--focus-ring);
+  border-radius: var(--radius-small);
+  background: var(--bg-popup);
+  color: var(--fg-strong);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
 .toolbar {
   height: 32px;
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
 }
 .serverSelect {
@@ -42,14 +64,14 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 10px;
 }
 .center {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 16px;
   color: var(--fg-subtle);
 }
@@ -72,7 +94,7 @@
 .report {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .reportErrors {
   margin: 0;
@@ -98,7 +120,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 10px 16px;
   flex: none;
 }
@@ -111,7 +133,7 @@
 .sync {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   height: 100%;
   min-height: 0;
   padding: 8px 10px 0;
@@ -121,7 +143,7 @@
   flex-wrap: wrap;
   align-items: center;
   flex: none;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .separator {
   height: 20px;
@@ -151,7 +173,7 @@
 .fileFilter {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   white-space: nowrap;
 }
 .compareBy select {
@@ -179,7 +201,7 @@
 .comparisonRoots > span {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-control, 4px);
@@ -244,7 +266,7 @@
 .fileName {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -315,7 +337,7 @@
   display: flex;
   align-items: flex-start;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 /* SSH password prompt */

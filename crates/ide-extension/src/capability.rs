@@ -26,6 +26,8 @@ pub enum Capability {
     DatabaseSources,
     VcsRead,
     VcsWrite,
+    /// The Maven / Gradle dependency graph the IDE resolved.
+    BuildRead,
     /// The plugin's own key-value store and data directory.
     Storage,
     /// The plugin's own secrets (kept in the client's OS keychain).
@@ -36,6 +38,8 @@ pub enum Capability {
     InputEvents,
     /// The system clipboard, from the plugin's web views.
     Clipboard,
+    /// Read the clipboard from commands and view actions the user ran (API 1.11).
+    ClipboardRead,
     /// HTTPS (and loopback HTTP) to one host (`*.example.com` matches subdomains).
     Net(String),
     /// Ask the user when the first request goes to an HTTPS (or loopback) host
@@ -48,10 +52,16 @@ pub enum Capability {
     Ipc(String),
     /// Run one external program. Full code execution: never fine-grained.
     Process(String),
+    /// Send a running language server (its name in the language definition) its own
+    /// requests. The server reads and edits project files on the plugin's behalf.
+    Lsp(String),
     /// Read files outside the project under one path.
     FsRead(String),
     /// Write files outside the project under one path.
     FsWrite(String),
+    /// Load the plugin's Java agent into the JVMs of Java run configurations. Never
+    /// declared: it comes from `[[contributes.javaAgents]]`.
+    JavaAgent,
 }
 
 /// How a grant is presented (plan 4.2).
@@ -69,9 +79,10 @@ pub enum Risk {
 impl Capability {
     pub fn risk(&self) -> Risk {
         match self {
-            Self::ProjectRead | Self::EditorRead | Self::Storage | Self::Events | Self::VcsRead => Risk::Low,
+            Self::ProjectRead | Self::EditorRead | Self::Storage | Self::Events | Self::VcsRead | Self::BuildRead => {
+                Risk::Low
+            }
             Self::EditorWrite
-            | Self::ProjectWrite
             | Self::DatabaseSources
             | Self::VcsWrite
             | Self::Net(_)
@@ -79,8 +90,18 @@ impl Capability {
             | Self::NetHttp(_)
             | Self::Secrets
             | Self::InputEvents
-            | Self::Clipboard => Risk::Medium,
-            Self::IdeCommands | Self::Ipc(_) | Self::Process(_) | Self::FsRead(_) | Self::FsWrite(_) => Risk::High,
+            | Self::Clipboard
+            | Self::ClipboardRead => Risk::Medium,
+            // A trusted project's own files name the programs the IDE starts (its settings, its
+            // build scripts), so writing them is running code.
+            Self::ProjectWrite
+            | Self::IdeCommands
+            | Self::Ipc(_)
+            | Self::Process(_)
+            | Self::Lsp(_)
+            | Self::FsRead(_)
+            | Self::FsWrite(_)
+            | Self::JavaAgent => Risk::High,
         }
     }
 
@@ -101,6 +122,7 @@ impl Capability {
             Self::IdeCommands => "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing".into(),
             Self::VcsRead => "Read version control state".into(),
             Self::VcsWrite => "Change version control state (commit, fetch, checkout)".into(),
+            Self::BuildRead => "Read the project's resolved Maven and Gradle dependencies".into(),
             Self::Storage => "Store its own data".into(),
             Self::Secrets => "Store secrets in the system keychain".into(),
             Self::Events => "Observe editor, filesystem and version control events".into(),
@@ -108,6 +130,7 @@ impl Capability {
             Self::Clipboard => {
                 "Copy to the clipboard from its commands, and read and write it from its web views".into()
             }
+            Self::ClipboardRead => "Read the clipboard's text and images when you run one of its commands".into(),
             Self::Net(host) => format!("Connect to {host} (from the machine the project is on)"),
             Self::NetAsk => {
                 "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones"
@@ -120,8 +143,12 @@ impl Capability {
                 format!("Connect to local socket {path} — equivalent to running arbitrary code on the project machine")
             }
             Self::Process(bin) => format!("Run {bin} — equivalent to running arbitrary code on this machine"),
+            Self::Lsp(server) => {
+                format!("Send requests to the {server} language server, which reads and changes the project's files")
+            }
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
             Self::FsWrite(path) => format!("Change files under {path}, outside the project"),
+            Self::JavaAgent => "Run code inside the Java applications you start".into(),
         }
     }
 
@@ -233,18 +260,22 @@ impl fmt::Display for Capability {
             Self::DatabaseSources => f.write_str("database.sources"),
             Self::VcsRead => f.write_str("vcs.read"),
             Self::VcsWrite => f.write_str("vcs.write"),
+            Self::BuildRead => f.write_str("build.read"),
             Self::Storage => f.write_str("storage"),
             Self::Secrets => f.write_str("secrets"),
             Self::Events => f.write_str("events"),
             Self::InputEvents => f.write_str("events.input"),
             Self::Clipboard => f.write_str("clipboard"),
+            Self::ClipboardRead => f.write_str("clipboard.read"),
             Self::Net(h) => write!(f, "net:{h}"),
             Self::NetAsk => f.write_str("net:ask"),
             Self::NetHttp(h) => write!(f, "net.http:{h}"),
             Self::Ipc(p) => write!(f, "ipc:{p}"),
             Self::Process(b) => write!(f, "process:{b}"),
+            Self::Lsp(s) => write!(f, "lsp:{s}"),
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
             Self::FsWrite(p) => write!(f, "fs.write:{p}"),
+            Self::JavaAgent => f.write_str("java.agent"),
         }
     }
 }
@@ -292,6 +323,12 @@ impl FromStr for Capability {
                     }
                     Ok(Self::Process(arg.to_owned()))
                 }
+                "lsp" => {
+                    if arg.len() > 128 || arg.chars().any(|c| c.is_whitespace() || c.is_control() || c == ':') {
+                        return Err(format!("{s:?}: use the server's name in its language definition"));
+                    }
+                    Ok(Self::Lsp(arg.to_owned()))
+                }
                 "fs.read" | "fs.write" => {
                     if !std::path::Path::new(arg).is_absolute() && !arg.starts_with('~') {
                         return Err(format!("{s:?}: use an absolute path (or ~/…)"));
@@ -310,11 +347,14 @@ impl FromStr for Capability {
             "database.sources" => Self::DatabaseSources,
             "vcs.read" => Self::VcsRead,
             "vcs.write" => Self::VcsWrite,
+            "build.read" => Self::BuildRead,
             "storage" => Self::Storage,
             "secrets" => Self::Secrets,
             "events" => Self::Events,
             "events.input" => Self::InputEvents,
             "clipboard" => Self::Clipboard,
+            "clipboard.read" => Self::ClipboardRead,
+            "java.agent" => Self::JavaAgent,
             _ => return Err(format!("unknown capability {s:?}")),
         })
     }
@@ -363,6 +403,8 @@ mod tests {
             "editor.write",
             "project.write",
             "vcs.write",
+            "build.read",
+            "clipboard.read",
             "storage",
             "secrets",
             "events",
@@ -370,6 +412,9 @@ mod tests {
             "net:crates.io",
             "net:*.github.com",
             "process:cargo",
+            "lsp:phoxite",
+            "lsp:rust-analyzer",
+            "java.agent",
         ] {
             assert_eq!(s.parse::<Capability>().unwrap().to_string(), s);
         }
@@ -386,6 +431,9 @@ mod tests {
         assert!("net:".parse::<Capability>().is_err());
         assert!("net:a b".parse::<Capability>().is_err());
         assert!("process:./evil".parse::<Capability>().is_err());
+        assert!("lsp:".parse::<Capability>().is_err());
+        assert!("lsp:a b".parse::<Capability>().is_err());
+        assert!("lsp:phoxite:phoxite/laravel".parse::<Capability>().is_err());
         assert!("fs.read:rel".parse::<Capability>().is_err());
         assert!("fs.write:rel".parse::<Capability>().is_err());
         assert!("network".parse::<Capability>().is_err());
@@ -398,8 +446,26 @@ mod tests {
         assert_eq!(Capability::InputEvents.risk(), Risk::Medium);
         assert_eq!("clipboard".parse::<Capability>().unwrap(), Capability::Clipboard);
         assert_eq!(Capability::Clipboard.risk(), Risk::Medium);
+        // Reading is its own grant: neither clipboard capability covers the other.
+        assert_eq!(Capability::ClipboardRead.risk(), Risk::Medium);
+        assert!(!Capability::Clipboard.covers(&Capability::ClipboardRead));
+        assert!(!Capability::ClipboardRead.covers(&Capability::Clipboard));
         assert_eq!(Capability::Process("cargo".into()).risk(), Risk::High);
+        assert_eq!(Capability::Lsp("phoxite".into()).risk(), Risk::High);
+        assert_eq!(Capability::BuildRead.risk(), Risk::Low);
+        assert!(!Capability::Lsp("phoxite".into()).covers(&Capability::Lsp("intelephense".into())));
         assert!(Capability::Storage.auto_migrates() && !Capability::EditorWrite.auto_migrates());
+        assert_eq!(Capability::JavaAgent.risk(), Risk::High);
+        assert!(!Capability::JavaAgent.auto_migrates());
+    }
+
+    /// A trusted project's files name programs the IDE starts by itself: the git and language
+    /// server executables in `.openidea/settings.toml`, its build scripts. Writing them is
+    /// running code, and the install dialog says so.
+    #[test]
+    fn writing_project_files_is_a_high_risk_grant() {
+        assert_eq!(Capability::ProjectWrite.risk(), Risk::High);
+        assert!(!Capability::ProjectWrite.auto_migrates());
     }
 
     #[test]

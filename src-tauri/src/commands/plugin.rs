@@ -4,15 +4,15 @@
 //! plus broadcasts (list/theme/status item changes).
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult};
 use ide_extension::ActivationEvent;
 use ide_host::plugins::intellij::{self, InstalledIntellijTheme, IntellijThemeSource};
 use ide_host::plugins::{
-    ActiveTheme, CatalogPlugin, Consent, EventKind, HostWorkspace, InstallPreview, PackageFile, PluginContextKey,
-    PluginEditor, PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
+    ActiveTheme, CatalogPlugin, Consent, EventKind, HostWorkspace, InstallPreview, PackageFile, PluginEvent,
+    PluginHost, PluginInfo, PluginsSnapshot,
 };
-use ide_plugin::{Invocation, Limits};
-use ide_workspace::settings::SettingsScope;
+use ide_plugin::Limits;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -110,11 +110,12 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
     project_host.languages.attach_plugins(host.language_store().clone());
     ide_language::set_external_syntax(Some(host.syntax_provider()));
     ide_run::set_external_detection(Some(host.run_detection()));
+    // Java agents load only on this machine: `openidea-server` installs no source.
+    ide_run::java_agent::set_java_agent_source(Some(host.java_agents()));
     host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(project_host)))));
-    // Released builds list the official plugins (published with each release) until the user picks another index.
-    if !cfg!(debug_assertions) {
-        host.set_default_market_url(Some(ide_host::plugins::OFFICIAL_MARKET_INDEX.into()));
-    }
+    // The official plugins (published with each release) are listed until the user picks another index.
+    host.set_default_market_url(Some(ide_host::plugins::OFFICIAL_MARKET_INDEX.into()));
+    host.set_downloads(project_host.global_settings.effective().tool_downloads);
     #[cfg(target_os = "macos")]
     host.set_secret_store(Arc::new(KeychainSecrets));
     ide_host::plugins::set_editor_providers(Some(&host));
@@ -164,6 +165,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
 }
 
 /// Routes this window's plugin events to `on_event` (replaces an earlier subscription).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn plugin_subscribe(window: Window, on_event: Channel<PluginEvent>) {
@@ -173,6 +175,7 @@ pub fn plugin_subscribe(window: Window, on_event: Channel<PluginEvent>) {
 /// Installed and linked plugins plus the project plugins of this window's
 /// project (`<project>/.openidea/plugins/*`, rescanned on every call), with
 /// the UI contributions to project.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_list(window: Window, state: State<'_, AppState>) -> IdeResult<PluginsSnapshot> {
@@ -190,6 +193,7 @@ pub async fn plugin_list(window: Window, state: State<'_, AppState>) -> IdeResul
     .await
 }
 
+#[desktop_command(trust = outside_restricted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_set_enabled(state: State<'_, AppState>, id: String, enabled: bool) -> IdeResult<()> {
@@ -198,6 +202,7 @@ pub async fn plugin_set_enabled(state: State<'_, AppState>, id: String, enabled:
 }
 
 /// Validates the package in `path` for the install page (nothing is copied).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_preview_install(state: State<'_, AppState>, path: PathBuf) -> IdeResult<InstallPreview> {
@@ -207,6 +212,7 @@ pub async fn plugin_preview_install(state: State<'_, AppState>, path: PathBuf) -
 
 /// Installs the plugin package in `path` (a folder with `plugin.toml`) with
 /// the capabilities the user accepted on the install page.
+#[desktop_command(trust = outside_restricted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_install_dir(state: State<'_, AppState>, path: PathBuf, consent: Consent) -> IdeResult<PluginInfo> {
@@ -215,6 +221,7 @@ pub async fn plugin_install_dir(state: State<'_, AppState>, path: PathBuf, conse
 }
 
 /// Confirms a plugin waiting for consent (project plugins, new capabilities).
+#[desktop_command(trust = outside_restricted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_grant(state: State<'_, AppState>, id: String, consent: Consent) -> IdeResult<PluginInfo> {
@@ -223,6 +230,7 @@ pub async fn plugin_grant(state: State<'_, AppState>, id: String, consent: Conse
 }
 
 /// Grants or revokes one declared capability.
+#[desktop_command(trust = outside_restricted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_set_capability(
@@ -236,6 +244,7 @@ pub async fn plugin_set_capability(
 }
 
 /// Revokes one host remembered through net:ask.
+#[desktop_command(trust = outside_restricted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_revoke_net_host(state: State<'_, AppState>, id: String, host: String) -> IdeResult<PluginInfo> {
@@ -244,6 +253,7 @@ pub async fn plugin_revoke_net_host(state: State<'_, AppState>, id: String, host
 }
 
 /// Links a development plugin folder (`openidea-plugin link` does the same from a terminal).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_link(state: State<'_, AppState>, path: PathBuf) -> IdeResult<PluginInfo> {
@@ -251,6 +261,7 @@ pub async fn plugin_link(state: State<'_, AppState>, path: PathBuf) -> IdeResult
     blocking(move || host.link(&path)).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_unlink(state: State<'_, AppState>, id: String) -> IdeResult<()> {
@@ -259,6 +270,7 @@ pub async fn plugin_unlink(state: State<'_, AppState>, id: String) -> IdeResult<
 }
 
 /// Validated assets of a plugin whose id starts with `prefix` (icon theme mapping and SVGs).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_assets(
@@ -270,15 +282,8 @@ pub async fn plugin_assets(
     blocking(move || host.assets(&plugin_id, &prefix)).await
 }
 
-/// The UI language (BCP 47) that plugin code reads with `ui.locale()`.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_set_ui_locale(state: State<'_, AppState>, tag: String) -> IdeResult<()> {
-    state.plugins.set_ui_locale(&tag);
-    Ok(())
-}
-
 /// An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_activation_event(
@@ -307,6 +312,7 @@ pub async fn plugin_activation_event(
 
 /// Plugin packages available locally for installation: `<resources>/plugins`
 /// when bundled, plus the repository's official plugins in debug builds.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_catalog(app: AppHandle, state: State<'_, AppState>) -> IdeResult<Vec<CatalogPlugin>> {
@@ -319,6 +325,7 @@ pub async fn plugin_catalog(app: AppHandle, state: State<'_, AppState>) -> IdeRe
     blocking(move || Ok(host.catalog(&dirs))).await
 }
 
+#[desktop_command(trust = outside_restricted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_uninstall(state: State<'_, AppState>, id: String) -> IdeResult<()> {
@@ -327,6 +334,7 @@ pub async fn plugin_uninstall(state: State<'_, AppState>, id: String) -> IdeResu
 }
 
 /// Re-reads a plugin from disk (after rebuilding a dev plugin).
+#[desktop_command(trust = outside_restricted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_reload(state: State<'_, AppState>, id: String) -> IdeResult<PluginInfo> {
@@ -334,51 +342,8 @@ pub async fn plugin_reload(state: State<'_, AppState>, id: String) -> IdeResult<
     blocking(move || host.reload(&id)).await
 }
 
-/// Runs a plugin command in the context of this window's project and focused editor.
-#[tauri::command]
-#[specta::specta]
-#[allow(clippy::too_many_arguments)]
-pub async fn plugin_run_command(
-    window: Window,
-    state: State<'_, AppState>,
-    plugin_id: String,
-    command_id: String,
-    arg: Option<String>,
-    editor: Option<PluginEditor>,
-    paths: Option<Vec<PathBuf>>,
-    settings_scope: Option<SettingsScope>,
-    command_chain: Option<Vec<String>>,
-) -> IdeResult<Option<String>> {
-    let host = state.plugins.clone();
-    let project = state.project(window.label()).ok();
-    let invocation = Invocation {
-        command_chain: command_chain.unwrap_or_default(),
-        client: Some(window.label().to_owned()),
-        workspace_root: project.as_ref().map(|p| p.root.clone()),
-        editor: editor.map(PluginEditor::context),
-        selected_paths: paths.unwrap_or_default(),
-        global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
-    };
-    blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
-}
-
-/// Workbench events from this window (only the kinds of `plugin_event_kinds`).
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_post_events(
-    window: Window,
-    state: State<'_, AppState>,
-    events: Vec<WorkbenchEvent>,
-    editor: Option<PluginEditor>,
-) {
-    state.plugins.post_window_events(window.label(), events, editor);
-}
-
-/// Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`).
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_event_kinds(app: tauri::AppHandle) -> Vec<EventKind> {
-    let host = app.state::<AppState>().plugins.clone();
+pub(crate) async fn plugin_event_kinds(window: tauri::Window) -> Vec<EventKind> {
+    let host = window.state::<AppState>().plugins.clone();
     // Asked once at startup: before the first load, the declared `on-event:` kinds
     // would be missing, and the `commandsChanged` that load sends may precede the window's subscription.
     let kinds = tauri::async_runtime::spawn_blocking(move || {
@@ -388,155 +353,8 @@ pub async fn plugin_event_kinds(app: tauri::AppHandle) -> Vec<EventKind> {
     kinds.await.unwrap_or_default()
 }
 
-/// Every plugin status bar item (later changes arrive as `statusItemChanged`).
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_status_items(window: Window, state: State<'_, AppState>) -> Vec<PluginStatusItem> {
-    state.plugins.status_snapshot(window.label())
-}
-
-/// Plugin context keys in effect for this window (later changes arrive as `contextChanged`).
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_context_keys(window: Window, state: State<'_, AppState>) -> Vec<PluginContextKey> {
-    state.plugins.context_keys(Some(window.label()))
-}
-
-/// Cancels a plugin task (`taskStarted` with `cancellable`).
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_cancel_task(state: State<'_, AppState>, task_id: String) -> bool {
-    state.plugins.cancel_task(&task_id)
-}
-
-/// Reports the user's answer to a plugin's `promptRequested`: the chosen keys
-/// (pick), `[text]` (input), anything (confirm: OK), or `None` when dismissed.
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_answer_prompt(state: State<'_, AppState>, prompt_id: String, answer: Option<Vec<String>>) -> bool {
-    state.plugins.answer_prompt(&prompt_id, answer)
-}
-
-/// A window's answer to a plugin's `commitRequested`; false when the call no
-/// longer waits.
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_answer_commit(
-    state: State<'_, AppState>,
-    request_id: String,
-    answer: ide_host::plugins::CommitAnswer,
-) -> bool {
-    state.plugins.answer_commit(&request_id, answer)
-}
-
-/// Runs plugins' before-commit checks on what `selection` commits, until
-/// `request` is cancelled.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_commit_checks(
-    window: Window,
-    state: State<'_, AppState>,
-    selection: ide_host::plugins::CommitSelection,
-    checks: Vec<ide_host::plugins::PluginCommitCheckRef>,
-    request: ide_core::RequestId,
-) -> IdeResult<Vec<ide_host::plugins::PluginCommitCheckResult>> {
-    let plugins = state.plugins.clone();
-    ide_host::plugins::commit::commit_checks(&state.host, plugins, window.label(), selection, checks, request).await
-}
-
-/// Gutter markers of plugin `line-markers` providers for an open document.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_line_markers(
-    window: Window,
-    state: State<'_, AppState>,
-    doc: ide_core::DocId,
-) -> IdeResult<Vec<ide_host::plugins::LineMarkerInfo>> {
-    ide_host::ops::lsp::plugin_line_markers(&state.host, window.label(), doc).await
-}
-
-/// Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
-/// a tool window, the window's active editor, as commands get it).
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_view_render(
-    window: Window,
-    state: State<'_, AppState>,
-    plugin_id: String,
-    view: String,
-    viewport: Option<ide_plugin::Viewport>,
-    doc: Option<ide_core::DocId>,
-    editor: Option<PluginEditor>,
-) -> IdeResult<ide_plugin::View> {
-    let plugins = state.plugins.clone();
-    ide_host::plugins::views::render(&state.host, plugins, window.label(), plugin_id, view, viewport, doc, editor).await
-}
-
-/// A user action in a plugin view or custom editor (`doc`, `editor`: as for rendering).
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_view_event(
-    window: Window,
-    state: State<'_, AppState>,
-    plugin_id: String,
-    view: String,
-    event: ide_plugin::ViewEvent,
-    doc: Option<ide_core::DocId>,
-    editor: Option<PluginEditor>,
-) -> IdeResult<()> {
-    let plugins = state.plugins.clone();
-    ide_host::plugins::views::event(&state.host, plugins, window.label(), plugin_id, view, event, doc, editor).await
-}
-
-/// The Services pane of node `key` of a plugin's `location = "services"` view.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_service_detail(
-    window: Window,
-    state: State<'_, AppState>,
-    plugin_id: String,
-    view: String,
-    key: String,
-) -> IdeResult<Vec<ide_plugin::ServiceTab>> {
-    let plugins = state.plugins.clone();
-    ide_host::plugins::views::service_detail(&state.host, plugins, window.label(), plugin_id, view, key).await
-}
-
-/// Runs the program of the log tab `tab` of node `key`'s Services pane (with
-/// the toggles in `on`), streaming its output until it exits or `request` is
-/// cancelled; returns the exit code.
-#[tauri::command]
-#[specta::specta]
-#[allow(clippy::too_many_arguments)]
-pub async fn plugin_service_log(
-    window: Window,
-    state: State<'_, AppState>,
-    request: ide_core::RequestId,
-    plugin_id: String,
-    view: String,
-    key: String,
-    tab: String,
-    on: Vec<String>,
-    on_line: Channel<ide_host::plugins::PluginOutputLine>,
-) -> IdeResult<Option<i32>> {
-    let plugins = state.plugins.clone();
-    let on_line = super::sender(on_line);
-    ide_host::plugins::views::service_log(
-        &state.host,
-        plugins,
-        window.label(),
-        plugin_id,
-        view,
-        key,
-        tab,
-        on,
-        request,
-        on_line,
-    )
-    .await
-}
-
 /// The page of a plugin's web view or custom editor (`web = …`).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn plugin_web_page(
@@ -547,6 +365,7 @@ pub fn plugin_web_page(
     state.plugins.web_page(&plugin_id, &view)
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_web_pty_spawn(
@@ -578,6 +397,7 @@ pub async fn plugin_web_pty_spawn(
 
 /// Starts the program of a log tab the plugin's code opened in this window,
 /// with the toggles in `on`.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]
@@ -616,6 +436,7 @@ const MAX_WEB_VIEW_FILE: u64 = 64 << 20;
 
 /// Writes what a web view saves (`openidea.saveFile`) to the path the user
 /// chose in the save dialog, on this machine.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_web_save_file(path: PathBuf, base64: String) -> IdeResult<()> {
@@ -633,6 +454,7 @@ pub async fn plugin_web_save_file(path: PathBuf, base64: String) -> IdeResult<()
 
 /// Reads the file the user picked in an open dialog for a web view
 /// (`openidea.openFile`), on this machine; base64.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_web_read_file(path: PathBuf) -> IdeResult<String> {
@@ -654,6 +476,7 @@ pub async fn plugin_web_read_file(path: PathBuf) -> IdeResult<String> {
 }
 
 /// The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_market(
@@ -664,6 +487,7 @@ pub async fn plugin_market(
     blocking(move || host.market_listing(refresh)).await
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn plugin_market_url(state: State<'_, AppState>) -> Option<String> {
@@ -671,6 +495,7 @@ pub fn plugin_market_url(state: State<'_, AppState>) -> Option<String> {
 }
 
 /// Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for the default).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn plugin_set_market_url(state: State<'_, AppState>, url: Option<String>) {
@@ -678,6 +503,7 @@ pub fn plugin_set_market_url(state: State<'_, AppState>, url: Option<String>) {
 }
 
 /// Downloads and checks a marketplace plugin; returns the folder for the install page.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_market_download(state: State<'_, AppState>, id: String) -> IdeResult<PathBuf> {
@@ -686,6 +512,7 @@ pub async fn plugin_market_download(state: State<'_, AppState>, id: String) -> I
 }
 
 /// Unpacks a package file (`.oiplugin` or `.zip`); returns the folder for the install page.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_unpack_package(state: State<'_, AppState>, path: PathBuf) -> IdeResult<PathBuf> {
@@ -694,6 +521,7 @@ pub async fn plugin_unpack_package(state: State<'_, AppState>, path: PathBuf) ->
 }
 
 /// Reads an IntelliJ theme plugin (`.jar`, Marketplace `.zip`, plugin folder) or `.theme.json` to import.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_read_intellij_theme(path: PathBuf) -> IdeResult<IntellijThemeSource> {
@@ -701,6 +529,7 @@ pub async fn plugin_read_intellij_theme(path: PathBuf) -> IdeResult<IntellijThem
 }
 
 /// Theme plugins installed in the JetBrains IDEs of this user, the ones in use first.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_installed_intellij_themes() -> IdeResult<Vec<InstalledIntellijTheme>> {
@@ -708,6 +537,7 @@ pub async fn plugin_installed_intellij_themes() -> IdeResult<Vec<InstalledIntell
 }
 
 /// Writes a package the UI generated (an imported theme); returns the folder for the install page.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_stage_package(
@@ -720,6 +550,7 @@ pub async fn plugin_stage_package(
 }
 
 /// Goes back to the version the last update of `id` replaced.
+#[desktop_command(trust = outside_restricted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_roll_back(state: State<'_, AppState>, id: String) -> IdeResult<PluginInfo> {
@@ -735,22 +566,30 @@ pub struct PluginSecretState {
     pub set: bool,
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub fn plugin_secrets(state: State<'_, AppState>, plugin_id: String) -> IdeResult<Vec<PluginSecretState>> {
-    Ok(state.plugins.secrets(&plugin_id)?.into_iter().map(|(name, set)| PluginSecretState { name, set }).collect())
+pub async fn plugin_secrets(state: State<'_, AppState>, plugin_id: String) -> IdeResult<Vec<PluginSecretState>> {
+    let host = state.plugins.clone();
+    blocking(move || {
+        Ok(host.secrets(&plugin_id)?.into_iter().map(|(name, set)| PluginSecretState { name, set }).collect())
+    })
+    .await
 }
 
 /// Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin.
+/// The keychain call takes up to hundreds of milliseconds, so it runs on the blocking pool.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub fn plugin_set_secret(
+pub async fn plugin_set_secret(
     state: State<'_, AppState>,
     plugin_id: String,
     name: String,
     value: Option<String>,
 ) -> IdeResult<()> {
-    state.plugins.set_secret(&plugin_id, &name, value.as_deref())
+    let host = state.plugins.clone();
+    blocking(move || host.set_secret(&plugin_id, &name, value.as_deref())).await
 }
 
 /// Plugin secrets in the login keychain (service `ai.l0ng.openidea.plugin.<id>`).
@@ -785,14 +624,8 @@ impl KeychainSecrets {
     }
 }
 
-/// The UI reports the focused editor's file (`editor-focused` events).
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_set_active_file(window: Window, state: State<'_, AppState>, path: Option<String>) {
-    state.plugins.set_active_file(window.label(), path);
-}
-
 /// Selects a plugin theme; both `None` restores the built-in theme.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn plugin_set_theme(
@@ -808,268 +641,45 @@ pub fn plugin_set_theme(
 
 /// The UI reports the selected plugin theme's resolved frame colour (`#rrggbb[aa]`),
 /// which new windows open in before their page loads.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn plugin_set_theme_frame(state: State<'_, AppState>, color: Option<String>) -> IdeResult<()> {
     state.plugins.set_theme_frame(color.as_deref())
 }
 
-use ide_host::plugins::index_ops::NavigationFiles;
-
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_navigation_files(window: Window, state: State<'_, AppState>) -> IdeResult<NavigationFiles> {
-    ide_host::plugins::index_ops::plugin_navigation_files(&state.host, state.plugins.clone(), window.label()).await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_navigation_invalidate(
-    window: Window,
-    state: State<'_, AppState>,
-    paths: Option<Vec<PathBuf>>,
-) -> IdeResult<()> {
-    ide_host::plugins::index_ops::plugin_navigation_invalidate(
-        &state.host,
-        state.plugins.clone(),
-        window.label(),
-        paths,
-    )
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_navigation_index(
-    window: Window,
-    state: State<'_, AppState>,
-    paths: Vec<PathBuf>,
-    request: ide_core::RequestId,
-) -> IdeResult<()> {
-    ide_host::plugins::index_ops::plugin_navigation_index(
-        &state.host,
-        state.plugins.clone(),
-        window.label(),
-        paths,
-        request,
-    )
-    .await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_navigation_goto(
-    window: Window,
-    state: State<'_, AppState>,
-    doc: ide_core::DocId,
-    pos: ide_core::Pos,
-) -> IdeResult<Option<ide_plugin::indexing::NavigationResult>> {
-    ide_host::plugins::index_ops::plugin_navigation_goto(&state.host, state.plugins.clone(), window.label(), doc, pos)
-        .await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_endpoints(
-    window: Window,
-    state: State<'_, AppState>,
-    plugin_id: String,
-) -> IdeResult<Vec<ide_host::plugins::endpoints::PluginEndpoint>> {
-    ide_host::plugins::index_ops::plugin_endpoints(&state.host, state.plugins.clone(), window.label(), plugin_id).await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_navigation_markers(
-    window: Window,
-    state: State<'_, AppState>,
-    paths: Vec<PathBuf>,
-) -> IdeResult<Vec<ide_plugin::indexing::FileMarkers>> {
-    ide_host::plugins::index_ops::plugin_navigation_markers(&state.host, state.plugins.clone(), window.label(), paths)
-        .await
-}
-
-/// The invoking window's reply to a plugin command request.
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_answer_command(
-    window: Window,
-    state: State<'_, AppState>,
-    request_id: String,
-    answer: ide_host::plugins::CommandAnswer,
-) -> IdeResult<bool> {
-    Ok(state.plugins.answer_command(window.label(), &request_id, answer))
-}
-
-/// Re-approves a plugin's executable, globally or for this window's project.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_choose_program(
-    window: Window,
-    state: State<'_, AppState>,
-    plugin_id: String,
-    capability: String,
-    scope: SettingsScope,
-    path: Option<PathBuf>,
-) -> IdeResult<PluginInfo> {
-    let host = state.plugins.clone();
-    let root = match scope {
-        SettingsScope::Global => None,
-        SettingsScope::Project => Some(state.project(window.label())?.root.clone()),
-    };
-    blocking(move || host.choose_program(&plugin_id, &capability, root.as_deref(), path.as_deref())).await
-}
-
-/// The currently approved executable in the selected scope, after revalidating its pin.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_program(
-    window: Window,
-    state: State<'_, AppState>,
-    plugin_id: String,
-    program: String,
-    scope: SettingsScope,
-) -> IdeResult<ide_core::IpcPath> {
-    let host = state.plugins.clone();
-    let root = match scope {
-        SettingsScope::Global => None,
-        SettingsScope::Project => Some(state.project(window.label())?.root.clone()),
-    };
-    blocking(move || host.program_for_project(&plugin_id, &program, root.as_deref()).map(Into::into)).await
-}
-
-/// Project-scoped decoration snapshots; the window filters to its current root.
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_decoration_sets(
-    state: State<'_, AppState>,
-) -> std::collections::BTreeMap<String, Vec<ide_host::plugins::DecorationSet>> {
-    state.plugins.decoration_sets()
-}
-
-/// Reports exactly one completion from the operation's launching window.
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_finish_operation(
-    window: Window,
-    state: State<'_, AppState>,
-    id: String,
-    status: Option<i32>,
-    stopped: bool,
-) -> IdeResult<bool> {
-    Ok(state.plugins.finish_operation(window.label(), &id, status, stopped))
-}
-
-/// Dispatches a wasm content editor action through the owning plugin's event handler.
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_content_tab_action(
-    window: Window,
-    state: State<'_, AppState>,
-    plugin_id: String,
-    action: ide_plugin::ContentTabAction,
-) -> IdeResult<()> {
-    state.plugins.content_tab_action(window.label(), &plugin_id, action)
-}
-
-/// Selects test-tree paths in an owned plugin test configuration.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_select_tests(
-    window: Window,
-    state: State<'_, AppState>,
-    config: String,
-    tests: Vec<Vec<String>>,
-) -> IdeResult<Option<Vec<String>>> {
-    let plugins = state.plugins.clone();
-    let client = window.label().to_owned();
-    tokio::task::spawn_blocking(move || plugins.select_tests(&client, &config, tests))
-        .await
-        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
-}
-
-/// Parses one batch of an owned test configuration's output.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_parse_test_results(
-    window: Window,
-    state: State<'_, AppState>,
-    config: String,
-    chunk: String,
-) -> IdeResult<Option<Vec<ide_plugin::PluginTestEvent>>> {
-    let plugins = state.plugins.clone();
-    let client = window.label().to_owned();
-    tokio::task::spawn_blocking(move || plugins.parse_test_results(&client, &config, chunk))
-        .await
-        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
-}
-
-/// Starts only the pinned command recorded for this window's terminal operation.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_terminal_session_spawn(
-    window: Window,
-    state: State<'_, AppState>,
-    operation: String,
-    cols: u16,
-    rows: u16,
-    on_output: Channel<String>,
-) -> IdeResult<ide_terminal::TerminalInfo> {
-    let (plugins, host, window) = (state.plugins.clone(), state.host.clone(), window.label().to_owned());
-    tokio::task::spawn_blocking(move || {
-        plugins.spawn_terminal_session(
-            &host,
-            &window,
-            &operation,
-            cols,
-            rows,
-            Arc::new(move |chunk| {
-                let _ = on_output.send(chunk);
-            }),
-        )
-    })
-    .await
-    .map_err(|e| IdeError::internal(e.to_string()))?
-}
-
-/// Marks a keyed tab closed before ending its process.
-#[tauri::command]
-#[specta::specta]
-pub fn plugin_terminal_session_close(window: Window, state: State<'_, AppState>, operation: String) -> IdeResult<()> {
-    state.plugins.close_terminal_session(window.label(), &operation)
-}
-
-/// Revalidates a plugin run's executable before debugging, including reruns.
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_prepare_debug_run(
-    window: Window,
-    state: State<'_, AppState>,
-    config: ide_run::RunConfig,
-) -> IdeResult<ide_run::RunConfig> {
-    let (plugins, client) = (state.plugins.clone(), window.label().to_owned());
-    tokio::task::spawn_blocking(move || plugins.prepare_debug_run(&client, config))
-        .await
-        .map_err(|e| IdeError::internal(e.to_string()))?
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_run_targets(
-    window: Window,
-    state: State<'_, AppState>,
-) -> IdeResult<Vec<ide_host::plugins::run_targets::RegisteredRunTarget>> {
-    ide_host::plugins::run_targets::list(&state.host, &state.plugins, window.label())
-}
-#[tauri::command]
-#[specta::specta]
-pub async fn plugin_answer_run_target(
-    window: Window,
-    state: State<'_, AppState>,
-    id: String,
-    use_target: bool,
-) -> IdeResult<ide_core::settings::Settings> {
-    let host = state.host.clone();
-    let plugins = state.plugins.clone();
-    let window = window.label().to_owned();
-    state.host.blocking(move || ide_host::plugins::run_targets::answer(&host, &plugins, &window, &id, use_target)).await
-}
+ide_command::desktop_domain!(
+    plugin_activation_event,
+    plugin_assets,
+    plugin_catalog,
+    plugin_grant,
+    plugin_install_dir,
+    plugin_installed_intellij_themes,
+    plugin_link,
+    plugin_list,
+    plugin_log_tab_spawn,
+    plugin_market,
+    plugin_market_download,
+    plugin_market_url,
+    plugin_preview_install,
+    plugin_read_intellij_theme,
+    plugin_reload,
+    plugin_revoke_net_host,
+    plugin_roll_back,
+    plugin_secrets,
+    plugin_set_capability,
+    plugin_set_enabled,
+    plugin_set_market_url,
+    plugin_set_secret,
+    plugin_set_theme,
+    plugin_set_theme_frame,
+    plugin_stage_package,
+    plugin_subscribe,
+    plugin_uninstall,
+    plugin_unlink,
+    plugin_unpack_package,
+    plugin_web_page,
+    plugin_web_pty_spawn,
+    plugin_web_read_file,
+    plugin_web_save_file,
+);

@@ -1,14 +1,14 @@
 .picker {
   display: inline-flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   width: 280px;
   max-width: 100%;
   min-width: 0;
 }
 .controls {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .controls input {

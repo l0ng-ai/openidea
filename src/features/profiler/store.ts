@@ -10,6 +10,8 @@ export interface Snapshot {
   name: string;
   createdAt: number;
   profile: Profile;
+  /** Why the numbers may mislead; shown above the views. */
+  notice: string | null;
 }
 
 export type ProfilerTab = "flame" | "tree" | "methods";
@@ -26,8 +28,8 @@ export const useProfiler = create<ProfilerState>(() => ({ snapshots: [], activeI
 
 let seq = 0;
 
-export function addSnapshot(name: string, profile: Profile): Snapshot {
-  const snapshot: Snapshot = { id: `profile${++seq}`, name, createdAt: Date.now(), profile };
+export function addSnapshot(name: string, profile: Profile, notice: string | null = null): Snapshot {
+  const snapshot: Snapshot = { id: `profile${++seq}`, name, createdAt: Date.now(), profile, notice };
   useProfiler.setState((s) => ({
     snapshots: [snapshot, ...s.snapshots].slice(0, MAX_SNAPSHOTS),
     activeId: snapshot.id,

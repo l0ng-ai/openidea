@@ -10,13 +10,15 @@
  * - exchanges messages with the plugin's code, when it has any;
  * - reads and edits the document of the custom editor it is (versioned edits
  *   that join the document's undo history, Save and dirty state);
+ * - as an editor panel, follows and scrolls its group's text editor (`openidea.editor`);
  * - asks the user to save or open a file (the IDE's dialogs: the user picks
  *   the path, the page never names one);
  * - uses the clipboard, when the plugin was granted `clipboard`;
  * - passes on IDE shortcuts it doesn't handle itself (Save, Close…).
  */
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { tx } from "@/platform/i18n";
+import { dispatchForwardedKey } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
@@ -31,6 +33,7 @@ import {
   contentTabData,
   contentTabKey,
   handleContentTabReplyText,
+  openPluginDiffRequest,
   registerContentTabSender,
 } from "./contentTab";
 import { PLUGIN_LOG_EDITOR_KIND } from "./logEditor";
@@ -58,11 +61,118 @@ export interface FrameDocument {
   read(): DocumentState & { readOnly: boolean; name: string };
   /** The bytes of the file on disk, for binary documents (read-only, so the disk is current). */
   bytes(): Promise<Uint8Array>;
+  size?(): Promise<number>;
+  readRange?(offset: number, length: number): Promise<Uint8Array>;
   /** Applies the frame's edits as one change; throws `stale` when not at `version`. Returns the new version. */
   edit(version: number, changes: readonly TextChange[]): number;
   /** Changes made other than through `edit` (the text editor, Undo, other windows). */
   subscribe(listener: (state: DocumentState) => void): () => void;
 }
+
+/** What `openidea.editor.get()` returns. */
+export interface EditorTarget {
+  path: string;
+  language: string;
+  version: number;
+  lineCount: number;
+  /** The columns a tab takes, as the editor expands it. */
+  tabSize: number;
+}
+
+/** What `openidea.editor.viewport()` returns: 0-based lines, fractional within a line. */
+export interface EditorViewport {
+  firstLine: number;
+  lastLine: number;
+  lineCount: number;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+export interface HighlightSpan {
+  from: number;
+  to: number;
+  color: string;
+}
+
+/** One problem of the marker bar, as `openidea.editor.problems()` returns it: 0-based lines. */
+export interface EditorProblem {
+  line: number;
+  /** The last line the problem covers (`line` for most). */
+  lastLine: number;
+  severity: "error" | "warning" | "weakWarning";
+}
+
+/** A fold, as `openidea.editor.folded()` returns it: 0-based lines. */
+export interface EditorFold {
+  /** The line that stays visible, showing the placeholder. */
+  fromLine: number;
+  /** The last line the fold hides. */
+  toLine: number;
+}
+
+/** A VCS change of the change-marker lane, as `openidea.editor.changes()` returns it: 0-based lines. */
+export interface EditorChange {
+  line: number;
+  /** The last changed line; `line` for a deletion, marked on the line the deleted text was above. */
+  lastLine: number;
+  kind: "added" | "modified" | "deleted";
+}
+
+/** A position in the document: 0-based line, UTF-16 column. */
+export interface EditorPosition {
+  line: number;
+  column: number;
+}
+
+/** A selection, as `openidea.editor.selections()` returns it; the caret is one whose `anchor` equals `head`. */
+export interface EditorSelection {
+  anchor: EditorPosition;
+  head: EditorPosition;
+}
+
+/** What `openidea.editor.onLayout` hears: the folds, and whether long lines wrap. */
+export interface EditorLayout {
+  folded: EditorFold[];
+  softWrap: boolean;
+}
+
+export type FrameEditorEvent =
+  | { editor: "target"; value: EditorTarget | null }
+  | { editor: "viewport"; value: EditorViewport }
+  | { editor: "highlights"; value: { fromLine: number; toLine: number } }
+  | { editor: "problems"; value: EditorProblem[] }
+  | { editor: "layout"; value: EditorLayout }
+  | { editor: "selections"; value: EditorSelection[] }
+  | { editor: "changes"; value: EditorChange[] };
+
+/** The text editor an editor panel's frame follows (`openidea.editor`). */
+export interface FrameEditor {
+  get(): EditorTarget | null;
+  viewport(): EditorViewport | null;
+  scrollTo(line: number): void;
+  scrollBy(pixels: number): void;
+  /** Lines `fromLine` up to `toLine` (exclusive); throws over {@link MAX_HIGHLIGHT_LINES}. */
+  highlights(fromLine: number, toLine: number): HighlightSpan[][];
+  problems(): EditorProblem[];
+  folded(): EditorFold[];
+  /** Visual rows of lines `fromLine` up to `toLine` (0 for lines folds hide), or null without soft wrap. */
+  wrapped(fromLine: number, toLine: number): number[] | null;
+  /** The main selection first, then the others in file order. */
+  selections(): EditorSelection[];
+  changes(): EditorChange[];
+  subscribe(listener: (event: FrameEditorEvent) => void): () => void;
+}
+
+export const MAX_HIGHLIGHT_LINES = 2000;
+
+/** The query that gives an editor panel's page `openidea.editor` (frame-bridge.js). */
+export const EDITOR_PANEL_QUERY = "openidea=editor-panel";
+
+const finite = (v: unknown, what: string) => {
+  if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`${what} must be a number`);
+  return v;
+};
 
 /** Largest text a frame may write in one edit. */
 const MAX_EDIT = 64 << 20;
@@ -150,9 +260,21 @@ export interface WebViewProps {
   document?: FrameDocument | null;
   /** The backend document, for messages to the plugin's code. */
   doc?: number | null;
+  binaryPath?: string;
+  /** The text editor an editor panel follows; none elsewhere. */
+  editor?: FrameEditor | null;
 }
 
-export function WebView({ pluginId, view, label, header = "default", document = null, doc = null }: WebViewProps) {
+export function WebView({
+  pluginId,
+  view,
+  label,
+  header = "default",
+  document = null,
+  doc = null,
+  binaryPath,
+  editor = null,
+}: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
   const [loadedPage, setLoadedPage] = useState<PageState | null>(null);
@@ -160,7 +282,16 @@ export function WebView({ pluginId, view, label, header = "default", document = 
   const headless = ownHeader && page !== null && "url" in page && loadedPage === page;
   useOwnToolWindowHeader(headless);
   const hasCode = plugin?.hasCode ?? false;
+  const eventEditor = useMemo(
+    () => (binaryPath ? { path: binaryPath, language: "binary", selections: [] } : undefined),
+    [binaryPath],
+  );
   const clipboard = plugin?.capabilities.some((c) => c.id === "clipboard" && c.granted) ?? false;
+  const anyAction = plugin?.capabilities.some((c) => c.id === "ide.commands" && c.granted) ?? false;
+  const anyActionRef = useRef(anyAction);
+  useEffect(() => {
+    anyActionRef.current = anyAction;
+  }, [anyAction]);
   const frame = useRef<HTMLIFrameElement>(null);
 
   const post = useCallback((message: object, transfer: Transferable[] = []) => {
@@ -183,6 +314,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
 
   // The document's changes made elsewhere.
   useEffect(() => document?.subscribe((state) => post({ document: state })), [document, post]);
+  useEffect(() => editor?.subscribe((event) => post(event)), [editor, post]);
 
   useEffect(() => {
     let dialog = false;
@@ -203,6 +335,22 @@ export function WebView({ pluginId, view, label, header = "default", document = 
         });
       } catch (err) {
         post({ text: JSON.stringify({ op: "log-error", error: errorText(err) }) });
+      }
+      return true;
+    };
+    const handleDiffMessage = (rawText: string): boolean => {
+      if (!rawText.includes('"open-diff"')) return false;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        return false;
+      }
+      if (!parsed || typeof parsed !== "object" || !("op" in parsed) || parsed.op !== "open-diff") return false;
+      try {
+        openPluginDiffRequest(parsed, rawText.length);
+      } catch (err) {
+        post({ text: JSON.stringify({ op: "diff-error", error: errorText(err) }) });
       }
       return true;
     };
@@ -269,6 +417,27 @@ export function WebView({ pluginId, view, label, header = "default", document = 
           const bytes = await document.bytes();
           return [bytes, [bytes.buffer]];
         }
+        case "document.size": {
+          if (!document?.size) throw new Error("this view shows no binary document");
+          return [await document.size()];
+        }
+        case "document.readRange": {
+          if (!document?.readRange) throw new Error("this view shows no binary document");
+          const { offset, length } = args;
+          if (
+            typeof offset !== "number" ||
+            !Number.isSafeInteger(offset) ||
+            offset < 0 ||
+            typeof length !== "number" ||
+            !Number.isSafeInteger(length) ||
+            length < 0 ||
+            length > 1024 * 1024 ||
+            !Number.isSafeInteger(offset + length)
+          )
+            throw new Error("invalid byte range (at most 1 MiB per read)");
+          const bytes = await document.readRange(offset, length);
+          return [bytes, [bytes.buffer]];
+        }
         case "document.edit":
         case "document.replace": {
           if (!document) throw new Error("this view shows no document");
@@ -282,6 +451,32 @@ export function WebView({ pluginId, view, label, header = "default", document = 
             changes = change ? [change] : [];
           } else changes = validChanges(args.edits, current.text.length);
           return [{ version: changes.length ? document.edit(current.version, changes) : current.version }];
+        }
+        case "editor.get":
+        case "editor.viewport":
+        case "editor.scrollTo":
+        case "editor.scrollBy":
+        case "editor.highlights":
+        case "editor.problems":
+        case "editor.folded":
+        case "editor.selections":
+        case "editor.changes":
+        case "editor.wrapped": {
+          if (!editor) throw new Error("this view is not an editor panel");
+          if (op === "editor.get") return [editor.get()];
+          if (op === "editor.problems") return [editor.problems()];
+          if (op === "editor.folded") return [editor.folded()];
+          if (op === "editor.selections") return [editor.selections()];
+          if (op === "editor.changes") return [editor.changes()];
+          if (op === "editor.viewport") return [editor.viewport()];
+          if (op === "editor.scrollTo") return [editor.scrollTo(finite(args.line, "line"))];
+          if (op === "editor.scrollBy") return [editor.scrollBy(finite(args.pixels, "pixels"))];
+          const from = finite(args.fromLine, "fromLine");
+          const to = finite(args.toLine, "toLine");
+          if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from)
+            throw new Error("lines are 0 ≤ fromLine ≤ toLine, whole numbers");
+          if (to - from > MAX_HIGHLIGHT_LINES) throw new Error(`at most ${MAX_HIGHLIGHT_LINES} lines at a time`);
+          return [op === "editor.wrapped" ? editor.wrapped(from, to) : editor.highlights(from, to)];
         }
         case "saveFile":
         case "openFile": {
@@ -317,12 +512,17 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       } | null;
       if (m?.tag !== FRAME_TAG) return;
       if (m.key && typeof m.key === "object") {
-        // A shortcut the page didn't handle: as if pressed on the frame, for the IDE's keymap.
+        // A shortcut the page didn't handle: as if pressed on the frame, for the IDE's keymap. The
+        // page can post one at any time and can take the focus, but it cannot fake the user's own
+        // input, so it counts only right after the user pressed a key or clicked in the frame.
+        const host = frame.current.ownerDocument;
+        const activation = host.defaultView?.navigator.userActivation;
+        if (host.activeElement !== frame.current || !host.hasFocus() || (activation && !activation.isActive)) return;
         const k = m.key as KeyboardEventInit;
-        const init: KeyboardEventInit = { bubbles: true, cancelable: true };
+        const init: KeyboardEventInit = {};
         for (const f of ["key", "code"] as const) if (typeof k[f] === "string") init[f] = k[f];
         for (const f of ["metaKey", "ctrlKey", "altKey", "shiftKey", "repeat"] as const) init[f] = k[f] === true;
-        frame.current.dispatchEvent(new KeyboardEvent("keydown", init));
+        dispatchForwardedKey(frame.current, init, anyActionRef.current);
       } else if (typeof m.call === "number" && typeof m.op === "string") {
         const id = m.call;
         run(m.op, (m.args ?? {}) as Record<string, unknown>).then(
@@ -332,10 +532,11 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       } else if (typeof m.text === "string") {
         if (handleLogTabMessage(m.text)) return;
         if (handleContentTabMessage(m.text)) return;
+        if (handleDiffMessage(m.text)) return;
         if (ptys.handle(m.text)) return;
         if (hasCode) {
           pluginsBackend()
-            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
+            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc, eventEditor)
             .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
         }
       }
@@ -352,7 +553,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       window.removeEventListener("pagehide", onUnload);
       currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, hasCode, post, page]);
+  }, [pluginId, view, document, doc, eventEditor, editor, hasCode, post, page]);
 
   if (!page)
     return (
@@ -375,7 +576,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       title={label}
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}
-      src={page.url}
+      src={editor ? `${page.url}${page.url.includes("?") ? "&" : "?"}${EDITOR_PANEL_QUERY}` : page.url}
       onLoad={() => {
         postTheme();
         setLoadedPage(page);

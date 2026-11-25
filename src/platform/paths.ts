@@ -21,6 +21,39 @@ export function ipcPath(p: string): string {
   return DRIVE.test(path) || NETWORK.test(path) ? path.replace(/\\/g, "/") : path;
 }
 
+const SHARE = /^[\\/]{2}/;
+const SHARE_NAME = /^[\\/]{2}(?:\?[\\/]UNC[\\/])?([^\\/]+)[\\/]([^\\/]+)/i;
+
+/**
+ * `server/share` of a path on a network share, in lower case; null for any other path. The
+ * host hands out a share's paths as `//?/UNC/server/share/…`, the dialogs as `//server/share/…`.
+ */
+function shareOf(path: string): string | null {
+  const m = SHARE_NAME.exec(path);
+  // Any other device path (`//?/C:/…`, `//./…`) names no server to compare.
+  return m && m[1] !== "?" && m[1] !== "." ? `${m[1]}/${m[2]}`.toLowerCase() : null;
+}
+
+/**
+ * Whether `path` is on a network share that `base` is not on. Windows reads `//server/share`,
+ * `\\server\share` and mixes of the two as a share, and opening one signs in to its server
+ * with the user's credentials: a path that text someone else wrote leads to is followed to no
+ * share but the one that text is on.
+ */
+export function onOtherShare(path: string, base: string): boolean {
+  if (!SHARE.test(path)) return false;
+  const share = shareOf(path);
+  return share === null || share !== shareOf(base);
+}
+
+/**
+ * `onOtherShare` for a path resolved against `base`, the folder or file of the text naming
+ * it: also true when that text spells a share itself (`written`, decoded).
+ */
+export function opensOtherShare(path: string, written: string, base: string): boolean {
+  return SHARE.test(written) || onOtherShare(path, base);
+}
+
 /** True when `path` equals `ancestor` or lies below it. */
 export function isSameOrInside(path: string, ancestor: string): boolean {
   path = ipcPath(path);

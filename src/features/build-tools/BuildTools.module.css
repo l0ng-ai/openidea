@@ -9,8 +9,11 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
+}
+.toolbarMore {
+  margin-left: auto;
 }
 .sep {
   width: 1px;
@@ -22,7 +25,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 28px;
   padding: 2px 10px;
   font-size: var(--fs-small);
@@ -57,14 +60,14 @@
 .loading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px;
   color: var(--fg-muted);
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 1;
   white-space: nowrap;
@@ -93,6 +96,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.pluginText {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  overflow: hidden;
+}
+.pluginText > .label {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+}
 .profile {
   min-width: 0;
 }
@@ -110,7 +125,7 @@
 .popupHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: var(--h-row);
   padding: 4px 10px 0;
   font-size: var(--fs-small);
@@ -124,7 +139,7 @@
 .inputRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 6px 10px;
   border-bottom: 1px solid var(--border-popup);
 }
@@ -164,7 +179,7 @@
 .completion {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   flex: 1;
 }
@@ -196,7 +211,7 @@
 .popupFooter {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 6px 10px;
   border-top: 1px solid var(--border-popup);
   font-size: var(--fs-small);

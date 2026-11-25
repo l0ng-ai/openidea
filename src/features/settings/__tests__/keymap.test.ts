@@ -18,6 +18,8 @@ import { vscodeMacos } from "@/platform/keymaps/vscode-macos";
 import {
   addBinding,
   bindingMatches,
+  parseShortcutQuery,
+  shortcutQueryMatches,
   findConflicts,
   isModified,
   removeBinding,
@@ -36,7 +38,7 @@ import {
   withCustomOverrides,
   type KeymapDraft,
 } from "../keymap/model";
-import { buildKeymapTree, keymapSearchLabels } from "../keymap/KeymapPage";
+import { buildKeymapTree, keymapJson, keymapSearchLabels } from "../keymap/KeymapPage";
 import { groupPath } from "../keymap/groups";
 import { registerEditorActions } from "@/editor/core/actions";
 import { registerLspActions } from "@/editor/lsp/actions";
@@ -57,6 +59,32 @@ it("finds the translated declaration action by 声明 and its English title", as
     dispose();
     _resetI18nForTests();
   }
+});
+
+describe("keymapJson", () => {
+  it("exports the keymap's name, base preset and every bound action", () => {
+    registerEditorActions();
+    const out = JSON.parse(
+      keymapJson("My Keymap", "intellij-macos", allActions(), { preset: "intellij-macos", overrides: {} }),
+    );
+    expect(out.name).toBe("My Keymap");
+    expect(out.basedOn).toBe("intellij-macos");
+    expect(out.actions["code.duplicateLine"]).toEqual(["Meta+D"]);
+    expect(out.actions["navigate.gotoLine"]).toEqual(["Meta+L"]);
+    // Unbound actions are omitted, not exported as empty lists.
+    expect(Object.values(out.actions).every((keys) => Array.isArray(keys) && keys.length > 0)).toBe(true);
+  });
+
+  it("exports overrides over the preset", () => {
+    registerEditorActions();
+    const out = JSON.parse(
+      keymapJson("Custom", "intellij-macos", allActions(), {
+        preset: "intellij-macos",
+        overrides: { "code.duplicateLine": ["Ctrl+T"] },
+      }),
+    );
+    expect(out.actions["code.duplicateLine"]).toEqual(["Ctrl+T"]);
+  });
 });
 
 const key = (
@@ -206,23 +234,39 @@ describe("conflicts", () => {
 });
 
 describe("shortcut search", () => {
-  it.each(Object.keys(PRESETS))("keeps the mouse-only caret action configurable in %s", (preset) => {
+  it.each(Object.keys(PRESETS))("keeps mouse-only selection actions configurable in %s", (preset) => {
     const dispose = registerEditorActions();
     const originalKeymap = useKeymap.getState();
-    const id = "editor.addOrRemoveCaret";
-    const title = "Add or Remove Caret";
     try {
-      expect(matchActions(allActions(), title, { isEnabled: () => true, recent: [id] })).toEqual([]);
-      const variants: KeymapDraft["overrides"][] = [{}, { [id]: ["Alt+Button1"] }, { [id]: [] }];
-      for (const overrides of variants) {
-        useKeymap.setState({ preset, overrides });
-        expect(keymapSearchLabels()).toContain(title);
-        const tree = buildKeymapTree(allActions(), { preset, overrides }, title, "");
-        const group = tree.find((node) => node.key === "grp:Editor Actions");
-        expect(group?.kind === "group" && group.children.map((node) => node.key)).toEqual([id]);
+      for (const [id, title] of [
+        ["editor.addOrRemoveCaret", "Add or Remove Caret"],
+        ["editor.createRectangularSelectionOnMouseDrag", "Create Rectangular Selection on Mouse Drag"],
+      ] as const) {
+        expect(matchActions(allActions(), title, { isEnabled: () => true, recent: [id] })).toEqual([]);
+        const variants: KeymapDraft["overrides"][] = [{}, { [id]: ["Alt+Button1"] }, { [id]: [] }];
+        for (const overrides of variants) {
+          useKeymap.setState({ preset, overrides });
+          expect(keymapSearchLabels()).toContain(title);
+          const tree = buildKeymapTree(allActions(), { preset, overrides }, title, "");
+          const group = tree.find((node) => node.key === "grp:Editor Actions");
+          expect(group?.kind === "group" && group.children.map((node) => node.key)).toEqual([id]);
+        }
       }
     } finally {
       useKeymap.setState(originalKeymap);
+      dispose();
+    }
+  });
+
+  it("finds the identifier case action by name and by each style it converts between", () => {
+    const dispose = registerEditorActions();
+    try {
+      for (const query of ["Cycle Identifier Case", "camel", "snake", "kebab", "pascal"]) {
+        expect(matchActions(allActions(), query, { isEnabled: () => true, recent: [] }).map((a) => a.id)).toContain(
+          "code.cycleCase",
+        );
+      }
+    } finally {
       dispose();
     }
   });
@@ -233,6 +277,56 @@ describe("shortcut search", () => {
     expect(bindingMatches(["Meta+O"], "Meta+Shift+O")).toBe(false);
   });
 
+  it("reads typed shortcut text in the search field", () => {
+    const m = (bindings: string[], query: string) => {
+      const parsed = parseShortcutQuery(query);
+      return !!parsed && shortcutQueryMatches(bindings, parsed);
+    };
+    for (const q of [
+      "ctrl+shift+n",
+      "Ctrl+Shift+N",
+      "shift+ctrl+n",
+      "ctrl shift n",
+      "Ctrl + Shift + N",
+      "control+shift+n",
+    ])
+      expect(m(["Ctrl+Shift+N"], q)).toBe(true);
+    expect(m(["Ctrl+N"], "ctrl+shift+n")).toBe(false);
+    expect(m(["Ctrl+Shift+N"], "ctrl+n")).toBe(false);
+    // Only modifiers typed so far: every shortcut holding them.
+    expect(m(["Ctrl+Shift+N"], "ctrl")).toBe(true);
+    expect(m(["Ctrl+Shift+N"], "ctrl+shift")).toBe(true);
+    expect(m(["Ctrl+Shift+N"], "ctrl+shift+")).toBe(true);
+    expect(m(["Alt+N"], "ctrl")).toBe(false);
+    expect(m(["Shift+Meta+O"], "⇧⌘O")).toBe(true);
+    expect(m(["Shift+Meta+O"], "cmd+shift+o")).toBe(true);
+    expect(m(["Meta+K Meta+C"], "Meta+K, Meta+C")).toBe(true);
+    expect(m(["Meta+K Meta+C"], "cmd+k")).toBe(true);
+    expect(m(["Meta+K Meta+C"], "cmd+k cmd+x")).toBe(false);
+    expect(m(["Shift Shift"], "shift")).toBe(true);
+    expect(m(["Ctrl+Escape"], "ctrl+esc")).toBe(true);
+    expect(m(["Shift+F6"], "shift+f6")).toBe(true);
+    expect(m(["F5"], "f5")).toBe(true);
+    // Plain words stay name searches.
+    expect(parseShortcutQuery("save")).toBeNull();
+    expect(parseShortcutQuery("go to file")).toBeNull();
+    expect(parseShortcutQuery("")).toBeNull();
+  });
+
+  it("lists actions whose shortcut matches the typed text", () => {
+    const run = () => {};
+    const actions = [
+      { id: "a.one", title: "Alpha", category: "File", run },
+      { id: "a.two", title: "Beta", category: "File", run },
+    ];
+    const draft = { preset: "intellij-windows", overrides: { "a.one": ["Ctrl+Shift+N"], "a.two": ["Ctrl+N"] } };
+    const keys = (nodes: ReturnType<typeof buildKeymapTree>): string[] =>
+      nodes.flatMap((n) => (n.kind === "group" ? keys(n.children) : [n.key]));
+    expect(keys(buildKeymapTree(actions, draft, "ctrl+shift+n", ""))).toEqual(["a.one"]);
+    expect(keys(buildKeymapTree(actions, draft, "ctrl+n", ""))).toEqual(["a.two"]);
+    expect(keys(buildKeymapTree(actions, draft, "Ctrl", "")).sort()).toEqual(["a.one", "a.two"]);
+  });
+
   it("filters the keymap tree by name and by shortcut", () => {
     const run = () => {};
     const actions = [
@@ -241,6 +335,11 @@ describe("shortcut search", () => {
       { id: "internal.x", title: "Internal", hidden: true, run },
     ];
     const draft = { preset: "intellij-macos", overrides: {} };
+    // Hidden from Search Everywhere but keymap-listed (Cut / Copy / Paste) still shows.
+    const copy = { id: "edit.copy", title: "Copy", category: "Edit", hidden: true, keymap: true, run };
+    const withCopy = buildKeymapTree([...actions, copy], draft, "copy", "");
+    const edit = withCopy[0]!.kind === "group" ? withCopy[0]!.children[0] : undefined;
+    expect(edit?.kind === "group" && edit.children.map((n) => n.key)).toEqual(["edit.copy"]);
     const all = buildKeymapTree(actions, draft, "", "");
     expect(all.map((n) => n.key)).toEqual(["grp:Main Menu"]);
     const menu = all[0]!.kind === "group" ? all[0]!.children : [];

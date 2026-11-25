@@ -33,7 +33,7 @@ test("plugin routes feed search, HTTP completion and the declaration gutter and 
     });
     await editorService().openFile("/dev/acme-api/routes.txt");
   });
-  await expect(page.locator('.cm-openidea-gutter-endpoints button[title="Open in HTTP Client"]')).toBeVisible();
+  await expect(page.locator('.cm-openidea-iconArea button[title="Open in HTTP Client"]')).toBeVisible();
   await doubleShift(page);
   const search = page.getByRole("dialog", { name: "Search Everywhere" });
   await search.getByRole("combobox").fill("/people");
@@ -59,5 +59,5 @@ test("plugin routes feed search, HTTP completion and the declaration gutter and 
     const path = "/src/workbench/contributions.ts";
     await (await import(path)).editorService().openFile("/dev/acme-api/routes.txt");
   });
-  await expect(page.locator('.cm-openidea-gutter-endpoints button[title="Open in HTTP Client"]')).toBeHidden();
+  await expect(page.locator('.cm-openidea-iconArea button[title="Open in HTTP Client"]')).toBeHidden();
 });

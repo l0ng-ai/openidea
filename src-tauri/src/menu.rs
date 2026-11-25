@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, MenuItemKind, NativeIcon, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
 
 /// Event emitted to the focused window when an IDE menu item is clicked.
@@ -217,14 +217,20 @@ pub fn spec(os: Os) -> Vec<Entry> {
     }
 
     let mut file = vec![
-        act("file.newProject", "New Project…"),
-        act("workspace.create", "New Workspace…"),
-        act("workspace.open", "Open Workspace…"),
-        act("workspace.manage", "Manage Workspace…"),
-        act("file.new", "New…"),
-        act("file.newScratchFile", "New Scratch File…"),
+        sub(
+            "new",
+            "New",
+            vec![
+                act("file.newProject", "Project…"),
+                act("workspace.create", "Workspace…"),
+                act("vcs.cloneProject", "Project from Version Control…"),
+                SEP,
+                act("file.new", "File…"),
+                act("file.newScratchFile", "Scratch File"),
+                act("file.newUntitled", "Untitled File"),
+            ],
+        ),
         act("file.openProject", "Open…"),
-        act("project.attach", "Attach Project…"),
         act("file.openFile", "Open File…"),
         act("file.openInNewWindow", "Open in New Window…"),
         sub(
@@ -232,12 +238,18 @@ pub fn spec(os: Os) -> Vec<Entry> {
             "Open Recent",
             vec![Entry::RecentProjects, SEP, act("welcome.recentProjects", "Manage Projects…")],
         ),
+        act("project.attach", "Attach Project…"),
+        SEP,
+        act("workspace.open", "Open Workspace…"),
+        act("workspace.manage", "Manage Workspace…"),
+        SEP,
         act("file.closeProject", "Close Project"),
         act("file.renameProject", "Rename Project…"),
         SEP,
         act("remote.connect", "Remote Development…"),
         act("remote.reopenInContainer", "Reopen in Container"),
         act("remote.disconnect", "Disconnect from Remote Host"),
+        act("remote.stopBackend", "Stop Remote Backend"),
         act("remote.reloadEnvironment", "Reload Environment"),
         SEP,
         act("file.save", "Save All"),
@@ -386,6 +398,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     act("editor.toggleZen", "Enter Distraction Free Mode"),
                     act("window.toggleFullScreen", "Toggle Full Screen"),
                     toggle("view.toggleCompactMode", "Compact Mode"),
+                    toggle("view.togglePresentationAssistant", "Presentation Assistant"),
                     SEP,
                     act("view.zoomIn", "Zoom In IDE"),
                     act("view.zoomOut", "Zoom Out IDE"),
@@ -409,7 +422,14 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     sub("statusBarWidgets", "Status Bar Widgets", vec![Entry::Dynamic(DYNAMIC_STATUS_BAR_WIDGETS)]),
                 ],
             ),
-            sub("activeEditor", "Active Editor", vec![act("editor.toggleSoftWrap", "Soft-Wrap")]),
+            sub(
+                "activeEditor",
+                "Active Editor",
+                vec![
+                    act("editor.toggleSoftWrap", "Soft-Wrap"),
+                    act("editor.toggleRenderedDocs", "Render Documentation Comments"),
+                ],
+            ),
             SEP,
             act("code.quickDefinition", "Quick Definition"),
             act("code.quickTypeDefinition", "Quick Type Definition"),
@@ -422,7 +442,8 @@ pub fn spec(os: Os) -> Vec<Entry> {
             SEP,
             act("view.quickSwitchScheme", "Quick Switch Scheme…"),
             SEP,
-            act("editor.resetFontSize", "Reset Font Size in All Editors"),
+            act("editor.resetFontSize", "Reset Font Size"),
+            act("editor.resetFontSizeAll", "Reset Font Size in All Editors"),
             SEP,
             act("view.notifications", "Notifications"),
         ],
@@ -448,6 +469,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("navigate.typeDeclaration", "Type Declaration"),
             act("navigate.superMethod", "Super Method"),
             act("navigate.gotoTest", "Test"),
+            act("navigate.relatedSymbol", "Related Symbol…"),
             SEP,
             act("navigate.fileStructure", "File Structure"),
             act("navigate.showFilePath", "File Path"),
@@ -474,6 +496,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 "Code Completion",
                 vec![
                     act("code.completion", "Basic"),
+                    act("code.smartTypeCompletion", "Smart Type"),
                     SEP,
                     act("code.cyclicExpandWord", "Cyclic Expand Word"),
                     act("code.cyclicExpandWordBackward", "Cyclic Expand Word (Backward)"),
@@ -497,6 +520,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("code.reformat", "Reformat Code"),
             act("code.autoIndentLines", "Auto-Indent Lines"),
             act("code.optimizeImports", "Optimize Imports"),
+            act("code.rearrange", "Rearrange Code"),
             act("code.cleanup", "Code Cleanup…"),
             SEP,
             act("code.commentLine", "Comment with Line Comment"),
@@ -575,6 +599,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("refactor.extractField", "Introduce Field…"),
             act("refactor.extractParameter", "Introduce Parameter…"),
             act("refactor.extractMethod", "Extract Method…"),
+            act("refactor.extractInterface", "Extract Interface…"),
             act("refactor.inline", "Inline…"),
             SEP,
             act("refactor.pullMembersUp", "Pull Members Up…"),
@@ -592,6 +617,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         vec![
             act("build.buildProject", "Build Project"),
             act("build.buildModule", "Build Module"),
+            act("build.compileFile", "Recompile"),
             act("build.rebuildProject", "Rebuild Project"),
             SEP,
             act("build.buildArtifacts", "Build Artifacts"),
@@ -656,6 +682,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("vcs.update", "Update Project…"),
             act("vcs.pull", "Pull…"),
             act("vcs.fetch", "Fetch"),
+            act("vcs.unshallow", "Fetch Full History"),
             SEP,
             // Operation items (Abort Merge, Continue Rebase…) are enabled only while it is in progress.
             act("vcs.merge", "Merge…"),
@@ -691,6 +718,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     act("vcs.shelve", "Shelve Changes…"),
                     act("vcs.showShelf", "Show Shelf"),
                     act("vcs.stash", "Stash Changes…"),
+                    act("vcs.showStashes", "Show Stash"),
                     act("vcs.unstash", "Unstash Changes…"),
                     act("vcs.rollback", "Rollback…"),
                 ],
@@ -783,13 +811,12 @@ pub fn spec(os: Os) -> Vec<Entry> {
             "toolWindowLayouts",
             "Tool Window Layouts",
             vec![
-                act("layout.save", "Save Current Layout as…"),
-                act("layout.restoreDefault", "Restore Default Layout"),
-                SEP,
+                toggle("layout.restoreDefault", "Restore Default Layout"),
                 Entry::Dynamic(DYNAMIC_LAYOUTS),
                 SEP,
-                act("layout.rename", "Rename Layout…"),
-                act("layout.delete", "Delete Layout…"),
+                act("layout.restoreCurrent", "Restore Current Layout"),
+                act("layout.saveCurrent", "Save Changes in Current Layout"),
+                act("layout.save", "Save Current Layout as…"),
             ],
         ),
         SEP,
@@ -865,6 +892,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("navigate.findAction", "Find Action…"),
         act("help.keymapReference", "Keymap Reference"),
         SEP,
+        act("app.whatsNew", "What's New"),
         act("help.showLog", show_log),
     ];
     if !mac {
@@ -880,6 +908,17 @@ pub fn spec(os: Os) -> Vec<Entry> {
 pub struct MenuRoute {
     pub action: String,
     pub arg: Option<String>,
+}
+
+/// Payload of [`MENU_EVENT`]: the route, and the window that was in front when the item was
+/// chosen if the action runs in another one (a Settings window's project window).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MenuEvent<'a> {
+    #[serde(flatten)]
+    pub route: &'a MenuRoute,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_to: Option<&'a str>,
 }
 
 /// Maps a clicked item id to the action to run. `None` for ids that are not
@@ -971,6 +1010,32 @@ impl DynamicItem {
             None => format!("{DYNAMIC_PREFIX}{}", self.action),
         }
     }
+
+    fn model(&self) -> MenuNode {
+        MenuNode::Action {
+            id: self.action.clone(),
+            label: self.label.clone(),
+            hint: None,
+            arg: self.arg.clone(),
+            checked: self.checked,
+        }
+    }
+
+    fn render(&self, config: &MenuConfig) -> RenderedItem {
+        RenderedItem::Action {
+            id: self.item_id(),
+            text: self.label.clone(),
+            accel: config.dynamic_accelerator(self).map(Into::into),
+            checked: self.checked,
+        }
+    }
+}
+
+struct LayoutMenu<'a> {
+    id: String,
+    name: &'a str,
+    current: bool,
+    items: Vec<Option<DynamicItem>>,
 }
 
 impl MenuConfig {
@@ -980,6 +1045,38 @@ impl MenuConfig {
 
     fn dynamic_items(&self, slot: &str) -> &[DynamicItem] {
         self.dynamic.get(slot).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    fn layout_menus(&self) -> Vec<LayoutMenu<'_>> {
+        self.dynamic_items(DYNAMIC_LAYOUTS)
+            .iter()
+            .filter_map(|layout| {
+                let name = layout.arg.as_deref()?;
+                let current = layout.checked.unwrap_or_default();
+                let command = |action: &str, label_key, fallback| {
+                    Some(DynamicItem {
+                        action: action.into(),
+                        arg: Some(name.into()),
+                        label: self.label(label_key, fallback),
+                        checked: None,
+                    })
+                };
+                let mut items = if current {
+                    vec![
+                        command("layout.restore", "layout.restoreNamed", "Restore"),
+                        command("layout.saveCurrent", "layout.saveNamed", "Save Changes"),
+                    ]
+                } else {
+                    vec![command("layout.restore", "layout.applyNamed", "Apply")]
+                };
+                items.extend([
+                    command("layout.rename", "layout.renameNamed", "Rename…"),
+                    None,
+                    command("layout.delete", "layout.deleteNamed", "Delete…"),
+                ]);
+                Some(LayoutMenu { id: format!("layout:{name}"), name, current, items })
+            })
+            .collect()
     }
 
     /// The keymap accelerator shown on the item of action `id`.
@@ -1112,8 +1209,9 @@ struct RenderedMenu {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RenderedItem {
     Submenu {
-        id: &'static str,
+        id: String,
         title: String,
+        current: bool,
         items: Vec<RenderedItem>,
     },
     /// `accel` is the spec's accelerator, or else the keymap's from [`MenuConfig::accelerators`].
@@ -1162,8 +1260,9 @@ fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -
     for entry in entries {
         match entry {
             Entry::Submenu { id, label, children } => out.push(RenderedItem::Submenu {
-                id,
+                id: (*id).into(),
                 title: config.label(id, label),
+                current: false,
                 items: render_items(children, config, recent),
             }),
             Entry::Action { id, label, accel, hint, check } => out.push(RenderedItem::Action {
@@ -1172,16 +1271,25 @@ fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -
                 accel: accel.or_else(|| config.accelerator(id)).map(Into::into),
                 checked: check.then(|| config.checked.iter().any(|c| c == id)),
             }),
-            Entry::Dynamic(slot) => {
-                for item in config.dynamic_items(slot) {
-                    out.push(RenderedItem::Action {
-                        id: item.item_id(),
-                        text: item.label.clone(),
-                        accel: config.dynamic_accelerator(item).map(Into::into),
-                        checked: item.checked,
-                    });
+            Entry::Dynamic(DYNAMIC_LAYOUTS) => {
+                let layouts = config.layout_menus();
+                if !layouts.is_empty() {
+                    out.push(RenderedItem::Separator);
                 }
+                out.extend(layouts.into_iter().map(|layout| {
+                    RenderedItem::Submenu {
+                        id: layout.id,
+                        title: layout.name.replace('&', "&&"),
+                        current: layout.current,
+                        items: layout
+                            .items
+                            .into_iter()
+                            .map(|item| item.map_or(RenderedItem::Separator, |item| item.render(config)))
+                            .collect(),
+                    }
+                }));
             }
+            Entry::Dynamic(slot) => out.extend(config.dynamic_items(slot).iter().map(|item| item.render(config))),
             Entry::Native(kind) => {
                 out.push(RenderedItem::Native { kind: *kind, text: config.label(kind.key(), kind.default_label()) })
             }
@@ -1207,7 +1315,7 @@ fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -
 
 fn structure_key(item: &RenderedItem) -> (u8, &str) {
     match item {
-        RenderedItem::Submenu { id, .. } => (0, *id),
+        RenderedItem::Submenu { id, .. } => (0, id.as_str()),
         RenderedItem::Action { id, checked: None, .. } => (1, id.as_str()),
         RenderedItem::Action { id, checked: Some(_), .. } => (5, id.as_str()),
         RenderedItem::Placeholder { id, .. } => (2, id.as_str()),
@@ -1245,11 +1353,11 @@ fn build_rendered<R: Runtime>(
     for rendered in menus {
         let submenu = Submenu::with_id(app, format!("submenu:{}", rendered.id), &rendered.title, true)?;
         append_rendered(app, &submenu, &rendered.items, disabled)?;
+        // The Window menu is registered after `set_menu`: doing it here cannot see the submenu
+        // on NSApp, so AppKit never adds the open-window list.
         #[cfg(target_os = "macos")]
-        match rendered.id {
-            "window" => submenu.set_as_windows_menu_for_nsapp()?,
-            "help" => submenu.set_as_help_menu_for_nsapp()?,
-            _ => {}
+        if rendered.id == "help" {
+            submenu.set_as_help_menu_for_nsapp()?;
         }
         menu.append(&submenu)?;
     }
@@ -1264,8 +1372,14 @@ fn append_rendered<R: Runtime>(
 ) -> tauri::Result<()> {
     for item in items {
         match item {
-            RenderedItem::Submenu { id, title, items } => {
-                let child = Submenu::with_id(app, format!("submenu:{id}"), title, true)?;
+            RenderedItem::Submenu { id, title, current, items } => {
+                let child = Submenu::with_id_and_native_icon(
+                    app,
+                    format!("submenu:{id}"),
+                    title,
+                    true,
+                    current.then_some(NativeIcon::MenuOnState),
+                )?;
                 append_rendered(app, &child, items, disabled)?;
                 parent.append(&child)?;
             }
@@ -1383,10 +1497,15 @@ fn sync_item<R: Runtime>(
     match (existing, previous, next) {
         (
             MenuItemKind::Submenu(submenu),
-            RenderedItem::Submenu { title: previous_title, items: previous_items, .. },
-            RenderedItem::Submenu { title, items, .. },
+            RenderedItem::Submenu { title: previous_title, current: previous_current, items: previous_items, .. },
+            RenderedItem::Submenu { title, current, items, .. },
         ) => {
             if previous_title != title && submenu.set_text(title).is_err() {
+                return false;
+            }
+            if previous_current != current
+                && submenu.set_native_icon(current.then_some(NativeIcon::MenuOnState)).is_err()
+            {
                 return false;
             }
             sync_children(app, submenu, previous_items, items, disabled, true)
@@ -1459,6 +1578,9 @@ pub enum MenuNode {
     Submenu {
         id: String,
         label: String,
+        /// Saved layout selection, unset for ordinary submenus.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current: Option<bool>,
         children: Vec<MenuNode>,
     },
     /// Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
@@ -1488,15 +1610,28 @@ pub fn model(spec: &[Entry], recent: &[RecentItem], config: &MenuConfig) -> Vec<
             Entry::Submenu { id, label, children } => out.push(MenuNode::Submenu {
                 id: (*id).into(),
                 label: (*label).into(),
+                current: None,
                 children: model(children, recent, config),
             }),
-            Entry::Dynamic(slot) => out.extend(config.dynamic_items(slot).iter().map(|d| MenuNode::Action {
-                id: d.action.clone(),
-                label: d.label.clone(),
-                hint: None,
-                arg: d.arg.clone(),
-                checked: d.checked,
-            })),
+            Entry::Dynamic(DYNAMIC_LAYOUTS) => {
+                let layouts = config.layout_menus();
+                if !layouts.is_empty() {
+                    out.push(MenuNode::Separator);
+                }
+                out.extend(layouts.into_iter().map(|layout| {
+                    MenuNode::Submenu {
+                        id: layout.id,
+                        label: layout.name.into(),
+                        current: Some(layout.current),
+                        children: layout
+                            .items
+                            .into_iter()
+                            .map(|item| item.map_or(MenuNode::Separator, |item| item.model()))
+                            .collect(),
+                    }
+                }));
+            }
+            Entry::Dynamic(slot) => out.extend(config.dynamic_items(slot).iter().map(DynamicItem::model)),
             Entry::Action { id, label, hint, .. } => out.push(MenuNode::Action {
                 id: (*id).into(),
                 label: (*label).into(),
@@ -1595,16 +1730,50 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
         *slot = Some(rendered);
         return;
     }
-    match build(app, Os::current(), &config, &items, &disabled).and_then(|menu| app.set_menu(menu)) {
-        Ok(_) => *slot = Some(rendered),
-        Err(e) => tracing::warn!("failed to build the app menu: {e}"),
+    let installed = match build(app, Os::current(), &config, &items, &disabled).and_then(|menu| app.set_menu(menu)) {
+        Ok(_) => {
+            *slot = Some(rendered);
+            true
+        }
+        Err(e) => {
+            tracing::warn!("failed to build the app menu: {e}");
+            false
+        }
+    };
+    drop(slot);
+    if installed {
+        // After the menu bar is installed. Holding `rendered` across this would deadlock a menu
+        // click on the main thread, which also takes that lock.
+        #[cfg(target_os = "macos")]
+        register_macos_windows_menu(app);
+    }
+}
+
+/// Makes the Window submenu the macOS windows menu, so AppKit lists open windows under it.
+///
+/// Each item uses the window title (`project – file`, or the workspace name). muda can only
+/// resolve the submenu once `set_menu` has attached it, and Tauri itself only does this for
+/// the id `__tauri_window_menu__`.
+#[cfg(target_os = "macos")]
+fn register_macos_windows_menu<R: Runtime>(app: &AppHandle<R>) {
+    let Some(menu) = app.menu() else { return };
+    let Ok(items) = menu.items() else { return };
+    for item in items {
+        let Some(submenu) = item.as_submenu() else { continue };
+        if submenu.id().as_ref() != "submenu:window" {
+            continue;
+        }
+        if let Err(error) = submenu.set_as_windows_menu_for_nsapp() {
+            tracing::warn!("failed to register the macOS Window menu: {error}");
+        }
+        return;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::{BTreeSet, HashSet};
 
     const ALL_OS: [Os; 3] = [Os::Mac, Os::Windows, Os::Linux];
 
@@ -1965,12 +2134,70 @@ mod tests {
     }
 
     #[test]
+    fn file_menu_starts_with_a_new_submenu() {
+        for os in ALL_OS {
+            let menus = spec(os);
+            let Some(Entry::Submenu { children: file, .. }) =
+                menus.iter().find(|e| matches!(e, Entry::Submenu { id: "file", .. }))
+            else {
+                panic!("File menu missing on {os:?}")
+            };
+            let Some(Entry::Submenu { id: "new", children: new, .. }) = file.first() else {
+                panic!("File menu does not start with New on {os:?}")
+            };
+            assert_eq!(
+                action_ids(new),
+                [
+                    "file.newProject",
+                    "workspace.create",
+                    "vcs.cloneProject",
+                    "file.new",
+                    "file.newScratchFile",
+                    "file.newUntitled"
+                ],
+                "{os:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_menu_item_has_a_catalog_label() {
+        fn walk(entries: &[Entry], out: &mut BTreeSet<&'static str>) {
+            for e in entries {
+                match e {
+                    Entry::Submenu { id, children, .. } => {
+                        out.insert(id);
+                        walk(children, out);
+                    }
+                    Entry::Action { id, .. } => {
+                        out.insert(id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut ids = BTreeSet::new();
+        for os in ALL_OS {
+            walk(&spec(os), &mut ids);
+        }
+        for (locale, catalog) in [
+            ("en", include_str!("../../src/platform/locales/en.json")),
+            ("zh", include_str!("../../src/platform/locales/zh.json")),
+        ] {
+            let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(catalog).unwrap();
+            let missing: Vec<_> = ids.iter().filter(|id| !catalog.contains_key(&format!("menu.{id}"))).collect();
+            assert!(missing.is_empty(), "{locale}.json lacks menu labels for {missing:?}");
+        }
+    }
+
+    #[test]
     fn recent_labels_tildify_home() {
         let recent = vec![ide_workspace::RecentProject {
             path: "/home/me/code/openidea".into(),
             name: "openidea".into(),
             opened_at_ms: 0.0,
             branch: None,
+            missing: false,
         }];
         let items = recent_items(&recent, Some(Path::new("/home/me")));
         assert_eq!(items[0].label, "openidea  —  ~/code/openidea");
@@ -2094,6 +2321,53 @@ mod tests {
     }
 
     #[test]
+    fn saved_layout_submenus_group_commands_by_selection() {
+        let mut config = MenuConfig::default();
+        let mut review = dynamic_item("layout.restore", Some("Review | wide"), "Review | wide");
+        review.checked = Some(true);
+        config
+            .dynamic
+            .insert(DYNAMIC_LAYOUTS.into(), vec![dynamic_item("layout.restore", Some("Focus"), "Focus"), review]);
+        config.labels.insert("menu.layout.applyNamed".into(), "Apply layout".into());
+        let layout_spec = [act("layout.restoreDefault", "Restore Default Layout"), Entry::Dynamic(DYNAMIC_LAYOUTS)];
+        let nodes = model(&layout_spec, &[], &config);
+        assert!(matches!(&nodes[0], MenuNode::Action { id, .. } if id == "layout.restoreDefault"));
+        assert!(matches!(&nodes[1], MenuNode::Separator));
+        let MenuNode::Submenu { label, current: Some(false), children, .. } = &nodes[2] else {
+            panic!("expected an inactive named layout");
+        };
+        assert_eq!(label, "Focus");
+        assert!(matches!(&children[0], MenuNode::Action { label, .. } if label == "Apply layout"));
+        assert_eq!(children.len(), 4);
+        let MenuNode::Submenu { label, current: Some(true), children, .. } = &nodes[3] else {
+            panic!("expected an active named layout");
+        };
+        assert_eq!(label, "Review | wide");
+        let ids: Vec<_> = children
+            .iter()
+            .filter_map(|node| match node {
+                MenuNode::Action { id, arg: Some(name), .. } => {
+                    assert_eq!(name, "Review | wide");
+                    Some(id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["layout.restore", "layout.saveCurrent", "layout.rename", "layout.delete"]);
+
+        let rendered = render_items(&layout_spec, &config, &[]);
+        let RenderedItem::Submenu { current: true, items, .. } = &rendered[3] else {
+            panic!("expected an active native named layout");
+        };
+        let RenderedItem::Action { id, .. } = &items[2] else { panic!("expected Rename") };
+        assert_eq!(
+            route(&layout_spec, id),
+            Some(MenuRoute { action: "layout.rename".into(), arg: Some("Review | wide".into()) }),
+        );
+        assert_eq!(model(&layout_spec, &[], &MenuConfig::default()).len(), 1);
+    }
+
+    #[test]
     fn tool_windows_and_layouts_are_listed_by_the_frontend() {
         fn slots(entries: &[Entry], out: &mut Vec<&'static str>) {
             for e in entries {
@@ -2183,6 +2457,7 @@ mod tests {
                 "vcs.update",
                 "vcs.pull",
                 "vcs.fetch",
+                "vcs.unshallow",
                 "|",
                 "vcs.merge",
                 "vcs.merge.abort",
@@ -2251,16 +2526,47 @@ mod tests {
                 "view.quickSwitchScheme",
                 "code.cleanup",
                 "runAnything.show",
+                "layout.saveCurrent",
+                "layout.restoreCurrent",
                 "layout.save",
                 "layout.restoreDefault",
-                "layout.rename",
-                "layout.delete",
                 "toolwindow.hideActive",
                 "editor.closeOtherTabs",
                 "toolbar.customize",
+                "build.compileFile",
             ] {
                 assert!(ids.contains(&required), "{required} missing on {os:?}");
             }
         }
+    }
+
+    #[test]
+    fn build_menu_lists_recompile_and_patches_its_label() {
+        for os in ALL_OS {
+            let entries = spec(os);
+            let Entry::Submenu { children, .. } =
+                entries.iter().find(|e| matches!(e, Entry::Submenu { id: "build", .. })).unwrap()
+            else {
+                panic!("Build menu missing")
+            };
+            assert_eq!(
+                action_ids(children),
+                [
+                    "build.buildProject",
+                    "build.buildModule",
+                    "build.compileFile",
+                    "build.rebuildProject",
+                    "build.buildArtifacts",
+                ],
+                "{os:?}"
+            );
+            assert!(!fires_natively(&entries, "build.compileFile"));
+        }
+        let entries = spec(Os::Mac);
+        let mut base = MenuConfig::default();
+        base.labels.insert("menu.build.compileFile".into(), "Recompile".into());
+        let mut active = base.clone();
+        active.labels.insert("menu.build.compileFile".into(), "Recompile 'Main.java'".into());
+        assert_eq!(changed_menus(&render_bar(&entries, &base, &[]), &render_bar(&entries, &active, &[])), ["build"]);
     }
 }

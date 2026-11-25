@@ -1,0 +1,20 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "implementations": [
+      "src/main/java/org/springframework/samples/petclinic/model/NamedEntity.java:31",
+      "src/main/java/org/springframework/samples/petclinic/model/Person.java:29",
+      "src/main/java/org/springframework/samples/petclinic/owner/Owner.java:50",
+      "src/main/java/org/springframework/samples/petclinic/owner/Pet.java:46",
+      "src/main/java/org/springframework/samples/petclinic/owner/PetType.java:28",
+      "src/main/java/org/springframework/samples/petclinic/owner/Visit.java:37",
+      "src/main/java/org/springframework/samples/petclinic/vet/Specialty.java:30",
+      "src/main/java/org/springframework/samples/petclinic/vet/Vet.java:45",
+      "src/test/java/org/springframework/samples/petclinic/owner/PetTypeFormatterTests.java:84",
+      "src/test/java/org/springframework/samples/petclinic/owner/PetTypeFormatterTests.java:89"
+    ]
+  }
+}

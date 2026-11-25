@@ -1,4 +1,4 @@
-/** Settings › Agents › Coding Agents. */
+/** Settings › Agents › Agent Setup. */
 import { AgentList } from "./AgentList";
 import { tauriCommands, tauriRegistry, type CommandsBackend, type RegistryBackend } from "./registry";
 import styles from "./AgentRegistry.module.css";

@@ -1,0 +1,24 @@
+.hover {
+  display: grid;
+  grid-template-columns: minmax(0, 320px) minmax(0, max-content);
+  column-gap: var(--space-4);
+  align-items: start;
+}
+
+.hover > :first-child {
+  padding-block-start: var(--space-2);
+}
+
+@container settings-content (max-width: 540px) {
+  .hover {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hover > :first-child {
+    padding-block-start: 2px;
+  }
+
+  .hover > :last-child {
+    margin-inline-start: calc(16px + var(--space-2) - 6px);
+  }
+}

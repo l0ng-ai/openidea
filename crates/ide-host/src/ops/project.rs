@@ -1,10 +1,11 @@
 use crate::{Host, Project};
-use ide_core::IdeResult;
+use ide_command::command;
 use ide_core::settings::Settings;
+use ide_core::{IdeEvent, IdeResult, RequestId, TaskId};
 use ide_workspace::settings::SettingsScope;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Serialize, Deserialize, Type)]
@@ -53,20 +54,188 @@ pub async fn open(host: &Arc<Host>, window: &str, path: &Path) -> IdeResult<Arc<
     host.blocking(move || h.open_project(&window, &path)).await
 }
 
-pub fn current(host: &Host, window: &str) -> Option<ProjectInfo> {
+#[command(trust = always, desktop_body = async)]
+pub async fn open_project(host: &Arc<Host>, window: &str, path: PathBuf) -> IdeResult<ProjectInfo> {
+    let project = open(host, window, &path).await?;
+    Ok(info(&project))
+}
+
+/// The project open in this window (a settings window: its parent's), if any.
+#[command(trust = always, desktop_body = sync)]
+pub fn project_current(host: &Host, window: &str) -> Option<ProjectInfo> {
     host.project(window).ok().filter(|p| !p.light).map(|p| info(&p))
 }
 
+#[command(trust = always, desktop_body = spawn)]
+pub fn close_project(host: &Host, window: &str) {
+    host.close_project(window);
+}
+
 /// Effective settings for the window's project, or global settings without one.
-pub fn settings(host: &Host, window: &str) -> Settings {
+#[command(trust = always, desktop_body = sync)]
+pub fn settings_get(host: &Host, window: &str) -> Settings {
     host.with_proxy_password(match host.project(window) {
         Ok(p) => p.settings.effective(),
         Err(_) => host.global_settings.effective(),
     })
 }
 
-pub fn roots(host: &Host, window: &str) -> IdeResult<ide_workspace::ProjectRoots> {
+/// Defaults plus the global layer, without any project's values: what new
+/// projects (and projects without their own value) get.
+#[command(trust = always)]
+pub fn settings_get_global(host: &Host) -> Settings {
+    host.with_proxy_password(host.global_settings.effective())
+}
+
+/// Read the same host-wide value for the close dialog and the idle timer: another project's
+/// daemon may have edited the file since this host loaded its settings.
+#[command(trust = always)]
+pub async fn remote_idle_timeout_minutes(host: &Arc<Host>) -> IdeResult<u16> {
+    let h = host.clone();
+    host.blocking(move || Ok(h.global_settings.layer(SettingsScope::Global).remote_development.idle_timeout_minutes))
+        .await
+}
+
+/// The removed built-in theme id a settings file of this window still names, if any:
+/// `settings_get` reports the built-in that stands in for it, so the notice about
+/// a theme that moved to a plugin can address the installs it concerns.
+#[command(trust = always, desktop_body = sync)]
+pub fn settings_removed_theme(host: &Host, window: &str) -> Option<String> {
+    match host.project(window) {
+        Ok(p) => p.settings.named_removed_theme().or_else(|| host.global_settings.named_removed_theme()),
+        Err(_) => host.global_settings.named_removed_theme(),
+    }
+}
+
+/// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
+/// value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
+/// re-reads its effective settings.
+#[command(trust = always, desktop_body = sync)]
+pub fn settings_set(
+    host: &Arc<Host>,
+    window: &str,
+    scope: SettingsScope,
+    key: String,
+    value: String,
+) -> IdeResult<Settings> {
+    let applied = set_settings(host, window, scope, &key, &value)?;
+    if key == "mcpServer" || key.starts_with("mcpServer.") {
+        host.mcp.apply(host);
+    }
+    let sink = host.window_sink(window);
+    sink.emit(IdeEvent::SettingsChanged { key });
+    if let Some(root) = applied.roots_changed {
+        sink.emit(IdeEvent::ProjectRootsChanged { root });
+    }
+    Ok(applied.settings)
+}
+
+/// Effective source / test / resource / excluded roots of the window's project:
+/// auto-detected from build files, overridden by Settings › Project Structure.
+#[command(trust = always)]
+pub fn project_roots(host: &Host, window: &str) -> IdeResult<ide_workspace::ProjectRoots> {
     Ok(host.project(window)?.roots())
+}
+
+/// A project attached to the window's project, with its own Project Structure.
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMember {
+    pub root: ide_core::IpcPath,
+    /// Its project settings' Project Structure (not merged with the user settings).
+    pub structure: ide_core::settings::ProjectStructureSettings,
+    /// Roots detected from its build files.
+    pub detected: Vec<ide_workspace::SourceFolder>,
+}
+
+/// The workspace projects outside the window's project folder, for Mark Directory as there.
+/// Each member's `for_project().layer(Project)` re-parses both settings layers and validates the
+/// merged tree against `Settings`; that stack-hungry work must not run on the IPC (main) thread,
+/// whose 1 MiB stack overflows on project open (STATUS_STACK_OVERFLOW).
+#[command(trust = always, desktop_body = spawn)]
+pub fn project_workspace_members(host: &Host, window: &str) -> IdeResult<Vec<WorkspaceMember>> {
+    let project = host.project(window)?;
+    Ok(project
+        .attached_roots()
+        .into_iter()
+        .map(|root| WorkspaceMember {
+            structure: project.settings.for_project(&root).layer(SettingsScope::Project).project_structure,
+            detected: ide_workspace::roots::detect(&root),
+            root: root.into(),
+        })
+        .collect())
+}
+
+/// Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
+/// project (Mark Directory as there). Every open window holding that project follows.
+/// Like `project_workspace_members`, its `for_project` settings re-parse runs off the IPC thread.
+#[command(trust = always, desktop_body = spawn)]
+pub fn project_workspace_member_set(
+    host: &Arc<Host>,
+    window: &str,
+    root: PathBuf,
+    key: String,
+    value: String,
+) -> IdeResult<()> {
+    let project = host.project(window)?;
+    if !project.attached_roots().contains(&root) {
+        return Err(ide_core::IdeError::invalid("Not a project attached to this one"));
+    }
+    if !key.starts_with("projectStructure.") {
+        return Err(ide_core::IdeError::invalid(format!("{key} is not a Project Structure setting")));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&value).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
+    project.settings.for_project(&root).set(SettingsScope::Project, &key, value)?;
+    let affected: Vec<_> = host
+        .projects()
+        .into_iter()
+        .filter(|p| p.root == root || p.member_excludes.read().contains_key(&root))
+        .collect();
+    host.runtime.spawn_blocking(move || {
+        for p in affected {
+            if p.root == root {
+                p.settings.reload();
+                p.sink.emit(IdeEvent::SettingsChanged { key: key.clone() });
+            }
+            p.refresh_index_scope();
+            p.sink.emit(IdeEvent::ProjectRootsChanged { root: p.root.clone().into() });
+        }
+    });
+    Ok(())
+}
+
+#[command(trust = always)]
+pub fn cancel_request(host: &Host, id: RequestId) {
+    host.cancel_request(id);
+}
+
+/// Stops a background task the backend reported with `cancellable` set; false when it
+/// has ended or can't be cancelled.
+#[command(trust = always)]
+pub fn cancel_task(id: TaskId) -> bool {
+    ide_core::task::cancel(id)
+}
+
+#[command(trust = always)]
+pub fn project_trust_status(host: &Host, path: PathBuf) -> IdeResult<crate::trust::TrustStatus> {
+    host.trust.status(&path)
+}
+
+#[command(trust = always)]
+pub fn project_trust_list(host: &Host) -> IdeResult<crate::trust::TrustDecisions> {
+    host.trust.decisions()
+}
+
+#[command(trust = always, desktop_body = async)]
+pub async fn project_trust_set(host: &Host, path: PathBuf, trusted: bool, folder: bool) -> IdeResult<()> {
+    host.set_project_trust(&path, trusted, folder).await
+}
+
+#[command(trust = always, desktop_body = async)]
+pub async fn project_trust_remove_location(host: &Host, path: PathBuf) -> IdeResult<()> {
+    host.trust.remove_location(&path)?;
+    host.refresh_project_trust().await
 }
 
 pub fn save_workspace(host: &Host, window: &str, name: &str, paths: Vec<std::path::PathBuf>) -> IdeResult<ProjectInfo> {
@@ -164,10 +333,21 @@ pub fn set_settings(
     // A LightEdit window has no project layer: its values are global.
     let project_scope = matches!(scope, SettingsScope::Project) && current.as_ref().is_some_and(|p| !p.light);
     let is_proxy = key == "proxy" || key.starts_with("proxy.");
-    let Some(value) = host.take_proxy_password(key, value)? else {
+    let Some(mut value) = host.take_proxy_password(key, value)? else {
         host.apply_proxy();
-        return Ok(SettingsApplied { settings: settings(host, window), project_scope, roots_changed: None });
+        return Ok(SettingsApplied { settings: settings_get(host, window), project_scope, roots_changed: None });
     };
+    // One canonical spelling per linked POM, including a project outside the opened root.
+    if project_scope
+        && key == "languages.java.maven.linkedProjects"
+        && let Some(project) = current.as_ref()
+        && let Some(list) = value.as_array()
+    {
+        let poms: Vec<String> = list.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect();
+        if poms.len() == list.len() {
+            value = serde_json::json!(ide_build::maven::normalize_linked_poms(&project.root, &poms));
+        }
+    }
     let settings = match &current {
         Some(p) if project_scope => p.settings.set(scope, key, value)?,
         Some(p) => {
@@ -209,11 +389,37 @@ pub fn set_settings(
             }
         });
     }
+    // Directory Mappings change which repositories the project has.
+    if key == "vcs" || key == "vcs.mappings" || key.starts_with("vcs.mappings.") {
+        let affected = affected();
+        host.runtime.spawn_blocking(move || {
+            for project in affected {
+                project.refresh_repositories();
+            }
+        });
+    }
     if key == "ssh" || key.starts_with("ssh.") {
         host.ssh.set_configs(host.global_settings.effective().ssh.configs);
     }
+    if key == "languages" || key == "languages.java" || key.starts_with("languages.java.addedJdks") {
+        host.apply_added_jdks();
+    }
+    if key == "vcs" || key == "vcs.git" || key == "vcs.git.executable" {
+        host.apply_git_executable();
+    }
     if is_proxy {
         host.apply_proxy();
+    }
+    if key == "agents" || key == "agents.mcpServers" || key.starts_with("agents.mcpServers.") {
+        for project in affected() {
+            project.agents.notify_mcp_servers_changed();
+        }
+    }
+    // A skill policy change re-resolves the modes; an idle session restarts to pick them up.
+    if key == "agents" || key == "agents.skills" || key.starts_with("agents.skills.") {
+        for project in affected() {
+            project.agents.notify_mcp_servers_changed();
+        }
     }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
     // So do inspections that are compiler options (`ide-sdk` `configure_java_compiler`).
@@ -228,6 +434,12 @@ pub fn set_settings(
     let toolchain = ["languages", "tools", "languageServers", "projectStructure"]
         .iter()
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));
+    // A run target chosen as the Python interpreter (or changed) needs a snapshot of its libraries.
+    if ["languages", "languages.python", "languages.python.interpreter", "runTargets"].contains(&key) {
+        for project in affected() {
+            crate::ops::sdk::container_python::ensure(host, &project);
+        }
+    }
     // Code style only reaches servers as settings (e.g. jdtls' formatter profile); builds don't depend on it.
     if code_style || toolchain {
         for project in affected() {
@@ -246,7 +458,14 @@ pub fn set_settings(
     // Content roots and excludes (files.exclude, ignored names, excluded folders) reach the
     // index and the watchers without reopening the project (the rescan runs in the background).
     if roots_changed || key == "files" || key.starts_with("files.") {
-        let affected = affected();
+        let mut affected = affected();
+        // A workspace open in another window may hold this project: its excluded folders apply there.
+        if roots_changed
+            && project_scope
+            && let Some(own) = &current
+        {
+            affected.extend(host.projects().into_iter().filter(|p| p.member_excludes.read().contains_key(&own.root)));
+        }
         host.runtime.spawn_blocking(move || {
             for project in affected {
                 project.refresh_index_scope();
@@ -256,3 +475,24 @@ pub fn set_settings(
     let roots_changed = current.as_ref().filter(|_| roots_changed && project_scope).map(|p| p.root.clone().into());
     Ok(SettingsApplied { settings: host.with_proxy_password(settings), project_scope, roots_changed })
 }
+
+ide_command::domain!(
+    project:
+    cancel_request,
+    cancel_task,
+    close_project,
+    open_project,
+    project_current,
+    project_roots,
+    project_trust_list,
+    project_trust_remove_location,
+    project_trust_set,
+    project_trust_status,
+    project_workspace_member_set,
+    project_workspace_members,
+    remote_idle_timeout_minutes,
+    settings_get,
+    settings_get_global,
+    settings_removed_theme,
+    settings_set,
+);

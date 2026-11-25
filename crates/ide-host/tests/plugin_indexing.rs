@@ -54,6 +54,7 @@ fn method() -> SymbolTag {
         kind: SymbolKind::Method,
         container: None,
         range: Range::new(Pos::new(0, 4), Pos::new(0, 8)),
+        bases: Vec::new(),
     }
 }
 const SOURCE: &str = "def source:item\nref mapping:item\n";

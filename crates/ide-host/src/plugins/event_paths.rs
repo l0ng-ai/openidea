@@ -1,10 +1,11 @@
 //! Project-relative event filters, kept with runtime subscriptions across idle reclaim.
 use super::{LoadedPlugin, PluginHost};
 use globset::{GlobBuilder, GlobMatcher};
+use ide_extension::Capability;
 use ide_plugin::{EventKind, HostError, WorkbenchEvent};
 use std::{
     collections::{BTreeSet, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 #[derive(Clone, Default)]
@@ -21,9 +22,9 @@ pub(super) struct PathFilter {
 
 impl PathFilter {
     pub fn new(kind: &str, globs: Vec<String>) -> Result<Self, HostError> {
-        if !matches!(kind, "file-opened" | "file-saved" | "files-changed") {
+        if !matches!(kind, "file-opened" | "file-saved" | "files-changed" | "document-changed") {
             return Err(HostError::Invalid(
-                "subscribe-paths supports file-opened, file-saved and files-changed".into(),
+                "subscribe-paths supports file-opened, file-saved, files-changed and document-changed".into(),
             ));
         }
         if globs.len() > 64 {
@@ -95,13 +96,15 @@ impl PluginHost {
         events: &[WorkbenchEvent],
         subs: &Subscriptions,
     ) -> Vec<WorkbenchEvent> {
-        let Some(filters) = subs.paths.get(plugin.id()) else { return events.to_vec() };
+        let filters = subs.paths.get(plugin.id());
         let workspace = shared.workspace();
         events
             .iter()
             .filter_map(|event| {
                 if let WorkbenchEvent::FilesChanged(batch) = event {
-                    let Some(filter) = filters.get(event.kind().name()) else { return Some(event.clone()) };
+                    let Some(filter) = filters.and_then(|filters| filters.get(event.kind().name())) else {
+                        return Some(event.clone());
+                    };
                     let root = workspace.as_ref()?.project_of(client?)?;
                     if plugin.dev_root.as_deref().is_some_and(|r| r != root) {
                         return None;
@@ -126,31 +129,75 @@ impl PluginHost {
                 }
                 let path = match event {
                     WorkbenchEvent::FileOpened(path) | WorkbenchEvent::FileSaved(path) => Path::new(path),
+                    WorkbenchEvent::EditorFocused(Some(path)) => Path::new(path),
+                    WorkbenchEvent::DocumentChanged(change) => Path::new(&change.path),
                     _ => return Some(event.clone()),
                 };
-                let Some(filter) = filters.get(event.kind().name()) else { return Some(event.clone()) };
                 if !path.is_absolute() {
                     return None;
                 }
-                let workspace = workspace.as_ref()?;
-                let root = match client {
-                    Some(client) => workspace.project_of(client),
-                    None => {
-                        let real = ide_plugin::resolve_real(path);
-                        workspace
-                            .projects()
-                            .into_iter()
-                            .filter(|r| real.starts_with(ide_plugin::resolve_real(r)))
-                            .max_by_key(|r| r.components().count())
-                    }
-                }?;
+                let root = file_project(workspace.as_deref()?, client, path)?;
                 if plugin.dev_root.as_deref().is_some_and(|r| r != root) {
                     return None;
                 }
-                filter.matches(&root, path).then(|| event.clone())
+                if let WorkbenchEvent::DocumentChanged(_) = event {
+                    // Typed text: only for plugins that may read editors, and only for paths they named.
+                    // The path stays absolute until delivery (`relativize_documents`): the batch is
+                    // filtered again then, against the grants and subscriptions of that moment.
+                    let filter = filters.and_then(|filters| filters.get(event.kind().name()))?;
+                    let granted = &plugin.meta.lock().granted;
+                    if !granted.contains(&Capability::ProjectRead)
+                        || !granted.contains(&Capability::EditorRead)
+                        || !filter.matches(&root, path)
+                    {
+                        return None;
+                    }
+                    return Some(event.clone());
+                }
+                filters
+                    .and_then(|filters| filters.get(event.kind().name()))
+                    .is_none_or(|filter| filter.matches(&root, path))
+                    .then(|| event.clone())
             })
             .collect()
     }
+
+    /// What a plugin receives for `document-changed`: the path relative to the file's own
+    /// project, and that project's root, since two open projects can hold the same relative path.
+    pub(super) fn relativize_documents(
+        shared: &super::api::Shared,
+        client: Option<&str>,
+        events: Vec<WorkbenchEvent>,
+    ) -> Vec<WorkbenchEvent> {
+        let workspace = shared.workspace();
+        events
+            .into_iter()
+            .filter_map(|event| {
+                let WorkbenchEvent::DocumentChanged(mut change) = event else { return Some(event) };
+                let path = Path::new(&change.path);
+                let root = file_project(workspace.as_deref()?, client, path)?;
+                let relative = ide_plugin::resolve_real(path)
+                    .strip_prefix(ide_plugin::resolve_real(&root))
+                    .ok()?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                change.path = relative;
+                change.project = Some(ide_core::ipc_path::to_ipc(&root));
+                Some(WorkbenchEvent::DocumentChanged(change))
+            })
+            .collect()
+    }
+}
+
+/// The open project an absolute `path` belongs to: the invoking window's when the file is in
+/// it, else the innermost open project containing it. Annotations follow the file, so a
+/// plugin hears about a file another window has open.
+fn file_project(workspace: &dyn super::api::PluginWorkspace, client: Option<&str>, path: &Path) -> Option<PathBuf> {
+    let real = ide_plugin::resolve_real(path);
+    let contains = |r: &PathBuf| real.starts_with(ide_plugin::resolve_real(r));
+    client
+        .and_then(|client| workspace.project_of(client).filter(contains))
+        .or_else(|| workspace.projects().into_iter().filter(contains).max_by_key(|r| r.components().count()))
 }
 
 #[cfg(test)]
@@ -167,6 +214,7 @@ mod tests {
         assert!(PathFilter::new("file-saved", vec!["./".repeat(513)]).is_err());
         assert!(PathFilter::new("file-saved", vec![]).is_ok());
         assert!(PathFilter::new("files-changed", vec![]).is_ok());
+        assert!(PathFilter::new("document-changed", vec!["src/**/*.rs".into()]).is_ok());
     }
 
     #[test]

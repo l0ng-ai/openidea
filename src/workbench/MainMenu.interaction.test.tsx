@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands, type Settings } from "@/platform/ipc";
+import { clearContext, setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
-import { registerActions } from "@/platform/actions";
+import { getAction, registerActions } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
 import { MainMenu } from "./MainMenu";
 
@@ -59,6 +60,45 @@ afterEach(() => {
 });
 
 const titles = () => within(screen.getByRole("menubar"));
+
+describe("main menu action focus", () => {
+  it.each([
+    { style: "hamburger", narrow: false, row: false },
+    { style: "merged", narrow: false, row: false },
+    { style: "merged", narrow: true, row: false },
+    { style: "toolbar", narrow: false, row: true },
+  ])("restores the invoking field before Undo runs ($style, narrow=$narrow)", async ({ style, narrow, row }) => {
+    if (narrow) available = 100;
+    setStyle(style);
+    const focusAtUndo = vi.fn(() => document.activeElement);
+    vi.mocked(getAction("test.undo")!.run).mockImplementation(() => {
+      focusAtUndo();
+    });
+    render(
+      <>
+        <input aria-label="Editor field" />
+        <MainMenu row={row} />
+      </>,
+    );
+    const field = screen.getByRole("textbox", { name: "Editor field" });
+    field.focus();
+    const open = (button: HTMLElement) => {
+      fireEvent.pointerDown(button);
+      button.focus();
+      fireEvent.click(button);
+    };
+    if (style === "hamburger" || narrow) open(screen.getByRole("button", { name: "Main Menu" }));
+    if (narrow) {
+      const root = await screen.findByRole("menu", { name: "Main Menu" });
+      fireEvent.click(within(root).getByRole("menuitem", { name: /Edit/ }));
+    } else open(within(await screen.findByRole("menubar")).getByRole("menuitem", { name: "Edit" }));
+    const undo = await screen.findByRole("menuitem", { name: "Undo" });
+    expect(undo).toHaveFocus();
+    fireEvent.click(undo);
+    expect(focusAtUndo).toHaveReturnedWith(field);
+    expect(field).toHaveFocus();
+  });
+});
 
 describe("main menu presentation", () => {
   it("keeps the hamburger default, expanding on click and collapsing on Escape", async () => {
@@ -253,6 +293,25 @@ describe("main menu presentation", () => {
     expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
   });
 
+  it("shows the titles in the separate toolbar row, which never collapses to the button", async () => {
+    act(() => useProject.setState({ settings: { appearance: { mainMenuStyle: "toolbar" } } as Settings }));
+    render(<MainMenu row />);
+    await screen.findByRole("menubar");
+    expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+    fireEvent.click(titles().getByRole("menuitem", { name: "File" }));
+    expect(await screen.findByRole("menu", { name: "File" })).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.getByRole("menubar")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+  });
+
+  it("keeps the hamburger button in a title bar whose menu has its own row", () => {
+    act(() => useProject.setState({ settings: { appearance: { mainMenuStyle: "toolbar" } } as Settings }));
+    render(<MainMenu />);
+    expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
+  });
+
   it("applies the setting immediately and restores toolbar visibility when switching from an expanded hamburger", async () => {
     const expanded = vi.fn();
     render(<MainMenu onExpandedChange={expanded} />);
@@ -302,5 +361,43 @@ it.each(["windows", "linux"] as const)("renders toggle and widget checks in the 
   } finally {
     off();
     usePlatform.setState(platform);
+  }
+});
+
+it("shows Recompile '<file>.java' when a Java file is active and disabled Recompile otherwise", async () => {
+  const off = registerActions([
+    {
+      id: "build.compileFile",
+      title: "Recompile",
+      when: "projectOpen",
+      enabled: ({ ctx }) => typeof ctx.editorPath === "string" && ctx.editorPath.endsWith(".java"),
+      run: () => {},
+    },
+  ]);
+  vi.mocked(commands.menuModel).mockResolvedValue([
+    {
+      kind: "submenu",
+      id: "build",
+      label: "Build",
+      children: [{ kind: "action", id: "build.compileFile", label: "Recompile", hint: null, arg: null, checked: null }],
+    },
+  ]);
+  setContext("projectOpen", true);
+  setContext("editorPath", "/p/src/Main.java");
+  setStyle("merged");
+  try {
+    render(<MainMenu />);
+    await screen.findByRole("menubar");
+    fireEvent.click(titles().getByRole("menuitem", { name: "Build" }));
+    const activeItem = await screen.findByRole("menuitem", { name: /Recompile 'Main\.java'/ });
+    expect(activeItem).not.toHaveAttribute("aria-disabled", "true");
+
+    act(() => setContext("editorPath", "/p/pom.xml"));
+    const disabledItem = await screen.findByRole("menuitem", { name: /^Recompile/ });
+    expect(disabledItem).toHaveAttribute("aria-disabled", "true");
+  } finally {
+    off();
+    clearContext("projectOpen");
+    clearContext("editorPath");
   }
 });

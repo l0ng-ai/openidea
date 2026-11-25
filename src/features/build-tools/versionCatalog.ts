@@ -115,7 +115,8 @@ export function declaredCatalogs(settings: string): DeclaredCatalog[] {
 }
 
 const readText = (path: string) => call(commands.fsReadText(path)).catch(() => null);
-const join = (dir: string, rel: string) => (rel.startsWith("/") ? rel : `${dir}/${rel.replace(/^\.\//, "")}`);
+const join = (dir: string, rel: string) =>
+  rel.startsWith("/") || /^[A-Za-z]:[\\/]/.test(rel) ? rel : `${dir}/${rel.replace(/^\.\//, "")}`;
 
 /**
  * The catalogs a build script sees: those of the nearest enclosing build (its settings file).

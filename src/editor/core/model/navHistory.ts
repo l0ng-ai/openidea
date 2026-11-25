@@ -23,8 +23,11 @@ export function isNavigation(tr: Transaction): boolean {
 }
 const MAX_ENTRIES = 100;
 
+const sameTarget = (a: Omit<NavigationLocation, "time">, b: Omit<NavigationLocation, "time">) =>
+  a.path === b.path && a.input?.key === b.input?.key;
+
 const samePlace = (a: Omit<NavigationLocation, "time">, b: Omit<NavigationLocation, "time">) =>
-  a.path === b.path && Math.abs(a.line - b.line) < MERGE_LINES;
+  sameTarget(a, b) && Math.abs(a.line - b.line) < MERGE_LINES;
 
 export class NavigationHistory {
   entries: NavigationLocation[] = [];
@@ -58,7 +61,7 @@ export class NavigationHistory {
       this.emit();
       return;
     }
-    const switched = cur.path !== loc.path;
+    const switched = !sameTarget(cur, loc);
     if (!switched && (!navigation || cur.line === loc.line)) {
       this.entries[this.index] = entry;
       return;
@@ -104,8 +107,11 @@ export class NavigationHistory {
     this.emit();
   }
 
+  /** Text places only (Recent Locations lists file positions); `index` is the current one's among them. */
   snapshot() {
-    return { entries: this.entries.map((e) => ({ ...e })), index: this.index };
+    const entries = this.entries.filter((e) => !e.input).map((e) => ({ ...e }));
+    const index = this.entries.slice(0, this.index + 1).filter((e) => !e.input).length - 1;
+    return { entries, index };
   }
 
   subscribe(fn: () => void) {

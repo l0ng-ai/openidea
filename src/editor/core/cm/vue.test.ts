@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { getIndentation } from "@codemirror/language";
+import { EditorState } from "@codemirror/state";
 import { findLanguageDescription, loadSupport } from "./languages";
 
 describe("vue language mode", () => {
@@ -22,5 +24,32 @@ describe("vue language mode", () => {
     expect(tree).toContain("StyleSheet");
     expect(tree).toContain("Declaration");
     expect(tree).not.toContain("SassVariableName");
+  });
+
+  it("indents the top-level <template>'s children only, not <script setup> or <style> code", async () => {
+    const support = await loadSupport(findLanguageDescription("Vue", "/p/a.vue")!);
+    const doc = [
+      "<template>",
+      "<div>",
+      "</div>",
+      "</template>",
+      '<script setup lang="ts">',
+      "const a = 1",
+      "function f() {",
+      "return a",
+      "}",
+      "</script>",
+      "<style>",
+      ".a { color: red; }",
+      "</style>",
+    ].join("\n");
+    const state = EditorState.create({ doc, extensions: [support!, EditorState.tabSize.of(2)] });
+    const indent = (line: number) => getIndentation(state, state.doc.line(line).from);
+    expect(indent(2)).toBe(2);
+    expect(indent(6)).toBe(0);
+    expect(indent(7)).toBe(0);
+    expect(indent(8)).toBe(2);
+    expect(indent(10)).toBe(0);
+    expect(indent(12)).toBe(0);
   });
 });

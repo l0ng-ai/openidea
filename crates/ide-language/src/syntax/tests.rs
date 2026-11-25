@@ -887,6 +887,17 @@ fn outline_more_languages() {
         ",
     );
     check_outline(
+        "prisma",
+        "datasource db {\n  provider = \"sqlite\"\n}\nmodel User {\n  id Int @id\n  @@map(\"users\")\n}\nenum Role {\n  ADMIN\n}\n",
+        "
+        Module db
+        Class User
+          Field id
+        Enum Role
+          EnumMember ADMIN
+        ",
+    );
+    check_outline(
         "nix",
         "{ pkgs, ... }:\nlet\n  foo = 1;\n  bar = x: x;\nin { inherit foo; }\n",
         "
@@ -968,6 +979,34 @@ fn g() {}
             (16, 18, FoldKind::Region),
         ]
     );
+}
+
+#[test]
+fn folding_typescript_import_run_ending_with_multiline_import() {
+    let src = "import { ZodError } from 'zod'\nimport { Library } from './library.js'\nimport {\n  CreationIntent,\n} from './creation-assistant.js'\n";
+    assert!(folds("typescript", src).contains(&(0, 4, FoldKind::Imports)));
+}
+
+#[test]
+fn folding_script_imports_in_web_containers() {
+    use ide_core::DocId;
+    use std::sync::Arc;
+
+    let src = "<template><div/></template>\n<script setup lang=\"ts\">\nimport { ref, normalizeStyle } from 'vue'\nimport { Button, CheckableTagGroup, Divider, Space } from 'antdv-next'\n</script>\n";
+    let cache = SyntaxCache::new(Arc::new(Syntax::new()));
+    for id in ["vue", "html", "svelte", "jsp"] {
+        let expected = (2, 3, FoldKind::Imports);
+        assert!(folds(id, src).contains(&expected), "{id}");
+        let doc = DocId::next();
+        cache.open(doc, &lang(id), 0);
+        let cached = cache.folding(doc, &lang(id), 0, src);
+        assert!(cached.iter().any(|f| (f.start_line, f.end_line, f.kind) == expected), "{id}");
+    }
+
+    let js = "<script>\r\nimport a from 'a'\r\nimport b from 'b'\r\n</script>\r\n";
+    assert!(folds("vue", js).contains(&(1, 2, FoldKind::Imports)));
+    let json = "<script type=\"application/json\">\nimport a from 'a'\nimport b from 'b'\n</script>\n";
+    assert!(!folds("vue", json).iter().any(|f| f.2 == FoldKind::Imports));
 }
 
 #[test]
@@ -1061,6 +1100,77 @@ fn folding_python_bodies_start_at_header() {
             (5, 7, FoldKind::Region),
             (10, 11, FoldKind::Region),
         ]
+    );
+}
+
+#[test]
+fn folding_python_docstrings_are_comments() {
+    let src = r#""""Module doc.
+More.
+"""
+
+class A:
+    """Class doc.
+    More.
+    """
+    def f(self):
+        """Method doc.
+        More.
+        """
+        return 1
+"#;
+    assert_eq!(
+        folds("python", src),
+        vec![
+            (0, 2, FoldKind::Comment),
+            (4, 12, FoldKind::Region),
+            (5, 7, FoldKind::Comment),
+            (8, 12, FoldKind::Region),
+            (9, 11, FoldKind::Comment),
+        ]
+    );
+}
+
+#[test]
+fn folding_python_single_line_or_later_strings_are_not_docstrings() {
+    // A one-line docstring has nothing to fold; a multi-line string that is not
+    // the opening statement stays an ordinary string fold, not a doc comment.
+    let src = r#"x = 1
+"""Later string.
+Still later.
+"""
+
+def f():
+    """One line."""
+    return 1
+"#;
+    let found = folds("python", src);
+    assert!(!found.contains(&(1, 3, FoldKind::Comment)), "later string must not be a doc comment: {found:?}");
+    assert!(found.contains(&(1, 3, FoldKind::Region)), "later string still folds as a string: {found:?}");
+    assert!(!found.iter().any(|f| f.2 == FoldKind::Comment), "single-line docstring has no fold: {found:?}");
+}
+
+#[test]
+fn folding_elixir_doc_strings_are_comments() {
+    let src = r#"defmodule Foo do
+  @moduledoc """
+  Module doc.
+  More.
+  """
+
+  @doc ~S"""
+  Function doc.
+  More.
+  """
+  def bar, do: :ok
+
+  @doc "one line"
+  def baz, do: :ok
+end
+"#;
+    assert_eq!(
+        folds("elixir", src),
+        vec![(0, 14, FoldKind::Region), (1, 4, FoldKind::Comment), (6, 9, FoldKind::Comment),]
     );
 }
 
@@ -1367,6 +1477,88 @@ fn merge_visibility_matches_by_name_and_position() {
 }
 
 #[test]
+fn merge_kinds_names_types_a_server_reported_as_values_or_type_parameters() {
+    fn kinds(items: &[OutlineItem], out: &mut Vec<(String, SymbolKind)>) {
+        for i in items {
+            out.push((i.name.clone(), i.kind));
+            kinds(&i.children, out);
+        }
+    }
+    /// The syntax outline with each kind replaced as a server reports it.
+    fn as_server(ts: &[OutlineItem], server: &[(&str, SymbolKind)]) -> Vec<OutlineItem> {
+        fn set(items: &mut [OutlineItem], server: &[(&str, SymbolKind)], at: &mut usize) {
+            for i in items {
+                i.kind = server[*at].1;
+                assert_eq!(i.name, server[*at].0);
+                *at += 1;
+                set(&mut i.children, server, at);
+            }
+        }
+        let mut lsp = ts.to_vec();
+        set(&mut lsp, server, &mut 0);
+        lsp
+    }
+    fn merged(language: &str, src: &str, server: &[(&str, SymbolKind)]) -> Vec<(String, SymbolKind)> {
+        let ts = syntax().outline(&lang(language), src);
+        let mut lsp = as_server(&ts, server);
+        crate::merge_kinds(&mut lsp, &ts);
+        let mut out = Vec::new();
+        kinds(&lsp, &mut out);
+        out
+    }
+    use SymbolKind as K;
+    let owned = |v: &[(&str, SymbolKind)]| v.iter().map(|(n, k)| (n.to_string(), *k)).collect::<Vec<_>>();
+
+    // typescript-language-server: a type alias is a Variable; `const` is one too.
+    let ts = "type Cents = number;\ninterface Shape {}\nconst rate = 1;\n";
+    assert_eq!(
+        merged("typescript", ts, &[("Cents", K::Variable), ("Shape", K::Interface), ("rate", K::Variable)]),
+        owned(&[("Cents", K::TypeAlias), ("Shape", K::Interface), ("rate", K::Variable)]),
+    );
+
+    // rust-analyzer: type aliases and associated types are TypeParameters, a trait an Interface.
+    let rs = "pub type Meters = u32;\ntrait Measure { type Unit; }\nstruct Rope;\nimpl Measure for Rope { type Unit = Meters; }\n";
+    assert_eq!(
+        merged(
+            "rust",
+            rs,
+            &[
+                ("Meters", K::TypeParameter),
+                ("Measure", K::Interface),
+                ("Unit", K::TypeParameter),
+                ("Rope", K::Struct),
+                ("impl Measure for Rope", K::Variable),
+                ("Unit", K::TypeParameter),
+            ],
+        ),
+        owned(&[
+            ("Meters", K::TypeAlias),
+            ("Measure", K::Interface),
+            ("Unit", K::TypeAlias),
+            ("Rope", K::Struct),
+            ("impl Measure for Rope", K::Variable),
+            ("Unit", K::TypeAlias),
+        ]),
+    );
+
+    // sourcekit-lsp: typealias and associatedtype are TypeParameters.
+    let swift = "typealias Meters = Int\nprotocol Measure { associatedtype Unit }\n";
+    assert_eq!(
+        merged("swift", swift, &[("Meters", K::TypeParameter), ("Measure", K::Interface), ("Unit", K::TypeParameter)]),
+        owned(&[("Meters", K::TypeAlias), ("Measure", K::Interface), ("Unit", K::TypeAlias)]),
+    );
+
+    // A type kind the server chose stays: clangd's Class for a typedef, gopls's Struct.
+    let c = "typedef unsigned int meters;\n";
+    assert_eq!(merged("c", c, &[("meters", K::Class)]), owned(&[("meters", K::Class)]));
+    let go = "package p\n\ntype Point struct{}\n";
+    assert_eq!(
+        merged("go", go, &[("p", K::Package), ("Point", K::Struct)]),
+        owned(&[("p", K::Package), ("Point", K::Struct)])
+    );
+}
+
+#[test]
 fn spelling_regions_cover_declared_names_only() {
     let src = "// note\nfn parse_input(raw_text: &str) -> Value { let mut counter = helper(raw_text); \"hi\" }\n";
     let found: Vec<(&str, SpellingKind)> =
@@ -1409,6 +1601,35 @@ fn spelling_regions_cover_declared_names_only() {
         .map(|r| &java[r.start..r.end])
         .collect();
     assert_eq!(names, ["Bird", "fly", "text"]);
+}
+
+#[test]
+fn spelling_regions_mark_raw_strings() {
+    let py = r#"a = r"\user" + R'\mesage' + fr"\wrd" + rb"\foo" + "\user""#;
+    let found: Vec<(&str, bool)> = syntax()
+        .spelling_regions(&lang("python"), py)
+        .unwrap()
+        .iter()
+        .filter(|r| r.kind == SpellingKind::String)
+        .map(|r| (&py[r.start..r.end], r.raw))
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            (r#"r"\user""#, true),
+            (r"R'\mesage'", true),
+            (r#"fr"\wrd""#, true),
+            (r#"rb"\foo""#, true),
+            (r#""\user""#, false),
+        ]
+    );
+    // C# verbatim / Rust raw literals are named by the grammar itself.
+    let cs = r#"var s = @"C:\mesage";"#;
+    let raw = syntax().spelling_regions(&lang("csharp"), cs).unwrap().iter().any(|r| r.raw);
+    assert!(raw, "C# verbatim string should be raw");
+    let rs = r#"let s = r"\mesage";"#;
+    let raw = syntax().spelling_regions(&lang("rust"), rs).unwrap().iter().any(|r| r.raw);
+    assert!(raw, "Rust raw string should be raw");
 }
 
 // ---------------------------------------------------------------------------

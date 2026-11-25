@@ -2,7 +2,7 @@
 import { openPopup } from "@/editor/lsp/popupStore";
 import { canRevealInFileManager, fileManagerName, revealInFileManager } from "@/platform/fileManager";
 import { notifications } from "@/workbench/contributions";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { nameOf, parentOf } from "./paths";
 import { notifyRevealUnavailable } from "./operations";
 
@@ -24,7 +24,7 @@ async function reveal(path: string) {
   try {
     await revealInFileManager(path);
   } catch (e) {
-    const fileManager = tx(fileManagerName());
+    const fileManager = txPart(fileManagerName());
     notifications().notify({
       level: "error",
       title: tx`Cannot reveal in ${fileManager}`,

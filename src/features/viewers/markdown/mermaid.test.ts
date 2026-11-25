@@ -97,6 +97,16 @@ describe("mermaid in the markdown preview", () => {
     expect(document.body.querySelector(":scope > [id^='d']")).toBeNull();
   });
 
+  it("keeps native math labels inside their SVG foreign objects on WebKit", async () => {
+    const svg = await renderedSvg(
+      '<svg><foreignObject><div><span class="katex"><math><mi>x</mi></math></span>' +
+        '<span class="katex"><span class="katex-html">y</span></span></div></foreignObject></svg>',
+    );
+    const [native, html] = svg.querySelectorAll<HTMLElement>("foreignObject .katex");
+    expect(native?.style.position).toBe("static");
+    expect(html?.style.position).toBe("");
+  });
+
   it("shows syntax errors inline next to the source without throwing", async () => {
     const root = preview("```mermaid\nsequenceDiagram\nbad\n```\n");
     await expect(renderMermaidIn(root).done).resolves.toBeUndefined();
@@ -139,6 +149,16 @@ describe("mermaid in the markdown preview", () => {
     const svg = root.querySelector("svg");
     expect(renderMermaidIn(root, []).async).toBe(false);
     expect(root.querySelector("svg")).toBe(svg);
+  });
+
+  it("renders repeated diagrams with math labels once in the same pass", async () => {
+    const diagram = '```mermaid\nflowchart LR\n A["$$x^2$$"] --> B\n```\n';
+    const root = preview([diagram, diagram, diagram.replace("x^2", "x^3")].join("\n"));
+    await renderMermaidIn(root).done;
+    const drawings = [...root.querySelectorAll(".mermaid-output svg")];
+    expect(m.render).toHaveBeenCalledTimes(2);
+    expect(drawings).toHaveLength(3);
+    expect(new Set(drawings.map((drawing) => drawing.id)).size).toBe(3);
   });
 
   it("applies a cached diagram with fresh SVG ids so copies don't share markers", async () => {
@@ -264,7 +284,7 @@ describe("mermaid in the markdown preview", () => {
     const changed = vi.fn();
     const off = subscribeTheme(changed);
     try {
-      root.dataset.colorTheme = "one-dark";
+      root.dataset.colorTheme = "solarized-light";
       const firstKey = themeKey();
       await renderMermaidIn(preview(SEQ)).done;
       root.dataset.colorTheme = "solarized-dark";
@@ -380,7 +400,8 @@ describe("mermaid in the markdown preview", () => {
           }),
         }),
       );
-      expect(document.querySelector("span[hidden]")).toBeNull();
+      // One probe element serves every token.
+      expect(document.querySelectorAll("span[hidden]")).toHaveLength(1);
     } finally {
       computed.mockRestore();
     }
@@ -393,6 +414,15 @@ describe("mermaid in the markdown preview", () => {
     await pass.done;
     expect(m.render).not.toHaveBeenCalled();
     expect(root.querySelector("[data-mermaid]")?.getAttribute("data-mermaid-state")).toBe("pending");
+  });
+
+  it("records a diagram's natural width so preview font zoom scales it without clamping", async () => {
+    const svg = await renderedSvg(
+      '<svg id="openidea-mermaid-1" width="100%" style="max-width: 540px;" viewBox="0 0 540 320"><text>flow</text></svg>',
+    );
+    expect(svg.hasAttribute("data-natural-width")).toBe(true);
+    expect(svg.style.getPropertyValue("--diagram-width")).toBe("540px");
+    expect(svg.style.maxWidth).toBe("calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1))");
   });
 
   it("puts full-screen and download tools on a drawn diagram", async () => {
@@ -482,6 +512,41 @@ describe("mermaid in the markdown preview", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(document.querySelector("[data-mermaid-preview]")).toBeNull();
     expect(document.activeElement).toBe(button);
+  });
+
+  it("redraws the full-screen view when the diagram is redrawn behind it", async () => {
+    const html = document.documentElement;
+    const previous = html.dataset.colorTheme;
+    try {
+      html.dataset.colorTheme = "solarized-light";
+      const root = preview(SEQ);
+      await renderMermaidIn(root).done;
+      root.querySelector<HTMLButtonElement>('[data-mermaid-tools] button[aria-label="Full screen"]')!.click();
+      const overlay = document.querySelector<HTMLElement>("[data-mermaid-preview]")!;
+      const pan = overlay.querySelector<HTMLElement>(".pan-zoom-content")!;
+      const before = overlay.querySelector("svg")!;
+      pan.parentElement!.dispatchEvent(
+        new WheelEvent("wheel", { deltaY: -120, ctrlKey: true, bubbles: true, cancelable: true }),
+      );
+      const zoomed = pan.style.transform;
+
+      html.dataset.colorTheme = "solarized-dark";
+      m.render.mockImplementationOnce(async (id: string) => ({ svg: `<svg id="${id}"><text>redrawn</text></svg>` }));
+      await renderMermaidIn(root).done;
+      const after = overlay.querySelector("svg")!;
+      expect(after).not.toBe(before);
+      expect(after.textContent).toBe("redrawn");
+      expect(after.parentElement).toBe(pan);
+      expect(pan.style.transform).toBe(zoomed);
+
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      html.dataset.colorTheme = "solarized-light";
+      await renderMermaidIn(root).done;
+      expect(document.querySelector("[data-mermaid-preview]")).toBeNull();
+    } finally {
+      if (previous === undefined) delete html.dataset.colorTheme;
+      else html.dataset.colorTheme = previous;
+    }
   });
 
   it("saves a diagram as a PNG through the file dialog", async () => {

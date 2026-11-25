@@ -45,6 +45,33 @@ async fn create_schemas(db: &DbManager) {
 }
 
 #[tokio::test]
+async fn postgres_read_only_is_checked_before_and_after_startup_sql() -> IdeResult<()> {
+    use ide_db::{DbProperty, Pool};
+    let Some((host, port, user, password)) = server() else { return Ok(()) };
+    let mut source =
+        DataSource { driver: DbDriver::Postgres, host, port: Some(port), user, read_only: true, ..Default::default() };
+    let pool = Pool::connect(&source, Some(&password), None).await?;
+    assert_eq!(pool.rows("SHOW transaction_read_only", 1).await?, [[Some("on".into())]]);
+    pool.close().await;
+
+    // Exercise the same server response as a pooler that ignored the startup option.
+    source.properties.push(DbProperty { name: "default_transaction_read_only".into(), value: "off".into() });
+    source.options.startup_script = "SELECT 1/0".into();
+    let err = Pool::connect(&source, Some(&password), None).await.err().expect("writable connection");
+    assert!(err.message.contains("did not enable the requested default_transaction_read_only"), "{}", err.message);
+    source.properties.clear();
+    source.options.startup_script = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE".into();
+    let err = Pool::connect(&source, Some(&password), None).await.err().expect("startup script disabled read-only");
+    assert!(err.message.contains("did not enable the requested default_transaction_read_only"), "{}", err.message);
+    source.options.startup_script = "BEGIN READ WRITE".into();
+    let err = Pool::connect(&source, Some(&password), None).await.err().expect("writable startup transaction");
+    assert!(err.message.contains("writable transaction"), "{}", err.message);
+    source.options.startup_script = "BEGIN READ ONLY".into();
+    Pool::connect(&source, Some(&password), None).await?.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn active_schema_context_drives_the_executing_connection() -> IdeResult<()> {
     let tmp = tempfile::tempdir().unwrap();
     let Some(db) = manager(&tmp).await else { return Ok(()) };
@@ -131,5 +158,417 @@ async fn a_reused_physical_connection_restores_the_full_default_path() -> IdeRes
         conn.execute(&pool, "SHOW search_path", 1, &c).await?.rows,
         vec![vec![Some("public, pg_catalog".into())]]
     );
+    Ok(())
+}
+
+/// Indexes, foreign keys, routines and completion read the catalog with queries every
+/// PostgreSQL-protocol server answers, back to the 9.2 core of openGauss / GaussDB (#3637).
+#[tokio::test]
+async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    for stmt in [
+        "DROP SCHEMA IF EXISTS oi_meta CASCADE",
+        "CREATE SCHEMA oi_meta",
+        "CREATE TABLE oi_meta.orders (region INT, id INT, note TEXT DEFAULT 'x', PRIMARY KEY (region, id))",
+        "CREATE TABLE oi_meta.lines (n INT PRIMARY KEY, o_region INT, o_id INT, \
+         FOREIGN KEY (o_region, o_id) REFERENCES oi_meta.orders (region, id))",
+        "CREATE INDEX lines_order ON oi_meta.lines (o_id, o_region)",
+        "CREATE FUNCTION oi_meta.twice(v INT) RETURNS INT AS 'SELECT v * 2' LANGUAGE sql",
+    ] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+    let details = db.table_details("p", "oi_meta", "lines").await?;
+    let index = details.indexes.iter().find(|i| i.name == "lines_order").expect("lines_order");
+    assert_eq!(index.columns, ["o_id", "o_region"]);
+    assert!(!index.unique);
+    assert_eq!(details.foreign_keys.len(), 1, "{:?}", details.foreign_keys);
+    assert_eq!(details.foreign_keys[0].columns, ["o_region", "o_id"]);
+    assert_eq!(details.foreign_keys[0].ref_columns, ["region", "id"]);
+    let orders = db.table_details("p", "oi_meta", "orders").await?;
+    let key = orders.indexes.iter().find(|i| i.unique).expect("primary key index");
+    assert_eq!(key.columns, ["region", "id"]);
+
+    let objects = db.schema_objects("p", "oi_meta").await?;
+    assert!(objects.routines.iter().any(|r| r.name == "twice"), "{:?}", objects.routines);
+    let completion = db.completion("p").await?;
+    assert!(completion.tables.iter().any(|t| t.schema == "oi_meta" && t.name == "orders"));
+    db.execute("p", "DROP SCHEMA oi_meta CASCADE", 10, &c).await?;
+    Ok(())
+}
+
+/// Opening a table pairs the columns of composite keys in order, also when a foreign key lists
+/// them in another order than the key it references; its data page and DDL read the same catalog,
+/// and completion tells identity columns apart in one query (#3637).
+#[tokio::test]
+async fn opening_a_table_reads_multi_column_keys_in_order() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    for stmt in [
+        "DROP SCHEMA IF EXISTS oi_keys CASCADE",
+        "CREATE SCHEMA oi_keys",
+        "CREATE TABLE oi_keys.pairs (a INT, b INT, PRIMARY KEY (b, a))",
+        "CREATE TABLE oi_keys.refs (id INT PRIMARY KEY, x INT, y INT, FOREIGN KEY (y, x) REFERENCES oi_keys.pairs (b, a))",
+        "CREATE UNIQUE INDEX refs_yx ON oi_keys.refs (y, x)",
+        "INSERT INTO oi_keys.pairs VALUES (1, 2)",
+        "INSERT INTO oi_keys.refs VALUES (7, 1, 2)",
+    ] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+
+    let details = db.table_details("p", "oi_keys", "refs").await?;
+    let indexes: Vec<_> = details.indexes.iter().map(|i| (i.name.as_str(), i.unique, i.columns.join(","))).collect();
+    assert_eq!(indexes, [("refs_pkey", true, "id".into()), ("refs_yx", true, "y,x".into())]);
+    let key = |k: &ide_db::ForeignKey| (k.columns.join(","), k.ref_table.clone(), k.ref_columns.join(","));
+    assert_eq!(
+        details.foreign_keys.iter().map(key).collect::<Vec<_>>(),
+        [("y,x".into(), "pairs".into(), "b,a".into())]
+    );
+    let pairs = db.table_details("p", "oi_keys", "pairs").await?;
+    assert_eq!(pairs.indexes[0].columns, ["b", "a"]);
+
+    let page = db.table_page("p", "oi_keys", "refs", None, &[], 0, 10, &c).await?;
+    assert_eq!(page.result.rows.len(), 1);
+    // Identity columns (PostgreSQL 10+; openGauss has none) are optional in INSERT.
+    let identity =
+        db.execute("p", "CREATE TABLE oi_keys.ids (n INT GENERATED ALWAYS AS IDENTITY, v INT)", 10, &c).await;
+    let completion = db.completion("p").await?;
+    if identity.is_ok() {
+        let ids = completion.tables.iter().find(|t| t.schema == "oi_keys" && t.name == "ids").expect("ids");
+        let defaults: Vec<_> = ids.columns.iter().map(|c| (c.name.as_str(), c.has_default)).collect();
+        assert_eq!(defaults, [("n", true), ("v", false)]);
+    }
+    assert!(
+        completion.foreign_keys.iter().any(|k| k.table == "refs" && key(k).2 == "b,a"),
+        "{:?}",
+        completion.foreign_keys
+    );
+    // The other catalog reads of the tree and its DDL actions, on the same server.
+    assert!(db.schemas("p").await?.iter().any(|s| s == "oi_keys"));
+    assert_eq!(db.tables("p", "oi_keys").await?.len(), if identity.is_ok() { 3 } else { 2 });
+    db.execute("p", "CREATE SEQUENCE oi_keys.seq", 10, &c).await?;
+    let objects = db.schema_objects("p", "oi_keys").await?;
+    assert_eq!(objects.sequences.len(), 1);
+    assert!(db.ddl("p", "oi_keys", "refs").await?.contains("FOREIGN KEY"));
+    db.execute("p", "DROP SCHEMA oi_keys CASCADE", 10, &c).await?;
+    Ok(())
+}
+
+/// Runs `job` with the newest installed copy of its tool, the way the dialogs do.
+#[tokio::test]
+async fn drops_a_database_the_ide_holds_connections_to() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    db.execute("p", "DROP DATABASE IF EXISTS oi_drop_me", 0, &c).await?;
+    db.execute("p", "CREATE DATABASE oi_drop_me TEMPLATE template0", 0, &c).await?;
+
+    // What the tree and a manual-commit console leave open on the database.
+    db.schemas("p:oi_drop_me").await?;
+    db.set_manual_commit("p:oi_drop_me", true).await?;
+    db.execute("p:oi_drop_me", "SELECT 1", 1, &c).await?;
+
+    db.drop_database("p", "oi_drop_me", "drop database oi_drop_me").await?;
+    assert!(!db.is_connected("p:oi_drop_me"));
+    assert!(!db.databases("p").await?.names.iter().any(|n| n == "oi_drop_me"));
+
+    let current = db.databases("p").await?.current;
+    let refused = db.drop_database("p", &current, &format!("drop database \"{current}\"")).await;
+    assert!(refused.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn creates_a_database_from_a_template_the_ide_holds_connections_to() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    db.execute("p", "DROP DATABASE IF EXISTS oi_from_template", 0, &c).await?;
+    db.schemas("p:template1").await?;
+
+    db.create_database("p", "template1", "create database oi_from_template").await?;
+    assert!(!db.is_connected("p:template1"));
+    assert!(db.databases("p").await?.names.iter().any(|n| n == "oi_from_template"));
+    db.execute("p", "DROP DATABASE oi_from_template", 0, &c).await?;
+    Ok(())
+}
+
+async fn run_tool(db: &DbManager, target: &str, job: ide_db::tools::DbToolJob) -> IdeResult<()> {
+    let install = ide_db::tools::find_installs(job.tool()).into_iter().next().expect("installed");
+    let mut lines = Vec::new();
+    let code = db.run_tool(target, install.path.as_ref(), &job, &CancellationToken::new(), |b| lines.extend(b)).await?;
+    assert_eq!(code, Some(0), "{} failed: {lines:?}", job.tool().program());
+    Ok(())
+}
+
+#[tokio::test]
+async fn dumps_and_restores_with_the_client_tools() -> IdeResult<()> {
+    use ide_db::tools::{
+        DbDumpContent, DbDumpFormat, DbDumpStatements, DbPgDumpOptions, DbPgRestoreOptions, DbPsqlOptions, DbTool,
+        DbToolJob, find_installs,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let server = db.server_version("p").await? / 10000;
+    let major = |t: DbTool| {
+        find_installs(t).first().and_then(|i| i.version.split(' ').nth(2)?.split('.').next()?.parse::<u32>().ok())
+    };
+    // Other major versions write or refuse what this server needs; the dialogs warn about that instead.
+    if [DbTool::PgDump, DbTool::PgRestore, DbTool::Psql].into_iter().any(|t| major(t) != Some(server)) {
+        return Ok(());
+    }
+    create_schemas(&db).await;
+    let c = CancellationToken::new();
+    db.execute("p", "DROP DATABASE IF EXISTS oi_restore", 1, &c).await?;
+    db.execute("p", "CREATE DATABASE oi_restore", 1, &c).await?;
+    let file = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+
+    let dump = |format, file: String, schema: &str| DbToolJob::PgDump {
+        file,
+        options: DbPgDumpOptions {
+            format,
+            statements: DbDumpStatements::Copy,
+            content: DbDumpContent::All,
+            schemas: vec![schema.into()],
+            tables: vec![],
+            exclude_tables: vec![],
+            clean: false,
+            if_exists: false,
+            create: false,
+            no_owner: false,
+            no_privileges: false,
+            jobs: 1,
+        },
+    };
+    let archive = file("a.dump");
+    run_tool(&db, "p", dump(DbDumpFormat::Custom, archive.clone(), "oi_a")).await?;
+    let restore = DbPgRestoreOptions {
+        content: DbDumpContent::All,
+        schemas: vec![],
+        create: false,
+        clean: false,
+        if_exists: false,
+        no_owner: false,
+        no_privileges: false,
+        single_transaction: false,
+        exit_on_error: true,
+        jobs: 1,
+    };
+    run_tool(&db, "p:oi_restore", DbToolJob::PgRestore { file: archive, options: restore }).await?;
+
+    let script = file("b.sql");
+    run_tool(&db, "p", dump(DbDumpFormat::Plain, script.clone(), "oi_b")).await?;
+    let psql = DbPsqlOptions { single_transaction: true, stop_on_error: true };
+    run_tool(&db, "p:oi_restore", DbToolJob::Psql { file: script, options: psql }).await?;
+
+    let r = db.execute("p:oi_restore", "SELECT a.tag || ', ' || b.tag FROM oi_a.items a, oi_b.items b", 1, &c).await?;
+    assert_eq!(r.rows[0][0].as_deref(), Some("from a, from b"));
+    db.disconnect("p:oi_restore").await;
+    db.execute("p", "DROP DATABASE oi_restore", 1, &c).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn later_pages_continue_the_result_where_the_previous_page_stopped() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    let query = "SELECT g AS id, repeat('x', 10) AS pad FROM generate_series(1, 1000) g ORDER BY g";
+    // Forward, back, and jumping: every page holds its own rows whichever cursor served it.
+    for page in [0, 1, 2, 3, 1, 7, 8, 9, 4, 0] {
+        let r = db.execute_from("p", query, page * 100, 100, &c, None).await?;
+        let ids: Vec<_> = r.rows.iter().map(|row| row[0].clone().unwrap()).collect();
+        let want: Vec<_> = (page * 100 + 1..=page * 100 + 100).map(|n| n.to_string()).collect();
+        assert_eq!(ids, want, "page {page}");
+        assert_eq!(r.has_more, page < 9, "page {page}");
+    }
+    // A pool of 4 connections: cursors that were left open must not exhaust it.
+    for _ in 0..8 {
+        db.execute_from("p", query, 100, 100, &c, None).await?;
+        db.release_result("p", query, None);
+        assert_eq!(db.execute("p", "SELECT 1", 1, &c).await?.rows[0][0].as_deref(), Some("1"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_a_later_page_stops_its_statement_on_the_server() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let marker = "oi_cursor_cancel_marker";
+    let slow = format!("SELECT g, pg_sleep(0.05) AS {marker} FROM generate_series(1, 100000) g");
+    let cancel = CancellationToken::new();
+    let stop = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        stop.cancel();
+    });
+    let started = std::time::Instant::now();
+    let e = db.execute_from("p", &slow, 5, 10, &cancel, None).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let c = CancellationToken::new();
+    let active = format!(
+        "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE '%{marker}%' \
+         AND query NOT LIKE '%pg_stat_activity%'"
+    );
+    let mut running = 1;
+    for _ in 0..20 {
+        running = db.execute("p", &active, 1, &c).await?.rows[0][0].as_deref().unwrap().parse().unwrap();
+        if running == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(running, 0, "the cancelled statement still runs on the server");
+    Ok(())
+}
+
+// The same test executable serves as a foreground TCP forwarder for the managed-route test.
+#[test]
+fn postgres_tunnel_fixture() {
+    use std::io::{Write, copy};
+    use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
+    let flag = |prefix: &str| std::env::args().find_map(|s| s.strip_prefix(prefix).map(String::from));
+    let Some(port) = flag("listen=") else { return };
+    if let Some(file) = flag("waiting=") {
+        std::fs::write(file, port.as_bytes()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        return;
+    }
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port.parse::<u16>().unwrap())).unwrap();
+    let log = flag("start-log=").unwrap();
+    let mut file = std::fs::OpenOptions::new().append(true).create(true).open(log).unwrap();
+    writeln!(file, "{port}").unwrap();
+    let destination = flag("forward=").unwrap();
+    for stream in listener.incoming() {
+        let mut client = stream.unwrap();
+        let dest = destination.clone();
+        std::thread::spawn(move || {
+            let mut remote = TcpStream::connect(dest).unwrap();
+            let mut input = client.try_clone().unwrap();
+            let mut output = remote.try_clone().unwrap();
+            std::thread::spawn(move || {
+                let _ = copy(&mut input, &mut output);
+                let _ = output.shutdown(Shutdown::Write);
+            });
+            let _ = copy(&mut remote, &mut client);
+            let _ = client.shutdown(Shutdown::Write);
+        });
+    }
+}
+
+#[tokio::test]
+async fn managed_tunnel_shares_the_forwarder_and_closes_it_after_the_last_target() -> IdeResult<()> {
+    let Some((host, port, user, password)) = server() else { return Ok(()) };
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path();
+    let log = root.join("starts");
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(root.join("ssh-secrets")));
+    let db = DbManager::new(root.into(), root.join("passwords.json"), root.join("history.json"), ssh)
+        .with_global_sources(root.join("app"))
+        .with_local_external_tunnels(true);
+    let source = DataSource {
+        id: "tunnel".into(),
+        name: "Tunnel fixture".into(),
+        driver: DbDriver::Postgres,
+        host,
+        port: Some(port),
+        user,
+        database: "postgres".into(),
+        read_only: true,
+        external_tunnel: Some(ide_db::DbExternalTunnel {
+            executable: std::env::current_exe()?.to_string_lossy().into_owned(),
+            arguments: vec![
+                "--exact".into(),
+                "postgres_tunnel_fixture".into(),
+                "--skip".into(),
+                "listen={localPort}".into(),
+                "--skip".into(),
+                "forward={host}:{port}".into(),
+                "--skip".into(),
+                format!("start-log={}", log.display()),
+            ],
+        }),
+        ..Default::default()
+    };
+    db.save_sources(vec![source.clone()]).await?;
+    db.set_password("tunnel", Some(password), false).await?;
+    assert!(db.pool("tunnel").await.is_err());
+    assert!(!log.exists());
+    assert!(db.test_external_tunnel(&source, None).await?.contains("PostgreSQL"));
+    assert!(db.pool("tunnel").await.is_err(), "Test must not persist launch approval");
+    db.approve_external_tunnel(&source).await?;
+    let (a, b) = tokio::try_join!(db.pool("tunnel"), db.pool("tunnel:postgres"))?;
+    assert_eq!(std::fs::read_to_string(&log)?.lines().count(), 2, "one test helper and one pooled helper");
+    assert!(db.is_connected("tunnel") && db.is_connected("tunnel:postgres"));
+    drop((a, b));
+    db.disconnect("tunnel").await;
+    let result = db.execute("tunnel:postgres", "SELECT 1", 1, &CancellationToken::new()).await?;
+    assert_eq!(result.rows, vec![vec![Some("1".to_owned())]]);
+    db.disconnect_source("tunnel").await;
+    let ports: Vec<u16> = std::fs::read_to_string(log)?.lines().map(|p| p.parse().unwrap()).collect();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        for port in ports {
+            while tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+    })
+    .await
+    .expect("both helpers must stop");
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_startup_does_not_block_another_source_and_disconnect_cancels_it() -> IdeResult<()> {
+    let tmp = tempfile::tempdir()?;
+    let dir = tmp.path();
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(dir.join("ssh-secrets")));
+    let db = DbManager::new(dir.into(), dir.join("passwords.json"), dir.join("history.json"), ssh)
+        .with_global_sources(dir.join("app"))
+        .with_local_external_tunnels(true);
+    let waiting = dir.join("starting");
+    let pending = DataSource {
+        id: "pending".into(),
+        name: "Starting helper".into(),
+        driver: DbDriver::Postgres,
+        host: "db.example".into(),
+        external_tunnel: Some(ide_db::DbExternalTunnel {
+            executable: std::env::current_exe()?.to_string_lossy().into_owned(),
+            arguments: vec![
+                "--exact".into(),
+                "postgres_tunnel_fixture".into(),
+                "--skip".into(),
+                "listen={localPort}".into(),
+                "--skip".into(),
+                format!("waiting={}", waiting.display()),
+            ],
+        }),
+        ..Default::default()
+    };
+    let file = dir.join("local.db");
+    std::fs::File::create(&file)?;
+    let sqlite =
+        DataSource { id: "local".into(), name: "SQLite fixture".into(), file: Some(file.into()), ..Default::default() };
+    db.approve_external_tunnel(&pending).await?;
+    db.save_sources(vec![pending, sqlite]).await?;
+    let connect = db.pool("pending");
+    let edit = async {
+        while !waiting.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        db.pool("local").await?;
+        assert!(db.is_connected("local"));
+        db.disconnect_source("pending").await;
+        Ok::<_, ide_core::IdeError>(())
+    };
+    let (result, edit) = tokio::time::timeout(std::time::Duration::from_secs(8), async { tokio::join!(connect, edit) })
+        .await
+        .expect("the pending PostgreSQL helper must not block SQLite or disconnect");
+    edit?;
+    assert!(matches!(result, Err(error) if error.kind == ide_core::error::ErrorKind::Cancelled));
     Ok(())
 }

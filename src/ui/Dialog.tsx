@@ -1,16 +1,18 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { usePlatform } from "@/platform/platformInfo";
 import { Button, IconButton } from "./Button";
 import { Icon } from "./icons";
-import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
+import { FOCUSABLE, dismissPopups, onWindowDeactivate, openLayer, trapTab } from "./popupState";
+import { PopupAncestry } from "./Popup";
 import { tx, useGivenTx } from "@/platform/i18n";
 import { selectableText } from "./selectableText";
 import appIcon from "../../src-tauri/icons/128x128.png";
 import styles from "./Dialog.module.css";
 import { isImeKey } from "@/platform/ime";
 import { lockDragCursor } from "./dragCursor";
+import { suspendKeyboardDispatch } from "@/platform/keymap";
 
 /**
  * `default`: filled accent button, triggered by Enter. `cancel`: Esc / close
@@ -99,6 +101,8 @@ export interface DialogProps {
   open: boolean;
   /** Cancel: Escape, the close button / light, and `cancel` buttons without a handler. */
   onClose: () => void;
+  /** Keep workbench shortcuts out of blocking prompts; dialog-local keys still work. */
+  blockWorkbenchShortcuts?: boolean;
   title?: ReactNode;
   children: ReactNode;
   /** Footer buttons; ordered per platform (see `orderDialogButtons`). */
@@ -130,6 +134,8 @@ export interface DialogProps {
    * and drag only by a `[data-dialog-drag]` element, such as their title.
    */
   position?: "center" | "top";
+  /** Use lightweight popup chrome even when the dialog is centered. */
+  popup?: boolean;
   className?: string;
   "aria-label"?: string;
   /** Close when clicking outside (default: only for `top` popups). */
@@ -208,6 +214,7 @@ const ENTER_OWNERS =
 
 function DialogInner({
   onClose,
+  blockWorkbenchShortcuts = false,
   title,
   children,
   buttons,
@@ -222,6 +229,7 @@ function DialogInner({
   initialSize,
   onResized,
   position = "center",
+  popup: asPopup = false,
   className,
   dismissOnBackdrop,
   closeOnDeactivate,
@@ -235,8 +243,7 @@ function DialogInner({
   const overlayTitleBar = usePlatform((s) => s.overlayTitleBar);
   const given = useGivenTx();
   if (typeof title === "string") title = given(title);
-  // Choosers and untitled dialogs (Recent Files, About) are IDEA popups.
-  const popup = position === "top" || (title == null && !icon);
+  const popup = asPopup || position === "top" || (title == null && !icon);
   const onCloseRef = useRef(onClose);
   const buttonsRef = useRef(buttons);
   const restoreFocusRef = useRef(restoreFocus);
@@ -265,13 +272,32 @@ function DialogInner({
     };
   }, []);
 
+  useEffect(() => {
+    if (!popup || !resizable) return;
+    const fitPopup = () => {
+      const rect = ref.current?.getBoundingClientRect();
+      if (!rect) return;
+      const left = Math.max(0, Math.min(rect.left, window.innerWidth - rect.width));
+      const top = Math.max(0, Math.min(rect.top, window.innerHeight - rect.height));
+      if (left !== rect.left || top !== rect.top) {
+        setOffset({ x: offset.x + left - rect.left, y: offset.y + top - rect.top });
+      }
+    };
+    window.addEventListener("resize", fitPopup);
+    return () => window.removeEventListener("resize", fitPopup);
+  }, [popup, resizable, offset]);
+
   const cancelOnDeactivate = closeOnDeactivate ?? popup;
   useEffect(() => {
     if (!cancelOnDeactivate) return;
     return onWindowDeactivate(() => onCloseRef.current());
   }, [cancelOnDeactivate]);
 
+  useEffect(() => (blockWorkbenchShortcuts ? suspendKeyboardDispatch() : undefined), [blockWorkbenchShortcuts]);
+
+  const ancestry = useRef(useContext(PopupAncestry));
   useEffect(() => {
+    dismissPopups(new Set(ancestry.current.flatMap((r) => (r.current === null ? [] : [r.current]))));
     const layer = openLayer(() => ref.current);
     let previous = document.activeElement as HTMLElement | null;
     const el = ref.current;

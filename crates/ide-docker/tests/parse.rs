@@ -1,14 +1,35 @@
 //! Parsing of recorded `docker … --format '{{json .}}'` output.
 
 use ide_docker::{
-    parse_container_stats, parse_container_top, parse_containers, parse_image_history, parse_images, parse_networks,
-    parse_volumes,
+    PS_FORMAT, parse_container_stats, parse_container_top, parse_containers, parse_image_history, parse_images,
+    parse_networks, parse_volume_sizes, parse_volumes,
 };
 
 const PS: &str = include_str!("fixtures/ps.jsonl");
 const IMAGES: &str = include_str!("fixtures/images.jsonl");
 const VOLUMES: &str = include_str!("fixtures/volumes.jsonl");
 const NETWORKS: &str = include_str!("fixtures/networks.jsonl");
+
+/// Fills `{{json .Field}}` placeholders of a `--format` template from a `{{json .}}` line.
+fn render(template: &str, line: &str) -> String {
+    let fields: serde_json::Map<String, serde_json::Value> = serde_json::from_str(line).unwrap();
+    let mut out = template.to_owned();
+    while let Some(start) = out.find("{{json .") {
+        let end = start + out[start..].find("}}").unwrap() + 2;
+        let key = &out[start + "{{json .".len()..end - 2];
+        let value = fields.get(key).unwrap_or_else(|| panic!("fixture lacks {key}"));
+        out.replace_range(start..end, &value.to_string());
+    }
+    out
+}
+
+#[test]
+fn ps_format_carries_everything_the_parser_reads_but_size() {
+    assert!(!PS_FORMAT.contains("Size"), "Size makes the daemon compute container sizes");
+    let rendered: Vec<String> = PS.lines().filter(|l| l.starts_with('{')).map(|l| render(PS_FORMAT, l)).collect();
+    assert_eq!(rendered.len(), 2);
+    assert_eq!(parse_containers(&rendered.join("\n")), parse_containers(PS));
+}
 
 #[test]
 fn containers_with_compose_labels() {
@@ -92,4 +113,12 @@ fn image_history_top_and_stats() {
     assert_eq!(stats.net_io, "12kB / 8kB");
     assert_eq!(stats.block_io, "1.2MB / 0B");
     assert_eq!(stats.pids, "14");
+
+    let df_volumes = r#"[{"Availability":"N/A","Driver":"local","Links":"4","Mountpoint":"/var/lib/docker/volumes/selfhost_runner-persist/_data","Name":"selfhost_runner-persist","Scope":"local","Size":"145.4kB"},{"Name":"unused_anon","Size":"0B"},{"Name":"remote_nfs","Size":"N/A"}]"#;
+    let volume_sizes = parse_volume_sizes(df_volumes);
+    assert_eq!(volume_sizes.get("selfhost_runner-persist").map(String::as_str), Some("145.4kB"));
+    assert_eq!(volume_sizes.get("unused_anon").map(String::as_str), Some("0B"));
+    assert!(!volume_sizes.contains_key("remote_nfs"));
+    assert!(parse_volume_sizes("null\n").is_empty());
+    assert!(parse_volume_sizes("").is_empty());
 }

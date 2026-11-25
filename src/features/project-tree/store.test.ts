@@ -3,9 +3,12 @@ import { MemoryFs, setProjectFsForTests } from "./fs";
 import { visibleInfo } from "./model";
 import {
   applyFsChange,
+  reloadArchiveDirs,
   reloadLoadedDirs,
   currentModel,
   expandAll,
+  explainHiddenPath,
+  hidingOption,
   initProjectTree,
   loadDir,
   revealPath,
@@ -17,6 +20,7 @@ import {
 } from "./store";
 import { beginNew, commitEditing, copySelection, paste, transfer } from "./operations";
 import { closeFileRefactorDialog, pendingFileRefactorDialog } from "./FileRefactorDialogs";
+import { provideNotificationService } from "@/workbench/contributions";
 
 const ROOT = "/p";
 let fs: MemoryFs;
@@ -42,6 +46,22 @@ afterEach(() => {
 });
 
 const childLabels = (key: string) => (currentModel().children.get(key) ?? []).map((n) => n.label);
+
+it("retains cached types only for members that remain in the same workspace", () => {
+  initProjectTree("/workspace", "Workspace", ["/go", "/web"]);
+  useProjectTree.setState({
+    projectTypes: new Map([
+      ["/go", "go"],
+      ["/web", "node"],
+    ]),
+  });
+
+  initProjectTree("/workspace", "Workspace", ["/go", "/new"]);
+  expect([...useProjectTree.getState().projectTypes]).toEqual([["/go", "go"]]);
+
+  initProjectTree("/other-workspace", "Other workspace", ["/go"]);
+  expect(useProjectTree.getState().projectTypes.size).toBe(0);
+});
 
 describe("lazy loading", () => {
   it("loads folders on demand and shares concurrent requests", async () => {
@@ -94,6 +114,28 @@ describe("refresh of excluded folders", () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith("/p/docs");
+    spy.mockRestore();
+  });
+});
+
+describe("refresh of library archives", () => {
+  it("re-reads the loaded folders inside archives only", async () => {
+    await fs.createFile("/m2/lib.jar!/p/A.class");
+    await loadDir(ROOT);
+    await loadDir("/m2/lib.jar!");
+    await loadDir("/m2/lib.jar!/p");
+    await fs.createFile("/m2/lib.jar!/p/B.class");
+    const spy = vi.spyOn(fs, "readDir");
+
+    await reloadArchiveDirs();
+
+    expect(spy.mock.calls.map(([p]) => p).sort()).toEqual(["/m2/lib.jar!", "/m2/lib.jar!/p"]);
+    expect(
+      useProjectTree
+        .getState()
+        .listings.get("/m2/lib.jar!/p")
+        ?.map((e) => e.name),
+    ).toEqual(["A.class", "B.class"]);
     spy.mockRestore();
   });
 });
@@ -279,4 +321,29 @@ it("keeps the primary first and sorts attachments by name", () => {
   expect(currentModel().roots.map((n) => n.path)).toEqual(["/z", "/a", "/c"]);
   initProjectTree("/ws", "Workspace", ["/z", "/c", "/a"]);
   expect(currentModel().roots.map((n) => n.path)).toEqual(["/a", "/c", "/z"]);
+});
+
+describe("a file the view options hide", () => {
+  const entry = (name: string, ignored = false) => ({ name, path: `/p/${name}`, isDir: true, ignored }) as never;
+
+  it("names the option that hides it below the shown ancestor, and offers to turn it on", () => {
+    useProjectTree.setState({ listings: new Map([["/p", [entry("build", true), entry("src")]]]) });
+    setViewOption("showExcluded", false);
+    expect(hidingOption("/p/build/out.txt", "/p")).toBe("showExcluded");
+    expect(hidingOption("/p/.git/config", "/p")).toBe(
+      useProjectTree.getState().options.showHidden ? null : "showHidden",
+    );
+    expect(hidingOption("/p/src/a.ts", "/p")).toBeNull();
+
+    const notify = vi.fn();
+    provideNotificationService({ notify } as never);
+    explainHiddenPath("/p/build/out.txt", "/p");
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "out.txt is hidden because Show Excluded Files is off" }),
+    );
+    notify.mock.calls[0]![0].actions[0].run();
+    expect(useProjectTree.getState().options.showExcluded).toBe(true);
+    expect(useProjectTree.getState().revealRequest?.path).toBe("/p/build/out.txt");
+    expect(hidingOption("/p/build/out.txt", "/p")).toBeNull();
+  });
 });

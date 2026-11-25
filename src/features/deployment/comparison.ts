@@ -1,7 +1,7 @@
 /** Read-only remote snapshots for the deployment comparison; project files are never downloaded over. */
 import { call, commands, type SyncEntry } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
+import { deploymentConnection, deploymentSecretKey, type DeploymentServerValid } from "@/platform/remoteSettings";
 import { withSsh } from "./ssh";
 
 const PREVIEW_LIMIT = 8 * 1024 * 1024;
@@ -25,7 +25,7 @@ export function createDeploymentComparison(server: DeploymentServerValid, root: 
   const remoteSnapshot = (entry: SyncEntry) => {
     let pending = snapshots.get(entry.remotePath);
     if (!pending) {
-      pending = withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      pending = withSsh(deploymentSecretKey(server), () =>
         call(commands.remoteOpen(deploymentConnection(server), entry.remotePath)),
       );
       snapshots.set(entry.remotePath, pending);

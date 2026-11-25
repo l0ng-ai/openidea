@@ -1,0 +1,72 @@
+id = "node"
+name = "Node.js"
+group = "JavaScript"
+icon = "project-node"
+description = "A minimal Node.js application."
+
+[[requires]]
+program = "node"
+min = "22.18"
+hint = "Install Node.js 22.18 or later: https://nodejs.org"
+
+[[fields]]
+id = "lang"
+label = "Language:"
+type = "choice"
+segmented = true
+options = [{ value = "ts", label = "TypeScript" }, { value = "js", label = "JavaScript" }]
+default = "ts"
+
+[[files]]
+path = "package.json"
+content = '''
+{
+  "name": "{{name|kebab}}",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.{{lang}}",
+    "test": "node --test"
+  }
+}
+'''
+
+[[files]]
+path = "src/index.{{lang}}"
+content = '''
+const greeting: string = "Hello, World!";
+console.log(greeting);
+'''
+when = { lang = "ts" }
+
+[[files]]
+path = "src/index.{{lang}}"
+content = '''
+console.log("Hello, World!");
+'''
+when = { lang = "js" }
+
+[[files]]
+path = "tsconfig.json"
+when = { lang = "ts" }
+content = '''
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true
+  },
+  "include": ["src"]
+}
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+node_modules/
+'''

@@ -28,6 +28,8 @@ description: "前端 UI 代码的规则：设计 token、CSS Modules、图标、
 
 先用 `src/ui/` 里的基础组件，再考虑自己写：`Button`、`BarButton`、`Input`、`Checkbox`、`Select`、`Dialog`、`Popup`、`Menu`、`Tooltip`、`List`、`Tree`、`Tabs`、`Splitter`、`Scrollbar`、`Spinner`、`Kbd`，以及用于翻译文本的 `T`。它们已经处理好焦点、键盘导航、主题和标签翻译。工作台级别的部件（工具窗口、状态栏项、浮层）来自 [contribution](/zh/contribute/architecture/frontend)，不要自己写布局。
 
+工具栏图标操作使用 `IconButton`：悬停时整个点击区域使用 `--bg-toolbar-hover`，按下和选中状态使用对应的工具栏 token。保留图标的语义颜色和键盘焦点环。
+
 ## 无障碍
 
 - 使用真正的 `<button>` 和 `<input>` 元素（或渲染它们的基础组件），不要用可点击的 `<div>`。
@@ -41,7 +43,7 @@ description: "前端 UI 代码的规则：设计 token、CSS Modules、图标、
 
 ## WebKit 兼容性
 
-在 macOS 和 Linux 上应用运行于 WebKit，最低支持 Safari 16（macOS 11 可以升级到这个版本）。`pnpm build` 会对产物运行 `scripts/check-webkit.ts`，`src/platform/webkitCompatibility.test.ts` 会检查应用中的正则。请避免：
+在 macOS 和 Linux 上应用运行于 WebKit，最低支持 Safari 15.4，即 macOS 12 的引擎（应用的最低系统版本）。在 macOS 11 以及 12.3 之前的 macOS 12 上，`src-tauri/src/macos_webview.rs` 会加载 Safari 更新暂存的新版 WebKit，前提是已安装该更新。`pnpm build` 会对产物运行 `scripts/check-webkit.ts`，`src/platform/webkitCompatibility.test.ts` 会检查应用中的正则。请避免：
 
 - 正则后行断言（`(?<=…)`、`(?<!…)`，需要 Safari 16.4）和正则 `v` 标志；
 - import attributes；

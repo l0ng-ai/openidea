@@ -42,7 +42,7 @@ import { MessagesHost } from "@/workbench/messages";
 import { projectInitials } from "@/workbench/projectColor";
 import { handleListKey } from "./ProjectsPage";
 import { customizeView } from "./CustomizePage";
-import { recentMenu } from "./RecentList";
+import { RecentList, recentMenu } from "./RecentList";
 import { filterRecent, useRecent } from "./recent";
 import { WelcomeView } from "./WelcomeView";
 
@@ -102,6 +102,18 @@ describe("Welcome › Projects", () => {
     expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
   });
 
+  it("shows a project whose folder is gone as unavailable", async () => {
+    recent = [
+      p("acme-api", "/Users/me/repo/acme-api", "dev"),
+      { ...p("gone", "/Users/me/worktrees/gone"), missing: true },
+    ];
+    await renderWelcome();
+    const [live, gone] = screen.getAllByRole("option");
+    expect(live!.title).toBe("/Users/me/repo/acme-api");
+    expect(gone!.title).toBe("/Users/me/worktrees/gone (unavailable)");
+    expect(within(gone!).getByText("gone").className).toMatch(/unavailable/);
+  });
+
   it("moves with arrows, filters by typing, opens with Enter and removes with Delete", async () => {
     await renderWelcome();
     const search = screen.getByLabelText("Search projects") as HTMLInputElement;
@@ -125,6 +137,18 @@ describe("Welcome › Projects", () => {
     expect(selectedName()).toBe("py-demo");
   });
 
+  it("leaves Delete to the search text while the caret has text after it", async () => {
+    await renderWelcome();
+    const search = screen.getByLabelText("Search projects") as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "acme" } });
+    search.setSelectionRange(1, 1);
+    fireEvent.keyDown(search, { key: "Delete" });
+    expect(screen.queryByRole("dialog", { name: "Remove Recent Project" })).toBeNull();
+    search.setSelectionRange(4, 4);
+    fireEvent.keyDown(search, { key: "Delete" });
+    expect(screen.getByRole("dialog", { name: "Remove Recent Project" })).toBeTruthy();
+  });
+
   it("offers Open in New Window in the row menu when the action exists", async () => {
     const dispose = registerActions([{ id: "file.openInNewWindow", title: "Open in New Window", run: () => {} }]);
     await renderWelcome();
@@ -132,6 +156,54 @@ describe("Welcome › Projects", () => {
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText("Open in New Window")).toBeTruthy();
     expect(within(menu).getByText("Remove from Recent Projects…")).toBeTruthy();
+    dispose();
+  });
+
+  it("opens in a new window with Shift or Ctrl, in this one with Alt, over 'Open project in'", async () => {
+    const chosen: unknown[] = [];
+    const dispose = registerActions([
+      { id: "file.openRecentProject", title: "Open Recent Project", run: (c) => void chosen.push(c.arg) },
+    ]);
+    await renderWelcome();
+    const acme = { path: "/Users/me/repo/acme-api" };
+    const row = () => screen.getAllByRole("option")[0]!;
+    const search = screen.getByLabelText("Search projects");
+    for (const mod of [{ shiftKey: true }, { ctrlKey: true }]) {
+      fireEvent.click(row(), mod);
+      await act(async () => {});
+      expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
+      fireEvent.keyDown(search, { key: "Enter", ...mod });
+      await act(async () => {});
+      expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
+    }
+    fireEvent.click(row(), { altKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
+    fireEvent.keyDown(search, { key: "Enter", altKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
+    expect(openProject).not.toHaveBeenCalled();
+    dispose();
+  });
+
+  it("gives File › Open Recent the same modifier keys", async () => {
+    const chosen: unknown[] = [];
+    const dispose = registerActions([
+      { id: "file.openRecentProject", title: "Open Recent Project", run: (c) => void chosen.push(c.arg) },
+    ]);
+    useRecent.setState({ projects: recent, loaded: true });
+    const view = render(<RecentList compact autoFocus />);
+    const delta = { path: "/Users/me/repo/delta" };
+    const row = screen.getAllByRole("option")[1]!;
+    // As with a real click, the press selects the row and the release opens it.
+    fireEvent.mouseDown(row);
+    fireEvent.click(row, { ctrlKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...delta, window: "new" });
+    fireEvent.keyDown(screen.getByLabelText("Search recent projects"), { key: "Enter", altKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...delta, window: "same" });
+    view.unmount();
     dispose();
   });
 
@@ -167,6 +239,20 @@ describe("Welcome › Projects", () => {
     const path = target ? remoteLocation(target, "/home/me/app") : "/Users/me/app";
     const items = resolveMenuItems(recentMenu(p("app", path)));
     expect(items.some((i) => i.key === "reveal")).toBe(shown);
+  });
+
+  it("changes any recent project's colour, and a local one's icon", async () => {
+    const { useTabColorPicker } = await import("@/workbench/TabColorPicker");
+    const local = resolveMenuItems(recentMenu(p("app", "/Users/me/app")));
+    expect(local.map((i) => i.key)).toEqual(expect.arrayContaining(["color", "icon"]));
+    // Nothing to reset until the project shows an icon set here.
+    expect(local.some((i) => i.key === "resetIcon")).toBe(false);
+    local.find((i) => i.key === "color")!.run!();
+    expect(useTabColorPicker.getState().target).toMatchObject({ root: "/Users/me/app", name: "app" });
+    useTabColorPicker.setState({ target: null });
+    const remote = resolveMenuItems(recentMenu(p("app", remoteLocation({ kind: "ssh", config: "box" }, "/srv/app"))));
+    expect(remote.map((i) => i.key)).toContain("color");
+    expect(remote.map((i) => i.key)).not.toContain("icon");
   });
 
   it("reveals a local recent project from an SSH window's project switcher", async () => {

@@ -10,7 +10,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { dirKeys, type FileTreeNode } from "@/features/vcs/fileTree";
-import { baseName, dirName, fileCount, KIND_COLOR } from "@/features/vcs/model";
+import { dirName, fileCount, KIND_COLOR, renameFrom } from "@/features/vcs/model";
 import { currentRepoRoot } from "@/features/vcs/store";
 import { useTx } from "@/platform/i18n";
 import { Icon, Tree, fileIconName, showContextMenu, T, type MenuItem, type TreeHandle } from "@/ui";
@@ -202,7 +202,7 @@ function ChangeRow(props: {
         {node.name}
       </span>
       {flat && dirName(f.filename) && <span className={styles.fileDir}>{dirName(f.filename)}</span>}
-      {f.previousFilename && <span className={styles.fileDir}>{tx`renamed from ${baseName(f.previousFilename)}`}</span>}
+      {f.previousFilename && <span className={styles.fileDir}>{renameFrom(f.filename, f.previousFilename)}</span>}
     </>
   ) : (
     <>

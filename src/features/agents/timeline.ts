@@ -91,15 +91,6 @@ export function workParts(s: WorkSummary): Array<{ text: string; count: number }
   return parts.filter(([, , n]) => n > 0).map(([one, many, count]) => ({ text: count === 1 ? one : many, count }));
 }
 
-/** The running tool call of a run, if any: what the agent is doing right now. */
-export function currentTool(entries: readonly AgentEntry[]): ToolEntry | null {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i]!;
-    if (e.type === "tool" && (e.status === "running" || e.status === "pending")) return e;
-  }
-  return null;
-}
-
 /** A finished turn: the message that asked it at `user`, its work in `[user + 1, reply)`. */
 export interface FoldedTurn {
   user: number;
@@ -135,12 +126,72 @@ export function foldedTurns(entries: readonly AgentEntry[], from: number, busy: 
         break;
       }
       // Something after the reply still wants to be seen (an error, an open question).
-      if (e.type === "error" || (e.type === "permission" && e.chosen === null)) return;
+      if (e.type === "error" || ((e.type === "permission" || e.type === "question") && e.chosen === null)) return;
     }
     if (reply < 0 || reply === user + 1) return;
     // What the user sent into the turn, and an error it ran into, stay in view.
-    if (entries.slice(user + 1, reply).some((e) => e.type === "user" || e.type === "error")) return;
+    if (
+      entries
+        .slice(user + 1, reply)
+        .some((e) => e.type === "user" || e.type === "error" || (e.type === "question" && e.chosen === null))
+    )
+      return;
     turns.set(user, { user, reply, sentMs: asked.sentMs ?? null, doneMs: asked.doneMs ?? null });
   });
   return turns;
+}
+
+/** A command a tool ran and how it ended, read from its output (Hermes: `$ cmd`, `- **exit_code:** 0`). */
+export interface ToolRun {
+  command: string | null;
+  output: string;
+  exitCode: number | null;
+}
+
+/** Splits an `execute` tool's text into its command, output and exit code, where it names them. */
+export function toolRun(entry: ToolEntry): ToolRun {
+  const text = entry.output ?? "";
+  const command = /^\$ (.+)$/m.exec(text)?.[1] ?? null;
+  const code = /^- \*\*exit_code:\*\* (-?\d+)\s*$/m.exec(text);
+  const output = /^- \*\*output:\*\* ?([\s\S]*?)(?=^- \*\*exit_code:\*\*|(?![\s\S]))/m.exec(text)?.[1];
+  return {
+    command,
+    output: (output ?? (command ? text.replace(`$ ${command}`, "") : text)).trim(),
+    exitCode: code ? Number(code[1]) : null,
+  };
+}
+
+/** How long a tool call took, once it ended; `null` while it runs or when its times aren't known. */
+export function toolDuration(entry: ToolEntry): number | null {
+  const { startedMs, endedMs } = entry;
+  return startedMs != null && endedMs != null ? Math.max(0, endedMs - startedMs) : null;
+}
+
+/**
+ * How long each finished thought took, by index: from its start to the start of what came
+ * next that keeps time (a tool call, another thought) or else the end of its turn.
+ */
+export function thoughtDurations(entries: readonly AgentEntry[]): Map<number, number> {
+  const out = new Map<number, number>();
+  let open: { index: number; started: number } | null = null;
+  let turnEnd: number | null = null;
+  // An untimed entry (older history) says nothing about when the open thought ended.
+  const close = (at: number | null | undefined) => {
+    if (at == null) return;
+    if (open) out.set(open.index, Math.max(0, at - open.started));
+    open = null;
+  };
+  entries.forEach((e, i) => {
+    if (e.type === "user" && !e.steered) {
+      close(turnEnd);
+      open = null;
+      turnEnd = e.doneMs ?? null;
+    } else if (e.type === "tool") close(e.startedMs);
+    else if (e.type === "thought" && e.startedMs != null) {
+      close(e.startedMs);
+      open = { index: i, started: e.startedMs };
+    }
+  });
+  close(turnEnd);
+  return out;
 }

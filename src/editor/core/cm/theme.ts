@@ -9,6 +9,10 @@ import { EditorView } from "@codemirror/view";
 import { BRACKET_COLORS } from "./rainbowBrackets";
 import { LINE_INSET } from "./lineInset";
 import { GUIDE_COLORS } from "./indentGuides";
+import { inlineBackground, inlineFramedFallback, inlineFramedModern } from "./inlineBg";
+
+/** How much of its palette colour a rainbow indent guide takes. */
+const RAINBOW_GUIDE_STRENGTH = "55%";
 
 /** The `--editor-*` locals of `findStyles`, for the `&` rule. */
 export const findLocals = {
@@ -16,25 +20,34 @@ export const findLocals = {
   "--editor-search-current": "var(--bg-search-match-current, color-mix(in srgb, var(--warning) 48%, transparent))",
 };
 
+const FIND_CURRENT_FRAME = "color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))";
+
 /** Find in file highlights (cm/find.ts), also for viewers with their own theme (diff). */
 export const findStyles = {
   ".cm-openidea-findMatch": {
-    backgroundColor: "var(--editor-search)",
+    ...inlineBackground("var(--editor-search)"),
     color: "var(--fg-search-match, inherit)",
+    // Its own colour, over the text fill of an identifier highlight around the match.
+    WebkitTextFillColor: "currentcolor",
     borderRadius: "2px",
   },
   ".cm-openidea-findExcluded": {
     textDecoration: "line-through",
     textDecorationColor: "var(--fg-muted)",
   },
-  ".cm-openidea-findScope": {
-    backgroundColor: "var(--editor-selection-inactive, var(--bg-editor-selection-inactive))",
-  },
+  ".cm-openidea-findScope": inlineBackground("var(--editor-selection-inactive, var(--bg-editor-selection-inactive))"),
   ".cm-openidea-findMatch-current": {
-    backgroundColor: "var(--editor-search-current)",
+    ...inlineFramedFallback("var(--editor-search-current)", FIND_CURRENT_FRAME),
     color: "var(--fg-search-match, inherit)",
-    outline: "1px solid color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))",
   },
+  "@supports (height: 1lh)": {
+    ".cm-openidea-findMatch-current": inlineFramedModern("var(--editor-search-current)", FIND_CURRENT_FRAME),
+  },
+};
+
+/** Marks colour text with an inherited text fill; widgets inside them keep their own colours. */
+export const markWidgetStyles = {
+  '.cm-content [contenteditable="false"]': { WebkitTextFillColor: "currentcolor" },
 };
 
 /** The caret and Settings › Editor › General › Appearance caret options (`caretExtension`), also for viewers. */
@@ -70,21 +83,15 @@ export const caretStyles = {
 
 /** The error stripe and scrollbar lane (cm/lanes.ts), also for the VCS viewers. */
 export const overviewStyles = {
+  "&.cm-openidea-withOverview": { "--cm-overview-width": "12px" },
   ".cm-openidea-overview": {
     position: "absolute",
     top: "0",
     right: "0",
     bottom: "0",
-    width: "12px",
+    width: "var(--cm-overview-width)",
     cursor: "default",
     zIndex: "3",
-  },
-  // Over an outer scroller (an aligned diff): stays at the top of its viewport, taking no room.
-  ".cm-openidea-overview-sticky": {
-    position: "sticky",
-    bottom: "auto",
-    flex: "none",
-    alignSelf: "flex-end",
   },
   ".cm-openidea-overviewMark": {
     position: "absolute",
@@ -137,11 +144,26 @@ export const openideaTheme = EditorView.theme({
       "var(--bg-editor-selection-inactive, color-mix(in srgb, var(--accent) 14%, transparent))",
     "--editor-indent-guide": "var(--border-indent-guide, var(--border))",
     "--openidea-guide": "linear-gradient(var(--editor-indent-guide), var(--editor-indent-guide))",
-    // Rainbow indent guides: one image per depth, so they follow the colour scheme.
+    // The guide the caret is on (IDEA's Selected indent guide).
+    "--editor-indent-guide-active": "var(--border-indent-guide-active, var(--editor-indent-guide))",
+    "--openidea-guide-active": "linear-gradient(var(--editor-indent-guide-active), var(--editor-indent-guide-active))",
+    // The guide of the block whose braces match at the caret (IDEA's Matched braces indent guide).
+    "--editor-indent-guide-brace":
+      "var(--border-indent-guide-brace, var(--bg-matched-brace, var(--editor-indent-guide-active)))",
+    "--openidea-guide-brace": "linear-gradient(var(--editor-indent-guide-brace), var(--editor-indent-guide-brace))",
+    // Rainbow indent guides: one image per depth, so they follow the colour scheme. The
+    // palettes are text colours; guides take them at half strength so they stay chrome.
     ...Object.fromEntries(
       Array.from({ length: GUIDE_COLORS }, (_, i) => {
-        const color = `var(--syn-rainbow-${i + 1}, var(--editor-indent-guide))`;
+        const color = `color-mix(in srgb, var(--syn-rainbow-${i + 1}, var(--editor-indent-guide)) ${RAINBOW_GUIDE_STRENGTH}, transparent)`;
         return [`--openidea-guide-${i + 1}`, `linear-gradient(${color}, ${color})`];
+      }),
+    ),
+    // A rainbow guide of a bracket block takes its bracket's colour (rainbow brackets).
+    ...Object.fromEntries(
+      Array.from({ length: BRACKET_COLORS }, (_, i) => {
+        const color = `color-mix(in srgb, var(--syn-bracket-${i + 1}, var(--editor-indent-guide)) ${RAINBOW_GUIDE_STRENGTH}, transparent)`;
+        return [`--openidea-guide-bracket-${i + 1}`, `linear-gradient(${color}, ${color})`];
       }),
     ),
     ...findLocals,
@@ -149,15 +171,14 @@ export const openideaTheme = EditorView.theme({
     "--editor-fold-chip": "var(--bg-fold-placeholder, color-mix(in srgb, var(--fg-muted) 14%, transparent))",
   },
   "&.cm-focused": { outline: "none" },
-  ".cm-scroller": {
-    // The scroll container keeps the arrow cursor so its scrollbar does not turn into the I-beam.
+  ".cm-scroller, .cm-openidea-sticky, .cm-openidea-scopeContext": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     lineHeight: "var(--openidea-editor-line-height, var(--lh-code))",
     fontVariantLigatures: "none",
-    overscrollBehavior: "contain",
   },
+  ".cm-scroller": { overscrollBehavior: "contain" },
   ".cm-content": {
     // no top padding: the first line starts at the top edge, as in IDEA, and so does its selection
     padding: "0 0 8px 0",
@@ -167,7 +188,7 @@ export const openideaTheme = EditorView.theme({
   // The right side also leaves room for the floating corner widgets (core/cm/cornerInset.ts).
   ".cm-line": { padding: `0 calc(16px + var(--cm-corner-inset, 0px)) 0 ${LINE_INSET}px` },
   ...caretStyles,
-  "&.cm-openidea-ligatures .cm-scroller, &.cm-openidea-ligatures .cm-openidea-sticky": {
+  "&.cm-openidea-ligatures :is(.cm-scroller, .cm-openidea-sticky, .cm-openidea-scopeContext)": {
     fontVariantLigatures: "normal",
   },
   "&.cm-openidea-methodSeparators .cm-openidea-methodSeparator": {
@@ -205,28 +226,30 @@ export const openideaTheme = EditorView.theme({
     background: "var(--openidea-line-bg)",
     pointerEvents: "none",
   },
-  ".cm-selectionMatch": {
-    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
-  },
+  ".cm-selectionMatch": inlineBackground(
+    "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
+  ),
+  // IDEA paints these with IDENTIFIER_UNDER_CARET_ATTRIBUTES, except the selection itself.
+  ".cm-selectionMatch:not(.cm-selectionMatch-main)": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
   // IDEA's MATCHED_BRACE_ATTRIBUTES (bold in dark schemes only) and MATCHED_TAG_NAME (never bold).
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
-    backgroundColor: "var(--editor-brace)",
+    ...inlineBackground("var(--editor-brace)"),
     color: "inherit",
     fontWeight: "var(--matched-brace-weight, var(--fw-code-bold, 700))",
     borderRadius: "1px",
   },
   ".cm-matchingTag, &.cm-focused .cm-matchingTag": {
-    backgroundColor: "var(--bg-matched-tag, var(--editor-brace))",
+    ...inlineBackground("var(--bg-matched-tag, var(--editor-brace))"),
     fontWeight: "inherit",
   },
   ".cm-nonmatchingBracket, &.cm-focused .cm-nonmatchingBracket": {
     color: "var(--danger)",
-    backgroundColor: "color-mix(in srgb, var(--danger) 14%, transparent)",
+    ...inlineBackground("color-mix(in srgb, var(--danger) 14%, transparent)"),
   },
   ".cm-specialChar": { color: "var(--danger)" },
 
   // Gutter: numbers | VCS bar | fold chevrons | hairline
-  ".cm-gutters": {
+  ".cm-gutters, .cm-openidea-stickyGutter": {
     cursor: "default",
     backgroundColor: "var(--bg-editor-gutter, var(--bg-editor, var(--bg-island, var(--bg-app))))",
     color: "var(--editor-line-number)",
@@ -235,9 +258,10 @@ export const openideaTheme = EditorView.theme({
     WebkitUserSelect: "none",
     userSelect: "none",
   },
-  ".cm-lineNumbers .cm-gutterElement": {
-    minWidth: "32px",
-    padding: "0 8px 0 10px",
+  ".cm-lineNumbers .cm-gutterElement, .cm-openidea-stickyNumber": {
+    minWidth: "calc(max(16px, var(--openidea-editor-font-size, var(--fs-code))) + var(--space-2))",
+    paddingInline: "var(--space-1)",
+    fontSize: "max(1px, calc(var(--openidea-editor-font-size, var(--fs-code)) - 1px))",
     textAlign: "right",
     fontVariantNumeric: "tabular-nums",
   },
@@ -256,14 +280,23 @@ export const openideaTheme = EditorView.theme({
   },
   ".cm-openidea-laneDeleted": {
     position: "absolute",
-    left: "0",
-    top: "-3px",
+    left: "-4px",
+    top: "-6px",
+    width: "12px",
+    height: "12px",
+    cursor: "pointer",
+    zIndex: "1",
+  },
+  ".cm-openidea-laneDeleted::after": {
+    content: '""',
+    position: "absolute",
+    left: "4px",
+    top: "3px",
     width: "0",
     height: "0",
     borderTop: "3px solid transparent",
     borderBottom: "3px solid transparent",
     borderLeft: "6px solid var(--lane-color)",
-    zIndex: "1",
   },
   ".cm-foldGutter": { width: "16px" },
   ".cm-foldGutter .cm-gutterElement": {
@@ -274,9 +307,9 @@ export const openideaTheme = EditorView.theme({
     cursor: "pointer",
     transition: "opacity var(--dur-fast) var(--ease)",
   },
-  ".cm-foldGutter .cm-openidea-foldOpen": { opacity: "0", display: "inline-flex" },
-  ".cm-foldGutter .cm-openidea-foldClosed": { display: "inline-flex" },
-  ".cm-gutters:hover .cm-foldGutter .cm-openidea-foldOpen": { opacity: "1" },
+  ".cm-foldGutter .cm-openidea-foldOpen, .cm-foldGutter .cm-openidea-foldClosed": { display: "inline-flex" },
+  ".cm-foldGutter .cm-openidea-foldOnHover": { opacity: "0" },
+  ".cm-gutters:hover .cm-foldGutter .cm-openidea-foldOnHover": { opacity: "1" },
   ".cm-foldGutter .cm-gutterElement:hover": { color: "var(--fg-secondary)" },
   ".cm-foldPlaceholder": {
     backgroundColor: "var(--editor-fold-chip)",
@@ -332,6 +365,9 @@ export const openideaTheme = EditorView.theme({
 
   // Find in file (cm/find.ts)
   ...findStyles,
+  ...markWidgetStyles,
+  // Find in Files preview matches (search/find/parts.tsx)
+  ".cm-openidea-searchResult": inlineBackground("var(--bg-search-result)"),
 
   // Overlays
   ".cm-tooltip": {
@@ -344,6 +380,11 @@ export const openideaTheme = EditorView.theme({
     borderRadius: "var(--radius-popup)",
     boxShadow: "var(--shadow-popup)",
   },
+  // Near the window edge CodeMirror caps the hover host's height; its sections then shrink and
+  // scroll inside the popup instead of running past its border. Content tooltips still carry
+  // their own `max-height` + `overflow` for the space they get when not squeezed.
+  ".cm-tooltip.cm-tooltip-hover": { display: "flex", flexDirection: "column" },
+  ".cm-tooltip-hover > .cm-tooltip-section": { minHeight: 0, flexShrink: 1 },
   ".cm-tooltip .cm-tooltip-arrow:before": {
     borderTopColor: "var(--border-popup)",
     borderBottomColor: "var(--border-popup)",
@@ -358,31 +399,38 @@ export const openideaTheme = EditorView.theme({
   // Sticky lines (cm/stickyScroll.ts)
   ".cm-openidea-sticky": {
     position: "absolute",
-    top: "0",
-    left: "0",
-    right: "12px",
-    zIndex: "4",
+    zIndex: "2",
+    boxSizing: "border-box",
     backgroundColor: "var(--bg-editor, var(--bg-island, var(--bg-app)))",
     borderBottom: "1px solid var(--editor-gutter-border)",
     boxShadow: "0 3px 6px -2px color-mix(in srgb, var(--fg-strong) 12%, transparent)",
-    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
-    fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
-    lineHeight: "var(--openidea-editor-line-height, var(--lh-code))",
     overflow: "hidden",
     cursor: "pointer",
   },
   ".cm-openidea-stickyLine": { display: "flex", whiteSpace: "pre" },
   ".cm-openidea-stickyLine:hover": { backgroundColor: "var(--editor-caret-row)" },
+  ".cm-openidea-stickyGutter": { flex: "none", boxSizing: "border-box" },
   ".cm-openidea-stickyNumber": {
-    flex: "none",
-    textAlign: "right",
-    color: "var(--editor-line-number)",
+    display: "block",
     boxSizing: "border-box",
-    paddingRight: "8px",
   },
   ".cm-openidea-stickyText": { flex: "1", overflow: "hidden", position: "relative" },
   ".cm-openidea-stickyInner": { position: "relative" },
+  ".cm-openidea-scopeContext": {
+    position: "absolute",
+    zIndex: "3",
+    boxSizing: "border-box",
+    width: "max-content",
+    overflow: "hidden",
+    pointerEvents: "none",
+    backgroundColor: "var(--bg-popup)",
+    border: "1px solid var(--border-popup)",
+    borderRadius: "var(--radius-popup)",
+    boxShadow: "var(--shadow-popup)",
+    padding: "var(--space-0-5) var(--space-2) var(--space-0-5) 0",
+  },
+  ".cm-openidea-scopeLine": { display: "flex", whiteSpace: "pre" },
+  ".cm-openidea-scopeCode": { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" },
   // The selection on a pinned line, under its text (as the selection layer in the editor).
   ".cm-openidea-stickySelection": {
     position: "absolute",
@@ -397,4 +445,8 @@ export const openideaTheme = EditorView.theme({
   "&.cm-lineWrapping .cm-line, .cm-lineWrapping .cm-line": {
     paddingRight: "calc(24px + var(--cm-corner-inset, 0px))",
   },
+  // The wrapped-part indent is a negative `text-indent` on the line (prefs.ts). Widgets inherit
+  // it, and a block-level box inside one (the inline blame, a line-end hint) would start its
+  // text that many columns to the left, over the code.
+  ".cm-line [contenteditable='false']": { textIndent: "0" },
 });

@@ -1,12 +1,24 @@
 /** Inline change popup shown when clicking a gutter change marker. */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { EditorView } from "@codemirror/view";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
-import { IconButton, Popup } from "@/ui";
-import { editorHunks, gotoChange, setHunkPopupHooks, type EditorHunk } from "./gutter";
+import { previewColors, tokenSpans, type CodeToken } from "@/editor/lineTokens";
+import { IconButton, Popup, selectableText } from "@/ui";
+import type { PopupAnchor } from "@/ui/Popup";
+import {
+  editableHunk,
+  editorHunks,
+  equivalentStagingHunk,
+  gotoChange,
+  hunkAtPos,
+  rollbackHunks,
+  setHunkPopupHooks,
+  stagingTitle,
+  type EditorHunk,
+} from "./gutter";
 import styles from "./HunkPopup.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -14,17 +26,18 @@ interface PopupState {
   view: EditorView;
   hunk: EditorHunk;
   path: string;
-  x: number;
-  y: number;
+  anchor: PopupAnchor;
+  width: number;
   id: number;
 }
 
 let root: Root | null = null;
-let openFor: EditorView | null = null;
+let current: PopupState | null = null;
 let host: HTMLElement | null = null;
 let seq = 0;
 
 function render(state: PopupState | null) {
+  current = state;
   if (!state && !root) return;
   if (!root) {
     host = document.createElement("div");
@@ -36,26 +49,48 @@ function render(state: PopupState | null) {
 }
 
 export function closeHunkPopup() {
-  openFor = null;
   render(null);
 }
 
 export function openHunkPopup(view: EditorView, hunk: EditorHunk, path: string) {
   const doc = view.state.doc;
-  const endPos = hunk.to > hunk.from ? Math.max(hunk.from, hunk.to - 1) : Math.min(hunk.from, doc.length);
-  const coords = view.coordsAtPos(doc.lineAt(endPos).from);
-  const gutterRect = view.dom.querySelector(".cm-openidea-lane")?.getBoundingClientRect();
-  const x = gutterRect ? gutterRect.right : (coords?.left ?? 0);
-  const y = coords ? (hunk.to > hunk.from ? coords.bottom : coords.top) : 0;
-  openFor = view;
-  render({ view, hunk, path, x, y, id: ++seq });
+  const from = Math.min(hunk.from, doc.length);
+  const to = Math.min(Math.max(from, hunk.to - 1), doc.length);
+  const anchor = {
+    contextElement: view.scrollDOM,
+    getBoundingClientRect: () => {
+      const start = view.coordsAtPos(from);
+      const visible = view.scrollDOM.getBoundingClientRect();
+      const gutter = view.dom.querySelector(".cm-openidea-lane")?.getBoundingClientRect();
+      const x = Math.max(start?.left ?? visible.left, gutter?.right ?? visible.left);
+      const top = view.documentTop + view.lineBlockAt(from).top;
+      const bottom = hunk.to > hunk.from ? view.documentTop + view.lineBlockAt(to).bottom : top;
+      const clampY = (y: number) => Math.min(visible.bottom, Math.max(visible.top, y));
+      // Flipping above the change leaves the current lines in the editor visible.
+      return new DOMRect(x, clampY(top), 0, Math.max(0, clampY(bottom) - clampY(top)));
+    },
+  };
+  const width = Math.max(240, view.scrollDOM.getBoundingClientRect().right - anchor.getBoundingClientRect().left);
+  render({ view, hunk, path, anchor, width, id: ++seq });
 }
 
 export function installHunkPopup(): () => void {
   setHunkPopupHooks({
     open: openHunkPopup,
     docChanged: (view) => {
-      if (openFor === view) closeHunkPopup();
+      if (current?.view === view) closeHunkPopup();
+    },
+    stagingChanged: (view) => {
+      if (current?.view !== view || !current.hunk.staging) return;
+      const same = equivalentStagingHunk(view, current.hunk);
+      if (same) {
+        render({ ...current, hunk: same });
+        return;
+      }
+      const from = view.state.doc.lineAt(Math.min(current.hunk.from, view.state.doc.length)).from;
+      const next = hunkAtPos(view.state, from);
+      if (next?.staging) openHunkPopup(view, next, current.path);
+      else closeHunkPopup();
     },
   });
   return () => {
@@ -64,40 +99,74 @@ export function installHunkPopup(): () => void {
     host?.remove();
     root = null;
     host = null;
+    current = null;
   };
-}
-
-function splitLines(text: string): string[] {
-  if (!text) return [];
-  const lines = text.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
-  return lines;
 }
 
 const KIND_TITLE = { added: "Added lines", modified: "Modified lines", deleted: "Deleted lines" } as const;
 
+function OriginalText({
+  view,
+  path,
+  text,
+  label = "Original text",
+}: {
+  view: EditorView;
+  path: string;
+  text: string;
+  label?: string;
+}) {
+  const [tokens, setTokens] = useState<CodeToken[] | null>(null);
+  const [font] = useState(() => {
+    const { fontFamily, fontSize, fontWeight, lineHeight, fontVariantLigatures } = getComputedStyle(view.contentDOM);
+    return { fontFamily, fontSize, fontWeight, lineHeight, fontVariantLigatures, tabSize: view.state.tabSize };
+  });
+  useEffect(() => {
+    if (text.length > 100_000) return;
+    let alive = true;
+    void previewColors(text, path).then((colorize) => {
+      if (alive && colorize) setTokens(colorize(0, text.length));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [text, path]);
+  return (
+    <pre
+      role="region"
+      aria-label={tx(label)}
+      tabIndex={0}
+      className={`${styles.preview} ${selectableText}`}
+      style={font}
+    >
+      {tokenSpans(text, 0, text.length, tokens)}
+    </pre>
+  );
+}
+
 function HunkPopupView({ state }: { state: PopupState }) {
   const { view, hunk, path } = state;
   const [copied, setCopied] = useState(false);
-  const current = view.state.sliceDoc(hunk.from, hunk.to);
-  const oldLines = splitLines(hunk.oldText);
-  const newLines = splitLines(current);
   const all = editorHunks(view.state);
   const index = all.findIndex((h) => h.start === hunk.start && h.oldStart === hunk.oldStart);
+  const stage = hunk.staging;
+  const title = stage ? stagingTitle(stage) : tx(KIND_TITLE[hunk.kind]);
+  const original = stage?.unstaged ? stage.indexText : hunk.oldText;
+  const canStageEdit = !!stage && editableHunk(view, hunk);
+  const canRollback = !view.state.readOnly && (!stage || (stage.unstaged && canStageEdit));
 
   const rollback = () => {
-    const live = editorHunks(view.state).find((h) => h.start === hunk.start && h.oldStart === hunk.oldStart) ?? hunk;
-    view.dispatch({
-      changes: { from: live.from, to: live.to, insert: live.oldText },
-      userEvent: "input.rollback",
-      scrollIntoView: true,
-    });
-    closeHunkPopup();
-    view.focus();
+    const live = stage
+      ? equivalentStagingHunk(view, hunk)
+      : editorHunks(view.state).find((h) => h.start === hunk.start && h.oldStart === hunk.oldStart);
+    if (live && rollbackHunks({ view, path, hunks: [live] })) {
+      closeHunkPopup();
+      view.focus();
+    }
   };
 
   const step = (dir: 1 | -1) => {
-    const target = gotoChange(view, dir);
+    const target = gotoChange(view, dir, hunk.from);
     if (target) requestAnimationFrame(() => openHunkPopup(view, target, path));
     else closeHunkPopup();
   };
@@ -105,12 +174,14 @@ function HunkPopupView({ state }: { state: PopupState }) {
   return (
     <Popup
       open
-      anchor={{ x: state.x, y: state.y }}
+      anchor={state.anchor}
       placement="bottom-start"
       offset={2}
       onClose={closeHunkPopup}
-      aria-label={KIND_TITLE[hunk.kind]}
+      aria-label={title}
       className={styles.popup}
+      style={{ "--hunk-popup-width": `${state.width}px` } as CSSProperties}
+      unstyled
     >
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Change actions")}>
         <IconButton
@@ -127,51 +198,78 @@ function HunkPopupView({ state }: { state: PopupState }) {
           size="small"
           onClick={() => step(1)}
         />
-        <IconButton icon="undo" title="Rollback" size="small" data-autofocus onClick={rollback} />
+        <IconButton
+          icon="undo"
+          title="Rollback"
+          size="small"
+          disabled={!canRollback}
+          data-autofocus={canRollback || undefined}
+          onClick={rollback}
+        />
         <IconButton
           icon="diff"
           title="Show Diff"
           size="small"
+          disabled={!!stage && !canStageEdit}
           onClick={() => {
             closeHunkPopup();
-            void executeAction("vcs.showDiff", { path, line: hunk.start });
+            if (stage) void executeAction("vcs.showDiffForLines", { view, path, hunks: [hunk] });
+            else void executeAction("vcs.showDiff", { path, line: hunk.start });
           }}
         />
         <IconButton
           icon={copied ? "check" : "copy"}
           title="Copy Original Text"
           size="small"
-          disabled={!hunk.oldText}
+          disabled={!original}
           onClick={() => {
-            void writeClipboardText(hunk.oldText).then(() => setCopied(true));
+            void writeClipboardText(original).then(() => setCopied(true));
           }}
         />
+        {stage?.unstaged && (
+          <IconButton
+            icon="plus"
+            action="vcs.stageGutterChange"
+            actionArg={{ view, path, hunks: [hunk] }}
+            size="small"
+            disabled={!canStageEdit}
+            data-autofocus={(canStageEdit && !canRollback) || undefined}
+          />
+        )}
+        {stage?.staged && (
+          <IconButton
+            icon="minus"
+            action="vcs.unstageGutterChange"
+            actionArg={{ view, path, hunks: [hunk] }}
+            size="small"
+            disabled={!canStageEdit}
+            data-autofocus={(canStageEdit && !stage.unstaged) || undefined}
+          />
+        )}
         <span className={styles.title}>
-          {tx(KIND_TITLE[hunk.kind])}
+          {title}
           {index >= 0 && all.length > 1 && <span className={styles.counter}>{tx`${index + 1} of ${all.length}`}</span>}
         </span>
         <IconButton icon="close" title="Close" size="small" onClick={closeHunkPopup} />
       </div>
-      {(oldLines.length > 0 || newLines.length > 0) && (
-        <div className={styles.body}>
-          {oldLines.map((l, i) => (
-            <div key={`o${i}`} className={styles.removed}>
-              <span className={styles.sign} aria-hidden>
-                -
-              </span>
-              {l || " "}
+      {stage
+        ? ((stage.staged && hunk.oldText) || (stage.unstaged && stage.indexText)) && (
+            <div className={styles.versions}>
+              {stage.staged && hunk.oldText && (
+                <>
+                  <div className={styles.versionLabel}>{tx("HEAD")}</div>
+                  <OriginalText view={view} path={path} text={hunk.oldText} label="HEAD" />
+                </>
+              )}
+              {stage.unstaged && stage.indexText && (
+                <>
+                  <div className={styles.versionLabel}>{tx("Staged (index)")}</div>
+                  <OriginalText view={view} path={path} text={stage.indexText} label="Staged (index)" />
+                </>
+              )}
             </div>
-          ))}
-          {newLines.map((l, i) => (
-            <div key={`n${i}`} className={styles.added}>
-              <span className={styles.sign} aria-hidden>
-                +
-              </span>
-              {l || " "}
-            </div>
-          ))}
-        </div>
-      )}
+          )
+        : hunk.oldText && <OriginalText view={view} path={path} text={hunk.oldText} />}
     </Popup>
   );
 }

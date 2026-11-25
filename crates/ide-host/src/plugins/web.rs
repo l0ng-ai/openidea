@@ -16,7 +16,6 @@ use ide_extension::{Package, check_relative};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
 /// Most files under one web root.
 const MAX_FILES: usize = 4096;
@@ -122,6 +121,10 @@ pub(super) struct WebPtySession {
 pub struct WebFile {
     pub bytes: Vec<u8>,
     pub mime: &'static str,
+    /// The origins a page may embed: `None` when no web page whose directory holds
+    /// the file declares `frames` (API 1.16), else the declared origins the user has
+    /// granted (`net:` / `net.http:`), possibly none.
+    pub frames: Option<Vec<String>>,
 }
 
 impl PluginHost {
@@ -169,7 +172,7 @@ impl PluginHost {
         plugin_id: &str,
         window: &str,
         output: crate::ops::Emit<String>,
-        completion: Option<Arc<dyn Fn(Option<i32>) + Send + Sync>>,
+        completion: Option<ide_terminal::TerminalExitHook>,
         options: impl FnOnce() -> IdeResult<ide_terminal::TerminalOptions>,
     ) -> IdeResult<ide_terminal::TerminalInfo> {
         let _guard = self.lifecycle.lock();
@@ -184,20 +187,12 @@ impl PluginHost {
             return Err(IdeError::invalid("a plugin may own at most 8 PTYs"));
         }
         let cwd = options.cwd.0.clone();
-        let previous = host.window_sink(window);
-        let sink: Arc<dyn ide_core::EventSink> = Arc::new(move |event: ide_core::IdeEvent| {
-            if let ide_core::IdeEvent::TerminalExited { code, .. } = &event
-                && let Some(completion) = &completion
-            {
-                completion(*code);
-            }
-            previous.emit(event);
-        });
         let info = host.terminals.spawn_program(
             options,
             host.owner_window(window).to_owned(),
-            sink,
+            host.window_sink(window),
             Box::new(move |data| output(data)),
+            completion,
         )?;
         if !self
             .shared
@@ -333,9 +328,35 @@ impl PluginHost {
         })
     }
 
+    /// `frames` of the web pages whose directory holds `rel`, kept to those `granted`.
+    fn web_frames(&self, plugin: &str, rel: &str, granted: &[ide_extension::Capability]) -> Option<Vec<String>> {
+        let declared: Vec<String> = super::ui_points::WEB_POINTS
+            .iter()
+            .flat_map(|point| self.ui.items(point, Some(plugin)))
+            .filter(|item| {
+                let dir = item.decl.get("web").and_then(|w| w.as_str()).and_then(|e| e.rsplit_once('/'));
+                dir.is_some_and(|(dir, _)| rel.starts_with(&format!("{dir}/")))
+            })
+            .filter_map(|item| item.decl.get("frames").and_then(|f| f.as_array()).cloned())
+            .flatten()
+            .filter_map(|f| f.as_str().map(str::to_owned))
+            .collect();
+        if declared.is_empty() {
+            return None;
+        }
+        let mut allowed = Vec::new();
+        for origin in declared {
+            let ok = ide_plugin::net_capability(&origin).is_ok_and(|cap| granted.iter().any(|g| g.covers(&cap)));
+            if ok && !allowed.contains(&origin) {
+                allowed.push(origin);
+            }
+        }
+        Some(allowed)
+    }
+
     /// The web roots `plugin` declares (entry directories, package-relative, `/`-terminated).
     fn web_dirs(&self, plugin: &str) -> Vec<String> {
-        [super::ui_points::VIEWS, super::ui_points::CUSTOM_EDITORS]
+        super::ui_points::WEB_POINTS
             .iter()
             .flat_map(|point| self.ui.items(point, Some(plugin)))
             .filter_map(|item| item.decl.get("web").and_then(|w| w.as_str()).map(str::to_owned))
@@ -356,7 +377,7 @@ impl PluginHost {
         if !plugin.status().is_live() {
             return Err(IdeError::unavailable(format!("plugin {plugin_id:?} is not enabled")));
         }
-        let entry = [super::ui_points::VIEWS, super::ui_points::CUSTOM_EDITORS]
+        let entry = super::ui_points::WEB_POINTS
             .iter()
             .flat_map(|point| self.ui.items(point, Some(plugin_id)))
             .find(|item| item.key == view)
@@ -385,7 +406,14 @@ impl PluginHost {
             return Err(IdeError::not_found(format!("{rel}: not part of a web view")));
         }
         let bytes = plugin.pkg.read_bytes(rel_path).map_err(IdeError::not_found)?;
-        Ok(WebFile { bytes, mime: mime(rel) })
+        let mime = mime(rel);
+        let frames = if mime.starts_with("text/html") {
+            let granted = plugin.meta.lock().granted.clone();
+            self.web_frames(plugin_id, rel, &granted)
+        } else {
+            None
+        };
+        Ok(WebFile { bytes, mime, frames })
     }
 }
 

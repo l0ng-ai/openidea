@@ -23,9 +23,46 @@ closes it, and records:
 | `exit_s`                                    | until every process has exited                                                                                        |
 | `cache_mb`, install size                    | `cache_dirs`, `install_dir`                                                                                           |
 
-Apps run interleaved, rotating the order, after `--warmup` discarded runs.
-Output goes to `results/<time>-<project>/`: `report.md` (median, min–max),
-`results.json`, and each run's stdout.
+Apps run interleaved, rotating the order, after `--warmup` unaggregated runs.
+Every attempt, including warmups and failed launches, is retained in
+`results/<time>-<project>-<unique>/`: `report.md`, `results.json`, and each
+launched run's stdout. Reports are refreshed before and after each attempt
+and on errors or interruption; separate invocations never overwrite each other.
+
+The table shows median (min–max) and **valid/attempted** measured-trial counts
+for every fixed metric, even when there are zero valid values. Only completely
+valid trials enter aggregates; failed trials retain partial measurements and
+explicit reasons in JSON and the attempts table. Warmups never enter medians
+but a failed warmup still fails the suite. An empty or incomplete suite is not
+successful.
+
+Startup timeout, early exit/crash, observation/access errors, invalid or missing
+required metrics, quit-command errors, forced termination, and interruption
+produce a nonzero exit. JSON records `status`, `reasons`, `warmup`, and
+`metric_status` (`valid`, `missing`, `invalid`, or `unsupported`). Nonfinite
+numeric evidence is preserved as an `invalid_number` object, never JSON NaN.
+Unsupported window observation, non-Linux PSS, and unconfigured cache directories
+are explicit exclusions rather than missing required values. Unobserved optional
+log markers do not fail a trial; `ready_after` markers are required.
+
+`--runs` must be positive; `--warmup` and `--cooldown` may be zero. Other
+durations and the CPU threshold must be finite and positive, and the quiet
+period cannot exceed the startup timeout.
+
+Shutdown always runs after a launch, including observation errors and Ctrl-C.
+`--close-timeout` bounds the quit command plus graceful wait; each forced cleanup
+has at most two additional seconds to reap processes. `--command-timeout`
+(default 60 seconds) bounds `--drop-os-cache`, including interactive commands.
+Only processes attributed to the launch are terminated; preexisting instances
+are refused, never killed. Configured `daemons` remain explicitly excluded from
+shutdown and forced cleanup. POSIX launch-owned process groups retain orphaned
+children; on Windows discovery uses the recorded process ancestry.
+
+Run the small process-fixture regressions without launching an installed IDE:
+
+```sh
+python -m unittest discover -s perf/compare -p 'test_bench.py'
+```
 
 ## Fair runs
 
@@ -46,6 +83,7 @@ Output goes to `results/<time>-<project>/`: `report.md` (median, min–max),
 - Windows: windows via `user32`, closed with `WM_CLOSE`.
 - macOS: windows via Quartz (`pyobjc-framework-Quartz`; titles need Screen
   Recording permission). WebKit helpers are children of launchd and are
-  attributed through `responsibility_get_pid_responsible_for_pid`.
+  attributed through `responsibility_get_pid_responsible_for_pid`. Without that
+  API, unrelated WebKit processes are not guessed by name/start time or killed.
 - Linux: windows via `wmctrl` (X11). Without it `window_s` is skipped and
   readiness counts from launch.

@@ -1,6 +1,7 @@
-//! Read-only browsing of zip archives (jar, zip, war…), IDEA's `jar://` file
-//! system: `<archive>!` is the archive's root and `<archive>!/<entry>` an entry
-//! inside it. Listing and reading go through a small cache of parsed central
+//! Read-only browsing of zip archives (jar, zip, war…) and gzip'd tars (Zig
+//! keeps its fetched packages as `.tar.gz` blobs), IDEA's `jar://` file system:
+//! `<archive>!` is the archive's root and `<archive>!/<entry>` an entry inside
+//! it. Listing and reading go through a small cache of parsed central
 //! directories, refreshed when the archive changes on disk.
 
 use crate::{EntryKind, FileEntry, mtime_ms, natural_cmp};
@@ -8,7 +9,7 @@ use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
@@ -22,11 +23,19 @@ pub const ARCHIVE_SEPARATOR: char = '!';
 /// Parsed archives kept open.
 const CACHE_SIZE: usize = 8;
 
-/// Whether `path` names a file browsed as an archive (by extension).
+/// Whether `path` names a file browsed as an archive: a zip extension, or a
+/// gzip'd tar (`x.tar.gz`).
 pub fn is_archive_file(path: &Path) -> bool {
+    if is_tar_gz(path) {
+        return true;
+    }
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| ARCHIVE_EXTENSIONS.iter().any(|a| a.eq_ignore_ascii_case(e)))
+}
+
+fn is_tar_gz(path: &Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.to_ascii_lowercase().ends_with(".tar.gz"))
 }
 
 /// `(archive, entry)` for `<archive>!` (entry `""`) or `<archive>!/<entry>`;
@@ -84,7 +93,14 @@ struct Archive {
     mtime_ms: f64,
     /// Entry path (`""` = root) → node.
     nodes: HashMap<String, Node>,
-    zip: Mutex<zip::ZipArchive<File>>,
+    contents: Contents,
+}
+
+/// Where entry contents come from: a random-access zip, or a gzip'd tar that
+/// is re-scanned per read (package tarballs are small).
+enum Contents {
+    Zip(Mutex<zip::ZipArchive<File>>),
+    Tar(Mutex<File>),
 }
 
 /// Most recently used first.
@@ -115,41 +131,81 @@ fn parent_of(name: &str) -> (&str, &str) {
 
 impl Archive {
     fn open(path: &Path, stamp: (Option<SystemTime>, u64), mtime_ms: f64) -> IdeResult<Self> {
-        let mut zip = zip::ZipArchive::new(File::open(path)?).map_err(|e| zip_error(path, e))?;
-        let mut nodes: HashMap<String, Node> = HashMap::new();
-        nodes.insert(String::new(), Node { dir: true, size: 0, index: None, children: Vec::new() });
-        for i in 0..zip.len() {
-            let Ok(file) = zip.by_index_raw(i) else { continue };
-            let Ok(name) = file.name() else { continue };
-            let Some(name) = clean_name(&name) else { continue };
-            let (dir, size) = (file.is_dir(), file.size());
-            drop(file);
-            let mut parent = parent_of(&name).0;
-            while !nodes.contains_key(parent) {
-                nodes.insert(parent.to_owned(), Node { dir: true, size: 0, index: None, children: Vec::new() });
-                parent = parent_of(parent).0;
-            }
-            let node = nodes.entry(name).or_insert(Node { dir, size: 0, index: None, children: Vec::new() });
-            node.dir |= dir;
-            node.index = Some(i);
-            node.size = if node.dir { 0 } else { size };
-        }
-        let links: Vec<(String, String)> = nodes
-            .keys()
-            .filter(|k| !k.is_empty())
-            .map(|k| {
-                let (parent, base) = parent_of(k);
-                (parent.to_owned(), base.to_owned())
-            })
-            .collect();
-        for (parent, base) in links {
-            if let Some(p) = nodes.get_mut(&parent) {
-                p.dir = true;
-                p.children.push(base);
-            }
-        }
-        Ok(Self { stamp, mtime_ms, nodes, zip: Mutex::new(zip) })
+        let file = File::open(path)?;
+        let (nodes, contents) = if is_tar_gz(path) {
+            (tar_nodes(&file)?, Contents::Tar(Mutex::new(file)))
+        } else {
+            let mut zip = zip::ZipArchive::new(file).map_err(|e| zip_error(path, e))?;
+            let nodes = zip_nodes(&mut zip)?;
+            (nodes, Contents::Zip(Mutex::new(zip)))
+        };
+        Ok(Self { stamp, mtime_ms, nodes, contents })
     }
+}
+
+/// The directory tree of a zip, with each entry's central-directory index.
+fn zip_nodes(zip: &mut zip::ZipArchive<File>) -> IdeResult<HashMap<String, Node>> {
+    let mut nodes: HashMap<String, Node> = HashMap::new();
+    nodes.insert(String::new(), Node { dir: true, size: 0, index: None, children: Vec::new() });
+    for i in 0..zip.len() {
+        let Ok(file) = zip.by_index_raw(i) else { continue };
+        let Ok(name) = file.name() else { continue };
+        let Some(name) = clean_name(&name) else { continue };
+        let (dir, size) = (file.is_dir(), file.size());
+        drop(file);
+        add_entry(&mut nodes, name, i, dir, size);
+    }
+    Ok(link_children(nodes))
+}
+
+/// The directory tree of a gzip'd tar, with each entry's ordinal position.
+/// Entries are re-read by streaming the (decompressed) tar again.
+fn tar_nodes(file: &File) -> IdeResult<HashMap<String, Node>> {
+    let mut nodes: HashMap<String, Node> = HashMap::new();
+    nodes.insert(String::new(), Node { dir: true, size: 0, index: None, children: Vec::new() });
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    for (i, entry) in tar.entries()?.enumerate() {
+        let Ok(entry) = entry else { break };
+        let Ok(name) = entry.path().map(|p| p.to_string_lossy().into_owned()) else { continue };
+        let Some(name) = clean_name(&name) else { continue };
+        let (dir, size) = match entry.header().entry_type().is_dir() {
+            true => (true, 0),
+            false => (false, entry.header().size().unwrap_or_default()),
+        };
+        add_entry(&mut nodes, name, i, dir, size);
+    }
+    Ok(link_children(nodes))
+}
+
+fn add_entry(nodes: &mut HashMap<String, Node>, name: String, index: usize, dir: bool, size: u64) {
+    let mut parent = parent_of(&name).0;
+    while !nodes.contains_key(parent) {
+        nodes.insert(parent.to_owned(), Node { dir: true, size: 0, index: None, children: Vec::new() });
+        parent = parent_of(parent).0;
+    }
+    let node = nodes.entry(name).or_insert(Node { dir, size: 0, index: None, children: Vec::new() });
+    node.dir |= dir;
+    node.index = Some(index);
+    node.size = if node.dir { 0 } else { size };
+}
+
+/// Makes every named entry a child of its parent folder node.
+fn link_children(mut nodes: HashMap<String, Node>) -> HashMap<String, Node> {
+    let links: Vec<(String, String)> = nodes
+        .keys()
+        .filter(|k| !k.is_empty())
+        .map(|k| {
+            let (parent, base) = parent_of(k);
+            (parent.to_owned(), base.to_owned())
+        })
+        .collect();
+    for (parent, base) in links {
+        if let Some(p) = nodes.get_mut(&parent) {
+            p.dir = true;
+            p.children.push(base);
+        }
+    }
+    nodes
 }
 
 /// The parsed archive at `path`, from the cache unless it changed on disk.
@@ -235,10 +291,31 @@ pub fn read_archive_entry(archive_path: &Path, entry: &str) -> IdeResult<(Vec<u8
         Some(_) => return Err(IdeError::invalid(format!("{entry} is a directory"))),
         None => return Err(IdeError::not_found(format!("{entry} not found in {}", archive_path.display()))),
     };
-    let mut zip = a.zip.lock();
-    let mut file = zip.by_index(index).map_err(|e| zip_error(archive_path, e))?;
-    let mut bytes = Vec::with_capacity(file.size().min(crate::MAX_OPEN_SIZE) as usize);
-    file.read_to_end(&mut bytes)?;
+    let bytes = match &a.contents {
+        Contents::Zip(zip) => {
+            let mut zip = zip.lock();
+            let mut file = zip.by_index(index).map_err(|e| zip_error(archive_path, e))?;
+            let mut bytes = Vec::with_capacity(file.size().min(crate::MAX_OPEN_SIZE) as usize);
+            file.read_to_end(&mut bytes)?;
+            bytes
+        }
+        Contents::Tar(file) => {
+            let mut file = file.lock();
+            file.seek(std::io::SeekFrom::Start(0))?;
+            let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(&mut *file));
+            for (i, entry) in tar.entries()?.enumerate() {
+                if i != index {
+                    continue;
+                }
+                let mut entry = entry.map_err(|e| IdeError::invalid(format!("{}: {e}", archive_path.display())))?;
+                let mut bytes =
+                    Vec::with_capacity(entry.header().size().unwrap_or_default().min(crate::MAX_OPEN_SIZE) as usize);
+                entry.read_to_end(&mut bytes)?;
+                return Ok((bytes, a.mtime_ms));
+            }
+            return Err(IdeError::not_found(format!("{entry} not found in {}", archive_path.display())));
+        }
+    };
     Ok((bytes, a.mtime_ms))
 }
 
@@ -260,6 +337,20 @@ pub(crate) mod tests {
             }
         }
         w.finish().unwrap();
+    }
+
+    /// Writes a gzip'd tar with `files`, the layout of the Zig package cache blobs.
+    pub(crate) fn write_tar_gz(path: &Path, files: &[(&str, &str)]) {
+        let enc = flate2::write::GzEncoder::new(File::create(path).unwrap(), flate2::Compression::default());
+        let mut b = tar::Builder::new(enc);
+        for (name, text) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(text.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            b.append_data(&mut header, name, text.as_bytes()).unwrap();
+        }
+        b.into_inner().unwrap().finish().unwrap();
     }
 
     #[test]
@@ -315,6 +406,34 @@ pub(crate) mod tests {
         let f = File::options().write(true).open(&zip).unwrap();
         f.set_modified(SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
         assert_eq!(names(""), vec![("only.txt".into(), EntryKind::File)]);
+    }
+
+    #[test]
+    fn lists_and_reads_gzipped_tars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = "probe_pkg-0.1.0-ISc0DC0BAAD0X6wRO4jcg4yLywsgmBYSlOsNhFDSnwV8";
+        let blob = tmp.path().join(format!("{hash}.tar.gz"));
+        let (zon, lib) = (format!("{hash}/build.zig.zon"), format!("{hash}/src/lib.zig"));
+        write_tar_gz(&blob, &[(zon.as_str(), ".{ .name = .probe_pkg }"), (lib.as_str(), "pub fn hello() {}\n")]);
+        let root = |entry: &str| PathBuf::from(format!("{}!/{entry}", blob.display()));
+        let names = |dir: &str| -> Vec<String> {
+            crate::read_dir(&root(&format!("{hash}/{dir}")), &[]).unwrap().into_iter().map(|e| e.name).collect()
+        };
+        assert_eq!(names(""), vec!["src", "build.zig.zon"]);
+        assert_eq!(names("src"), vec!["lib.zig"]);
+        let lib = crate::load_text(&root(&format!("{hash}/src/lib.zig"))).unwrap();
+        assert_eq!((lib.text.as_str(), lib.binary), ("pub fn hello() {}\n", false));
+
+        // A rewritten tar is re-read, and a plain `.gz` stays an ordinary file.
+        write_tar_gz(&blob, &[("only.zig", "1")]);
+        let f = File::options().write(true).open(&blob).unwrap();
+        f.set_modified(SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            crate::read_dir(&root(""), &[]).unwrap().iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            ["only.zig"]
+        );
+        assert!(!is_archive_file(Path::new("/a/data.gz")));
+        assert!(is_archive_file(Path::new("/a/pack.TAR.GZ")));
     }
 
     #[test]

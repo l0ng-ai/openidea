@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { call, commands, isTauri, type Settings } from "@/platform/ipc";
 import { loadSettings, useProject } from "@/platform/project";
+import { lastSettingsPage, rememberSettingsPage } from "./lastPage";
 import { deepEqual, getAt, putAt, setAt, validateSettings, type ValidSettings } from "./schema";
 
 export type Scope = "global" | "project";
@@ -109,10 +110,12 @@ export function splitPageTarget(target: string): { pageId: string; focus: string
   return i < 0 ? { pageId: target, focus: null } : { pageId: target.slice(0, i), focus: target.slice(i + 1) || null };
 }
 
-export function openSettings(pageId?: string, opts: { newProjects?: boolean } = {}) {
+export function openSettings(pageId?: string, opts: { newProjects?: boolean; globalBase?: ValidSettings } = {}) {
   const s = useSettingsDialog.getState();
   const base = validateSettings(useProject.getState().settings);
-  const target = pageId ? splitPageTarget(pageId) : { pageId: s.pageId, focus: null };
+  const newProjects = opts.newProjects ?? false;
+  // IDEA reopens Settings on the page it was left on; Settings for New Projects has its own pages.
+  const target = splitPageTarget(pageId ?? (newProjects ? s.pageId : (lastSettingsPage() ?? s.pageId)));
   useSettingsDialog.setState({
     open: true,
     projectStructureOpen: false,
@@ -120,8 +123,8 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean } = 
     focus: target.focus,
     query: "",
     base,
-    globalBase: base,
-    newProjects: opts.newProjects ?? false,
+    globalBase: opts.globalBase ?? base,
+    newProjects,
     staged: {},
     stagedSecrets: {},
     stagedExternal: {},
@@ -129,7 +132,8 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean } = 
     saving: false,
     error: null,
   });
-  void loadGlobalBase();
+  if (!newProjects) rememberSettingsPage(target.pageId);
+  if (!opts.globalBase) void loadGlobalBase();
 }
 
 export function openProjectStructure(section?: string) {
@@ -182,10 +186,10 @@ async function loadGlobalBase() {
   }
 }
 
-export function rebaseSettings() {
+export function rebaseSettings(globalBase?: ValidSettings) {
   const base = validateSettings(useProject.getState().settings);
-  useSettingsDialog.setState((s) => (s.open || s.projectStructureOpen ? { base, globalBase: base } : {}));
-  void loadGlobalBase();
+  useSettingsDialog.setState((s) => (s.open || s.projectStructureOpen ? { base, globalBase: globalBase ?? base } : {}));
+  if (!globalBase) void loadGlobalBase();
 }
 
 /** IDEA's File › New Projects Setup › Settings for New Projects. */
@@ -214,7 +218,9 @@ export function closeSettings() {
 
 /** Shows `pageId` (`page#focus` also selects `focus` on it). */
 export function selectPage(pageId: string) {
-  useSettingsDialog.setState(splitPageTarget(pageId));
+  const target = splitPageTarget(pageId);
+  useSettingsDialog.setState(target);
+  if (!useSettingsDialog.getState().newProjects) rememberSettingsPage(target.pageId);
 }
 
 export function setQuery(query: string) {
