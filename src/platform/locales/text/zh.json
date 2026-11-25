@@ -2871,7 +2871,7 @@
   "Unnamed container": "未命名容器",
   "State unknown": "状态未知",
   "Lock owners of virtual threads need Java 25 or later.": "需要 Java 25 或更高版本才能显示虚拟线程的锁持有者。",
-  "Virtual threads are not listed while the debugger stops the program.": "调试器使程序停止时，不会列出虚拟线程。",
+  "Virtual threads are not listed while the debugger stops the program.": "程序被调试器暂停时，不会列出虚拟线程。",
   "Virtual threads are not listed: there are too many to read.": "未列出虚拟线程：数量过多，无法读取。",
   "Virtual threads are not listed: the JVM could not report them.": "未列出虚拟线程：JVM 无法报告它们。",
   "Dump Threads": "转储线程",
