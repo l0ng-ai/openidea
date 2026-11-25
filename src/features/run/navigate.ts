@@ -168,11 +168,31 @@ export async function openTarget(target: FileTarget, cwd: string, focus = true):
 /**
  * ⌘⇧-click (Ctrl+Shift elsewhere) on a URL in console output debugs its page in a browser
  * session instead of opening it, like IDEA's Ctrl+Shift+click on a URL in the Run tool window.
- * Returns whether the click was taken.
+ * A normal click on a loopback URL in a trusted local project opens the Browser panel;
+ * public URLs and remote-project output keep the external opener.
  */
-export function debugConsoleUrl(e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, url: string): boolean {
-  if (!e.shiftKey || !(e.metaKey || e.ctrlKey) || !getAction("debug.debugInBrowser")) return false;
-  void executeAction("debug.debugInBrowser", url);
+export function routeConsoleUrl(e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, url: string): boolean {
+  if (e.shiftKey && (e.metaKey || e.ctrlKey) && getAction("debug.debugInBrowser")) {
+    void executeAction("debug.debugInBrowser", url);
+    return true;
+  }
+  if (
+    !isTauri() ||
+    !useProject.getState().project?.trusted ||
+    useRemote.getState().session ||
+    !getAction("web.openLocalBrowser") ||
+    !URL.canParse(url)
+  )
+    return false;
+  const { protocol, hostname, username, password } = new URL(url);
+  if (
+    !(protocol === "http:" || protocol === "https:") ||
+    username ||
+    password ||
+    !(hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d+){3}$/.test(hostname))
+  )
+    return false;
+  void executeAction("web.openLocalBrowser", url);
   return true;
 }
 

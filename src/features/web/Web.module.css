@@ -34,3 +34,51 @@
   color: var(--fg-muted);
   font-family: var(--font-ui);
 }
+.inspector {
+  flex: 1;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 12px;
+  min-width: 0;
+  overflow: auto;
+}
+.inspector form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.inspector label {
+  grid-column: 1 / -1;
+}
+.navigation {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.viewport {
+  flex: 1 0 100px;
+  background: var(--bg-editor);
+}
+.inspector button {
+  justify-self: start;
+  align-self: flex-start;
+}
+.inspector h3,
+.inspector p {
+  margin: 0;
+  font-size: inherit;
+}
+.inspector pre {
+  margin: 0;
+  padding: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  user-select: text;
+}

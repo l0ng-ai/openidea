@@ -79,6 +79,10 @@ fn with_bridge(html: &[u8]) -> Vec<u8> {
 }
 
 pub fn handle<R: Runtime>(ctx: UriSchemeContext<'_, R>, request: Request<Vec<u8>>, responder: UriSchemeResponder) {
+    if crate::browser_picker::is_guest(ctx.webview_label()) {
+        responder.respond(status(StatusCode::FORBIDDEN));
+        return;
+    }
     let app = ctx.app_handle().clone();
     let path = request.uri().path().to_owned();
     tauri::async_runtime::spawn_blocking(move || {

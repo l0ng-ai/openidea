@@ -15,6 +15,8 @@ import {
   registerEditorBanner,
   registerMenuGroup,
   registerTextEditorWrapper,
+  registerToolWindow,
+  toolWindowService,
   useTextEditorWrappers,
 } from "@/workbench/contributions";
 import { activeEditor, registerEditorContribution } from "@/editor/api";
@@ -31,6 +33,7 @@ import {
   useWebPreview,
 } from "./browsers";
 import { tx } from "@/platform/i18n";
+import { closeBrowser, useBrowserSession, visit, watchBrowserOwner } from "./browserSession";
 
 interface OpenArg {
   path?: string;
@@ -78,9 +81,20 @@ function browserMenu(path: string): MenuItem {
 export function activate(): () => void {
   void loadBrowsers();
   const disposers = [
+    watchBrowserOwner(),
     // Open tabs gain or lose the browser bar and preview when File Types change.
     onFileTypesChange(() => useTextEditorWrappers.setState((w) => ({ wrappers: new Map(w.wrappers) }))),
     registerEditorBanner(djangoTemplateBanner),
+    registerToolWindow({
+      id: "browser",
+      title: "Browser",
+      icon: "web",
+      anchor: "right",
+      order: 7,
+      stripe: "onUse",
+      sessionContent: true,
+      component: lazyComponent(() => import("./BrowserView").then((m) => m.BrowserView)),
+    }),
     registerEditorContribution({ id: "web.djangoContent", order: 57, extensions: djangoContentWatcher }),
     registerTextEditorWrapper({
       id: "web.html",
@@ -88,6 +102,21 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./WebEditor").then((m) => m.WebEditor)),
     }),
     registerActions([
+      {
+        id: "web.openLocalBrowser",
+        title: "Open Local Browser",
+        category: "View",
+        icon: "web",
+        when: "projectLocal",
+        keywords: ["browser", "element", "inspect", "agent", "DOM", "CSS"],
+        run: async ({ arg }) => {
+          toolWindowService().show("browser", true);
+          if (typeof arg !== "string" || !URL.canParse(arg)) return;
+          const previous = useBrowserSession.getState().location;
+          if (previous && new URL(previous.url).origin !== new URL(arg).origin) closeBrowser();
+          await visit(arg);
+        },
+      },
       {
         id: "web.openInBrowser",
         title: "Open in Browser",

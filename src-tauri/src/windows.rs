@@ -289,7 +289,7 @@ pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Opt
     };
     if let Some(remote) = launch.remote.clone() {
         let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(&remote.target, &remote.path));
-        if let Some(w) = open.and_then(|label| app.get_webview_window(&label)) {
+        if let Some(w) = open.and_then(|label| app.workbench_window(&label)) {
             return Ok(Some(w));
         }
         let title = remote
@@ -309,6 +309,7 @@ pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Opt
 
 #[derive(Default)]
 pub struct WindowsState {
+    primary: Mutex<HashMap<String, WebviewWindow>>,
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
     pub groups_restored: AtomicBool,
     /// Serialises writes of the saved session. Holds the previous run's session once read: it is
@@ -353,6 +354,47 @@ pub(crate) struct AuxGeometry {
     pub height: f64,
     #[serde(default)]
     pub maximized: bool,
+}
+
+/// Tauri's WebviewWindow lookup and command argument both stop matching as soon as a
+/// window has a second webview. Keep addressing its original, trusted workbench instead.
+pub(crate) trait WorkbenchWindows {
+    fn workbench_window(&self, label: &str) -> Option<WebviewWindow>;
+    fn workbench_windows(&self) -> HashMap<String, WebviewWindow>;
+}
+
+impl WorkbenchWindows for AppHandle {
+    fn workbench_window(&self, label: &str) -> Option<WebviewWindow> {
+        self.state::<WindowsState>().primary.lock().get(label).cloned()
+    }
+    fn workbench_windows(&self) -> HashMap<String, WebviewWindow> {
+        self.state::<WindowsState>().primary.lock().clone()
+    }
+}
+
+pub struct WorkbenchWindow(WebviewWindow);
+
+impl std::ops::Deref for WorkbenchWindow {
+    type Target = WebviewWindow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> tauri::ipc::CommandArg<'a, tauri::Wry> for WorkbenchWindow {
+    fn from_command(item: tauri::ipc::CommandItem<'a, tauri::Wry>) -> Result<Self, tauri::ipc::InvokeError> {
+        let view = item.message.webview_ref();
+        view.app_handle()
+            .workbench_window(view.label())
+            .map(Self)
+            .ok_or_else(|| tauri::ipc::InvokeError::from("Not a workbench webview"))
+    }
+}
+
+impl specta::function::FunctionArg for WorkbenchWindow {
+    fn to_datatype(_: &mut specta::Types) -> Option<specta::datatype::DataType> {
+        None
+    }
 }
 
 impl WindowsState {
@@ -429,6 +471,7 @@ impl WindowsState {
     }
 
     pub fn forget(&self, label: &str) {
+        self.primary.lock().remove(label);
         self.close_settled(label);
         {
             let mut launches = self.launches.lock();
@@ -614,7 +657,7 @@ pub fn state_key(label: &str) -> &str {
 
 /// `parent`'s auxiliary windows that show its project's documents.
 pub fn document_windows(app: &AppHandle, parent: &str) -> Vec<String> {
-    app.webview_windows()
+    app.workbench_windows()
         .into_keys()
         .filter(|label| auxiliary(label).is_some_and(|(kind, p)| kind.shares_documents() && p == parent))
         .collect()
@@ -624,7 +667,7 @@ pub fn document_windows(app: &AppHandle, parent: &str) -> Vec<String> {
 /// Windows with documents are destroyed: the parent's leave guard has already settled their
 /// unsaved changes (`closeAuxiliaryWindows` in the UI).
 pub fn close_auxiliary_windows(app: &AppHandle, parent: &str) {
-    for (label, window) in app.webview_windows() {
+    for (label, window) in app.workbench_windows() {
         match auxiliary(&label) {
             Some((kind, p)) if p == parent && kind.shares_documents() => drop(window.destroy()),
             Some((_, p)) if p == parent => drop(window.close()),
@@ -635,7 +678,7 @@ pub fn close_auxiliary_windows(app: &AppHandle, parent: &str) {
 
 /// Project windows, excluding auxiliary windows, for counting and cycling.
 pub fn project_window_labels(app: &AppHandle) -> Vec<String> {
-    sorted_labels(app.webview_windows().keys().map(String::as_str).filter(|l| auxiliary_parent(l).is_none()))
+    sorted_labels(app.workbench_windows().keys().map(String::as_str).filter(|l| auxiliary_parent(l).is_none()))
 }
 
 /// Sort key: `main` first, then `project-<n>` by n, then anything else.
@@ -755,7 +798,7 @@ pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
     let next = project_window_labels(app)
         .into_iter()
         .filter(|label| Some(label.as_str()) != closed)
-        .find_map(|label| app.get_webview_window(&label));
+        .find_map(|label| app.workbench_window(&label));
     if let Some(window) = next {
         focus(&window);
         if window.close().is_err() {
@@ -769,7 +812,7 @@ pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
 /// The window whose open project is `root` (already canonical).
 pub fn find_project_window(app: &AppHandle, root: &Path) -> Option<WebviewWindow> {
     let state = app.try_state::<AppState>()?;
-    app.webview_windows().into_iter().filter(|(label, _)| auxiliary_parent(label).is_none()).find_map(|(label, w)| {
+    app.workbench_windows().into_iter().filter(|(label, _)| auxiliary_parent(label).is_none()).find_map(|(label, w)| {
         let project = state.project(&label).ok()?;
         (project.root == root && !project.light).then_some(w)
     })
@@ -788,7 +831,7 @@ fn send_files_at(app: &AppHandle, window: &WebviewWindow, files: Vec<PathBuf>, p
 
 /// The focused window, else the last focused, else any.
 pub fn target_window(app: &AppHandle) -> Option<WebviewWindow> {
-    let windows = app.webview_windows();
+    let windows = app.workbench_windows();
     if let Some(w) = windows.values().find(|w| w.is_focused().unwrap_or(false)) {
         return Some(w.clone());
     }
@@ -853,6 +896,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     let window = WebviewWindowBuilder::from_config(app, &config)
         .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
+    app.state::<WindowsState>().primary.lock().insert(window.label().into(), window.clone());
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
@@ -967,7 +1011,7 @@ fn create_window_for(
     let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
     // The label is free only until the window exists, so concurrent opens take turns.
     let creating = CREATING.lock();
-    let windows = app.webview_windows();
+    let windows = app.workbench_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
     config.label = label.clone();
@@ -1103,7 +1147,7 @@ pub fn open_remote_window(
     new_window: bool,
 ) -> IdeResult<OpenOutcome> {
     tracing::info!("open_remote_window {target:?}:{path} new_window={new_window}");
-    let windows = app.webview_windows();
+    let windows = app.workbench_windows();
     let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(target, path));
     if let Some(w) = open.and_then(|label| windows.get(&label)) {
         focus(w);
@@ -1387,18 +1431,18 @@ pub(crate) fn run_open_at(
     for step in steps {
         match step {
             OpenStep::Focus(label) => {
-                if let Some(w) = app.get_webview_window(&label) {
+                if let Some(w) = app.workbench_window(&label) {
                     focus(&w);
                 }
             }
-            OpenStep::Files(label, files) => match app.get_webview_window(&label) {
+            OpenStep::Files(label, files) => match app.workbench_window(&label) {
                 Some(w) => send_files_at(app, &w, files, positions),
                 None => windows.add_files_at(&label, files, positions),
             },
             OpenStep::Launch(label, mut launch) => {
                 launch.add_positions(positions);
                 windows.set_launch(&label, *launch);
-                if let Some(w) = app.get_webview_window(&label) {
+                if let Some(w) = app.workbench_window(&label) {
                     let _ = app.emit_to(&label, LAUNCH_EVENT, ());
                     focus(&w);
                 }
@@ -1457,7 +1501,7 @@ fn dispatch_cli(app: &AppHandle, args: Vec<String>, cwd: String) {
     {
         let target = target_window(app)
             .filter(|window| auxiliary_parent(window.label()).is_none())
-            .or_else(|| project_window_labels(app).into_iter().find_map(|label| app.get_webview_window(&label)));
+            .or_else(|| project_window_labels(app).into_iter().find_map(|label| app.workbench_window(&label)));
         if let Some(window) = target {
             let _ = app.emit_to(
                 window.label(),
@@ -1539,7 +1583,7 @@ fn open_diff_files_at(app: &AppHandle, diff: DiffFilesLaunch, wait_for_window: b
             && matches!(holds(app, window.label()), Holds::Nothing | Holds::Project(_) | Holds::LightEdit)
     };
     let target = target_window(app).filter(local).or_else(|| {
-        project_window_labels(app).into_iter().filter_map(|label| app.get_webview_window(&label)).find(local)
+        project_window_labels(app).into_iter().filter_map(|label| app.workbench_window(&label)).find(local)
     });
     if let Some(window) = target {
         app.state::<WindowsState>().add_diff(window.label(), diff);
@@ -1604,7 +1648,7 @@ fn drain_cli(app: &AppHandle) {
 }
 
 pub fn cycle(app: &AppHandle, current: &str, forward: bool) {
-    let windows = app.webview_windows();
+    let windows = app.workbench_windows();
     let sorted = project_window_labels(app);
     if let Some(w) = cycle_target(&sorted, current, forward).and_then(|l| windows.get(&l)) {
         focus(w);
@@ -1641,7 +1685,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     } else {
         format!("{}-{parent_label}", aux.kind.name())
     };
-    if let Some(existing) = app.get_webview_window(&label) {
+    if let Some(existing) = app.workbench_window(&label) {
         if aux.launch != Launch::default() {
             windows.set_launch(&label, aux.launch);
             let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
@@ -1649,7 +1693,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
         focus(&existing);
         return Ok(());
     }
-    let parent = app.get_webview_window(&parent_label).ok_or_else(|| IdeError::not_found("no parent window"))?;
+    let parent = app.workbench_window(&parent_label).ok_or_else(|| IdeError::not_found("no parent window"))?;
     let mut config = window_config(app)?;
     config.label = label.clone();
     config.title = aux.title.into();
@@ -1693,6 +1737,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
         windows.forget(&label);
         IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
     })?;
+    windows.primary.lock().insert(label.clone(), window.clone());
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
@@ -1776,7 +1821,7 @@ pub fn open_settings_from_menu(app: &AppHandle, target: &WebviewWindow, action: 
     else {
         return false;
     };
-    let Some(parent) = app.get_webview_window(parent_label) else {
+    let Some(parent) = app.workbench_window(parent_label) else {
         return false;
     };
     match open_settings_window(app, &parent, page, new_projects, None) {

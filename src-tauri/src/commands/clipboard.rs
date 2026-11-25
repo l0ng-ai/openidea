@@ -7,13 +7,13 @@ use ide_core::IdeResult;
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use ide_host::ops::blocking;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, WebviewWindow};
+use tauri::{AppHandle, Window};
 
 /// Writes text locally, without WebView user-activation requirements.
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: String) -> IdeResult<()> {
+pub async fn clipboard_write_text(app: AppHandle, window: Window, text: String) -> IdeResult<()> {
     #[cfg(windows)]
     let owner = window.hwnd().map_err(|error| ide_core::IdeError::internal(error.to_string()))?.0 as usize;
     #[cfg(not(windows))]
