@@ -1154,7 +1154,7 @@
   flex-wrap: wrap;
   align-items: center;
   align-content: flex-start;
-  gap: 0 6px;
+  gap: 0 var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
@@ -1166,7 +1166,7 @@
   align-items: center;
   min-width: 0;
   height: 22px;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .meterGroup {
   display: inline-flex;
@@ -1174,7 +1174,7 @@
   align-items: center;
   min-width: 0;
   height: 22px;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .meterDivider {
   flex: none;
