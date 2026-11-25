@@ -11,7 +11,7 @@ use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 fn fake_venv(root: &Path, name: &str) -> std::path::PathBuf {
@@ -2103,8 +2103,9 @@ fn the_flutter_sdk_setting_picks_flutter_and_dart_for_server_and_run_configurati
     // Saved configurations keep the bare name.
     assert_eq!(crate::apply::without_derived(&configs[0], tmp.path(), &s).command, "flutter");
     // An explicit tool path still wins.
-    s.tools.insert("dart".into(), ide_core::settings::ToolSettings { path: "/opt/dart/bin/dart".into() });
-    assert_eq!(crate::apply::tool_command(tmp.path(), &s, "dart"), Some(PathBuf::from("/opt/dart/bin/dart")));
+    let explicit = tmp.path().join("opt").join("dart");
+    s.tools.insert("dart".into(), ide_core::settings::ToolSettings { path: explicit.to_string_lossy().into_owned() });
+    assert_eq!(crate::apply::tool_command(tmp.path(), &s, "dart"), Some(explicit));
 }
 
 #[test]

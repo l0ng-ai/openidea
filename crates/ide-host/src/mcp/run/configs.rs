@@ -513,6 +513,7 @@ async fn resolve_jvm_application(
         call.window(),
         std::path::PathBuf::from(&module),
         test == Some(true),
+        false,
         policy,
         &cancel,
         None,

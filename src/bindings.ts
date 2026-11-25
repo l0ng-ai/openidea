@@ -218,7 +218,7 @@ export const commands = {
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
 	 */
 	appMetrics: () => typedError<AppMetrics, IdeError>(__TAURI_INVOKE("app_metrics")),
-	/**  Quits: closes every window, each of which runs its own unsaved-changes check. */
+	/**  Quits: closes every window in parallel, each of which runs its own unsaved-changes check. */
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 	/**
 	 *  Release notes of `version` from the update manifest (`latest.json`), read
@@ -858,8 +858,10 @@ export const commands = {
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
 	 *  The build streams its console, messages and progress on `on_event` while it runs; a launch
 	 *  whose build another launch's build joins receives that build's events.
+	 *  A Maven module is built by the IDE's Java build, except for a `debug` launch the language
+	 *  server serves: java-debug's HotSwap reloads the classes the language server compiles.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request, onEvent })),
+	javaResolveLaunch: (module: string, test: boolean, debug: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, debug, policy, request, onEvent })),
 	/**
 	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
@@ -2284,6 +2286,11 @@ export const commands = {
 	 *  HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
 	 */
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
+	/**
+	 *  Acquires the interactive prompt turn for a batch close and brings this window forward.
+	 *  Returns `false` if the batch was cancelled while waiting.
+	 */
+	windowBeginPrompt: () => __TAURI_INVOKE<boolean>("window_begin_prompt"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
 	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
@@ -2295,6 +2302,8 @@ export const commands = {
 	 *  with whether a target took the files.
 	 */
 	windowDragFiles: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_drag_files", { paths })),
+	/**  Releases the interactive prompt turn held by this window. */
+	windowEndPrompt: () => __TAURI_INVOKE<void>("window_end_prompt"),
 	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
@@ -2374,6 +2383,11 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**
+	 *  Signals that this window passed its close checks and waits for peers closing in the same
+	 *  batch/tab group so they hide together in one frame. Returns `false` if the batch was cancelled.
+	 */
+	windowReadyToClose: () => __TAURI_INVOKE<boolean>("window_ready_to_close"),
 	/**  Appearance › Smooth scrolling for this window's web view (Linux only) */
 	windowSetSmoothScrolling: (enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_smooth_scrolling", { enabled })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
@@ -4266,6 +4280,10 @@ export type CloseContext = {
 	quitting: boolean,
 	/**  Number of open project windows (settings windows excluded), including the caller. */
 	windows: number,
+	/**  Whether this window currently has auxiliary document windows that must settle first. */
+	hasDocumentWindows: boolean,
+	/**  Whether this close runs alongside other windows or on a background tab (prompts serialize and raise). */
+	batch: boolean,
 };
 
 export type CodeAction = {

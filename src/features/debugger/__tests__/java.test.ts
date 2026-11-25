@@ -99,7 +99,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
     expect(isJavaDebuggable({ ...app, kind: "maven" })).toBe(false);
     const l = await javaLaunchConfig(app, "/p");
     expect(invoked).toEqual([
-      ["javaResolveLaunch", ["api", false, "automatic", expect.any(Number), expect.anything()]],
+      ["javaResolveLaunch", ["api", false, true, "automatic", expect.any(Number), expect.anything()]],
       ["javaDebugAdapter", ["api"]],
       ["javaDebugServer", ["api"]],
     ]);
@@ -240,7 +240,7 @@ it.each(["sibling", "/outside/modules"])("debugs from %s with the main class mod
     const launch = await javaLaunchConfig({ ...app, module, cwd }, "/p");
     expect(invoked).toContainEqual([
       "javaResolveLaunch",
-      ["api", false, "automatic", expect.any(Number), expect.anything()],
+      ["api", false, true, "automatic", expect.any(Number), expect.anything()],
     ]);
     expect(invoked).toContainEqual(["javaDebugServer", ["api"]]);
     expect(launch.cwd).toBe(cwd.startsWith("/") ? cwd : `/p/${cwd}`);

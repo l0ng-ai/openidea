@@ -43,6 +43,7 @@ import {
   entriesKey,
   findSubagent,
   groupTasks,
+  providerIcon,
   subagentTitle,
   turnNumbers,
   upsertEntry,
@@ -80,6 +81,22 @@ const option = (category: string, values: string[], current: string | null): Age
   current,
   values: values.map((value) => ({ value, name: value, description: null })),
   via: "option",
+});
+
+describe("providerIcon", () => {
+  it("uses the agent's logo, shared by its legacy and adapter ids", () => {
+    expect(providerIcon("devin")).toBe("agent-devin");
+    expect(providerIcon("amp-acp")).toBe("agent-amp-acp");
+    expect(providerIcon("claude-acp")).toBe("agent-claude");
+    expect(providerIcon("codex-acp")).toBe("agent-codex");
+    expect(providerIcon("kimi-code")).toBe("agent-kimi");
+    expect(providerIcon("opencode-v2")).toBe("agent-opencode");
+    expect(providerIcon("hermes-work")).toBe("agent-hermes");
+  });
+
+  it("falls back to the generic agents icon", () => {
+    expect(providerIcon("my-agent")).toBe("toolwindow-agents");
+  });
 });
 
 describe("fenced blocks", () => {

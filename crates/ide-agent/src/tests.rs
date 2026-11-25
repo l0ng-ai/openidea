@@ -1632,6 +1632,47 @@ async fn shutdown_writes_the_saves_still_waiting_and_a_delete_drops_them() {
     assert_eq!(saved_title(&kept_path).as_deref(), Some("renamed"));
 }
 
+/// Closing a project with many restored/archived tasks must not rewrite tasks that never changed.
+#[tokio::test]
+async fn shutdown_skips_rewriting_untouched_restored_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let untouched = idle_task(&mgr, "untouched").await;
+    let archived = idle_task(&mgr, "archived").await;
+    mgr.archive(&archived.id).unwrap();
+    let dirty = idle_task(&mgr, "dirty").await;
+    mgr.shutdown();
+
+    let (untouched_path, archived_path, dirty_path) =
+        (task_file(tmp.path(), &untouched.id), task_file(tmp.path(), &archived.id), task_file(tmp.path(), &dirty.id));
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let before_untouched = FILE_WRITES.lock().get(&untouched_path).copied().unwrap_or(0);
+    let before_archived = FILE_WRITES.lock().get(&archived_path).copied().unwrap_or(0);
+    let before_dirty = FILE_WRITES.lock().get(&dirty_path).copied().unwrap_or(0);
+
+    let dirty_handle = restored.task(&dirty.id).unwrap();
+    dirty_handle.state.lock().task.title = "updated".into();
+    dirty_handle.persist_soon();
+
+    restored.shutdown();
+
+    assert_eq!(
+        FILE_WRITES.lock().get(&untouched_path).copied().unwrap_or(0),
+        before_untouched,
+        "untouched task should not be rewritten on shutdown"
+    );
+    assert_eq!(
+        FILE_WRITES.lock().get(&archived_path).copied().unwrap_or(0),
+        before_archived,
+        "archived task should not be rewritten on shutdown"
+    );
+    assert!(
+        FILE_WRITES.lock().get(&dirty_path).copied().unwrap_or(0) > before_dirty,
+        "pending persist_soon task must still be flushed on shutdown"
+    );
+    assert_eq!(saved_title(&dirty_path).as_deref(), Some("updated"));
+}
+
 /// Archiving saves the task as it is, including changes nobody asked to be saved.
 #[tokio::test]
 async fn archiving_saves_the_task_before_it_returns() {

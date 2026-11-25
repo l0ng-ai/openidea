@@ -335,6 +335,10 @@ pub struct CloseContext {
     pub quitting: bool,
     /// Number of open project windows (settings windows excluded), including the caller.
     pub windows: u32,
+    /// Whether this window currently has auxiliary document windows that must settle first.
+    pub has_document_windows: bool,
+    /// Whether this close runs alongside other windows or on a background tab (prompts serialize and raise).
+    pub batch: bool,
 }
 
 #[desktop_command(trust = always)]
@@ -351,10 +355,40 @@ pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, W
         Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
         _ => all.len(),
     };
-    CloseContext { quitting: windows.quitting(), windows: count as u32 }
+    let quitting = windows.quitting();
+    let has_document_windows = !windows::document_windows(&app, window.label()).is_empty();
+    let hidden_tab = windows.groups.lock().group(window.label()).is_some_and(|g| g.selected != window.label());
+    let batch = quitting || pending.len() > 1 || windows.in_tab_close_batch(window.label()) || hidden_tab;
+    CloseContext { quitting, windows: count as u32, has_document_windows, batch }
 }
 
-/// Quits: closes every window, each of which runs its own unsaved-changes check.
+/// Acquires the interactive prompt turn for a batch close and brings this window forward.
+/// Returns `false` if the batch was cancelled while waiting.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_begin_prompt(app: AppHandle, window: WorkbenchWindow) -> bool {
+    crate::window_groups::begin_prompt(&app, &window).await
+}
+
+/// Releases the interactive prompt turn held by this window.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_end_prompt(app: AppHandle, window: Window) {
+    crate::window_groups::end_prompt(&app, window.label());
+}
+
+/// Signals that this window passed its close checks and waits for peers closing in the same
+/// batch/tab group so they hide together in one frame. Returns `false` if the batch was cancelled.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_ready_to_close(app: AppHandle, window: WorkbenchWindow) -> bool {
+    crate::window_groups::ready_to_close(&app, &window).await
+}
+
+/// Quits: closes every window in parallel, each of which runs its own unsaved-changes check.
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
@@ -363,15 +397,17 @@ pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
         return;
     }
     windows.set_quitting(true);
-    windows::continue_quit(&app, None);
+    windows::start_quit(&app);
 }
 
 /// A window vetoed the quit (user cancelled its unsaved-changes prompt).
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
+pub fn app_cancel_quit(app: AppHandle, window: Window, windows: State<'_, WindowsState>) {
     windows.set_quitting(false);
+    windows.abort_all_closing(Some(window.label()));
+    windows.close_settled(window.label());
     tauri::async_runtime::spawn(async move {
         let _ = crate::window_groups::persist(&app).await;
     });
@@ -927,9 +963,11 @@ ide_command::desktop_domain!(
     menu_model,
     menu_refresh,
     menu_set_disabled,
+    window_begin_prompt,
     window_close_context,
     window_complete_launch,
     window_cycle,
+    window_end_prompt,
     window_flash_taskbar,
     window_is_fullscreen,
     window_new,
@@ -943,6 +981,7 @@ ide_command::desktop_domain!(
     window_open_projects,
     window_open_remote,
     window_open_settings,
+    window_ready_to_close,
     window_set_smooth_scrolling,
     window_set_titlebar_height,
     window_take_launch,

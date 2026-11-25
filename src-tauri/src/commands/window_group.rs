@@ -51,7 +51,6 @@ pub async fn window_group_detach(window: Window, label: String) -> IdeResult<()>
 #[tauri::command]
 #[specta::specta]
 pub fn window_group_close(window: Window, label: String) -> IdeResult<()> {
-    groups::select(window.app_handle(), window.label(), &label)?;
     window
         .app_handle()
         .workbench_window(&label)
