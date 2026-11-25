@@ -531,9 +531,7 @@ function NotebookCellView({
       )}
       {collapsed || cell.cellType !== "code" ? null : outputsHidden && cell.outputs.length > 0 ? (
         <button type="button" className={styles.hiddenOutputs} onClick={onToggleOutputs}>
-          {cell.outputs.length === 1
-            ? tx`${cell.outputs.length} output hidden`
-            : tx`${cell.outputs.length} outputs hidden`}
+          {cell.outputs.length === 1 ? tx("1 output hidden") : tx`${cell.outputs.length} outputs hidden`}
         </button>
       ) : (
         <CellOutputs outputs={cell.outputs} />
@@ -542,11 +540,25 @@ function NotebookCellView({
   );
 }
 
-/** A folded cell: its first line (a Markdown heading without its marks) and what it hides. */
+/** What a folded cell shows: its first non-blank line (a Markdown heading without its marks) and its output count. */
+export function collapsedSummary(cell: Pick<NotebookCell, "cellType" | "source" | "outputs">): {
+  text: string;
+  outputs: number;
+} {
+  const line =
+    cell.source
+      .split("\n")
+      .find((l) => l.trim())
+      ?.trim() ?? "";
+  return {
+    text: cell.cellType === "markdown" ? line.replace(/^#+\s*/, "") : line,
+    outputs: cell.cellType === "code" ? cell.outputs.length : 0,
+  };
+}
+
+/** A folded cell: its first line and what it hides. */
 function CollapsedCell({ cell, onExpand }: { cell: NotebookCell; onExpand: () => void }) {
-  const line = cell.source.split("\n").find((l) => l.trim())?.trim() ?? "";
-  const text = cell.cellType === "markdown" ? line.replace(/^#+\s*/, "") : line;
-  const outputs = cell.cellType === "code" ? cell.outputs.length : 0;
+  const { text, outputs } = collapsedSummary(cell);
   return (
     <button
       type="button"
@@ -555,9 +567,7 @@ function CollapsedCell({ cell, onExpand }: { cell: NotebookCell; onExpand: () =>
     >
       <span className={styles.collapsedText}>{text || tx("Empty cell")}</span>
       {outputs > 0 && (
-        <span className={styles.collapsedOutputs}>
-          {outputs === 1 ? tx`${outputs} output` : tx`${outputs} outputs`}
-        </span>
+        <span className={styles.collapsedOutputs}>{outputs === 1 ? tx("1 output") : tx`${outputs} outputs`}</span>
       )}
     </button>
   );
