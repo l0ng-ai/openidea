@@ -40,6 +40,7 @@ const entries: AgentEntry[] = Array.from({ length: 80 }, (_, turn): AgentEntry[]
   },
 ]).flat();
 
+/** Opens the 80-turn chat; each turn's consecutive tool calls and reasoning fold into one row. */
 async function openHistory(page: Page) {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();
@@ -61,6 +62,7 @@ async function openHistory(page: Page) {
     { task, entries },
   );
   const stream = page.locator("[class*='_stream_']:visible");
+  // Each turn shows its request, its folded process run and its reply.
   await expect(stream.locator(":scope > *")).toHaveCount(80 * 3);
   await page.evaluate(() => document.fonts.ready);
   return stream;
@@ -185,22 +187,20 @@ for (const selected of [false, true]) {
   });
 }
 
-test("opens a folded turn with the keyboard and jumps back to the latest reply", async ({ page }) => {
+test("opens a folded process run with the keyboard and jumps back to the latest reply", async ({ page }) => {
   const stream = await openHistory(page);
   await stream.evaluate((el) => {
     el.scrollTop = 0;
   });
   const jump = page.getByRole("button", { name: "Jump to Latest" });
   await expect(jump).toBeVisible();
-  const fold = stream.locator("[class*='_turnFold_']").first();
+  const fold = stream.locator("[class*='_processRun_']").first();
   const summary = fold.locator(":scope > summary");
   await summary.focus();
   await page.keyboard.press("Enter");
   await expect(fold).toHaveAttribute("open", "");
-  const run = fold.locator("[class*='_processRun_']").first();
-  await expect(run).toBeVisible();
-  await run.locator(":scope > summary").click();
   await expect(fold.getByText("read src/module-0.ts", { exact: true })).toBeVisible();
+  await expect(fold.getByText("execute src/module-0.ts", { exact: true })).toBeVisible();
   await summary.focus();
   await page.keyboard.press("Space");
   await expect(fold).not.toHaveAttribute("open", "");

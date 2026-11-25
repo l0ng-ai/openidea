@@ -19,6 +19,7 @@ const empty: GeneratorInfo = {
   description: "An empty folder to add files to.",
   git: true,
   fields: [],
+  directory: null,
   dynamic: false,
 };
 const dotnet: GeneratorInfo = {

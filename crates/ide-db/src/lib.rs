@@ -658,8 +658,7 @@ impl DbManager {
         let config = self.sources()?.into_iter().find(|s| s.id == id).and_then(|s| s.ssh).map(|s| s.config);
         if let Some(c) = config.filter(|c| !c.trim().is_empty()) {
             let save = self.ssh.config(&c).map(|c| c.save_secret).unwrap_or(save);
-            self.ssh.set_secret(&c, secret, save);
-            return Ok(());
+            return self.ssh.set_secret(&c, secret, save);
         }
         self.remember(self.saved_for(id), secrets::ssh_key(id), secret, save).await
     }
@@ -760,7 +759,9 @@ impl DbManager {
         } else {
             if let Some(s) = ssh_secret {
                 let save = self.ssh.config(config)?.save_secret;
-                self.ssh.set_secret(config, Some(s), save);
+                if let Err(e) = self.ssh.set_secret(config, Some(s), save) {
+                    tracing::warn!("could not save the SSH credential: {}", e.message);
+                }
             }
             self.ssh.session(config).await?
         })

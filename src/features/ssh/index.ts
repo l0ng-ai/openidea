@@ -8,10 +8,12 @@ import { onIdeEvent } from "@/platform/ipc";
 import { registerOverlay } from "@/workbench/contributions";
 import { dropAskpass, enqueueAskpass, useAskpass } from "./askpass";
 import { AskpassHost } from "./AskpassDialog";
+import { startPasswordMigrationNotice } from "./passwordMigration";
 import { chooseSshSession, SSH_SETTINGS_PAGE, startSshSession } from "./session";
 
 export function activate(): () => void {
   const disposers = [
+    startPasswordMigrationNotice(),
     registerOverlay({ id: "ssh.askpass", component: AskpassHost }),
     onIdeEvent("askpass", (e) => enqueueAskpass({ id: e.id, prompt: e.prompt, kind: e.kind, remember: e.remember })),
     onIdeEvent("askpassDone", (e) => dropAskpass(e.id)),

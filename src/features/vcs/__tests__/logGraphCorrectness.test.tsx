@@ -129,6 +129,55 @@ describe("graph projections", () => {
     expect(navigate).toHaveBeenLastCalledWith(0, "base");
   });
 
+  it("shares a passing lane's straight segment between rows", () => {
+    const rows = computeGraph([
+      commit("tip", ["main", "side"]),
+      commit("side", ["base"]),
+      commit("side2", ["base"]),
+      commit("main", ["base"]),
+      commit("base"),
+    ]).rows;
+    const passing = (row: number) => rows[row]!.down.find((s) => s.from === 0 && s.to === 0);
+    expect(passing(1)).toBeDefined();
+    expect(passing(2)).toBe(passing(1));
+    expect(rows[2]!.up.find((s) => s.from === 0 && s.to === 0)).toBe(passing(1));
+  });
+
+  it("keeps each arrow and target when multiple long edges cross the same rows", () => {
+    const chain = (prefix: string) =>
+      Array.from({ length: 40 }, (_, i) => commit(`${prefix}${i}`, i < 39 ? [`${prefix}${i + 1}`] : []));
+    const commits = [
+      commit("left", ["left-base"]),
+      ...chain("a"),
+      commit("right", ["right-base"]),
+      ...chain("b"),
+      commit("left-base"),
+      ...chain("c"),
+      commit("right-base"),
+    ];
+    const rows = hideLongEdges(computeGraph(commits).rows);
+    const arrows = rows.flatMap((row) =>
+      (
+        [
+          ["up", row.up, row.upTargets],
+          ["down", row.down, row.downTargets],
+        ] as const
+      ).flatMap(([direction, segments, targets]) =>
+        segments.flatMap((segment, index) =>
+          segment.arrow === direction ? [[direction, targets![index], segment.targetRow]] : [],
+        ),
+      ),
+    );
+    expect(arrows).toEqual([
+      ["down", "left-base", 82],
+      ["down", "right-base", 123],
+      ["up", "left-base", 0],
+      ["up", "right-base", 41],
+    ]);
+    expect(rows[60]!.upTargets).toEqual(["b18"]);
+    expect(rows[60]!.downTargets).toEqual(["b19"]);
+  });
+
   it("keeps a referenced branch's colour when an unrelated head is inserted ahead of it", () => {
     const main = commit("main-tip", ["base"], ["HEAD", "main"]);
     const old = computeGraph([main, commit("base")]).rows[0]!;

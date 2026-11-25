@@ -6,7 +6,7 @@ use std::io::Read;
 use std::time::SystemTime;
 
 /// `(byte length, mtime, blake3 hex)`; the hash is recorded for files inside the project only.
-type Stamp = (u64, SystemTime, Option<String>);
+pub(crate) type Stamp = (u64, SystemTime, Option<String>);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchFingerprint {
@@ -182,7 +182,7 @@ fn collect(
 }
 
 /// Scans every input, storing project inputs relative to the project.
-pub(super) fn scan_all(
+pub(crate) fn scan_all(
     root: &Path,
     inputs: Vec<PathBuf>,
     cancel: &CancellationToken,
@@ -282,6 +282,11 @@ pub(super) fn module_fingerprint(
 }
 
 impl LaunchFingerprint {
+    /// The fingerprint of `parameters` and the files under `inputs` (see [`scan_all`]).
+    pub(crate) fn new(parameters: String, files: BTreeMap<PathBuf, Option<Stamp>>) -> Self {
+        LaunchFingerprint { version: 2, parameters, files }
+    }
+
     /// Folders (relative to the project) of the Maven projects whose POM is an input.
     pub(super) fn project_dirs(&self) -> impl Iterator<Item = &Path> {
         self.files

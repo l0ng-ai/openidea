@@ -3,9 +3,10 @@
 
 use crate::utf8::OutputDecoder;
 use crate::{OutputChunk, RunAttach, RunConfig, RunInfo};
+use ide_core::pty::native_pty_system;
 use ide_core::{IdeError, IdeEvent, IdeResult, RunId, SharedSink};
 use parking_lot::Mutex;
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -887,15 +888,25 @@ impl ProcessManager {
         }
     }
 
-    /// Kills every running process tree at once (shutting down).
-    pub fn kill_project(&self, root: &Path) {
+    /// Collects every running process tree for `root` and marks it stopping so the actual
+    /// termination can run on a background thread without blocking the UI thread or racing
+    /// processes started later.
+    pub fn detach_project_kills(&self, root: &Path) -> DetachedProcessKills {
+        let mut targets = Vec::new();
         for entry in self.runs.lock().values().filter(|e| e.project_root == root) {
             if !entry.exited.load(Ordering::Acquire)
                 && let Some(pid) = *entry.pid.lock()
             {
-                kill_tree(entry, pid, true);
+                entry.stopping.store(true, Ordering::Release);
+                targets.push((entry.clone(), pid));
             }
         }
+        DetachedProcessKills(targets)
+    }
+
+    /// Kills every running process tree at once (shutting down).
+    pub fn kill_project(&self, root: &Path) {
+        self.detach_project_kills(root).kill();
     }
 
     pub fn kill_all(&self) {
@@ -933,6 +944,19 @@ impl ProcessManager {
         while let Some(result) = stops.join_next().await {
             if let Err(e) = result {
                 tracing::warn!("could not stop a run during shutdown: {e}");
+            }
+        }
+    }
+}
+
+/// Running process trees snapshotted from [`ProcessManager`] to be killed off the caller's thread.
+pub struct DetachedProcessKills(Vec<(Arc<Entry>, u32)>);
+
+impl DetachedProcessKills {
+    pub fn kill(self) {
+        for (entry, pid) in self.0 {
+            if !entry.exited.load(Ordering::Acquire) {
+                kill_tree(&entry, pid, true);
             }
         }
     }

@@ -90,6 +90,8 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
+  min-width: 3ch;
+  text-align: end;
 }
 /* Pin and Archive appear beside the age while the pointer is on the row. */
 .rowActions {
@@ -107,6 +109,20 @@
 .row:has(.rowActions:focus-within) .age {
   margin-left: 0;
 }
+/* The status mark sits in a fixed slot just before the age, so marks form a column. */
+.status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  margin-left: auto;
+}
+.row:has(.status) .age,
+.row:hover .status,
+.row:has(.rowActions:focus-within) .status {
+  margin-left: 0;
+}
 .rowAction {
   display: flex;
   align-items: center;
@@ -119,7 +135,6 @@
   background: none;
   color: var(--fg-subtle);
   --icon-color: currentColor;
-  cursor: pointer;
   transition:
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
@@ -176,7 +191,6 @@
   background: none;
   color: inherit;
   font: inherit;
-  cursor: pointer;
 }
 .statusItem:hover {
   background: var(--bg-hover);

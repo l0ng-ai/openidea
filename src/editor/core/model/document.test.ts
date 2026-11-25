@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChangeSet, EditorState, StateEffect } from "@codemirror/state";
 import { showTooltip, type Tooltip } from "@codemirror/view";
-import { indentUnit, language as languageFacet } from "@codemirror/language";
+import { foldedRanges, indentUnit, language as languageFacet } from "@codemirror/language";
 import { HEAVY_LIMIT, onEditorEvent, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
@@ -81,6 +81,55 @@ describe("DocumentManager + slots", () => {
       ]);
     } finally {
       off();
+      manager.stop();
+    }
+  });
+
+  it.each([
+    ["opening the file", {}, 0, false, [3, 9]],
+    ["opening a file that was already loaded", {}, 0, true, [3, 9]],
+    ["jumping into a short block", {}, 4, false, [9]],
+    ["disabling short Go block folding", { goShortBlocks: false }, 0, false, []],
+  ])("applies compact Go folding when %s", async (_reason, folding, caret, loadedFirst, expected) => {
+    const path = "/p/main.go";
+    const { backend, manager, frame } = setup(
+      {
+        [path]: [
+          "package main",
+          "func main() {",
+          "  if ok {",
+          "    return",
+          "  }",
+          `  if ${"longCondition".repeat(12)} {`,
+          "    return",
+          "  }",
+          "  if done {",
+          "    return",
+          "  }",
+          "}",
+        ].join("\n"),
+      },
+      { editor: { folding } },
+    );
+    vi.spyOn(backend, "folding").mockResolvedValue([
+      { start_line: 2, end_line: 4, kind: "compact" },
+      { start_line: 5, end_line: 7, kind: "compact" },
+      { start_line: 8, end_line: 10, kind: "compact" },
+    ]);
+    try {
+      const model = await manager.acquire(path);
+      if (loadedFirst) await frame();
+      const slot = new EditorSlot(model, "go", host);
+      if (caret) slot.dispatchLocal({ selection: { anchor: slot.state.doc.line(caret).from } });
+      await vi.waitFor(() => {
+        const lines: number[] = [];
+        foldedRanges(slot.state).between(0, slot.state.doc.length, (from) => {
+          lines.push(slot.state.doc.lineAt(from).number);
+        });
+        expect(lines).toEqual(expected);
+      });
+      slot.dispose();
+    } finally {
       manager.stop();
     }
   });

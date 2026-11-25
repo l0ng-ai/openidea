@@ -1632,6 +1632,47 @@ async fn shutdown_writes_the_saves_still_waiting_and_a_delete_drops_them() {
     assert_eq!(saved_title(&kept_path).as_deref(), Some("renamed"));
 }
 
+/// Closing a project with many restored/archived tasks must not rewrite tasks that never changed.
+#[tokio::test]
+async fn shutdown_skips_rewriting_untouched_restored_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let untouched = idle_task(&mgr, "untouched").await;
+    let archived = idle_task(&mgr, "archived").await;
+    mgr.archive(&archived.id).unwrap();
+    let dirty = idle_task(&mgr, "dirty").await;
+    mgr.shutdown();
+
+    let (untouched_path, archived_path, dirty_path) =
+        (task_file(tmp.path(), &untouched.id), task_file(tmp.path(), &archived.id), task_file(tmp.path(), &dirty.id));
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let before_untouched = FILE_WRITES.lock().get(&untouched_path).copied().unwrap_or(0);
+    let before_archived = FILE_WRITES.lock().get(&archived_path).copied().unwrap_or(0);
+    let before_dirty = FILE_WRITES.lock().get(&dirty_path).copied().unwrap_or(0);
+
+    let dirty_handle = restored.task(&dirty.id).unwrap();
+    dirty_handle.state.lock().task.title = "updated".into();
+    dirty_handle.persist_soon();
+
+    restored.shutdown();
+
+    assert_eq!(
+        FILE_WRITES.lock().get(&untouched_path).copied().unwrap_or(0),
+        before_untouched,
+        "untouched task should not be rewritten on shutdown"
+    );
+    assert_eq!(
+        FILE_WRITES.lock().get(&archived_path).copied().unwrap_or(0),
+        before_archived,
+        "archived task should not be rewritten on shutdown"
+    );
+    assert!(
+        FILE_WRITES.lock().get(&dirty_path).copied().unwrap_or(0) > before_dirty,
+        "pending persist_soon task must still be flushed on shutdown"
+    );
+    assert_eq!(saved_title(&dirty_path).as_deref(), Some("updated"));
+}
+
 /// Archiving saves the task as it is, including changes nobody asked to be saved.
 #[tokio::test]
 async fn archiving_saves_the_task_before_it_returns() {
@@ -3942,14 +3983,10 @@ async fn composer_commands_discover_cursor_effort_and_fast() {
     assert!(calls.iter().any(|m| m.as_str() == "session/new"));
     assert_eq!(calls.iter().filter(|m| m.as_str() == "initialize").count(), 1);
     let cursor = mgr.providers().into_iter().find(|p| p.id == "cursor").unwrap();
-    assert_eq!(cursor.config.iter().find(|o| o.id == "fast").unwrap().current.as_deref(), Some("false"));
-    assert!(
-        cursor
-            .thought_levels
-            .values()
-            .next()
-            .is_some_and(|levels| { levels.iter().any(|o| o.category.as_deref() == Some("thought_level")) })
-    );
+    assert!(!cursor.config.iter().any(|o| o.id == "fast"));
+    let levels = cursor.thought_levels.values().next().expect("discovered model options");
+    assert_eq!(levels.iter().find(|o| o.id == "fast").unwrap().current.as_deref(), Some("false"));
+    assert!(levels.iter().any(|o| o.category.as_deref() == Some("thought_level")));
 }
 
 #[tokio::test(flavor = "multi_thread")]

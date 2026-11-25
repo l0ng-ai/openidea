@@ -1,5 +1,5 @@
 //! Immutable Maven outputs retained in the project cache, including across close/reopen.
-use ide_build::compile::{self, LaunchFingerprint};
+use ide_build::compile::{self, BuildEvent, LaunchFingerprint};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use ide_run::BuildPolicy;
 use parking_lot::Mutex;
@@ -131,6 +131,10 @@ pub(super) fn has_record(root: &Path, cache: &Path, module: &Path) -> bool {
     [false, true].into_iter().any(|test| record_path(root, cache, module, test).is_some_and(|record| record.is_file()))
 }
 
+/// Where the build of a launch streams its console, messages and progress: the run
+/// console, the status bar and the Build tool window of the launch's request.
+pub(in crate::ops) type LaunchEvents = Arc<dyn Fn(BuildEvent) + Send + Sync>;
+
 #[derive(Default)]
 pub(super) struct BuildOptions {
     pub test: bool,
@@ -142,13 +146,15 @@ pub(super) struct BuildOptions {
     /// together, #3971): their modules join this Maven run, and their launches then reuse
     /// the snapshots recorded here instead of running Maven again.
     pub members: Vec<Member>,
+    /// The launch's own events; members that join the build get them too.
+    pub events: Option<LaunchEvents>,
 }
 
 /// A launch module joining another launch's build; see [`BuildOptions::members`].
-#[derive(Debug)]
 pub(super) struct Member {
     pub module: PathBuf,
     pub rebuild_on_jdt_errors: bool,
+    pub events: Option<LaunchEvents>,
 }
 
 /// Launches share a build only within the same workspace project's cache.
@@ -180,11 +186,12 @@ impl Sessions {
 #[derive(Default)]
 pub(crate) struct Waiting(Arc<Mutex<Vec<Arc<WaitingLaunch>>>>);
 
-#[derive(Debug)]
 pub(super) struct WaitingLaunch {
     pub module: PathBuf,
     pub test: bool,
     pub policy: BuildPolicy,
+    /// The launch's build events, for a build it joins.
+    pub events: Option<LaunchEvents>,
 }
 
 /// Leaves [`Waiting`] when dropped.
@@ -194,8 +201,14 @@ pub(super) struct WaitingGuard {
 }
 
 impl Waiting {
-    pub(super) fn add(&self, module: PathBuf, test: bool, policy: BuildPolicy) -> WaitingGuard {
-        let launch = Arc::new(WaitingLaunch { module, test, policy });
+    pub(super) fn add(
+        &self,
+        module: PathBuf,
+        test: bool,
+        policy: BuildPolicy,
+        events: Option<LaunchEvents>,
+    ) -> WaitingGuard {
+        let launch = Arc::new(WaitingLaunch { module, test, policy, events });
         self.0.lock().push(launch.clone());
         WaitingGuard { all: self.0.clone(), launch }
     }
@@ -266,7 +279,7 @@ impl Session {
         cancel: &CancellationToken,
     ) -> IdeResult<Outputs> {
         self.initialize();
-        let BuildOptions { test, policy, rebuild_on_jdt_errors, members } = options;
+        let BuildOptions { test, policy, rebuild_on_jdt_errors, members, events } = options;
         let mut lead = match self.prepare(root, model, module, test, policy, &local_repo, cancel)? {
             Ok(outputs) => return Ok(outputs),
             Err(pending) => pending,
@@ -284,11 +297,13 @@ impl Session {
         let policy = if rebuild_on_jdt_errors { BuildPolicy::Rebuild } else { policy };
         let mut joined = Vec::new();
         let mut rebuild = policy == BuildPolicy::Rebuild;
+        let mut sinks: Vec<LaunchEvents> = events.into_iter().collect();
         for member in members {
             if let Err(pending) =
                 self.prepare(root, model, &member.module, test, BuildPolicy::Make, &local_repo, cancel)?
             {
                 rebuild |= member.rebuild_on_jdt_errors;
+                sinks.extend(member.events);
                 joined.push(pending);
             }
         }
@@ -298,7 +313,13 @@ impl Session {
             tracing::info!(?modules, "Building the launch modules in one Maven run");
         }
         let kind = if rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-        let mut built = compile::build_for_launches(root, model, &modules, test, kind, cancel)?.into_iter();
+        // Every launch waiting for this build follows it.
+        let on_event = |event: BuildEvent| {
+            for sink in &sinks {
+                sink(event.clone());
+            }
+        };
+        let mut built = compile::build_for_launches(root, model, &modules, test, kind, cancel, &on_event)?.into_iter();
         let lead_built = built.next().unwrap();
         for (pending, built) in joined.into_iter().zip(built) {
             match built.failure {
@@ -648,10 +669,31 @@ mod tests {
         let mut session = Session::new(root.join("cache"));
         let (a, b) = (root.join("a"), root.join("b"));
         let with = |rebuild_on_jdt_errors: bool| BuildOptions {
-            members: vec![Member { module: b.clone(), rebuild_on_jdt_errors }],
+            members: vec![Member { module: b.clone(), rebuild_on_jdt_errors, events: None }],
             ..Default::default()
         };
-        let lead = session.build(root, &model, &a, with(false), None, &cancel).unwrap();
+        // The lead's and the member's launches both follow the shared build.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = |name: &'static str| -> LaunchEvents {
+            let seen = seen.clone();
+            Arc::new(move |event| {
+                if let BuildEvent::Step { command, .. } = event {
+                    seen.lock().push(format!("{name}: {command}"));
+                }
+            })
+        };
+        let options = BuildOptions {
+            members: vec![Member { module: b.clone(), rebuild_on_jdt_errors: false, events: Some(sink("b")) }],
+            events: Some(sink("a")),
+            ..Default::default()
+        };
+        let lead = session.build(root, &model, &a, options, None, &cancel).unwrap();
+        let seen = seen.lock().clone();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(
+            seen[0].starts_with("a: ") && seen[1].starts_with("b: ") && seen[0].contains("-pl a,b -am"),
+            "{seen:?}"
+        );
         assert_eq!(fs::read_to_string(lead.snapshot.join("0/Main.class")).unwrap(), "a");
         assert_eq!(fs::read_to_string(lead.snapshot.join("1/Main.class")).unwrap(), "lib");
         // b's own launch runs from the snapshot the shared build recorded for it.
@@ -690,17 +732,17 @@ mod tests {
         let root = dir.path();
         let model = reactor_fixture(root);
         let waiting = Waiting::default();
-        let lead = waiting.add(root.join("a"), false, BuildPolicy::Automatic);
+        let lead = waiting.add(root.join("a"), false, BuildPolicy::Automatic, None);
         let _guards = [
-            waiting.add(root.join("b"), false, BuildPolicy::Make),
-            waiting.add(root.join("lib"), false, BuildPolicy::Automatic),
-            waiting.add(root.join("b"), false, BuildPolicy::Automatic),
-            waiting.add(root.join("a"), false, BuildPolicy::Automatic),
-            waiting.add(root.join("lib"), true, BuildPolicy::Automatic),
-            waiting.add(root.join("lib"), false, BuildPolicy::Rebuild),
-            waiting.add(root.join("lib"), false, BuildPolicy::MakeAndContinueOnErrors),
-            waiting.add(root.join("lib"), false, BuildPolicy::NoBuild),
-            waiting.add(root.join("other"), false, BuildPolicy::Automatic),
+            waiting.add(root.join("b"), false, BuildPolicy::Make, None),
+            waiting.add(root.join("lib"), false, BuildPolicy::Automatic, None),
+            waiting.add(root.join("b"), false, BuildPolicy::Automatic, None),
+            waiting.add(root.join("a"), false, BuildPolicy::Automatic, None),
+            waiting.add(root.join("lib"), true, BuildPolicy::Automatic, None),
+            waiting.add(root.join("lib"), false, BuildPolicy::Rebuild, None),
+            waiting.add(root.join("lib"), false, BuildPolicy::MakeAndContinueOnErrors, None),
+            waiting.add(root.join("lib"), false, BuildPolicy::NoBuild, None),
+            waiting.add(root.join("other"), false, BuildPolicy::Automatic, None),
         ];
         let join = |prefer_maven| {
             super::super::joining_launches(

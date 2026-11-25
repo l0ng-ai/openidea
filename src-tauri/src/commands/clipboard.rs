@@ -1,4 +1,4 @@
-//! The OS clipboard's file list, so the project view and Explorer exchange files.
+//! The OS clipboard's file list, so the project view and the file manager exchange files.
 
 use ide_command::desktop_command;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -7,13 +7,13 @@ use ide_core::IdeResult;
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use ide_host::ops::blocking;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, WebviewWindow};
+use tauri::{AppHandle, Window};
 
 /// Writes text locally, without WebView user-activation requirements.
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: String) -> IdeResult<()> {
+pub async fn clipboard_write_text(app: AppHandle, window: Window, text: String) -> IdeResult<()> {
     #[cfg(windows)]
     let owner = window.hwnd().map_err(|error| ide_core::IdeError::internal(error.to_string()))?.0 as usize;
     #[cfg(not(windows))]
@@ -28,7 +28,7 @@ pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: S
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn clipboard_write_image(app: AppHandle, window: WebviewWindow, png: String) -> IdeResult<()> {
+pub async fn clipboard_write_image(app: AppHandle, window: Window, png: String) -> IdeResult<()> {
     use base64::Engine;
     if png.len() > 90 * 1024 * 1024 {
         return Err(ide_core::IdeError::invalid("Clipboard image is too large"));
@@ -83,7 +83,21 @@ pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_file_list(app: AppHandle) -> IdeResult<Vec<String>> {
-    with_clipboard(app, || Ok(ide_clipboard::files()?.iter().map(|p| slash(p)).collect())).await
+    #[cfg(target_os = "linux")]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            ide_clipboard::request_files(move |paths| {
+                let _ = tx.send(paths);
+            })
+        })
+        .map_err(|error| IdeError::internal(format!("Cannot dispatch clipboard access to the main thread: {error}")))?;
+        Ok(rx.await.unwrap_or_default().iter().map(|p| slash(p)).collect())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        with_clipboard(app, || Ok(ide_clipboard::files()?.iter().map(|p| slash(p)).collect())).await
+    }
 }
 
 /// Whether the clipboard holds files: cheap, for the Paste item's enabled state.

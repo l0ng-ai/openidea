@@ -95,8 +95,6 @@ pub struct AgentSettings {
     pub show_usage_limits: bool,
     /// What the session has cost so far, as the agent reports it.
     pub show_cost: bool,
-    /// A finished turn's work folds into one line under its message, leaving the reply.
-    pub fold_turns: bool,
     /// Streaming text is revealed at a steady pace rather than chunk by chunk.
     pub smooth_text: bool,
     /// Conversations and the composer expand to the full width of the pane instead of staying in a centred column.
@@ -145,7 +143,6 @@ impl Default for AgentSettings {
             show_work_time: true,
             show_usage_limits: true,
             show_cost: false,
-            fold_turns: true,
             smooth_text: true,
             fit_window_width: false,
             thinking: ThinkingDisplay::Auto,
@@ -1218,6 +1215,7 @@ pub struct LanguagesSettings {
     pub markdown: MarkdownSettings,
     pub arduino: ArduinoSettings,
     pub zig: ZigSettings,
+    pub flutter: FlutterSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -1249,6 +1247,7 @@ impl Default for LanguagesSettings {
             markdown: MarkdownSettings::default(),
             arduino: ArduinoSettings::default(),
             zig: ZigSettings::default(),
+            flutter: FlutterSettings::default(),
         }
     }
 }
@@ -1513,6 +1512,15 @@ impl Default for RustSettings {
 pub struct ZigSettings {
     /// Directory holding the `zig` executable; empty = the one on `PATH`.
     pub zig: String,
+}
+
+/// The Flutter plugin's "Flutter SDK path".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FlutterSettings {
+    /// Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+    /// `PATH`. Empty = `PATH`.
+    pub sdk: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -2109,7 +2117,7 @@ mod tests {
 
     #[test]
     fn agent_meters_default_and_round_trip() {
-        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
+        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true,"foldTurns":true}}"#).unwrap();
         assert!(old.agents.show_cost);
         assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
         assert!(!old.agents.fit_window_width);

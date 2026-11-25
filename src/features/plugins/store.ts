@@ -102,21 +102,33 @@ function askConsent(req: ConsentRequest): Promise<Consent | null> {
 // --- loading ------------------------------------------------------------------
 
 let generation = 0;
+/** Bumped whenever the active theme arrives on its own (a theme event, a theme choice). */
+let themeStamp = 0;
+
+/**
+ * Sets the active plugin theme from a `themeChanged` event or a theme choice. A plugin list
+ * requested before it carries the older theme, so its snapshot no longer overrides this one.
+ */
+export function setActivePluginTheme(activeTheme: ActiveTheme | null) {
+  themeStamp++;
+  usePlugins.setState({ activeTheme });
+}
 
 export async function refreshPlugins(): Promise<void> {
   const gen = ++generation;
+  const stamp = themeStamp;
   usePlugins.setState({ loading: true });
   try {
     const snapshot = await pluginsBackend().list();
     if (gen !== generation) return;
-    usePlugins.setState({
+    usePlugins.setState((s) => ({
       plugins: snapshot.plugins,
       ui: snapshot.ui,
-      activeTheme: snapshot.activeTheme,
+      activeTheme: stamp === themeStamp ? snapshot.activeTheme : s.activeTheme,
       loaded: true,
       loading: false,
       error: null,
-    });
+    }));
   } catch (e) {
     if (gen !== generation) return;
     usePlugins.setState({ loading: false, loaded: true, error: errorText(e) });
@@ -383,8 +395,7 @@ export async function installFromDisk(
 
 export async function selectPluginTheme(pluginId: string | null, themeId: string | null): Promise<void> {
   try {
-    const activeTheme = await pluginsBackend().setTheme(pluginId, themeId);
-    usePlugins.setState({ activeTheme });
+    setActivePluginTheme(await pluginsBackend().setTheme(pluginId, themeId));
   } catch (e) {
     notifications().notify({ group: "plugins", level: "error", title: "Could not apply theme", body: errorText(e) });
   }

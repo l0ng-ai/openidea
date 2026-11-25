@@ -4,10 +4,13 @@
  * `${classpath}` (or `${testClasspath}`) and the `java` launcher are resolved
  * through jdtls when the configuration starts.
  */
+import { Channel } from "@tauri-apps/api/core";
 import {
   call,
   commands,
   IpcError,
+  isCancelled,
+  type BuildEvent,
   type BuildPolicy,
   type JavaLaunchInfo,
   type JunitLaunch,
@@ -247,6 +250,40 @@ export interface JavaPreparation {
   policy?: BuildPolicy;
   /** Saves open documents first, as IDEA's Before launch does. */
   saveAll?: () => Promise<void>;
+  /** Follows the build while it runs (status bar, Build tool window); see `followLaunchBuild`. */
+  build?: JavaBuildFollower;
+  /**
+   * A debug launch: a module the Java language server serves is compiled by it, whose classes
+   * java-debug's HotSwap reloads, instead of the IDE's Java build.
+   */
+  debug?: boolean;
+}
+
+/** Receives the events of a launch's build as it runs, then its outcome. */
+export interface JavaBuildFollower {
+  onEvent(e: BuildEvent): void;
+  finish(status: "success" | "failed" | "cancelled"): void;
+}
+
+/** `javaResolveLaunch`, streaming the build's events to `build`, which then gets the outcome. */
+export async function resolveJavaLaunch(
+  module: string,
+  test: boolean,
+  policy: BuildPolicy,
+  request: RequestId,
+  build?: JavaBuildFollower,
+  debug = false,
+): Promise<JavaLaunchInfo> {
+  const channel = new Channel<BuildEvent>();
+  channel.onmessage = (e) => build?.onEvent(e);
+  try {
+    const info = await call(commands.javaResolveLaunch(module, test, debug, policy, request, channel));
+    build?.finish(info.build === "failed" ? "failed" : info.build === "cancelled" ? "cancelled" : "success");
+    return info;
+  } catch (e) {
+    build?.finish(isCancelled(e) ? "cancelled" : "failed");
+    throw e;
+  }
 }
 
 /** The build the launch would do: the configuration's policy, else incremental. */
@@ -268,8 +305,13 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   const started = performance.now();
   const module = await prepareJavaModule(config, preparation.saveAll, signal);
   const moduleMs = performance.now() - started;
-  const info = await call(
-    commands.javaResolveLaunch(module, parsed.classpath === "test", policy, preparation.request),
+  const info = await resolveJavaLaunch(
+    module,
+    parsed.classpath === "test",
+    policy,
+    preparation.request,
+    preparation.build,
+    preparation.debug,
   ).catch((error: unknown) => {
     if (error instanceof IpcError && error.data?.type === "javaBuildProblems") {
       const problems = error.data.problems.join("; ");

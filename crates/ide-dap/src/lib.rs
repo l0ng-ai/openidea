@@ -897,6 +897,21 @@ impl DebugManager {
         if config.adapter == "rdbg" {
             rdbg_command_line(&mut spec, &config, &cwd)?;
         }
+        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
+        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
+        // is Flutter-only). Plain Dart projects keep the configured `dart`. Before
+        // `custom_command`, which picks the Flutter SDK setting's `flutter`.
+        if config.adapter == "dart" {
+            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
+            if force_flutter || is_flutter_project(&cwd, program) {
+                if spec.command == "dart" {
+                    spec.command = "flutter".into();
+                }
+                if let Some(device) = flutter_device {
+                    add_flutter_device(&mut arguments, device);
+                }
+            }
+        }
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
@@ -910,20 +925,6 @@ impl DebugManager {
             };
             if let Some(python) = python {
                 spec.command = python;
-            }
-        }
-        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
-        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
-        // is Flutter-only). Plain Dart projects keep the configured `dart`.
-        if config.adapter == "dart" {
-            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
-            if force_flutter || is_flutter_project(&cwd, program) {
-                if spec.command == "dart" {
-                    spec.command = "flutter".into();
-                }
-                if let Some(device) = flutter_device {
-                    add_flutter_device(&mut arguments, device);
-                }
             }
         }
         let id = DebugSessionId::next();
@@ -1977,20 +1978,27 @@ impl DebugManager {
         jvm_memory::session_heap_dump(session, dir, cancel).await
     }
 
-    /// `Thread.print -l` of the session's JVM, taking the session's class-table turn. A JVM the
-    /// debugger holds suspended is asked only when it is 17 or later and its listener already
-    /// runs: otherwise the request would hang until the program resumes.
-    pub async fn jvm_thread_dump(&self, s: DebugSessionId) -> IdeResult<JvmThreadsResult> {
+    /// `Thread.print -l` of the session's JVM, taking the session's class-table turn, and on JDK
+    /// 21+ the JSON dump written into `json_dir`. A JVM the debugger holds suspended is asked
+    /// only when it is 17 or later and its listener already runs: otherwise the request would hang
+    /// until the program resumes.
+    pub async fn jvm_thread_dump(&self, s: DebugSessionId, json_dir: Option<PathBuf>) -> IdeResult<JvmThreadsResult> {
         let session = self.session(s)?;
-        jvm_memory::session_thread_dump(session).await
+        jvm_memory::session_thread_dump(session, json_dir).await
     }
 
     /// `Thread.print -l` of `pid`, the JVM of `run`, when a live session debugs it (a build
     /// tool's run started for Debug, Attach to Process): taken as [`Self::jvm_thread_dump`] takes
-    /// it, under that session's turn and suspension. `None` when no session debugs `pid`.
-    pub async fn debugged_jvm_thread_dump(&self, run: RunId, pid: u32) -> Option<IdeResult<JvmThreadsResult>> {
+    /// it, under that session's turn and suspension, so a suspended JVM is not asked for the JSON
+    /// dump either. `None` when no session debugs `pid`.
+    pub async fn debugged_jvm_thread_dump(
+        &self,
+        run: RunId,
+        pid: u32,
+        json_dir: Option<PathBuf>,
+    ) -> Option<IdeResult<JvmThreadsResult>> {
         let session = self.jvm_session_of(run, pid)?;
-        Some(jvm_memory::debugged_run_thread_dump(session, pid).await)
+        Some(jvm_memory::debugged_run_thread_dump(session, pid, json_dir).await)
     }
 
     /// A session attached to `run` first: one whose JVM is not located yet (its attach-time scan

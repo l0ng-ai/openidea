@@ -72,6 +72,7 @@ import {
   type DiffData,
 } from "./diffInput";
 import { buildChangeTree, changeFileNodes, changeGroupPaths, selectedChangeNodes, type ChangeNode } from "./changes";
+import { currentChangeModules } from "./changeModules";
 import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
 import {
@@ -190,6 +191,9 @@ export function currentChangeTree(): ChangeNode[] {
     undefined,
     commit.groupByRepo,
     commit.showUnversionedSeparately,
+    [],
+    currentChangeModules(),
+    commit.groupByModule,
   );
 }
 

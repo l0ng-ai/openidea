@@ -55,6 +55,7 @@ import { moveToReportedClasses } from "./testing/jvm";
 import { RubyTestOutput } from "./testing/ruby";
 import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
+import { flutterMachineOutput, isFlutterMachineRun } from "./flutterMachine";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
 import { testsBySubproject } from "./testing/gradleSubprojects";
@@ -70,6 +71,7 @@ import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx, txPart } from "@/platform/i18n";
+import { followLaunchBuild } from "@/features/build/store";
 import { UNITY_CONFIG_KIND } from "./unity";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
@@ -1128,8 +1130,11 @@ async function startRunIn(
       if (!check && launch.kind === "tomcat") useRun.setState({ activeSession: sessionId });
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     }
-    // Debug launches read the agent's output lines: never through a terminal.
-    if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
+    const machine = isFlutterMachineRun(launch);
+    if (machine) rt.stdout = flutterMachineOutput(sessionId, config);
+    // Debug launches read the agent's output lines, `flutter run --machine` speaks JSON: never through a terminal.
+    if ((options.launch || launch.isTest || machine) && launch.emulateTerminal)
+      launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
     let started =
@@ -1231,6 +1236,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       request: request.id,
       signal: request.controller.signal,
       report: say,
+      build: followLaunchBuild(request.id, tx`Build before launch: ${config.name}`, say),
       saveAll: async () => {
         await maybeEditorService()?.saveAll();
       },

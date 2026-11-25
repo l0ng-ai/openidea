@@ -1,5 +1,7 @@
 //! Desktop updater coordination shared by all webviews.
 
+use crate::windows::WorkbenchWindows;
+
 use crate::commands::window::{UpdateSource, check_update, update_endpoint_env, updates_configured};
 use crate::state::AppState;
 use ide_core::updates::{UpdateCheck, UpdatePolicy};
@@ -145,7 +147,7 @@ fn announce_available(app: &AppHandle) {
     let live = crate::windows::project_window_labels(app);
     let owner = {
         let mut ready = state.updates.ready.lock();
-        ready.retain(|label| app.get_webview_window(label).is_some());
+        ready.retain(|label| app.workbench_window(label).is_some());
         ready_owner(focused.as_ref().map(|window| window.label()), &live, &ready)
     };
     let Some(owner) = owner else { return };

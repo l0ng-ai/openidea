@@ -46,6 +46,11 @@ through the app-wide SSH configurations.
 Saved passwords and passphrases go to the macOS Keychain, Windows Credential Manager or the Secret Service on Linux,
 never to a settings file. The **+**, **−** and copy buttons above the list add, remove and duplicate configurations.
 
+Older versions stored saved credentials in plaintext in `ssh-passwords.json`. On startup, OpenIDEA moves them into
+the OS credential store. If the file still contains passwords, unlock the store and choose **Retry migration**, or
+choose **Remove plaintext copy** and re-enter any credentials that were not migrated. New credentials that cannot
+be saved are kept only for the session. Migration does not change old backups: rotate any exposed password.
+
 ### `~/.ssh/config` support
 
 OpenIDEA has its own SSH client and reads `~/.ssh/config` itself. It understands `Host`, `Match`, `Include`,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEntry } from "@/bindings";
-import { foldedTurns } from "../timeline";
-import { conversationRows, foldTurnRows, rowEntries, sameRow } from "./conversationRows";
+import { summarizeWork } from "../timeline";
+import { conversationRows, rowEntries, sameRow } from "./conversationRows";
 
 const user = (text: string): AgentEntry => ({
   type: "user",
@@ -12,46 +12,78 @@ const user = (text: string): AgentEntry => ({
   doneMs: 5000,
 });
 const agent = (text: string): AgentEntry => ({ type: "agent", text });
-const tool = (id: string, added = 0): AgentEntry => ({
+const tool = (id: string, kind = "read", added = 0): AgentEntry => ({
   type: "tool",
   id,
   title: id,
-  kind: "edit",
+  kind,
   status: "completed",
   locations: [],
   output: null,
   diffs: added ? [{ path: `/${id}.ts`, added, removed: 0 }] : [],
 });
 
-const rowsOf = (entries: AgentEntry[], busy = false) => {
-  const rows = conversationRows(entries, 0);
-  return foldTurnRows(rows, foldedTurns(entries, 0, busy));
-};
+describe("conversationRows", () => {
+  it("groups consecutive reasoning, exploration, edits and commands into one run", () => {
+    const entries: AgentEntry[] = [
+      user("a"),
+      { type: "thought", text: "inspect" },
+      tool("r1", "read"),
+      tool("s1", "search"),
+      tool("e1", "edit", 3),
+      tool("cmd1", "execute"),
+      tool("cmd2", "execute"),
+      agent("done"),
+    ];
+    const rows = conversationRows(entries, 0);
+    expect(rows.map((row) => row.kind)).toEqual(["entry", "process", "entry"]);
+    expect(rows[1]!.kind === "process" ? rows[1]!.entries.length : 0).toBe(6);
+    const work = summarizeWork(rowEntries(rows[1]!));
+    expect([work.edited, work.run, work.read, work.search]).toEqual([1, 2, 1, 1]);
+  });
+
+  it("keeps direct composer shell commands separate from grouped runs", () => {
+    const entries: AgentEntry[] = [
+      user("a"),
+      tool("r1", "read"),
+      tool("shell-1", "execute"),
+      tool("cmd1", "execute"),
+      tool("cmd2", "execute"),
+      agent("done"),
+    ];
+    const rows = conversationRows(entries, 0);
+    expect(rows.map((row) => row.kind)).toEqual(["entry", "entry", "entry", "process", "entry"]);
+    expect(rows[3]!.kind === "process" ? rows[3]!.entries.map((e) => e.index) : []).toEqual([3, 4]);
+  });
+});
 
 describe("sameRow", () => {
-  const entries = [user("a"), tool("t1"), tool("t2"), agent("done"), user("b"), agent("streaming")];
+  const entries = [user("a"), tool("t1", "edit"), tool("t2", "execute"), agent("done"), user("b"), agent("streaming")];
 
   it("sees the rows of the same conversation as the same, whichever copy it was built from", () => {
-    const again = rowsOf(entries);
-    expect(again.map((row) => row.kind)).toEqual(["entry", "turn", "entry", "entry", "entry"]);
-    rowsOf(entries).forEach((row, i) => expect(sameRow(row, again[i]!)).toBe(true));
+    const again = conversationRows(entries, 0);
+    expect(again.map((row) => row.kind)).toEqual(["entry", "process", "entry", "entry", "entry"]);
+    conversationRows(entries, 0).forEach((row, i) => expect(sameRow(row, again[i]!)).toBe(true));
   });
 
   it("leaves the rows a streamed chunk did not touch the same and the grown one different", () => {
-    const before = rowsOf(entries, true);
-    const after = rowsOf([...entries.slice(0, -1), agent("streaming on")], true);
+    const before = conversationRows(entries, 0);
+    const after = conversationRows([...entries.slice(0, -1), agent("streaming on")], 0);
     expect(after.map((row, i) => sameRow(before[i]!, row))).toEqual([true, true, true, true, false]);
   });
 
-  it("tells a turn whose work changed from one whose work did not", () => {
-    const [, turn] = rowsOf(entries);
-    const [, edited] = rowsOf([entries[0]!, tool("t1"), tool("t2", 7), ...entries.slice(3)]);
-    expect(sameRow(turn!, edited!)).toBe(false);
+  it("tells a run whose entry changed from one whose entries did not", () => {
+    const [, run] = conversationRows(entries, 0);
+    const [, edited] = conversationRows(
+      [entries[0]!, tool("t1", "edit"), tool("t2", "edit", 7), ...entries.slice(3)],
+      0,
+    );
+    expect(sameRow(run!, edited!)).toBe(false);
   });
 
   it("tells a run that gained a call from the run before", () => {
-    const run = conversationRows([user("a"), tool("t1"), tool("t2")], 0)[1]!;
-    const longer = conversationRows([user("a"), tool("t1"), tool("t2"), tool("t3")], 0)[1]!;
+    const run = conversationRows([user("a"), tool("t1", "read"), tool("t2", "read")], 0)[1]!;
+    const longer = conversationRows([user("a"), tool("t1", "read"), tool("t2", "read"), tool("t3", "read")], 0)[1]!;
     expect(run.kind).toBe("process");
     expect(sameRow(run, longer)).toBe(false);
   });
@@ -60,17 +92,12 @@ describe("sameRow", () => {
     const shared = agent("same");
     expect(sameRow(conversationRows([shared], 0)[0]!, conversationRows([user("x"), shared], 1)[0]!)).toBe(false);
   });
-
-  it("tells a turn that finished at another time from the turn before", () => {
-    const later = [{ ...(entries[0] as Extract<AgentEntry, { type: "user" }>), doneMs: 9000 }, ...entries.slice(1)];
-    expect(sameRow(rowsOf(entries)[1]!, rowsOf(later)[1]!)).toBe(false);
-  });
 });
 
 describe("rowEntries", () => {
-  it("lists the entries a folded turn paints, work first", () => {
+  it("lists the entries a process row paints, in order", () => {
     const entries = [user("a"), tool("t1"), tool("t2"), agent("done")];
-    const [, turn] = rowsOf(entries);
-    expect(rowEntries(turn!)).toEqual([entries[1], entries[2]]);
+    const [, run] = conversationRows(entries, 0);
+    expect(rowEntries(run!)).toEqual([entries[1], entries[2]]);
   });
 });

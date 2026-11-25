@@ -385,6 +385,26 @@ describe("store", () => {
     expect(usePlugins.getState().activeTheme).toBeNull();
   });
 
+  it("keeps a theme applied by an event over an older plugin list that predates it", async () => {
+    await refreshPlugins();
+    const applied = await backend.setTheme("theme-harbor-night", "harbor-night");
+    await backend.setTheme(null, null);
+    // The list is read before the theme lands and answers after its event.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const stale = await backend.list();
+    setPluginsBackend({ ...backend, list: () => gate.then(() => stale) });
+    const refresh = refreshPlugins();
+    handlePluginEvent({ type: "themeChanged", theme: applied });
+    release();
+    await refresh;
+    expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night");
+    // A list requested after the event is taken as it is.
+    setPluginsBackend(backend);
+    await refreshPlugins();
+    expect(usePlugins.getState().activeTheme).toBeNull();
+  });
+
   it("applies the plugin theme the Appearance setting selects, and clears it for a built-in one", async () => {
     const stop = [syncProjection(), followThemeSetting()];
     try {

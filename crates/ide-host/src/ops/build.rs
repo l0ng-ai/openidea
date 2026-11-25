@@ -9,6 +9,7 @@ use crate::{Host, Project};
 use ide_command::command;
 
 use ide_build::compile::{self, BuildEvent, BuildKind, BuildResult};
+use ide_build::jbuild::Target;
 use ide_build::maven::completion::{PomCompletion, PomCompletionOption};
 use ide_build::maven::sources;
 use ide_build::maven::{PomGoto, PomManagedDeclaration, PomNavigationOptions};
@@ -975,11 +976,38 @@ pub async fn build_run(
     let config_dir = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
     let launch_project = project.clone();
+    let (service, data_dir) = (host.java_build.clone(), host.local_data_dir.clone());
     let result = blocking(move || {
+        let single = cmake.is_none() && ide_workspace::workspace::Workspace::load(&root)?.is_none();
+        // A Maven or Gradle project builds with the IDE's Java build (#4078), unless its
+        // settings ask for the build tool, or it can't.
+        if single {
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            let served = match file.as_deref() {
+                Some(module) => super::java::served_by_service(&root, &model, &settings, module),
+                None => super::java::project_served_by_service(&model, &settings),
+            };
+            if served {
+                let service = super::java::ServiceBuild {
+                    service: &service,
+                    data_dir: &data_dir,
+                    root: &root,
+                    cache: &cache,
+                    settings: &settings,
+                    model: &model,
+                };
+                let target = match file.as_deref() {
+                    Some(file) => Target::Module(file),
+                    None => Target::Project,
+                };
+                if let Some(result) = service_build_result(&service, target, kind, &clear, &sink, &token, &on_event)? {
+                    return Ok(result);
+                }
+            }
+        }
         // Fast path (#2476): an unchanged single-project Maven build skips
         // Maven entirely. Previous diagnostics stay: nothing changed, so they
         // are still accurate.
-        let single = cmake.is_none() && ide_workspace::workspace::Workspace::load(&root)?.is_none();
         if single && kind == BuildKind::Build {
             let model = with_profiles(load(&root, &cache, &settings), &cache);
             if compile::menu_up_to_date(&cache, &root, &model, file.as_deref(), &token) {
@@ -1102,11 +1130,57 @@ pub async fn build_run(
     let outcome = result?;
     // Maven generated sources (protobuf, gRPC) stay invisible to jdtls until the
     // folders the build wrote are attached. An up-to-date build skips Maven and
-    // still needs this: the classes can already be on disk.
-    if outcome.system == ide_build::compile::BuildSystem::Maven {
+    // still needs this: the classes can already be on disk. The IDE's Java build
+    // generates them with Maven too.
+    if matches!(outcome.system, ide_build::compile::BuildSystem::Maven | ide_build::compile::BuildSystem::Javac) {
         project.lsp.sync_maven_generated_sources(&project.root).await;
     }
     Ok(outcome)
+}
+
+/// A menu build by the IDE's Java build, as the Build window shows it; `None` when Maven builds.
+/// Diagnostics of `clear` are cleared once the service builds; its messages are published.
+#[allow(clippy::too_many_arguments)]
+fn service_build_result(
+    service: &super::java::ServiceBuild,
+    target: Target,
+    kind: BuildKind,
+    clear: &[std::path::PathBuf],
+    sink: &ide_core::SharedSink,
+    token: &CancellationToken,
+    on_event: &Channel<BuildEvent>,
+) -> IdeResult<Option<BuildResult>> {
+    let started = std::time::Instant::now();
+    let title = std::sync::Mutex::new(String::new());
+    let forward = |event: BuildEvent| {
+        if let BuildEvent::Started { title: t, .. } = &event {
+            *title.lock().unwrap() = t.clone();
+        }
+        let _ = on_event.send(event);
+    };
+    let built = service.build(target, kind, token, &forward)?;
+    let Some(outputs) = built else { return Ok(None) };
+    for path in clear {
+        sink.emit(IdeEvent::Diagnostics {
+            path: path.clone().into(),
+            source: compile::DIAGNOSTICS_SOURCE.into(),
+            items: Vec::new(),
+        });
+    }
+    for (path, items) in compile::diagnostics(&outputs.messages) {
+        sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });
+    }
+    let count =
+        |severity: ide_core::Severity| outputs.messages.iter().filter(|m| m.severity == severity).count() as u32;
+    Ok(Some(BuildResult {
+        system: compile::BuildSystem::Javac,
+        title: title.into_inner().unwrap(),
+        success: outputs.failure.is_none(),
+        errors: count(ide_core::Severity::Error),
+        warnings: count(ide_core::Severity::Warning),
+        duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+        messages: outputs.messages,
+    }))
 }
 
 fn plan_compile_file(
@@ -1167,7 +1241,26 @@ pub async fn build_compile_file(
     };
     let sink = project.sink.clone();
     let token = host.begin_project_request(window, request);
+    let (service, data_dir) = (host.java_build.clone(), host.local_data_dir.clone());
     let result = blocking(move || {
+        {
+            let model = with_profiles(load(&scope.root, &scope.cache, &scope.settings), &scope.cache);
+            if super::java::served_by_service(&scope.root, &model, &scope.settings, &file) {
+                let service = super::java::ServiceBuild {
+                    service: &service,
+                    data_dir: &data_dir,
+                    root: &scope.root,
+                    cache: &scope.cache,
+                    settings: &scope.settings,
+                    model: &model,
+                };
+                let target = Target::File(&file);
+                let kind = BuildKind::Build;
+                if let Some(result) = service_build_result(&service, target, kind, &clear, &sink, &token, &on_event)? {
+                    return Ok(result);
+                }
+            }
+        }
         for path in clear {
             sink.emit(IdeEvent::Diagnostics {
                 path: path.into(),
@@ -1190,7 +1283,7 @@ pub async fn build_compile_file(
     .await;
     host.end_request(request);
     let outcome = result?;
-    if outcome.system == ide_build::compile::BuildSystem::Maven {
+    if matches!(outcome.system, ide_build::compile::BuildSystem::Maven | ide_build::compile::BuildSystem::Javac) {
         project.lsp.sync_maven_generated_sources(&scope_root).await;
     }
     Ok(outcome)

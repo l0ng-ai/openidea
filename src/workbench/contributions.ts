@@ -94,6 +94,11 @@ export interface ToolWindowContribution {
    * so it isn't reopened with the project.
    */
   sessionContent?: boolean;
+  /** Accepts pointer drags dropped onto this window's stripe button (even while hidden). */
+  onStripeDrop?: {
+    accepts(type: string, data: DragData): boolean;
+    drop(data: DragData): void;
+  };
 }
 
 export type StatusAlign = "left" | "right";
@@ -1020,6 +1025,22 @@ export const maybeCommitService = (): CommitService | undefined => commitService
  * or references to files.
  */
 export type AgentContext = { kind: "block"; info: string; text: string } | { kind: "files"; paths: string[] };
+
+type DraftBlock = Extract<AgentContext, { kind: "block" }>;
+let appendDraftBlock: ((block: DraftBlock) => void) | undefined;
+
+/** Shows the current composer after appending context requested in another tool window. */
+export function provideAgentDraftAppender(append: (block: DraftBlock) => void): () => void {
+  appendDraftBlock = append;
+  return () => {
+    if (appendDraftBlock === append) appendDraftBlock = undefined;
+  };
+}
+export function appendAgentDraftBlock(block: DraftBlock): boolean {
+  if (!appendDraftBlock) return false;
+  appendDraftBlock(block);
+  return true;
+}
 
 export interface AgentContextSource {
   /** Typed after `@`. */

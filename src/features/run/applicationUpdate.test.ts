@@ -21,6 +21,12 @@ const mocks = vi.hoisted(() => ({
   buildListeners: new Set<(event: unknown) => void>(),
   state: { configs: [] as RunSession["config"][], sessions: [] as RunSession[], activeSession: null as string | null },
 }));
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage = null;
+  },
+}));
 vi.mock("@/platform/actions", () => ({ executeAction: mocks.action, getAction: () => ({}) }));
 vi.mock("@/platform/ipc", () => ({
   call: async (p: Promise<{ data: unknown }>) => (await p).data,
@@ -141,7 +147,7 @@ const boot = {
 describe("Spring Boot application updates", () => {
   it("processes resources and publishes them to the resolved runtime output", async () => {
     await updateTomcat(boot, "resources");
-    expect(mocks.resolve).toHaveBeenCalledWith("app", false, "noBuild", 1);
+    expect(mocks.resolve).toHaveBeenCalledWith("app", false, true, "noBuild", 1, expect.anything());
     expect(mocks.runBuild).toHaveBeenCalledWith({ id: "build" });
     expect(mocks.publish).toHaveBeenCalledWith(boot.config, ["/p/app/bin/main"], "a.Main");
     expect(mocks.update).not.toHaveBeenCalled();
@@ -149,7 +155,7 @@ describe("Spring Boot application updates", () => {
   });
   it("compiles and invokes the existing scoped HotSwap action in debug", async () => {
     await updateTomcat(boot, "classes");
-    expect(mocks.resolve).toHaveBeenCalledWith("app", false, "make", 1);
+    expect(mocks.resolve).toHaveBeenCalledWith("app", false, true, "make", 1, expect.anything());
     expect(mocks.action).toHaveBeenCalledWith("debug.reloadChangedClasses", { configId: "boot" });
   });
   it("explains compiled classes require restart without a debugger", async () => {

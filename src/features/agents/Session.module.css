@@ -8,7 +8,7 @@
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   background: var(--bg-app);
   color: var(--fg);
   font-size: var(--fs-ui);
@@ -20,23 +20,9 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border);
-}
-
-.conversation[hidden] {
-  display: none;
 }
 .docked {
-  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
-}
-.docked .conversation {
-  border-right: 0;
-}
-/* The pane takes its width while the conversation keeps 240px (half of a narrower session);
-   keep that minimum in step with ChangesResizer. */
-.withChanges {
-  grid-template-columns: minmax(min(240px, 50%), 1fr) minmax(0, var(--agent-changes-width, 280px));
 }
 .fitWidth .stream > * {
   width: 100%;
@@ -141,10 +127,8 @@
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  cursor: pointer;
 }
-.statusChip:hover,
-.statusChip[aria-expanded="true"] {
+.statusChip:hover {
   background: var(--bg-toolbar-hover);
   color: var(--fg-strong);
 }
@@ -268,7 +252,6 @@
   border-radius: var(--radius-toolbar-button);
   background: var(--bg-app);
   color: var(--fg-muted);
-  cursor: pointer;
 }
 /* Over the stream's text: keep it opaque against the icon button's translucent hover fill. */
 .streamArea .jumpToLatest:not(:disabled):hover {
@@ -392,8 +375,7 @@
   .shownElsewhere {
     display: none;
   }
-  .processBody,
-  .turnBody {
+  .processBody {
     padding-left: var(--space-2);
   }
   .processBody > .thoughtEntry ~ .toolEntry {
@@ -583,7 +565,6 @@
   border-radius: var(--radius-small);
   background: var(--bg-elev);
   color: var(--fg-secondary);
-  cursor: pointer;
   opacity: 0;
   -webkit-user-select: none;
   user-select: none;
@@ -762,7 +743,6 @@
   background: var(--bg-elev);
   color: var(--fg-secondary);
   font: inherit;
-  cursor: pointer;
 }
 .loadImage:hover {
   background: var(--bg-toolbar-hover);
@@ -786,7 +766,7 @@
 }
 .thought summary,
 .toolDetails > summary {
-  cursor: pointer;
+  cursor: default;
   list-style: none;
 }
 .thought summary::-webkit-details-marker,
@@ -878,7 +858,6 @@
   background: none;
   padding: 0 4px;
   border-radius: var(--radius-small);
-  cursor: pointer;
   white-space: nowrap;
 }
 .toolDiff:hover {
@@ -887,7 +866,7 @@
 
 /* Reasoning and tool calls between messages, folded as one block per turn. */
 .processRun > summary {
-  cursor: pointer;
+  cursor: default;
   list-style: none;
 }
 .processRun > summary::-webkit-details-marker {
@@ -1108,12 +1087,12 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1-5);
+  gap: var(--space-1);
   align-self: center;
   width: 100%;
   max-width: calc(var(--session-content-width) + var(--space-3) * 2);
   box-sizing: border-box;
-  padding: var(--space-2) var(--space-3) var(--space-4);
+  padding: var(--space-1-5) var(--space-3) var(--space-3);
 }
 
 .background {
@@ -1174,32 +1153,86 @@
   flex-wrap: wrap;
   align-items: center;
   align-content: flex-start;
-  gap: 0 10px;
+  gap: 0 var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+.meterSegment {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 22px;
+  gap: var(--space-1-5);
+}
+.meterGroup {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 22px;
+  gap: var(--space-1-5);
+}
+.meterDivider {
+  flex: none;
+  width: 1px;
+  height: 11px;
+  background: var(--border-strong);
+  opacity: 0.5;
 }
 .meter {
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
   min-width: 0;
-  height: 22px;
+  height: 20px;
   gap: 5px;
   overflow: hidden;
 }
-.usageBar {
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border);
-  overflow: hidden;
+.meterValue {
+  line-height: 1;
 }
-.usageBar > span {
+.usageRing {
+  flex: none;
+  width: 13px;
+  height: 13px;
   display: block;
-  height: 100%;
-  background: var(--fg-muted);
+}
+.usageRingTrack {
+  fill: none;
+  stroke: color-mix(in srgb, currentColor 22%, transparent);
+  stroke-width: 1.75;
+}
+.usageRingArc {
+  fill: none;
+  stroke: var(--fg-muted);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  transition:
+    stroke-dashoffset 200ms var(--ease),
+    stroke var(--dur-fast) var(--ease);
+}
+.limitsButton {
+  gap: 0;
+}
+.limitItem {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+}
+.limitWindow {
+  color: var(--fg-faint);
+}
+.limitPercent {
+  color: inherit;
+}
+.meterDot {
+  flex: none;
+  margin: 0 5px;
+  color: var(--fg-faint);
+  opacity: 0.65;
 }
 
 .images {
@@ -1248,7 +1281,6 @@
   background: var(--bg-popup);
   box-shadow: 0 0 0 1px var(--border);
   color: var(--fg);
-  cursor: pointer;
 }
 /* Opaque on hover too: the icon button's own hover fill is translucent over the image. */
 .imageItem .removeImage:not(:disabled):hover {
@@ -1269,79 +1301,26 @@
   gap: var(--space-1);
 }
 
+/* The Changes tab: the file tree beside the diff of every file, under one toolbar. */
 .changes {
-  position: relative;
-  display: flex;
-  flex-direction: column;
+  flex: 1;
+  height: 100%;
   min-height: 0;
   min-width: 0;
-}
-/* On the conversation's border; the hit area reaches 3px either side of it. */
-.changesResizer {
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  bottom: 0;
-  left: -1px;
-  width: 0;
-  outline: none;
-}
-.changesResizer::after {
-  content: "";
-  position: absolute;
-  inset: 0 -3px;
-  cursor: col-resize;
-}
-.changesResizer:focus-visible::after {
-  background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
-}
-.changesHeader {
-  min-width: 0;
   display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  height: 32px;
-  flex: none;
-  padding: 0 6px 0 10px;
-  border-bottom: 1px solid var(--border);
-}
-.changesTitle {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: var(--fg-strong);
-}
-.changesHeader > .muted {
-  flex: none;
-  white-space: nowrap;
-}
-.changesScope {
-  flex: none;
-  padding: 0 4px;
+  flex-direction: column;
+  background: var(--bg-app);
+  color: var(--fg);
+  font-size: var(--fs-ui);
 }
 .changesSummary {
-  flex: none;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 4px 10px;
+  padding-inline: var(--space-1-5);
+  font-size: var(--fs-small);
   color: var(--fg-subtle);
   white-space: pre;
-}
-.changesList {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.changesList > * {
-  flex: 1;
-  min-height: 0;
-}
-.changesEmpty {
-  padding: 8px 10px;
-  color: var(--fg-muted);
 }
 .change {
   flex: 1;
@@ -1452,7 +1431,6 @@
   color: var(--fg);
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 .subagentOpen:hover {
   background: var(--bg-hover);
@@ -1495,7 +1473,7 @@
   padding-left: 22px;
   color: var(--fg-muted);
   font-size: var(--agent-fs-small, var(--fs-small));
-  cursor: pointer;
+  cursor: default;
   list-style: none;
 }
 .subagentSection > summary::-webkit-details-marker {
@@ -1592,7 +1570,6 @@
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .subagentChip:hover {
   background: var(--bg-toolbar-hover);
@@ -1840,26 +1817,6 @@
   mask-image: linear-gradient(to bottom, transparent, black 40%);
 }
 
-/* A finished turn's work, folded under its message. */
-.turnFold > summary {
-  cursor: pointer;
-  list-style: none;
-}
-.turnFold > summary::-webkit-details-marker {
-  display: none;
-}
-.turnFold[open] .processChevron {
-  transform: rotate(90deg);
-}
-.turnBody {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: 2px 0 0 10px;
-  padding-left: var(--space-3);
-  border-left: 1px solid var(--border);
-}
-
 /* Above the composer: what waits for the user, the plan and changes, what runs now. */
 .tray {
   display: flex;
@@ -1890,7 +1847,6 @@
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .trayChip:hover,
 .trayChip[aria-expanded="true"] {
@@ -1938,6 +1894,18 @@
 .toolKindIcon {
   flex: none;
   color: var(--fg-muted);
+}
+.toolDir {
+  flex: none;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .toolPath {
   flex: none;
@@ -2011,12 +1979,113 @@
 }
 .meterButton {
   composes: meter;
-  cursor: pointer;
   color: inherit;
   font: inherit;
   border: 0;
+  border-radius: var(--radius-control);
   background: transparent;
-  padding: 0 var(--space-1);
+  padding: 0 5px;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.meterButton:hover,
+.meterButton[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg);
+}
+.meterButton:hover .usageRingArc,
+.meterButton[aria-expanded="true"] .usageRingArc {
+  stroke: currentColor;
+}
+.limitsButton:hover .limitWindow,
+.limitsButton[aria-expanded="true"] .limitWindow {
+  color: var(--fg-subtle);
+}
+.meterButton:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+.meterWarning,
+.meterWarning:hover,
+.meterWarning[aria-expanded="true"] {
+  color: var(--warning);
+}
+.meterDanger,
+.meterDanger:hover,
+.meterDanger[aria-expanded="true"] {
+  color: var(--danger);
+}
+.meterWarning .usageRingArc,
+.meterDanger .usageRingArc {
+  stroke: currentColor;
+}
+.meterWarning .meterValue,
+.meterDanger .meterValue,
+.meterWarning .limitPercent,
+.meterDanger .limitPercent {
+  font-weight: 500;
+}
+.limitsDetails {
+  display: grid;
+  gap: var(--space-2);
+  width: min(272px, 80vw);
+  padding: var(--space-3);
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  font-variant-numeric: tabular-nums;
+}
+.limitsList {
+  display: grid;
+  gap: var(--space-3);
+}
+.limitsRow {
+  display: grid;
+  gap: 5px;
+}
+.limitsRowHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.limitsRowName {
+  color: var(--fg);
+  font-size: var(--fs-small);
+}
+.limitsRowPercent {
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.meterWarning .limitsRowPercent {
+  color: var(--warning);
+  font-weight: 500;
+}
+.meterDanger .limitsRowPercent {
+  color: var(--danger);
+  font-weight: 500;
+}
+.limitsTrack {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.limitsFill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--fg-muted);
+}
+.meterWarning .limitsFill {
+  background: var(--warning);
+}
+.meterDanger .limitsFill {
+  background: var(--danger);
+}
+.limitsReset {
+  color: var(--fg-subtle);
+  font-size: var(--fs-tiny, var(--fs-small));
 }
 .contextPopover {
   max-width: calc(100vw - 24px);
@@ -2073,7 +2142,7 @@
   flex-basis: 0;
 }
 .contextDetails summary {
-  cursor: pointer;
+  cursor: default;
   color: var(--fg);
 }
 .contextDetails ul {

@@ -331,17 +331,21 @@ impl Shared {
         let hook = self.new_task_approvals.read().clone();
         if hook.is_some_and(|ask| ask() == ide_core::settings::NewTaskApprovals::Ask) {
             config::ask_for_approvals(&mut config);
-            return config;
-        }
-        if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
-            && let Some(o) = config.iter_mut().find(|c| c.id == o)
-        {
-            o.current = Some(v);
-        }
-        if let Some(o) = config.iter_mut().find(|o| o.id == config::CURSOR_APPROVAL) {
-            o.current = Some("bypass".into());
+        } else {
+            config::apply_bypass_approvals(&mut config);
         }
         config
+    }
+
+    pub(crate) fn thought_levels_for_new_task(
+        &self,
+        mut levels: BTreeMap<String, Vec<AgentConfigOption>>,
+        provider: &str,
+    ) -> BTreeMap<String, Vec<AgentConfigOption>> {
+        for options in levels.values_mut() {
+            config::apply_model_defaults(provider, options);
+        }
+        levels
     }
 
     /// The commands the agent offered last time in this project.
@@ -375,8 +379,19 @@ impl Shared {
             }
         }
         // Discovery reads one model's options; a session on another model reports that model's.
+        // Restore each option's agent default so a session's manual overrides never pollute the catalog.
         if acp && let Some((model, config)) = model.zip(config) {
-            let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
+            let levels: Vec<_> = config
+                .iter()
+                .filter(|o| config::is_per_model_option(o))
+                .cloned()
+                .map(|mut o| {
+                    if let Some(def) = o.default_value.clone().filter(|d| o.values.iter().any(|v| v.value == *d)) {
+                        o.current = Some(def);
+                    }
+                    o
+                })
+                .collect();
             if !levels.is_empty() {
                 self.paths.catalogs.learn_levels(self, provider, model, levels);
             }
@@ -736,7 +751,7 @@ impl AgentManager {
                 let mut info = provider::describe(p);
                 let catalog = self.shared.paths.catalogs.cached(&self.shared, &p.id);
                 info.config = self.shared.config_for_new_task(catalog.config, &p.id);
-                info.thought_levels = catalog.thought_levels;
+                info.thought_levels = self.shared.thought_levels_for_new_task(catalog.thought_levels, &p.id);
                 info.commands = self.shared.known_commands(&p.id);
                 info
             })
@@ -1059,7 +1074,7 @@ impl AgentManager {
         };
         // Until the session reports its own, show what the agent offered last time with the choices applied.
         let catalog = self.shared.paths.catalogs.cached(&self.shared, &spec.id);
-        let mut levels = catalog.thought_levels;
+        let mut levels = self.shared.thought_levels_for_new_task(catalog.thought_levels, &spec.id);
         let mut config = self.shared.config_for_new_task(catalog.config, &spec.id);
         for choice in &req.config {
             if let Some(o) = config.iter_mut().find(|o| o.id == choice.id) {
@@ -2276,14 +2291,25 @@ impl AgentManager {
         }
     }
 
+    /// Stops sending events to UI sinks (project closing).
+    pub fn detach_sinks(&self) {
+        self.shared.sinks.write().clear();
+    }
+
     /// Stops every agent (project closed).
     pub fn shutdown(&self) {
-        for task in self.tasks.read().values() {
-            task.kill();
-            // What arrived after the last save (a subagent's late updates).
-            task.persist();
+        self.detach_sinks();
+        let tasks: Vec<_> = self.tasks.read().values().cloned().collect();
+        for task in tasks {
+            let was_live = task.kill().is_some();
+            if was_live {
+                // Persist late subagent updates and cleared live background state.
+                task.persist();
+            } else {
+                // Flush pending delayed saves without rewriting untouched or archived tasks.
+                task.save();
+            }
         }
-        self.shared.sinks.write().clear();
     }
 }
 

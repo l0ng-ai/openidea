@@ -4,11 +4,13 @@
  * chevrons in the gutter (open chevrons can be shown only on hover).
  */
 import {
+  countColumn,
   EditorSelection,
+  EditorState,
   Prec,
   StateEffect,
   StateField,
-  type EditorState,
+  Text,
   type Extension,
   type Line,
 } from "@codemirror/state";
@@ -20,6 +22,8 @@ import {
   foldService,
   foldable,
   foldedRanges,
+  language,
+  syntaxTree,
   unfoldEffect,
 } from "@codemirror/language";
 import type { FoldRange } from "@/platform/ipc";
@@ -28,6 +32,7 @@ import { tx } from "@/platform/i18n";
 import { enclosingCodeBlock } from "./caretCommands";
 import { foldPreviewExtension } from "./foldPreview";
 import { regionMarkerAt, regionNameAt } from "./regions";
+import { renderSyntaxRange } from "./renderLineContent";
 
 export interface BackendFold {
   /** Offset where the fold starts (end of the header line). */
@@ -131,10 +136,33 @@ export function foldsFromRanges(state: EditorState, ranges: readonly FoldRange[]
     // `}` / `)` / `]` on the last line stays visible after the placeholder, like IDEA. An import
     // run ending in `} from '…'` hides that whole statement; a bare `)` / `};` still shows.
     const delimiter = r.kind === "imports" ? /^[}\])]+[;,]?$/.test(trimmed.trimEnd()) : /^[}\])]/.test(trimmed);
+    if (r.kind === "compact" && r.end_line === r.start_line + 1) {
+      out.push({ from, to: end.to, kind: r.kind });
+      continue;
+    }
     const to = delimiter ? end.from + (end.text.length - trimmed.length) : end.to;
     if (to > from) out.push({ from, to, kind: r.kind });
   }
   return out.sort((a, b) => a.from - b.from || b.to - a.to);
+}
+
+function compactBody(state: EditorState, range: { from: number; to: number }) {
+  const header = state.doc.lineAt(range.from);
+  const end = state.doc.lineAt(range.to);
+  const braced = end.number === header.number + 2;
+  if (range.from !== header.to || (end.number !== header.number + 1 && !braced)) return null;
+  const body = state.doc.line(header.number + 1);
+  const source = body.text.trim();
+  if (!source) return null;
+  const from = body.from + body.text.length - body.text.trimStart().length;
+  return { from, to: from + source.length, source, header, end, braced };
+}
+
+export function compactFoldFits(state: EditorState, range: BackendFold, margin: number): boolean {
+  const body = compactBody(state, range);
+  if (!body) return false;
+  const tail = body.braced ? ` ${body.end.text.trimStart()}` : "";
+  return countColumn(`${body.header.text} ${body.source}${tail}`, state.tabSize) <= margin;
 }
 
 export const backendFolds = StateField.define<BackendFold[]>({
@@ -514,11 +542,48 @@ export function foldingExtension(showOutline = true, visibility: FoldingOutlineV
     backendFolds,
     backendFoldService,
     foldPreviewExtension,
+    // Recreate the preview by expanding a folded statement if its source is changed.
+    // Edits above it simply move CodeMirror's fold and keep the preview intact.
+    EditorState.transactionFilter.of((tr) => {
+      if (!tr.docChanged) return tr;
+      const state = tr.startState;
+      const effects: StateEffect<unknown>[] = [];
+      tr.changes.iterChangedRanges((fromA, toA) => {
+        foldedRanges(state).between(fromA, toA, (from, to) => {
+          const header = state.doc.lineAt(from);
+          const fold = foldAtLine(state.field(backendFolds), header.from, header.to);
+          if (fold?.kind !== "compact" || fold.from !== from || fold.to !== to) return;
+          effects.push(unfoldEffect.of({ from: tr.changes.mapPos(from, 1), to: tr.changes.mapPos(to, -1) }));
+        });
+      });
+      return effects.length ? [tr, { effects, sequential: true }] : tr;
+    }),
     codeFolding({
       // A folded custom region shows its name, as in IDEA.
       preparePlaceholder: (state, range) => {
         const name = regionNameAt(state, range.from);
         if (name) return name;
+        const header = state.doc.lineAt(range.from);
+        const fold = foldAtLine(state.field(backendFolds), header.from, header.to);
+        if (fold?.kind === "compact" && fold.from === range.from && fold.to === range.to) {
+          const body = compactBody(state, range);
+          if (body) {
+            const content = document.createDocumentFragment();
+            content.append(" ");
+            const tree = syntaxTree(state);
+            const parser = state.facet(language)?.parser;
+            if (parser && tree.length < body.to) {
+              // The initial parse may stop before this fold. Only parse the statement.
+              const snippet = Text.of(["package main", "func _() {", body.source, "}"]);
+              const line = snippet.line(3);
+              renderSyntaxRange(snippet, parser.parse(snippet.toString()), line.from, line.to, content);
+            } else {
+              renderSyntaxRange(state.doc, tree, body.from, body.to, content);
+            }
+            if (body.braced) content.append(" ");
+            return content;
+          }
+        }
         const doc = commentPlaceholderFold(state, state.doc.lineAt(range.from), state.doc.lineAt(range.to));
         if (!doc || range.from < doc.from || range.to > doc.to) return null;
         const before = state.doc.sliceString(doc.from, range.from);
@@ -527,11 +592,16 @@ export function foldingExtension(showOutline = true, visibility: FoldingOutlineV
           ? doc.text.slice(before.length, doc.text.length - after.length)
           : null;
       },
-      placeholderDOM: (view, onclick, name: string | null) => {
+      placeholderDOM: (view, onclick, placeholder: string | DocumentFragment | null) => {
         const el = document.createElement("span");
         el.className = "cm-foldPlaceholder";
-        el.textContent = name ?? "…";
-        el.setAttribute("aria-label", tx("Folded code"));
+        if (placeholder instanceof DocumentFragment) {
+          el.classList.add("cm-foldCompact");
+          el.append(placeholder.cloneNode(true));
+        } else {
+          el.textContent = placeholder ?? "…";
+          el.setAttribute("aria-label", tx("Folded code"));
+        }
         // The chip is a button, not a text anchor. Letting the mousedown through
         // starts a mouse selection that moves the caret to the chip's line; a caret
         // change re-runs the inline blame refresh, which replaces this line's DOM

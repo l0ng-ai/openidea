@@ -218,7 +218,7 @@ export const commands = {
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
 	 */
 	appMetrics: () => typedError<AppMetrics, IdeError>(__TAURI_INVOKE("app_metrics")),
-	/**  Quits: closes every window, each of which runs its own unsaved-changes check. */
+	/**  Quits: closes every window in parallel, each of which runs its own unsaved-changes check. */
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 	/**
 	 *  Release notes of `version` from the update manifest (`latest.json`), read
@@ -464,7 +464,10 @@ export const commands = {
 	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
 	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
 	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
-	/**  A `Thread.print -l` of the debuggee JVM, or why it cannot be taken. */
+	/**
+	 *  A `Thread.print -l` of the debuggee JVM (with the JSON dump on JDK 21+), or why it cannot be
+	 *  taken.
+	 */
 	debugJvmThreadDump: (session: DebugSessionId) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("debug_jvm_thread_dump", { session })),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
@@ -697,6 +700,12 @@ export const commands = {
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
 	/**  Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`. */
 	flutterEmulatorLaunch: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("flutter_emulator_launch", { id })),
+	/**
+	 *  The address of the project's Widget Preview page, its server started on first use with the
+	 *  project's DevTools for its inspector. A server that failed or exited is only started again by
+	 *  the next request.
+	 */
+	flutterWidgetPreviewUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_widget_preview_url")),
 	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -847,8 +856,12 @@ export const commands = {
 	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+	 *  The build streams its console, messages and progress on `on_event` while it runs; a launch
+	 *  whose build another launch's build joins receives that build's events.
+	 *  A Maven module is built by the IDE's Java build, except for a `debug` launch the language
+	 *  server serves: java-debug's HotSwap reloads the classes the language server compiles.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request })),
+	javaResolveLaunch: (module: string, test: boolean, debug: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, debug, policy, request, onEvent })),
 	/**
 	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
@@ -895,6 +908,18 @@ export const commands = {
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
+	/**
+	 *  Sets an argument of the call at `pos`; the edit reaches the document as the server's
+	 *  `workspace/applyEdit`, undoable like any other.
+	 */
+	lspEditArgument: (doc: DocId, pos: Pos, name: string, value: boolean | number | number | null | string | null) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_edit_argument", { doc, pos, name, value })),
+	/**  The Flutter Property Editor's arguments of the call at `pos`. */
+	lspEditableArguments: (doc: DocId, pos: Pos) => typedError<{
+	/**  The widget's (or callee's) name. */
+	name: string | null,
+	documentation: string | null,
+	arguments: EditableArgument[],
+} | null, IdeError>(__TAURI_INVOKE("lsp_editable_arguments", { doc, pos })),
 	/**  The Throwable class the caret at `pos` names, for the exception breakpoint intention. */
 	lspExceptionClassAt: (request: RequestId, doc: DocId, pos: Pos) => typedError<{
 	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
@@ -1690,6 +1715,17 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("sdk_container_python_refresh")),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	/**
+	 *  `flutter --version --machine` of the Flutter SDK at `path`, or of the `flutter` on the
+	 *  search path when `path` is empty; `None` when there is no Flutter SDK.
+	 */
+	sdkFlutterAt: (path: string) => typedError<{
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
+} | null, IdeError>(__TAURI_INVOKE("sdk_flutter_at", { path })),
 	/**  The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home. */
 	sdkJdkAt: (path: string) => typedError<{
 	/**
@@ -1844,6 +1880,8 @@ export const commands = {
 	/**  Ids of the configurations with an open connection. */
 	sshConnected: () => __TAURI_INVOKE<string[]>("ssh_connected"),
 	sshDisconnect: (id: string) => __TAURI_INVOKE<void>("ssh_disconnect", { id }),
+	/**  `Some` means legacy credentials remain in plaintext on this host. */
+	sshLegacyPasswords: (action: LegacyPasswordAction) => typedError<string | null, IdeError>(__TAURI_INVOKE("ssh_legacy_passwords", { action })),
 	/**  Whether connecting with configuration `id` needs a password first. */
 	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
 	/**
@@ -2227,6 +2265,9 @@ export const commands = {
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	/**  Create Patch › Save to file. */
 	vcsWritePatch: (path: string, patch: string, encoding: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch, encoding })),
+	webBrowserControl: (session: RequestId, action: BrowserAction) => typedError<BrowserStatus, IdeError>(__TAURI_INVOKE("web_browser_control", { session, action })),
+	/**  Creates a private localhost browser session owned by this window and project. */
+	webBrowserOpen: (url: string, session: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("web_browser_open", { url, session })),
 	/**  The browsers installed on this machine. */
 	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
@@ -2245,6 +2286,11 @@ export const commands = {
 	 *  HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
 	 */
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
+	/**
+	 *  Acquires the interactive prompt turn for a batch close and brings this window forward.
+	 *  Returns `false` if the batch was cancelled while waiting.
+	 */
+	windowBeginPrompt: () => __TAURI_INVOKE<boolean>("window_begin_prompt"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
 	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
@@ -2256,6 +2302,8 @@ export const commands = {
 	 *  with whether a target took the files.
 	 */
 	windowDragFiles: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_drag_files", { paths })),
+	/**  Releases the interactive prompt turn held by this window. */
+	windowEndPrompt: () => __TAURI_INVOKE<void>("window_end_prompt"),
 	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
@@ -2335,6 +2383,11 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**
+	 *  Signals that this window passed its close checks and waits for peers closing in the same
+	 *  batch/tab group so they hide together in one frame. Returns `false` if the batch was cancelled.
+	 */
+	windowReadyToClose: () => __TAURI_INVOKE<boolean>("window_ready_to_close"),
 	/**  Appearance › Smooth scrolling for this window's web view (Linux only) */
 	windowSetSmoothScrolling: (enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_smooth_scrolling", { enabled })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
@@ -2986,8 +3039,6 @@ export type AgentSettings_Deserialize = {
 	showUsageLimits?: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost?: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns?: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -3031,8 +3082,6 @@ export type AgentSettings_Serialize = {
 	showUsageLimits: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -3615,6 +3664,9 @@ export type ArduinoSettings = {
 	fqbn?: string,
 };
 
+/**  A literal argument value. Ints stay ints: the server rejects `1.0` for an `int` parameter. */
+export type ArgumentValue = boolean | number | number | null | string;
+
 /**  Packaging artifact definition (Project Structure › Artifacts). */
 export type ArtifactConfig = {
 	name?: string,
@@ -3868,6 +3920,26 @@ export type Browser = {
 	/**  `chrome`, `firefox`, `safari`, `edge`, `brave`, `chromium`. */
 	id: string,
 	name: string,
+};
+
+export type BrowserAction = { type: "navigate"; url: string } | { type: "back" } | { type: "forward" } | { type: "reload" } | { type: "inspect" } | { type: "cancel" } | { type: "layout"; bounds: BrowserBounds | null } | { type: "status" };
+
+/**  CSS pixels measured from the top left of the workbench viewport, along with the viewport size. */
+export type BrowserBounds = {
+	x: number | null,
+	y: number | null,
+	width: number | null,
+	height: number | null,
+	viewportWidth: number | null,
+	viewportHeight: number | null,
+};
+
+export type BrowserStatus = {
+	url: string,
+	canBack: boolean,
+	canForward: boolean,
+	inspecting: boolean,
+	element: InspectedElement | null,
 };
 
 export type BuildEvent = 
@@ -4206,6 +4278,10 @@ export type CloseContext = {
 	quitting: boolean,
 	/**  Number of open project windows (settings windows excluded), including the caller. */
 	windows: number,
+	/**  Whether this window currently has auxiliary document windows that must settle first. */
+	hasDocumentWindows: boolean,
+	/**  Whether this close runs alongside other windows or on a background tab (prompts serialize and raise). */
+	batch: boolean,
 };
 
 export type CodeAction = {
@@ -6436,6 +6512,36 @@ export type DynamicItem = {
 	checked?: boolean | null,
 };
 
+export type EditableArgument = {
+	name: string,
+	documentation: string | null,
+	/**  How to edit it: `string`, `int`, `double`, `bool` or `enum`. */
+	type: string,
+	/**  The literal value in the code (only while `has_argument`); an expression has `display_value`. */
+	value: ArgumentValue | null,
+	hasArgument?: boolean,
+	defaultValue: ArgumentValue | null,
+	displayValue: string | null,
+	isRequired?: boolean,
+	isNullable?: boolean,
+	isDeprecated?: boolean,
+	isEditable?: boolean,
+	notEditableReason: string | null,
+	/**  An enum's values, as `EnumName.value`. */
+	options: string[] | null,
+};
+
+/**
+ *  The arguments the Flutter Property Editor edits: those of the widget (or other) call at a
+ *  position, as the Dart server's `dart/textDocument/editableArguments` reports them.
+ */
+export type EditableArguments = {
+	/**  The widget's (or callee's) name. */
+	name: string | null,
+	documentation: string | null,
+	arguments: EditableArgument[],
+};
+
 /**  Editor › General › Appearance. */
 export type EditorAppearanceSettings = {
 	caretBlinking?: boolean,
@@ -7242,6 +7348,24 @@ export type FlutterEmulator = {
 	platformType: string | null,
 };
 
+/**  The Flutter plugin's "Flutter SDK path". */
+export type FlutterSettings = {
+	/**
+	 *  Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+	 *  `PATH`. Empty = `PATH`.
+	 */
+	sdk?: string,
+};
+
+/**  What `flutter --version --machine` reports of an SDK. */
+export type FlutterVersion = {
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
+};
+
 export type FocusedEditor = {
 	path: IpcPath,
 	/**  Zero-based lines and UTF-16 columns, end exclusive. */
@@ -7249,7 +7373,7 @@ export type FocusedEditor = {
 	selectedText: string,
 };
 
-export type FoldKind = "region" | "comment" | "imports";
+export type FoldKind = "region" | "comment" | "imports" | "compact";
 
 export type FoldRange = {
 	start_line: number,
@@ -7266,6 +7390,7 @@ export type FoldingSettings = {
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
+	goShortBlocks?: boolean,
 };
 
 /**
@@ -7397,6 +7522,11 @@ export type GeneratorInfo = {
 	/**  Offer "Create Git repository". */
 	git: boolean,
 	fields: Field[],
+	/**
+	 *  The project folder's name when it isn't the project name: a template over the fields
+	 *  shown (a hidden field has its default), like [`Field::default`]; empty renders the name.
+	 */
+	directory: string | null,
 	/**  More fields come from `scaffold_options` (a project service's metadata). */
 	dynamic: boolean,
 };
@@ -8417,6 +8547,12 @@ export type InspectSummary = {
 	elapsedMs: number,
 };
 
+export type InspectedElement = {
+	selector: string,
+	html: string,
+	styles: string,
+};
+
 export type InspectedFile = {
 	path: IpcPath,
 	relPath: string,
@@ -8876,6 +9012,10 @@ export type JvmThreadDump = {
 	takenWhileSuspended: boolean,
 	/**  Wall time of the `Thread.print` request. */
 	elapsedMs: number,
+	/**  `Thread.dump_to_file -format=json`, which also lists virtual threads; JDK 21+ only. */
+	virtualJson: string | null,
+	/**  Why `virtual_json` is missing from a JDK 21+ dump; none below 21. */
+	virtualNote: VirtualThreadsNote | null,
 };
 
 export type JvmThreadsResult = { status: "ready"; dump: JvmThreadDump } | { status: "unavailable"; reason: JvmThreadsUnavailable };
@@ -9094,6 +9234,7 @@ export type LanguagesSettings = {
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
 	zig?: ZigSettings,
+	flutter?: FlutterSettings,
 };
 
 export type LargeCommitFile = {
@@ -9186,6 +9327,8 @@ export type Launch_Serialize = {
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
 };
+
+export type LegacyPasswordAction = "check" | "retry" | "removePlaintext";
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
 export type LibraryGroup = {
@@ -12580,7 +12723,9 @@ export type SdkKind = "python" | "node" |
 /**  Zig toolchain directories. */
 "zig" | 
 /**  .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins. */
-"dotnet";
+"dotnet" | 
+/**  Flutter SDK roots. */
+"flutter";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -14269,6 +14414,12 @@ export type VirtualDocument = {
 	 */
 	canReloadEncoding: boolean,
 };
+
+export type VirtualThreadsNote = 
+/**  A debugger holds the VM, which would hang the JSON request until it resumes. */
+"whileSuspended" | 
+/**  Over the attach reply limit (64 MiB). */
+"tooLarge" | "failed";
 
 /**  Declared (or conventional) visibility of an outline symbol. */
 export type Visibility = "public" | "protected" | 

@@ -1,4 +1,6 @@
 //! Desktop adapter for application-drawn project tabs. Each member retains its WebView and services.
+use crate::windows::WorkbenchWindows;
+
 use crate::{
     state::AppState,
     windows::{self, WindowsState},
@@ -6,7 +8,7 @@ use crate::{
 use ide_core::{IdeError, IdeEvent, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::VecDeque;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, WebviewWindow};
@@ -33,7 +35,7 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
         .members
         .iter()
         .filter_map(|label| {
-            let window = app.get_webview_window(label)?;
+            let window = app.workbench_window(label)?;
             let project = host.project(label).ok();
             let name = project.as_ref().map(|p| ide_host::ops::project::info(p).display_name).unwrap_or_else(|| {
                 // Taken its launch but not finished opening: name the tab after that project.
@@ -75,7 +77,7 @@ pub fn toggle_fullscreen(window: &WebviewWindow) -> IdeResult<bool> {
 }
 
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
-    let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
+    let to = app.workbench_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
     let previous = state.groups.lock().select(caller, target)?;
     #[cfg(target_os = "macos")]
@@ -85,7 +87,7 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     if result.is_err() {
         let _ = state.groups.lock().select(caller, &previous.selected);
         #[cfg(target_os = "macos")]
-        if let Some(window) = app.get_webview_window(&previous.selected) {
+        if let Some(window) = app.workbench_window(&previous.selected) {
             let _ = native_select(app, &previous, &window);
         }
         #[cfg(not(target_os = "macos"))]
@@ -103,8 +105,8 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
 /// Shows `to` as the selected tab of the group's native tab group.
 #[cfg(target_os = "macos")]
 fn native_select(app: &AppHandle, group: &Group, to: &WebviewWindow) -> IdeResult<()> {
-    let members = group.members.iter().filter_map(|m| app.get_webview_window(m)).collect();
-    let anchor = app.get_webview_window(&group.selected).unwrap_or_else(|| to.clone());
+    let members = group.members.iter().filter_map(|m| app.workbench_window(m)).collect();
+    let anchor = app.workbench_window(&group.selected).unwrap_or_else(|| to.clone());
     to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
     crate::macos::sync_tab_group(members, &anchor, to).map_err(|e| IdeError::internal(e.to_string()))
 }
@@ -125,7 +127,7 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     }
     // Native fullscreen puts each window in a separate Space; leave it before grouping.
     for label in &members {
-        if let Some(window) = app.get_webview_window(label) {
+        if let Some(window) = app.workbench_window(label) {
             window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
         }
     }
@@ -140,13 +142,13 @@ pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
         changed(app);
         return Ok(());
     };
-    let window = app.get_webview_window(caller);
+    let window = app.workbench_window(caller);
     // A tab moved out of a fullscreen group stays fullscreen in a Space of its own.
     #[cfg(target_os = "macos")]
     if let Some(window) = &window {
         crate::macos::move_tab_to_new_window(window).map_err(err)?;
     }
-    if let Some(next) = app.get_webview_window(&next) {
+    if let Some(next) = app.workbench_window(&next) {
         #[cfg(target_os = "macos")]
         if state.groups.lock().group(next.label()).is_some() {
             select(app, next.label(), next.label())?;
@@ -169,35 +171,59 @@ pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
 pub fn destroyed(app: &AppHandle, caller: &str) {
     let Some(state) = app.try_state::<WindowsState>() else { return };
     let next = state.groups.lock().detach(caller);
+    let batch_done_keep = {
+        let mut batch = state.tab_closes.lock();
+        if let Some(b) = batch.as_mut()
+            && b.pending.remove(caller)
+            && b.pending.is_empty()
+        {
+            Some(batch.take().unwrap().keep)
+        } else {
+            None
+        }
+    };
+    let next_closing = next.as_deref().is_some_and(|label| state.is_closing(label));
+    let more_closing = state.has_other_pending_closes(caller);
     if !state.quitting() {
-        if let Some(window) = next.and_then(|label| app.get_webview_window(&label)) {
+        if let Some(keep) = batch_done_keep {
+            if let Some(window) = app.workbench_window(&keep)
+                && !window.is_focused().unwrap_or(false)
+            {
+                windows::focus(&window);
+            }
+        } else if !next_closing && let Some(window) = next.as_deref().and_then(|label| app.workbench_window(label)) {
             windows::focus(&window);
         }
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = persist(&app).await;
-        });
-    }
-    changed(app);
-    let advance = state.tab_closes.lock().as_mut().is_some_and(|batch| {
-        let closing = batch.pending.front().is_some_and(|l| l == caller);
-        if closing {
-            batch.pending.pop_front();
+        if !more_closing {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = persist(&app).await;
+            });
         }
-        closing
-    });
-    if advance {
-        close_next(app);
+    }
+    if !next_closing || !more_closing {
+        changed(app);
     }
 }
 
-/// Tabs left to close; the first one is closing now.
+/// Tabs closing together in a batch (Close Other / Left / Right Tabs), keeping `keep`.
 pub struct TabCloses {
-    keep: String,
-    pending: VecDeque<String>,
+    pub(crate) keep: String,
+    pub(crate) pending: HashSet<String>,
 }
 
-/// Closes `labels` one at a time so each project's unsaved-changes prompt is shown in turn, then selects `keep`.
+impl TabCloses {
+    pub(crate) fn contains(&self, label: &str) -> bool {
+        self.pending.contains(label)
+    }
+
+    pub(crate) fn has_other(&self, exclude: &str) -> bool {
+        self.pending.iter().any(|l| l != exclude)
+    }
+}
+
+/// Closes `labels` in parallel without flipping tabs; any tab that needs a confirmation prompt
+/// acquires the prompt turn and raises itself, and `keep` stays selected when the batch finishes.
 pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     let members = state
@@ -209,58 +235,238 @@ pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>
     if !members.iter().any(|m| m == keep) {
         return Err(IdeError::invalid("The window is not in this group"));
     }
-    let pending = members.into_iter().filter(|m| m != keep && labels.contains(m)).collect();
+    let targets: Vec<String> = members.into_iter().filter(|m| m != keep && labels.contains(m)).collect();
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let pending: HashSet<String> = targets.iter().cloned().collect();
     *state.tab_closes.lock() = Some(TabCloses { keep: keep.to_owned(), pending });
-    close_next(app);
+    // Pre-register every target before invoking `close()` so early responders see the full cohort.
+    for label in &targets {
+        state.close_requested(label);
+    }
+    let mut any_sent = false;
+    for label in targets {
+        if let Some(window) = app.workbench_window(&label)
+            && window.close().is_ok()
+        {
+            any_sent = true;
+            continue;
+        }
+        if let Some(b) = state.tab_closes.lock().as_mut() {
+            b.pending.remove(&label);
+        }
+        state.close_settled(&label);
+    }
+    if !any_sent {
+        *state.tab_closes.lock() = None;
+        if let Some(window) = app.workbench_window(keep) {
+            windows::focus(&window);
+        }
+    }
     Ok(())
 }
 
-/// The closing tab's project vetoed (its unsaved-changes prompt was cancelled): leave the rest open.
+/// The closing tab stayed open (either its prompt was cancelled or it returned to Welcome).
 pub fn cancel_close(app: &AppHandle, caller: &str) {
     let state = app.state::<WindowsState>();
+    let cancelled_batch = {
+        let mut batch = state.tab_closes.lock();
+        if batch.as_ref().is_some_and(|b| b.pending.contains(caller)) { batch.take() } else { None }
+    };
+    if let Some(batch) = cancelled_batch {
+        // A vetoed Close Other/Left/Right Tabs leaves the remaining tabs open too.
+        state.abort_batch(batch.pending.into_iter().filter(|l| l != caller));
+        state.close_settled(caller);
+        return;
+    }
     state.close_settled(caller);
-    let mut batch = state.tab_closes.lock();
-    if batch.as_ref().is_some_and(|b| b.pending.front().is_some_and(|l| l == caller)) {
-        *batch = None;
+    // For a red-button group close where this tab stayed open (e.g. returned to Welcome),
+    // select it so closing siblings disappear behind it without flashing.
+    if state.groups.lock().group(caller).is_some()
+        && let Some(window) = app.workbench_window(caller)
+    {
+        windows::focus(&window);
+    }
+    if !state.has_other_pending_closes(caller) && !state.quitting() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = persist(&app).await;
+        });
     }
 }
 
-fn close_next(app: &AppHandle) {
+/// Waits for the caller's interactive prompt turn in a parallel batch close and brings it forward.
+/// Returns `false` if the batch was cancelled while waiting (the caller should stay open quietly).
+pub async fn begin_prompt(app: &AppHandle, window: &WebviewWindow) -> bool {
+    let label = window.label();
     let state = app.state::<WindowsState>();
     loop {
-        let next = {
-            let mut batch = state.tab_closes.lock();
-            let Some(b) = batch.as_mut() else { return };
-            match b.pending.front() {
-                Some(label) => Ok(label.clone()),
-                None => Err(batch.take().unwrap().keep),
+        let notified = state.close_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        match state.try_acquire_prompt(label) {
+            Ok(true) => {
+                windows::focus(window);
+                return true;
             }
-        };
-        match next {
-            Ok(label) => {
-                if let Some(window) = app.get_webview_window(&label) {
-                    windows::focus(&window);
-                    if window.close().is_ok() {
-                        return;
-                    }
-                }
-                if let Some(b) = state.tab_closes.lock().as_mut() {
-                    b.pending.pop_front();
-                }
+            Ok(false) => {
+                notified.await;
             }
-            Err(keep) => {
-                if let Some(window) = app.get_webview_window(&keep) {
-                    windows::focus(&window);
-                }
-                return;
+            Err(()) => {
+                state.take_aborted(label);
+                return false;
             }
         }
     }
 }
 
+pub fn end_prompt(app: &AppHandle, caller: &str) {
+    app.state::<WindowsState>().release_prompt(caller);
+}
+
+/// Coordinates the final hide/destroy step across windows closing together.
+/// Returns `false` if the batch was cancelled while waiting (the caller must stay open).
+pub async fn ready_to_close(app: &AppHandle, window: &WebviewWindow) -> bool {
+    let label = window.label();
+    let state = app.state::<WindowsState>();
+    if !state.mark_ready(label) {
+        return false;
+    }
+
+    const BARRIER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+    const POLL_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+    let mut waited_idle = std::time::Duration::ZERO;
+    let mut last_tick = std::time::Instant::now();
+
+    loop {
+        let notified = state.close_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        if state.take_aborted(label) {
+            return false;
+        }
+
+        let (cohort, keep_label) = close_cohort(app, &state, label);
+        let any_undecided =
+            cohort.iter().any(|peer| peer != label && app.workbench_window(peer).is_some() && !state.is_ready(peer));
+
+        if !any_undecided {
+            finish_cohort_visuals(app, &state, label, &cohort, keep_label.as_deref());
+            state.close_notify.notify_waiters();
+            return true;
+        }
+
+        match tokio::time::timeout(POLL_STEP, notified).await {
+            Ok(()) => {
+                waited_idle = std::time::Duration::ZERO;
+                last_tick = std::time::Instant::now();
+            }
+            Err(_) => {
+                // Never time out while another tab is waiting on the user's answer to a dialog.
+                if state.has_prompt_holder() {
+                    waited_idle = std::time::Duration::ZERO;
+                } else {
+                    waited_idle += last_tick.elapsed();
+                    if waited_idle >= BARRIER_TIMEOUT {
+                        let single = vec![label.to_owned()];
+                        if !state.claim_hide(&single).is_empty() && state.groups.lock().group(label).is_none() {
+                            windows::hide_windows(vec![window.clone()]);
+                        }
+                        return true;
+                    }
+                }
+                last_tick = std::time::Instant::now();
+            }
+        }
+    }
+}
+
+fn close_cohort(app: &AppHandle, state: &WindowsState, label: &str) -> (Vec<String>, Option<String>) {
+    if state.quitting() {
+        let pending = state.pending_closes();
+        let mut cohort: Vec<String> = windows::project_window_labels(app)
+            .into_iter()
+            .filter(|l| l == label || pending.iter().any(|p| p == l))
+            .collect();
+        if !cohort.iter().any(|l| l == label) {
+            cohort.push(label.to_owned());
+        }
+        return (cohort, None);
+    }
+    if let Some((keep, pending)) = state
+        .tab_closes
+        .lock()
+        .as_ref()
+        .filter(|b| b.pending.contains(label))
+        .map(|b| (b.keep.clone(), b.pending.iter().cloned().collect::<Vec<_>>()))
+    {
+        return (pending, Some(keep));
+    }
+    let pending = state.pending_closes();
+    let group_members = state.groups.lock().group(label).map(|g| g.members.clone());
+    if let Some(members) = group_members {
+        let mut cohort: Vec<String> =
+            members.into_iter().filter(|m| m == label || pending.iter().any(|p| p == m)).collect();
+        if !cohort.iter().any(|l| l == label) {
+            cohort.push(label.to_owned());
+        }
+        return (cohort, None);
+    }
+    (vec![label.to_owned()], None)
+}
+
+/// Applies the visual transition once every peer in `cohort` is ready to close:
+/// - Whole closing window or whole closing tab group (or quit): hide all of them in a single frame.
+/// - Partial tab group close (Close Other Tabs, single tab close, or keeper returning to Welcome):
+///   ensure a surviving tab is selected so the closing tabs tear down invisibly behind it.
+fn finish_cohort_visuals(
+    app: &AppHandle,
+    state: &WindowsState,
+    label: &str,
+    cohort: &[String],
+    keep_label: Option<&str>,
+) {
+    if state.quitting() {
+        let to_hide = state.claim_hide(cohort);
+        let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.workbench_window(&l)).collect();
+        windows::hide_windows(windows);
+        return;
+    }
+    let group_snapshot = state.groups.lock().group(label).cloned();
+    if let Some(group) = group_snapshot {
+        let cohort_set: HashSet<&str> = cohort.iter().map(String::as_str).collect();
+        let all_closing = group.members.iter().all(|m| cohort_set.contains(m.as_str()));
+        if all_closing {
+            let to_hide = state.claim_hide(&group.members);
+            let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.workbench_window(&l)).collect();
+            windows::hide_windows(windows);
+        } else {
+            let survivor = keep_label
+                .filter(|k| !cohort_set.contains(*k))
+                .map(str::to_owned)
+                .or_else(|| group.members.iter().find(|m| !cohort_set.contains(m.as_str())).cloned());
+            // Only switch tabs if the currently visible tab is one of the closing ones.
+            if cohort_set.contains(group.selected.as_str())
+                && let Some(survivor) = survivor
+                && !state.claim_hide(cohort).is_empty()
+                && let Some(window) = app.workbench_window(&survivor)
+            {
+                windows::focus(&window);
+            }
+        }
+    } else {
+        let to_hide = state.claim_hide(cohort);
+        let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.workbench_window(&l)).collect();
+        windows::hide_windows(windows);
+    }
+}
+
 /// Window labels in creation order: `main`, then `project-1`, `project-2`, ….
 fn labels_in_order(app: &AppHandle) -> Vec<String> {
-    let mut labels: Vec<String> = app.webview_windows().into_keys().collect();
+    let mut labels: Vec<String> = app.workbench_windows().into_keys().collect();
     labels.sort_by_key(|l| (l != "main", l.rsplit('-').next().and_then(|n| n.parse::<u32>().ok()), l.clone()));
     labels
 }

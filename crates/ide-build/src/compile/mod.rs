@@ -3,7 +3,7 @@
 //! background with cancellation and parses the compiler output into messages
 //! for the Build tool window, the Problems view and the editor.
 
-mod fingerprint;
+pub(crate) mod fingerprint;
 mod launch_resources;
 mod modules;
 mod parse;
@@ -845,6 +845,28 @@ fn reactor_projects<'a>(m: &'a maven::MavenModel, top: &'a maven::MavenProject) 
     projects
 }
 
+/// A step running Maven, its output parsed as Maven's.
+pub(crate) fn maven_build_step(program: &str, args: &[&str], cwd: &Path) -> BuildStep {
+    BuildStep::new(program, args, cwd, Format::Maven)
+}
+
+pub(crate) fn gradle_build_step(program: &str, args: &[&str], cwd: &Path) -> BuildStep {
+    BuildStep::new(program, args, cwd, Format::Gradle)
+}
+
+/// The linked reactor root building the project at `module` (project-relative).
+pub(crate) fn maven_reactor_dir<'a>(m: &'a maven::MavenModel, module: &str) -> Option<&'a maven::MavenProject> {
+    maven_reactor(m, module)
+}
+
+/// The projects of the reactor `top`.
+pub(crate) fn reactor_projects_of<'a>(
+    m: &'a maven::MavenModel,
+    top: &'a maven::MavenProject,
+) -> Vec<&'a maven::MavenProject> {
+    reactor_projects(m, top)
+}
+
 fn maven_reactor<'a>(m: &'a maven::MavenModel, module: &str) -> Option<&'a maven::MavenProject> {
     m.projects.iter().filter(|p| !p.aggregated).find(|top| reactor_projects(m, top).iter().any(|p| p.dir == module))
 }
@@ -965,6 +987,7 @@ pub struct LaunchBuild {
 
 /// Compiles the module at `module` with its build system before a JVM launch and
 /// returns the class directories it wrote, to put ahead of the jdtls classpath.
+/// The build's console, messages and progress stream to `on_event` as it runs.
 pub fn build_for_launch(
     root: &Path,
     model: &BuildModel,
@@ -972,8 +995,9 @@ pub fn build_for_launch(
     test: bool,
     kind: BuildKind,
     cancel: &CancellationToken,
+    on_event: &(dyn Fn(BuildEvent) + Sync),
 ) -> IdeResult<LaunchBuild> {
-    let mut built = build_for_launches(root, model, &[module.to_path_buf()], test, kind, cancel)?;
+    let mut built = build_for_launches(root, model, &[module.to_path_buf()], test, kind, cancel, on_event)?;
     Ok(built.pop().unwrap())
 }
 
@@ -986,9 +1010,10 @@ pub fn build_for_launches(
     test: bool,
     kind: BuildKind,
     cancel: &CancellationToken,
+    on_event: &(dyn Fn(BuildEvent) + Sync),
 ) -> IdeResult<Vec<LaunchBuild>> {
     let plan = merged_launch_plan(root, model, modules, test, kind, cancel)?;
-    let result = run(root, &plan, cancel, &|_| {})?;
+    let result = run(root, &plan, cancel, on_event)?;
     let failure = if !result.success {
         let errors: Vec<String> = result
             .messages
@@ -1822,8 +1847,16 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut model = reactor_model();
         model.maven.as_mut().unwrap().projects[0].command = wrapper.to_string_lossy().into_owned();
-        let dirs = build_for_launch(root, &model, &root.join("app"), true, BuildKind::Build, &CancellationToken::new())
-            .unwrap();
+        let dirs = build_for_launch(
+            root,
+            &model,
+            &root.join("app"),
+            true,
+            BuildKind::Build,
+            &CancellationToken::new(),
+            &|_| {},
+        )
+        .unwrap();
         assert_eq!(
             dirs.class_dirs,
             ["app/target/test-classes", "app/target/classes", "middle/target/classes", "lib/target/classes"]
@@ -1834,16 +1867,25 @@ mod tests {
             "mvnw",
             "#!/bin/sh\necho '[ERROR] Kotlin compilation failed: unresolved reference broken' >&2\nexit 1\n",
         );
-        let error =
-            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &CancellationToken::new())
-                .unwrap()
-                .failure
-                .unwrap();
+        let error = build_for_launch(
+            root,
+            &model,
+            &root.join("app"),
+            false,
+            BuildKind::Build,
+            &CancellationToken::new(),
+            &|_| {},
+        )
+        .unwrap()
+        .failure
+        .unwrap();
         assert!(error.contains("Kotlin compilation failed"), "{error}");
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert_eq!(
-            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel).unwrap_err().kind,
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel, &|_| {})
+                .unwrap_err()
+                .kind,
             ide_core::error::ErrorKind::Cancelled
         );
     }

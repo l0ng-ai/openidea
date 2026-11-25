@@ -136,7 +136,8 @@ async fn ssh_server(home: &Path, server_home: &Path, project: &Path) -> Arc<ide_
         save_secret: true,
         ..Default::default()
     }]);
-    ssh.set_secret("local-test", Some("secret".into()), true);
+    ide_ssh::secrets::testing::use_memory_store();
+    ssh.set_secret("local-test", Some("secret".into()), true).unwrap();
     assert!(ssh.session("local-test").await.is_err(), "unknown host key first");
     ssh.trust_host("local-test").await.unwrap();
     ssh.session("local-test").await.unwrap()
@@ -744,7 +745,18 @@ async fn upgraded_build_refuses_live_work_and_then_replaces_idle_backend() {
         .unwrap();
     until("old backend socket", || guard.0.exists()).await;
     let old_open = || async {
-        let mut stream = UnixStream::connect(&guard.0).await.unwrap();
+        // bind() creates the socket file before listen(): a connect in between is refused.
+        let mut stream = 'connect: {
+            for _ in 0..600 {
+                match UnixStream::connect(&guard.0).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                        tokio::time::sleep(Duration::from_millis(15)).await;
+                    }
+                    other => break 'connect other.unwrap(),
+                }
+            }
+            panic!("the old backend never accepted a connection");
+        };
         stream.write_all(OLD_BUILD.as_bytes()).await.unwrap();
         assert_eq!(stream.read_u8().await.unwrap(), b'A');
         let (reader, writer) = stream.into_split();
