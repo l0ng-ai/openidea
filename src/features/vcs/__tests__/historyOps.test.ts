@@ -1,8 +1,11 @@
 import type { Commit } from "@/bindings";
+import { getAction, isActionEnabled } from "@/platform/actions";
 import { describe, expect, it } from "vitest";
 import { operationActions } from "../BranchWidget";
+import { registerHistoryActions } from "../historyActions";
 import { commitMenu } from "../log/commitMenu";
 import { extendCommitSelection, selectCommit, selectedCommits, toggleCommitSelection, useGitLog } from "../logStore";
+import { commitKey } from "../multiRoot";
 import { controlLabel, inProgress, operationControls, operationTitle, validateTagName } from "../operations";
 import { suggestedPatchName } from "../patches";
 import { useVcs } from "../store";
@@ -232,6 +235,31 @@ describe("Git Log commit actions", () => {
     expect(history).toMatchObject({
       arg: { kind: "file-history-commits", commits: [newer, older], target },
     });
+  });
+
+  it("enables Cherry-Pick (toolbar and context menu) only for a selection it can apply", () => {
+    const dispose = registerHistoryActions();
+    const enabled = (ctx = { vcsAvailable: true }) => isActionEnabled(getAction("vcs.log.cherryPick")!, ctx);
+    const [a, b] = [commit("A", "a".repeat(40)), commit("B", "b".repeat(40))];
+    const select = (cs: Commit[]) => useGitLog.setState({ commits: cs, selection: cs.map(commitKey) });
+    try {
+      expect(enabled()).toBe(false);
+      select([a]);
+      expect(enabled()).toBe(true);
+      select([a, b]);
+      expect(enabled()).toBe(true);
+      select([Object.assign({ repo: "/r1" }, a), Object.assign({ repo: "/r2" }, b)]);
+      expect(enabled()).toBe(true);
+      select([a, { ...b, parents: ["1".repeat(40), "2".repeat(40)] }]);
+      expect(enabled()).toBe(false);
+      select([Object.assign({ readOnly: true }, a)]);
+      expect(enabled()).toBe(false);
+      select([a]);
+      expect(enabled({ vcsAvailable: false })).toBe(false);
+    } finally {
+      useGitLog.setState({ commits: [], selection: [], selected: null });
+      dispose();
+    }
   });
 
   it("extends and toggles the log selection", () => {
