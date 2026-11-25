@@ -162,6 +162,7 @@ struct State {
     restricted: bool,
     decorations: BTreeMap<(String, String), Vec<Decoration>>,
     markdown_decorations: BTreeMap<(String, String), Vec<MarkdownDecoration>>,
+    styled_decorations: BTreeMap<(String, String), Vec<StyledDecoration>>,
     file_decorations: BTreeMap<(String, String), FileDecoration>,
     file_notes: BTreeMap<(String, String), (String, Option<String>)>,
     file_icons: BTreeMap<(String, String), (String, Option<String>)>,
@@ -327,6 +328,10 @@ impl MockHost {
     /// Markdown decoration snapshots keyed by (set id, absolute path).
     pub fn markdown_decorations(&self) -> BTreeMap<(String, String), Vec<MarkdownDecoration>> {
         self.state.borrow().markdown_decorations.clone()
+    }
+    /// Styled decoration snapshots (API 1.17) keyed by (set id, absolute path), colors normalized.
+    pub fn styled_decorations(&self) -> BTreeMap<(String, String), Vec<StyledDecoration>> {
+        self.state.borrow().styled_decorations.clone()
     }
     /// Tree decoration snapshots keyed by (set id, absolute path).
     pub fn file_decorations(&self) -> BTreeMap<(String, String), FileDecoration> {
@@ -1785,56 +1790,86 @@ pub mod current {
                 | "muted"
         )
     }
+    /// Plain, Markdown and styled sets share the set-id namespace and the per-file limit: the last
+    /// call for a (set, path) replaces whichever kind was there.
+    fn replace_decorations(
+        s: &mut State,
+        set: &str,
+        path: &str,
+        insert: impl FnOnce(&mut State, (String, String)),
+    ) -> Result<(), Error> {
+        fn per_file<T>(map: &BTreeMap<(String, String), Vec<T>>, path: &str) -> usize {
+            map.iter().filter(|((_, p), _)| p == path).map(|(_, i)| i.len()).sum()
+        }
+        let key = (set.to_owned(), path.to_owned());
+        let saved = (s.decorations.clone(), s.markdown_decorations.clone(), s.styled_decorations.clone());
+        s.decorations.remove(&key);
+        s.markdown_decorations.remove(&key);
+        s.styled_decorations.remove(&key);
+        insert(s, key);
+        let names = (s.decorations.keys())
+            .chain(s.markdown_decorations.keys())
+            .chain(s.styled_decorations.keys())
+            .map(|(set, _)| set)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let count = per_file(&s.decorations, path)
+            + per_file(&s.markdown_decorations, path)
+            + per_file(&s.styled_decorations, path);
+        if set.is_empty() || set.len() > 128 || names > 50 || count > 10_000 {
+            (s.decorations, s.markdown_decorations, s.styled_decorations) = saved;
+            return Err(Error::Invalid("decoration limit".into()));
+        }
+        Ok(())
+    }
     pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
         with(|s| {
             require(s, "project.read")?;
             let path = decoration_path(s, path)?;
-            let mut next = s.decorations.clone();
-            next.insert((set.into(), path.clone()), items.iter().filter(|d| style(&d.style)).cloned().collect());
-            // Plain and Markdown sets share the set-id namespace: the last call wins.
-            let mut markdown = s.markdown_decorations.clone();
-            markdown.remove(&(set.into(), path.clone()));
-            let names: BTreeSet<_> = next.keys().chain(markdown.keys()).map(|(set, _)| set).collect();
-            let counts = |map: &BTreeMap<(String, String), Vec<Decoration>>| -> usize {
-                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
-            };
-            let markdown_counts = |map: &BTreeMap<(String, String), Vec<MarkdownDecoration>>| -> usize {
-                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
-            };
-            if set.is_empty()
-                || set.len() > 128
-                || names.len() > 50
-                || counts(&next) + markdown_counts(&markdown) > 10_000
-            {
-                return Err(Error::Invalid("decoration limit".into()));
-            }
-            s.decorations = next;
-            s.markdown_decorations = markdown;
-            Ok(())
+            let items = items.iter().filter(|d| style(&d.style)).cloned().collect();
+            replace_decorations(s, set, &path, |s, key| {
+                s.decorations.insert(key, items);
+            })
         })
     }
     pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
         with(|s| {
             require(s, "project.read")?;
             let path = decoration_path(s, path)?;
-            let mut next = s.markdown_decorations.clone();
-            next.insert((set.into(), path.clone()), items.iter().filter(|d| style(&d.style)).cloned().collect());
-            // Plain and Markdown sets share the set-id namespace: the last call wins.
-            let mut plain = s.decorations.clone();
-            plain.remove(&(set.into(), path.clone()));
-            let names: BTreeSet<_> = next.keys().chain(plain.keys()).map(|(set, _)| set).collect();
-            let counts = |map: &BTreeMap<(String, String), Vec<MarkdownDecoration>>| -> usize {
-                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
-            };
-            let plain_counts = |map: &BTreeMap<(String, String), Vec<Decoration>>| -> usize {
-                map.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum()
-            };
-            if set.is_empty() || set.len() > 128 || names.len() > 50 || counts(&next) + plain_counts(&plain) > 10_000 {
-                return Err(Error::Invalid("decoration limit".into()));
+            let items = items.iter().filter(|d| style(&d.style)).cloned().collect();
+            replace_decorations(s, set, &path, |s, key| {
+                s.markdown_decorations.insert(key, items);
+            })
+        })
+    }
+    /// The host's color rule: `#rrggbb` or `#rrggbbaa`, stored lower case.
+    fn color(color: &str) -> Result<String, Error> {
+        let hex = color.strip_prefix('#').unwrap_or("");
+        if (hex.len() == 6 || hex.len() == 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            Ok(format!("#{}", hex.to_ascii_lowercase()))
+        } else {
+            Err(Error::Invalid(format!("decoration color '{color}' is not #rrggbb or #rrggbbaa")))
+        }
+    }
+    pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let mut kept = Vec::new();
+            for item in items {
+                let mut item = item.clone();
+                if let Some(c) = &mut item.colors {
+                    c.foreground = c.foreground.as_deref().map(color).transpose()?;
+                    c.background = c.background.as_deref().map(color).transpose()?;
+                }
+                item.colors = item.colors.filter(|c| c.foreground.is_some() || c.background.is_some());
+                if style(&item.style) || (item.style.is_empty() && item.colors.is_some()) {
+                    kept.push(item);
+                }
             }
-            s.decorations = plain;
-            s.markdown_decorations = next;
-            Ok(())
+            replace_decorations(s, set, &path, |s, key| {
+                s.styled_decorations.insert(key, kept);
+            })
         })
     }
     pub fn clear_decorations(set: &str) -> Result<(), Error> {
@@ -1842,6 +1877,7 @@ pub mod current {
             require(s, "project.read")?;
             s.decorations.retain(|(id, _), _| id != set);
             s.markdown_decorations.retain(|(id, _), _| id != set);
+            s.styled_decorations.retain(|(id, _), _| id != set);
             Ok(())
         })
     }

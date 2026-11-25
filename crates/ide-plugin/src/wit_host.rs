@@ -2888,6 +2888,7 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
                 hover: d.hover,
                 after: d.after,
                 markdown_hover: None,
+                colors: None,
             })
             .collect();
         self.replace_decorations(path, set_id, items)
@@ -2906,6 +2907,28 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
                 hover: d.hover,
                 after: d.after,
                 markdown_hover: d.markdown_hover,
+                colors: None,
+            })
+            .collect();
+        self.replace_decorations(path, set_id, items)
+    }
+    fn set_styled(
+        &mut self,
+        path: String,
+        set_id: String,
+        items: Vec<bindings::openidea::plugin::decorations::StyledDecoration>,
+    ) -> Fallible<()> {
+        let items = items
+            .into_iter()
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: d.markdown_hover,
+                colors: d
+                    .colors
+                    .map(|c| crate::DecorationColors { foreground: c.foreground, background: c.background }),
             })
             .collect();
         self.replace_decorations(path, set_id, items)

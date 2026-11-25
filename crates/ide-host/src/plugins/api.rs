@@ -4826,7 +4826,18 @@ impl PluginApi {
         if let Some(icon) = file.as_ref().and_then(|f| f.icon.as_ref()) {
             ide_extension::validate_item_id(icon, "file icon id").map_err(HostError::Invalid)?;
         }
-        items.retain(|d| decoration_style(&d.style));
+        for colors in items.iter_mut().filter_map(|d| d.colors.as_mut()) {
+            for color in [&mut colors.foreground, &mut colors.background].into_iter().flatten() {
+                *color = decoration_color(color).ok_or_else(|| {
+                    HostError::Invalid(format!("decoration color '{color}' is not #rrggbb or #rrggbbaa"))
+                })?;
+            }
+        }
+        items
+            .iter_mut()
+            .for_each(|d| d.colors = d.colors.take().filter(|c| c.foreground.is_some() || c.background.is_some()));
+        // An item with its own colors (API 1.17) may leave the style empty.
+        items.retain(|d| decoration_style(&d.style) || (d.style.is_empty() && d.colors.is_some()));
         if items.iter().any(|d| d.range.start > d.range.end) {
             return Err(HostError::Invalid("reversed decoration range".into()));
         }
@@ -4924,6 +4935,13 @@ impl PluginApi {
         Ok(())
     }
 }
+/// A `set-styled` color as the editor renders it: `#rrggbb` or `#rrggbbaa`, lower case.
+fn decoration_color(color: &str) -> Option<String> {
+    let hex = color.strip_prefix('#')?;
+    ((hex.len() == 6 || hex.len() == 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| format!("#{}", hex.to_ascii_lowercase()))
+}
+
 fn decoration_style(style: &str) -> bool {
     matches!(
         style,
@@ -5058,9 +5076,38 @@ mod workbench_tests {
             hover: None,
             after: Some("after".into()),
             markdown_hover: None,
+            colors: None,
         };
         api.decorations(Some(&path), "set", vec![item("highlight"), item("unknown")]).unwrap();
         assert_eq!(api.shared.decoration_sets()["test"][0].items.len(), 1);
+        // Styled items (API 1.17): colors are validated and normalized; an empty style needs colors.
+        let colored = |style: &str, foreground: Option<&str>, background: Option<&str>| ide_plugin::Decoration {
+            colors: Some(ide_plugin::DecorationColors {
+                foreground: foreground.map(Into::into),
+                background: background.map(Into::into),
+            }),
+            ..item(style)
+        };
+        api.decorations(
+            Some(&path),
+            "styled",
+            vec![
+                colored("", Some("#1A1A1A"), Some("#FFEB3BFF")),
+                colored("highlight", None, Some("#00e5ff")),
+                colored("", None, None),
+                item(""),
+            ],
+        )
+        .unwrap();
+        let styled = api.shared.decoration_sets()["test"].iter().find(|s| s.set_id == "styled").unwrap().items.clone();
+        assert_eq!(styled.len(), 2);
+        let first = styled[0].colors.as_ref().unwrap();
+        assert_eq!((first.foreground.as_deref(), first.background.as_deref()), (Some("#1a1a1a"), Some("#ffeb3bff")));
+        for bad in ["red", "#fff", "#12345g", "rgb(0,0,0)", "#1234567", "#ffffff; x: y"] {
+            let err = api.decorations(Some(&path), "styled", vec![colored("", Some(bad), None)]).unwrap_err();
+            assert!(matches!(err, HostError::Invalid(ref m) if m.contains("#rrggbb")), "{bad}: {err}");
+        }
+        api.decorations(None, "styled", vec![]).unwrap();
         // Decorations follow the file: a path outside the open project is accepted too.
         api.decorations(Some(&root.join("../outside.txt")), "set", vec![]).unwrap();
         assert_eq!(api.shared.decoration_sets()["test"].len(), 2);

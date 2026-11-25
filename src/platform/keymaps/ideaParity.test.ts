@@ -70,6 +70,10 @@ describe("IDEA keymap parity", () => {
     ["editor.moveToPageTopWithSelection", ["Meta+Shift+PageUp"], ["Ctrl+Shift+PageUp"]],
     ["editor.moveToPageBottomWithSelection", ["Meta+Shift+PageDown"], ["Ctrl+Shift+PageDown"]],
     ["editor.toggleInsertState", ["Insert"], ["Insert"]],
+    // EditorCutLineEnd: only `Mac OS X 10.5+` binds it; EditorDeleteToLineStart / End have no shortcut.
+    ["code.cutLineEnd", ["Ctrl+K"], []],
+    ["code.deleteToLineStart", [], []],
+    ["code.deleteToLineEnd", [], []],
     ["navigate.nextOccurrence", ["Meta+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["navigate.prevOccurrence", ["Meta+Alt+Up"], ["Ctrl+Alt+Up"]],
     // Rerun in the Find / Find Usages tool windows uses the Rerun shortcut.

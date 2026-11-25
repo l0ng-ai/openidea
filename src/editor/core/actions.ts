@@ -29,6 +29,7 @@ import {
   toggleCase,
   unselectOccurrence,
 } from "./cm/editing";
+import { cutToLineEnd, deleteToLogicalLineEnd, deleteToLogicalLineStart } from "./cm/lineDeletion";
 import {
   emptyStack,
   extendSelection,
@@ -887,6 +888,19 @@ export function registerEditorActions(): () => void {
     edit("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
     edit("code.duplicateEntireLines", "Duplicate Entire Lines", (v) => duplicateEntireLines(v)),
     edit("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
+    // Their keys (⌃K, ⇧⌘⌦) also edit a popup's text field, so they run only in a focused editor.
+    edit("code.deleteToLineStart", "Delete to Line Start", (v) => deleteToLogicalLineStart(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
+    edit("code.deleteToLineEnd", "Delete to Line End", (v) => deleteToLogicalLineEnd(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
+    edit("code.cutLineEnd", "Cut up to Line End", (v) => cutToLineEnd(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
     edit("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
     edit("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
     edit("code.moveElementLeft", "Move Element Left", (v) => moveElementLeft(v), {
