@@ -5,7 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlameLine, Commit } from "@/bindings";
 import { useI18n } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
-import { annotationsShown, blameSlot, readAnnotateColumns, toggleAnnotations, useAnnotateColumns } from "../blame";
+import {
+  annotationsShown,
+  blameSlot,
+  readAnnotateColumns,
+  readAnnotateNames,
+  shortAuthorName,
+  toggleAnnotations,
+  useAnnotateColumns,
+  useAnnotateNames,
+} from "../blame";
 import { closeBlamePopup } from "../BlamePopup";
 import { useVcs } from "../store";
 
@@ -218,6 +227,7 @@ describe("annotate Options", () => {
   beforeEach(() => {
     localStorage.clear();
     useAnnotateColumns.setState(readAnnotateColumns());
+    useAnnotateNames.setState({ names: readAnnotateNames() });
   });
 
   async function annotated(doc = "first\nsecond\nthird") {
@@ -358,6 +368,95 @@ describe("annotate Options", () => {
     } finally {
       historical.destroy();
     }
+  });
+
+  const authors = (v: EditorView) =>
+    [...v.dom.querySelectorAll(`[data-commit="${sha}"], [data-commit="${otherSha}"]`)].map(
+      (el) => el.querySelector(".cm-vcs-blame-author")!.textContent,
+    );
+
+  const pick = async (item: Item) => {
+    await act(async () => {
+      item.run!();
+      await vi.advanceTimersByTimeAsync(20);
+    });
+  };
+
+  it("shows full names by default and switches every annotated editor from Options › Names", async () => {
+    view = await annotated();
+    const historical = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "one\ntwo\nthree", extensions: [blameSlot()] }),
+    });
+    try {
+      await toggleAnnotations(historical, "/repo/src/old.py", "one\ntwo\nthree", sha);
+      const names = options(view).find((i) => i.label === "Names")!.submenu!;
+      expect(names.map((i) => [i.label, i.checked])).toEqual([
+        ["Initials", false],
+        ["Last Name", false],
+        ["First Name", false],
+        ["Full Name", true],
+      ]);
+      expect(authors(view)).toEqual(["Aleks Zlateski", "Aleks Zlateski", "Dan Crankshaw"]);
+
+      await pick(names[0]!);
+      expect(authors(view)).toEqual(["AZ", "AZ", "DC"]);
+      expect(authors(historical)).toEqual(["AZ", "AZ", "DC"]);
+      expect(mocks.blame.mock.calls.slice(-2)).toEqual([
+        ["/repo/src/main.py", null, null],
+        ["/repo/src/old.py", "one\ntwo\nthree", sha],
+      ]);
+      expect(localStorage.getItem("openidea.vcs.annotateNames")).toBe("initials");
+      expect(readAnnotateNames()).toBe("initials");
+      const next = options(view).find((i) => i.label === "Names")!.submenu!;
+      expect(next.map((i) => i.checked)).toEqual([true, false, false, false]);
+
+      await pick(next[1]!);
+      expect(authors(view)).toEqual(["Zlateski", "Zlateski", "Crankshaw"]);
+      await pick(next[2]!);
+      expect(authors(view)).toEqual(["Aleks", "Aleks", "Dan"]);
+      await pick(next[3]!);
+      expect(authors(view)).toEqual(["Aleks Zlateski", "Aleks Zlateski", "Dan Crankshaw"]);
+    } finally {
+      historical.destroy();
+    }
+  });
+
+  it("follows a Names choice made in another window and ignores values it cannot use", async () => {
+    view = await annotated();
+    localStorage.setItem("openidea.vcs.annotateNames", "lastName");
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateNames" }));
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    expect(authors(view)).toEqual(["Zlateski", "Zlateski", "Crankshaw"]);
+    const blames = mocks.blame.mock.calls.length;
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateNames" }));
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    await pick(options(view).find((i) => i.label === "Names")!.submenu![1]!);
+    expect(mocks.blame.mock.calls.length).toBe(blames);
+    for (const raw of ["", "LASTNAME", "email", '"initials"']) {
+      localStorage.setItem("openidea.vcs.annotateNames", raw);
+      expect(readAnnotateNames()).toBe("fullName");
+    }
+  });
+
+  it("shortens names as IDEA does", () => {
+    const all = (author: string) =>
+      (["initials", "lastName", "firstName", "fullName"] as const).map((t) => shortAuthorName(author, t));
+    expect(all("Aleks Zlateski")).toEqual(["AZ", "Zlateski", "Aleks", "Aleks Zlateski"]);
+    expect(all("Vasya S. Pupkin <vasya.pupkin@example.com>")).toEqual([
+      "VSP",
+      "Pupkin",
+      "Vasya",
+      "Vasya S. Pupkin <vasya.pupkin@example.com>",
+    ]);
+    expect(all("john.smith@example.com")).toEqual(["JS", "Smith", "John", "john.smith@example.com"]);
+    expect(all("mary_ann-lee")).toEqual(["MAL", "Lee", "Mary", "mary_ann-lee"]);
+    expect(all("  dependabot[bot] ")).toEqual(["D", "Dependabot[bot]", "Dependabot[bot]", "dependabot[bot]"]);
+    expect(all("   ")).toEqual(["", "", "", ""]);
   });
 
   it("leaves the editor's classes alone once annotations are closed", async () => {

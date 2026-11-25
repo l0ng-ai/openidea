@@ -145,6 +145,55 @@ function setAnnotateColumn(column: AnnotateColumn, shown: boolean) {
   }
 }
 
+/** How the author column shows names (IDEA's annotate Options › Names); kept across sessions. */
+const NAMES_KEY = "openidea.vcs.annotateNames";
+const NAME_TYPES = ["initials", "lastName", "firstName", "fullName"] as const;
+type AnnotateNames = (typeof NAME_TYPES)[number];
+
+export function readAnnotateNames(): AnnotateNames {
+  try {
+    const raw = localStorage.getItem(NAMES_KEY);
+    return NAME_TYPES.find((t) => t === raw) ?? "fullName";
+  } catch {
+    return "fullName";
+  }
+}
+
+export const useAnnotateNames = create<{ names: AnnotateNames }>(() => ({ names: readAnnotateNames() }));
+
+if (typeof window !== "undefined")
+  window.addEventListener("storage", (e) => {
+    if (e.key === NAMES_KEY) setAnnotateNames(readAnnotateNames(), false);
+  });
+
+function setAnnotateNames(names: AnnotateNames, save = true) {
+  if (useAnnotateNames.getState().names === names) return;
+  useAnnotateNames.setState({ names });
+  if (!save) return;
+  try {
+    localStorage.setItem(NAMES_KEY, names);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Shortens a commit author the way IDEA's ShortNameType does: drops an `<email>` part,
+ * takes the local part of a bare email, and splits on spaces, dots, underscores and dashes.
+ */
+export function shortAuthorName(author: string, names: AnnotateNames): string {
+  let name = author.trim();
+  if (names === "fullName") return name;
+  const lt = name.indexOf("<");
+  if (lt > 0 && lt < name.indexOf("@") && name.indexOf("@") < name.indexOf(">")) name = name.slice(0, lt).trim();
+  if (!name.includes(" ") && name.includes("@")) name = name.slice(0, name.indexOf("@"));
+  const parts = name.split(/[\s._-]+/).filter(Boolean);
+  if (!parts.length) return author.trim();
+  const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  if (names === "initials") return parts.map((p) => p.charAt(0).toUpperCase()).join("");
+  return capitalize(names === "firstName" ? parts[0]! : parts[parts.length - 1]!);
+}
+
 /** Hides the columns turned off in Options, here and in editors annotated before the change. */
 const annotateColumns = ViewPlugin.define(
   (view) => {
@@ -168,10 +217,17 @@ const annotateColumns = ViewPlugin.define(
 );
 
 const COLUMN_LABELS: Record<AnnotateColumn, string> = { date: "Date", author: "Author", revision: "Revision" };
+const NAME_LABELS: Record<AnnotateNames, string> = {
+  initials: "Initials",
+  lastName: "Last Name",
+  firstName: "First Name",
+  fullName: "Full Name",
+};
 
 function optionsMenu(): MenuItem {
   const c = useAnnotateColumns.getState();
   const shown = COLUMNS.filter((k) => c[k]).length;
+  const { names } = useAnnotateNames.getState();
   const { ignoreWhitespace, movement } = workflowSettings().vcs.git.annotate;
   return {
     label: "Options",
@@ -182,6 +238,14 @@ function optionsMenu(): MenuItem {
         disabled: c[k] && shown === 1,
         run: () => setAnnotateColumn(k, !c[k]),
       })),
+      {
+        label: "Names",
+        submenu: NAME_TYPES.map((t) => ({
+          label: NAME_LABELS[t],
+          checked: names === t,
+          run: () => setAnnotateNames(t),
+        })),
+      },
       { kind: "separator" },
       {
         label: "Ignore Whitespaces",
@@ -217,6 +281,7 @@ interface BlameState {
 
 function build(lines: BlameLine[], doc: Text): BlameState {
   const bgs = commitBackgrounds(lines);
+  const { names } = useAnnotateNames.getState();
   const labels = new Map<string, BlameLabels>();
   const out = [];
   const n = Math.min(lines.length, doc.lines);
@@ -224,7 +289,11 @@ function build(lines: BlameLine[], doc: Text): BlameState {
     const line = lines[i]!;
     let label = labels.get(line.commit);
     if (!label && !isUncommitted(line)) {
-      label = { date: formatDate(line.timeMs), author: line.author.trim(), revision: line.commit.slice(0, 8) };
+      label = {
+        date: formatDate(line.timeMs),
+        author: shortAuthorName(line.author, names),
+        revision: line.commit.slice(0, 8),
+      };
       labels.set(line.commit, label);
     }
     out.push(new BlameMarker(line, label, bgs.get(line.commit) ?? "").range(doc.line(i + 1).from));
@@ -290,6 +359,7 @@ class BlameRefresher implements PluginValue {
         (s) => s.vcs.git.annotate,
         () => this.schedule(0),
       ),
+      useAnnotateNames.subscribe(() => this.schedule(0)),
     ];
     if (this.live) {
       this.off.push(
