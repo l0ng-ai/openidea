@@ -10253,6 +10253,7 @@
   "Gradle project sync failed": "Gradle 项目同步失败",
   "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. Cause: {cause}": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。原因：{cause}",
   "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project.": "Gradle 无法同步 {project}。构建同步成功前，Java 代码分析可能无法正常工作。请修复构建，然后重新加载 Gradle 项目。",
+  "Closing labels": "结束标签",
   "Roll Back to Here": "回滚到这里",
   "Couldn't roll back": "无法回滚",
   "This message and the ones after it are removed, and the files the agent changed since go back to how they were before it was sent. The message returns to the composer.": "这条消息及之后的消息会被移除，Agent 在此之后改动的文件会恢复到这条消息发送前的状态。消息会放回输入框。"
