@@ -342,6 +342,27 @@ impl Drop for JavaExternalBuild {
     }
 }
 
+/// The Gradle tooling API's own messages for a build that failed, ahead of its cause.
+const GRADLE_TOOLING_FAILURES: [&str; 4] = [
+    "The supplied phased action failed with an exception",
+    "Could not run phased build action",
+    "Could not run build action",
+    "Could not fetch model of type",
+];
+
+/// A diagnostic's message on one line. Buildship marks a Gradle project whose sync failed with
+/// the tooling API's message on the first line and the build's own error last ("… failed with
+/// an exception.\nA problem occurred evaluating root project 'app'.\n<the error>"); that error is
+/// kept as the cause.
+fn launch_message(message: &str) -> String {
+    let mut lines = message.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or_default();
+    match lines.last() {
+        Some(cause) if GRADLE_TOOLING_FAILURES.iter().any(|m| first.contains(m)) => format!("{first} Cause: {cause}"),
+        _ => first.to_owned(),
+    }
+}
+
 /// Error diagnostics sorted by file and position, capped at `limit`, and their total.
 pub fn compile_errors(
     diagnostics: Vec<(PathBuf, lsp_types::Diagnostic)>,
@@ -354,7 +375,7 @@ pub fn compile_errors(
             path: path.into(),
             line: d.range.start.line + 1,
             column: d.range.start.character + 1,
-            message: d.message.lines().next().unwrap_or_default().to_owned(),
+            message: launch_message(&d.message),
         })
         .collect();
     errors.sort_by(|a, b| (&a.path, a.line, a.column).cmp(&(&b.path, b.line, b.column)));
@@ -535,7 +556,8 @@ fn build_file_errors(diagnostics: &[(PathBuf, lsp_types::Diagnostic)], root: &Pa
                 && path.parent().is_some_and(|dir| module.starts_with(dir))
         })
         .map(|(path, d)| {
-            let message = d.message.lines().next().unwrap_or_default().trim().trim_end_matches(':');
+            let message = launch_message(&d.message);
+            let message = message.trim().trim_end_matches(':');
             (path.components().count(), format!("{}: {message}", path.strip_prefix(root).unwrap_or(path).display()))
         })
         .collect();
@@ -1636,6 +1658,24 @@ mod tests {
         std::fs::write(&prefs, format!("{}=error\n", ACCESS_OPTIONS[0])).unwrap();
         assert!(!cache_owned_maven_settings(root));
         assert_eq!(std::fs::read_to_string(prefs).unwrap(), format!("{}=error\n", ACCESS_OPTIONS[0]));
+    }
+
+    #[test]
+    fn a_failed_gradle_sync_keeps_its_cause_on_one_line() {
+        let marker = "The supplied phased action failed with an exception.\n\
+            A problem occurred configuring root project 'app'.\n\
+            A problem occurred evaluating root project 'app'.\n\
+            missing generated schema";
+        assert_eq!(
+            launch_message(marker),
+            "The supplied phased action failed with an exception. Cause: missing generated schema"
+        );
+        assert_eq!(
+            launch_message("The supplied phased action failed with an exception."),
+            "The supplied phased action failed with an exception."
+        );
+        // Other messages keep their first line only.
+        assert_eq!(launch_message("x cannot be resolved\nmore detail"), "x cannot be resolved");
     }
 
     #[test]
