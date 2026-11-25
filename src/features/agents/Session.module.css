@@ -1088,12 +1088,12 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1-5);
+  gap: var(--space-1);
   align-self: center;
   width: 100%;
   max-width: calc(var(--session-content-width) + var(--space-3) * 2);
   box-sizing: border-box;
-  padding: var(--space-2) var(--space-3) var(--space-4);
+  padding: var(--space-1-5) var(--space-3) var(--space-3);
 }
 
 .background {
