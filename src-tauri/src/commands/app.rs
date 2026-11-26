@@ -171,16 +171,7 @@ fn project_info(project: &crate::state::Project) -> ProjectInfo {
 #[tauri::command]
 #[specta::specta]
 pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<ProjectInfo> {
-    let project = state.project(window.label())?;
-    let name = name.trim();
-    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)?
-        && workspace.is_container(&project.root)
-    {
-        ide_host::ops::project::save_workspace(&state.host, window.label(), name, workspace.projects)?;
-    } else {
-        let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
-        project.settings.set(SettingsScope::Project, "general.projectName", value)?;
-    }
+    let project = ide_host::ops::project::rename(&state.host, window.label(), &name)?;
     let info = project_info(&project);
     state.record_project(&project)?;
     let _ = window.set_title(&info.display_name);

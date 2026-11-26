@@ -10438,5 +10438,11 @@
   "Extracted {written} embedded images": "已提取 {written} 张嵌入图片",
   "Saved to {name}/.": "已保存到 {name}/。",
   "Could not extract embedded images": "无法提取嵌入的图片",
-  "{reason} No image links were changed. {written} image files were written to {name}/ before the operation stopped.": "{reason} 图片链接未更改。操作停止前已将 {written} 个图片文件写入 {name}/。"
+  "{reason} No image links were changed. {written} image files were written to {name}/ before the operation stopped.": "{reason} 图片链接未更改。操作停止前已将 {written} 个图片文件写入 {name}/。",
+  "Connection to OpenIDEA server lost. Reconnecting…": "与 OpenIDEA 服务器的连接已断开，正在重新连接…",
+  "Save File": "保存文件",
+  "Not connected to OpenIDEA server": "未连接到 OpenIDEA 服务器",
+  "Command failed": "命令执行失败",
+  "This OpenIDEA session is open in another browser tab.": "此 OpenIDEA 会话已在另一个浏览器标签页中打开。",
+  "Take Over": "接管会话"
 }
