@@ -1069,7 +1069,9 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         (config.min_width, config.min_height) = (Some(min.0), Some(min.1));
     }
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(webview_profile(app, b)).on_new_window(open_popup_in_browser).build())
+        .and_then(|b| {
+            macos_webview_configuration(app, webview_profile(app, b)).on_new_window(open_popup_in_browser).build()
+        })
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -1907,10 +1909,11 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     // display's Space, so macOS keeps it too.
     #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
-    let window = builder.and_then(|b| dev_font_preferences(webview_profile(app, b)).build()).map_err(|e| {
-        windows.forget(&label);
-        IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
-    })?;
+    let window =
+        builder.and_then(|b| macos_webview_configuration(app, webview_profile(app, b)).build()).map_err(|e| {
+            windows.forget(&label);
+            IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
+        })?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
@@ -2443,18 +2446,86 @@ fn webview_profile<'a>(
     builder
 }
 
-/// Reproduce WKWebView's user-font restriction before WKWebView creation. The
-/// private selector and environment override are absent from release builds.
-#[cfg(all(debug_assertions, target_os = "macos"))]
-fn dev_font_preferences(
-    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
-) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+/// Configure macOS `WKWebViewConfiguration` before `WKWebView` creation:
+/// - Disable macOS 15+ Apple Intelligence Writing Tools so its floating selection
+///   affordance does not appear over Markdown previews, Quick Documentation, or editors.
+/// - In debug builds, optionally reproduce WKWebView's user-font restriction when
+///   `OPENIDEA_DEV_DISALLOW_USER_FONTS=1` is set (absent from release builds).
+#[cfg(target_os = "macos")]
+fn macos_webview_configuration<'a>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    match build_macos_webview_configuration(app) {
+        Some(config) => builder.with_webview_configuration(config),
+        None => builder,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_webview_configuration(
+    app: &AppHandle,
+) -> Option<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>> {
+    build_macos_webview_configuration_with(|f| app.run_on_main_thread(f))
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_webview_configuration_with(
+    run_on_main_thread: impl FnOnce(Box<dyn FnOnce() + Send>) -> tauri::Result<()>,
+) -> Option<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>> {
+    const ON_MAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    struct SendConfig(objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>);
+    // SAFETY: Created and configured exclusively on the main thread, then moved untouched into
+    // `WebviewWindowBuilder::with_webview_configuration`, which transfers it back to the main
+    // thread when Wry constructs the WKWebView.
+    unsafe impl Send for SendConfig {}
+
+    let make = |mtm: objc2::MainThreadMarker| {
+        let config = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+        configure_macos_webview_configuration(&config).then_some(SendConfig(config))
+    };
+
+    if let Some(mtm) = objc2::MainThreadMarker::new() {
+        return make(mtm).map(|c| c.0);
+    }
+
+    // Secondary project windows (`spawn_window`) and auxiliary windows (`open_auxiliary_window`)
+    // build off the main thread; create the configuration on the AppKit main thread and fall back
+    // to the default builder if the event loop cannot service it.
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    if let Err(err) = run_on_main_thread(Box::new(move || {
+        let result = objc2::MainThreadMarker::new().and_then(make);
+        let _ = tx.send(result);
+    })) {
+        tracing::warn!("could not schedule macOS WKWebViewConfiguration on main thread: {err}");
+        return None;
+    }
+    match rx.recv_timeout(ON_MAIN_TIMEOUT) {
+        Ok(Some(config)) => Some(config.0),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!("timed out waiting for macOS WKWebViewConfiguration on main thread: {err}");
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_webview_configuration(config: &objc2_web_kit::WKWebViewConfiguration) -> bool {
+    use objc2::{msg_send, sel};
+    use objc2_app_kit::NSWritingToolsBehavior;
+    use objc2_foundation::NSObjectProtocol;
+
+    let mut configured = false;
+    if config.respondsToSelector(sel!(setWritingToolsBehavior:)) {
+        unsafe {
+            let _: () = msg_send![config, setWritingToolsBehavior: NSWritingToolsBehavior::None];
+        }
+        configured = true;
+    }
+    #[cfg(debug_assertions)]
     if std::env::var("OPENIDEA_DEV_DISALLOW_USER_FONTS").as_deref() == Ok("1") {
-        use objc2::{MainThreadMarker, msg_send, sel};
-        use objc2_foundation::NSObjectProtocol;
-        let config = unsafe {
-            objc2_web_kit::WKWebViewConfiguration::new(MainThreadMarker::new().expect("window creation on main thread"))
-        };
         let preferences = unsafe { config.preferences() };
         if preferences.respondsToSelector(sel!(_setShouldAllowUserInstalledFonts:)) {
             unsafe {
@@ -2462,17 +2533,19 @@ fn dev_font_preferences(
             }
             let allowed: bool = unsafe { msg_send![&preferences, _shouldAllowUserInstalledFonts] };
             tracing::info!(allowed, "Development user-installed fonts override");
-            return builder.with_webview_configuration(config);
+            configured = true;
+        } else {
+            tracing::warn!("WKPreferences user-font development selector unavailable");
         }
-        tracing::warn!("WKPreferences user-font development selector unavailable");
     }
-    builder
+    configured
 }
 
-#[cfg(not(all(debug_assertions, target_os = "macos")))]
-fn dev_font_preferences(
-    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
-) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+#[cfg(not(target_os = "macos"))]
+fn macos_webview_configuration<'a>(
+    _app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
     builder
 }
 
@@ -2558,6 +2631,76 @@ mod tests {
             a.preferred_dark_theme = id.into();
             assert_eq!(frame_color(&a, false), color);
             assert_eq!(frame_color(&a, true), color);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_webview_configuration_disables_writing_tools() {
+        use objc2::{MainThreadMarker, msg_send, sel};
+        use objc2_app_kit::NSWritingToolsBehavior;
+        use objc2_foundation::NSObjectProtocol;
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let config = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+        let configured = configure_macos_webview_configuration(&config);
+        if config.respondsToSelector(sel!(writingToolsBehavior)) {
+            assert!(configured);
+            let behavior: NSWritingToolsBehavior = unsafe { msg_send![&config, writingToolsBehavior] };
+            assert_eq!(behavior, NSWritingToolsBehavior::None);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_webview_configuration_handles_non_main_thread() {
+        use objc2::{MainThreadMarker, sel};
+        use objc2_foundation::NSObjectProtocol;
+
+        // Off-thread scheduling failure falls back to None instead of panicking.
+        let result = std::thread::spawn(|| {
+            assert!(MainThreadMarker::new().is_none());
+            build_macos_webview_configuration_with(|_| Err(tauri::Error::FailedToReceiveMessage)).is_none()
+        })
+        .join()
+        .expect("worker thread must not panic");
+        assert!(result);
+
+        // Off-thread callback without a main-thread marker falls back to None instead of panicking.
+        let result = std::thread::spawn(|| {
+            assert!(MainThreadMarker::new().is_none());
+            build_macos_webview_configuration_with(|f| {
+                f();
+                Ok(())
+            })
+            .is_none()
+        })
+        .join()
+        .expect("worker thread must not panic");
+        assert!(result);
+
+        // When a main thread is available (e.g. nextest or --test-threads=1), dispatching from a
+        // worker thread constructs and configures WKWebViewConfiguration on the main thread.
+        if let Some(mtm) = MainThreadMarker::new() {
+            let probe = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+            let expects_config = probe.respondsToSelector(sel!(setWritingToolsBehavior:));
+
+            let (work_tx, work_rx) = std::sync::mpsc::sync_channel::<Box<dyn FnOnce() + Send>>(1);
+            let worker = std::thread::spawn(move || {
+                assert!(MainThreadMarker::new().is_none());
+                build_macos_webview_configuration_with(move |f| {
+                    work_tx.send(f).map_err(|_| tauri::Error::FailedToReceiveMessage)
+                })
+                .is_some()
+            });
+            let work = work_rx.recv().expect("worker should schedule onto main thread");
+            work();
+            let got_config = worker.join().expect("worker thread must not panic");
+            if expects_config {
+                assert!(got_config);
+            }
         }
     }
 
