@@ -191,6 +191,35 @@ impl DocState {
         self.disk_conflict = false;
         self.clean_text = (!self.large).then(|| self.doc.clone());
     }
+
+    /// The bytes saving `doc` with this document's encoding, BOM and conversion would write.
+    fn bytes_for_save(&self, doc: &Document) -> IdeResult<Vec<u8>> {
+        let text = doc.text_for_save();
+        Ok(if self.native_to_ascii {
+            ide_vfs::encode_properties_ascii(&text).into_bytes()
+        } else {
+            ide_vfs::encode(&text, &self.encoding, self.has_bom)?
+        })
+    }
+
+    /// Whether the file changed on disk since the buffer last matched it. A moved stamp with the
+    /// same bytes (touch, a tool rewriting the file unchanged) is no change and its stamp is adopted. Reads the file
+    /// only when the mtime moved but the length did not; without a clean text to compare (large
+    /// files, a pending encoding, line-ending or BOM change, a reported conflict) a moved stamp counts.
+    fn changed_on_disk(&mut self, meta: &std::fs::Metadata) -> bool {
+        let mtime = ide_vfs::mtime_ms(meta);
+        if mtime == self.disk_mtime && meta.len() == self.disk_len {
+            return false;
+        }
+        let same_bytes = meta.len() == self.disk_len
+            && self.clean_text.as_ref().is_some_and(|clean| {
+                self.bytes_for_save(clean).is_ok_and(|bytes| std::fs::read(&self.path).is_ok_and(|disk| disk == bytes))
+            });
+        if same_bytes {
+            self.disk_mtime = mtime;
+        }
+        !same_bytes
+    }
 }
 
 fn keys_for(path: &Path) -> Vec<PathBuf> {
@@ -924,7 +953,7 @@ impl Documents {
                 && !st.disk_conflict
                 && st.uri.is_none()
                 && let Ok(meta) = std::fs::metadata(&st.path)
-                && (ide_vfs::mtime_ms(&meta) != st.disk_mtime || meta.len() != st.disk_len)
+                && st.changed_on_disk(&meta)
             {
                 st.disk_mtime = ide_vfs::mtime_ms(&meta);
                 st.disk_len = meta.len();
@@ -1411,6 +1440,9 @@ impl Documents {
                     return Ok(());
                 }
                 if st.dirty {
+                    if !st.changed_on_disk(&meta) {
+                        return Ok(());
+                    }
                     st.disk_mtime = mtime;
                     st.disk_len = meta.len();
                     st.disk_conflict = true;
