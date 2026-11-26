@@ -146,10 +146,14 @@ describe("local filter and sort", () => {
       { value: "Beijing", count: 1 },
       { value: "Shanghai", count: 2 },
     ]);
-    const all = d.map((x) => x.value);
-    let f = toggleFilterValue(new Map(), 1, all, "Beijing", false);
-    expect([...f.get(1)!]).toEqual([null, "Shanghai"]);
-    f = toggleFilterValue(f, 1, all, "Beijing", true);
+    // Checking a value keeps only the checked values; unchecking the last one clears the filter (DataGrip).
+    let f = toggleFilterValue(new Map(), 1, "Beijing", true);
+    expect([...f.get(1)!]).toEqual(["Beijing"]);
+    expect(visibleRows(4, value, f, null)).toEqual([1]);
+    f = toggleFilterValue(f, 1, null, true);
+    expect([...f.get(1)!]).toEqual(["Beijing", null]);
+    expect(visibleRows(4, value, f, null)).toEqual([1, 3]);
+    f = toggleFilterValue(toggleFilterValue(f, 1, "Beijing", false), 1, null, false);
     expect(f.has(1)).toBe(false);
   });
 

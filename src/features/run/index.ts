@@ -67,7 +67,7 @@ import { ServiceImportHost } from "./serviceImport";
 import { selectedBuildTarget } from "./buildTarget";
 import { configurationChecks } from "./configurationChecks";
 import { runBeforeLaunch } from "./beforeLaunch";
-import { compoundChildren } from "./configs";
+import { compoundChildren, createdConfigs } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
 import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
@@ -929,17 +929,18 @@ export function activate(): () => void {
       {
         id: "run.createConfig",
         title: "Create Run Configuration",
-        description: "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.",
+        description:
+          "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.",
         category: "Run",
         hidden: true,
         when: "projectOpen",
         run: async ({ arg }) => {
           if (!arg || typeof arg !== "object") return;
           await ensureConfigs();
-          const config: RunConfig = { ...(arg as RunConfig), detected: false };
+          const config = arg as RunConfig;
           const { configs, temporary } = useRun.getState();
-          const user = configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== config.id);
-          await saveUserConfigs([...user, config]);
+          const created = createdConfigs(configs, temporary, config);
+          if (created) await saveUserConfigs(created);
           selectConfig(config.id);
           useRun.setState({ editorOpen: true, chooserOpen: false, editTarget: config.id });
         },

@@ -278,7 +278,7 @@ describe("Find in Files popup", () => {
     expect(screen.getByRole("listbox", { name: "Matches" })).toHaveTextContent("a.kt");
 
     const directory = screen.getByRole("textbox", { name: "Directory" });
-    expect(directory).toHaveValue(".");
+    expect(directory).toHaveValue("/p");
     fireEvent.change(directory, { target: { value: "" } });
     expect(screen.queryByText("a.kt")).not.toBeInTheDocument();
     await settle();

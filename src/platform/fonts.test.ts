@@ -298,3 +298,35 @@ describe("macOS user font resolver", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 });
+
+describe("bundled mono face on Linux (#5770)", () => {
+  afterEach(() => {
+    vi.doUnmock("./platformInfo");
+    vi.resetModules();
+    document.documentElement.style.removeProperty("--font-mono");
+  });
+
+  async function onLinux() {
+    vi.resetModules();
+    vi.doMock("./platformInfo", () => ({ guessOs: () => "linux" }));
+    return import("./fonts");
+  }
+
+  it("names only the bundled face until the system lists JetBrains Mono, as fontconfig may alias the name", async () => {
+    const fonts = await onLinux();
+    expect(fonts.monoFontFamily("JetBrains Mono", "", BASE)).toBe(`"JetBrains Mono Variable", ${BASE}`);
+    fonts.installMonoStack();
+    expect(document.documentElement.style.getPropertyValue("--font-mono")).toBe(
+      '"JetBrains Mono Variable", ui-monospace, monospace',
+    );
+
+    fonts.noteInstalledFonts(["DejaVu Sans Mono", "JetBrains Mono"]);
+    expect(fonts.monoFontFamily("JetBrains Mono", "", BASE)).toBe(
+      `"JetBrains Mono", "JetBrains Mono Variable", ${BASE}`,
+    );
+    expect(document.documentElement.style.getPropertyValue("--font-mono")).toBe("");
+
+    fonts.noteInstalledFonts(["DejaVu Sans Mono", "Noto Sans CJK SC"]);
+    expect(fonts.monoFontFamily("", "", BASE)).toBe(`"JetBrains Mono Variable", ${BASE}`);
+  });
+});
