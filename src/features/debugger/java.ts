@@ -49,12 +49,17 @@ export async function javaProjectName(root: string): Promise<string> {
   const descriptor = await readText(join(root, ".project"));
   const eclipse = /<name>([^<]+)<\/name>/.exec(descriptor)?.[1]?.trim();
   if (eclipse) return eclipse;
-  const pom = await readText(join(root, "pom.xml"));
-  // A child module's own <artifactId> follows the <parent> block, which names the parent.
-  const own = pom.replace(/<parent>[\s\S]*?<\/parent>/, "");
-  const artifact = /<artifactId>\s*([^<\s]+)\s*<\/artifactId>/.exec(own)?.[1];
+  const artifact = /<artifactId>\s*([^<\s]+)\s*<\/artifactId>/.exec(ownPom(await readText(join(root, "pom.xml"))))?.[1];
   if (artifact && !artifact.includes("${")) return artifact;
   return baseName(root);
+}
+
+/** A child module's own part of its POM: its <artifactId> follows the <parent> block, which names the parent. */
+const ownPom = (pom: string) => pom.replace(/<parent>[\s\S]*?<\/parent>/, "");
+
+/** A dependency-only Maven module (`packaging=pom`): jdtls has no Java project for it. */
+async function isPomOnlyModule(root: string): Promise<boolean> {
+  return /<packaging>\s*pom\s*<\/packaging>/.test(ownPom(await readText(join(root, "pom.xml"))));
 }
 
 /** A file of the project, or "" when it is missing (or when there is no filesystem bridge). */
@@ -174,6 +179,12 @@ export async function javaLaunchConfig(
   preparation?.report?.(`${joinJavaArgs([resolved.command, ...resolved.args])}\n`);
   const agentNote = await remoteJavaAgentNote(rc);
   if (agentNote) preparation?.report?.(agentNote);
+  // The host adds JetBrains Runtime's flag for it, or says in the console why the session runs without.
+  const enhanced = {
+    ...(rc.params?.enhancedClassRedefinition === "true" ? { enhancedClassRedefinition: true } : {}),
+    // A plugin executor's launch ("Debug with …"): the host adds that plugin's Java agent.
+    ...(rc.executor ? { executor: rc.executor } : {}),
+  };
   if (kotlin) {
     return {
       name: rc.name,
@@ -191,6 +202,7 @@ export async function javaLaunchConfig(
         javaExec: resolved.command,
         vmArguments: [...consoleVmArgs(rc), ...parsed.vmArgs],
         programArgs: parsed.programArgs,
+        ...enhanced,
       }),
     };
   }
@@ -212,6 +224,7 @@ export async function javaLaunchConfig(
         javaExec: resolved.command === "java" ? undefined : resolved.command,
         vmArgs: [...consoleVmArgs(rc), ...parsed.vmArgs],
         args: parsed.programArgs,
+        ...enhanced,
       }),
     };
   }
@@ -220,7 +233,9 @@ export async function javaLaunchConfig(
   // java-debug resolves the Java project for Evaluate on its own from `mainClass` only when
   // the class belongs to a project it knows; name the project it imported so that works for
   // classes compiled outside the language server's build (plain folders, custom outputs).
-  const project = await javaProjectName(info.projectRoot ?? root);
+  const projectRoot = info.projectRoot ?? join(root, module);
+  // A launch from a dependency-only POM names no project: java-debug finds the main class's own.
+  const project = (await isPomOnlyModule(projectRoot)) ? undefined : await javaProjectName(projectRoot);
   return {
     name: rc.name,
     adapter: JAVA_ADAPTER,
@@ -243,6 +258,7 @@ export async function javaLaunchConfig(
       shortenCommandLine: info.shortenCommandLine ?? "none",
       console: "internalConsole",
       stopOnEntry: false,
+      ...enhanced,
     }),
   };
 }

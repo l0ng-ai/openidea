@@ -35,7 +35,7 @@ import {
 import { PageContext, useSettingsFormFor } from "../components/context";
 import { SearchLabel } from "../components/Form";
 import {
-  breadcrumb,
+  breadcrumbNodes,
   buildPageTree,
   filterPageTree,
   flatten,
@@ -49,7 +49,9 @@ import {
   closeSettings,
   pendingChanges,
   resetPage,
+  selectNextPage,
   selectPage,
+  selectPreviousPage,
   setPageScope,
   setQuery,
   settingsTitle,
@@ -135,21 +137,21 @@ function ScopeSwitch({ pageId, scope }: { pageId: string; scope: Scope }) {
 function PageHost({
   node,
   page,
-  crumbs,
+  tree,
   dirty,
   onReset,
-  history,
 }: {
   node: PageNode | undefined;
   page: SettingsPageContribution | undefined;
-  crumbs: string[];
+  /** Root of the (unfiltered) page tree, for breadcrumb links. */
+  tree: PageNode[];
   dirty: boolean;
   onReset: () => void;
-  history: { back?: () => void; forward?: () => void };
 }) {
   const pageId = node?.key ?? "";
   const hasProject = useProject((s) => !!s.project);
   const newProjects = useSettingsDialog((s) => s.newProjects);
+  const history = useSettingsDialog((s) => s.history);
   const spec = page ? builtinSpec(page.id) : undefined;
   const projectScope = !!(spec?.projectScope ?? page?.projectScope) && hasProject && !newProjects;
   const scopeKey = spec?.scopeGroup ?? pageId;
@@ -165,6 +167,8 @@ function PageHost({
   const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
   if (!node) return <EmptyState title="Nothing found" icon="search" />;
   const Body = page?.component;
+  // IDEA's breadcrumb: the entries before the current page are links back up the tree.
+  const crumbs = breadcrumbNodes(tree, node.key);
   const parents = crumbs.slice(0, -1);
   return (
     <PageContext.Provider value={ctx}>
@@ -172,15 +176,21 @@ function PageHost({
         <SettingsPageFocusContext.Provider value={pageFocus}>
           <SettingsHeaderSlotContext.Provider value={headerSlot}>
             <div className={styles.pageHeader}>
-              <div className={styles.crumbs} aria-label={tx("Breadcrumb")} title={crumbs.map((c) => tx(c)).join(" › ")}>
+              <div
+                className={styles.crumbs}
+                aria-label={tx("Breadcrumb")}
+                title={crumbs.map((c) => tx(c.title)).join(" › ")}
+              >
                 {parents.length > 0 && (
                   <span className={styles.parentCrumbs}>
                     {parents.map((c, i) => (
                       // oxlint-disable-next-line react/no-array-index-key -- crumb labels can repeat; position is the identity
                       <span key={i} className={styles.crumb}>
-                        <span className={styles.crumbLabel}>
-                          <T>{c}</T>
-                        </span>
+                        <button type="button" className={styles.crumbLink} onClick={() => selectPage(c.key)}>
+                          <span className={styles.crumbLabel}>
+                            <T>{c.title}</T>
+                          </span>
+                        </button>
                         <Icon name="chevron-right" size={12} className={styles.crumbSep} />
                       </span>
                     ))}
@@ -202,15 +212,15 @@ function PageHost({
                   icon="arrow-left"
                   title="Back"
                   size="small"
-                  disabled={!history.back}
-                  onClick={history.back}
+                  disabled={history.index <= 0}
+                  onClick={() => selectPreviousPage()}
                 />
                 <IconButton
                   icon="arrow-right"
                   title="Forward"
                   size="small"
-                  disabled={!history.forward}
-                  onClick={history.forward}
+                  disabled={history.index >= history.stack.length - 1}
+                  onClick={() => selectNextPage()}
                 />
               </span>
             </div>
@@ -276,7 +286,6 @@ export function SettingsLayout() {
   const expanded = useMemo(() => new Set(visible.filter((n) => n.children.length).map((n) => n.key)), [visible]);
 
   const current = all.find((n) => n.key === pageId) ?? all.find((n) => n.page);
-  const crumbs = current ? breadcrumb(tree, current.key) : [];
   const dirtyPages = useMemo(() => {
     const pages = new Set(Object.values(staged).map((c) => c.page));
     if (Object.keys(stagedSecrets).length) pages.add(SSH_SETTINGS_PAGE);
@@ -284,22 +293,6 @@ export function SettingsLayout() {
     return pages;
   }, [staged, stagedSecrets, stagedExternal]);
   const pageDirty = !!current && dirtyPages.has(current.key);
-
-  // Back / forward through pages visited while the dialog is open.
-  const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
-  const currentKey = current?.key;
-  if (currentKey && nav.stack[nav.index] !== currentKey) {
-    const stack = [...nav.stack.slice(0, nav.index + 1), currentKey];
-    setNav({ stack, index: stack.length - 1 });
-  }
-  const go = (index: number) => {
-    setNav((n) => ({ ...n, index }));
-    selectPage(nav.stack[index]!);
-  };
-  const history = {
-    back: nav.index > 0 ? () => go(nav.index - 1) : undefined,
-    forward: nav.index < nav.stack.length - 1 ? () => go(nav.index + 1) : undefined,
-  };
 
   const onQuery = (q: string) => {
     setQuery(q);
@@ -390,10 +383,9 @@ export function SettingsLayout() {
         <PageHost
           node={current}
           page={current?.page}
-          crumbs={crumbs}
+          tree={tree}
           dirty={pageDirty && !saving}
           onReset={() => current && resetPage(current.key)}
-          history={history}
           key={current?.key ?? groupKey("")}
         />
       </SplitPanel>

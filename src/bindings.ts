@@ -227,6 +227,8 @@ export const commands = {
 	 *  can show the UI's language and fall back to English. An install records the
 	 *  notes it saw, so this is only for an update installed outside the app.
 	 *  `Ok(None)` when the manifest covers another version or carries no notes.
+	 *  Reads only the public manifest, like the update check: the page usually opens
+	 *  in a window without a project.
 	 */
 	appReleaseNotes: (version: string, source: UpdateSource) => typedError<{ [key in string]: string } | null, IdeError>(__TAURI_INVOKE("app_release_notes", { version, source })),
 	/**  Quits through every window's unsaved-changes check, then starts again. */
@@ -478,6 +480,8 @@ export const commands = {
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
+	/**  Replaces all of this window's line breakpoints with `files`. */
+	debugReplaceBreakpoints: (files: { [key in string]: Breakpoint[] }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_replace_breakpoints", { files })),
 	debugResolveVariable: (session: DebugSessionId, variable: Variable_Deserialize) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_resolve_variable", { session, variable })),
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
@@ -488,6 +492,7 @@ export const commands = {
 	debugSendInput: (session: DebugSessionId, text: string) => typedError<null, IdeError>(__TAURI_INVOKE("debug_send_input", { session, text })),
 	/**  This window's live sessions, including adapter-started child sessions. */
 	debugSessions: () => typedError<SessionInfo[], IdeError>(__TAURI_INVOKE("debug_sessions")),
+	/**  This window's breakpoints of `path`. */
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
 	debugSetDataBreakpoints: (breakpoints: DataBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_data_breakpoints", { breakpoints })),
@@ -589,8 +594,8 @@ export const commands = {
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
 	 *  visibility and type-alias kinds), tree-sitter otherwise.
-	 *  Tree-sitter answers come from the per-document tree cache (incremental
-	 *  re-parse); large documents get no syntax structure.
+	 *  Normal files reuse the per-document tree cache. Large Markdown files use
+	 *  the syntax parser's size limit for heading outlines.
 	 */
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
@@ -1157,6 +1162,8 @@ export const commands = {
 	 *  disabled in place (no rebuild).
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
+	/**  The Remote Development projects of the frontend's recent list, for Open Recent. */
+	menuSetRemoteRecent: (projects: RemoteRecent[]) => __TAURI_INVOKE<void>("menu_set_remote_recent", { projects }),
 	/**
 	 *  Index definitions named `name` within the roots `from` may navigate into (its own root
 	 *  plus its configured dependencies).
@@ -1305,12 +1312,21 @@ export const commands = {
 	pluginRevokeNetHost: (id: string, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_revoke_net_host", { id, host })),
 	/**  Goes back to the version the last update of `id` replaced. */
 	pluginRollBack: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_roll_back", { id })),
+	/**
+	 *  Runs a Run Anything line starting with the plugin's `prefix` (API 1.18): whether
+	 *  the plugin claimed it.
+	 */
+	pluginRunAnythingRun: (pluginId: string, prefix: string, line: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_run_anything_run", { pluginId, prefix, line })),
+	/**  Run Anything entries of the plugin declaring `prefix` for the field's `text` (API 1.18). */
+	pluginRunAnythingSuggest: (pluginId: string, prefix: string, text: string) => typedError<RunAnythingItem[], IdeError>(__TAURI_INVOKE("plugin_run_anything_suggest", { pluginId, prefix, text })),
 	/**  Runs a plugin command in the context of this window's project and focused editor. */
 	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null, editor: {
 	path: string,
 	language: string,
 	selections: Range[],
 } | null, paths: string[] | null, settingsScope: "global" | "project" | null, commandChain: string[] | null, request: number | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain, request })),
+	/**  Completions for a field of a plugin's own run configuration (API 1.18). */
+	pluginRunConfigurationComplete: (configId: string, field: string, text: string, caret: number) => typedError<RunConfigCompletion[], IdeError>(__TAURI_INVOKE("plugin_run_configuration_complete", { configId, field, text, caret })),
 	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
 	/**
 	 *  One page of `plugin_id`'s results for its search `category`. Cancellable with
@@ -1512,7 +1528,7 @@ export const commands = {
 	 *  dev container, whose project folder is the container's own) in this window (installs /
 	 *  starts the server as needed).
 	 */
-	remoteConnect: (target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, onProgress })),
+	remoteConnect: (target: RemoteTarget, path: string, replace: boolean, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, replace, onProgress })),
 	/**  The remote session of this window (a settings window: its parent's), if any. */
 	remoteCurrent: () => __TAURI_INVOKE<{
 	target: RemoteTarget,
@@ -1579,7 +1595,9 @@ export const commands = {
 	 *  Edits go through the document layer as one patch per file, so open editors
 	 *  update live and undo the whole file's replacements in one step. Unsaved
 	 *  editor buffers are replaced in place and left unsaved; other open documents
-	 *  are saved, and files that were not open are opened transiently, saved and closed.
+	 *  are saved unless the file changed on disk meanwhile (then the replacement stays
+	 *  unsaved, as autosave does), and files that were not open are opened
+	 *  transiently, saved and closed.
 	 * 
 	 *  With `all_in_scope` (Replace All after the search hit its match limit) the
 	 *  scope is searched again without the limit and every match in it is replaced,
@@ -3780,6 +3798,8 @@ export type BlameLine_Serialize = {
 export type BlockHistory = {
 	/**  The selected lines in HEAD (0-based, inclusive); None when none of them is committed. */
 	headLines: [number, number] | null,
+	/**  Those lines as HEAD has them, each ending with `\n`; None from servers that predate it. */
+	head?: string | null,
 	revisions: BlockRevision[],
 };
 
@@ -6423,8 +6443,8 @@ export type DocumentInfo = {
 	 */
 	canReloadEncoding: boolean,
 	/**
-	 *  Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
-	 *  structure and folding are disabled; the editor should drop heavy features.
+	 *  Marks files above `ide_vfs::LARGE_FILE_THRESHOLD` for reduced editor
+	 *  features such as disabling language servers and folding.
 	 */
 	large?: boolean,
 	/**  Effective `.editorconfig` properties, when any section applies. */
@@ -6848,7 +6868,9 @@ report?: PushReport | null } |
  *  jdtls could not set a module up as a Java project: the errors on its build files and
  *  the builds enclosing it (`path: message`, the path relative to the project), nearest first.
  */
-{ type: "javaBuildProblems"; problems: string[] };
+{ type: "javaBuildProblems"; problems: string[] } | 
+/**  A remote backend of another OpenIDEA build still serves the project and refused to retire. */
+{ type: "remoteBackendBusy" };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  The requested state is stale; the UI must use the current snapshot. */
@@ -6859,7 +6881,11 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
 export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "caret-moved" | "action-performed" | "vcs-changed" | 
 /**  Problems of the window's files changed (a language server or a report). */
-"problems-changed" | "scheduled";
+"problems-changed" | 
+/**  A project was closed (or its window closed): the project root path. */
+"project-closed" | 
+/**  Paths outside the project watched with `events.watch-paths` changed (API 1.18). */
+"watched-files-changed" | "scheduled";
 
 export type ExceptionClassBreakpoint = {
 	id: string,
@@ -7305,6 +7331,10 @@ export type FileTypeAssociation = {
 
 /**  Debounced worktree changes. Paths use the same absolute form as `file-saved`. */
 export type FilesChanged = {
+	/**  Canonical absolute root of the project where changes occurred (API 1.18). */
+	project?: string | null,
+	/**  Project state generation at the time this batch was emitted (API 1.18). */
+	generation?: number | null,
 	created: string[],
 	modified: string[],
 	removed: string[],
@@ -11011,6 +11041,11 @@ export type PluginJavaAgent = {
 	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
+	/**
+	 *  The title of the executor the agent is bound to (API 1.18): "Run with <title>" and
+	 *  "Debug with <title>" launch with it; other launches leave it out.
+	 */
+	executor?: string | null,
 };
 
 /**
@@ -12159,6 +12194,19 @@ export type RemoteProject_Serialize = {
 	project: ProjectInfo_Serialize,
 };
 
+/**
+ *  A recent Remote Development project (SSH, WSL, Dev Container), kept by the frontend: Open
+ *  Recent lists it among the local projects, as Manage Projects does.
+ */
+export type RemoteRecent = {
+	/**  `ssh://host/path`, `wsl://Ubuntu/path`…: what `file.openRecentProject` gets back. */
+	location: string,
+	name: string,
+	/**  Where it lives, as shown after the name (`me@host:/srv/app`). */
+	detail: string,
+	openedAtMs: number | null,
+};
+
 export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;
 
 export type RemoteSession_Deserialize = {
@@ -12359,6 +12407,14 @@ export type RubySettings = {
 	interpreter?: string,
 };
 
+/**  A Run Anything entry from a plugin's `run-anything-provider` export (API 1.18). */
+export type RunAnythingItem = {
+	label: string,
+	detail: string | null,
+	/**  The line Tab completes and Enter runs; `label` when absent. */
+	line: string | null,
+};
+
 /**  Snapshot and live output binding returned when reattaching to a running process. */
 export type RunAttach = RunAttach_Serialize | RunAttach_Deserialize;
 
@@ -12377,6 +12433,16 @@ export type RunAttach_Serialize = {
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
+
+/**  A completion for a field of a plugin's own run configuration (API 1.18). */
+export type RunConfigCompletion = {
+	label: string,
+	detail: string | null,
+	/**  Replaces the UTF-16 range `[replace_start, replace_end)` of the field's text. */
+	insert: string,
+	replaceStart: number,
+	replaceEnd: number,
+};
 
 export type RunConfig_Deserialize = {
 	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */
@@ -12476,6 +12542,11 @@ export type RunExtras_Deserialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -12526,6 +12597,11 @@ export type RunExtras_Serialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -14343,7 +14419,7 @@ export type ViewButton = {
 };
 
 /**  A user action in a view. */
-export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean } | { kind: "tableSelect"; row: number } | { kind: "tableActivate"; row: number };
+export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean } | { kind: "tableSelect"; row: number } | { kind: "tableActivate"; row: number } | { kind: "closed" };
 
 export type ViewField = {
 	key: string,
@@ -14523,7 +14599,14 @@ export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged }
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
 { kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "caretMoved"; value: CaretMoved } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
 /**  Problems of the window's files changed; plugins re-read `problems`. */
-{ kind: "problemsChanged" } | { kind: "scheduled" };
+{ kind: "problemsChanged" } | 
+/**  A project closed (API 1.18); payload is the canonical absolute root path. */
+{ kind: "projectClosed"; value: string } | 
+/**
+ *  Changes to paths outside the project watched with `events.watch-paths` (API 1.18);
+ *  `project` is the project the watch belongs to, `generation` is unset.
+ */
+{ kind: "watchedFilesChanged"; value: FilesChanged } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

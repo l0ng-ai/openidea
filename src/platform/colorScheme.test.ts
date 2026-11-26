@@ -173,6 +173,22 @@ describe("color schemes", () => {
     expect(css).toContain("--syn-keyword: #224466 !important");
   });
 
+  it("offers a C/C++ scheme page and scopes its overrides to C and C++ editors only", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "cpp.packageReference")?.path).toEqual(["C/C++"]);
+    expect(ATTRIBUTES.find((a) => a.id === "cpp.predefined")?.language).toBe("C/C++");
+    const css = schemeCss("dark", {
+      dark: { "cpp.packageReference": { foreground: "#224466" }, "cpp.predefined": { italic: true } },
+    });
+    const block = css.slice(css.indexOf('.cm-editor[data-language="C"]'));
+    expect(block).toContain('.cm-editor [data-language="C"]');
+    expect(block).toContain('.cm-editor[data-language="C++"]');
+    expect(block).toContain('.cm-editor [data-language="C++"]');
+    expect(block).toContain("--syn-namespace: #224466 !important");
+    expect(block).toContain("--syn-builtin-italic: italic !important");
+    expect(css).not.toContain('data-language="Java"]');
+    expect(css.indexOf('.cm-editor[data-language="C"]')).toBeGreaterThan(css.indexOf(":root"));
+  });
+
   it("offers a Julia scheme page and scopes Julia overrides to Julia editors", () => {
     expect(ATTRIBUTES.find((a) => a.id === "julia.functionCall")?.path).toEqual(["Julia"]);
     expect(ATTRIBUTES.find((a) => a.id === "julia.className")?.path).toEqual(["Julia"]);

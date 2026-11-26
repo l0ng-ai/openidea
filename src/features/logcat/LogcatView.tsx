@@ -145,6 +145,7 @@ export function LogcatView() {
 
   const deviceOptions = devices.map((d) => ({
     value: d.serial,
+    verbatim: true,
     label: d.model ? `${d.model} (${d.serial})` : d.serial,
     detail: d.state === "device" ? undefined : d.state,
     disabled: d.state !== "device",

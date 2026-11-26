@@ -126,6 +126,8 @@ struct Script {
     child_request: Option<Value>,
     ignore_configuration_done: bool,
     source_path: Option<String>,
+    /// Fail each `stackTrace` request whose frames include this one (java-debug, one frame's source lookup throwing).
+    failing_frame: Option<u64>,
     /// Report this process id in the adapter's `process` event (the program being debugged).
     debuggee_pid: Option<u32>,
     /// java-debug's spelling of the same event.
@@ -206,6 +208,7 @@ impl Default for Script {
             child_request: None,
             ignore_configuration_done: false,
             source_path: None,
+            failing_frame: None,
             debuggee_pid: None,
             java_process_id: false,
             output_after_terminate: false,
@@ -518,6 +521,20 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     ok!(msg, json!({"threads": []}));
                 } else {
                     ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]}));
+                }
+            }
+            "stackTrace" if let Some(bad) = script.failing_frame => {
+                let start = msg["arguments"]["startFrame"].as_u64().unwrap();
+                let end = (start + msg["arguments"]["levels"].as_u64().unwrap()).min(3);
+                if (start..end).contains(&bad) {
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": "stackTrace", "success": false, "message": "Illegal char <<> at index 21: C:\\p\\com\\x\\<generated>"})
+                    );
+                } else {
+                    let frames: Vec<Value> = (start..end)
+                        .map(|i| json!({"id": 10 + i, "name": format!("f{i}"), "line": 1, "column": 1}))
+                        .collect();
+                    ok!(msg, json!({"stackFrames": frames, "totalFrames": 3}));
                 }
             }
             "stackTrace" => ok!(
@@ -899,7 +916,7 @@ async fn full_protocol_flow() {
     let path = PathBuf::from("/p/a.py");
     let disabled = Breakpoint { enabled: false, ..bp(2) };
     let cond = Breakpoint { condition: Some("x > 1".into()), ..bp(7) };
-    let states = h.manager.set_breakpoints(path.clone(), vec![bp(4), disabled, cond]).await.unwrap();
+    let states = h.manager.set_breakpoints(&h.owner.key, path.clone(), vec![bp(4), disabled, cond]).await.unwrap();
     assert!(states.iter().all(|s| !s.verified), "no session yet");
 
     let id = h.start(config()).await.unwrap();
@@ -981,7 +998,7 @@ async fn full_protocol_flow() {
     assert_eq!(asked["arguments"]["frameId"], 10);
 
     // Live breakpoint updates reach the session.
-    let states = h.manager.set_breakpoints(path.clone(), vec![bp(0)]).await.unwrap();
+    let states = h.manager.set_breakpoints(&h.owner.key, path.clone(), vec![bp(0)]).await.unwrap();
     assert!(states[0].verified);
 
     h.manager.resume(id, 1).await.unwrap();
@@ -1005,7 +1022,7 @@ async fn full_protocol_flow() {
 async fn run_to_cursor_uses_temporary_breakpoint() {
     let h = harness(Script::default());
     let path = PathBuf::from("/p/a.py");
-    h.manager.set_breakpoints(path.clone(), vec![bp(1)]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, path.clone(), vec![bp(1)]).await.unwrap();
     let id = h.start(config()).await.unwrap();
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
     h.manager.run_to(id, 1, path.clone(), 9, false).await.unwrap();
@@ -1037,7 +1054,7 @@ async fn stop_terminates_and_disconnects() {
 #[tokio::test]
 async fn unity_attach_waits_for_mono_and_disconnects_without_terminating_editor() {
     let h = harness(Script { empty_thread_responses: 2, ..Script::default() });
-    h.manager.set_breakpoints(PathBuf::from("/p/a.cs"), vec![bp(4)]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, PathBuf::from("/p/a.cs"), vec![bp(4)]).await.unwrap();
     let start = h.start(LaunchConfig {
         adapter: "unity".into(),
         request: "attach".into(),
@@ -1889,7 +1906,7 @@ fn function_bp(name: &str, enabled: bool) -> FunctionBreakpoint {
 async fn function_and_data_breakpoints_are_stored_and_sent() {
     let h = harness(Script::default());
     let cond = FunctionBreakpoint { condition: Some("n > 1".into()), ..function_bp("com.a.B#run", true) };
-    let states = h.manager.set_function_breakpoints(vec![cond, function_bp("off", false)]).await.unwrap();
+    let states = h.manager.set_function_breakpoints(&h.owner.key, vec![cond, function_bp("off", false)]).await.unwrap();
     assert!(!states[0].verified && states[1].message.as_deref() == Some("Disabled"), "no session yet");
     let watch = DataBreakpoint {
         data_id: "Req#count".into(),
@@ -1898,7 +1915,7 @@ async fn function_and_data_breakpoints_are_stored_and_sent() {
         hit_condition: Some("2".into()),
         enabled: true,
     };
-    h.manager.set_data_breakpoints(vec![watch]).await.unwrap();
+    h.manager.set_data_breakpoints(&h.owner.key, vec![watch]).await.unwrap();
 
     let id = h.start(config()).await.unwrap();
     assert_eq!(
@@ -1914,8 +1931,11 @@ async fn function_and_data_breakpoints_are_stored_and_sent() {
     let pos = |c: &str| order.iter().position(|x| x == c).unwrap();
     assert!(pos("setFunctionBreakpoints") < pos("configurationDone"));
 
-    let states =
-        h.manager.set_function_breakpoints(vec![function_bp("missing", true), function_bp("ok", true)]).await.unwrap();
+    let states = h
+        .manager
+        .set_function_breakpoints(&h.owner.key, vec![function_bp("missing", true), function_bp("ok", true)])
+        .await
+        .unwrap();
     assert_eq!((states[0].verified, states[1].verified), (false, true), "live states from the session");
 
     let info = h.manager.data_breakpoint_info(id, 101, "count".into(), Some(10)).await.unwrap();
@@ -1958,10 +1978,13 @@ async fn force_stepping_suspends_breakpoints_until_the_next_stop() {
     let h = harness(Script::default());
     let a = PathBuf::from("/p/a.py");
     let b = PathBuf::from("/p/b.py");
-    h.manager.set_breakpoints(a.clone(), vec![bp(1)]).await.unwrap();
-    h.manager.set_breakpoints(b.clone(), vec![bp(3)]).await.unwrap();
-    h.manager.set_breakpoints(PathBuf::from("/p/off.py"), vec![Breakpoint { enabled: false, ..bp(5) }]).await.unwrap();
-    h.manager.set_function_breakpoints(vec![function_bp("run", true)]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, a.clone(), vec![bp(1)]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, b.clone(), vec![bp(3)]).await.unwrap();
+    h.manager
+        .set_breakpoints(&h.owner.key, PathBuf::from("/p/off.py"), vec![Breakpoint { enabled: false, ..bp(5) }])
+        .await
+        .unwrap();
+    h.manager.set_function_breakpoints(&h.owner.key, vec![function_bp("run", true)]).await.unwrap();
     let id = h.start(config()).await.unwrap();
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
     let sent_for = |path: &str| -> Vec<Value> {
@@ -1995,10 +2018,10 @@ async fn force_stepping_suspends_breakpoints_until_the_next_stop() {
 #[tokio::test]
 async fn startup_sends_every_file_at_once_and_skips_files_with_nothing_enabled() {
     let h = harness(Script { hold_set_breakpoints: 2, ..Script::default() });
-    h.manager.set_breakpoints(PathBuf::from("/p/a.py"), vec![bp(1)]).await.unwrap();
-    h.manager.set_breakpoints(PathBuf::from("/p/b.py"), vec![bp(3)]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, PathBuf::from("/p/a.py"), vec![bp(1)]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, PathBuf::from("/p/b.py"), vec![bp(3)]).await.unwrap();
     let off = PathBuf::from("/p/off.py");
-    h.manager.set_breakpoints(off.clone(), vec![Breakpoint { enabled: false, ..bp(5) }]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, off.clone(), vec![Breakpoint { enabled: false, ..bp(5) }]).await.unwrap();
     // Waiting for each answer before the next request would stall until the request timeout.
     tokio::time::timeout(Duration::from_secs(5), h.start(config())).await.expect("requests pipelined").unwrap();
     let paths: Vec<Value> = requests(&h, "setBreakpoints").into_iter().map(|r| r["source"]["path"].clone()).collect();
@@ -2007,6 +2030,40 @@ async fn startup_sends_every_file_at_once_and_skips_files_with_nothing_enabled()
         h.manager.breakpoint_states(&off),
         [BreakpointState { line: 5, verified: false, message: Some("Disabled".into()) }]
     );
+}
+
+#[tokio::test]
+async fn sessions_get_only_their_windows_breakpoints_and_a_replaced_list_drops_stale_files() {
+    let h = harness(Script::default());
+    let other = "project-2";
+    h.manager.set_breakpoints(other, PathBuf::from("/p/other.py"), vec![bp(1)]).await.unwrap();
+    h.manager.set_function_breakpoints(other, vec![function_bp("elsewhere", true)]).await.unwrap();
+    let stale = PathBuf::from("/p/stale.py");
+    h.manager.set_breakpoints(&h.owner.key, stale.clone(), vec![bp(2)]).await.unwrap();
+    let id = h.start(config()).await.unwrap();
+    let paths = || -> Vec<(Value, Value)> {
+        requests(&h, "setBreakpoints")
+            .into_iter()
+            .map(|r| (r["source"]["path"].clone(), r["breakpoints"].clone()))
+            .collect()
+    };
+    assert_eq!(paths(), [(json!("/p/stale.py"), json!([{"line": 3}]))], "another window's file is not sent");
+    assert!(requests(&h, "setFunctionBreakpoints").is_empty(), "nor its method breakpoints");
+
+    // The window's list no longer has the stale file (#6116): replacing clears it in the session...
+    let kept = PathBuf::from("/p/kept.py");
+    h.manager.replace_breakpoints(&h.owner.key, BTreeMap::from([(kept.clone(), vec![bp(4)])])).await.unwrap();
+    assert_eq!(paths()[1..], [(json!("/p/stale.py"), json!([])), (json!("/p/kept.py"), json!([{"line": 5}]))]);
+    // ...unchanged files are not sent again...
+    h.manager.replace_breakpoints(&h.owner.key, BTreeMap::from([(kept.clone(), vec![bp(4)])])).await.unwrap();
+    assert_eq!(paths().len(), 3);
+    h.manager.stop(id).await.unwrap();
+    // ...and the next session gets only what the window lists.
+    let h2 = harness(Script::default());
+    h2.manager.set_breakpoints(&h2.owner.key, stale.clone(), vec![bp(2)]).await.unwrap();
+    h2.manager.replace_breakpoints(&h2.owner.key, BTreeMap::new()).await.unwrap();
+    h2.start(config()).await.unwrap();
+    assert!(requests(&h2, "setBreakpoints").is_empty());
 }
 
 #[tokio::test]
@@ -2209,7 +2266,7 @@ async fn godot_gets_resolved_paths() {
         Arc::new(FakeLauncher { log: log.clone(), script: Script::default() }),
     );
     let bp = Breakpoint { line: 0, condition: None, hit_condition: None, log_message: None, enabled: true };
-    manager.set_breakpoints(link.join("player.gd"), vec![bp]).await.unwrap();
+    manager.set_breakpoints("main", link.join("player.gd"), vec![bp]).await.unwrap();
     let id = manager.start(godot_launch(&link), owner).await.unwrap();
     let sent = log.lock().iter().find(|m| m["command"] == "setBreakpoints").cloned().unwrap();
     assert_eq!(sent["arguments"]["source"]["path"], json!(real.join("player.gd")));
@@ -2236,7 +2293,7 @@ async fn kotlin_configures_without_configuration_done_response() {
     let project = tempfile::tempdir().unwrap();
     let path = project.path().join("Main.kt");
     std::fs::write(&path, "package org.example\nfun main() {}\n").unwrap();
-    h.manager.set_breakpoints(path.clone(), vec![bp(1)]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, path.clone(), vec![bp(1)]).await.unwrap();
     let mut config = config();
     config.adapter = kotlin::ADAPTER.into();
     config.request = "attach".into();
@@ -2270,7 +2327,7 @@ async fn kotlin_official_release_ten_no_delay_runs() {
         let (owner, events) = recording_owner("kotlin-probe");
         let manager = DebugManager::new(Arc::new(LanguageRegistry::from_configs(Vec::new())));
         let h = Harness { manager, owner, events, log: Arc::default() };
-        h.manager.set_breakpoints(source.clone(), vec![bp(5)]).await.unwrap();
+        h.manager.set_breakpoints(&h.owner.key, source.clone(), vec![bp(5)]).await.unwrap();
         let id = h.manager.start_with(config.clone(), h.owner.clone(), |_| Some(adapter.clone())).await.unwrap();
         let stopped = h.wait_event(|e| matches!(e, DebugEvent::Stopped { reason, .. } if reason == "breakpoint")).await;
         let DebugEvent::Stopped { thread_id, .. } = stopped else { unreachable!() };
@@ -2292,6 +2349,21 @@ async fn kotlin_official_release_ten_no_delay_runs() {
     }
 }
 
+#[tokio::test]
+async fn stack_trace_leaves_out_a_frame_the_adapter_cannot_describe() {
+    let h = harness(Script { failing_frame: Some(1), ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    let frames = h.manager.stack_trace(id, 1).await.unwrap();
+    assert_eq!(frames.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["f0", "f2"]);
+    h.manager.stop(id).await.unwrap();
+
+    let h = harness(Script { failing_frame: Some(0), ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    let error = h.manager.stack_trace(id, 1).await.unwrap_err();
+    assert!(error.message.contains("<generated>"), "{error:?}");
+    h.manager.stop(id).await.unwrap();
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn netcoredbg_windows_source_paths_round_trip() {
@@ -2299,7 +2371,7 @@ async fn netcoredbg_windows_source_paths_round_trip() {
     let native = r"D:\work\LoginController.cs";
     let h = harness(Script { source_path: Some(native.into()), ..Script::default() });
     let path = PathBuf::from(client);
-    h.manager.set_breakpoints(path.clone(), vec![bp(25)]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, path.clone(), vec![bp(25)]).await.unwrap();
     let mut cfg = config();
     cfg.adapter = "netcoredbg".into();
     let id = h.start(cfg).await.unwrap();
@@ -2323,7 +2395,7 @@ async fn java_windows_source_paths_for_launch_and_attach() {
         ] {
             let h = harness(Script { source_path: Some(returned.into()), ..Script::default() });
             let path = PathBuf::from(client);
-            h.manager.set_breakpoints(path.clone(), vec![bp(4)]).await.unwrap();
+            h.manager.set_breakpoints(&h.owner.key, path.clone(), vec![bp(4)]).await.unwrap();
             let mut cfg = config();
             cfg.adapter = "java-debug".into();
             cfg.request = request.into();
@@ -3418,7 +3490,7 @@ async fn kotlin_lsp_gets_real_paths_and_its_link_holds_nothing() {
     let project = tempfile::tempdir().unwrap();
     let path = project.path().join("Main.kt");
     std::fs::write(&path, "package org.example\nfun main() {}\n").unwrap();
-    h.manager.set_breakpoints(path.clone(), vec![bp(1)]).await.unwrap();
+    h.manager.set_breakpoints(&h.owner.key, path.clone(), vec![bp(1)]).await.unwrap();
     let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
     assert_eq!(h.request("setBreakpoints")["arguments"]["source"]["path"], json!(path));
     let sent = &h.request("attach")["arguments"];

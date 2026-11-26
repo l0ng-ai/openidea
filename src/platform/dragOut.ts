@@ -5,6 +5,7 @@
  */
 import { call, commands, isTauri } from "./ipc";
 import { isRemoteWindow } from "./remote";
+import { isWebMode } from "./webBridge";
 
 /** The running drag, until it ends or the next press shows none is live. */
 let running: object | null = null;
@@ -14,7 +15,7 @@ const pressed = () => {
 
 /** Whether files can be dragged out of this window. */
 export function canDragOut(): boolean {
-  return isTauri() && !isRemoteWindow();
+  return isTauri() && !isWebMode() && !isRemoteWindow();
 }
 
 /**

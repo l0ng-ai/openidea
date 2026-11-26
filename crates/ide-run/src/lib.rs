@@ -10,6 +10,7 @@ pub mod gradle_jvm;
 pub mod import;
 pub mod java_agent;
 pub mod java_cmdline;
+pub mod java_hotswap;
 pub mod junit;
 mod process;
 pub mod python_path;
@@ -187,6 +188,11 @@ pub struct RunExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub test_runner: Option<String>,
+    /// The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+    /// on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub executor: Option<String>,
 }
 
 impl Default for RunExtras {
@@ -211,6 +217,7 @@ impl Default for RunExtras {
             stop_command: None,
             target: None,
             test_runner: None,
+            executor: None,
         }
     }
 }

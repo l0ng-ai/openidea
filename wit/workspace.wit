@@ -1,4 +1,4 @@
-package openidea:plugin@1.17.0;
+package openidea:plugin@1.18.0;
 
 interface workspace {
     use types.{error, location};
@@ -11,6 +11,12 @@ interface workspace {
     /// The open project containing an absolute document path, or `none`.
     /// Reading the returned project still requires `project.read`.
     project-of: func(path: string) -> option<project>;
+
+    /// The project of the window this call serves (API 1.18): the invoking window's for
+    /// commands and events, the editor's window's for `gutter-actions` and `hover-actions`.
+    /// `none` when the call serves no window. Unlike `project-of`, it tells overlapping
+    /// projects apart. Reading the returned project still requires `project.read`.
+    invoking-project: func() -> option<project>;
 
     /// What a path inside a project is.
     enum file-kind {
@@ -103,6 +109,10 @@ interface workspace {
         /// the current call's deadline fails. A closed project is not-found.
         /// Requires `project.read`.
         symbols: func(query: string, limit: u32) -> result<list<symbol-info>, error>;
+        /// Monotonically increasing project state generation (API 1.18).
+        /// Increments on project file changes. Fails with `not-found` when closed.
+        /// Requires `project.read`.
+        generation: func() -> result<u64, error>;
     }
 
     /// Projects open in any window. Requires `project.read`.

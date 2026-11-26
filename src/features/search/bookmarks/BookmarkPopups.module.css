@@ -36,7 +36,6 @@
   color: var(--fg);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .key:hover {
   border-color: var(--accent);

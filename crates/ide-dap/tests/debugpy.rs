@@ -47,7 +47,7 @@ async fn debugpy_end_to_end() {
     let sink: SharedSink = Arc::new(move |e: IdeEvent| sink_events.lock().push(e));
     let manager = DebugManager::new(Arc::new(LanguageRegistry::from_configs(Vec::new())));
     let bp = Breakpoint { line: 3, condition: None, hit_condition: None, log_message: None, enabled: true };
-    manager.set_breakpoints(script.clone(), vec![bp]).await.unwrap();
+    manager.set_breakpoints("main", script.clone(), vec![bp]).await.unwrap();
     let id = manager
         .start(
             LaunchConfig {
@@ -74,7 +74,7 @@ async fn debugpy_end_to_end() {
     assert!(vars.iter().any(|v| v.name == "total"), "{vars:?}");
     let v = manager.evaluate(id, Some(frames[0].id), "total + 100".into()).await.unwrap();
     assert_eq!(v.value, "100");
-    manager.set_breakpoints(script.clone(), vec![]).await.unwrap();
+    manager.set_breakpoints("main", script.clone(), vec![]).await.unwrap();
     manager.resume(id, thread_id).await.unwrap();
     wait(&events, |e| matches!(e, DebugEvent::Output { output, .. } if output.contains("total 3"))).await;
     wait(&events, |e| matches!(e, DebugEvent::Terminated)).await;
