@@ -13,8 +13,10 @@ export async function readRcFile(): Promise<RcFile | null> {
   const { homeDir, join } = await import("@tauri-apps/api/path");
   const home = await homeDir();
   for (const name of RC_FILES) {
+    // oxlint-disable-next-line no-await-in-loop -- rc files are tried in priority order; the first readable one wins
     const path = await join(home, name);
     try {
+      // oxlint-disable-next-line no-await-in-loop -- returns the first readable rc file; later names are tried only on failure
       return { path, text: await call(commands.fsReadText(path)) };
     } catch {
       // Not there (or unreadable): try the next name.
@@ -36,6 +38,7 @@ export async function readSourcedFiles(
   while (pending.length && sources.size < MAX_SOURCED_FILES) {
     const path = pending.shift()!;
     if (sources.has(path)) continue;
+    // oxlint-disable-next-line no-await-in-loop -- breadth-first walk: dedup, discovered sources and the 32-file cap need one-at-a-time processing
     const content = await read(path.replace(/^~(?=$|[\\/])/, home)).catch(() => null);
     sources.set(path, content);
     if (content !== null) pending.push(...sourcedPaths(content));

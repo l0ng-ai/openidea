@@ -5,14 +5,16 @@
  * `Meta+Shift+O`, `Alt+F7`, `F8`. Space separates chord strokes
  * (`Meta+K Meta+C`). A modifier pressed twice is `Shift Shift` (IDEA's double
  * Shift, `Ctrl Ctrl`…); pressed twice and held, then a key, `Alt Alt+Up`.
- * Keys are matched by physical position (`KeyboardEvent.code`), so ⌥-letter
- * combos work on macOS where `event.key` would be a symbol. Mouse shortcuts
+ * Keys match by the typed character for letters and unshifted punctuation (so
+ * AZERTY's ⌘, records `Meta+,`, not `Meta+M`), and by physical position
+ * (`KeyboardEvent.code`) when Shift or Alt are held, so ⌥-letter combos work on
+ * macOS where `event.key` would be a symbol. Mouse shortcuts
  * name the button 1-based (`Button1` = left, `Button4` = back side button, `Button5` = forward),
  * or the wheel direction (`WheelUp`, `WheelDown`), optionally with modifiers.
  */
 import { create } from "zustand";
-import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
-import { evaluateWhen, getContext } from "./context";
+import { executeAction, executeActionFrom, getAction, isActionEnabled, isActionKeyEnabled } from "./actions";
+import { evaluateWhen, getContext, type ContextKeys } from "./context";
 import { intellijMacos } from "./keymaps/intellij-macos";
 import { intellijWindows } from "./keymaps/intellij-windows";
 import { eclipseMacos } from "./keymaps/eclipse-macos";
@@ -375,17 +377,27 @@ export function letterOf(e: Pick<KeyboardEvent, "code" | "key"> & { altKey?: boo
   return null;
 }
 
+/** A printable ASCII character other than a letter, digit or space. */
+const ASCII_PUNCTUATION = /^[!-/:-@[-`{-~]$/;
+
 /** Converts a keydown event into a canonical stroke, or null for bare modifiers. */
 export function strokeOf(
   e: Pick<KeyboardEvent, "code" | "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
   let key: string | undefined;
-  const letter = letterOf(e);
-  if (letter) key = letter;
+  if (/^[a-zA-Z]$/.test(e.key) && !e.altKey) key = e.key.toUpperCase();
   else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
   else if (/^Numpad\d$/.test(e.code)) key = e.code.slice(6);
   else if (/^F\d{1,2}$/.test(e.code)) key = e.code;
-  else key = CODE_NAMES[e.code];
+  else if (/^Numpad/.test(e.code)) key = CODE_NAMES[e.code];
+  // Unshifted ASCII punctuation follows the layout, not the QWERTY position
+  // (AZERTY's comma sits on KeyM, so ⌘, must record `Meta+,` not `Meta+M`).
+  // Shift-held events keep the physical key — presets are written
+  // `Meta+Shift+]` — and so do Alt-held ones, since ⌥ on macOS and AltGr type
+  // symbols. Other characters (Cyrillic, Greek, accented letters) keep the
+  // physical key too, so Ctrl+C stays Ctrl+C on those layouts.
+  else if (!e.altKey && !e.shiftKey && ASCII_PUNCTUATION.test(e.key)) key = e.key;
+  else key = letterOf(e) ?? CODE_NAMES[e.code];
   if (!key) {
     if (["Shift", "Meta", "Control", "Alt"].includes(e.key)) return null;
     key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
@@ -555,6 +567,24 @@ function isPlainTextField(target: EventTarget | null): boolean {
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
 }
 
+/**
+ * A popup keeps text actions enabled so Find Action can run them. A key pressed outside the
+ * editor belongs to the control that has focus: Ctrl/Cmd+Enter commits or pushes instead of
+ * splitting a line in the editor behind the dialog. `keyWhen` still sees the real context.
+ */
+function whenContextForKey(e: KeyboardEvent, ctx: ContextKeys): ContextKeys {
+  const node = e.composedPath()[0] ?? e.target;
+  const el = node instanceof Element ? node : null;
+  if (el?.closest(".cm-editor")) return ctx;
+  if (!isPlainTextField(node) && !ctx.popupOpen) return ctx;
+  return { ...ctx, editorTextFocus: false, diffEditorFocus: false, suspendEditorKeys: true };
+}
+
+function actionEnabledForKey(action: NonNullable<ReturnType<typeof getAction>>, e: KeyboardEvent): boolean {
+  const ctx = getContext();
+  return isActionEnabled(action, whenContextForKey(e, ctx)) && evaluateWhen(action.keyWhen, ctx);
+}
+
 function isTextTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || !el.tagName) return false;
@@ -568,12 +598,13 @@ function isTextTarget(target: EventTarget | null): boolean {
  */
 export function isAltGrTyping(
   e: Pick<KeyboardEvent, "key" | "code" | "target" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey"> & {
+    composedPath?: KeyboardEvent["composedPath"];
     getModifierState?: (key: string) => boolean;
   },
 ): boolean {
   if (isMacHost() || !e.getModifierState?.("AltGraph")) return false;
   if (e.key !== "Dead" && e.key.length !== 1) return false;
-  if (!isTextTarget(e.target)) return false;
+  if (!isTextTarget(e.composedPath?.()[0] ?? e.target)) return false;
   // Ctrl+Alt+L on a layout with no AltGr character there still reports `l`: that is a shortcut.
   const key = strokeOf(e)?.split("+").pop();
   return e.key === "Dead" || e.key.toUpperCase() !== key;
@@ -665,6 +696,7 @@ export const FORWARDABLE_ACTIONS: ReadonlySet<string> = new Set([
   "toolwindow.debug",
   "toolwindow.hideActive",
   "toolwindow.hideAll",
+  "toolwindow.hideSide",
   "toolwindow.jumpToLast",
   "toolwindow.focusEditor",
   "toolwindow.maximize",
@@ -679,6 +711,19 @@ export const FORWARDABLE_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 const restrictedKeys = new WeakSet<Event>();
+
+function isForwardableAction(id: string, target: EventTarget | null): boolean {
+  if (FORWARDABLE_ACTIONS.has(id)) return true;
+  const el = target instanceof Element ? target : null;
+  // A frame rendered inside an already-open tool window may always toggle that enclosing pane,
+  // and a plugin frame may toggle its own contributed `toolwindow.plugin.<pluginId>.*` windows.
+  const hostToolWindow = el?.closest("[data-toolwindow]")?.getAttribute("data-toolwindow");
+  if (hostToolWindow && hostToolWindow !== "terminal" && id === `toolwindow.${hostToolWindow}`) {
+    return true;
+  }
+  const hostPlugin = el?.getAttribute("data-plugin-webview");
+  return !!hostPlugin && id.startsWith(`toolwindow.plugin.${hostPlugin}.`);
+}
 
 /**
  * Dispatches on `target` a shortcut that a plugin's sandboxed frame says was pressed in it and left
@@ -718,7 +763,7 @@ export function installKeyboardDispatcher(
       .map(([, id]) => id);
     for (const id of ids.reverse()) {
       const action = getAction(id);
-      if (!action || !isActionKeyEnabled(action)) continue;
+      if (!action || !actionEnabledForKey(action, e)) continue;
       return () => {
         e.preventDefault();
         e.stopPropagation();
@@ -747,9 +792,10 @@ export function installKeyboardDispatcher(
     if (!chord) {
       if (isAltGrTyping(e)) return;
       const hasCommandMod = e.metaKey || e.ctrlKey || e.altKey;
-      if (isPlainTextField(e.target)) {
+      const target = e.composedPath()[0] ?? e.target;
+      if (isPlainTextField(target)) {
         // Native deletion stays in the field; Shift bindings and terminal keys keep their own routing.
-        if ((e.key === "Backspace" || e.key === "Delete") && !e.shiftKey && !(e.target as Element).closest?.(".xterm"))
+        if ((e.key === "Backspace" || e.key === "Delete") && !e.shiftKey && !(target as Element).closest?.(".xterm"))
           return;
         if (!hasCommandMod && !/^(Shift\+)?(F\d{1,2}|Escape)$/.test(stroke)) return;
       }
@@ -790,7 +836,7 @@ export function installKeyboardDispatcher(
     }
     for (const id of [...preferred, ...fallback]) {
       const action = getAction(id);
-      if (action && isActionKeyEnabled(action, ctx) && (!restricted || FORWARDABLE_ACTIONS.has(id))) {
+      if (action && actionEnabledForKey(action, e) && (!restricted || isForwardableAction(id, e.target))) {
         e.preventDefault();
         e.stopPropagation();
         reset();

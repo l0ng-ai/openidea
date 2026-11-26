@@ -6,6 +6,8 @@ import { selectPluginTests } from "@/workbench/contributions";
 import { phpunitArgs, phpunitFilter } from "./phpunit";
 import type { RunConfig } from "@/platform/ipc";
 import { formatArgs, parseArgs } from "../configs";
+import { isJunitRunner } from "../application";
+import { JUNIT_RUNNER_MAIN } from "@/platform/javaLaunch";
 import { appendScriptArgs } from "../scriptArgs";
 import { djangoTestsOf } from "../djangoTypes";
 import { goTestParts, withoutGoSelection } from "../goArguments";
@@ -151,6 +153,10 @@ function jvmArgs(config: RunConfig, paths: string[][]): string[] | null {
     .map((p) => ({ cls: p[0]!, method: p[p.length - 1]!.replace(/\(\)$/, "") }));
   const classes = unique(paths.filter((p) => p.length === 1).map((p) => p[0]!));
   if (!tests.length && !classes.length) return null;
+  if (isJunitRunner(config)) {
+    const runner = config.args.slice(0, config.args.indexOf(JUNIT_RUNNER_MAIN) + 1);
+    return [...runner, ...unique(tests.map((t) => `${t.cls}#${t.method}`)), ...classes];
+  }
   if (config.kind === "maven" || /\bmvnw?\b/.test(config.command)) {
     const byClass = new Map<string, string[]>();
     for (const t of tests) byClass.set(t.cls, [...(byClass.get(t.cls) ?? []), t.method]);

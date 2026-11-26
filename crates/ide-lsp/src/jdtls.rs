@@ -7,7 +7,7 @@
 
 use crate::LspManager;
 use crate::server::{Running, Server};
-use ide_core::error::ErrorKind;
+use ide_core::error::{ErrorData, ErrorKind};
 use ide_core::event::LspRefreshKind;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
@@ -342,6 +342,27 @@ impl Drop for JavaExternalBuild {
     }
 }
 
+/// The Gradle tooling API's own messages for a build that failed, ahead of its cause.
+const GRADLE_TOOLING_FAILURES: [&str; 4] = [
+    "The supplied phased action failed with an exception",
+    "Could not run phased build action",
+    "Could not run build action",
+    "Could not fetch model of type",
+];
+
+/// A diagnostic's message on one line. Buildship marks a Gradle project whose sync failed with
+/// the tooling API's message on the first line and the build's own error last ("… failed with
+/// an exception.\nA problem occurred evaluating root project 'app'.\n<the error>"); that error is
+/// kept as the cause.
+fn launch_message(message: &str) -> String {
+    let mut lines = message.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or_default();
+    match lines.next_back() {
+        Some(cause) if GRADLE_TOOLING_FAILURES.iter().any(|m| first.contains(m)) => format!("{first} Cause: {cause}"),
+        _ => first.to_owned(),
+    }
+}
+
 /// Error diagnostics sorted by file and position, capped at `limit`, and their total.
 pub fn compile_errors(
     diagnostics: Vec<(PathBuf, lsp_types::Diagnostic)>,
@@ -354,7 +375,7 @@ pub fn compile_errors(
             path: path.into(),
             line: d.range.start.line + 1,
             column: d.range.start.character + 1,
-            message: d.message.lines().next().unwrap_or_default().to_owned(),
+            message: launch_message(&d.message),
         })
         .collect();
     errors.sort_by(|a, b| (&a.path, a.line, a.column).cmp(&(&b.path, b.line, b.column)));
@@ -518,6 +539,31 @@ fn not_imported(e: &IdeError) -> bool {
         || m.contains("not a java project")
         || m.contains("no project")
         || m.contains("cannot find")
+}
+
+const BUILD_FILES: [&str; 5] =
+    ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"];
+
+/// Errors on the build files of `module` and the builds enclosing it, nearest first, as
+/// `path: message` (relative to `root`). When m2e or Buildship can't configure a module (a build
+/// plugin or parent that doesn't resolve), it stays out of the Java model and these say why.
+fn build_file_errors(diagnostics: &[(PathBuf, lsp_types::Diagnostic)], root: &Path, module: &Path) -> Vec<String> {
+    let mut errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|(path, d)| {
+            d.severity == Some(lsp_types::DiagnosticSeverity::ERROR)
+                && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| BUILD_FILES.contains(&n))
+                && path.parent().is_some_and(|dir| module.starts_with(dir))
+        })
+        .map(|(path, d)| {
+            let message = launch_message(&d.message);
+            let message = message.trim().trim_end_matches(':');
+            (path.components().count(), format!("{}: {message}", path.strip_prefix(root).unwrap_or(path).display()))
+        })
+        .collect();
+    errors.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+    let mut seen = HashSet::new();
+    errors.into_iter().map(|(_, e)| e).filter(|e| seen.insert(e.clone())).collect()
 }
 
 /// The java-debug bundle is not loaded into jdtls.
@@ -844,12 +890,27 @@ impl LspManager {
         loop {
             match self.jdtls_command_cancellable(path, command, arguments.clone(), cancel).await {
                 Err(e) if not_imported(&e) && Instant::now() < deadline => {
+                    // An import that failed on the build file won't finish by waiting.
+                    if let Some(unconfigured) = self.unconfigured_module(path, cancel).await? {
+                        return Err(unconfigured);
+                    }
                     tracing::debug!("{command}: {e}; waiting for the project import");
                     cancellable_wait(cancel, tokio::time::sleep(Duration::from_millis(1500))).await?;
                 }
                 r => return r,
             }
         }
+    }
+
+    /// Why jdtls has no Java project for the module at `path`, when its build files say so.
+    async fn unconfigured_module(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<Option<IdeError>> {
+        let (server, _) = self.jdtls(path, cancel).await?;
+        let problems = build_file_errors(&server.diagnostics_snapshot(), &self.project_root, path);
+        Ok((!problems.is_empty()).then(|| IdeError {
+            kind: ErrorKind::InvalidInput,
+            message: format!("{SERVER}: {} is not a Java project: {}", path.display(), problems.join("; ")),
+            data: Some(ErrorData::JavaBuildProblems { problems }),
+        }))
     }
 
     fn running_java_projects<'a>(&self, files: &'a [PathBuf]) -> Vec<(Running, Vec<&'a Path>)> {
@@ -1004,12 +1065,21 @@ impl LspManager {
             };
             let cp = match self.java_classpath(module, test, cancel).await {
                 Ok(cp) => Some(cp),
-                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-                Err(e) if matches!(build, Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed)) => {
-                    tracing::debug!("java.project.getClasspaths: {e}; retaining all compile errors");
-                    None
+                Err(e)
+                    if e.kind == ErrorKind::Cancelled
+                        || matches!(e.data, Some(ErrorData::JavaBuildProblems { .. })) =>
+                {
+                    return Err(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => match self.unconfigured_module(module, cancel).await? {
+                    // The build "fails" on the build file's errors alone, with no compile errors to show.
+                    Some(unconfigured) => return Err(unconfigured),
+                    None if matches!(build, Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed)) => {
+                        tracing::debug!("java.project.getClasspaths: {e}; retaining all compile errors");
+                        None
+                    }
+                    None => return Err(e),
+                },
             };
             let java_home = match self.java_vm_location(module, cancel).await {
                 Ok(home) => home,
@@ -1245,7 +1315,66 @@ pub(crate) fn logged_build_plan_failure(message: &str) -> Option<(String, String
     Some((reason, body))
 }
 
+/// How long a failed Gradle sync waits for jdtls' incompatible-JDK message (sent a few ms later).
+const GRADLE_JDK_MESSAGE_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Buildship's log when a Gradle sync fails ("Synchronize project app failed due to an error
+/// connecting to the Gradle build.", then the stack trace), as (project, notification body).
+/// jdtls logs it below error level, so without this the import fails silently: every Java file
+/// shows unresolved types and nothing says why. The deepest `Caused by` is the build's own error.
+pub(crate) fn gradle_sync_failure(message: &str) -> Option<(String, String)> {
+    let first = message.lines().next()?;
+    let (_, rest) = first.split_once("Synchronize project ")?;
+    let (project, _) = rest.split_once(" failed due to ")?;
+    let cause = message
+        .lines()
+        .rev()
+        .find_map(|l| l.trim_start().strip_prefix("Caused by: "))
+        .or_else(|| message.lines().nth(1))
+        .map(|l| match l.split_once(": ") {
+            // `org.gradle.Some.Exception: what happened` → what happened
+            Some((class, text)) if class.contains('.') && !class.contains(char::is_whitespace) => text,
+            _ => l,
+        })
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && !c.starts_with("at "));
+    const MAX: usize = 500;
+    let cause = cause.map(|c| match c.char_indices().nth(MAX) {
+        Some((end, _)) => format!("{}…", &c[..end]),
+        None => c.to_owned(),
+    });
+    let body = match cause {
+        Some(cause) => format!(
+            "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. Cause: {cause}"
+        ),
+        None => format!(
+            "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project."
+        ),
+    };
+    Some((project.to_owned(), body))
+}
+
 impl LspManager {
+    /// A failed Gradle sync of `project` (see [`gradle_sync_failure`]), shown once. jdtls follows
+    /// a sync that failed on an incompatible JDK with "Can't use Java … to import Gradle project
+    /// …", which has its own notification with the fix; wait for it so that one is the only one.
+    pub(crate) fn report_gradle_sync_failure(&self, (project, body): (String, String)) {
+        let Some(me) = self.me.upgrade() else { return };
+        self.runtime.spawn(async move {
+            tokio::time::sleep(GRADLE_JDK_MESSAGE_WAIT).await;
+            if me.shown_message_containing(SERVER, &format!(" to import Gradle project {project}")) {
+                return;
+            }
+            if me.first_message(SERVER, &body) {
+                me.sink().emit(ide_core::IdeEvent::Notify {
+                    level: ide_core::event::NotifyLevel::Error,
+                    title: "Gradle project sync failed".into(),
+                    body: Some(body),
+                });
+            }
+        });
+    }
+
     /// JDT LS aborted its import with `message`: when reserved Windows device names
     /// below `root` are the cause, say which (once). The walk runs off the RPC thread.
     pub(crate) fn report_import_failure(&self, root: PathBuf, message: String) {
@@ -1271,6 +1400,36 @@ mod tests {
         let language: ide_language::LanguageConfig =
             toml::from_str(include_str!("../../../languages/java.toml")).unwrap();
         language.language_servers.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn a_module_without_java_configuration_reports_its_build_file_errors() {
+        let at = |path: &str, severity, message: &str| {
+            let d = lsp_types::Diagnostic { severity: Some(severity), message: message.into(), ..Default::default() };
+            (PathBuf::from(path), d)
+        };
+        use lsp_types::DiagnosticSeverity as S;
+        let diagnostics = [
+            at("/w/pom.xml", S::ERROR, "Non-resolvable import POM"),
+            at(
+                "/w/app-server/pom.xml",
+                S::ERROR,
+                "Could not calculate build plan: Plugin x:y:9.9.9 could not be resolved:\nFailure to find…",
+            ),
+            at("/w/app-server/pom.xml", S::WARNING, "Overriding managed version"),
+            at("/w/app-server/src/main/java/Main.java", S::ERROR, "Main cannot be resolved"),
+            at("/w/app-system/pom.xml", S::ERROR, "Another module's error"),
+            at("/w/app-server/build.gradle", S::ERROR, "Could not run phased build action"),
+        ];
+        assert_eq!(
+            build_file_errors(&diagnostics, Path::new("/w"), Path::new("/w/app-server")),
+            [
+                "app-server/pom.xml: Could not calculate build plan: Plugin x:y:9.9.9 could not be resolved",
+                "app-server/build.gradle: Could not run phased build action",
+                "pom.xml: Non-resolvable import POM",
+            ]
+        );
+        assert!(build_file_errors(&diagnostics, Path::new("/w"), Path::new("/w/app-module")).len() == 1);
     }
 
     #[test]
@@ -1322,6 +1481,43 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn a_failed_gradle_sync_is_explained_with_its_root_cause() {
+        let log = "Nov 25, 2026, 2:00:14 PM Synchronize project repro failed due to an error connecting to the Gradle build.\n\
+            org.gradle.tooling.BuildActionFailureException: The supplied phased action failed with an exception.\n\
+            \tat org.gradle.tooling.internal.consumer.connection.PhasedActionAwareConsumerConnection.doRun(PhasedActionAwareConsumerConnection.java:58)\n\
+            Caused by: org.gradle.api.plugins.InvalidPluginException: An exception occurred applying plugin request [id: 'war']\n\
+            \tat x\n\
+            Caused by: java.lang.IllegalArgumentException: Unable to determine constructor argument #2: missing parameter of type IdeArtifactRegistry, or no service of type IdeArtifactRegistry.\n\
+            \tat org.gradle.groovy.scripts.DefaultScript.apply(DefaultScript.java:133)\n\
+            \t... 12 more";
+        let (project, body) = gradle_sync_failure(log).unwrap();
+        assert_eq!(project, "repro");
+        assert_eq!(
+            body,
+            "Gradle could not sync repro. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. \
+            Cause: Unable to determine constructor argument #2: missing parameter of type IdeArtifactRegistry, or no service of type IdeArtifactRegistry."
+        );
+
+        // Without a `Caused by`, the logged exception's own message.
+        let (_, body) = gradle_sync_failure(
+            "Synchronize project app failed due to an error in the referenced Gradle build.\n\
+            org.gradle.tooling.BuildException: Could not run build action.\n\tat y",
+        )
+        .unwrap();
+        assert!(body.ends_with(" Cause: Could not run build action."), "{body}");
+
+        // A cause that is a plain sentence keeps its colons.
+        let (_, body) = gradle_sync_failure(
+            "Synchronize project app failed due to an error connecting to the Gradle build.\nx\nCaused by: Build failed: see above",
+        )
+        .unwrap();
+        assert!(body.ends_with(" Cause: Build failed: see above"), "{body}");
+
+        assert_eq!(gradle_sync_failure("Synchronizing projects\nCaused by: x.Y: z"), None);
+        assert_eq!(gradle_sync_failure("Failed to configure some Maven project(s)"), None);
     }
 
     #[test]
@@ -1462,6 +1658,24 @@ mod tests {
         std::fs::write(&prefs, format!("{}=error\n", ACCESS_OPTIONS[0])).unwrap();
         assert!(!cache_owned_maven_settings(root));
         assert_eq!(std::fs::read_to_string(prefs).unwrap(), format!("{}=error\n", ACCESS_OPTIONS[0]));
+    }
+
+    #[test]
+    fn a_failed_gradle_sync_keeps_its_cause_on_one_line() {
+        let marker = "The supplied phased action failed with an exception.\n\
+            A problem occurred configuring root project 'app'.\n\
+            A problem occurred evaluating root project 'app'.\n\
+            missing generated schema";
+        assert_eq!(
+            launch_message(marker),
+            "The supplied phased action failed with an exception. Cause: missing generated schema"
+        );
+        assert_eq!(
+            launch_message("The supplied phased action failed with an exception."),
+            "The supplied phased action failed with an exception."
+        );
+        // Other messages keep their first line only.
+        assert_eq!(launch_message("x cannot be resolved\nmore detail"), "x cannot be resolved");
     }
 
     #[test]

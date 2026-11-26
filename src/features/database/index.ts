@@ -31,6 +31,7 @@ import { installValueEditorActions } from "./valueEditorActions";
 import { registerResultTabActions } from "./resultTabActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
+import { DIAGRAM_KIND, diagramTitle } from "./erDiagram";
 import { databaseRequest, projectRequest } from "./requests";
 import { nodeTarget, type DbNode } from "./nodes";
 import { registerDatabaseTreeActions } from "./treeActions";
@@ -149,6 +150,12 @@ export function activate(): () => void {
       // Switching tabs keeps the rows, filters, page and unsubmitted edits without querying again.
       keepAlive: true,
     }),
+    registerEditorKind({
+      kind: DIAGRAM_KIND,
+      component: lazyComponent(() => import("./DiagramView").then((m) => m.DiagramEditor)),
+      title: diagramTitle,
+      icon: () => "db-table",
+    }),
     registerOverlay({
       id: "database.dialogs",
       component: lazyWhen(useDialogOpen, () => import("./Dialogs").then((m) => m.DatabaseDialogs)),
@@ -189,6 +196,7 @@ export function activate(): () => void {
         activeResult: null,
         selectedSource: null,
         selectedNode: null,
+        selectedNodes: [],
         treeExpanded: new Set(),
         treeReveal: null,
         manualCommit: new Set(),

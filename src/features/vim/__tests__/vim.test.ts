@@ -21,7 +21,10 @@ import { updateVimSettings, useVimSettings, VIM_SETTINGS_KEY } from "../settings
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const until = async (cond: () => boolean) => {
-  for (let i = 0; i < 50 && !cond(); i++) await tick();
+  for (let i = 0; i < 50 && !cond(); i++) {
+    // oxlint-disable-next-line no-await-in-loop -- polls one tick at a time until the condition holds
+    await tick();
+  }
   expect(cond()).toBe(true);
 };
 
@@ -421,10 +424,12 @@ describe("Vim engine", () => {
       for (const beforeCleanup of [false, true]) {
         const view = makeView();
         composeKorean(view);
+        // oxlint-disable-next-line no-await-in-loop -- the tick must finish before dispatching this case's keydown
         if (!beforeCleanup) await tick();
         view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
         expect(view.state.selection.main.head).toBe(0);
         typeText(view, "j");
+        // oxlint-disable-next-line no-await-in-loop -- assertions depend on this tick before the next case starts
         await tick();
         expect(view.state.doc.toString()).toBe("one two\nthree");
         expect(view.state.selection.main.head).toBe(8);

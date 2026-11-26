@@ -5,7 +5,7 @@
  * batches.
  */
 import { readClipboardPlainText, readClipboardPng, writeClipboardText } from "@/platform/clipboard";
-import { choosePath } from "@/platform/choosePath";
+import { choosePath, chooseSavePath } from "@/platform/choosePath";
 import { providePluginTestParser, providePluginTestSelector } from "@/workbench/contributions";
 import {
   contentTabData,
@@ -63,6 +63,7 @@ import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
 import type { PluginLogEditorData } from "./views/logTab";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
 import { revealWindowView } from "./views/viewWindows";
+import { openPluginDialog } from "./views/dialog";
 import { runPluginCommand, usePlugins } from "./store";
 
 // --- status bar items ---------------------------------------------------------
@@ -510,18 +511,31 @@ const openPrompts = new Map<string, AbortController>();
 /** The user's answer in the shape `plugin_answer_prompt` takes: `null` when dismissed. */
 async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | null> {
   switch (prompt.kind) {
+    case "pickFile":
     case "pickDirectory": {
       if (signal.aborted) return null;
       try {
-        const path = await choosePath(
-          { directory: true, title: prompt.title, defaultPath: prompt.initial ?? undefined },
-          signal,
-        );
+        let path: string | null;
+        if (prompt.kind === "pickDirectory") {
+          path = await choosePath(
+            { directory: true, title: prompt.title, defaultPath: prompt.initial ?? undefined },
+            signal,
+          );
+        } else {
+          const options = { title: prompt.title, filters: prompt.filters };
+          path = prompt.save
+            ? await chooseSavePath({ ...options, defaultPath: prompt.name ?? undefined }, signal)
+            : await choosePath({ ...options, directory: false }, signal);
+        }
         if (signal.aborted) return null;
         return path ? [ipcPath(path)] : null;
       } catch (error) {
         if (!signal.aborted)
-          notifications().notify({ level: "error", title: tx("Cannot choose a directory"), body: String(error) });
+          notifications().notify({
+            level: "error",
+            title: prompt.kind === "pickDirectory" ? tx("Cannot choose a directory") : tx("Cannot choose a file"),
+            body: String(error),
+          });
         return null;
       }
     }
@@ -812,7 +826,7 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void answerClipboard(e.requestId, e.pluginId);
       return true;
     case "revealView":
-      revealWindowView(e.pluginId, e.view);
+      if (!openPluginDialog(e.pluginId, e.view)) revealWindowView(e.pluginId, e.view);
       return true;
     default:
       return false;

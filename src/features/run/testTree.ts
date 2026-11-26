@@ -9,10 +9,14 @@ export const testTree: {
   exportResults: (() => void) | null;
   showDurations: boolean | null;
   toggleDurations: (() => void) | null;
+  selectFirstFailed: boolean | null;
+  toggleSelectFirstFailed: (() => void) | null;
 } = {
   expandAll: null,
   collapseAll: null,
   exportResults: null,
   showDurations: null,
   toggleDurations: null,
+  selectFirstFailed: null,
+  toggleSelectFirstFailed: null,
 };

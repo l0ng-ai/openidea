@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { registerAction } from "@/platform/actions";
 import { clearContext, getContext, setContext, type ContextKeys } from "@/platform/context";
+import { useProject } from "@/platform/project";
+import { projectKey } from "@/platform/search";
 import type { SeDeps } from "../everywhere/controller";
 
 const defaultFindFiles: SeDeps["findFiles"] = async (q) =>
@@ -168,7 +170,7 @@ describe("Search Everywhere dialog", () => {
   });
 
   it("⌥↑ / ⌥↓ browse the tab's search history and restore the draft", async () => {
-    localStorage.removeItem("openidea.search.everywhereHistory.v1");
+    localStorage.removeItem(projectKey("openidea.search.everywhereHistory.v1"));
     pushSearchHistory("all", "older");
     pushSearchHistory("all", "newer");
     pushSearchHistory("files", "other tab");
@@ -186,6 +188,21 @@ describe("Search Everywhere dialog", () => {
     key("ArrowDown");
     expect(useSearchEverywhere.getState().query).toBe("draft");
     expect(searchHistory("all")).toEqual(["newer", "older"]);
+  });
+
+  it("keeps each project's Search Everywhere history apart (#5758)", () => {
+    const before = useProject.getState().project;
+    const open = (root: string) => useProject.setState({ project: { root, name: "p", isGit: false } as never });
+    try {
+      open("/work/a");
+      pushSearchHistory("all", "FooService");
+      open("/work/b");
+      expect(searchHistory("all")).toEqual([]);
+      open("/work/a");
+      expect(searchHistory("all")).toEqual(["FooService"]);
+    } finally {
+      useProject.setState({ project: before });
+    }
   });
 
   it("⇥ cycles scopes and repeating the scope action toggles non-project items", async () => {
@@ -361,6 +378,37 @@ describe("Search Everywhere multi-selection", () => {
     expect(selectedOptions()).toEqual([resultOptions()[1]]);
     expect(screen.getByRole("listbox", { name: "Results" })).toHaveAttribute("aria-multiselectable", "true");
   });
+
+  it.each(["macos", "windows", "linux"] as const)(
+    "moves with Ctrl+N / Ctrl+P like the arrows on macOS only (%s)",
+    async (os) => {
+      const previous = usePlatform.getState().os;
+      usePlatform.setState({ os });
+      try {
+        const input = await showDuplicateFiles();
+        const ctrl = (key: string) => fireEvent.keyDown(input, { key, ctrlKey: true });
+        const at = () => resultOptions().indexOf(selectedOptions()[0]!);
+        expect(at()).toBe(0);
+        ctrl("n");
+        ctrl("n");
+        expect(at()).toBe(os === "macos" ? 2 : 0);
+        if (os !== "macos") return;
+        // At the end it wraps around, as ↓ does; the query and focus stay put.
+        ctrl("n");
+        expect(at()).toBe(0);
+        ctrl("p");
+        expect(at()).toBe(2);
+        expect(input).toHaveValue("index");
+        expect(input).toHaveFocus();
+        // Cmd+N or Ctrl+Shift+N are other keys.
+        fireEvent.keyDown(input, { key: "n", ctrlKey: true, metaKey: true });
+        fireEvent.keyDown(input, { key: "N", ctrlKey: true, shiftKey: true });
+        expect(at()).toBe(2);
+      } finally {
+        usePlatform.setState({ os: previous });
+      }
+    },
+  );
 
   it("Shift-click selects a range without opening; an ordinary click opens just that file", async () => {
     await showDuplicateFiles();

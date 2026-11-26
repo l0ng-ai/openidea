@@ -95,8 +95,6 @@ pub struct AgentSettings {
     pub show_usage_limits: bool,
     /// What the session has cost so far, as the agent reports it.
     pub show_cost: bool,
-    /// A finished turn's work folds into one line under its message, leaving the reply.
-    pub fold_turns: bool,
     /// Streaming text is revealed at a steady pace rather than chunk by chunk.
     pub smooth_text: bool,
     /// Conversations and the composer expand to the full width of the pane instead of staying in a centred column.
@@ -145,7 +143,6 @@ impl Default for AgentSettings {
             show_work_time: true,
             show_usage_limits: true,
             show_cost: false,
-            fold_turns: true,
             smooth_text: true,
             fit_window_width: false,
             thinking: ThinkingDisplay::Auto,
@@ -420,10 +417,10 @@ impl Default for McpServerSettings {
     }
 }
 
-/// Tools › Download sources: a mirror the installer tries when `github.com` is slow or
-/// unreachable.
+/// Tools › Download sources: mirrors the installer tries, in order, when `github.com` is slow
+/// or unreachable.
 ///
-/// The mirror is a proxy prefix: the official URL is appended to it unchanged
+/// A mirror is a proxy prefix: the official URL is appended to it unchanged
 /// (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
 /// public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
 /// hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
@@ -431,8 +428,9 @@ impl Default for McpServerSettings {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ToolDownloadSettings {
-    /// Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
-    /// every download on its official host.
+    /// Proxy prefixes prepended to `https://github.com/…` archive addresses only, separated by
+    /// commas or whitespace and tried in order before the official host; empty keeps every
+    /// download on its official host.
     pub github_mirror: String,
 }
 
@@ -826,6 +824,8 @@ pub struct AppearanceSettings {
     pub contrast_scrollbars: bool,
     /// Adjust colours for red-green vision deficiency.
     pub red_green_vision: bool,
+    /// Turn off animations and transitions (also on when the OS asks for reduced motion).
+    pub reduce_motion: bool,
     pub different_tool_window_background: bool,
     pub compact_mode: bool,
     /// IDEA "Use smaller indents in trees": tool window trees indent less per level.
@@ -941,6 +941,8 @@ pub struct FileIconThemeOptions {
 #[serde(default, rename_all = "camelCase")]
 pub struct MainToolbarSettings {
     pub left: Vec<String>,
+    /// Centred in the toolbar (between the other two groups when they leave too little room).
+    pub center: Vec<String>,
     pub right: Vec<String>,
     /// Widgets the user removed.
     pub hidden: Vec<String>,
@@ -964,6 +966,7 @@ impl Default for AppearanceSettings {
             ui_font_fallback: String::new(),
             contrast_scrollbars: false,
             red_green_vision: false,
+            reduce_motion: false,
             different_tool_window_background: false,
             compact_mode: false,
             small_tree_indents: false,
@@ -1216,6 +1219,7 @@ pub struct LanguagesSettings {
     pub markdown: MarkdownSettings,
     pub arduino: ArduinoSettings,
     pub zig: ZigSettings,
+    pub flutter: FlutterSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -1247,6 +1251,7 @@ impl Default for LanguagesSettings {
             markdown: MarkdownSettings::default(),
             arduino: ArduinoSettings::default(),
             zig: ZigSettings::default(),
+            flutter: FlutterSettings::default(),
         }
     }
 }
@@ -1513,6 +1518,15 @@ pub struct ZigSettings {
     pub zig: String,
 }
 
+/// The Flutter plugin's "Flutter SDK path".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FlutterSettings {
+    /// Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+    /// `PATH`. Empty = `PATH`.
+    pub sdk: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GoSettings {
@@ -1655,6 +1669,20 @@ pub struct MavenSettings {
     /// Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
     /// dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
     pub update_snapshots: bool,
+    /// Who runs the JUnit 5 tests of the gutter's Run / Debug.
+    pub run_tests_using: MavenRunTestsUsing,
+}
+
+/// Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+/// and run actions are delegated to Maven.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MavenRunTestsUsing {
+    /// OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`).
+    #[default]
+    Ide,
+    /// Surefire (`mvn test -Dtest=…`).
+    Maven,
 }
 
 impl MavenSettings {
@@ -2093,7 +2121,7 @@ mod tests {
 
     #[test]
     fn agent_meters_default_and_round_trip() {
-        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
+        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true,"foldTurns":true}}"#).unwrap();
         assert!(old.agents.show_cost);
         assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
         assert!(!old.agents.fit_window_width);
@@ -2316,6 +2344,7 @@ mod maven_linkage_tests {
         let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
         assert!(old.runner_jre.is_empty());
         assert!(!old.delegate_build);
+        assert_eq!(old.run_tests_using, MavenRunTestsUsing::Ide);
         assert!(MavenSettings::default().runner_jre.is_empty());
         let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), delegate_build: true, ..old };
         let encoded = serde_json::to_string(&settings).unwrap();

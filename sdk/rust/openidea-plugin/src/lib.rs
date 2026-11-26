@@ -102,6 +102,23 @@ pub mod hover_actions_bindings {
     });
 }
 
+/// The optional `completion-list-provider` export (API 1.16): completion that
+/// can mark its list incomplete.
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod completion_list_bindings {
+    wit_bindgen::generate!({
+        world: "completion-list-exports",
+        path: "wit",
+        pub_export_macro: true,
+        export_macro_name: "__export_completion_list_world",
+        default_bindings_module: "openidea_plugin::completion_list_bindings",
+        with: {
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+        },
+    });
+}
+
 /// The `editor-providers` world: only the `providers` export, merged with
 /// `plugin` (world `plugin-providers`).
 #[cfg(target_arch = "wasm32")]
@@ -114,7 +131,7 @@ pub mod providers_bindings {
         export_macro_name: "__export_editor_providers_world",
         default_bindings_module: "openidea_plugin::providers_bindings",
         with: {
-            "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
         },
     });
 }
@@ -131,10 +148,10 @@ pub mod views_bindings {
         export_macro_name: "__export_views_world",
         default_bindings_module: "openidea_plugin::views_bindings",
         with: {
-            "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.15.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.15.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.15.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.18.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.18.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.18.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
@@ -146,7 +163,7 @@ pub mod indexing_bindings {
         world: "indexing", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_indexing_world",
         default_bindings_module: "openidea_plugin::indexing_bindings",
-        with: { "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -158,10 +175,10 @@ pub mod details_bindings {
         export_macro_name: "__export_details_world",
         default_bindings_module: "openidea_plugin::details_bindings",
         with: {
-            "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.15.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.15.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.15.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.18.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.18.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.18.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
@@ -173,7 +190,7 @@ pub mod semantic_bindings {
         world: "semantic-tokens", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_semantic_tokens_world",
         default_bindings_module: "openidea_plugin::semantic_bindings",
-        with: { "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -185,8 +202,8 @@ pub mod diagnostics_bindings {
         export_macro_name: "__export_diagnostics_world",
         default_bindings_module: "openidea_plugin::diagnostics_bindings",
         with: {
-            "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/diagnostics@1.15.0": crate::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/diagnostics@1.18.0": crate::bindings::openidea::plugin::diagnostics,
         },
     });
 }
@@ -198,7 +215,7 @@ pub mod hover_bindings {
         world: "hover", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_hover_world",
         default_bindings_module: "openidea_plugin::hover_bindings",
-        with: { "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -210,11 +227,11 @@ pub mod commit_checks_bindings {
         export_macro_name: "__export_commit_checks_world",
         default_bindings_module: "openidea_plugin::commit_checks_bindings",
         with: {
-            "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.15.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.15.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.15.0": crate::bindings::openidea::plugin::invocation,
-            "openidea:plugin/commit@1.15.0": crate::bindings::openidea::plugin::commit,
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.18.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.18.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.18.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/commit@1.18.0": crate::bindings::openidea::plugin::commit,
         },
     });
 }
@@ -226,7 +243,7 @@ pub mod inlay_bindings {
         world: "inlay-hints", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_inlay_hints_world",
         default_bindings_module: "openidea_plugin::inlay_bindings",
-        with: { "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -237,7 +254,7 @@ pub mod file_actions_bindings {
         world: "file-actions-provider", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_file_actions_world",
         default_bindings_module: "openidea_plugin::file_actions_bindings",
-        with: { "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -249,10 +266,10 @@ pub mod endpoints_bindings {
         export_macro_name: "__export_endpoints_world",
         default_bindings_module: "openidea_plugin::endpoints_bindings",
         with: {
-            "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.15.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.15.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.15.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.18.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.18.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.18.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
@@ -265,16 +282,16 @@ pub mod search_bindings {
         export_macro_name: "__export_search_world",
         default_bindings_module: "openidea_plugin::search_bindings",
         with: {
-            "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/workspace@1.15.0": crate::bindings::openidea::plugin::workspace,
-            "openidea:plugin/editor@1.15.0": crate::bindings::openidea::plugin::editor,
-            "openidea:plugin/invocation@1.15.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.18.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.18.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.18.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }
 
 /// The plugin API version this SDK targets.
-pub const API_VERSION: &str = "1.15";
+pub const API_VERSION: &str = "1.18";
 
 /// A plugin. One instance lives as long as the plugin's Wasm instance (until
 /// it is disabled, crashes or is reclaimed when idle).
@@ -324,6 +341,7 @@ macro_rules! __optional_exports {
     (mcp, $plugin:ty, $component:ident) => { $crate::__mcp_exports!($plugin, $component); };
     (run_configurations, $plugin:ty, $component:ident) => { $crate::__run_configurations_exports!($plugin, $component); };
     (launch_configurations, $plugin:ty, $component:ident) => { $crate::__launch_configurations_exports!($plugin, $component); };
+    (execution_configurations, $plugin:ty, $component:ident) => { $crate::__execution_configurations_exports!($plugin, $component); };
     (test_results, $plugin:ty, $component:ident) => { $crate::__test_results_exports!($plugin, $component); };
 
     (providers, $plugin:ty, $component:ident) => {
@@ -343,6 +361,9 @@ macro_rules! __optional_exports {
     };
     (hover_actions, $plugin:ty, $component:ident) => {
         $crate::__hover_actions_exports!($plugin, $component);
+    };
+    (completion_list, $plugin:ty, $component:ident) => {
+        $crate::__completion_list_exports!($plugin, $component);
     };
     (search, $plugin:ty, $component:ident) => { $crate::__search_exports!($plugin, $component); };
     (endpoints, $plugin:ty, $component:ident) => {
@@ -391,6 +412,31 @@ macro_rules! __optional_exports {
         }
 
     $crate::syntax_bindings::__export_syntax_world!($component with_types_in $crate::syntax_bindings);
+    };
+}
+
+/// `register_plugin!(T, providers, completion_list)`: `T` also exports
+/// [`Providers::completion_list`](crate::providers::Providers::completion_list).
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __completion_list_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::completion_list_bindings::exports::openidea::plugin::completion_list_provider::Guest
+            for $component
+        {
+            fn completion(
+                doc: $crate::completion_list_bindings::exports::openidea::plugin::completion_list_provider::Document,
+                at: $crate::bindings::openidea::plugin::types::Position,
+                trigger: ::core::option::Option<::std::string::String>,
+            ) -> $crate::completion_list_bindings::exports::openidea::plugin::completion_list_provider::CompletionList
+            {
+                $crate::__rt::completion_list::<$plugin>(doc, at, trigger)
+            }
+        }
+        $crate::completion_list_bindings::__export_completion_list_world!(
+            $component with_types_in $crate::completion_list_bindings
+        );
     };
 }
 
@@ -793,6 +839,25 @@ pub mod __rt {
     use crate::providers as p;
     use crate::providers_bindings::exports::openidea::plugin::providers as w;
 
+    /// A completion item in the bindings of `$m` (`providers` or `completion-list-provider`).
+    macro_rules! completion_item {
+        ($m:ident, $i:expr) => {{
+            let i = $i;
+            $m::CompletionItem {
+                label: i.label,
+                detail: i.detail,
+                kind: i.kind.map(|k| k.as_str().to_owned()),
+                insert_text: i.insert_text,
+                snippet: i.snippet,
+                replace: i.replace.map(crate::host::__range_to),
+                sort_text: i.sort_text,
+                filter_text: i.filter_text,
+                documentation: i.documentation,
+                additional_edits: i.additional_edits.into_iter().map(edit_out).collect(),
+            }
+        }};
+    }
+
     fn doc(d: w::Document) -> p::Document {
         p::Document { path: d.path, language: d.language, version: d.version, text: d.text }
     }
@@ -813,19 +878,22 @@ pub mod __rt {
         let d = doc(d);
         with::<T, _>(|x| x.completion(&d, at(pos), trigger.as_deref()))
             .into_iter()
-            .map(|i| w::CompletionItem {
-                label: i.label,
-                detail: i.detail,
-                kind: i.kind.map(|k| k.as_str().to_owned()),
-                insert_text: i.insert_text,
-                snippet: i.snippet,
-                replace: i.replace.map(crate::host::__range_to),
-                sort_text: i.sort_text,
-                filter_text: i.filter_text,
-                documentation: i.documentation,
-                additional_edits: i.additional_edits.into_iter().map(edit_out).collect(),
-            })
+            .map(|i| completion_item!(w, i))
             .collect()
+    }
+
+    pub fn completion_list<T: Plugin + p::Providers + Default>(
+        d: crate::completion_list_bindings::exports::openidea::plugin::completion_list_provider::Document,
+        pos: b::types::Position,
+        trigger: Option<String>,
+    ) -> crate::completion_list_bindings::exports::openidea::plugin::completion_list_provider::CompletionList {
+        use crate::completion_list_bindings::exports::openidea::plugin::completion_list_provider as cl;
+        let d = p::Document { path: d.path, language: d.language, version: d.version, text: d.text };
+        let list = with::<T, _>(|x| x.completion_list(&d, at(pos), trigger.as_deref()));
+        cl::CompletionList {
+            items: list.items.into_iter().map(|i| completion_item!(cl, i)).collect(),
+            incomplete: list.incomplete,
+        }
     }
 
     pub fn inline_completion<T: Plugin + p::Providers + Default>(
@@ -1240,6 +1308,37 @@ pub mod __rt {
             })
             .collect()
     }
+    pub fn execution_configurations<T: Plugin + crate::ExecutionConfigurations + Default>(
+        root: &str,
+    ) -> Vec<crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations::ExecutionConfiguration>
+    {
+        use crate::bindings::openidea::plugin::run::OutputMode as WitMode;
+        use crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations as w;
+        use crate::execution_configurations_bindings::openidea::plugin::launch_configurations as w_launch;
+        with::<T, _>(|p| p.execution_configurations(root))
+            .into_iter()
+            .map(|e| w::ExecutionConfiguration {
+                id: e.launch.config.id,
+                name: e.launch.config.name,
+                program: e.launch.config.program,
+                args: e.launch.config.args,
+                cwd: e.launch.config.cwd,
+                test: e.launch.config.test,
+                framework: e.launch.config.framework,
+                env: e.launch.env,
+                debugger: e.launch.debugger.map(|d| match d {
+                    crate::Debugger::Launch { language } => w_launch::Debugger::Launch(language),
+                    crate::Debugger::AttachChild { kind, command_contains } => {
+                        w_launch::Debugger::AttachChild(w_launch::AttachChild { kind, command_contains })
+                    }
+                }),
+                output_mode: match e.output_mode {
+                    crate::OutputMode::Pipes => WitMode::Pipes,
+                    crate::OutputMode::Pty => WitMode::Pty,
+                },
+            })
+            .collect()
+    }
     pub fn select_tests<T: Plugin + crate::TestResults + Default>(
         config: &str,
         tests: &[Vec<String>],
@@ -1472,7 +1571,18 @@ pub mod run_configurations_bindings {
 pub mod launch_configurations_bindings {
     wit_bindgen::generate!({ world: "launch-configurations-provider", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_launch_configurations_world", default_bindings_module: "openidea_plugin::launch_configurations_bindings",
-        with: { "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types },
+    });
+}
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod execution_configurations_bindings {
+    wit_bindgen::generate!({ world: "execution-configurations-provider", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_execution_configurations_world", default_bindings_module: "openidea_plugin::execution_configurations_bindings",
+        with: {
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/run@1.18.0": crate::bindings::openidea::plugin::run,
+        },
     });
 }
 #[cfg(target_arch = "wasm32")]
@@ -1480,7 +1590,7 @@ pub mod launch_configurations_bindings {
 pub mod test_results_bindings {
     wit_bindgen::generate!({ world: "test-results-provider", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_tests_world", default_bindings_module: "openidea_plugin::test_results_bindings",
-        with: { "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types },
     });
 }
 #[doc(hidden)]
@@ -1509,6 +1619,18 @@ macro_rules! __launch_configurations_exports {
 }
 #[doc(hidden)]
 #[macro_export]
+macro_rules! __execution_configurations_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations::Guest for $component {
+            fn configurations(root: String) -> Vec<$crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations::ExecutionConfiguration> {
+                $crate::__rt::execution_configurations::<$plugin>(&root)
+            }
+        }
+        $crate::execution_configurations_bindings::__export_execution_configurations_world!($component with_types_in $crate::execution_configurations_bindings);
+    };
+}
+#[doc(hidden)]
+#[macro_export]
 macro_rules! __test_results_exports {
     ($plugin:ty, $component:ident) => {
         impl $crate::test_results_bindings::exports::openidea::plugin::test_results::Guest for $component {
@@ -1530,7 +1652,7 @@ pub mod language_features;
 pub mod language_features_bindings {
     wit_bindgen::generate!({world: "editor-language-features", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_language_features_world", default_bindings_module: "openidea_plugin::language_features_bindings",
-        with: { "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -1562,7 +1684,7 @@ fn gutter_actions(doc: $crate::language_features_bindings::exports::openidea::pl
 pub mod injections_bindings {
     wit_bindgen::generate!({world: "language-injections", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_injections_world", default_bindings_module: "openidea_plugin::injections_bindings",
-        with: { "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -1592,8 +1714,8 @@ pub mod mcp_bindings {
     wit_bindgen::generate!({ world: "mcp-tools", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_mcp_world", default_bindings_module: "openidea_plugin::mcp_bindings",
         with: {
-            "openidea:plugin/types@1.15.0": crate::bindings::openidea::plugin::types,
-            "openidea:plugin/invocation@1.15.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/invocation@1.18.0": crate::bindings::openidea::plugin::invocation,
         },
     });
 }

@@ -56,6 +56,7 @@ function queryOutcome(statement: SqlStatement, value: string, elapsedMs: number)
       hasMore: false,
       elapsedMs,
       executionMs: elapsedMs,
+      truncated: [],
     },
     error: null,
   };
@@ -174,22 +175,24 @@ describe("statements in flight", () => {
     });
     let finish!: () => void;
     const gate = new Promise<void>((resolve) => (finish = resolve));
-    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
-      channel.onmessage({ type: "started", index: 0 });
-      channel.onmessage({ type: "completed", index: 0, outcome: queryOutcome(statements[0]!, "first", 500) });
-      channel.onmessage({ type: "started", index: 1 });
-      await gate;
-      const update = queryOutcome(statements[1]!, "", 2500);
-      channel.onmessage({
-        type: "completed",
-        index: 1,
-        outcome: { ...update, result: { ...update.result!, columns: [], rows: [], affected: 1 } },
-      });
-      channel.onmessage({ type: "started", index: 2 });
-      channel.onmessage({ type: "completed", index: 2, outcome: queryOutcome(statements[2]!, "third", 1000) });
-      channel.onmessage({ type: "done", error: null });
-      return { status: "ok", data: null };
-    });
+    backend.stream.mockImplementationOnce(
+      async (_r, _id, statements: SqlStatement[], _max, _schema, _limit, channel) => {
+        channel.onmessage({ type: "started", index: 0 });
+        channel.onmessage({ type: "completed", index: 0, outcome: queryOutcome(statements[0]!, "first", 500) });
+        channel.onmessage({ type: "started", index: 1 });
+        await gate;
+        const update = queryOutcome(statements[1]!, "", 2500);
+        channel.onmessage({
+          type: "completed",
+          index: 1,
+          outcome: { ...update, result: { ...update.result!, columns: [], rows: [], affected: 1 } },
+        });
+        channel.onmessage({ type: "started", index: 2 });
+        channel.onmessage({ type: "completed", index: 2, outcome: queryOutcome(statements[2]!, "third", 1000) });
+        channel.onmessage({ type: "done", error: null });
+        return { status: "ok", data: null };
+      },
+    );
     const cells = () => useDatabase.getState().results.map((r) => r.outcome.result?.rows[0]?.[0]);
     const highlighted = () => [...view.dom.querySelectorAll(".cm-openidea-db-executing")].map((e) => e.textContent);
     const times = () =>
@@ -243,20 +246,22 @@ describe("statements in flight", () => {
     }));
     let cancel!: () => void;
     backend.stream.mockImplementationOnce(streamExecution(backend.execute));
-    backend.stream.mockImplementationOnce(async (request, _id, statements: SqlStatement[], _max, _schema, channel) => {
-      channel.onmessage({ type: "started", index: 0 });
-      channel.onmessage({ type: "completed", index: 0, outcome: queryOutcome(statements[0]!, "new", 500) });
-      channel.onmessage({ type: "started", index: 1 });
-      await new Promise<void>((resolve) => {
-        cancel = resolve;
-        backend.cancel.mockImplementationOnce(async (id) => {
-          expect(id).toBe(request);
-          cancel();
+    backend.stream.mockImplementationOnce(
+      async (request, _id, statements: SqlStatement[], _max, _schema, _limit, channel) => {
+        channel.onmessage({ type: "started", index: 0 });
+        channel.onmessage({ type: "completed", index: 0, outcome: queryOutcome(statements[0]!, "new", 500) });
+        channel.onmessage({ type: "started", index: 1 });
+        await new Promise<void>((resolve) => {
+          cancel = resolve;
+          backend.cancel.mockImplementationOnce(async (id) => {
+            expect(id).toBe(request);
+            cancel();
+          });
         });
-      });
-      channel.onmessage({ type: "done", error: { kind: "cancelled", message: "Cancelled", data: null } });
-      return { status: "ok", data: null };
-    });
+        channel.onmessage({ type: "done", error: { kind: "cancelled", message: "Cancelled", data: null } });
+        return { status: "ok", data: null };
+      },
+    );
     const ok = () => view.dom.querySelectorAll(".cm-openidea-db-run-ok");
     const error = () => view.dom.querySelectorAll(".cm-openidea-db-run-error");
     const banner = () => view.dom.querySelector(".cm-openidea-db-banner");

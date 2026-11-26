@@ -12,6 +12,7 @@ const windowGroupJoin = vi.fn();
 const windowTakeLaunch = vi.fn();
 const windowCompleteLaunch = vi.fn();
 const wslResolve = vi.fn();
+const windowOpenRemote = vi.fn();
 const cancelClose = vi.fn();
 const notify = vi.fn();
 const listen = vi.fn();
@@ -51,6 +52,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       windowTakeLaunch: () => windowTakeLaunch(),
       windowCompleteLaunch: () => windowCompleteLaunch(),
       wslResolve: (p: string) => wslResolve(p),
+      windowOpenRemote: (...a: unknown[]) => windowOpenRemote(...a),
       lightEditOpen: (p: string) => lightEditOpen(p),
       fsReadDir: (p: string) => fsReadDir(p),
     },
@@ -222,6 +224,57 @@ describe("replacing a project in this window", () => {
     await openProjectWithPolicy("/same");
     expect(windowOpenProject).toHaveBeenCalledWith("/same", false, []);
     expect(openProject).toHaveBeenCalledWith("/same");
+  });
+});
+
+describe("a recent project opened with a modifier key", () => {
+  it.each([
+    ["same", "new"],
+    ["new", "same"],
+    ["ask", "new"],
+    ["ask", "same"],
+  ] as const)("opens in the chosen window over 'Open project in: %s' without asking", async (policy, override) => {
+    const newWindow = override === "new";
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: policy } } } as never);
+    windowOpenProject.mockResolvedValue(ok(newWindow ? { kind: "opened", label: "project-2" } : { kind: "current" }));
+    await openProjectWithPolicy("/p/b", [], override);
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", newWindow, []);
+    expect(ask).not.toHaveBeenCalled();
+    // Only the current window takes the project here; a new one leaves this project alone.
+    expect(openProject.mock.calls).toEqual(newWindow ? [] : [["/p/b"]]);
+  });
+
+  it("opens a new window from a window that has no project", async () => {
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-2" }));
+    await openProjectWithPolicy("/p/b", [], "new");
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", true, []);
+    expect(openProject).not.toHaveBeenCalled();
+  });
+
+  it("keeps asking for a plain open", async () => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "ask" } } } as never);
+    vi.mocked(ask).mockResolvedValue({ button: "cancel", checked: false });
+    await openProjectWithPolicy("/p/b");
+    expect(ask).toHaveBeenCalledOnce();
+    expect(windowOpenProject).not.toHaveBeenCalled();
+  });
+
+  it("takes the window from the Open Recent action's argument", async () => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "same" } } } as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-2" }));
+    const action = windowActions().find((a) => a.id === "file.openRecentProject")!;
+    await action.run({ arg: { path: "/p/b", window: "new" } } as never);
+    expect(windowOpenProject).toHaveBeenLastCalledWith("/p/b", true, []);
+    await action.run({ arg: "/p/b" } as never);
+    expect(windowOpenProject).toHaveBeenLastCalledWith("/p/b", false, []);
+  });
+
+  it("opens a Remote Development project from Open Recent on its host (#6124)", async () => {
+    windowOpenRemote.mockResolvedValue(ok({ kind: "focused" }));
+    const action = windowActions().find((a) => a.id === "file.openRecentProject")!;
+    await action.run({ arg: "wsl://Ubuntu/home/me/api" } as never);
+    expect(windowOpenRemote).toHaveBeenCalledWith({ kind: "wsl", distro: "Ubuntu" }, "/home/me/api", false);
+    expect(windowOpenProject).not.toHaveBeenCalled();
   });
 });
 

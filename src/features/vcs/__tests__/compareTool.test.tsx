@@ -39,6 +39,7 @@ vi.mock("@/workbench/contributions", async (original) => {
 import { useProject } from "@/platform/project";
 import { ChangesBetweenDialog, comparisonDiffData, type ComparisonFile } from "../operations";
 import { CompareToolWindow, useCompareTool } from "../compareTool";
+import type { DiffData } from "../diffInput";
 import { useVcs } from "../store";
 
 const modified: ComparisonFile = {
@@ -124,6 +125,19 @@ describe("CompareToolWindow", () => {
     expect(jump).toBeEnabled();
     fireEvent.click(jump);
     expect(mocks.openFile).toHaveBeenCalledWith("/workspace/client/src/app.ts", { focus: true });
+  });
+
+  it("opens a file's diff with the listed files as its chain, so F7 goes on to the next file (IDEA)", async () => {
+    mocks.openDiff.mockResolvedValue(undefined);
+    render(<CompareToolWindow />);
+    fireEvent.doubleClick(await screen.findByText("new.ts"));
+    const data = mocks.openDiff.mock.calls[0]![0] as DiffData;
+    expect(data.path).toBe("/workspace/client/src/new.ts");
+    expect(data.chain?.map((d) => d.path)).toEqual([
+      "/workspace/client/src/app.ts",
+      "/workspace/client/src/new.ts",
+      "/workspace/client/src/old.ts",
+    ]);
   });
 
   it("groups working-tree diffs by the requested repositories and opens the selected copy of a common path", async () => {

@@ -23,6 +23,8 @@
   border-radius: var(--island-radius);
   margin: 0 1px;
   color: var(--fg-muted);
+  touch-action: none;
+  user-select: none;
 }
 .close {
   position: absolute;
@@ -38,12 +40,8 @@
 .item:hover {
   background: var(--bg-hover);
 }
-.item {
-  touch-action: none;
-  user-select: none;
-}
 .dragging {
-  opacity: 0.55;
+  opacity: 0.4;
 }
 .selected,
 .selected:hover {
@@ -109,4 +107,34 @@
 .item:hover .detach,
 .item:focus-within .detach {
   opacity: 1;
+}
+
+/* Drag & drop feedback matching tool window stripes and tab strips. */
+.tabs[data-dragging] .item .close,
+.tabs[data-dragging] .item .detach {
+  opacity: 0;
+}
+.item.dropBefore::before,
+.item.dropAfter::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  z-index: 1;
+  pointer-events: none;
+}
+.item.dropBefore::before {
+  left: -2px;
+}
+.item.dropBefore:first-child::before {
+  left: 0;
+}
+.item.dropAfter::after {
+  right: -2px;
+}
+.item.dropAfter:last-child::after {
+  right: 0;
 }

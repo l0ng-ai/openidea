@@ -119,6 +119,13 @@ pub struct PickItem {
     pub description: Option<String>,
 }
 
+/// A group of file extensions in a plugin's native chooser.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PluginFileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
 /// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
 /// `ui.input-multiline`, `ui.confirm`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -132,6 +139,8 @@ pub enum Prompt {
     Confirm { title: String, message: String },
     #[serde(rename_all = "camelCase")]
     PickDirectory { title: String, initial: Option<String> },
+    #[serde(rename_all = "camelCase")]
+    PickFile { title: String, save: bool, name: Option<String>, filters: Vec<PluginFileFilter> },
     /// The host's own question under `net:ask` (never plugin-initiated): the
     /// plugin reached an HTTPS host its manifest does not list.
     #[serde(rename_all = "camelCase")]
@@ -160,11 +169,13 @@ pub enum EventKind {
     VcsChanged,
     /// Problems of the window's files changed (a language server or a report).
     ProblemsChanged,
+    /// A project was closed (or its window closed): the project root path.
+    ProjectClosed,
     Scheduled,
 }
 
 impl EventKind {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::DocumentChanged,
         Self::WebsocketReady,
         Self::FileClosed,
@@ -182,6 +193,7 @@ impl EventKind {
         Self::ActionPerformed,
         Self::VcsChanged,
         Self::ProblemsChanged,
+        Self::ProjectClosed,
         Self::Scheduled,
     ];
 
@@ -204,6 +216,7 @@ impl EventKind {
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
             Self::ProblemsChanged => "problems-changed",
+            Self::ProjectClosed => "project-closed",
             Self::Scheduled => "scheduled",
         }
     }
@@ -265,6 +278,12 @@ pub struct ActionPerformed {
 /// Debounced worktree changes. Paths use the same absolute form as `file-saved`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct FilesChanged {
+    /// Canonical absolute root of the project where changes occurred (API 1.18).
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Project state generation at the time this batch was emitted (API 1.18).
+    #[serde(default)]
+    pub generation: Option<u64>,
     pub created: Vec<String>,
     pub modified: Vec<String>,
     pub removed: Vec<String>,
@@ -358,6 +377,8 @@ pub enum WorkbenchEvent {
     VcsChanged(String),
     /// Problems of the window's files changed; plugins re-read `problems`.
     ProblemsChanged,
+    /// A project closed (API 1.18); payload is the canonical absolute root path.
+    ProjectClosed(String),
     Scheduled,
 }
 
@@ -381,6 +402,7 @@ impl WorkbenchEvent {
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,
             Self::ProblemsChanged => EventKind::ProblemsChanged,
+            Self::ProjectClosed(_) => EventKind::ProjectClosed,
             Self::Scheduled => EventKind::Scheduled,
         }
     }
@@ -397,6 +419,18 @@ pub struct RepositoryStatus {
     pub behind: u32,
     pub operation: Option<String>,
     pub changed_files: u32,
+}
+
+/// Reference and remotes of a path's mapped worktree (WIT `vcs.repository-info`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositoryInfo {
+    pub root: String,
+    pub relative_path: String,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub remotes: Vec<(String, String)>,
 }
 
 /// A file a pending commit changes (WIT `commit.commit-change`).
@@ -922,6 +956,9 @@ pub enum ViewEvent {
     Sort { column: u32, descending: bool },
     TableSelect { row: u32 },
     TableActivate { row: u32 },
+    // A plugin dialog closed (API 1.18): its close button, Escape or its page.
+    // Leaves as an `other` view-event, kind `closed`.
+    Closed,
 }
 
 /// A plugin's HTTP route declaration in a project.
@@ -993,11 +1030,24 @@ pub struct FileProblems {
 }
 /// An editor decoration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct Decoration {
     pub range: ide_core::Range,
     pub style: String,
     pub hover: Option<String>,
     pub after: Option<String>,
+    /// Markdown rendered in the editor's hover card (API 1.16); `hover` is the
+    /// plain-text fallback shown when this is absent.
+    pub markdown_hover: Option<String>,
+    /// The item's own colors (API 1.17 `set-styled`), validated `#rrggbb` / `#rrggbbaa`.
+    #[serde(default)]
+    pub colors: Option<DecorationColors>,
+}
+/// Colors of a styled editor decoration (API 1.17).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+pub struct DecorationColors {
+    pub foreground: Option<String>,
+    pub background: Option<String>,
 }
 /// A tree decoration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

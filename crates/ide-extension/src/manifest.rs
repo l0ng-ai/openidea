@@ -34,7 +34,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.15.0";
+pub const ENGINE_VERSION: &str = "1.18.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -168,6 +168,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "action-performed",
     "vcs-changed",
     "problems-changed",
+    "project-closed",
 ];
 
 impl std::fmt::Display for ActivationEvent {
@@ -402,6 +403,9 @@ impl Manifest {
             }
             if matches!(event, ActivationEvent::Event(kind) if kind == "files-changed") {
                 self.needs_api("`on-event:files-changed`", 3)?;
+            }
+            if matches!(event, ActivationEvent::Event(kind) if kind == "project-closed") {
+                self.needs_api("`on-event:project-closed`", 18)?;
             }
             if !seen.insert(event) {
                 return Err(format!("duplicate activation event {event}"));
@@ -959,6 +963,21 @@ mod net_ask_api_tests {
                 } else {
                     assert!(parsed.unwrap_err().contains("new in plugin API 1.6"), "{engine}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn project_closed_event_requires_api_1_18() {
+        for engine in ["^1.17", "^1.18"] {
+            let manifest = format!(
+                "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\nactivation = [\"on-event:project-closed\"]\n"
+            );
+            let parsed = Manifest::parse(&manifest);
+            if engine == "^1.18" {
+                parsed.unwrap();
+            } else {
+                assert!(parsed.unwrap_err().contains("new in plugin API 1.18"), "{engine}");
             }
         }
     }

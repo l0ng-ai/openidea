@@ -20,6 +20,7 @@ import {
 } from "@/platform/javaLaunch";
 import { applyBuildPolicyToCommand } from "./buildCommand";
 import { startRun, useRun } from "./store";
+import { isJunitRunner } from "./application";
 import { DELEGATED_ATTACH_LISTENER, DELEGATED_DEBUG, DELEGATED_MAIN } from "./gradleRun";
 import { isWindows } from "./jvmTypes";
 
@@ -112,6 +113,8 @@ export function jdwpLaunch(config: RunConfig, jdwpPort?: number): RunConfig | nu
     if (!args.some(isGradleJvmTask)) return null;
     return args.includes("--debug-jvm") ? config : { ...config, args: [...args, "--debug-jvm"] };
   }
+  // OpenIDEA's JUnit runner keeps its test tree in the Run tab: the agent waits there, the debugger attaches.
+  if (isJunitRunner(config)) return { ...config, args: [JDWP_AGENT, ...args] };
   // Application / Spring Boot configurations are launched by java-debug itself.
   if (JVM_ADAPTERS.includes(config.debugAdapter ?? "") && !isJvmApplication(config))
     return {

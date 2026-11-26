@@ -13,7 +13,7 @@ use std::time::Duration;
 pub async fn run_configs(host: &Arc<Host>, window: &str) -> IdeResult<Vec<RunConfig>> {
     // Detection reads build files (and Spring Boot sources): off the command thread.
     let (host, window) = (host.clone(), window.to_owned());
-    super::doc::blocking(move || configs(&host, &window)).await
+    super::blocking(move || configs(&host, &window)).await
 }
 
 #[command(trust = trusted)]
@@ -25,7 +25,7 @@ pub async fn run_save_configs(
 ) -> IdeResult<()> {
     let (host, window) = (host.clone(), window.to_owned());
     let removed = removed_detected_ids.unwrap_or_default();
-    super::doc::blocking(move || save_configs(&host, &window, &configs, &removed)).await
+    super::blocking(move || save_configs(&host, &window, &configs, &removed)).await
 }
 
 /// Detected configs followed by user-defined ones (user ids win on conflict).
@@ -263,7 +263,7 @@ fn settings_only(
 #[command(trust = trusted)]
 pub async fn run_without_derived(host: &Arc<Host>, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
     let (host, window) = (host.clone(), window.to_owned());
-    super::doc::blocking(move || without_derived(&host, &window, configs)).await
+    super::blocking(move || without_derived(&host, &window, configs)).await
 }
 
 /// Without what settings derived (toolchain commands, Maven options, `JAVA_HOME`…), so they
@@ -287,7 +287,7 @@ fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeRes
 #[command(trust = trusted)]
 pub async fn run_apply_settings(host: &Arc<Host>, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
     let (host, window) = (host.clone(), window.to_owned());
-    super::doc::blocking(move || apply_settings(&host, &window, configs)).await
+    super::blocking(move || apply_settings(&host, &window, configs)).await
 }
 
 /// Today's settings applied, as [`configs`] lists the others.
@@ -319,6 +319,7 @@ pub async fn run_start(
     on_output: Channel<OutputChunk>,
     request: Option<ide_core::RequestId>,
 ) -> IdeResult<RunInfo> {
+    super::term::apply_output_rate(host, window);
     let on_output: Emit<OutputChunk> = Arc::new(move |chunk| {
         let _ = on_output.send(chunk);
     });
@@ -391,8 +392,10 @@ async fn start_inner(
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
     }
-    let on_target = config.extras.target.as_deref().is_some_and(|t| !t.is_empty());
-    add_java_agents(&mut config, &on_output, !on_target);
+    // A JVM on a run target gets no plugin agents; a local one gets them once its JDK is resolved.
+    if config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
+        add_java_agents(&mut config, &on_output, None);
+    }
     // Settings › Run Targets: over SSH, or in a container.
     if config.kind == "tomcat" && config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
         return Err(IdeError::invalid("Tomcat Local requires the local machine"));
@@ -483,6 +486,8 @@ async fn start_inner(
         );
         ide_sdk::go::apply_to_run(&mut config, &settings.languages.go.build_tags);
     }
+    let run_dir = project.root.join(config.cwd.as_deref().unwrap_or(Path::new("")));
+    add_java_agents(&mut config, &on_output, Some(&run_dir));
     if config.command == ide_sdk::godot::COMMAND {
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
     }
@@ -555,14 +560,24 @@ async fn start_inner(
 /// Plugins' Java agents (`[[contributes.javaAgents]]`, granted `java.agent`) for the JVM of an
 /// Application, Spring Boot or JAR Application configuration started on this machine. A JVM on a
 /// run target gets none; the console says so, and why an approved agent was left out.
-fn add_java_agents(config: &mut RunConfig, on_output: &Emit<OutputChunk>, local: bool) {
+fn add_java_agents(config: &mut RunConfig, on_output: &Emit<OutputChunk>, run_dir: Option<&Path>) {
     if !ide_run::java_agent::applies(&config.kind) {
         return;
     }
-    let java = std::path::Path::new(&config.command);
-    let agents = ide_run::java_agent::current_for(Some(java));
+    // The JVM the launch starts: a bare `java` (what generated configurations name) is looked
+    // up the way the process start finds it, so the `jdk` filter of `vmOptions` sees that JDK.
+    let java = run_dir.and_then(|dir| {
+        let search = ide_run::wrap::search_path_in(config, dir);
+        let home = config
+            .env
+            .get("JAVA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("JAVA_HOME").map(std::path::PathBuf::from));
+        ide_run::java_agent::launched_java(&config.command, &search, home.as_deref())
+    });
+    let agents = ide_run::java_agent::current_for(java.as_deref());
     let say = |text: &str| on_output(OutputChunk::System { text: format!("{text}\n") });
-    if !local {
+    if run_dir.is_none() {
         if !agents.options.is_empty() {
             say(
                 "Plugin Java agents were not added: they load only into JVMs started on this machine, not on a run target.",

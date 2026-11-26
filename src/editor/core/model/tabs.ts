@@ -197,7 +197,7 @@ export function openTab(
   } else {
     const pins = pinnedCount(pane);
     let index: number;
-    if (tab.pinned) index = pins;
+    if (tab.pinned) index = opts.index !== undefined ? Math.max(0, Math.min(opts.index, pins)) : pins;
     else if (opts.index !== undefined) index = Math.max(pins, Math.min(opts.index, tabs.length));
     else {
       const activeIdx = tabs.findIndex((t) => t.id === pane.active);

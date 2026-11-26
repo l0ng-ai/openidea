@@ -19,12 +19,18 @@ import { useRun } from "./store";
 import styles from "./StackTrace.module.css";
 import { tx } from "@/platform/i18n";
 import { readClipboardPlainText } from "@/platform/clipboard";
+import { isThreadDump, parseThreadDump, type ThreadDump } from "./threadDump/parse";
+import { threadDumpTab, type ThreadDumpSource, type ThreadDumpTab, type VirtualSource } from "./threadDump/store";
 
-export interface StackTraceTab {
+export interface TraceTab {
+  kind: "trace";
   id: string;
   title: string;
   model: ConsoleModel;
 }
+
+/** A tab of the Run tool window that is not a run session: a stack trace or a thread dump. */
+export type StackTraceTab = TraceTab | ThreadDumpTab;
 
 interface StackTraceState {
   tabs: StackTraceTab[];
@@ -67,16 +73,52 @@ export function countFrames(text: string): number {
   return text.split("\n").filter((l) => findOutputLinks(l).some((k) => k.kind === "file")).length;
 }
 
-export function addStackTrace(raw: string): string | null {
-  const text = normalizeTrace(raw);
-  if (!text) return null;
+function openTab(tab: StackTraceTab): string {
+  useStackTraces.setState((s) => ({ tabs: [...s.tabs, tab] }));
+  useRun.setState({ activeSession: tab.id });
+  return tab.id;
+}
+
+function addTrace(text: string, title: string): string {
   const model = new ConsoleModel();
   model.append({ kind: "stdout", text });
   model.flush();
-  const id = `trace-${++seq}`;
-  useStackTraces.setState((s) => ({ tabs: [...s.tabs, { id, title: traceTitle(text), model }] }));
-  useRun.setState({ activeSession: id });
-  return id;
+  return openTab({ kind: "trace", id: `trace-${++seq}`, title, model });
+}
+
+function addThreads(
+  text: string,
+  title: string,
+  source: ThreadDumpSource | null,
+  dump: ThreadDump,
+  virtual: VirtualSource | null,
+): string {
+  return openTab(threadDumpTab(`trace-${++seq}`, title, text, source, dump, virtual));
+}
+
+/** Opens a pasted trace, or a pasted thread dump in the thread viewer. */
+export function addStackTrace(raw: string): string | null {
+  const text = normalizeTrace(raw);
+  if (!text) return null;
+  const dump = isThreadDump(text) ? parseThreadDump(text) : null;
+  return dump ? addThreads(text, tx("Thread dump"), null, dump, null) : addTrace(text, traceTitle(text));
+}
+
+/** Opens a dump in the thread viewer; text that holds no thread opens as a plain trace. */
+export function addThreadDump(
+  raw: string,
+  meta: { title: string; source: ThreadDumpSource | null; virtual?: VirtualSource },
+): string {
+  const text = normalizeTrace(raw);
+  const dump = parseThreadDump(text);
+  return dump ? addThreads(text, meta.title, meta.source, dump, meta.virtual ?? null) : addTrace(text, meta.title);
+}
+
+/** Replaces a thread dump tab, e.g. with its next dump or the user's selection. */
+export function updateThreadDump(id: string, update: (tab: ThreadDumpTab) => ThreadDumpTab) {
+  useStackTraces.setState((s) => ({
+    tabs: s.tabs.map((t) => (t.id === id && t.kind === "threads" ? update(t) : t)),
+  }));
 }
 
 export function closeStackTrace(id: string) {
@@ -149,7 +191,7 @@ function StackTraceDialog({ initial }: { initial: string }) {
 }
 
 /** A trace tab's console in the Run tool window. */
-export function StackTracePanel({ tab }: { tab: StackTraceTab }) {
+export function StackTracePanel({ tab }: { tab: TraceTab }) {
   const root = useProject((s) => s.project?.root ?? "/");
   return (
     <ConsoleView

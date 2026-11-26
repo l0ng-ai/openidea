@@ -55,6 +55,7 @@ import { moveToReportedClasses } from "./testing/jvm";
 import { RubyTestOutput } from "./testing/ruby";
 import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
+import { flutterMachineOutput, isFlutterMachineRun } from "./flutterMachine";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
 import { testsBySubproject } from "./testing/gradleSubprojects";
@@ -70,6 +71,7 @@ import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx, txPart } from "@/platform/i18n";
+import { followLaunchBuild } from "@/features/build/store";
 import { UNITY_CONFIG_KIND } from "./unity";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
@@ -307,6 +309,7 @@ async function reattachRemoteRuns(root: string, knownConfigs: readonly RunConfig
       enqueue(sessionId, chunk);
     };
     try {
+      // oxlint-disable-next-line no-await-in-loop -- attaches in turn with a project guard, then adds the session to shared run state
       const attached = await call(commands.runAttach(info.id, channel));
       if (useProject.getState().project?.root !== root) return;
       if (useRun.getState().sessions.some((s) => s.runId === info.id)) continue;
@@ -703,7 +706,7 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
     // rAF pauses in background tabs; a timeout keeps consuming output so it doesn't
     // pile up until the console is shown again (issue #319: the console "kept
     // scrolling" the previous run's backlog after switching back to it).
-    const wait = FLUSH_INTERVAL - (performance.now() - rt.flushedAt);
+    const wait = flushInterval() - (performance.now() - rt.flushedAt);
     rt.flushHandle = document.hidden
       ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
       : wait > 0
@@ -723,6 +726,12 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
  * typing elsewhere from fitting in a frame (35% missed while 12k lines/s stream).
  */
 const FLUSH_INTERVAL = 50;
+
+/** `FLUSH_INTERVAL`, or longer when Settings › Tools › Terminal › Max FPS asks for fewer frames (#5897). */
+function flushInterval(): number {
+  const fps = Number(workflowSettings().terminal.maxFps);
+  return fps > 0 ? Math.max(FLUSH_INTERVAL, Math.round(1000 / fps)) : FLUSH_INTERVAL;
+}
 
 function cancelFlush(rt: SessionRuntime) {
   if (rt.flushHandle === null) return;
@@ -785,7 +794,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
     framework === "go"
       ? new GoTestOutput(feed)
       : framework === "phpunit" || framework === "jvm"
-        ? new TeamcityOutput(feed)
+        ? new TeamcityOutput(feed, framework === "jvm")
         : framework === "ruby" && config.kind !== "rspec"
           ? new RubyTestOutput(feed)
           : framework === "node-test" || framework === "mocha"
@@ -1127,8 +1136,11 @@ async function startRunIn(
       if (!check && launch.kind === "tomcat") useRun.setState({ activeSession: sessionId });
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     }
-    // Debug launches read the agent's output lines: never through a terminal.
-    if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
+    const machine = isFlutterMachineRun(launch);
+    if (machine) rt.stdout = flutterMachineOutput(sessionId, config);
+    // Debug launches read the agent's output lines, `flutter run --machine` speaks JSON: never through a terminal.
+    if ((options.launch || launch.isTest || machine) && launch.emulateTerminal)
+      launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
     let started =
@@ -1230,6 +1242,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       request: request.id,
       signal: request.controller.signal,
       report: say,
+      build: followLaunchBuild(request.id, tx`Build before launch: ${config.name}`, say),
       saveAll: async () => {
         await maybeEditorService()?.saveAll();
       },
@@ -1316,6 +1329,15 @@ function finishSession(sessionId: string, code: number | null) {
         if (runtimes.get(sessionId) !== rt) return;
         rt.tests.finish(code);
         recordTestStates(rt.tests);
+        // The build's test task succeeded without running a test: say why instead of ending silently.
+        const ran = rt.tests.counts();
+        if (code === 0 && frameworkFor(session.config) === "jvm" && !(ran.passed + ran.failed + ran.skipped)) {
+          const why = tx(
+            "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.",
+          );
+          rt.console.append({ kind: "system", text: `\n${why}\n` });
+          rt.console.flush();
+        }
       }
       patchSession(sessionId, { status: "finished", exitCode: code, endedAt: Date.now() });
       bump(sessionId);
@@ -1691,8 +1713,13 @@ export async function runSelectedTests(
             ...next,
             id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
           });
-    if (debug) await executeAction("run.debugConfig", config);
-    else await startRun(config, undefined, base);
+    if (debug) {
+      // oxlint-disable-next-line no-await-in-loop -- derived tests launch in order to keep tab order and shared run state consistent
+      await executeAction("run.debugConfig", config);
+    } else {
+      // oxlint-disable-next-line no-await-in-loop -- derived tests launch in order to keep tab order and shared run state consistent
+      await startRun(config, undefined, base);
+    }
   }
   return true;
 }
@@ -1874,6 +1901,109 @@ const SAMPLE_LINES = [
     `2026-11-05 10:42:01.${String(i % 1000).padStart(3, "0")} DEBUG 4242 --- [           main] o.s.web.servlet.DispatcherServlet        : GET "/api/orders/${i}", parameters={}`,
 ];
 
+export interface SampleConsoleOptions {
+  mode: "long" | "no-lf";
+  /** Number of long lines (`long`) or 63-char records (`no-lf`). */
+  count: number;
+  /** Items emitted per animation frame. */
+  perFrame: number;
+  /** Physical line length for `long` mode (default 10 KiB). */
+  lineLength?: number;
+  /** Existing session opened via `openSampleConsoleSession`; creates one when omitted. */
+  sessionId?: string;
+}
+
+/**
+ * Development and the performance harness only: creates and activates an empty Run
+ * console session so callers can await its mount and open UI (such as Find) before
+ * `startSampleConsoleOutput` begins streaming.
+ */
+export function openSampleConsoleSession(mode: "long" | "no-lf"): string {
+  const config: RunConfig = {
+    id: `sample-${mode}-${sessionSeq + 1}`,
+    name: `Sample ${mode}`,
+    kind: "shell",
+    command: "",
+    args: [],
+    cwd: null,
+    env: {},
+    detected: false,
+    isTest: false,
+    debugAdapter: null,
+  };
+  const session: RunSession = {
+    id: `run${++sessionSeq}`,
+    config,
+    runId: null,
+    status: "running",
+    exitCode: null,
+    startedAt: Date.now(),
+    endedAt: null,
+    stdinClosed: true,
+  };
+  const rt = newRuntime(config);
+  runtimes.set(session.id, rt);
+  useRun.setState((s) => ({ sessions: [...s.sessions, session], activeSession: session.id }));
+  bump(session.id);
+  try {
+    toolWindowService().show("run");
+  } catch {
+    /* no workbench (tests) */
+  }
+  return session.id;
+}
+
+/**
+ * Development and the performance harness only: streams either very long lines
+ * (10 KiB each, splitting across `MAX_LINE_LENGTH`) or high-rate output without
+ * newlines into a Run console session. Resolves once all output is flushed.
+ */
+export async function startSampleConsoleOutput({
+  mode,
+  count,
+  perFrame,
+  lineLength = 10_240,
+  sessionId,
+}: SampleConsoleOptions): Promise<{ lines: number; dropped: number }> {
+  const id = sessionId && runtimes.has(sessionId) ? sessionId : openSampleConsoleSession(mode);
+  const rt = runtimes.get(id)!;
+  const prefix = "target.txt:1:1 ";
+  const beginText = `${prefix}begin\n`;
+  enqueue(id, { kind: "stdout", text: beginText });
+  for (let i = 0; i < count;) {
+    // oxlint-disable-next-line no-await-in-loop -- streams one batch of sample output per frame
+    await new Promise(requestAnimationFrame);
+    const take = Math.min(perFrame, count - i);
+    let chunkText = "";
+    if (mode === "long") {
+      // Vary both head (before the 8,000-char split) and tail (after the split) per line so
+      // no two rows are identical.
+      for (let j = 0; j < take; j++) {
+        const lineNo = i + j + 1;
+        const head = `target.txt:${lineNo}:1 `;
+        const tail = ` #${lineNo}`;
+        const fill = "x".repeat(Math.max(0, lineLength - head.length - tail.length - 1));
+        chunkText += `${head}${fill}${tail}\n`;
+      }
+      chunkText += `${prefix}batch ${i}\n`;
+    } else {
+      // Keep each record at 63 chars with a unique counter so 8,000-char lines stay unique at any scale.
+      for (let j = 0; j < take; j++) {
+        const tag = String(i + j).padStart(6, "0");
+        chunkText += `${prefix}${tag} ${"x".repeat(40)} `;
+      }
+    }
+    enqueue(id, { kind: "stdout", text: chunkText });
+    i += take;
+  }
+  const doneText = "\nstream-done\n";
+  enqueue(id, { kind: "stdout", text: doneText });
+  await new Promise(requestAnimationFrame);
+  flush(id);
+  finishSession(id, 0);
+  return { lines: rt.console.size, dropped: rt.console.dropped };
+}
+
 /**
  * Development and the performance harness only: a session whose console gets
  * `lines` generated log lines (stack frames among them), `perFrame` per
@@ -1911,6 +2041,7 @@ export async function startSampleOutput(lines: number, perFrame: number): Promis
     /* no workbench (tests) */
   }
   for (let i = 0; i < lines;) {
+    // oxlint-disable-next-line no-await-in-loop -- output is paced one animation frame at a time to simulate streaming logs
     await new Promise(requestAnimationFrame);
     for (const end = Math.min(lines, i + perFrame); i < end; i++) {
       const line = SAMPLE_LINES[i % 20 === 19 ? 1 : i % 7 === 6 ? 2 : 0]!(i);

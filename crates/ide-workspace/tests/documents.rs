@@ -331,6 +331,26 @@ fn save_to_a_path_replaced_by_a_directory_preserves_the_dirty_buffer() {
 }
 
 #[test]
+fn autosave_checks_the_disk_before_the_watcher_reports_a_change() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // An external write (git checkout, another editor) whose watcher event has not arrived yet.
+    fs::write(&path, "alpha\nbeta external\n").unwrap();
+
+    assert!(!f.docs.autosave(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\nbeta external\n");
+    assert!(f.docs.snapshot(info.id).unwrap().dirty);
+    assert!(
+        f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocDiskConflict { doc, .. } if *doc == info.id)),
+        "the refused autosave must surface the conflict"
+    );
+}
+
+#[test]
 fn autosave_leaves_a_file_changed_on_disk_after_an_edit() {
     let f = fixture();
     let path = f.root.join("notes.txt");
@@ -1197,7 +1217,7 @@ fn untitled_buffers_are_editable_and_saved_to_a_chosen_path() {
     assert_eq!(f.docs.by_path(&target), Some(info.id));
     assert_eq!(f.docs.by_path(Path::new("untitled:Untitled-1")), None);
     f.docs.edit(info.id, version, change(0, 0, "// hi\n")).unwrap();
-    f.docs.save(info.id).unwrap();
+    assert!(f.docs.autosave(info.id).unwrap(), "Save As records the disk state autosave checks");
     assert!(!f.docs.is_dirty(info.id).unwrap());
     assert_eq!(fs::read_to_string(&target).unwrap(), "// hi\nfn main() {}\n");
 
@@ -1295,4 +1315,200 @@ fn language_of_a_closed_file_reads_the_hashbang() {
     let all = Range::new(Pos::new(0, 0), Pos::new(0, 19));
     docs.apply_edits(doc.id, &[TextEdit { range: all, new_text: "#!/usr/bin/env python3".into() }]).unwrap();
     assert_eq!(language(None), "python", "the open buffer's first line");
+}
+
+fn latin_project(f: &Fixture) {
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "iso-8859-15".into();
+    f.docs.set_file_defaults(defaults);
+}
+
+#[test]
+fn ascii_file_in_a_latin_project_saves_new_characters_in_the_project_encoding() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "iso-8859-15");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ação €\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"// a\xe7\xe3o \xa4\nclass A {}\n");
+}
+
+#[test]
+fn ascii_file_stays_utf8_when_the_project_encoding_is_utf8() {
+    let f = fixture();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ç\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "// ç\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn utf8_text_with_accents_keeps_utf8_in_a_latin_project() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, "// ação\n").unwrap();
+
+    assert_eq!(f.docs.open(&path).unwrap().encoding, "utf-8");
+}
+
+#[test]
+fn typing_a_character_latin9_lacks_into_an_ascii_file_fails_the_save() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// 漢\n")).unwrap();
+
+    let before = f.events.lock().len();
+    let err = f.docs.save(doc.id).expect_err("ISO-8859-15 cannot encode the edit");
+
+    assert_eq!(err.kind, ErrorKind::InvalidInput, "{err}");
+    assert_failed_save_preserves_edit(&f, doc.id, "// 漢\nclass A {}\n", before);
+    assert_eq!(fs::read(&path).unwrap(), b"class A {}\n");
+}
+
+#[test]
+fn editorconfig_utf8_charset_wins_over_a_latin_project_for_ascii_files() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// é\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "// é\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn ascii_properties_file_stays_utf8_by_default() {
+    let f = fixture();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Hello\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8", "the properties encoding only decodes bytes that are not UTF-8");
+    f.docs.edit(doc.id, doc.version, change(9, 14, "Olá")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "greeting=Olá\n".as_bytes());
+}
+
+#[test]
+fn latin_properties_file_still_decodes_with_the_properties_encoding() {
+    let f = fixture();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Ol\xe1\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "windows-1252");
+    assert_eq!(f.docs.text_of(&path).as_deref(), Some("greeting=Olá\n"));
+}
+
+#[test]
+fn editorconfig_charset_leaves_a_bomless_utf16_file_alone() {
+    let f = fixture();
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.txt]\ncharset = latin1\n").unwrap();
+    let path = f.root.join("a.txt");
+    fs::write(&path, b"a\x00b\x00c\x00d\x00").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-16le");
+    f.docs.edit(doc.id, doc.version, change(4, 4, "e")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"a\x00b\x00c\x00d\x00e\x00");
+}
+
+#[test]
+fn an_external_change_keeps_the_editorconfig_charset_of_an_ascii_file() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(&path, b"class B {}\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("class B {}\n", "utf-8"));
+}
+
+#[test]
+fn editorconfig_charset_applies_to_a_native_to_ascii_properties_file() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.native_to_ascii = true;
+    f.docs.set_file_defaults(defaults);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.properties]\ncharset = latin1\n").unwrap();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Ol\\u00e1\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "windows-1252", "the escapes are ASCII bytes");
+    assert_eq!(f.docs.text_of(&path).as_deref(), Some("greeting=Olá\n"));
+}
+
+/// Undoing back to the text on disk leaves the document clean (as in IntelliJ);
+/// redo, a save in between, or a pending line-ending change make it modified again.
+#[test]
+fn undo_back_to_the_disk_text_leaves_the_document_clean() {
+    let f = fixture();
+    let path = f.root.join("undo.txt");
+    fs::write(&path, "alpha\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap());
+    let v = f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(!f.docs.is_dirty(id).unwrap(), "undo back to the disk text");
+    let v = f.docs.edit(id, v, change(0, 0, "x")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap(), "redo");
+    assert_eq!(dirty_events(&f.events.lock()), vec![true, false, true]);
+
+    // After saving "xalpha", undoing to "alpha" differs from the file again.
+    f.docs.save(id).unwrap();
+    let v = f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap(), "undo past a save");
+    let v = f.docs.edit(id, v, change(0, 0, "x")).unwrap();
+    assert!(!f.docs.is_dirty(id).unwrap(), "redo back to the saved text");
+
+    // A pending line-ending change is written on save whatever the text.
+    f.docs.set_line_ending(id, LineEnding::CrLf).unwrap();
+    let v = f.docs.edit(id, v, change(0, 0, "y")).unwrap();
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap(), "line ending still differs from the file");
+}
+
+/// A buffer undone back to the disk text follows a checkout instead of warning about it.
+#[test]
+fn undo_back_to_the_disk_text_reloads_on_checkout() {
+    let f = fixture();
+    let path = f.root.join("undo.txt");
+    fs::write(&path, "alpha\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, "checked out\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "checked out\n");
 }

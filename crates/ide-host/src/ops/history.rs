@@ -6,7 +6,7 @@ use ide_core::IdeResult;
 use ide_workspace::DirectoryHistory;
 use std::path::PathBuf;
 
-use super::doc::blocking;
+use super::blocking;
 
 /// Show History on a folder: snapshots of the files under it (deleted ones included) and labels.
 #[command(trust = always)]

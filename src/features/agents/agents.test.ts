@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfigOption, AgentEntry, AgentStatus, AgentTask } from "@/bindings";
 import {
   applyCompletion,
+  approvalDefaults,
   atEdgeLine,
   bypassDefaults,
   cursorModelDefaults,
+  isContextOption,
+  isPerModelOption,
   modelConfigOptions,
   canSend,
   completionAt,
@@ -40,6 +43,7 @@ import {
   entriesKey,
   findSubagent,
   groupTasks,
+  providerIcon,
   subagentTitle,
   turnNumbers,
   upsertEntry,
@@ -77,6 +81,22 @@ const option = (category: string, values: string[], current: string | null): Age
   current,
   values: values.map((value) => ({ value, name: value, description: null })),
   via: "option",
+});
+
+describe("providerIcon", () => {
+  it("uses the agent's logo, shared by its legacy and adapter ids", () => {
+    expect(providerIcon("devin")).toBe("agent-devin");
+    expect(providerIcon("amp-acp")).toBe("agent-amp-acp");
+    expect(providerIcon("claude-acp")).toBe("agent-claude");
+    expect(providerIcon("codex-acp")).toBe("agent-codex");
+    expect(providerIcon("kimi-code")).toBe("agent-kimi");
+    expect(providerIcon("opencode-v2")).toBe("agent-opencode");
+    expect(providerIcon("hermes-work")).toBe("agent-hermes");
+  });
+
+  it("falls back to the generic agents icon", () => {
+    expect(providerIcon("my-agent")).toBe("toolwindow-agents");
+  });
 });
 
 describe("fenced blocks", () => {
@@ -289,13 +309,45 @@ describe("agent composer", () => {
     expect(atEdgeLine("a\nb", 1, 1)).toBe(false);
   });
 
-  it("defaults Cursor fast mode off when available", () => {
+  it("defaults Cursor fast mode off even when context precedes fast", () => {
+    const context = option("model_config", ["256k", "500k"], "256k");
+    context.id = "context";
+    context.name = "Context";
     const fast = option("model_config", ["false", "true"], "true");
     fast.id = "fast";
     fast.name = "Fast";
-    expect(cursorModelDefaults("cursor", [fast])).toEqual({ fast: "false" });
-    expect(cursorModelDefaults("claude", [fast])).toEqual({});
-    expect(modelConfigOptions([fast]).map((o) => o.id)).toEqual(["fast"]);
+    expect(isContextOption("context")).toBe(true);
+    expect(isPerModelOption(context)).toBe(true);
+    expect(isPerModelOption(fast)).toBe(true);
+    expect(cursorModelDefaults("cursor", [context, fast])).toEqual({ fast: "false" });
+    expect(cursorModelDefaults("claude", [context, fast])).toEqual({});
+    expect(modelConfigOptions([context, fast]).map((o) => o.id)).toEqual(["context", "fast"]);
+  });
+
+  it("resolves bypass and ask approval defaults across mode, permissions, and approval options", () => {
+    const codexMode: AgentConfigOption = {
+      ...option("mode", ["read-only", "ask", "auto", "full-access"], "full-access"),
+      defaultValue: "auto",
+    };
+    const permissions: AgentConfigOption = {
+      ...option("allow_all", ["off", "on"], "off"),
+      category: "permissions",
+      defaultValue: "off",
+    };
+    const approval: AgentConfigOption = {
+      ...option("openidea.cursor.approval", ["ask", "bypass"], "bypass"),
+      category: "approval",
+      defaultValue: "ask",
+    };
+    expect(approvalDefaults([codexMode, permissions, approval], "bypass")).toEqual({
+      mode: "full-access",
+      allow_all: "on",
+      "openidea.cursor.approval": "bypass",
+    });
+    expect(approvalDefaults([codexMode, permissions, approval], "ask")).toEqual({
+      mode: "auto",
+      "openidea.cursor.approval": "ask",
+    });
   });
 
   it("picks the main settings and cycles the mode", () => {

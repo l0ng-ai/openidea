@@ -131,6 +131,25 @@ describe("color schemes", () => {
     expect(split).toContain("--syn-builtin-function: #56a8f5 !important");
   });
 
+  it("offers TypeScript's interface, type alias and type parameter, in the class name's style until set (#5619)", () => {
+    const page = ATTRIBUTES.filter((a) => a.path[0] === "JavaScript and TypeScript").map((a) => a.id);
+    expect(page).toEqual(
+      expect.arrayContaining(["javascript.interface", "javascript.typeAlias", "javascript.typeParameter"]),
+    );
+    const customs = {
+      "custom-t": {
+        name: "T",
+        parent: "dark" as const,
+        attributes: { "javascript.className": { foreground: "#123456" } },
+      },
+    };
+    for (const id of ["javascript.interface", "javascript.typeAlias", "javascript.typeParameter"])
+      expect(resolvedAttribute("custom-t", id, customs)?.foreground).toBe("#123456");
+    const css = schemeCss("dark", { dark: { "javascript.interface": { foreground: "#4ec9b0" } } });
+    expect(css).toContain("--syn-javascript-interface: #4ec9b0 !important");
+    expect(css).not.toMatch(/:root \{[^}]*--syn-javascript-interface/);
+  });
+
   it("shows an unset Global function in the function declaration style, then its own (#4059)", () => {
     const fn = resolvedAttribute("dark", "functionDeclaration");
     expect(resolvedAttribute("dark", "javascript.globalFunction")).toEqual(fn);

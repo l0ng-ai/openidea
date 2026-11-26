@@ -11,8 +11,11 @@ import { foldNodeProp, syntaxTree } from "@codemirror/language";
 import { backendFolds } from "./folding";
 import { LINE_INSET } from "./lineInset";
 import { bracketScanner } from "./rainbowBrackets";
-import { MAX_PREVIEW_LINE_LENGTH, renderLineContent } from "./renderLineContent";
+import { MAX_PREVIEW_LINE_LENGTH, previewHighlightSets, renderLineContent } from "./renderLineContent";
 import { editorLineNumber } from "./relativeLineNumbers";
+
+const sameSets = (a: readonly unknown[], b: readonly unknown[]) =>
+  a.length === b.length && a.every((set, i) => set === b[i]);
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
 export const stickyMaxLines = Facet.define<number, number>({
@@ -127,12 +130,23 @@ export function readEditorTopLayout(view: EditorView) {
 class StickyScroll {
   dom: HTMLElement;
   private lines: number[] = [];
+  /** Header rows showing now. */
+  get rows(): number {
+    return this.lines.length;
+  }
   /**
    * Text and syntax tree the rows were rendered from (re-render when either changes), and
-   * the document while bracket colours are on (an edit above may change their depth).
+   * the document while bracket colours are on (an edit above may change their depth), and the
+   * semantic marks painted over the syntax colours.
    */
-  private renderedFrom: { texts: string[]; numbers: string[]; tree: unknown; doc: unknown; scanner: unknown } | null =
-    null;
+  private renderedFrom: {
+    texts: string[];
+    numbers: string[];
+    tree: unknown;
+    doc: unknown;
+    scanner: unknown;
+    highlights: readonly unknown[];
+  } | null = null;
   private gutterWidth = 0;
   private numberWidth = 0;
   private numberLeft = 0;
@@ -161,7 +175,8 @@ class StickyScroll {
       u.geometryChanged ||
       u.transactions.some((tr) => tr.reconfigured) ||
       syntaxTree(u.startState) !== syntaxTree(u.state) ||
-      u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false)
+      u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false) ||
+      !sameSets(previewHighlightSets(u.startState), previewHighlightSets(u.state))
     )
       this.schedule();
   }
@@ -201,6 +216,7 @@ class StickyScroll {
         const numbers = numberWidth > 0 ? lines.map((n) => editorLineNumber(state, n)) : [];
         const tree = syntaxTree(state);
         const scanner = bracketScanner(this.view);
+        const highlights = previewHighlightSets(state);
         const prev = this.renderedFrom;
         const same =
           lines.length === this.lines.length &&
@@ -209,6 +225,7 @@ class StickyScroll {
           prev.tree === tree &&
           prev.doc === (scanner ? state.doc : null) &&
           prev.scanner === scanner &&
+          sameSets(prev.highlights, highlights) &&
           texts.every((t, i) => t === prev.texts[i]) &&
           numbers.every((number, i) => number === prev.numbers[i]);
         if (!lines.length) {
@@ -233,7 +250,7 @@ class StickyScroll {
           numberLeft !== this.numberLeft;
         if (rebuild) {
           this.lines = lines;
-          this.renderedFrom = { texts, numbers, tree, doc: scanner ? state.doc : null, scanner };
+          this.renderedFrom = { texts, numbers, tree, doc: scanner ? state.doc : null, scanner, highlights };
           this.gutterWidth = gutterWidth;
           this.numberWidth = numberWidth;
           this.numberLeft = numberLeft;
@@ -356,6 +373,39 @@ class StickyScroll {
     this.dom.remove();
   }
 }
-export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll);
+/**
+ * Room the sticky rows take above the caret's line once it sits right below them: they show its
+ * enclosing headers. Scrolling the caret into view (search, vim `N`, Go to Line) keeps it out
+ * from under them, as in IDEA.
+ */
+export function stickyTopMargin(view: EditorView): number {
+  const caretBlock = view.lineBlockAt(view.state.selection.main.head);
+  const line = view.state.doc.lineAt(caretBlock.from).number;
+  const rows = Math.min(enclosingHeaders(view.state, line).length, view.state.facet(stickyMaxLines));
+  return rows * view.defaultLineHeight;
+}
+
+/**
+ * The editor's top scroll margin. CodeMirror also treats it as covered when placing tooltips, so
+ * the caret's rows are reserved only while the caret sits above where they would stick (revealing
+ * it then scrolls up and they appear); otherwise it is what sticks now. A caret deep in a method
+ * at the top of the file must not hide the hovers of its first lines.
+ */
+export function stickyScrollMargin(caretTop: number, visibleTop: number, reserve: number, shown: number): number {
+  return caretTop < visibleTop + reserve ? Math.max(reserve, shown) : shown;
+}
+
+const stickyScrollPlugin: ViewPlugin<StickyScroll> = ViewPlugin.fromClass(StickyScroll, {
+  provide: () =>
+    EditorView.scrollMargins.of((view) => {
+      const caretTop = view.lineBlockAt(view.state.selection.main.head).top;
+      // In document coordinates, like the caret's block.
+      const visibleTop = view.scrollDOM.getBoundingClientRect().top - view.documentTop;
+      const shown = (view.plugin(stickyScrollPlugin)?.rows ?? 0) * view.defaultLineHeight;
+      return { top: stickyScrollMargin(caretTop, visibleTop, stickyTopMargin(view), shown) };
+    }),
+});
+
+export const stickyScroll: Extension = stickyScrollPlugin;
 
 export { renderLineContent as renderContextLine };

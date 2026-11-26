@@ -366,6 +366,7 @@ export class Session {
 
   private async restoreEdits() {
     for (const [path, text] of this.edited) {
+      // oxlint-disable-next-line no-await-in-loop -- edits share one editor and save action, so restore files one at a time
       await this.page.evaluate(
         async ({ path, text }) => {
           const probe = (
@@ -379,11 +380,13 @@ export class Session {
             }
           ).__openideaPerf;
           await probe.openFile(path);
+          // oxlint-disable-next-line no-await-in-loop -- openFile is async: wait for this file to become the active editor before restoring it
           while (probe.editorState()?.path !== path) await new Promise(requestAnimationFrame);
           if (probe.editorText() !== text) probe.setText(text);
         },
         { path, text },
       );
+      // oxlint-disable-next-line no-await-in-loop -- save this file after its text is restored; the action targets the active editor
       await this.runAction("file.save");
     }
     this.edited.clear();
@@ -406,6 +409,7 @@ export class Session {
             `tasks ${JSON.stringify(t.runningTasks().map((x) => x.title))}, ${t.inFlight} command(s) in flight`,
         );
       }
+      // oxlint-disable-next-line no-await-in-loop -- polling: re-check activity only after the next 200 ms tick
       await new Promise((r) => setTimeout(r, 200));
     }
   }

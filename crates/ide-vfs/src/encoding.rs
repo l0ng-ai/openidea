@@ -8,8 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Files above this size open with expensive features (LSP, tree-sitter
-/// structure, folding) disabled.
+/// Files above this size open with reduced editor features.
 pub const LARGE_FILE_THRESHOLD: u64 = 5 * 1024 * 1024;
 /// Files above this size open read-only.
 pub const READ_ONLY_THRESHOLD: u64 = 50 * 1024 * 1024;
@@ -174,6 +173,45 @@ pub(crate) fn decode(bytes: &[u8]) -> (String, &'static Encoding, bool, bool) {
     (text.into_owned(), enc, false, false)
 }
 
+/// The configured encoding of a file. It decodes text that is neither valid UTF-8 nor
+/// marked by a BOM and, when `ascii` is set, also labels plain ASCII text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fallback<'a> {
+    pub encoding: &'a str,
+    pub ascii: bool,
+}
+
+pub(crate) enum Resolution {
+    Keep,
+    /// Plain ASCII reads the same in the configured encoding: only the label changes.
+    Relabel(&'static Encoding),
+    Redecode(&'static Encoding),
+}
+
+/// How decoded text meets the configured encoding; see [`Fallback`].
+pub(crate) fn resolve(
+    text: &str,
+    detected: &'static Encoding,
+    has_bom: bool,
+    binary: bool,
+    fallback: Option<Fallback<'_>>,
+) -> Resolution {
+    let Some((fallback, ascii)) =
+        fallback.and_then(|f| Some((Encoding::for_label(f.encoding.trim().as_bytes())?, f.ascii)))
+    else {
+        return Resolution::Keep;
+    };
+    if binary || has_bom || fallback == detected || detected == UTF_16LE || detected == UTF_16BE {
+        Resolution::Keep
+    } else if detected != UTF_8 {
+        Resolution::Redecode(fallback)
+    } else if ascii && fallback.is_ascii_compatible() && text.is_ascii() {
+        Resolution::Relabel(fallback)
+    } else {
+        Resolution::Keep
+    }
+}
+
 /// Bytes of a file inside an archive (size-checked) and the archive's mtime.
 fn archive_bytes(path: &Path) -> IdeResult<Option<(Vec<u8>, f64)>> {
     let Some((archive, entry)) = crate::split_archive_path(path) else { return Ok(None) };
@@ -228,7 +266,11 @@ pub(crate) fn load_text(path: &Path) -> IdeResult<LoadedText> {
 }
 
 /// Bounded disk snapshots for background consumers that share editor decoding.
-pub(crate) fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) -> IdeResult<LoadedText> {
+pub(crate) fn load_text_bounded(
+    path: &Path,
+    fallback: Option<Fallback<'_>>,
+    max_bytes: usize,
+) -> IdeResult<LoadedText> {
     use std::io::Read;
     let regular = |meta: &fs::Metadata| meta.is_file() && meta.len() <= max_bytes as u64;
     if !regular(&fs::metadata(path)?) {
@@ -246,15 +288,13 @@ pub(crate) fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: 
     }
     let len = bytes.len() as u64;
     let (mut text, mut enc, has_bom, binary) = decode(&bytes);
-    if !binary
-        && !has_bom
-        && enc != UTF_8
-        && enc != UTF_16LE
-        && enc != UTF_16BE
-        && let Some(fallback) = fallback.and_then(|label| Encoding::for_label(label.trim().as_bytes()))
-    {
-        text = fallback.decode_without_bom_handling(&bytes).0.into_owned();
-        enc = fallback;
+    match resolve(&text, enc, has_bom, binary, fallback) {
+        Resolution::Keep => {}
+        Resolution::Relabel(fallback) => enc = fallback,
+        Resolution::Redecode(fallback) => {
+            text = fallback.decode_without_bom_handling(&bytes).0.into_owned();
+            enc = fallback;
+        }
     }
     if text.len() > max_bytes {
         return Err(IdeError::invalid("decoded document is too large"));
@@ -702,18 +742,21 @@ mod tests {
             };
             let text = format!("{text}{}", "padding ".repeat(16));
             crate::save_text(&path, &text, encoding, bom).unwrap();
-            let ordinary = crate::load_text_with_fallback(&path, Some(encoding)).unwrap();
-            let bounded = load_text_bounded(&path, Some(encoding), 1024).unwrap();
+            let ordinary = crate::load_text_with_fallback(&path, Some(Fallback { encoding, ascii: true })).unwrap();
+            let bounded = load_text_bounded(&path, Some(Fallback { encoding, ascii: true }), 1024).unwrap();
             assert!(!bounded.binary, "{encoding} BOM={bom}");
             assert_eq!(bounded.text, text, "{encoding} BOM={bom}");
             assert_eq!(
                 (&bounded.text, &bounded.encoding, bounded.has_bom),
                 (&ordinary.text, &ordinary.encoding, ordinary.has_bom)
             );
-            assert!(load_text_bounded(&path, Some(encoding), 2).is_err());
+            assert!(load_text_bounded(&path, Some(Fallback { encoding, ascii: true }), 2).is_err());
         }
         fs::write(&path, [0xe9; 4]).unwrap();
-        assert!(load_text_bounded(&path, Some("windows-1252"), 4).is_err(), "decoded UTF-8 expansion is bounded");
+        assert!(
+            load_text_bounded(&path, Some(Fallback { encoding: "windows-1252", ascii: true }), 4).is_err(),
+            "decoded UTF-8 expansion is bounded"
+        );
         fs::write(&path, b"\x7fELF\0\0").unwrap();
         assert!(load_text_bounded(&path, None, 1024).unwrap().binary);
     }

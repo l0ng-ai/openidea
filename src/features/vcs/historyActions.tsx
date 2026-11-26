@@ -1,7 +1,7 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { useBookmarkPopups } from "@/features/search/bookmarks/store";
 import { commitBookmarkPath, parseCommitBookmark } from "./logBookmarks";
-import { commitKey, commitRepo } from "./multiRoot";
+import { canApplyCommits, commitKey, commitRepo } from "./multiRoot";
 /**
  * Actions for operations in progress, Git Log commits, change lists, the shelf
  * and patches (ids are bound in keymaps/intellij-macos.ts where IDEA binds them).
@@ -407,6 +407,15 @@ export function registerHistoryActions(): () => void {
       run: withCommits((cs) => writeClipboardText(cs.map((c) => c.id).join(" ")), { allowReadOnly: true }),
     },
     {
+      id: "vcs.log.copyCommitSubject",
+      title: "Copy Commit Subject",
+      category: "Git Log",
+      icon: "copy",
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_GIT_LOG,
+      run: withCommits((cs) => writeClipboardText(cs.map((c) => c.summary).join("\n")), { allowReadOnly: true }),
+    },
+    {
       id: "vcs.log.createPatch",
       title: "Create Patch…",
       category: "Git Log",
@@ -417,7 +426,9 @@ export function registerHistoryActions(): () => void {
       id: "vcs.log.cherryPick",
       title: "Cherry-Pick",
       category: "Git Log",
+      icon: "cherry-pick",
       when: VCS,
+      enabled: ({ arg }) => canApplyCommits(commitsArg(arg)),
       run: withCommits(cherryPick, { multipleRepositories: true }),
     },
     {

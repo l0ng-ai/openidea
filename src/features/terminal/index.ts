@@ -11,14 +11,28 @@ import { isRemoteWindow, parseRemoteLocation, projectLocation } from "@/platform
 import { useSystemFontStore } from "@/platform/systemFonts";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import {
+  EDITOR_TAB_MIME,
+  maybeEditorService,
   provideEmbeddedTerminal,
   registerAgentContextSource,
+  registerEditorDropHandler,
   registerEditorKind,
+  registerMenuGroup,
   registerToolWindow,
   toolWindowService,
 } from "@/workbench/contributions";
 import { lazyComponent } from "@/ui";
-import { CLI_KIND, CliDoneMark, cliData, moveTerminalToEditor } from "./cli";
+import {
+  CLI_KIND,
+  CliDoneMark,
+  TERMINAL_TAB_MIME,
+  cliData,
+  cliEditorPayload,
+  moveEditorToTerminal,
+  moveTerminalToEditor,
+  openNewTerminalInEditor,
+  splitCliTab,
+} from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
@@ -77,6 +91,7 @@ async function streamSampleTui(frames: number, fps: number) {
   const deadline = performance.now() + 5_000;
   let term = rt.activeSession()?.term;
   while (!term?.element && performance.now() < deadline) {
+    // oxlint-disable-next-line no-await-in-loop -- polls one animation frame at a time until the terminal element exists
     await new Promise((r) => requestAnimationFrame(r));
     term = rt.activeSession()?.term;
   }
@@ -85,7 +100,9 @@ async function streamSampleTui(frames: number, fps: number) {
   await write(SAMPLE_TUI_START);
   for (let n = 0; n < frames; n++) {
     const next = performance.now() + 1000 / fps;
+    // oxlint-disable-next-line no-await-in-loop -- frames are written in order to the same terminal
     await write(sampleTuiFrame(n, term.cols, term.rows));
+    // oxlint-disable-next-line no-await-in-loop -- each frame is paced to its deadline before the next write
     await new Promise((r) => setTimeout(r, Math.max(0, next - performance.now())));
   }
   await write(SAMPLE_TUI_END);
@@ -132,6 +149,13 @@ export function activate(): () => void {
         { kind: "separator" },
         { kind: "action", action: "file.settings", arg: "tools.terminal", label: "Settings", icon: "settings" },
       ],
+      onStripeDrop: {
+        accepts: (type, data) => type === EDITOR_TAB_MIME && cliEditorPayload(data.payload) !== null,
+        drop: (data) => {
+          const input = cliEditorPayload(data.payload);
+          if (input) void moveEditorToTerminal(input);
+        },
+      },
     }),
     // Terminal sessions moved to the editor (#2202): saved with the editor session, kept alive while hidden.
     registerEditorKind({
@@ -144,8 +168,22 @@ export function activate(): () => void {
       // A reopened tab shows Start: nothing runs on its own.
       restorable: true,
       keepAlive: true,
+      singleton: true,
+      splitInput: splitCliTab,
       onClose: (input) => terminalRuntime()?.disposeCli(input.key),
       isBusy: (input) => terminalRuntime()?.cliBusy(input.key) ?? false,
+    }),
+    registerEditorDropHandler({
+      accepts: (type) => type === TERMINAL_TAB_MIME,
+      allowSplit: true,
+      drop: ({ payload }, target) => void moveTerminalToEditor(payload, target),
+    }),
+    registerMenuGroup({
+      id: "terminal.editorTab",
+      menus: ["editorTab"],
+      order: 10,
+      items: (_, { input }) =>
+        input?.kind === CLI_KIND ? [{ kind: "action", action: "terminal.moveToToolWindow", arg: input.key }] : [],
     }),
     registerActions([
       {
@@ -155,7 +193,19 @@ export function activate(): () => void {
         category: "Terminal",
         when: "projectOpen",
         keywords: ["terminal", "editor", "cli", "claude", "codex"],
-        run: (arg) => moveTerminalToEditor(typeof arg === "string" ? arg : undefined),
+        run: ({ arg }) => moveTerminalToEditor(typeof arg === "string" ? arg : undefined),
+      },
+      {
+        id: "terminal.moveToToolWindow",
+        title: "Move to Terminal",
+        description:
+          "Moves a terminal editor tab, with its running session, back to the Terminal tool window (arg: input key).",
+        category: "Terminal",
+        icon: "terminal",
+        when: "projectOpen",
+        enabled: ({ arg }) => typeof arg === "string" || maybeEditorService()?.activeInput?.()?.kind === CLI_KIND,
+        keywords: ["terminal", "editor", "dock", "tool window"],
+        run: ({ arg }) => moveEditorToTerminal(typeof arg === "string" ? arg : undefined),
       },
       {
         id: "terminal.new",
@@ -167,6 +217,18 @@ export function activate(): () => void {
         // ⌘T is VCS Update elsewhere; in the terminal it opens a tab, as in IDEA.
         keyWhen: "terminalFocus",
         run: () => openNewTab(),
+      },
+      {
+        id: "terminal.newInEditor",
+        title: "New Terminal Tab in Editor",
+        description: "Opens a new terminal session as a tab in the editor area.",
+        category: "Terminal",
+        icon: "plus",
+        when: "projectOpen",
+        keywords: ["shell", "console", "editor", "cli"],
+        // Shortcuts run anywhere outside the Terminal tool window (and popups), so a key like ⌘T can be shared with New Terminal Tab.
+        keyWhen: "!terminalFocus && activeToolWindow != 'terminal' && !popupOpen",
+        run: ({ arg }) => openNewTerminalInEditor(typeof arg === "string" && arg ? arg : undefined),
       },
       {
         id: "terminal.newPredefinedSession",

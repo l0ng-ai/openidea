@@ -111,7 +111,7 @@ pub(crate) fn search_project(
     };
     let literals = |path: &Path, text: &str| literals_of(project, syntax, path, text);
     let defaults = project.documents.file_defaults();
-    let fallback = |path: &Path| defaults.fallback_for(path).map(str::to_owned);
+    let fallback = |path: &Path| defaults.fallback_for(path).map(|f| f.encoding.to_owned());
     let mut total = SearchSummary::default();
     for dir in std::iter::once(root).filter(|_| include_root).chain(&content_roots) {
         let mut remaining = query.clone();

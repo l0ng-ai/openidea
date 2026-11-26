@@ -232,6 +232,16 @@ mod imp {
         wit::ui::pick(title, &pick_items(items)).map_err(error)
     }
 
+    pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+        let filters = dialog
+            .filters
+            .iter()
+            .map(|f| wit::ui::FileFilter { name: f.name.clone(), extensions: f.extensions.clone() })
+            .collect();
+        wit::ui::pick_file(title, &wit::ui::FileDialog { save: dialog.save, name: dialog.name.clone(), filters })
+            .map_err(error)
+    }
+
     pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
         wit::ui::pick_directory(title, initial).map_err(error)
     }
@@ -444,6 +454,36 @@ mod imp {
             .collect::<Vec<_>>();
         wit::decorations::set(path, set, &items).map_err(error)
     }
+    pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::MarkdownDecoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+                markdown_hover: d.markdown_hover.clone(),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set_markdown(path, set, &items).map_err(error)
+    }
+    pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::StyledDecoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+                markdown_hover: d.markdown_hover.clone(),
+                colors: d.colors.as_ref().map(|c| wit::decorations::DecorationColors {
+                    foreground: c.foreground.clone(),
+                    background: c.background.clone(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set_styled(path, set, &items).map_err(error)
+    }
     pub fn clear_decorations(set: &str) -> Result<(), Error> {
         wit::decorations::clear(set).map_err(error)
     }
@@ -532,6 +572,26 @@ mod imp {
         wit::vcs::remotes(p).map_err(error)
     }
 
+    pub fn vcs_roots(p: &ProjectRes) -> Result<Vec<String>, Error> {
+        wit::vcs::roots(p).map_err(error)
+    }
+
+    pub fn vcs_repository_at(p: &ProjectRes, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        wit::vcs::repository_at(p, path)
+            .map(|r| {
+                r.map(|r| RepositoryInfo {
+                    root: r.root,
+                    relative_path: r.relative_path,
+                    branch: r.branch,
+                    commit: r.commit,
+                    upstream: r.upstream,
+                    ahead: r.ahead,
+                    remotes: r.remotes,
+                })
+            })
+            .map_err(error)
+    }
+
     pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
         wit::commit::pending_commit().map(|d| d.map(__draft_in)).map_err(error)
     }
@@ -563,6 +623,11 @@ mod imp {
 
     pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
         wit::events::subscribe_paths(kind, &globs.iter().map(|g| (*g).to_owned()).collect::<Vec<_>>()).map_err(error)
+    }
+
+    pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+        let opts = wit::events::SubscriptionOptions { globs: options.globs.clone(), debounce_ms: options.debounce_ms };
+        wit::events::subscribe_paths_with_options(kind, &opts).map_err(error)
     }
 
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
@@ -611,6 +676,10 @@ mod imp {
 
     pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
         p.stat(path).map(file_stat).map_err(error)
+    }
+
+    pub fn project_generation(p: &ProjectRes) -> Result<u64, Error> {
+        p.generation().map_err(error)
     }
 
     fn file_kind(kind: wit::workspace::FileKind) -> FileKind {
@@ -949,6 +1018,18 @@ mod imp {
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
         wit::run::start(config, args, debug).map_err(error)
     }
+    pub fn start_run_with_options(
+        config: &str,
+        args: &[String],
+        options: &crate::RunStartOptions,
+    ) -> Result<String, Error> {
+        let mode = options.output_mode.map(|m| match m {
+            crate::OutputMode::Pipes => wit::run::OutputMode::Pipes,
+            crate::OutputMode::Pty => wit::run::OutputMode::Pty,
+        });
+        wit::run::start_with_options(config, args, wit::run::StartOptions { debug: options.debug, output_mode: mode })
+            .map_err(error)
+    }
     pub fn open_terminal_session(key: &str, title: &str, cmd: &super::Command) -> Result<String, Error> {
         wit::views::open_terminal_session(
             key,
@@ -1157,6 +1238,12 @@ impl Project {
     pub fn data_sources(&self) -> Result<Vec<String>, Error> {
         imp::database_sources(&self.inner)
     }
+
+    /// Returns the monotonic generation of this project workspace (API 1.18).
+    /// Incremented whenever the project's filesystem or structure changes.
+    pub fn generation(&self) -> Result<u64, Error> {
+        imp::project_generation(&self.inner)
+    }
     /// Writes directly to the Database secure store, without a read API.
     pub fn set_data_source_credential(&self, id: &str, password: &str) -> Result<(), Error> {
         imp::database_credential(&self.inner, id, password)
@@ -1285,6 +1372,17 @@ impl Project {
     /// Configured remotes (`(name, fetch_url)`), in order. Needs `vcs.read`.
     pub fn vcs_remotes(&self) -> Result<Vec<(String, String)>, Error> {
         imp::vcs_remotes(&self.inner)
+    }
+
+    /// Mapped Git worktrees within or enclosing this project (API 1.16). Needs `vcs.read`.
+    pub fn vcs_roots(&self) -> Result<Vec<String>, Error> {
+        imp::vcs_roots(&self.inner)
+    }
+
+    /// The innermost mapped worktree for an existing file or directory in this project,
+    /// or `None` outside Git (API 1.16). Needs `vcs.read` and a trusted project.
+    pub fn vcs_repository_at(&self, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        imp::vcs_repository_at(&self.inner, path)
     }
 
     /// Fetches all remotes. Needs `vcs.write`; long-running, so call it in a [`Task`].
@@ -1796,6 +1894,12 @@ pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
     imp::subscribe_paths(kind, globs)
 }
 
+/// Subscribe to project-relative path globs with options (including debounce_ms).
+/// Requires `events`. Register during activation before the events you want to observe (API 1.18).
+pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+    imp::subscribe_paths_with_options(kind, options)
+}
+
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
 /// the session (also after the instance is reclaimed: an event activates the
 /// plugin again). Needs `events` (`events.input` for `ActionPerformed`).
@@ -1906,6 +2010,12 @@ pub use imp::{event as __event, range_from as __range_from, range_to as __range_
 /// Only from a command or event of a window; waiting is excluded from the budget.
 pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
     imp::pick_directory(title, initial)
+}
+
+/// Choose a file in the invoking window. Returns its absolute host path or `None` on cancellation.
+/// The choice grants no filesystem access and requires an interactive call.
+pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+    imp::pick_file(title, dialog)
 }
 
 /// Requests the normal File > Open flow, including project trust, in the
@@ -2046,6 +2156,17 @@ pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
 pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
     imp::set_decorations(path, set, items)
 }
+/// Replace a file's editor decorations with Markdown hover cards (API 1.16).
+/// Requires project.read; the same limits and set ids as [`set_decorations`].
+pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+    imp::set_markdown_decorations(path, set, items)
+}
+/// Replace a file's editor decorations with items that carry their own `#rrggbb` / `#rrggbbaa`
+/// foreground and background (API 1.17); an item may leave `style` empty when it has colors.
+/// Requires project.read; the same limits and set ids as [`set_decorations`].
+pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+    imp::set_styled_decorations(path, set, items)
+}
 /// Clear this plugin's editor decoration set in all projects. Requires project.read.
 pub fn clear_decorations(set: &str) -> Result<(), Error> {
     imp::clear_decorations(set)
@@ -2077,6 +2198,14 @@ pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error
 /// Starts an owned run configuration in the invoking window. Its id receives run-exited.
 pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
     imp::start_run(config, args, debug)
+}
+/// Starts an owned run configuration with launch options (API 1.18). Its id receives run-exited.
+pub fn start_run_with_options(
+    config: &str,
+    args: &[String],
+    options: &crate::RunStartOptions,
+) -> Result<String, Error> {
+    imp::start_run_with_options(config, args, options)
 }
 /// Opens/reuses a keyed, approved terminal with append-only environment variables.
 pub fn open_terminal_session(key: &str, title: &str, cmd: &Command) -> Result<String, Error> {

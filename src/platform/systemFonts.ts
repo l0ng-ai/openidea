@@ -1,7 +1,7 @@
 /** Shared suggestions only: editor, UI and terminal preferences remain independent. */
 import { useEffect } from "react";
 import { detectCandidateFonts } from "./candidateFonts";
-import { BUNDLED_MONO_FAMILY, BUNDLED_UI_FAMILY, discoverNerdFonts } from "./fonts";
+import { BUNDLED_MONO_FAMILY, BUNDLED_UI_FAMILY, discoverNerdFonts, noteInstalledFonts } from "./fonts";
 import { create } from "zustand";
 import { isTauri } from "@tauri-apps/api/core";
 import { call, commands, type FontFamily } from "@/platform/ipc";
@@ -55,6 +55,7 @@ export function loadSystemFonts(refresh = false): Promise<void> {
       const merged = mergeFontFamilies(fonts);
       // Before subscribers (open terminals) re-apply their font stacks with it.
       discoverNerdFonts(merged.map((font) => font.name));
+      noteInstalledFonts(fonts.map((font) => font.name));
       useSystemFontStore.setState({ fonts: merged, status: fonts.length ? "ready" : "empty", source: "native" });
     })
     .catch(() => fallback("error"))

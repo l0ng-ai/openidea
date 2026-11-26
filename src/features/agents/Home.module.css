@@ -24,10 +24,11 @@
   width: 100%;
 }
 .heading {
-  margin: 0 0 14px;
-  font-size: calc(22px + var(--agent-font-zoom, 0px));
+  margin: 0 0 10px;
+  font-size: calc(18px + var(--agent-font-zoom, 0px));
   font-weight: 500;
   letter-spacing: -0.01em;
+  line-height: 1.4;
   text-align: center;
   color: var(--fg-strong);
   text-wrap: balance;
@@ -93,21 +94,24 @@
 
 .docked {
   justify-content: flex-end;
-  padding: 16px 12px 12px;
+  padding: var(--space-3);
 }
+/* The tool window keeps its box at the bottom, as a session does; the question is a hint line above it. */
 .dockedIntro {
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-end;
   width: 100%;
   min-height: 0;
-  padding-bottom: 8vh;
+  padding-bottom: var(--space-2);
 }
 .docked .heading {
   margin: 0;
-  font-size: calc(15px + var(--agent-font-zoom, 0px));
-  font-weight: 500;
+  padding: 0 4px;
+  font-size: var(--agent-fs-ui);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-align: left;
   color: var(--fg-muted);
 }
 

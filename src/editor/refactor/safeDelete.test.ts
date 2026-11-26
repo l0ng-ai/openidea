@@ -16,17 +16,28 @@ const unavailable = () => ({ status: "error" as const, error: { kind: "unavailab
 
 let goto: Answer<Location[]> = ok([]);
 let outline: Answer<OutlineItem[]> = ok([]);
+/** Outlines of the documents opened for a search, by document id (others answer `outline`). */
+let outlinesByDoc: Record<number, OutlineItem[]> = {};
 /** Called with the position searched from. */
 let references: (pos: Pos) => ReturnType<Answer<Location[]>> = ok([]);
 const lspGoto = vi.fn(async () => goto());
-const docOutline = vi.fn(async () => outline());
+const docOutline = vi.fn(async (doc: number) => (outlinesByDoc[doc] ? ok(outlinesByDoc[doc])() : outline()));
 const lspReferences = vi.fn(async (_request: number, _doc: number, pos: Pos) => {
   const r = references(pos);
   return r.status === "ok" ? { status: "ok" as const, data: { locations: r.data, incomplete: null } } : r;
 });
 const lspCodeActions = vi.fn(async () => ({ status: "ok", data: [] }));
 const lspApplyCodeAction = vi.fn(async () => ({ status: "ok", data: null }));
-const docOpen = vi.fn(async (path: string) => ({ status: "ok", data: { id: 99, path } }));
+/** Text of the documents opened for a search, by path. */
+const texts: Record<string, string> = {};
+const docIds: Record<string, number> = {};
+const docOpen = vi.fn(async (path: string) => ({
+  status: "ok",
+  data: { id: docIds[path] ?? 99, path, text: texts[path] ?? "" },
+}));
+/** Imports of a file (vtsls' file references); unavailable unless a test serves them. */
+let fileRefs: () => ReturnType<Answer<Location[]>> = unavailable;
+const lspFileReferences = vi.fn(async () => fileRefs());
 const docClose = vi.fn(async () => ({ status: "ok", data: null }));
 const languages = vi.fn(async () => [
   { id: "rust", name: "Rust", lineComment: "//", blockComment: ["/*", "*/"] },
@@ -43,6 +54,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       lspGoto,
       docOutline,
       lspReferences,
+      lspFileReferences,
       lspCodeActions,
       lspApplyCodeAction,
       docOpen,
@@ -77,6 +89,11 @@ const ask = vi.fn(async (_request: MessageRequest) => ({ button: answer, checked
 let confirmAnswer: { checked: boolean } | null = { checked: false };
 const confirmChecked = vi.fn(async (_opts: ConfirmOptions) => confirmAnswer);
 vi.mock("@/workbench/messages", () => ({ ask, confirmChecked }));
+const python = vi.hoisted(() => ({ hierarchy: null as unknown }));
+vi.mock("@/editor/navigation/pythonHierarchy", async (orig) => ({
+  ...(await orig<object>()),
+  projectPythonHierarchy: async () => python.hierarchy ?? Promise.reject(new Error("no graph")),
+}));
 
 const { deletionRange, localDeclaration, outlineItemAt, safeDelete, fileUsages, textOccurrences } =
   await import("./safeDelete");
@@ -100,12 +117,12 @@ function cut(text: string, needle: string, comments?: { line: string | null; blo
 }
 
 let view: EditorView | null = null;
-function editor(text: string, caretNeedle: string, language = "rust") {
+function editor(text: string, caretNeedle: string, language = "rust", path = "/p/a.rs") {
   view = new EditorView({
     state: EditorState.create({
       doc: text,
       selection: { anchor: text.indexOf(caretNeedle) + 1 },
-      extensions: [history(), lspDoc.of({ doc: 1, path: "/p/a.rs", language, uiMode: null, readOnly: false })],
+      extensions: [history(), lspDoc.of({ doc: 1, path, language, uiMode: null, readOnly: false })],
     }),
   });
   return view;
@@ -127,6 +144,8 @@ function item(text: string, name: string, decl: string, kind: OutlineItem["kind"
 beforeEach(() => {
   goto = ok([]);
   outline = ok([]);
+  outlinesByDoc = {};
+  python.hierarchy = null;
   references = ok([]);
   locals = { status: "noIdentifier" };
   statement = null;
@@ -310,6 +329,68 @@ describe("safeDelete in the editor", () => {
     expect((await run("delete")).state.doc.toString()).toBe("fn unused() {\n    unused();\n}\n\nfn main() {}\n");
   });
 
+  it("counts the calls through the base a Python method overrides as usages", async () => {
+    const { pythonHierarchy } = await import("@/editor/navigation/pythonHierarchy");
+    python.hierarchy = pythonHierarchy(
+      [
+        { path: "/p/base.py", line: 0, col: 6, name: "Repository", bases: [] },
+        { path: "/p/impl.py", line: 0, col: 6, name: "MysqlRepository", bases: ["Repository"] },
+      ],
+      { readFiles: async (paths) => new Map(paths.map((p) => [p, null])) },
+    );
+    const impl = "class MysqlRepository(Repository):\n    def save(self):\n        pass\n";
+    const save = item(impl, "save", "def save(self):\n        pass", "method");
+    const cls = { ...item(impl, "MysqlRepository", impl.trimEnd(), "class"), children: [save] };
+    outline = ok([cls]);
+    const base = "class Repository(ABC):\n    @abstractmethod\n    def save(self): ...\n";
+    const abstract = item(base, "save", "def save(self): ...", "method");
+    docIds["/p/base.py"] = 7;
+    outlinesByDoc[7] = [{ ...item(base, "Repository", base.trimEnd(), "class"), children: [abstract] }];
+    // `self._repo.save()` with `_repo: Repository` is a reference of the base's method only.
+    const call: Location = { path: "/p/service.py", range: { start: { line: 9, col: 19 }, end: { line: 9, col: 23 } } };
+    references = (pos) => ok(pos.line === abstract.selection_range.start.line ? [call] : [])();
+    answer = "view";
+    const v = editor(impl, "save(self)", "python", "/p/impl.py");
+    await safeDelete(v);
+    expect(ask.mock.calls[0]![0].title).toBe("Usages Detected");
+    expect(executeAction).toHaveBeenCalledWith("find.showUsageResults", { symbol: "save", locations: [call] });
+    expect(v.state.doc.toString()).toBe(impl);
+    // The base's method is searched in its own document, under the same request.
+    const calls = lspReferences.mock.calls.map(([request, doc, pos]) => ({ request, doc, pos }));
+    expect(calls.map((c) => [c.doc, c.pos])).toEqual([
+      [1, save.selection_range.start],
+      [7, abstract.selection_range.start],
+    ]);
+    expect(calls[1]!.request).toBe(calls[0]!.request);
+  });
+
+  it("refuses to delete a Python override when the calls through its base can't be searched", async () => {
+    const { pythonHierarchy } = await import("@/editor/navigation/pythonHierarchy");
+    python.hierarchy = pythonHierarchy(
+      [
+        { path: "/p/base.py", line: 0, col: 6, name: "Repository", bases: [] },
+        { path: "/p/impl.py", line: 0, col: 6, name: "MysqlRepository", bases: ["Repository"] },
+      ],
+      { readFiles: async (paths) => new Map(paths.map((p) => [p, null])) },
+    );
+    const impl = "class MysqlRepository(Repository):\n    def save(self):\n        pass\n";
+    const save = item(impl, "save", "def save(self):\n        pass", "method");
+    outline = ok([{ ...item(impl, "MysqlRepository", impl.trimEnd(), "class"), children: [save] }]);
+    const base = "class Repository(ABC):\n    @abstractmethod\n    def save(self): ...\n";
+    const abstract = item(base, "save", "def save(self): ...", "method");
+    docIds["/p/base.py"] = 7;
+    outlinesByDoc[7] = [{ ...item(base, "Repository", base.trimEnd(), "class"), children: [abstract] }];
+    references = (pos) =>
+      pos.line === abstract.selection_range.start.line
+        ? { status: "error", error: { kind: "protocol", message: "boom" } }
+        : ok([])();
+    const v = editor(impl, "save(self)", "python", "/p/impl.py");
+    await safeDelete(v);
+    expect(v.state.doc.toString()).toBe(impl);
+    expect(ask).not.toHaveBeenCalled();
+    expect(showHint.mock.calls.at(-1)![1]).toContain("could not search the calls through the base method");
+  });
+
   it("confirms first ('Delete Function …?') and searches nothing when cancelled", async () => {
     const v = editor(text, "unused() {");
     outline = ok([item(text, "unused", "fn unused() {\n    unused();\n}")]);
@@ -405,6 +486,65 @@ describe("safeDelete in the editor", () => {
     v.dispatch({ selection: { anchor: 11 } });
     await safeDelete(v);
     expect(showHint).toHaveBeenCalledWith(v, "Cannot perform refactoring. Caret should be on a symbol");
+  });
+});
+
+describe("file references", () => {
+  const at = (path: string, line: number, col: number, len = 1): Location => ({
+    path,
+    range: { start: { line, col }, end: { line, col: col + len } },
+  });
+  afterEach(() => {
+    fileRefs = unavailable;
+    references = ok([]);
+    outline = ok([]);
+  });
+
+  it("finds the default import name before a module specifier", async () => {
+    const { defaultImportName } = await import("./fileReferences");
+    expect(defaultImportName("import Hello from ")).toEqual({ name: "Hello", col: 7 });
+    expect(defaultImportName("import Hello from '")).toEqual({ name: "Hello", col: 7 });
+    expect(defaultImportName("  import Hello, { a } from ")).toEqual({ name: "Hello", col: 9 });
+    expect(defaultImportName("import type Props from ")).toEqual({ name: "Props", col: 12 });
+    expect(defaultImportName("import { Hello } from ")).toBeNull();
+    expect(defaultImportName("const Page = () => import(")).toBeNull();
+  });
+
+  it("a Vue component: its imports and the tags of the name each import binds", async () => {
+    const app = "<script setup>\nimport Hello from './Hello.vue'\n</script>\n<template><Hello /></template>";
+    texts["/p/App.vue"] = app;
+    docIds["/p/App.vue"] = 7;
+    const imported = at("/p/App.vue", 1, 19, 22);
+    const tag = at("/p/App.vue", 3, 11, 5);
+    fileRefs = ok([imported, at("/p/router.ts", 2, 30, 13)]);
+    texts["/p/router.ts"] = "\n\nimport Hello from './components/Hello.vue'";
+    // The binding itself comes back too (on the import's line): listed once, as the import.
+    references = (pos) =>
+      pos.line === 1 && pos.col === 7
+        ? {
+            status: "ok",
+            data: [at("/p/App.vue", 1, 7, 5), tag, at("/p/Hello.vue", 0, 0), at("/p/router.ts", 2, 7, 5)],
+          }
+        : { status: "ok", data: [] };
+    const res = await fileUsages(["/p/Hello.vue"]);
+    expect(res).toEqual({ status: "ok", usages: [imported, at("/p/router.ts", 2, 30, 13), tag] });
+    expect(lspReferences).toHaveBeenCalledWith(
+      expect.anything(),
+      7,
+      { line: 1, col: 7 },
+      false,
+      false,
+      false,
+      expect.anything(),
+    );
+  });
+
+  it("other files: the imports of the file beside its symbols' references", async () => {
+    lspReferences.mockClear();
+    const imported = at("/p/main.ts", 0, 20, 8);
+    fileRefs = ok([imported]);
+    expect(await fileUsages(["/p/util.ts"])).toEqual({ status: "ok", usages: [imported] });
+    expect(lspReferences).not.toHaveBeenCalled();
   });
 });
 

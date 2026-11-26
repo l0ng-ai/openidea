@@ -1,5 +1,5 @@
-//! Download mirrors: a user-configured proxy prefix the installer tries when an official host
-//! is slow or unreachable (Tools › Download sources).
+//! Download mirrors: user-configured proxy prefixes the installer tries, in order, when an
+//! official host is slow or unreachable (Tools › Download sources).
 //!
 //! The official URL is appended to the prefix unchanged, which is what the public GitHub
 //! proxies speak. Only `github.com` is mirrored: those proxies hard-code that host, so an
@@ -7,6 +7,9 @@
 //! never mirrored either — the GitHub token must not reach a third party.
 
 use ide_core::settings::ToolDownloadSettings;
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// The only host a mirror prefix may be prepended to.
 const MIRRORED_PREFIX: &str = "https://github.com/";
@@ -49,18 +52,57 @@ pub fn through(url: &str, mirror: &str) -> Option<String> {
     Some(format!("{prefix}{url}"))
 }
 
-/// The URLs to try for `url`: the mirror when one is set, then the official host.
-///
-/// A configured mirror is tried first — the user set it because the official host is slow, so
-/// waiting for that host to fail first would defeat the point. The official host stays last as
-/// the fallback, and with no mirror the list is exactly `[url]`, so an unconfigured IDE
-/// downloads as it always did.
-pub fn candidates(url: &str, settings: &ToolDownloadSettings) -> Vec<Candidate> {
-    let official = Candidate { url: url.to_owned(), mirror: None };
-    match through(url, &settings.github_mirror) {
-        Some(mirrored) => vec![Candidate { url: mirrored, mirror: Some(settings.github_mirror.clone()) }, official],
-        None => vec![official],
+/// The mirror entries of the setting: prefixes separated by commas or whitespace, in the
+/// order given, without the ones that are not URLs and without repeats.
+pub fn mirrors(setting: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for entry in setting.split(|c: char| c == ',' || c.is_whitespace()).filter(|e| !e.is_empty()) {
+        if prefix(entry).is_some() && !out.iter().any(|seen| prefix(seen) == prefix(entry)) {
+            out.push(entry);
+        }
     }
+    out
+}
+
+/// How long a mirror that failed to deliver waits behind the others.
+const FAILED_FOR: Duration = Duration::from_secs(10 * 60);
+
+/// Mirrors whose last download failed, with when: tried after the ones that have not.
+static FAILED: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+/// Records how a download through `mirror` went. A mirror that could not deliver moves behind
+/// the others for a while, so the next downloads don't each wait for it to time out first;
+/// a success puts it back in its place.
+pub fn report(mirror: &str, delivered: bool) {
+    let Some(key) = prefix(mirror) else { return };
+    let mut failed = FAILED.lock();
+    let failed = failed.get_or_insert_with(HashMap::new);
+    if delivered {
+        failed.remove(&key);
+    } else {
+        failed.insert(key, Instant::now());
+    }
+}
+
+fn recently_failed(mirror: &str) -> bool {
+    let Some(key) = prefix(mirror) else { return false };
+    FAILED.lock().as_ref().and_then(|f| f.get(&key)).is_some_and(|at| at.elapsed() < FAILED_FOR)
+}
+
+/// The URLs to try for `url`: each configured mirror in order, then the official host.
+///
+/// Configured mirrors are tried first — the user set them because the official host is slow, so
+/// waiting for that host to fail first would defeat the point. A mirror that failed recently
+/// ([`report`]) goes after the others. The official host stays last as the fallback, and with
+/// no mirror the list is exactly `[url]`, so an unconfigured IDE downloads as it always did.
+pub fn candidates(url: &str, settings: &ToolDownloadSettings) -> Vec<Candidate> {
+    let (mut fresh, mut failed): (Vec<Candidate>, Vec<Candidate>) = mirrors(&settings.github_mirror)
+        .into_iter()
+        .filter_map(|mirror| Some(Candidate { url: through(url, mirror)?, mirror: Some(mirror.to_owned()) }))
+        .partition(|c| !c.mirror.as_deref().is_some_and(recently_failed));
+    fresh.append(&mut failed);
+    fresh.push(Candidate { url: url.to_owned(), mirror: None });
+    fresh
 }
 
 #[cfg(test)]
@@ -117,6 +159,24 @@ mod tests {
             assert_eq!(prefix(mirror), None, "{mirror}");
             assert_eq!(through(ASSET, mirror), None, "{mirror}");
         }
+    }
+
+    #[test]
+    fn several_mirrors_are_tried_in_order_before_the_official_host() {
+        let candidates = candidates(ASSET, &settings("https://a.test/, https://b.test\n  https://a.test  ftp://x"));
+        let sources: Vec<_> = candidates.iter().map(Candidate::describe).collect();
+        assert_eq!(sources, ["https://a.test/", "https://b.test", "the official source"]);
+        assert_eq!(candidates[1].url, format!("https://b.test/{ASSET}"));
+    }
+
+    #[test]
+    fn a_mirror_that_failed_goes_behind_the_others_until_it_delivers() {
+        let setting = settings("https://first.fail.test https://second.fail.test");
+        let order = || candidates(ASSET, &setting).iter().map(|c| c.describe().to_owned()).collect::<Vec<_>>();
+        report("https://first.fail.test/", false);
+        assert_eq!(order(), ["https://second.fail.test", "https://first.fail.test", "the official source"]);
+        report("https://first.fail.test", true);
+        assert_eq!(order(), ["https://first.fail.test", "https://second.fail.test", "the official source"]);
     }
 
     #[test]

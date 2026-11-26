@@ -5,6 +5,7 @@
  * its source (as IDEA: selection shows, navigation jumps).
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
+import { hasPrimaryModifier } from "@/platform/keymap";
 import {
   useCallback,
   useEffect,
@@ -266,6 +267,7 @@ function BuildConsole({ rowHeight }: { rowHeight: number }) {
   const root = useProject((s) => s.project?.root ?? "/");
   const lines = useBuildRun((s) => s.lines);
   const ref = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [widest] = useState(() => new WidestColumns());
   const columns = useMemo(() => widest.measure(lines), [widest, lines]);
@@ -281,13 +283,60 @@ function BuildConsole({ rowHeight }: { rowHeight: number }) {
   useEffect(() => {
     if (stick.current && lines.length) virtualizer.scrollToIndex(lines.length - 1, { align: "end" });
   }, [lines.length, rowHeight, virtualizer]);
+
+  /** Rows are virtualized, so "everything" is a selection of the container, not of the mounted rows. */
+  const selectAll = () => {
+    const inner = innerRef.current;
+    if (inner) window.getSelection()?.selectAllChildren(inner);
+  };
+  const allSelected = () => {
+    const inner = innerRef.current;
+    const s = window.getSelection();
+    return (
+      !!inner &&
+      !!s &&
+      !s.isCollapsed &&
+      s.anchorNode === inner &&
+      s.focusNode === inner &&
+      s.anchorOffset === 0 &&
+      s.focusOffset === inner.childNodes.length
+    );
+  };
+  const allText = () => lines.map((l) => l.text).join("\n");
+  // macOS routes Cmd+A through the native Edit menu (no keydown reaches the webview); Select All
+  // asks the body with `selectstart` first, so with the output focused, select the output instead.
+  useEffect(() => {
+    const onSelectStart = (e: Event) => {
+      const el = ref.current;
+      if (e.target !== document.body || !el || !el.contains(document.activeElement)) return;
+      e.preventDefault();
+      const inner = innerRef.current;
+      if (inner) window.getSelection()?.selectAllChildren(inner);
+    };
+    document.addEventListener("selectstart", onSelectStart, true);
+    return () => document.removeEventListener("selectstart", onSelectStart, true);
+  }, []);
+
   return (
     <div
       ref={ref}
       className={styles.console}
       tabIndex={0}
       role="log"
-      onKeyDown={copySelectionOnKeyDown}
+      onKeyDown={(e) => {
+        if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+          e.preventDefault();
+          selectAll();
+          return;
+        }
+        copySelectionOnKeyDown(e, (selection) => (allSelected() ? allText() : selection.toString()));
+      }}
+      onCopy={(e) => {
+        // Native copy (Edit menu, macOS) would take only the mounted rows.
+        if (!allSelected()) return;
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", allText());
+      }}
       aria-label={tx("Build output")}
       onScroll={(e) => {
         const el = e.currentTarget;
@@ -295,6 +344,7 @@ function BuildConsole({ rowHeight }: { rowHeight: number }) {
       }}
     >
       <div
+        ref={innerRef}
         className={styles.consoleInner}
         style={{ height: virtualizer.getTotalSize(), minWidth: `calc(${columns}ch + 24px)` }}
       >
@@ -346,7 +396,16 @@ function BuildOutput({ rowHeight }: { rowHeight: number }) {
   const selected = useBuildRun((s) => s.selected);
   const messages = useBuildRun((s) => s.messages);
   const node = useMemo(() => (selected ? findNode(messages, selected) : undefined), [selected, messages]);
-  return node?.kind === "message" ? <MessageDetail message={node.message} /> : <BuildConsole rowHeight={rowHeight} />;
+  const dropped = useBuildRun((s) => s.dropped);
+  if (node?.kind === "message") return <MessageDetail message={node.message} />;
+  return (
+    <>
+      {dropped > 0 && (
+        <div className={styles.notice}>{tx`${dropped.toLocaleString()} earlier lines were discarded`}</div>
+      )}
+      <BuildConsole rowHeight={rowHeight} />
+    </>
+  );
 }
 
 export function BuildView() {

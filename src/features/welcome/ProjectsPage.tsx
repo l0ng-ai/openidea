@@ -1,5 +1,5 @@
 /** Welcome › Projects: search, New Project / Open / Clone Repository / Remote Development, and the recent projects list. */
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { executeAction, useActions } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
@@ -23,6 +23,7 @@ import {
 } from "@/ui";
 import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
 import { openRecent, recentRows, setGroupExpanded, useRecent, type RecentMatch, type RecentRow } from "./recent";
+import { projectWindowOverride } from "@/workbench/projectWindow";
 import type { RecentProjectGroup } from "@/platform/ipc";
 import styles from "./Welcome.module.css";
 import { tx } from "@/platform/i18n";
@@ -253,7 +254,8 @@ function ProjectRow({
   /** Listed under a group. */
   nested?: boolean;
   onSelect: () => void;
-  onOpen: () => void;
+  /** Its modifier keys pick the window ({@link projectWindowOverride}). */
+  onOpen: (e: MouseEvent<HTMLDivElement>) => void;
 }) {
   const opening = useRecent((s) => s.opening === m.project.path);
   // Opening a remote project: which stage of connecting it is at.
@@ -274,9 +276,9 @@ function ProjectRow({
       title={unavailableTitle(m.project) ?? m.project.path}
       className={clsx(styles.project, nested && styles.projectNested, selected && styles.projectSelected)}
       onMouseDown={(e) => e.preventDefault()}
-      onClick={() => {
+      onClick={(e) => {
         onSelect();
-        onOpen();
+        onOpen(e);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -400,7 +402,7 @@ export function ProjectsPage() {
       }
       return;
     }
-    if (r.kind === "open") void openRecent(match.m.project);
+    if (r.kind === "open") void openRecent(match.m.project, projectWindowOverride(e));
     else if (r.kind === "remove") void askRemoveRecent(match.m.project);
     else {
       const el = document.getElementById(optionId(current))?.getBoundingClientRect();
@@ -456,7 +458,7 @@ export function ProjectsPage() {
               selected={i === current}
               nested={row.group !== null}
               onSelect={() => setActive(i)}
-              onOpen={() => void openRecent(row.m.project)}
+              onOpen={(e) => void openRecent(row.m.project, projectWindowOverride(e))}
             />
           ),
         )}

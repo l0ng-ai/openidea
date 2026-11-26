@@ -334,6 +334,12 @@ impl Shim {
         Some(history::transcript(self.config.config_dir.as_deref()?, cwd, id))
     }
 
+    /// Whether session `id` is in the configuration directory, copied there from another one
+    /// if need be (see [`history::adopt`]).
+    fn adopt(&self, cwd: &Path, id: &str) -> bool {
+        self.config.config_dir.as_deref().is_some_and(|dir| history::adopt(dir, cwd, id))
+    }
+
     /// The conversation a session started with `start` begins with.
     fn base_chain(&self, cwd: &Path, start: &Start) -> Result<Vec<Value>, String> {
         let (id, at) = match start {
@@ -435,10 +441,13 @@ impl Shim {
                 let id = params.get("sessionId").and_then(Value::as_str).ok_or_else(|| invalid("no sessionId"))?;
                 let cwd = self.cwd_of(&params);
                 let (start, pending) = match self.load_pending(id) {
-                    Some(s) => (s, true),
-                    None if self.transcript(&cwd, id).is_some_and(|p| p.exists()) => {
-                        (Start::Resume { id: id.to_owned(), at: None }, false)
+                    Some(s) => {
+                        if let Start::Resume { id: from, .. } | Start::Fork { from, .. } = &s {
+                            self.adopt(&cwd, from);
+                        }
+                        (s, true)
                     }
+                    None if self.adopt(&cwd, id) => (Start::Resume { id: id.to_owned(), at: None }, false),
                     None => return Err(invalid(format!("no Claude Code session {id} in {}", cwd.display()))),
                 };
                 let chain = self.base_chain(&cwd, &start).map_err(internal)?;
@@ -505,7 +514,16 @@ impl Shim {
             "_openidea/context_usage" => {
                 let session = self.session(&params)?;
                 let proc = session.st.lock().proc.clone().ok_or_else(|| internal("Claude Code is not running"))?;
-                rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)
+                let usage = rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)?;
+                // The meter shows the same numbers as these details from now on.
+                let n = |k: &str| usage.get(k).and_then(Value::as_u64);
+                if let (Some(used), Some(size)) = (n("totalTokens"), n("maxTokens").filter(|m| *m > 0)) {
+                    let update = session.st.lock().tr.on_context_usage(used, size);
+                    if let Some(shim) = session.shim() {
+                        shim.notify(vec![update]);
+                    }
+                }
+                Ok(usage)
             }
             "_openidea/stop_task" => {
                 let session = self.session(&params)?;

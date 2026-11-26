@@ -100,3 +100,10 @@
 .after .strikethrough {
   text-decoration: none;
 }
+
+/* A highlighted label carries emphasis; the range background stays on the text. */
+.after .highlight {
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+}

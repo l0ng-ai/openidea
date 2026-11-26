@@ -12,14 +12,14 @@ The **Terminal** tool window runs your shell in the IDE. Each tab is a real pseu
 | Show or hide the Terminal tool window | `⌥F12` | `Alt+F12`      |
 | New Terminal Tab (terminal focused)   | `⌘T`   | `Ctrl+Shift+T` |
 
-Showing an empty Terminal window opens a tab in the start directory (the project root by default). To open a terminal in a specific folder, right-click it in the Project tool window and choose **Open In › Terminal**, or run **Open in Terminal**.
+Showing an empty Terminal window opens a tab in the start directory (the project root by default). To open a terminal in a specific folder, right-click it in the Project tool window and choose **Open In › Terminal**, or run **Open in Terminal**. To open a terminal directly as an editor tab, run **New Terminal Tab in Editor** (its shortcut applies outside the Terminal tool window and popups, so it can share `⌘T` / `Ctrl+Shift+T` with **New Terminal Tab** in **Settings › Keymap**).
 
 ## Tabs and splits
 
 - **+** (**New Tab**) opens a tab with the default shell.
 - The **▾** button (**More Terminal Options**) has **New Terminal Tab**, **New Predefined Session** (one entry per installed shell, plus **SSH Session…**), **Split Right**, **Split Down** and **Settings**.
-- Right-click a tab for **Rename Session…**, **Close Tab**, **Close Other Tabs**, **Split Right**, **Split and Move Right**, **Split Down**, **Split and Move Down** and **Unsplit**. Double-clicking a tab also renames it.
-- Drag tabs to reorder them, or drop a tab on the edge of another group to split.
+- Right-click a tab for **Rename Session…**, **Move to Editor**, **Close Tab**, **Close Other Tabs**, **Split Right**, **Split and Move Right**, **Split Down**, **Split and Move Down** and **Unsplit**. Double-clicking a tab also renames it.
+- Drag tabs to reorder them, drop a tab on the edge of another group to split, or drag a tab into an editor group (or its edge) to keep the session running as an editor tab. A terminal moved to the editor can return via **Move to Terminal** or by dragging its editor tab onto a Terminal tab strip, pane edge, or the **Terminal** stripe button.
 
 A tab is named after your custom name, otherwise after the program running in it (when the shell reports it), otherwise `Local`, `Local (2)` and so on. A spinner shows while a command runs; **Exited** or **Failed** shows once the session ends.
 
@@ -56,6 +56,7 @@ The pane's context menu has **Copy**, **Paste**, **Select All**, **Clear Buffer*
 
 - `http`, `https` and `file` URLs open in your browser. OSC 8 hyperlinks from programs work too.
 - File locations such as `src/main.rs:42:7` or `Main.java(42,7)` open in the editor at that line. Paths resolve against the shell's current directory, then by file name across the project.
+- Hold `⌘` (`Ctrl` on Windows/Linux) and hover over an existing file or folder name (`README.md`, `src/features`, `/tmp`) to turn it into a link: clicking opens files in an editor tab of the current window, opens project folders in the **Project** tool window, and reveals folders outside the project in Finder / Explorer / Files.
 - Pasting copied files pastes their paths, quoted for the shell in use (bash/zsh/fish, PowerShell or cmd). Pasting an image from the clipboard saves it to a file and pastes that file's path.
 - Dropping files from your file manager onto the terminal types their quoted paths at the prompt. They are not run.
 

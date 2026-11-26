@@ -124,16 +124,33 @@ describe("Tabs interactions", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
     render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} />);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "B" }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: "B" });
+    expect(fireEvent.mouseDown(tab, { button: 1 })).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(fireEvent.mouseUp(tab, { button: 1 })).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledWith("b");
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("does not close a tab when the middle button is released after leaving the pressed tab", () => {
+    const onClose = vi.fn();
+    render(<Tabs items={items} activeId="a" onSelect={() => {}} onClose={onClose} />);
+    const pressed = screen.getByRole("tab", { name: "B" });
+    fireEvent.mouseDown(pressed, { button: 1 });
+    fireEvent.mouseLeave(pressed);
+    fireEvent.mouseEnter(pressed);
+    fireEvent.mouseUp(pressed, { button: 1 });
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("middle click ignores tabs that cannot close", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
     render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} />);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "C" }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: "C" });
+    expect(fireEvent.mouseDown(tab, { button: 1 })).toBe(true);
+    expect(fireEvent.mouseUp(tab, { button: 1 })).toBe(true);
     expect(onClose).not.toHaveBeenCalled();
     expect(onSelect).not.toHaveBeenCalled();
   });
@@ -146,8 +163,22 @@ describe("Tabs interactions", () => {
     const hidden = items.map((it) => ({ ...it, showCloseButton: false }));
     render(<Tabs items={hidden} activeId="a" onSelect={() => {}} onClose={onClose} />);
     expect(screen.queryByRole("button", { name: "Close Tab" })).toBeNull();
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "B" }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: "B" });
+    fireEvent.mouseDown(tab, { button: 1 });
+    fireEvent.mouseUp(tab, { button: 1 });
     expect(onClose).toHaveBeenCalledWith("b");
+  });
+
+  it("leaves focus where it was on click only when the strip asks to", () => {
+    const { rerender } = render(<Tabs items={items} activeId="b" onSelect={() => {}} keepFocusOnClick />);
+    const down = () => {
+      const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      screen.getByRole("tab", { name: "C" }).dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(down()).toBe(true);
+    rerender(<Tabs items={items} activeId="b" onSelect={() => {}} />);
+    expect(down()).toBe(false);
   });
 
   it("keeps Shift+click selection where the strip does not opt in", () => {
@@ -440,5 +471,36 @@ describe("Tabs drag & drop", () => {
     expect(tab("Right", "d")).toHaveClass(styles.dropAfter!);
     pointer(window, "pointerup", 180);
     expect(onDrop).toHaveBeenCalledWith("a", 2);
+  });
+
+  it("accepts external drag types with an insertion marker and routes them to onExternalDrop", () => {
+    const onExternalDrop = vi.fn();
+    render(
+      <>
+        <Strip label="Source" initial={["term-1"]} />
+        <Tabs
+          aria-label="Editor"
+          items={[
+            { id: "c", label: "c" },
+            { id: "d", label: "d" },
+          ]}
+          activeId="c"
+          onSelect={() => {}}
+          dnd={{
+            type: "application/x-other",
+            payload: (id) => id,
+            onDrop: () => {},
+            accepts: (data) => data.type === TYPE && data.payload === "term-1",
+            onExternalDrop,
+          }}
+        />
+      </>,
+    );
+    pointer(within(tab("Source", "term-1")).getByRole("tab"), "pointerdown", 50);
+    hit = strip("Editor");
+    pointer(window, "pointermove", 120);
+    expect(tab("Editor", "d")).toHaveClass(styles.dropBefore!);
+    pointer(window, "pointerup", 120);
+    expect(onExternalDrop).toHaveBeenCalledWith({ type: TYPE, payload: "term-1" }, 1);
   });
 });

@@ -417,6 +417,7 @@ export const viewerTheme = EditorView.theme(
     ".cm-content": {
       padding: "0 0 4px",
       caretColor: "var(--caret, var(--fg-strong))",
+      cursor: "text",
       WebkitUserSelect: "text",
       userSelect: "text",
     },
@@ -506,6 +507,7 @@ export const viewerTheme = EditorView.theme(
     ".cm-collapsedLines": {
       WebkitUserSelect: "none",
       userSelect: "none",
+      minHeight: "max(27px, var(--openidea-editor-line-height, var(--lh-code)))",
       padding: "0",
       background: "var(--bg-editor)",
     },
@@ -514,14 +516,13 @@ export const viewerTheme = EditorView.theme(
       alignItems: "center",
       gap: "var(--space-1)",
       width: "100%",
-      minHeight: "max(27px, var(--openidea-editor-line-height, var(--lh-code)))",
+      minHeight: "inherit",
       padding: "0 var(--space-3)",
       color: "var(--fg-secondary)",
       fontFamily: "var(--font-ui)",
       fontSize: "var(--fs-ui)",
       lineHeight: "1.4",
       textAlign: "start",
-      cursor: "pointer",
     },
     ".cm-collapsedLines > button:hover, .cm-collapsedLines > button:focus-visible": {
       backgroundColor: "var(--bg-hover)",

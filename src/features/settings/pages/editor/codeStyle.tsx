@@ -11,7 +11,13 @@ import { useId, useState } from "react";
 import { Button, Checkbox, Input, type SelectOption, T } from "@/ui";
 import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
 import { choosePath } from "@/platform/choosePath";
-import { ENCODING_CHOICES, lineCommentDefaults, type LanguageCodeStyle } from "@/platform/editorSettings";
+import {
+  ENCODING_CHOICES,
+  lineCommentDefaults,
+  sqlCaseOf,
+  type LanguageCodeStyle,
+  type SqlWordCase,
+} from "@/platform/editorSettings";
 import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
 import { FormGroup, NumberInput, Row, Select, Toggle } from "../../components/Form";
 import { useSetting } from "../../components/context";
@@ -150,6 +156,13 @@ const COMMENTS = {
   label: "Comment Code",
   keywords: ["Line comment at first column", "Add a space at line comment start"],
 };
+const CASE = { id: "case", label: "Case", keywords: ["Keywords", "Identifiers", "To upper", "To lower"] };
+
+const WORD_CASES: SelectOption<SqlWordCase>[] = [
+  { value: "upper", label: "To upper" },
+  { value: "lower", label: "To lower" },
+  { value: "keep", label: "Do not change" },
+];
 
 /** Code Style overrides on top of the language definition. */
 function LanguageStyle({ lang }: { lang: LanguageInfo }) {
@@ -238,6 +251,32 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
             label="Add a space at line comment start"
           />
         </>
+      ),
+    });
+  }
+  if (lang.id === "sql") {
+    const wordCase = sqlCaseOf(own);
+    tabs.push({
+      ...CASE,
+      content: (
+        <FormGroup>
+          <Row label="Keywords">
+            <Select
+              value={wordCase.keywords}
+              options={WORD_CASES}
+              onChange={(keywordCase) => set({ keywordCase })}
+              aria-label="Keywords"
+            />
+          </Row>
+          <Row label="Identifiers" hint="Unquoted table, column and alias names; ClickHouse names keep their case.">
+            <Select
+              value={wordCase.identifiers}
+              options={WORD_CASES}
+              onChange={(identifierCase) => set({ identifierCase })}
+              aria-label="Identifiers"
+            />
+          </Row>
+        </FormGroup>
       ),
     });
   }
@@ -372,6 +411,7 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
           ? ["Formatting profile", "IntelliJ IDEA", "Custom Eclipse formatter XML", "Eclipse formatter XML"]
           : []),
         ...(lang.id === "php" ? ["Alignment", "Align key-value pairs", "Align consecutive assignments"] : []),
+        ...(lang.id === "sql" ? [CASE.label, ...CASE.keywords, "Do not change"] : []),
       ],
       component: () => <LanguageStyle lang={lang} />,
     }));

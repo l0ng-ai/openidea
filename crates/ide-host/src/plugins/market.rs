@@ -11,6 +11,7 @@ use super::{PackageFile, PluginEvent, PluginHost, PluginSource, PluginStatus, Pl
 use ide_core::{IdeError, IdeResult};
 use ide_extension::package::{self, Index, IndexEntry, PackageSignature, PluginIcon, SIGNATURE_FILE};
 use ide_extension::{MANIFEST_FILE, Manifest};
+use ide_tools::mirror;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -237,6 +238,11 @@ impl PluginHost {
         *self.default_market_url.write() = url.filter(|u| !u.trim().is_empty());
     }
 
+    /// Where plugin packages are fetched from first (Tools › Download sources).
+    pub fn set_downloads(&self, downloads: ide_core::settings::ToolDownloadSettings) {
+        *self.downloads.write() = downloads;
+    }
+
     pub fn set_market_url(&self, url: Option<String>) {
         self.state.lock().market_url = url.filter(|u| !u.trim().is_empty());
         self.save_state();
@@ -355,40 +361,114 @@ impl PluginHost {
                 entry.id, entry.version
             )));
         }
-        let bytes = read_url(&download, MAX_PACKAGE).map_err(IdeError::unavailable)?;
+        let candidates = mirror::candidates(&download, &self.downloads.read());
         let downloads = self.plugins_dir.join(DOWNLOADS);
         std::fs::create_dir_all(&downloads)?;
         let archive = downloads.join(format!("{}-{}.{}", entry.id, entry.version, package::PACKAGE_EXTENSION));
-        std::fs::write(&archive, bytes)?;
-        let dir = self.unpack_package(&archive);
-        let _ = std::fs::remove_file(&archive);
-        let dir = dir?;
-        let manifest = Manifest::load(&dir).map_err(IdeError::invalid)?;
-        let files = self.package_files_in(&dir)?;
-        let digest = package::package_digest(&dir, &files)?;
-        if (manifest.id.as_str(), manifest.version.as_str(), digest.as_str())
-            != (&entry.id, &entry.version, &entry.digest)
-        {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(IdeError::invalid("the download does not match the marketplace's entry"));
+        let picked = try_sources(&candidates, |index, candidate| {
+            // Bytes a failed source left behind must not be unpacked as the next one's.
+            if index > 0 {
+                let _ = std::fs::remove_file(&archive);
+            }
+            // Which source a package comes from is the first thing to look at when an install
+            // is slow or fails (a mirror is one of several candidates), so it goes in the log.
+            tracing::info!(
+                "plugins: {} {} from {} ({}){}",
+                entry.id,
+                entry.version,
+                candidate.url,
+                candidate.describe(),
+                if candidates.len() > 1 {
+                    format!(", source {} of {}", index + 1, candidates.len())
+                } else {
+                    String::new()
+                }
+            );
+            let fetched = self.fetch_market_package(&candidate.url, &entry, &archive);
+            if let Some(mirror) = &candidate.mirror {
+                mirror::report(mirror, fetched.is_ok());
+            }
+            if let Err(e) = &fetched {
+                tracing::warn!("plugins: {} from {} failed: {}", entry.id, candidate.url, e.message);
+            }
+            fetched
+        });
+        match picked {
+            Ok((dir, index)) => {
+                tracing::info!(
+                    "plugins: {} {} installed from {}",
+                    entry.id,
+                    entry.version,
+                    candidates[index].describe()
+                );
+                Ok(dir)
+            }
+            Err(e) => Err(e),
         }
-        if self.verified_publisher(&dir).is_none() {
+    }
+
+    /// Fetches the package of `entry` from `url`, checks it against the index (its digest, then
+    /// the publisher's signature) and only then hands it over, unpacked. A failure here is that
+    /// source's failure.
+    ///
+    /// The index has no hash of the archive itself, only [`package_digest`] of the unpacked
+    /// contents, so the bytes have to be unpacked before they can be checked. The unpacked
+    /// files of a source that does **not** check are therefore kept out of reach until they
+    /// pass: they go to a staging folder of this attempt, and every exit but the verified one
+    /// removes it, so nothing a mirror served is ever left where the install page reads from.
+    fn fetch_market_package(&self, url: &str, entry: &IndexEntry, archive: &Path) -> IdeResult<PathBuf> {
+        let bytes = read_url(url, MAX_PACKAGE).map_err(IdeError::unavailable)?;
+        std::fs::write(archive, bytes)?;
+        let unpacked = self.unpack_package(archive);
+        // The archive is needed only until it is unpacked; a failed source leaves none behind.
+        let _ = std::fs::remove_file(archive);
+        let dir = unpacked?;
+        self.verify_market_package(&dir, entry).inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&dir);
-            return Err(IdeError::invalid("the marketplace package is not signed by a trusted publisher"));
-        }
+        })?;
         Ok(dir)
     }
 
+    /// Whether the unpacked package in `dir` is the one `entry` names: same id, version and
+    /// digest, and signed by a publisher the index trusts.
+    fn verify_market_package(&self, dir: &Path, entry: &IndexEntry) -> IdeResult<()> {
+        let manifest = Manifest::load(dir).map_err(IdeError::invalid)?;
+        let files = self.package_files_in(dir)?;
+        let digest = package::package_digest(dir, &files)?;
+        if (manifest.id.as_str(), manifest.version.as_str(), digest.as_str())
+            != (&entry.id, &entry.version, &entry.digest)
+        {
+            return Err(IdeError::invalid("the download does not match the marketplace's entry"));
+        }
+        if self.verified_publisher(dir).is_none() {
+            return Err(IdeError::invalid("the marketplace package is not signed by a trusted publisher"));
+        }
+        Ok(())
+    }
+
     /// Unpacks a package file (`.oiplugin`, or a `.zip` of a package) next to the downloads; returns the folder.
+    ///
+    /// A package that fails to unpack leaves nothing: the folder is removed, so a half-written
+    /// zip is never mistaken for a package (a mirror's bytes reach here before they are checked).
     pub fn unpack_package(&self, archive: &Path) -> IdeResult<PathBuf> {
         let stem = archive.file_stem().and_then(|s| s.to_str()).unwrap_or("package");
         let dir = self.plugins_dir.join(DOWNLOADS).join(format!("{stem}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let unpacked = package::unpack(archive, &dir).map_err(IdeError::invalid)?;
+        let unpacked = match package::unpack(archive, &dir) {
+            Ok(unpacked) => unpacked,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(IdeError::invalid(e));
+            }
+        };
         // Kept with the files: install checks it and keeps it with the installed copy.
         if let Some(sig) = unpacked.signature {
-            let json = serde_json::to_string_pretty(&sig).map_err(|e| IdeError::internal(e.to_string()))?;
-            std::fs::write(dir.join(SIGNATURE_FILE), json)?;
+            let json = serde_json::to_string_pretty(&sig).map_err(|e| IdeError::internal(e.to_string()));
+            let written = json.and_then(|json| std::fs::write(dir.join(SIGNATURE_FILE), json).map_err(IdeError::from));
+            if let Err(e) = written {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
         }
         Ok(dir)
     }
@@ -540,6 +620,31 @@ pub(super) fn read_signature(dir: &Path) -> Option<PackageSignature> {
     serde_json::from_str(&text).ok()
 }
 
+/// The first `candidate` whose `attempt` succeeds, with its index.
+///
+/// A mirror is a third party: when one fails, that failure is its own and the official host
+/// below still gets its turn. The official host is the last candidate, so its failure is the
+/// download's: returned as it is when nothing came before it, else with the mirrors' reasons.
+fn try_sources<T>(
+    candidates: &[mirror::Candidate],
+    mut attempt: impl FnMut(usize, &mirror::Candidate) -> IdeResult<T>,
+) -> IdeResult<(T, usize)> {
+    let mut failures: Vec<String> = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        match attempt(index, candidate) {
+            Ok(value) => return Ok((value, index)),
+            // A mirror's failure is its own: the next source still gets a turn.
+            Err(e) if candidate.mirror.is_some() => failures.push(format!("{}: {}", candidate.describe(), e.message)),
+            Err(e) if failures.is_empty() => return Err(e),
+            Err(e) => {
+                failures.push(format!("{}: {}", candidate.describe(), e.message));
+                return Err(IdeError::unavailable(format!("could not download ({})", failures.join("; "))));
+            }
+        }
+    }
+    Err(IdeError::unavailable(format!("could not download ({})", failures.join("; "))))
+}
+
 /// Keeps the signature of a package with its installed copy.
 pub(super) fn copy_signature(src: &Path, installed: &Path) {
     if src.join(SIGNATURE_FILE).is_file() {
@@ -589,13 +694,70 @@ mod tests {
     }
 
     #[test]
+    fn a_mirror_that_serves_a_bad_package_leaves_the_official_host_its_turn() {
+        // Two sources: the mirror, then the official host. The mirror answers with bytes that
+        // do not verify — which is exactly the failure `fetch_market_package` reports for a
+        // tampered package — and the official host must still be asked.
+        let candidates = mirror::candidates(
+            "https://github.com/acme/hello/releases/download/v1/acme.hello-1.0.0.oiplugin",
+            &ide_core::settings::ToolDownloadSettings { github_mirror: "https://gh-proxy.com/".into() },
+        );
+        let asked: std::cell::RefCell<Vec<usize>> = std::cell::RefCell::new(Vec::new());
+        let picked = try_sources(&candidates, |index, candidate| {
+            asked.borrow_mut().push(index);
+            match candidate.mirror.is_some() {
+                true => Err(IdeError::invalid("the download does not match the marketplace's entry")),
+                false => Ok("the official copy"),
+            }
+        });
+        let (copy, index) = picked.unwrap();
+        assert_eq!((copy, index), ("the official copy", 1));
+        assert_eq!(*asked.borrow(), [0, 1], "the mirror was tried first, then the official host");
+
+        // Both failing: the official host's error is the download's, with the mirror's folded in.
+        let err = try_sources(&candidates, |index, candidate| -> IdeResult<&str> {
+            match candidate.mirror.is_some() {
+                true => Err(IdeError::invalid("the download does not match the marketplace's entry")),
+                false => Err(IdeError::unavailable(format!("nothing at {index}"))),
+            }
+        })
+        .unwrap_err();
+        assert!(err.message.contains("https://gh-proxy.com/"), "{}", err.message);
+        assert!(err.message.contains("nothing at 1"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_download_goes_to_the_mirror_first_and_the_official_host_last() {
+        let url = "https://github.com/acme/hello/releases/download/v1/acme.hello-1.0.0.oiplugin";
+        let through = mirror::candidates(
+            url,
+            &ide_core::settings::ToolDownloadSettings { github_mirror: "https://gh-proxy.com/".into() },
+        );
+        assert_eq!(through.len(), 2);
+        assert_eq!(through[0].url, format!("https://gh-proxy.com/{url}"));
+        assert!(through[0].mirror.is_some());
+        assert_eq!((through[1].url.as_str(), through[1].mirror.is_none()), (url, true));
+
+        // A local index's own package is not on GitHub: no prefix may carry it.
+        let local = mirror::candidates(
+            "/srv/market/a.oiplugin",
+            &ide_core::settings::ToolDownloadSettings { github_mirror: "https://gh-proxy.com/".into() },
+        );
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].url, "/srv/market/a.oiplugin");
+    }
+
+    #[test]
     fn a_failed_read_says_why() {
         // A port nothing listens on: refused.
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let url = format!("http://127.0.0.1:{port}/a.oiplugin");
         let err = read_url(&url, 1 << 20).unwrap_err();
         assert_eq!(err.matches(&url).count(), 1, "{err}");
-        assert!(err.to_lowercase().contains("refused"), "{err}");
+        // The cause follows the URL. Its wording is the OS's, and localised: assert that it is
+        // there rather than spelling out any one language's phrase for a refused connection.
+        let cause = err.strip_prefix(&url).unwrap_or_default().trim_start_matches([':', ' ']);
+        assert!(cause.len() > 1, "the failure says nothing beyond the URL: {err}");
     }
 
     #[test]

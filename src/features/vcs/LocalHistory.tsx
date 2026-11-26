@@ -109,6 +109,7 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
     await runOp(
       tx("Revert from Local History"),
       async () => {
+        // oxlint-disable-next-line no-await-in-loop -- restores write snapshots to disk under one operation; a failure stops the remaining files
         for (const e of targets) await call(commands.historyRestore(e.path, e.id));
       },
       {

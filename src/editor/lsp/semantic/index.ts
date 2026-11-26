@@ -21,6 +21,7 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { debounce, docOf, isUnavailable, lspRequest } from "../lsp";
 import { featureBackoff, onLspRefresh } from "../availability";
 import { languageSemantics, type SemanticRange } from "./languages";
+import { previewHighlights } from "@/editor/core/cm/renderLineContent";
 
 // Language folders register their semantics by importing this module; lookups
 // elsewhere go through the re-exported `languageSemantics`.
@@ -32,6 +33,7 @@ import "./php";
 import "./go";
 import "./java";
 import "./javascript";
+import "./cpp";
 
 const semanticBackoff = featureBackoff();
 
@@ -160,7 +162,7 @@ export function semanticRanges(
     if (base && base !== "variable") classes.push(`cm-sem-${base}`);
     // `hasOwn`: servers send names like `constructor` (jdtls) that `Object.prototype` also has.
     for (const n of names) if (Object.hasOwn(MODIFIER_CLASS, n)) classes.push(`cm-sem-${MODIFIER_CLASS[n]}`);
-    semantics?.tokenClasses?.({ type, modifiers: names, kind, classes, marksLocals });
+    semantics?.tokenClasses?.({ type, modifiers: names, kind, classes, marksLocals, from, doc, tree });
     const local =
       rainbow &&
       !constant &&
@@ -338,5 +340,10 @@ export function semanticExtension(): Extension {
   // `Prec.high`, and at equal precedence the later source ends up outside —
   // its inner span then re-set the colour (a field's `variableName` grey hid
   // `cm-sem-property`).
-  return [semanticField, semanticPlugin, Prec.highest(EditorView.decorations.from(semanticField))];
+  return [
+    semanticField,
+    semanticPlugin,
+    Prec.highest(EditorView.decorations.from(semanticField)),
+    previewHighlights.of(semanticHighlights),
+  ];
 }

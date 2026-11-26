@@ -404,6 +404,7 @@ export async function runRemoteRound<Op extends RemoteOp>(
       const description = target.detail ?? name ?? detail;
       logConsole("cmd", `git ${command}${description ? ` (${description})` : ""}`);
       if ((op.op === "updateProjectBranch" || (op.op === "pull" && !op.expectedBranch)) && targets.length > 1) {
+        // oxlint-disable-next-line no-await-in-loop -- this check decides whether this target is skipped before the next command
         const info = await call(commands.vcsBranchInfo(repo)).catch(() => null);
         if (info && (!info.head || !info.upstream)) {
           logConsole("info", info.head ? "No upstream branch, skipped" : "Detached HEAD, skipped");
@@ -412,6 +413,7 @@ export async function runRemoteRound<Op extends RemoteOp>(
       }
       try {
         if (target.requireCurrentBranch) {
+          // oxlint-disable-next-line no-await-in-loop -- the detached-HEAD check must settle before this pull is attempted
           const info = await call(commands.vcsBranchInfo(repo));
           if (!info.head) {
             detached++;
@@ -419,6 +421,7 @@ export async function runRemoteRound<Op extends RemoteOp>(
             continue;
           }
         }
+        // oxlint-disable-next-line no-await-in-loop -- the "before" tip must be read before the remote command changes it
         const before = isUpdate(op) ? await publishedTip(repo, op) : null;
         // Older remote hosts return no push report. Only compare with a known upstream.
         let legacyPush: string | null = null;
@@ -428,6 +431,7 @@ export async function runRemoteRound<Op extends RemoteOp>(
           op.op === "forcePushRejected" ||
           (op.op === "pushBranch" && !op.target && !op.remote)
         ) {
+          // oxlint-disable-next-line no-await-in-loop -- the upstream info is read before pushing so the fallback report is known
           const info = await call(commands.vcsBranchInfo(repo)).catch(() => null);
           const selection = op.op === "pushSelected" ? op.selection : null;
           const same =
@@ -440,6 +444,7 @@ export async function runRemoteRound<Op extends RemoteOp>(
         if (cancelRequested || useProject.getState().project !== project) break;
         const remoteOp =
           op.op === "fetchRemote" || (op.op === "fetch" && !op.background) ? { ...op, report: true } : op;
+        // oxlint-disable-next-line no-await-in-loop -- remote commands share one request/channel and run in repository order
         const report = await call(commands.vcsRemote(repo, request, remoteOp, channel, shelfBatch.id));
         if (report && "remotes" in report) {
           hasFetchReport = true;
@@ -456,7 +461,11 @@ export async function runRemoteRound<Op extends RemoteOp>(
           const fallback = op.op === "pushTag" ? tx`Pushed tag ${op.tag} to ${op.remote}` : tx("Push successful");
           recordPush(root, [legacyPush ?? fallback]);
         }
-        if (pushedTarget) await rememberTarget();
+        if (pushedTarget) {
+          // oxlint-disable-next-line no-await-in-loop -- upstream bookkeeping must finish before the post-push tip is read
+          await rememberTarget();
+        }
+        // oxlint-disable-next-line no-await-in-loop -- the "after" tip is read only after this repository's remote operation completes
         const after = before ? await publishedTip(repo, op) : null;
         if (before && after && before !== after) updated.push({ repo, from: before, to: after });
       } catch (e) {
@@ -475,6 +484,7 @@ export async function runRemoteRound<Op extends RemoteOp>(
               (ref) => ref.reference === `refs/heads/${pushedTarget.target}` && ref.status !== "deleted",
             )
           ) {
+            // oxlint-disable-next-line no-await-in-loop -- the push retry's upstream bookkeeping must finish in this iteration
             await rememberTarget();
           }
         }
@@ -651,6 +661,7 @@ export async function runBranchUpdates(
       if (cancelled || useProject.getState().project !== project) break;
       logConsole("cmd", `git update ${names.join(" ")}${repo && branches.size > 1 ? ` (${repoName(repo)})` : ""}`);
       try {
+        // oxlint-disable-next-line no-await-in-loop -- branch updates share one request/channel and cancellation, so repositories run in turn
         const updates = await call(commands.vcsUpdateBranches(repo, request, [...names], channel, null));
         results.push(...updates.map((u) => ({ ...u, repo })));
       } catch (error) {

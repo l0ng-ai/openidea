@@ -134,7 +134,7 @@ export interface PluginsBackend {
   stagePackage(name: string, files: { path: string; text: string }[]): Promise<string>;
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
-  viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
+  viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null, editor?: PluginEditor): Promise<void>;
   /** The detail tabs of item `key` in a Services or `detail = true` view. */
   serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
   /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
@@ -170,6 +170,7 @@ export interface PluginsBackend {
   openWebFile(filters: FileFilter[] | undefined): Promise<{ name: string; data: Uint8Array } | null>;
   /** The bytes of a file on this machine, at most 64 MiB (a web custom editor's `document.bytes`). */
   readFileBytes(path: string): Promise<Uint8Array>;
+  readFileRange(path: string, offset: number, length: number): Promise<{ total: number; data: Uint8Array }>;
   /** Which of a plugin's declared secrets are stored (values never come back). */
   secrets(pluginId: string): Promise<PluginSecretState[]>;
   /** Stores a secret (`null` removes it). */
@@ -336,8 +337,8 @@ export const tauriPluginsBackend: PluginsBackend = {
   // A tool window's calls (no `doc`) carry the window's active editor.
   renderView: (pluginId, view, viewport, doc) =>
     call(commands.pluginViewRender(pluginId, view, viewport, doc, doc == null ? editorContext() : null)),
-  viewEvent: async (pluginId, view, event, doc) => {
-    await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
+  viewEvent: async (pluginId, view, event, doc, editor) => {
+    await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? (editor ?? editorContext()) : null));
   },
   serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
   runTargets: () => call(commands.pluginRunTargets()),
@@ -374,6 +375,10 @@ export const tauriPluginsBackend: PluginsBackend = {
     return { name: path.split(/[\\/]/).pop() ?? path, data };
   },
   readFileBytes: async (path) => fromBase64(await call(commands.pluginWebReadFile(path))),
+  readFileRange: async (path, offset, length) => {
+    const { total, data } = await call(commands.fsReadRange(path, offset, length));
+    return { total, data: fromBase64(data) };
+  },
   secrets: (pluginId) => call(commands.pluginSecrets(pluginId)),
   setSecret: async (pluginId, name, value) => {
     await call(commands.pluginSetSecret(pluginId, name, value));
@@ -743,6 +748,9 @@ export function createMemoryPluginsBackend(
     saveWebFile: async () => null,
     openWebFile: async () => null,
     readFileBytes: async () => {
+      throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
+    },
+    readFileRange: async () => {
       throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
     },
     secrets: async (pluginId) =>

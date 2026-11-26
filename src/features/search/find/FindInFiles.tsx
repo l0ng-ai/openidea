@@ -127,13 +127,6 @@ const NAMED_SCOPES: Array<{ value: BuiltinScope; label: string }> = [
   { value: "recentFiles", label: "Recently Viewed Files" },
 ];
 
-function displayDirectory(dir: string, root: string | null): string {
-  if (!root) return dir;
-  const prefix = root.endsWith("/") ? root : root + "/";
-  if (dir === root) return ".";
-  return dir.startsWith(prefix) ? dir.slice(prefix.length) || "." : dir;
-}
-
 function FindInFilesDialog() {
   const s = useFindPopup();
   const rowHeight = useRowHeight(ROW);
@@ -778,12 +771,13 @@ function FindInFilesDialog() {
             }))}
             activeId={s.scopeTab}
             onSelect={(id) => selectScope(id as ScopeTab)}
+            keepFocusOnClick
           />
           <div className={styles.scopeDetail}>
             {s.scopeTab === "directory" && (
               <input
                 className={styles.dirInput}
-                value={displayDirectory(s.directory, root)}
+                value={s.directory}
                 placeholder={tx("Directory (relative to project root)")}
                 aria-label={tx("Directory")}
                 aria-invalid={!query || undefined}
@@ -809,8 +803,10 @@ function FindInFilesDialog() {
                 options={modules.map((m) => ({
                   value: m.path,
                   label: m.name || m.path || "Project",
+                  verbatim: !!(m.name || m.path),
                   icon: "module",
                   detail: m.path || undefined,
+                  verbatimDetail: true,
                 }))}
                 onChange={(v) => set({ module: v })}
                 aria-label="Module"
@@ -833,7 +829,9 @@ function FindInFilesDialog() {
                           ...customScopes.map((c) => ({
                             value: customScopeValue(c.name),
                             label: c.name,
+                            verbatim: true,
                             detail: c.pattern,
+                            verbatimDetail: true,
                           })),
                         ]
                       : []),

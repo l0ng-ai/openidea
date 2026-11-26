@@ -8,7 +8,7 @@
 /// `fs` and `workspace`, and everything else goes through the imports below,
 /// gated by the capabilities granted in `plugin.toml` (a missing one returns
 /// `error::denied`).
-package openidea:plugin@1.15.0;
+package openidea:plugin@1.18.0;
 
 world plugin {
     import log;
@@ -189,6 +189,10 @@ world configurations-provider { export run-configurations; }
 world plugin-launch-configurations { include plugin; export launch-configurations; }
 /// Export-only launch configurations world, composed with plugin by SDK macros.
 world launch-configurations-provider { export launch-configurations; }
+/// A plugin that exports configurations with environment, debugger, and output mode (API 1.18).
+world plugin-execution-configurations { include plugin; export execution-configurations; }
+/// Export-only execution configurations world, composed with plugin by SDK macros.
+world execution-configurations-provider { export execution-configurations; }
 /// A plugin that parses its test output.
 world plugin-test-results { include plugin; export test-results; }
 /// Export-only test parser world, composed with plugin by SDK macros.

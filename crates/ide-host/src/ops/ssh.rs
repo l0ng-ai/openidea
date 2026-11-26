@@ -4,8 +4,10 @@
 //! given belong to the server's [`ide_ssh::SshManager`], not the desktop's.
 use crate::Host;
 use ide_command::command;
-use ide_core::IdeResult;
+use ide_core::event::NotifyLevel;
 use ide_core::remote_settings::SshConfiguration;
+use ide_core::{IdeError, IdeEvent, IdeResult};
+use ide_ssh::secrets::LegacyPasswordAction;
 
 /// Test Connection: connects with `config` as edited (not necessarily saved).
 #[command(trust = always)]
@@ -15,8 +17,23 @@ pub async fn ssh_test(host: &Host, config: SshConfiguration, secret: Option<Stri
 
 /// Remembers the password / passphrase of configuration `id` (`None` forgets it).
 #[command(trust = always)]
-pub fn ssh_set_secret(host: &Host, id: String, secret: Option<String>, save: bool) {
-    host.ssh.set_secret(&id, secret, save);
+pub fn ssh_set_secret(host: &Host, window: &str, id: String, secret: Option<String>, save: bool) {
+    if let Err(e) = host.ssh.set_secret(&id, secret, save) {
+        host.window_sink(window).emit(IdeEvent::Notify {
+            level: NotifyLevel::Warning,
+            title: "Could not save credential".into(),
+            body: Some(e.message),
+        });
+    }
+}
+
+/// `Some` means legacy credentials remain in plaintext on this host.
+#[command(trust = always)]
+pub async fn ssh_legacy_passwords(host: &Host, action: LegacyPasswordAction) -> IdeResult<Option<String>> {
+    let ssh = host.ssh.clone();
+    tokio::task::spawn_blocking(move || ssh.resolve_legacy_passwords(action))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Whether a password is saved under `key` (an FTP deployment server's).
@@ -52,6 +69,7 @@ ide_command::domain!(
     ssh:
     ssh_connected,
     ssh_disconnect,
+    ssh_legacy_passwords,
     ssh_needs_secret,
     ssh_password_saved,
     ssh_set_secret,

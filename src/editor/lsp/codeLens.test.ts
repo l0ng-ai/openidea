@@ -15,6 +15,8 @@ import {
 
 const ipc = vi.hoisted(() => ({
   docOutline: vi.fn(),
+  docOpen: vi.fn(),
+  docClose: vi.fn(async () => ({ status: "ok" as const, data: null })),
   lspReferences: vi.fn(),
   cancelRequest: vi.fn<(id: number) => Promise<void>>(async () => {}),
   vcsBlame: vi.fn(),
@@ -23,6 +25,11 @@ vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };
 });
+const python = vi.hoisted(() => ({ hierarchy: null as unknown }));
+vi.mock("@/editor/navigation/pythonHierarchy", async (orig) => ({
+  ...(await orig<object>()),
+  projectPythonHierarchy: async () => python.hierarchy ?? Promise.reject(new Error("no graph")),
+}));
 const executeAction = vi.hoisted(() => vi.fn(async () => true));
 vi.mock("@/platform/actions", () => ({ executeAction }));
 vi.mock("@tauri-apps/api/core", async (orig) => ({
@@ -33,6 +40,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 }));
 
 const { lensTargets, usagesLensExtension } = await import("./codeLens");
+const { navigationStarted } = await import("./foreground");
 const { lspDoc } = await import("./lsp");
 const { useProject } = await import("@/platform/project");
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
@@ -128,6 +136,81 @@ describe("author hint", () => {
     author.run!(view, new MouseEvent("click"));
     author.run!(view, new MouseEvent("click"));
     expect(executeAction.mock.calls).toEqual([["vcs.annotate"], ["vcs.annotate"]]);
+  });
+});
+
+describe("Python usages through a base", () => {
+  const impl = { doc: 9, path: "/p/impl.py", language: "python", uiMode: "Python", readOnly: false };
+  const BASE_DOC = 10;
+  const span = (line: number, col: number, len: number) => ({
+    start: { line, col },
+    end: { line, col: col + len },
+  });
+  const py = (name: string, kind: OutlineItem["kind"], line: number, end: number, children: OutlineItem[] = []) => ({
+    name,
+    kind,
+    detail: null,
+    range: { start: { line, col: 0 }, end: { line: end, col: 1 } },
+    selection_range: span(line, kind === "class" ? 6 : 8, name.length),
+    children,
+  });
+
+  afterEach(() => {
+    python.hierarchy = null;
+  });
+
+  it("counts the calls bound to the method it overrides", async () => {
+    const { pythonHierarchy } = await import("@/editor/navigation/pythonHierarchy");
+    python.hierarchy = pythonHierarchy(
+      [
+        { path: "/p/base.py", line: 0, col: 6, name: "Repository", bases: [] },
+        { path: "/p/impl.py", line: 0, col: 6, name: "MysqlRepository", bases: ["Repository"] },
+      ],
+      { readFiles: async (paths) => new Map(paths.map((p) => [p, null])) },
+    );
+    const outlines: Record<number, OutlineItem[]> = {
+      [impl.doc]: [py("MysqlRepository", "class", 0, 2, [py("save", "method", 1, 2)])],
+      [BASE_DOC]: [py("Repository", "class", 0, 2, [py("save", "method", 1, 2)])],
+    };
+    ipc.docOutline.mockImplementation(async (doc: number) => ok(outlines[doc] ?? []));
+    ipc.docOpen.mockImplementation(async (path: string) => ok({ id: path === "/p/base.py" ? BASE_DOC : 0 }));
+    // `repo.save()` with `repo: Repository` binds to the base's declaration only.
+    const call = { path: "/p/service.py", range: span(4, 13, 4) };
+    ipc.lspReferences.mockImplementation(async (_request: number, doc: number) =>
+      ok({ locations: doc === BASE_DOC ? [call] : [], incomplete: null }),
+    );
+    const view = editor(3, undefined, impl);
+    await settle();
+    expect(titles(view)).toEqual(["no usages", "1 usage"]);
+    expect(ipc.lspReferences.mock.calls.map((c) => [c[1], c[2]])).toEqual([
+      [impl.doc, { line: 0, col: 6 }],
+      [impl.doc, { line: 1, col: 8 }],
+      [BASE_DOC, { line: 1, col: 8 }],
+    ]);
+  });
+});
+
+describe("Vue component usages", () => {
+  const vue = { doc: 8, path: "/p/Hello.vue", language: "vue", uiMode: "Vue", readOnly: false };
+
+  it("offers Show component usages above a .vue file, and nothing extra elsewhere", async () => {
+    ipc.docOutline.mockResolvedValue(ok([]));
+    const view = editor(1, undefined, vue);
+    await settle();
+    const lens = view.state.facet(codeLenses).find((l) => l.title === "Show component usages");
+    expect(lens).toMatchObject({ pos: 0, kind: "usages" });
+    const rust = editor();
+    await settle();
+    expect(titles(rust)).not.toContain("Show component usages");
+  });
+
+  it("is hidden with the usages hints", async () => {
+    useProject.setState({
+      settings: { editor: { inlay: { codeVisionUsages: false, codeVisionAuthor: false } } } as never,
+    });
+    const view = editor(1, undefined, vue);
+    await settle();
+    expect(titles(view)).toEqual([]);
   });
 });
 
@@ -274,7 +357,10 @@ describe("background usage counts", () => {
   it("stops asking again while the server keeps saying it is indexing, until it settles", async () => {
     ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
     const view = editor();
-    for (let i = 0; i < 10; i++) await settle();
+    for (let i = 0; i < 10; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- each settle advances fake timers one retry step at a time
+      await settle();
+    }
     expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
     expect(titles(view)).toEqual([]);
     ipc.lspReferences.mockResolvedValue(refs(2));
@@ -379,6 +465,33 @@ describe("background usage counts", () => {
     pending.resolve(refs(1));
     await settle();
     expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
+  });
+
+  it("gives way to Go to Declaration: cancels in-flight counts and asks again once it is done", async () => {
+    const pending = deferred<ReturnType<typeof refs>>();
+    ipc.lspReferences.mockReturnValueOnce(pending.promise);
+    const view = editor();
+    await settle();
+    const request = ipc.lspReferences.mock.calls[0]![0];
+    const done = navigationStarted();
+    expect(ipc.cancelRequest).toHaveBeenCalledWith(request);
+    pending.resolve(refs(99));
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(1);
+    done();
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("starts no counts while a navigation runs", async () => {
+    const done = navigationStarted();
+    const view = editor();
+    await settle();
+    expect(ipc.lspReferences).not.toHaveBeenCalled();
+    done();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
   });
 
   it("cancels pending counts when the feature is disabled", async () => {
@@ -517,6 +630,7 @@ describe("file changes on disk", () => {
     const first = await settledEditors(n);
     for (let i = 0; i < 10; i++) {
       fsChanged(["/p/logo.png"]);
+      // oxlint-disable-next-line no-await-in-loop -- fake timers must advance one debounce window per file event
       await vi.advanceTimersByTimeAsync(1000);
     }
     fsChanged([], ["/p"]);

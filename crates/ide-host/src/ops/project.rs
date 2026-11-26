@@ -122,6 +122,9 @@ pub fn settings_set(
     if key == "mcpServer" || key.starts_with("mcpServer.") {
         host.mcp.apply(host);
     }
+    if key == "terminal" || key.starts_with("terminal.") {
+        super::term::apply_output_rate(host, window);
+    }
     let sink = host.window_sink(window);
     sink.emit(IdeEvent::SettingsChanged { key });
     if let Some(root) = applied.roots_changed {
@@ -406,6 +409,13 @@ pub fn set_settings(
     }
     if key == "vcs" || key == "vcs.git" || key == "vcs.git.executable" {
         host.apply_git_executable();
+    }
+    // `flutter daemon` and DevTools run on the Flutter SDK; the next request starts DevTools again.
+    if ["languages", "languages.flutter", "languages.flutter.sdk"].contains(&key) {
+        for project in affected() {
+            project.flutter.sdk_changed();
+            project.devtools.stop();
+        }
     }
     if is_proxy {
         host.apply_proxy();

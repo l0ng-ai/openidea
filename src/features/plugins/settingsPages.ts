@@ -15,7 +15,7 @@ import { useIntellijThemesDialog } from "./intellijThemesDialogStore";
 import { defineUiPoint } from "./projection";
 import { refreshRunTargets, startRunTargets } from "./runTargets";
 import { projectSettings, type SettingsDecl } from "./settings";
-import { refreshPlugins, SETTINGS_PAGE_ID, usePlugins } from "./store";
+import { refreshPlugins, setActivePluginTheme, SETTINGS_PAGE_ID } from "./store";
 import { syncPluginProjection, trackPluginTheme } from "./themeRuntime";
 
 export function registerPluginsPage(): () => void {
@@ -48,6 +48,8 @@ const VIEW_ONLY_POINTS: ReadonlyArray<[string, string]> = [
   ["views", "Tool Windows"],
   ["customEditors", "Editors"],
   ["editorPanels", "Editor Panels"],
+  ["overlays", "Overlays"],
+  ["dialogs", "Dialogs"],
   ["markerIcons", "Marker Icons"],
   ["fileIcons", "File Icons"],
   ["commitChecks", "Commit Checks"],
@@ -92,7 +94,7 @@ function followSettingsPluginChanges(): () => void {
         }
         break;
       case "themeChanged":
-        usePlugins.setState({ activeTheme: e.theme });
+        setActivePluginTheme(e.theme);
         break;
       case "languagesChanged":
         languageListChanged();

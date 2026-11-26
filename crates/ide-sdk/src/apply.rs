@@ -1184,13 +1184,31 @@ pub fn tool_command(root: &Path, s: &Settings, command: &str) -> Option<PathBuf>
     if command == godot::COMMAND {
         return godot::find(custom);
     }
-    custom
+    custom.or_else(|| flutter_sdk_tool(root, s, command))
+}
+
+/// `flutter` / `dart` of the Flutter SDK in Settings › Languages & Frameworks › Flutter, else
+/// `None` (the search path). Dart is the SDK's own (`bin/cache/dart-sdk`), else its `bin/dart`
+/// wrapper, which downloads it on first use.
+pub fn flutter_sdk_tool(root: &Path, s: &Settings, command: &str) -> Option<PathBuf> {
+    let bin = setting_path(root, &s.languages.flutter.sdk)?.join("bin");
+    let script = |name: &str| bin.join(if cfg!(windows) { format!("{name}.bat") } else { name.to_owned() });
+    match command {
+        "flutter" => Some(script("flutter")),
+        "dart" => Some(
+            Some(bin.join("cache/dart-sdk/bin").join(exe("dart")))
+                .filter(|d| d.is_file())
+                .unwrap_or_else(|| script("dart")),
+        ),
+        _ => None,
+    }
 }
 
 /// Points a run configuration launching a bare tool name at the executable from
-/// [`tool_command`] (Godot apps live outside the search path).
+/// [`tool_command`] (Godot apps live outside the search path; `flutter` / `dart` follow the
+/// Flutter SDK setting).
 pub fn resolve_run_command(config: &mut RunConfig, root: &Path, s: &Settings) {
-    if config.command == godot::COMMAND
+    if matches!(config.command.as_str(), godot::COMMAND | "flutter" | "dart")
         && let Some(path) = tool_command(root, s, &config.command)
     {
         config.command = path.to_string_lossy().into_owned();
@@ -1980,7 +1998,15 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                 // member's own venv / pin.
                 if !own && let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
-                    if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
+                    // Options for the runner itself (`uv run --with rich …`, `--no-sync`,
+                    // `--project member`) only mean something to it: keep that command (#5874).
+                    let runner_options = runner
+                        && c.args.first().map(String::as_str) == Some("run")
+                        && c.args.get(1).is_some_and(|a| a.starts_with('-'));
+                    if (c.kind == "python" || c.kind == "django-test")
+                        && !runner_options
+                        && (runner || is_python_command(&c.command))
+                    {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
                             // `uv run python …` → `<interpreter> …`
                             let skip = if c.args.get(1).is_some_and(|a| is_python_command(a)) { 2 } else { 1 };
@@ -2207,9 +2233,12 @@ pub fn without_derived_in(config: &RunConfig, root: &Path, fallback: Option<&Pat
         && let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned())
     {
         // Generated configurations name the bare program (`java`), also on Windows where the
-        // derived path ends in `java.exe`.
-        let bare =
-            name.len().checked_sub(4).filter(|&at| name[at..].eq_ignore_ascii_case(".exe")).map(|at| &name[..at]);
+        // derived path ends in `java.exe` (`flutter.bat`).
+        let bare = name
+            .len()
+            .checked_sub(4)
+            .filter(|&at| name[at..].eq_ignore_ascii_case(".exe") || name[at..].eq_ignore_ascii_case(".bat"))
+            .map(|at| &name[..at]);
         for candidate in bare.into_iter().chain([name.as_str()]) {
             let mut probe = out.clone();
             probe.command = candidate.to_owned();
@@ -2794,6 +2823,16 @@ mod maven_linkage_tests {
         let mut nowhere = custom_server("jdtls", &LanguageServerSettings::default());
         configure_gradle_classpath(&mut nowhere, &[spaced]);
         assert!(nowhere.settings.is_none(), "no usable directory: the import runs without it");
+    }
+
+    #[test]
+    fn gradle_classpath_script_applies_plugins_to_the_project() {
+        // Inside the script's closures a bare `apply` is the init script's own: on Gradle 7 the
+        // Eclipse plugin then fails to start and the whole import fails.
+        let script = include_str!("gradle-classpath.init.gradle");
+        let bare: Vec<&str> = script.lines().filter(|line| line.trim_start().starts_with("apply ")).collect();
+        assert!(bare.is_empty(), "{bare:?}");
+        assert!(script.contains("project.apply plugin: 'eclipse'"));
     }
 
     #[test]

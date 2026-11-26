@@ -20,7 +20,28 @@ export const DELEGATED_MAIN = "-Dopenidea.run.main=";
 export const DELEGATED_DEBUG = "-Dopenidea.run.debug=true";
 /** Lets the init script start the debugged JVM's attach listener (the memory view needs it; not on Windows). */
 export const DELEGATED_ATTACH_LISTENER = "-Dopenidea.run.attachListener=true";
+/**
+ * Names the application JVM for the thread dump, which finds it by this argument. A Gradle run forks
+ * it under the daemon, outside the run's process tree; the init scripts pass it on.
+ */
+export const DELEGATED_TOKEN = "-Dopenidea.run.token=";
 const TASK = "openideaRun";
+
+/**
+ * Stable per configuration of the project at `root`: a per-launch value would change the Gradle
+ * command line and miss its configuration cache on every launch. The project's share keeps two
+ * worktrees, or two projects with the same main class, apart.
+ */
+export function runJvmToken(config: Pick<RunConfig, "id">, root: string): string {
+  return `${config.id.replace(/[^A-Za-z0-9._-]/g, "_")}-${shortHash(root)}`;
+}
+
+/** FNV-1a (32 bits) in base 36. */
+function shortHash(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+  return (hash >>> 0).toString(36);
+}
 
 const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
 const absolute = (root: string, p: string) => (isAbsolute(p) ? p : p ? `${root}/${p}` : root);
@@ -74,6 +95,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
     `-Dopenidea.run.args=${JSON.stringify(parsed.programArgs)}`,
     `-Dopenidea.run.jvmArgs=${JSON.stringify(parsed.vmArgs)}`,
     `-Dopenidea.run.workingDir=${config.cwd ? absolute(ctx.root, config.cwd) : dir}`,
+    `${DELEGATED_TOKEN}${runJvmToken(config, ctx.root)}`,
     ...(ctx.offline ? ["--offline"] : []),
     // Problems only warn: a build with incompatible plugins still runs, uncached.
     ...(ctx.configurationCache ? ["--configuration-cache", "--configuration-cache-problems=warn"] : []),
@@ -138,7 +160,14 @@ export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<
 export async function gradleBootLaunch<T extends RunConfig>(config: T): Promise<T> {
   if (!isTauri() || !isGradleCommand(config) || !config.args.some((a) => /(^|:)bootRun$/.test(a))) return config;
   try {
-    return withTestEvents(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
+    const marked = withTestEvents(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
+    // The forked bootRun JVM is outside the run's process tree; the init script hands the token on.
+    return marked.args.some((a) => a.startsWith(DELEGATED_TOKEN))
+      ? marked
+      : {
+          ...marked,
+          args: [...marked.args, `${DELEGATED_TOKEN}${runJvmToken(config, useProject.getState().project?.root ?? "")}`],
+        };
   } catch (e) {
     console.warn("Gradle BootRun init script not written", e);
     return config;
@@ -151,7 +180,7 @@ export async function gradleBootLaunch<T extends RunConfig>(config: T): Promise<
  * modules; null to launch it on the language server's classpath.
  */
 export async function gradleDelegation(config: RunConfig): Promise<RunConfig | null> {
-  if (!isTauri() || !isJvmApplication(config)) return null;
+  if (!isTauri() || !isJvmApplication(config) || config.isTest) return null;
   const { project, settings } = useProject.getState();
   if (!project?.root || settings?.languages?.java?.gradle?.runUsing === "ide") return null;
   const { model, gradleOffline } = useBuildModel.getState();

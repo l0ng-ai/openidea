@@ -1,0 +1,11 @@
+id = "overlay"
+name = "Overlay Probe"
+version = "0.1.0"
+description = "Test fixture for [[contributes.overlays]]: a card floating over the workbench that moves itself around with openidea.overlay.place, no code."
+engines.openidea = "^1.18"
+
+[[contributes.overlays]]
+id = "probe"
+web = "web/index.html"
+width = 260
+height = 140

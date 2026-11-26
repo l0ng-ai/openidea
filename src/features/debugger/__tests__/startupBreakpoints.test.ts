@@ -25,6 +25,7 @@ import {
 
 const ipc = vi.hoisted(() => ({
   debugSetBreakpoints: vi.fn(),
+  debugReplaceBreakpoints: vi.fn(async () => ({ status: "ok", data: null })),
   debugStart: vi.fn(async () => ({ status: "ok", data: 42 })),
   debugStop: vi.fn(async () => ({ status: "ok", data: null })),
   debugCapabilities: vi.fn(async () => ({ status: "ok", data: {} })),
@@ -73,10 +74,14 @@ it.each([undefined, true, false])(
         const show = vi.fn();
         provideToolWindowService({ show } as unknown as ToolWindowService);
         if (prepared) {
+          // oxlint-disable-next-line no-await-in-loop -- prepared and direct starts share tool-window/session state; the show assertion must follow this start
           await startPreparedSession({ id: "java", name: "Java" } as never, async () => config("launch"), {
             show: foreground,
           });
-        } else await startSession(config("launch"), { show: foreground });
+        } else {
+          // oxlint-disable-next-line no-await-in-loop -- prepared and direct starts share tool-window/session state; the show assertion must follow this start
+          await startSession(config("launch"), { show: foreground });
+        }
         if (showOnStart && foreground !== false) expect(show).toHaveBeenCalledWith("debug");
         else expect(show).not.toHaveBeenCalled();
       }
@@ -163,6 +168,24 @@ it("drains an in-flight update and sends pending removals before startup", async
   await starting;
   expect(ipc.debugSetBreakpoints).toHaveBeenLastCalledWith("/p/Main.java", []);
   expect(ipc.debugStart).toHaveBeenCalledOnce();
+});
+
+it("hands the window's whole list to the backend before startup, even after a failed removal (#6116)", async () => {
+  ipc.debugSetBreakpoints.mockResolvedValueOnce({ status: "ok", data: [] }).mockRejectedValueOnce(new Error("lost"));
+  addBreakpoint("/p/Main.java", 4);
+  await vi.advanceTimersByTimeAsync(120);
+  removeAllBreakpoints();
+  await vi.advanceTimersByTimeAsync(120);
+  addBreakpoint("/p/Other.java", 7);
+  ipc.debugSetBreakpoints.mockResolvedValue({ status: "ok", data: [] });
+  ipc.debugReplaceBreakpoints.mockClear();
+  await startSession(config("launch"));
+  expect(ipc.debugReplaceBreakpoints).toHaveBeenCalledExactlyOnceWith({
+    "/p/Other.java": [expect.objectContaining({ line: 7, enabled: true })],
+  });
+  expect(ipc.debugReplaceBreakpoints.mock.invocationCallOrder[0]).toBeLessThan(
+    ipc.debugStart.mock.invocationCallOrder[0]!,
+  );
 });
 
 it("flushes persisted breakpoints immediately after project loading", async () => {

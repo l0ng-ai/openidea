@@ -17,9 +17,10 @@ export interface FitScheduler {
  * Coalesces fit requests. An idle terminal fits on the next frame; while requests keep
  * coming (its host is being resized) it fits once, FIT_SETTLE_MS after the last one.
  */
-export function fitScheduler(fit: () => void): FitScheduler {
+export function fitScheduler(fit: () => boolean | void): FitScheduler {
   let raf = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let fitted = false;
   let lastRequest = -Infinity;
   const cancel = () => {
     cancelAnimationFrame(raf);
@@ -29,12 +30,13 @@ export function fitScheduler(fit: () => void): FitScheduler {
   };
   const run = () => {
     cancel();
-    fit();
+    // A hidden or zero-size pane can request another frame before it has ever fit.
+    if (fit() !== false) fitted = true;
   };
   return {
     schedule() {
       const now = performance.now();
-      const resizing = now - lastRequest < FIT_SETTLE_MS;
+      const resizing = fitted && now - lastRequest < FIT_SETTLE_MS;
       lastRequest = now;
       if (resizing) {
         cancel();

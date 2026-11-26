@@ -207,6 +207,9 @@
 .projectSelected:hover {
   background: color-mix(in srgb, var(--bg-list-selected) 70%, var(--bg-island));
 }
+.tile:has(> img) {
+  background: none;
+}
 .tile.projectBadge {
   width: 32px;
   height: 32px;

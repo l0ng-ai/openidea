@@ -10,6 +10,7 @@ pub mod gradle_jvm;
 pub mod import;
 pub mod java_agent;
 pub mod java_cmdline;
+pub mod java_hotswap;
 pub mod junit;
 mod process;
 pub mod python_path;
@@ -21,7 +22,7 @@ mod utf8;
 pub mod wrap;
 
 pub use detect::cmake::{build_configs as cmake_build_configs, prepare as prepare_cmake};
-pub use process::{ProcessManager, StartOptions};
+pub use process::{DetachedProcessKills, ProcessManager, StartOptions};
 
 use ide_core::{IdeResult, RunId};
 use serde::{Deserialize, Serialize};

@@ -18,12 +18,13 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
-import { Checkbox, Dialog, Icon, lockDragCursor, Popup, SelectListbox, showContextMenu, type MenuItem } from "@/ui";
+import { Checkbox, Dialog, Icon, lockDragCursor, Popup, SelectListbox, showContextMenu, T, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
 import { initialJsonText, isJsonColumn, isJsonValue } from "./jsonValue";
 import { JsonValueWindow } from "./JsonValueEditor";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { hasPrimaryModifier } from "@/platform/keymap";
 import { CELL_PREVIEW_LIMIT, cellPreview, hasLineBreak } from "./cellPreview";
 import {
   booleanLiterals,
@@ -67,6 +68,10 @@ export interface GridProps {
   rowCount: number;
   /** Displayed value (pending edits applied). */
   value: (row: number, col: number) => Cell;
+  /** The whole length (UTF-16 units) of a cell shown cut short (a page carries only the start of a large value); `null` when it is whole. */
+  truncated?: (row: number, col: number) => number | null;
+  /** Reads the whole values of cut cells (the resolved values follow `cells`); `null` when they could not be read. */
+  loadFull?: (cells: ReadonlyArray<{ row: number; col: number }>) => Promise<Cell[] | null>;
   /** The format plain ⌘C copies in (the toolbar's extractor; TSV by default). */
   copyFormat?: CopyFormat;
   rowState?: (row: number) => "deleted" | "inserted" | null;
@@ -112,6 +117,8 @@ export interface GridRange {
   left: number;
   right: number;
   lead: { row: number; col: number };
+  /** Further whole rows selected with ⌘/Ctrl-click, besides `top`..`bottom`. */
+  rows?: number[];
 }
 
 interface Sel {
@@ -119,6 +126,8 @@ interface Sel {
   c0: number;
   r1: number;
   c1: number;
+  /** Whole rows added with ⌘/Ctrl-click on their numbers, besides the block above. */
+  rows?: number[];
 }
 
 const ROW_H = 24;
@@ -150,6 +159,29 @@ function cellText(value: string) {
   );
 }
 
+/**
+ * The selection after a click on row `r`'s number: the whole row, a range of whole rows with
+ * Shift, or (⌘/Ctrl) that row added to or removed from the selected rows.
+ */
+export function rowNumberClick(
+  sel: Sel | null,
+  r: number,
+  last: number,
+  mods: { shift: boolean; add: boolean },
+): Sel | null {
+  if (mods.shift && sel) return { ...sel, r1: r, c1: last };
+  if (!mods.add || !sel) return { r0: r, c0: 0, r1: r, c1: last };
+  const n = norm(sel);
+  const block = Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
+  const rows = [...new Set([...(sel.rows ?? []), ...block])];
+  if (!rows.includes(r)) return { r0: r, c0: 0, r1: r, c1: last, rows };
+  // ⌘-click on a selected row deselects it; the last remaining row leads.
+  const rest = rows.filter((x) => x !== r);
+  const lead = rest.at(-1);
+  if (lead === undefined) return null;
+  return { r0: lead, c0: 0, r1: lead, c1: last, rows: rest.slice(0, -1) };
+}
+
 function norm(s: Sel) {
   return {
     top: Math.min(s.r0, s.r1),
@@ -175,7 +207,8 @@ export function Grid(props: GridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const numberWidth = Math.max(40, String(firstRowNumber + rowCount - 1).length * 8 + 8);
   const [sel, setSel] = useState<Sel | null>(null);
-  const dragging = useRef(false);
+  /** A drag that started on a cell extends the block; one on a row number extends whole rows. */
+  const dragging = useRef<"cells" | "rows" | false>(false);
   useEffect(() => {
     const stop = () => {
       dragging.current = false;
@@ -216,7 +249,9 @@ export function Grid(props: GridProps) {
   const { onSelectionChange } = props;
   useEffect(() => {
     onSelectionChange?.(
-      sel && rowCount ? { ...norm(sel), lead: { row: Math.min(sel.r1, rowCount - 1), col: sel.c1 } } : null,
+      sel && rowCount
+        ? { ...norm(sel), lead: { row: Math.min(sel.r1, rowCount - 1), col: sel.c1 }, rows: sel.rows }
+        : null,
     );
   }, [sel, rowCount, onSelectionChange]);
 
@@ -272,22 +307,39 @@ export function Grid(props: GridProps) {
   const selected = (r: number, c: number) => {
     if (!sel) return false;
     const n = norm(sel);
-    return r >= n.top && r <= n.bottom && c >= n.left && c <= n.right;
+    return (r >= n.top && r <= n.bottom && c >= n.left && c <= n.right) || !!sel.rows?.includes(r);
   };
 
   const selectedRows = (): number[] => {
     if (!sel) return [];
     const n = norm(sel);
-    return Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
+    const block = Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
+    if (!sel.rows?.length) return block;
+    return [...new Set([...sel.rows, ...block])].sort((a, b) => a - b);
   };
+  const rowSelected = (() => {
+    const rows = new Set(selectedRows());
+    return (r: number) => rows.has(r);
+  })();
 
-  const copy = (format: CopyFormat, header: boolean, wholeRows = false) => {
+  const copy = async (format: CopyFormat, header: boolean, wholeRows = false) => {
     if (!sel) return;
     const n = norm(sel);
-    const cols = wholeRows
-      ? columns.map((_, i) => i)
-      : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
-    const rows = selectedRows().map((r) => cols.map((c) => value(r, c)));
+    const cols =
+      wholeRows || sel.rows?.length
+        ? columns.map((_, i) => i)
+        : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
+    const picked = selectedRows();
+    const rows = picked.map((r) => cols.map((c) => value(r, c)));
+    // A cut cell copies as its whole value.
+    const cut = picked.flatMap((row, i) =>
+      cols.flatMap((col, j) => (props.truncated?.(row, col) != null ? [{ row, col, i, j }] : [])),
+    );
+    if (cut.length) {
+      const full = await props.loadFull?.(cut);
+      if (!full) return;
+      cut.forEach(({ i, j }, k) => (rows[i]![j] = full[k]!));
+    }
     const head = header ? cols.map((c) => columns[c]!.name) : null;
     const text =
       format === "onerow"
@@ -325,7 +377,15 @@ export function Grid(props: GridProps) {
   /** `maximized` (⇧Enter): the multi-line editor, which multi-line and long values always use. */
   const startEdit = (row: number, col: number, maximized = false) => {
     if (!editable || props.rowState?.(row) === "deleted") return;
-    const cell = value(row, col);
+    // A cut value is read whole first: editing its start would write that back.
+    if (props.truncated?.(row, col) != null) {
+      void props.loadFull?.([{ row, col }]).then((full) => full && openEditor(row, col, full[0]!, maximized));
+      return;
+    }
+    openEditor(row, col, value(row, col), maximized);
+  };
+
+  const openEditor = (row: number, col: number, cell: Cell, maximized: boolean) => {
     const text = cell ?? "";
     // JSON cells (type or content) edit in the JSON value editor when the dialog opens (#2333).
     const json = isJsonValue(columns[col]?.type ?? "", cell);
@@ -520,7 +580,7 @@ export function Grid(props: GridProps) {
     if (editing) commit();
     e.preventDefault();
     scrollRef.current?.focus();
-    dragging.current = true;
+    dragging.current = "cells";
     setSel(e.shiftKey && sel ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
   };
 
@@ -547,9 +607,15 @@ export function Grid(props: GridProps) {
   };
 
   const onRowNumberMouseDown = (e: MouseEvent, r: number) => {
-    if (e.button !== 0 && sel && selected(r, 0)) return;
-    const last = columns.length - 1;
-    setSel(e.shiftKey && sel ? { ...sel, r1: r, c1: last } : { r0: r, c0: 0, r1: r, c1: last });
+    if (e.button !== 0) {
+      if (!sel || !selected(r, 0)) setSel({ r0: r, c0: 0, r1: r, c1: columns.length - 1 });
+      return;
+    }
+    if (editing) commit();
+    e.preventDefault();
+    scrollRef.current?.focus();
+    dragging.current = "rows";
+    setSel(rowNumberClick(sel, r, columns.length - 1, { shift: e.shiftKey, add: hasPrimaryModifier(e) }));
   };
 
   const onContextMenu = (e: MouseEvent) => {
@@ -734,7 +800,13 @@ export function Grid(props: GridProps) {
               )}
               style={{ gridTemplateColumns: template, transform: `translateY(${v.start + ROW_H}px)` }}
             >
-              <div className={styles.rowNumber} onMouseDown={(e) => onRowNumberMouseDown(e, r)}>
+              <div
+                className={clsx(styles.rowNumber, rowSelected(r) && styles.rowNumberSelected)}
+                onMouseDown={(e) => onRowNumberMouseDown(e, r)}
+                onMouseEnter={() => {
+                  if (dragging.current === "rows") setSel((s) => (s ? { ...s, r1: r } : s));
+                }}
+              >
                 {state === "inserted" ? "+" : (props.rowNumber?.(r) ?? firstRowNumber + r)}
               </div>
               {columns.map((col, c) => {
@@ -806,6 +878,8 @@ export function Grid(props: GridProps) {
                   );
                 }
                 const val = value(r, c);
+                const cut = props.truncated?.(r, c) ?? null;
+                const [shown, total] = [val?.length ?? 0, cut ?? 0];
                 // Boolean cells show a checkbox while the grid is editable (DataGrip); Space toggles too.
                 const lit =
                   editable && onEdit && bools[c] && state !== "deleted" ? booleanLiterals(props.driver) : null;
@@ -825,11 +899,23 @@ export function Grid(props: GridProps) {
                     )}
                     onMouseDown={(e) => onCellMouseDown(e, r, c)}
                     onMouseEnter={() => {
-                      if (dragging.current) setSel((s) => (s ? { ...s, r1: r, c1: c } : s));
+                      if (dragging.current === "cells") setSel((s) => (s ? { ...s, r1: r, c1: c } : s));
+                      else if (dragging.current === "rows") setSel((s) => (s ? { ...s, r1: r } : s));
                     }}
                     onDoubleClick={() => startEdit(r, c)}
-                    title={val != null && val.length > 40 ? val.slice(0, 2000) : undefined}
+                    title={
+                      cut !== null
+                        ? tx`Only the first ${shown} of ${total} characters are shown. Double-click to load the whole value.`
+                        : val != null && val.length > 40
+                          ? val.slice(0, 2000)
+                          : undefined
+                    }
                   >
+                    {cut !== null && (
+                      <span className={styles.cellCutMark}>
+                        <T>truncated</T>
+                      </span>
+                    )}
                     {lit ? (
                       <>
                         <span

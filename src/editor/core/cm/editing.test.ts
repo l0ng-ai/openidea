@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { history, insertNewlineAndIndent, redo, undo } from "@codemirror/commands";
+import { history, insertNewlineAndIndent, redo, selectCharLeft, undo } from "@codemirror/commands";
 import { indentOnInput, indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
 import {
   addCaretsToLineEnds,
   commentLine,
   completeStatement,
+  cycleCase,
   deleteLine,
+  duplicateEntireLines,
   joinLines,
+  selectLineAtCaret,
   startNewLine,
   startNewLineBefore,
+  swapSelectionBoundaries,
   toggleCase,
   unselectOccurrence,
 } from "./editing";
@@ -143,6 +147,41 @@ describe("join lines", () => {
   });
 });
 
+describe("duplicate entire lines", () => {
+  it("copies the whole lines a selection touches below them and selects the copy", () => {
+    const v = make("a[b\nc]d\ne");
+    duplicateEntireLines(v);
+    expect(show(v)).toBe("ab\ncd\na[b\nc]d\ne");
+  });
+
+  it("copies the caret's line without a selection", () => {
+    const v = make("a|b\nc");
+    duplicateEntireLines(v);
+    expect(show(v)).toBe("ab\na|b\nc");
+  });
+
+  it("leaves out the line where a selection ends at its start", () => {
+    const v = make("[ab\n]cd");
+    duplicateEntireLines(v);
+    expect(show(v)).toBe("ab\n[ab\n]cd");
+  });
+
+  it("copies a line once for several carets on it, and each caret's line otherwise", () => {
+    const one = make("a|b|c");
+    duplicateEntireLines(one);
+    expect(show(one)).toBe("abc\na|b|c");
+    const two = make("a|\nb\nc|");
+    duplicateEntireLines(two);
+    expect(show(two)).toBe("a\na|\nb\nc\nc|");
+  });
+
+  it("does nothing in a read-only editor", () => {
+    const v = make("a[b]", EditorState.readOnly.of(true));
+    expect(duplicateEntireLines(v)).toBe(false);
+    expect(show(v)).toBe("a[b]");
+  });
+});
+
 describe("toggle case", () => {
   it("lower-cases text with any upper-case letter, upper-cases the rest", () => {
     const v = make("[fooBar]");
@@ -162,6 +201,117 @@ describe("toggle case", () => {
     const v = make("[abc] [Def]");
     toggleCase(v);
     expect(v.state.doc.toString()).toBe("abc def");
+  });
+});
+
+describe("cycle case", () => {
+  it("cycles the identifier at the caret and keeps it selected", () => {
+    const v = make("int myVar|Name = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("int [MyVarName] = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("int [my_var_name] = 1;");
+  });
+
+  it("cycles the identifier the caret just left", () => {
+    const v = make("let my_var| = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("let [MY_VAR] = 1;");
+  });
+
+  it("converts the selection", () => {
+    const v = make("const [SOME_VALUE] = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("const [some-value] = 1;");
+  });
+
+  it("takes a kebab-case name at the caret whole", () => {
+    const v = make("<div data-some-|attribute>");
+    cycleCase(v);
+    expect(show(v)).toBe("<div [dataSomeAttribute]>");
+  });
+
+  it("leaves a subtraction alone", () => {
+    const v = make("let n = a - b|;");
+    cycleCase(v);
+    expect(show(v)).toBe("let n = a - [B];");
+  });
+
+  it("moves each caret to the next style", () => {
+    const v = make("[fooBar] [foo_bar]");
+    cycleCase(v);
+    expect(show(v)).toBe("[FooBar] [FOO_BAR]");
+  });
+
+  it("keeps what surrounds a converted selection", () => {
+    const v = make("x = [ user name ] + 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("x = [ userName ] + 1;");
+  });
+
+  it("does nothing where there is no identifier to convert", () => {
+    const v = make("let a = 2|0;");
+    expect(cycleCase(v)).toBe(false);
+    expect(show(v)).toBe("let a = 2|0;");
+  });
+});
+
+describe("select line at caret", () => {
+  it("selects the caret's line with its line break, the head after it", () => {
+    const v = make("a|b\ncd");
+    expect(selectLineAtCaret(v)).toBe(true);
+    expect(show(v)).toBe("[ab\n]cd");
+    expect(v.state.selection.main).toMatchObject({ anchor: 0, head: 3 });
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("[ab\n]cd");
+  });
+
+  it("selects up to the end of the document on the last line", () => {
+    const v = make("ab\nc|d");
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("ab\n[cd]");
+  });
+
+  it("grows a selection to the whole lines it touches, keeping its direction", () => {
+    const v = make("x\na[b\nc]d\ne");
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("x\n[ab\ncd\n]e");
+    expect(v.state.selection.main).toMatchObject({ anchor: 2, head: 8 });
+
+    const back = make("x\nab\ncd\ne");
+    back.dispatch({ selection: { anchor: 6, head: 3 } });
+    selectLineAtCaret(back);
+    expect(back.state.selection.main).toMatchObject({ anchor: 8, head: 2 });
+  });
+
+  it("leaves out the line where a selection ends at its start", () => {
+    const v = make("[ab\n]cd\nef");
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("[ab\n]cd\nef");
+    const partial = make("a[b\n]cd");
+    selectLineAtCaret(partial);
+    expect(show(partial)).toBe("[ab\n]cd");
+  });
+
+  it("selects each caret's line, once per line", () => {
+    const v = make("a|b\ncd\ne|f");
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("[ab\n]cd\n[ef]");
+    expect(v.state.selection.ranges).toHaveLength(2);
+
+    const one = make("a|b|c\nd");
+    selectLineAtCaret(one);
+    expect(show(one)).toBe("[abc\n]d");
+    expect(one.state.selection.ranges).toHaveLength(1);
+  });
+
+  it("selects in a read-only editor and on an empty line", () => {
+    const v = make("ab\n|\ncd", EditorState.readOnly.of(true));
+    expect(selectLineAtCaret(v)).toBe(true);
+    expect(show(v)).toBe("ab\n[\n]cd");
+    const empty = make("|");
+    expect(selectLineAtCaret(empty)).toBe(true);
+    expect(show(empty)).toBe("|");
   });
 });
 
@@ -190,6 +340,48 @@ describe("multiple carets", () => {
     expect(unselectOccurrence(v)).toBe(true);
     expect(show(v)).toBe("a| a a");
     expect(unselectOccurrence(v)).toBe(false);
+  });
+
+  it("swaps the caret to the other end of each selection", () => {
+    const v = make("[ab] c|d [ef]");
+    const before = v.state.selection;
+    expect(swapSelectionBoundaries(v)).toBe(true);
+    const after = v.state.selection;
+    expect(after.ranges.map((r) => [r.anchor, r.head])).toEqual([
+      [2, 0],
+      [4, 4],
+      [8, 6],
+    ]);
+    expect(after.mainIndex).toBe(before.mainIndex);
+    expect(show(v)).toBe("[ab] c|d [ef]");
+    swapSelectionBoundaries(v);
+    expect(v.state.selection.eq(before)).toBe(true);
+  });
+
+  it("lets the selection grow from its start after the swap", () => {
+    const v = make("a [bc]d");
+    swapSelectionBoundaries(v);
+    selectCharLeft(v);
+    expect(show(v)).toBe("a[ bc]d");
+  });
+
+  it("swaps a selection that spans lines", () => {
+    const v = make("a[b\nc]d");
+    swapSelectionBoundaries(v);
+    expect(v.state.selection.main.head).toBe(1);
+    expect(v.state.selection.main.anchor).toBe(4);
+  });
+
+  it("does nothing without a selection", () => {
+    const v = make("a|b c|d");
+    expect(swapSelectionBoundaries(v)).toBe(false);
+    expect(show(v)).toBe("a|b c|d");
+  });
+
+  it("swaps in a read-only editor", () => {
+    const v = make("[ab]c", EditorState.readOnly.of(true));
+    expect(swapSelectionBoundaries(v)).toBe(true);
+    expect(v.state.selection.main.head).toBe(0);
   });
 
   it("⌥⇧click toggles a caret", () => {

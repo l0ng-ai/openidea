@@ -34,6 +34,7 @@ import {
   setFocusedToolWindow,
   toolWindowServiceImpl,
 } from "./toolwindows/store";
+import { TabColorPicker } from "./TabColorPicker";
 import { WebConnectionBanner } from "./WebConnectionBanner";
 import { installWebSessionGuard } from "./webSessionGuard";
 
@@ -88,6 +89,7 @@ export function activateWorkbench(): () => void {
     registerWorkbenchBanner({ id: "workbench.webConnection", component: WebConnectionBanner }),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),
     registerOverlay({ id: "workbench.backgroundTasks", component: BackgroundTasksHost }),
+    registerOverlay({ id: "workbench.projectColor", component: TabColorPicker }),
     registerStatusItem({ id: "workbench.tasks", align: "right", priority: 0, component: TaskStatus, lightEdit: true }),
     registerStatusItem({ id: "workbench.info", align: "left", priority: 5, component: StatusInfo, lightEdit: true }),
     registerToolWindow({

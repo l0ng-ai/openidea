@@ -308,6 +308,18 @@ async fn serves_projects_files_documents_search_and_runs() {
     assert!(found.iter().any(|d| d["type"] == "file"), "{found:?}");
     assert_eq!(found.last().unwrap()["type"], "done");
 
+    // HTTP Client requests and their history are served by the project host.
+    let history = invoke(&peer, "http_history", json!({})).await.unwrap();
+    assert_eq!(history, json!([]));
+    let curl = invoke(
+        &peer,
+        "http_curl",
+        json!({ "path": null, "text": "GET http://localhost/x\n", "index": 0, "env": null }),
+    )
+    .await
+    .unwrap();
+    assert!(curl.as_str().unwrap().contains("http://localhost/x"), "{curl}");
+
     // A run's output streams through a channel and its exit is an event.
     let config = json!({ "id": "echo", "name": "echo", "kind": "shell", "command": "echo", "args": ["remote-hi"],
         "cwd": null, "env": {}, "detected": false, "isTest": false, "debugAdapter": null });
@@ -371,6 +383,14 @@ async fn local_deployment_runs_on_the_project_host() {
         "remote_mkdir",
         "remote_rename",
         "remote_download_into",
+        "http_environments",
+        "http_execute",
+        "http_history",
+        "http_history_get",
+        "http_history_clear",
+        "http_curl",
+        "http_environment_file",
+        "http_variable_definitions",
         "db_sources",
         "db_save_sources",
         "db_set_password",
@@ -387,6 +407,7 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_schemas",
         "db_tables",
         "db_table_details",
+        "db_table_grants",
         "db_ddl",
         "db_schema_objects",
         "db_object_ddl",

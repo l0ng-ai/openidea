@@ -206,6 +206,14 @@ it.each(["Trust Project", "Preview in Restricted Mode"])(
   },
 );
 
+it("reports why a local opening's trust can't be read as an error message", async () => {
+  // A recent project whose folder was deleted: the backend's error, not "[object Object]".
+  vi.mocked(invokeLocal).mockRejectedValueOnce({ kind: "notFound", message: "/gone: no such directory" });
+  const opening = confirmProjectTrust("/gone", "local");
+  await expect(opening).rejects.toBeInstanceOf(Error);
+  await expect(opening).rejects.toThrow("/gone: no such directory");
+});
+
 it.each([false, true])("recovers an attached member whose trust is lost (decided=%s)", async (decided) => {
   useProject.setState({
     project: {

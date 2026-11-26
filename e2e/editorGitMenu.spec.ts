@@ -4,13 +4,16 @@ test("editor Git submenu offers the registered file and repository actions in gr
   const editor = await openFromTree(page, "README.md");
   await editor.locator(".cm-content").click({ button: "right" });
   await page.getByRole("menuitem", { name: "Git", exact: true }).hover();
-  const git = page.getByRole("menu").filter({ has: page.getByRole("menuitem", { name: "Clone…", exact: true }) });
+  const git = page
+    .getByRole("menu")
+    .filter({ has: page.getByRole("menuitem", { name: "Get from Version Control…", exact: true }) });
   await expect(git.locator('[role="menuitem"], [role="menuitemcheckbox"]')).toHaveText([
     /Commit File…/,
-    /Add/,
+    /^Add(?:⌥⌘A)?$/,
+    /Add to \.gitignore/,
     /Annotate with Git Blame/,
     /Show Diff/,
-    /Compare with Branch or Revision…/,
+    /Compare with Branch…/,
     /Compare with Revision…/,
     /Show History$/,
     /Show Current Revision/,
@@ -29,7 +32,7 @@ test("editor Git submenu offers the registered file and repository actions in gr
     /Unstash Changes…/,
     /GitHub/,
     /Manage Remotes…/,
-    /Clone…/,
+    /Get from Version Control…/,
   ]);
   await expect(git.getByRole("separator")).toHaveCount(6);
   await git.getByRole("menuitem", { name: "GitHub", exact: true }).hover();
@@ -62,17 +65,19 @@ test("editor Git submenu keeps repository actions disabled without Git", async (
   ]) {
     await expect(page.getByRole("menuitem", { name: new RegExp(`^${name}`) })).toBeDisabled();
   }
-  await expect(page.getByRole("menuitem", { name: "Clone…", exact: true })).toBeEnabled();
+  await expect(page.getByRole("menuitem", { name: "Get from Version Control…", exact: true })).toBeEnabled();
 });
 
 test("Project view Git submenu ends with Manage Remotes and Clone", async ({ workbench: page }) => {
   await page.getByRole("treeitem", { name: /README\.md/ }).click({ button: "right" });
   await page.getByRole("menuitem", { name: "Git", exact: true }).hover();
-  const git = page.getByRole("menu").filter({ has: page.getByRole("menuitem", { name: "Clone…", exact: true }) });
+  const git = page
+    .getByRole("menu")
+    .filter({ has: page.getByRole("menuitem", { name: "Get from Version Control…", exact: true }) });
   const items = git.locator('[role="menuitem"], [role="menuitemcheckbox"]');
-  await expect(items.nth(-3)).toHaveText(/Unstash Changes…/);
+  await expect(items.nth(-3)).toHaveText(/GitHub/);
   await expect(items.nth(-2)).toHaveText(/Manage Remotes…/);
-  await expect(items.nth(-1)).toHaveText(/Clone…/);
+  await expect(items.nth(-1)).toHaveText(/Get from Version Control…/);
   await git.getByRole("menuitem", { name: "Manage Remotes…", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Git Remotes" })).toBeVisible();
 });

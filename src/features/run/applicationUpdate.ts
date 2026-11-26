@@ -3,11 +3,14 @@ import { create } from "zustand";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, isTauri, nextRequestId, type RunConfig } from "@/platform/ipc";
-import { parseJavaArgs, resolveJavaModule } from "@/platform/javaLaunch";
+import { parseJavaArgs, resolveJavaLaunch, resolveJavaModule } from "@/platform/javaLaunch";
+import { followLaunchBuild } from "@/features/build/store";
 import {
   maybeEditorService,
   notifications,
+  onBuildCompleted,
   useDebugRunSessions,
+  type BuildCompletedEvent,
   type DebugServiceSession,
 } from "@/workbench/contributions";
 import { showContextMenu } from "@/ui";
@@ -19,6 +22,8 @@ import { isUpdatable, updateAllowed, type UpdateMode } from "./updatePolicies";
 export type UpdateSession = Pick<RunSession, "id" | "config"> & { debug?: DebugServiceSession };
 export const useApplicationUpdates = create<{ ids: ReadonlySet<string> }>(() => ({ ids: new Set() }));
 const updatingConfigs = new Set<string>();
+
+const JAVA_BUILD_SYSTEMS = new Set(["maven", "gradle", "javac"]);
 
 export function updatableSessions(): UpdateSession[] {
   const runs = useRun.getState().sessions.filter((s) => isUpdatable(s.config) && s.status === "running");
@@ -42,13 +47,15 @@ async function updateSpringBoot(config: RunConfig, mode: UpdateMode, debugging: 
   const module = await resolveJavaModule(config);
   const parsed = parseJavaArgs(config.args);
   if (!parsed.mainClass) throw new Error(tx("The Spring Boot configuration has no main class"));
-  const info = await call(
-    commands.javaResolveLaunch(
-      module,
-      parsed.classpath === "test",
-      mode === "classes" ? "make" : "noBuild",
-      nextRequestId(),
-    ),
+  const request = nextRequestId();
+  const info = await resolveJavaLaunch(
+    module,
+    parsed.classpath === "test",
+    mode === "classes" ? "make" : "noBuild",
+    request,
+    followLaunchBuild(request, tx`Build before launch: ${config.name}`),
+    // HotSwap reloads what the Java language server compiles.
+    debugging,
   );
   if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
     throw updateBuildError(info);
@@ -159,4 +166,40 @@ export function listenForApplicationDeactivation(): () => void {
   return () => {
     void listener.then((unlisten) => unlisten());
   };
+}
+
+/** Syncs compiled classes and web resources into running exploded-artifact Tomcat deployments after a user Java build. */
+export async function syncTomcatOnBuildCompleted(event: BuildCompletedEvent): Promise<void> {
+  if (!event.userInitiated || !JAVA_BUILD_SYSTEMS.has(event.system)) return;
+  const sessions = updatableSessions().filter(
+    (s) =>
+      s.config.kind === "tomcat" &&
+      (s.config.params?.deployment ?? "artifact") === "artifact" &&
+      !updatingConfigs.has(s.config.id),
+  );
+  for (const session of sessions) {
+    updatingConfigs.add(session.config.id);
+    useApplicationUpdates.setState((st) => ({ ids: new Set([...st.ids, session.id]) }));
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- deployments sync in turn; parallel notices would race the shared tomcat-sync key and writes could target the same exploded artifact
+      const synced = await syncTomcatOutputs(session.config, false, "noBuild");
+      if (!synced) continue;
+      const debugging =
+        !!session.debug || useDebugRunSessions.getState().sessions.some((d) => d.configId === session.config.id);
+      if (!debugging) {
+        notifications().notify({ group: "run", level: "info", key: "tomcat-sync", title: "Tomcat classes updated" });
+      }
+    } catch {
+      // Unrelated modules or stopped deployments leave the user's explicit build result undisturbed.
+    } finally {
+      updatingConfigs.delete(session.config.id);
+      useApplicationUpdates.setState((st) => ({ ids: new Set([...st.ids].filter((id) => id !== session.id)) }));
+    }
+  }
+}
+
+export function installBuildTomcatSync(): () => void {
+  return onBuildCompleted((event) => {
+    void syncTomcatOnBuildCompleted(event);
+  });
 }

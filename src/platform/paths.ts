@@ -21,6 +21,16 @@ export function ipcPath(p: string): string {
   return DRIVE.test(path) || NETWORK.test(path) ? path.replace(/\\/g, "/") : path;
 }
 
+/**
+ * `p` (a path in the UI's `/`-separated form) as Windows writes it, for text the user pastes
+ * elsewhere: `C:/a/b` becomes `C:\a\b`, `//server/share/x` becomes `\\server\share\x`. Any
+ * other path (POSIX, remote) is returned as is.
+ */
+export function nativePath(p: string): string {
+  const path = p.replace(/^\/\/\?\/UNC\//i, "//").replace(/^\/\/\?\/(?=[A-Za-z]:\/)/, "");
+  return /^[A-Za-z]:\//.test(path) || /^\/\/[^/?.]/.test(path) ? path.replace(/\//g, "\\") : p;
+}
+
 const SHARE = /^[\\/]{2}/;
 const SHARE_NAME = /^[\\/]{2}(?:\?[\\/]UNC[\\/])?([^\\/]+)[\\/]([^\\/]+)/i;
 

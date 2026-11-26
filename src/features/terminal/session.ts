@@ -8,8 +8,7 @@ import { noteCopySource } from "@/platform/clipboardSource";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
-import "@xterm/xterm/css/xterm.css";
-import "./xtermInput.css";
+import screenCss from "./sessionScreen.css?inline";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -22,6 +21,7 @@ import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
+import { installModifierPathLinks, type ModifierPathLinksController } from "./pathLinks";
 import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { installImeAnchor } from "./imeAnchor";
@@ -215,9 +215,11 @@ export async function openFileLink(link: Extract<TerminalLink, { kind: "file" }>
   // for a basename match only when the link names no directory.
   for (const q of rel === name ? [name] : [rel, name]) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- the full path is tried before the basename; a hit here stops the search
       const hits = await call(commands.findFiles(q, 5));
       const hit = hits.find((h) => h.relPath === q || h.relPath.endsWith(`/${q}`));
       if (hit) {
+        // oxlint-disable-next-line no-await-in-loop -- opens the first matching hit, then stops; later candidates are not searched
         await editorService().openFile(hit.path, { selection, focus: true });
         return;
       }
@@ -255,6 +257,7 @@ export class TerminalSession {
   private searchSelection = false;
   private readonly selectionHighlights: SelectionHighlightController;
   private readonly linkHighlights: LinkHighlightController;
+  private readonly pathLinks: ModifierPathLinksController;
   private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
@@ -473,7 +476,11 @@ export class TerminalSession {
       isSearchSelection: () => this.searchSelection,
     });
     this.linkHighlights = installLinkHighlights(this.term, readLinkColor);
-    this.disposables.push(this.selectionHighlights, this.linkHighlights);
+    this.pathLinks = installModifierPathLinks(this.term, this.host, {
+      cwd: () => this.snapshot.cwd,
+      color: readLinkColor,
+    });
+    this.disposables.push(this.selectionHighlights, this.linkHighlights, this.pathLinks);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text), this.clipboardTarget) },
@@ -545,6 +552,7 @@ export class TerminalSession {
     o.macOptionIsMeta = t.optionAsMeta;
     this.selectionHighlights.refresh();
     this.linkHighlights.refresh();
+    this.pathLinks.refresh();
     this.scheduleFit();
   }
 
@@ -676,7 +684,14 @@ export class TerminalSession {
     if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) return;
     // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
     // selected text rendered at a visibly different weight than the rest.
-    this.term.open(this.host);
+    // Keep xterm's per-session stylesheets from restyling the editor on tab changes.
+    const root = this.host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = screenCss;
+    const screen = document.createElement("div");
+    screen.style.height = "100%";
+    root.append(style, screen);
+    this.term.open(screen);
     installDomRowCache(this.term);
     this.opened = true;
     remeasureWhenFontsLoad(
@@ -690,7 +705,7 @@ export class TerminalSession {
       this.opts.onFocus(this.key);
     });
     this.watchImeCommit();
-    this.disposables.push({ dispose: installImeAnchor({ host: this.host, term: this.term }) });
+    this.disposables.push({ dispose: installImeAnchor({ host: screen, term: this.term }) });
     if (this.pendingFocus) {
       this.pendingFocus = false;
       if (this.focusStayedHere()) this.focus();
@@ -779,20 +794,20 @@ export class TerminalSession {
   }
 
   private doFit() {
-    if (this.disposed || !this.host.isConnected) return;
+    if (this.disposed || !this.host.isConnected) return false;
     // The grid row is still 0 on the first layout pass (the track is set by a
     // parent layout effect after this one). Keep asking until it has a box;
     // ResizeObserver also resets the budget when the size actually changes.
     if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) {
       if (this.fitAttempts++ < 20) this.scheduleFit();
-      return;
+      return false;
     }
     this.openIfReady();
-    if (!this.opened) return;
+    if (!this.opened) return false;
     const dims = this.fit.proposeDimensions();
     if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) {
       if (this.fitAttempts++ < 20) this.scheduleFit();
-      return;
+      return false;
     }
     this.fitAttempts = 0;
     if (dims.cols !== this.term.cols || dims.rows !== this.term.rows) this.term.resize(dims.cols, dims.rows);
@@ -1071,6 +1086,7 @@ export class TerminalSession {
     this.term.options.theme = readTerminalTheme();
     this.searchDecorations = null;
     this.linkHighlights.refresh();
+    this.pathLinks.refresh();
   }
 
   /** Finds `query` (highlighting every match); `incremental` keeps the current match while typing. */

@@ -56,6 +56,7 @@ function CheckDetails({
     void (async () => {
       let cursor: string | null = null;
       do {
+        // oxlint-disable-next-line no-await-in-loop -- cursor pagination: the next page's cursor comes from this response.
         const page = await commitStatusContextsPage(revision, cursor, 100, { root, owner, name });
         if (!active || !page) break;
         setItems((prev) => [...prev, ...page.nodes]);

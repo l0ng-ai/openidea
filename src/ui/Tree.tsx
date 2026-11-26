@@ -23,10 +23,11 @@ import {
   type RefObject,
 } from "react";
 import clsx from "clsx";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { observeElementOffset, observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import { Icon, type IconName } from "./icons";
 import { HighlightedText } from "./HighlightedText";
 import { Spinner } from "./Feedback";
+import { Scrollbar, hideNativeScrollbar, scrollNow } from "./Scrollbar";
 import { IconButton } from "./Button";
 import { fuzzyMatch } from "./match";
 import { acquirePopup } from "./popupState";
@@ -377,14 +378,41 @@ export function Tree<T>(props: TreeProps<T>) {
   const themedRowHeight = useIconRowHeight();
   const defaultRowHeight = useRowHeight();
   const rowHeight = fixedRowHeight ?? themedRowHeight ?? defaultRowHeight;
+  const getItemKey = useCallback((i: number) => rows[i]!.key, [rows]);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
     overscan: 12,
-    getItemKey: (i) => rows[i]!.key,
+    getItemKey,
+    observeElementRect: observeVisibleViewport,
+    observeElementOffset: observeVisibleOffset,
   });
   useEffect(() => virtualizer.measure(), [virtualizer, rowHeight]);
+  const contentHeight = virtualizer.getTotalSize();
+
+  useEffect(() => {
+    const tree = scrollRef.current;
+    const wrap = tree?.parentElement;
+    if (!tree || !wrap) return;
+
+    // A compositor wheel scroll can paint beyond the mounted rows before the scroll event.
+    const onWheel = (event: WheelEvent) => {
+      if (!event.cancelable || event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const mode = event.deltaMode;
+      const dy =
+        event.deltaY *
+        (mode === WheelEvent.DOM_DELTA_PAGE ? tree.clientHeight : mode === WheelEvent.DOM_DELTA_LINE ? rowHeight : 1);
+      const top = tree.scrollTop;
+      if (!dy || (dy < 0 ? top <= 0 : top >= tree.scrollHeight - tree.clientHeight - 1)) return;
+      const dx =
+        event.deltaX *
+        (mode === WheelEvent.DOM_DELTA_PAGE ? tree.clientWidth : mode === WheelEvent.DOM_DELTA_LINE ? rowHeight : 1);
+      if (scrollNow(tree, top + dy, tree.scrollLeft + dx)) event.preventDefault();
+    };
+    wrap.addEventListener("wheel", onWheel, { passive: false });
+    return () => wrap.removeEventListener("wheel", onWheel);
+  }, [emptyState, rowHeight]);
 
   // Keep the keyboard lead in view when the lead changes — not when its index
   // shifts because expanding or collapsing elsewhere inserted rows above it:
@@ -751,7 +779,7 @@ export function Tree<T>(props: TreeProps<T>) {
             : undefined
         }
         tabIndex={0}
-        className={styles.tree}
+        className={clsx(styles.tree, hideNativeScrollbar)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         onBlur={(e) => {
@@ -772,7 +800,7 @@ export function Tree<T>(props: TreeProps<T>) {
             : undefined
         }
       >
-        <div className={styles.sizer} style={{ height: virtualizer.getTotalSize() }}>
+        <div className={styles.sizer} style={{ height: contentHeight }}>
           {props.horizontalScroll && (
             <div aria-hidden data-content-width className={styles.contentWidth} style={{ width: contentWidth }} />
           )}
@@ -822,6 +850,7 @@ export function Tree<T>(props: TreeProps<T>) {
                 key={v.key}
                 id={`${baseId}-${v.index}`}
                 data-row={v.index}
+                data-tree-key={row.key}
                 role="treeitem"
                 aria-level={row.depth + 1}
                 aria-posinset={positions[v.index]![0]}
@@ -895,6 +924,7 @@ export function Tree<T>(props: TreeProps<T>) {
           })}
         </div>
       </div>
+      <Scrollbar target={scrollRef} contentHeight={contentHeight} />
       {searching &&
         (speedSearchField ? (
           // Typing stays in the tree: a press here must not take its focus, which would end the search.
@@ -989,3 +1019,19 @@ export function findOccurrence<T>(
   const hit = occurrences[i];
   return hit ? { node: hit.node, ancestors: hit.ancestors, index: i + 1, total: occurrences.length } : null;
 }
+
+// A hidden pane has no layout. Keep its last viewport until layout resumes.
+const observeVisibleViewport: typeof observeElementRect = (instance, notify) =>
+  observeElementRect(instance, (rect) => {
+    if (rect.height || !instance.scrollElement?.closest("[hidden]")) notify(rect);
+  });
+
+// A scroll can settle after its pane hides, when the browser reports scrollTop as zero.
+const observeVisibleOffset: typeof observeElementOffset = (instance, notify) =>
+  observeElementOffset(instance, (offset, scrolling) => {
+    if (offset === 0 && instance.scrollElement?.closest("[hidden]")) {
+      notify(instance.scrollOffset ?? 0, false);
+      return;
+    }
+    notify(offset, scrolling);
+  });

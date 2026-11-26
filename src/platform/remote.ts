@@ -235,6 +235,29 @@ async function attachRemote(r: RemoteProject, path: string): Promise<void> {
   });
 }
 
+let connectAttempt = 0;
+
+let backendBusyPrompt: ((target: RemoteTarget) => Promise<boolean>) | null = null;
+
+/** Asks whether to stop another build's backend that still holds the project (#6119). */
+export function provideBackendBusyPrompt(value: (target: RemoteTarget) => Promise<boolean>): () => void {
+  backendBusyPrompt = value;
+  return () => {
+    if (backendBusyPrompt === value) backendBusyPrompt = null;
+  };
+}
+
+/** Connects; when another build's backend still holds the project, stops it once the user agrees. */
+async function connectOrReplace(target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) {
+  try {
+    return await call(commands.remoteConnect(target, path, false, onProgress));
+  } catch (e) {
+    const busy = e instanceof IpcError && e.data?.type === "remoteBackendBusy";
+    if (!busy || !backendBusyPrompt || !(await backendBusyPrompt(target))) throw e;
+    return await call(commands.remoteConnect(target, path, true, onProgress));
+  }
+}
+
 /**
  * Opens `path` of `target` (an SSH host or a WSL distribution) in this window. A dev container's
  * project folder is the one in the container: `path` is then only a label.
@@ -242,27 +265,28 @@ async function attachRemote(r: RemoteProject, path: string): Promise<void> {
 export async function connectRemote(target: RemoteTarget, path: string) {
   useProject.setState({ opening: true });
   const location = remoteLocation(target, path);
+  // Two connects to one location (a double click) share `location`; only the latest attaches.
+  const attempt = ++connectAttempt;
+  const current = () => attempt === connectAttempt && useRemoteProgress.getState().location === location;
   const onProgress = new Channel<RemoteProgress>();
   onProgress.onmessage = (progress) => {
-    if (useRemoteProgress.getState().location === location) {
-      useRemoteProgress.setState({ progress });
-    }
+    if (current()) useRemoteProgress.setState({ progress });
   };
   useRemoteProgress.setState({
     progress: { stage: "connecting", fraction: null },
     location,
   });
   try {
-    const r = await call(commands.remoteConnect(target, path, onProgress));
+    const r = await connectOrReplace(target, path, onProgress);
     // Another connect replaced this one, or the user cancelled. Disconnecting here
     // would drop the connection that replacement published. Cancel already disconnects.
-    if (useRemoteProgress.getState().location !== location) {
+    if (!current()) {
       throw new IpcError({ kind: "cancelled", message: "Remote connection cancelled" });
     }
     await attachRemote(r, path);
     return r;
   } finally {
-    if (useRemoteProgress.getState().location === location) {
+    if (current()) {
       useProject.setState({ opening: false });
       useRemoteProgress.setState({ progress: null, location: null });
     }
@@ -277,7 +301,7 @@ export async function reconnectRemote(): Promise<void> {
   if (!session) return;
   useRemote.setState({ reconnecting: true });
   try {
-    const r = await call(commands.remoteConnect(session.target, session.root, new Channel<RemoteProgress>()));
+    const r = await connectOrReplace(session.target, session.root, new Channel<RemoteProgress>());
     useProject.setState({ project: null });
     await attachRemote(r, session.root);
   } finally {
@@ -431,6 +455,21 @@ function saveRemotes(list: RecentRemote[]) {
   } catch {
     /* storage unavailable */
   }
+  syncRemoteRecentMenu();
+}
+
+/** Hands the recent remote projects to File › Open Recent, which lists them among the local ones. */
+export function syncRemoteRecentMenu() {
+  if (!isTauri()) return;
+  const projects = recentRemotes().map((r) => ({
+    location: remoteLocation(r.target, r.path),
+    name: r.name,
+    detail: `${r.host || targetName(r.target)}:${r.path}`,
+    openedAtMs: r.openedAtMs,
+  }));
+  void Promise.resolve()
+    .then(() => commands.menuSetRemoteRecent(projects))
+    .catch(() => {});
 }
 
 const sameRemote = (a: Pick<RecentRemote, "target" | "path">, b: Pick<RecentRemote, "target" | "path">) =>

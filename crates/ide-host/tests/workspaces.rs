@@ -85,17 +85,44 @@ done
     for (index, root) in roots.into_iter().enumerate() {
         let module = if root == &sibling { root.join("app") } else { root.strip_prefix(&primary).unwrap().join("app") };
         let test = index != 0;
-        let info = ops::java::java_resolve_launch(&host, "main", module, test, BuildPolicy::Make, RequestId::next())
-            .await
-            .unwrap();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let channel = ops::Channel::new(move |event: ide_build::compile::BuildEvent| sink.lock().unwrap().push(event));
+        let info = ops::java::java_resolve_launch(
+            &host,
+            "main",
+            module,
+            test,
+            false,
+            BuildPolicy::Make,
+            RequestId::next(),
+            channel,
+        )
+        .await
+        .unwrap();
+        // The build streams its command and progress while it runs.
+        use ide_build::compile::BuildEvent;
+        let events = events.lock().unwrap();
+        assert!(
+            events.iter().any(|e| matches!(e, BuildEvent::Step { command, .. } if command.contains("-pl app -am"))),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, BuildEvent::Progress { message, .. } if message == "Resolving the classpath")),
+            "{events:?}"
+        );
         let out = root.join("app/target").join(if test { "test-classes" } else { "classes" });
         let jar = root.join("app").join(if test { "test.jar" } else { "runtime.jar" });
         assert!(info.class_paths.iter().any(|p| std::path::Path::new(p) == out));
         assert!(info.class_paths.iter().any(|p| std::path::Path::new(p) == jar));
         let calls = fs::read_to_string(root.join("calls")).unwrap();
-        assert!(calls.lines().next().unwrap().contains("-pl app -am"), "{calls}");
+        // This Maven records no build model for the IDE's Java build, so Maven builds the module.
+        assert!(calls.lines().next().unwrap().contains("-Dopenidea.build.model="), "{calls}");
+        assert!(calls.lines().nth(1).unwrap().contains("-pl app -am"), "{calls}");
         assert!(calls.lines().all(|line| line.contains(&format!("-P member-{index}"))), "{calls}");
-        assert!(calls.contains("dependency:build-classpath"), "{calls}");
+        assert!(calls.contains(":build-classpath"), "{calls}");
     }
 }
 

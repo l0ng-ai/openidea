@@ -51,6 +51,8 @@ interface CommitState extends CommitAuthorDetails {
   groupByStaging: boolean;
   /** With several repositories, a node per repository above their files. */
   groupByRepo: boolean;
+  /** Group the changes by project / build module. */
+  groupByModule: boolean;
   /** Keep untracked files in their own group instead of Changes / Unstaged Changes. */
   showUnversionedSeparately: boolean;
   /** Project-specific visibility of Git-ignored files in the staging tree. */
@@ -107,6 +109,7 @@ export const useCommit = create<CommitState>(() => ({
   groupByDir: readBool("openidea.vcs.groupByDir", false),
   groupByStaging: readBool("openidea.vcs.groupByStaging", false),
   groupByRepo: readBool("openidea.vcs.groupByRepo", true),
+  groupByModule: readBool("openidea.vcs.groupByModule", false),
   showUnversionedSeparately: readBool("openidea.vcs.showUnversionedSeparately", true),
   ignoredVisibility: new Map(),
   diffPreview: readBool("openidea.vcs.diffPreview", true),
@@ -187,6 +190,15 @@ export function setGroupByRepo(v: boolean) {
   useCommit.setState({ groupByRepo: v });
   try {
     localStorage.setItem("openidea.vcs.groupByRepo", String(v));
+  } catch {
+    // ignore
+  }
+}
+
+export function setGroupByModule(v: boolean) {
+  useCommit.setState({ groupByModule: v });
+  try {
+    localStorage.setItem("openidea.vcs.groupByModule", String(v));
   } catch {
     // ignore
   }
@@ -437,6 +449,9 @@ export async function setAmend(on: boolean, target: EarlierAmend | null = null) 
     if (data) scheduleDraft();
     return;
   }
+  // With several repositories the commit to amend is ambiguous: as in IDEA, no message is
+  // loaded, and the one typed amends each repository's HEAD.
+  if (!target && roots.length > 1) return;
   const current = () => request === amendRequest && useCommit.getState().amend && useVcs.getState().root === project;
   let head = target?.commit;
   try {

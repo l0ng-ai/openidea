@@ -96,6 +96,7 @@
 }
 .detailPane {
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -235,6 +236,7 @@
   user-select: text;
 }
 .dashboardActions {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -253,6 +255,14 @@
   background: var(--bg-elev);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
+}
+.dashboard > .sectionBanner:first-child,
+.dashboardActions + .sectionBanner {
+  border-top: 0;
+}
+.bannerMeta {
+  font-weight: 400;
+  color: var(--fg-secondary);
 }
 .propList {
   display: flex;
@@ -326,7 +336,6 @@
   font-family: var(--font-ui);
   font-size: var(--fs-tiny);
   line-height: 1;
-  cursor: pointer;
 }
 .commandToggle:hover {
   background: var(--bg-hover);
@@ -455,7 +464,6 @@
   color: var(--fg);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .entityChip:disabled {
   cursor: default;
@@ -469,6 +477,7 @@ button.entityChip:not(:disabled):hover {
 }
 .portChipLink {
   color: var(--link);
+  cursor: pointer;
 }
 .chipMeta {
   color: var(--fg-subtle);
@@ -511,7 +520,7 @@ button.entityChip:not(:disabled):hover {
 }
 .dataRow {
   display: grid;
-  grid-template-columns: 72px minmax(120px, 1fr) minmax(140px, 1.3fr) 56px;
+  grid-template-columns: 72px minmax(120px, 1fr) minmax(120px, 1.2fr) 88px 56px;
   gap: var(--space-2);
   align-items: center;
   padding: 4px 12px;

@@ -1,6 +1,11 @@
 /** Editor-side styling for LSP features (CodeMirror theme; tokens only). */
 import { EditorView } from "@codemirror/view";
-import { inlineBackground, inlineFramedFallback, inlineFramedModern } from "@/editor/core/cm/inlineBg";
+import {
+  inlineBackground,
+  inlineFramedFallback,
+  inlineFramedModern,
+  inlineTokenBackground,
+} from "@/editor/core/cm/inlineBg";
 import { RAINBOW_COLORS } from "./semantic";
 
 const tooltipSurface = {
@@ -84,15 +89,19 @@ const markdown = {
   ".tok-invalid": { color: "var(--syn-invalid)" },
 };
 
-function semanticStyle(token: string, fallback: string) {
+function semanticAttributes(token: string, fallback: string) {
   return {
     color: `var(--syn-${token}, var(--syn-${fallback}))`,
     fontWeight: `var(--syn-${token}-bold, inherit)`,
     fontStyle: `var(--syn-${token}-italic, inherit)`,
-    backgroundColor: `var(--syn-${token}-bg, transparent)`,
+    "--openidea-token-bg": `var(--syn-${token}-bg, initial)`,
     textDecoration: `var(--syn-${token}-effect, none)`,
     WebkitTextDecoration: `var(--syn-${token}-effect, none)`,
   };
+}
+
+function semanticStyle(token: string, fallback: string) {
+  return { ...semanticAttributes(token, fallback), ...inlineTokenBackground };
 }
 
 /** A token that shows `parent`'s colour and style while its own are unset (an `inherit` attribute). */
@@ -103,7 +112,23 @@ function inheritedStyle(token: string, parent: string) {
     color: v("", "inherit"),
     fontWeight: v("-bold", "inherit"),
     fontStyle: v("-italic", "inherit"),
-    backgroundColor: v("-bg", "transparent"),
+    "--openidea-token-bg": v("-bg", "initial"),
+    ...inlineTokenBackground,
+    textDecoration: v("-effect", "none"),
+    WebkitTextDecoration: v("-effect", "none"),
+  };
+}
+
+/** `token`'s style, else the first of `parents` that is set (`--syn-function-call`, then `--syn-function`). */
+function fallbackStyle(token: string, parents: string[]) {
+  const v = (suffix: string, fallback: string) =>
+    [token, ...parents].reduceRight((inner, name) => `var(--syn-${name}${suffix}, ${inner})`, fallback);
+  return {
+    color: v("", "inherit"),
+    fontWeight: v("-bold", "inherit"),
+    fontStyle: v("-italic", "inherit"),
+    "--openidea-token-bg": v("-bg", "initial"),
+    ...inlineTokenBackground,
     textDecoration: v("-effect", "none"),
     WebkitTextDecoration: v("-effect", "none"),
   };
@@ -239,7 +264,6 @@ export const lspTheme = EditorView.theme({
     background: "none",
     color: "var(--fg-subtle)",
     font: "inherit",
-    cursor: "pointer",
   },
   ".cm-lsp-completion-sort:hover": { color: "var(--fg)" },
   '.cm-lsp-completion-sort[aria-pressed="true"]': { color: "var(--link)" },
@@ -494,7 +518,6 @@ export const lspTheme = EditorView.theme({
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
-    cursor: "pointer",
   },
   ".cm-lsp-inplace-suggestions button:hover": { backgroundColor: "var(--bg-hover)" },
   '.cm-lsp-inplace-suggestions button[aria-current="true"]': {
@@ -561,7 +584,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-python-nested": semanticStyle("python-nested-function", "function"),
   ".cm-sem-python-predefined-definition": semanticStyle("python-predefined-definition", "predefined"),
   ".cm-sem-python-predefined-usage": semanticStyle("python-predefined-usage", "predefined"),
-  ".cm-sem-python-docstring, .cm-sem-python-docstring *": semanticStyle("docstring", "string"),
+  ".cm-sem-python-docstring": inlineTokenBackground,
+  ".cm-sem-python-docstring, .cm-sem-python-docstring *": semanticAttributes("docstring", "string"),
   // After the docstring wildcard above so the tag's own colour wins inside it.
   ".cm-sem-python-docstring-tag": {
     ...semanticStyle("python-docstring-tag", "doc-comment-tag"),
@@ -574,11 +598,21 @@ export const lspTheme = EditorView.theme({
     "python-fstring",
     "string",
   ),
-  ".cm-sem-python-escape": semanticStyle("escape", "escape"),
+  ".cm-sem-python-escape, .cm-sem-escape": semanticStyle("escape", "escape"),
+  // IDEA's Invalid escape sequence: the escape colour with an error wave.
+  ".cm-sem-invalid-escape": {
+    ...semanticStyle("escape", "escape"),
+    textDecoration: "underline wavy var(--wave-error)",
+    WebkitTextDecoration: "underline wavy var(--wave-error)",
+  },
   ".cm-sem-python-format": semanticStyle("python-format", "escape"),
   ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
   // --- semantic tokens -----------------------------------------------------
   ".cm-sem-type, .cm-sem-typeParameter": semanticStyle("type", "type"),
+  // WebStorm's Interface / Type alias / Type parameter: unset, they keep the type colour.
+  ".cm-sem-js-interface": inheritedStyle("javascript-interface", "type"),
+  ".cm-sem-js-type-alias": inheritedStyle("javascript-type-alias", "type"),
+  ".cm-sem-js-type-parameter": inheritedStyle("javascript-type-parameter", "type"),
   // IDEA colours declarations, calls stay (nearly) plain text.
   ".cm-sem-function": semanticStyle("function-call", "function"),
   // Keep role selectors at one class so static/deprecated modifiers can override their styles.
@@ -591,6 +625,12 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-function.cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
   // WebStorm's Global function: a module-level function, its declaration and its calls.
   ".cm-sem-global-function": inheritedStyle("global-function", "function"),
+  // WebStorm's Instance / Static member function: unset, a method keeps the function call or
+  // declaration style. One class each, so the static modifier's italic still applies.
+  ".cm-sem-js-instance-method": fallbackStyle("javascript-instance-method", ["function-call", "function"]),
+  ".cm-sem-js-instance-method:where(.cm-sem-declaration)": fallbackStyle("javascript-instance-method", ["function"]),
+  ".cm-sem-js-static-method": fallbackStyle("javascript-static-method", ["function-call", "function"]),
+  ".cm-sem-js-static-method:where(.cm-sem-declaration)": fallbackStyle("javascript-static-method", ["function"]),
   ".cm-sem-macro": semanticStyle("annotation", "annotation"),
   ".cm-sem-annotation": semanticStyle("decorator", "annotation"),
   ".cm-sem-namespace": semanticStyle("namespace", "type"),
@@ -615,7 +655,7 @@ export const lspTheme = EditorView.theme({
     color: "var(--syn-static-property, var(--syn-property))",
     fontStyle: "var(--syn-static-property-italic, var(--syn-static-italic, italic))",
     fontWeight: "var(--syn-static-property-bold, var(--syn-property-bold, inherit))",
-    backgroundColor: "var(--syn-static-property-bg, transparent)",
+    "--openidea-token-bg": "var(--syn-static-property-bg, initial)",
     textDecoration: "var(--syn-static-property-effect, none)",
     WebkitTextDecoration: "var(--syn-static-property-effect, none)",
   },
@@ -646,6 +686,12 @@ export const lspTheme = EditorView.theme({
       },
     ]),
   ),
+  // Java's unterminated string or char literal, over the spans the parser's error recovery left inside.
+  ".cm-sem-java-unterminated-string, .cm-sem-java-unterminated-string *": {
+    color: "var(--syn-string)",
+    fontWeight: "var(--syn-string-bold, normal)",
+    fontStyle: "var(--syn-string-italic, normal)",
+  },
   // After the semantic classes: the link wraps their (innermost) spans, and its colour must win.
   ".cm-lsp-link *": { color: "var(--link)" },
 

@@ -15,7 +15,8 @@ use std::time::Duration;
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const FLAGS_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// The attach calls a snapshot or a heap dump makes, so tests can stand in for a JVM.
+/// The attach calls a snapshot, a heap dump or a thread dump makes, so tests can stand in for a
+/// JVM.
 pub(crate) trait AttachProbe: Send + Sync {
     fn has_listener(&self, pid: u32) -> bool;
     /// Asks only the JVMs whose pid `may_query` accepts.
@@ -27,6 +28,12 @@ pub(crate) trait AttachProbe: Send + Sync {
     fn heap_dump(&self, pid: u32, path: &Path, timeout: Duration) -> Result<HeapDumpReply, AttachError>;
     /// `None` where the free space is not known.
     fn free_bytes(&self, dir: &Path) -> Option<u64>;
+    fn thread_print(&self, pid: u32) -> Result<String, AttachError>;
+    /// Opens `pid`'s attach listener unless it runs; refuses a process not confirmed HotSpot.
+    fn ensure_listener(&self, pid: u32) -> Result<(), AttachError>;
+    /// Confirmed HotSpot and not one of Gradle's own JVMs; asks the JVM nothing.
+    fn is_application_jvm(&self, pid: u32) -> bool;
+    fn thread_dump_json(&self, pid: u32, dir: &Path) -> Result<String, AttachError>;
 }
 
 pub(super) struct JdkProbe {
@@ -72,6 +79,22 @@ impl AttachProbe for JdkProbe {
 
     fn free_bytes(&self, dir: &Path) -> Option<u64> {
         ide_heap::free_bytes(dir)
+    }
+
+    fn thread_print(&self, pid: u32) -> Result<String, AttachError> {
+        ide_jvm_attach::thread_print(pid, ide_jvm_attach::THREAD_DUMP_TIMEOUT)
+    }
+
+    fn ensure_listener(&self, pid: u32) -> Result<(), AttachError> {
+        ide_jvm_attach::ensure_listener(pid, ide_jvm_attach::LISTENER_START_TIMEOUT)
+    }
+
+    fn is_application_jvm(&self, pid: u32) -> bool {
+        ide_jvm_attach::is_application_jvm(pid)
+    }
+
+    fn thread_dump_json(&self, pid: u32, dir: &Path) -> Result<String, AttachError> {
+        ide_jvm_attach::thread_dump_json(pid, dir, ide_jvm_attach::THREAD_DUMP_TIMEOUT)
     }
 }
 

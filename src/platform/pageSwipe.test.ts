@@ -127,4 +127,18 @@ describe("native page swipes", () => {
     document.body.innerHTML = '<div class="xterm"><textarea></textarea></div>';
     expect(ownsHorizontalScroll(document.querySelector("textarea"))).toBe(true);
   });
+  it("leaves horizontal wheel handling to embedded iframes", () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    document.body.innerHTML = '<iframe sandbox="allow-scripts" title="Kubernetes"></iframe>';
+    const iframe = document.querySelector("iframe")!;
+    expect(ownsHorizontalScroll(iframe)).toBe(true);
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => iframe });
+    const stop = installPageSwipeTracking(window);
+    try {
+      window.dispatchEvent(new CustomEvent("ide:page-swipe-candidate", { detail: { id: 99, x: 10, y: 20 } }));
+      expect(emitTo).not.toHaveBeenCalled();
+    } finally {
+      stop();
+    }
+  });
 });

@@ -39,7 +39,7 @@ import {
   uiModeForPath,
 } from "../cm/languages";
 import { foldEffect } from "@codemirror/language";
-import { backendFolds, setBackendFolds } from "../cm/folding";
+import { backendFolds, compactFoldFits, setBackendFolds, type BackendFold } from "../cm/folding";
 import { setSyntaxHighlights } from "../cm/syntaxHighlight";
 import {
   caretFor,
@@ -49,6 +49,7 @@ import {
   effectiveIndent,
   foldingFor,
   fontExtension,
+  hardWrapAt,
   heavyExtension,
   indentExtension,
   lineNumbersExtension,
@@ -88,6 +89,29 @@ export function isFileHeaderFold(
   if (lineComment && text.startsWith(lineComment)) return true;
   if (blockComment && text.startsWith(blockComment[0])) return true;
   return false;
+}
+
+/** 1-based number of the first line that is neither blank nor a shebang; 0 when there is none. */
+function firstCodeLine(state: EditorState): number {
+  for (let n = 1; n <= state.doc.lines; n++) {
+    const t = state.doc.line(n).text.trim();
+    if (t && !t.startsWith("#!")) return n;
+  }
+  return 0;
+}
+
+/** Whether comment fold `r` is the file header (see `isFileHeaderFold`). */
+function isHeaderComment(state: EditorState, r: BackendFold, firstCode: number, info: LanguageInfo | undefined) {
+  const first = state.doc.lineAt(r.from);
+  return isFileHeaderFold(first.number, firstCode, first.text, info?.lineComment, info?.blockComment);
+}
+
+/** The documentation comment folds: every comment fold but the file header. */
+export function docCommentFolds(state: EditorState, info: LanguageInfo | undefined): BackendFold[] {
+  const firstCode = firstCodeLine(state);
+  return (state.field(backendFolds, false) ?? []).filter(
+    (r) => r.kind === "comment" && !isHeaderComment(state, r, firstCode, info),
+  );
 }
 
 export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
@@ -146,7 +170,12 @@ export class ModifiedRanges {
 
   map(changes: ChangeSet) {
     if (this.all) return;
-    this.ranges = this.ranges.map(([a, b]): [number, number] => [changes.mapPos(a, -1), changes.mapPos(b, 1)]);
+    // A range past the end belongs to another version of the text; mapping it would throw out of the
+    // edit (before the document is marked dirty, so the edit would never be saved). Drop it instead.
+    const kept = this.ranges.filter(([, b]) => b <= changes.length);
+    if (kept.length < this.ranges.length)
+      console.warn(`modified ranges past the end (${changes.length}) dropped`, this.ranges.length - kept.length);
+    this.ranges = kept.map(([a, b]): [number, number] => [changes.mapPos(a, -1), changes.mapPos(b, 1)]);
   }
 
   add(changes: ChangeSet) {
@@ -166,10 +195,32 @@ export class ModifiedRanges {
     }
   }
 
+  /**
+   * `changes` put back text from the VCS version (a rollback): what they inserted is not an edit
+   * of the user's, so save cleanup leaves it alone; ranges recorded there before are dropped.
+   */
+  restore(changes: ChangeSet) {
+    if (this.all) return;
+    this.map(changes);
+    const restored: Array<[number, number]> = [];
+    changes.iterChangedRanges((_fa, _ta, fromB, toB) => restored.push([fromB, toB]), true);
+    this.ranges = this.ranges.filter(([a, b]) => !restored.some(([from, to]) => from <= a && b <= to));
+  }
+
   clear() {
     this.ranges = [];
     this.all = false;
   }
+}
+
+/** User events of edits that put back text from the VCS version: a diff's revert arrow, a gutter rollback. */
+const RESTORE_EVENTS = ["revert", "input.rollback"];
+
+/** Whether `tr` (or an edit with user event `event`) puts back text from the VCS version. */
+export function restoresVcsText(tr: Transaction | string): boolean {
+  return typeof tr === "string"
+    ? RESTORE_EVENTS.some((e) => tr === e || tr.startsWith(`${e}.`))
+    : RESTORE_EVENTS.some((e) => tr.isUserEvent(e));
 }
 
 /** 0-based start lines of functions / methods in an outline (method separators). */
@@ -198,12 +249,14 @@ export function saveCleanupChanges(
     protectLines: Set<number>;
     allLines?: boolean;
     trailingBlankLines?: boolean;
+    /** The end of the text was restored from the VCS version: its blank lines and line break stay. */
+    keepEnd?: boolean;
   },
 ): Array<{ from: number; to: number; insert?: string }> {
   const changes: Array<{ from: number; to: number; insert?: string }> = [];
   const doc = state.doc;
   let blankFrom = doc.length;
-  if (opts.trailingBlankLines) {
+  if (opts.trailingBlankLines && !opts.keepEnd) {
     // Keep exactly one line break after the last non-blank line.
     const m = /\n[ \t\n]*$/.exec(doc.sliceString(Math.max(0, doc.length - 10_000)));
     if (m && m[0].indexOf("\n", 1) >= 0) blankFrom = doc.length - m[0].length + 1;
@@ -226,7 +279,7 @@ export function saveCleanupChanges(
     }
   }
   if (blankFrom < doc.length) changes.push({ from: blankFrom, to: doc.length });
-  else if (opts.finalNewline && doc.length > 0 && doc.sliceString(doc.length - 1) !== "\n")
+  else if (opts.finalNewline && !opts.keepEnd && doc.length > 0 && doc.sliceString(doc.length - 1) !== "\n")
     changes.push({ from: doc.length, to: doc.length, insert: "\n" });
   return changes;
 }
@@ -241,6 +294,8 @@ export class DocModel {
   /** Views outside the tab system sharing this document (e.g. the editable side of a diff). */
   readonly attachments = new Set<DocAttachmentTarget>();
   readonly modified = new ModifiedRanges();
+  /** The end of the text was last changed by a rollback to the VCS version (see [`restoresVcsText`]). */
+  private endRestored = false;
   info: LanguageInfo | undefined;
   /** Effective `.editorconfig` properties at open time. */
   editorconfig: EditorConfigProps | null = null;
@@ -384,6 +439,8 @@ export class DocModel {
 
   addSlot(slot: EditorSlot) {
     this.slots.add(slot);
+    // An attachment can load and refresh the document before its first editor opens.
+    if (this.meta.language === "go" && this.slots.size === 1 && !this.initialFolds) this.scheduleRefresh(0);
     if (this.highlights?.counter === this.changeCounter)
       slot.reconfigure([setSyntaxHighlights.of(this.highlights.value)]);
   }
@@ -417,9 +474,16 @@ export class DocModel {
     return this.slots.values().next().value ?? null;
   }
 
-  onLocal(changes: ChangeSet, origin: EditorSlot | DocAttachmentTarget) {
+  /** `restored`: the changes put back text from the VCS version ([`restoresVcsText`]). */
+  onLocal(changes: ChangeSet, origin: EditorSlot | DocAttachmentTarget, restored = false) {
     this.sync.local(changes);
-    this.modified.add(changes);
+    if (restored) this.modified.restore(changes);
+    else this.modified.add(changes);
+    let end = false;
+    changes.iterChangedRanges((_fromA, toA) => {
+      if (toA === changes.length) end = true;
+    });
+    if (end) this.endRestored = restored;
     this.changeCounter++;
     for (const s of this.slots)
       if (s !== origin) s.applyExternal(changes, [mirroredChange.of(true), Transaction.addToHistory.of(false)]);
@@ -501,8 +565,8 @@ export class DocModel {
   }
 
   /**
-   * Detects the indents again after Reformat Code rewrote them: tabs written by
-   * the formatter then render at the Code Style tab size and new lines indent
+   * Detects the indents again after Reformat Code or Convert Indents rewrote them:
+   * tabs written by them then render at the Code Style tab size and new lines indent
    * like them, instead of following the indents detected at open time.
    */
   redetectIndent() {
@@ -551,7 +615,7 @@ export class DocModel {
     const effects = [
       compartments.indent.reconfigure(indentExtension(indent, this.formatIndent())),
       compartments.wrap.reconfigure(wrapExtension(editor, this.path, this.softWrapOverride)),
-      compartments.sticky.reconfigure(stickyExtension(editor)),
+      compartments.sticky.reconfigure(stickyExtension(editor, this.meta.language)),
       compartments.font.reconfigure(fontExtension(editor)),
       compartments.comments.reconfigure(commentTokens(this.info, this.meta.language)),
       compartments.lineNumbers.reconfigure(lineNumbersExtension(editor)),
@@ -632,6 +696,8 @@ export class DocModel {
       backend.folding(this.doc),
       backend.outline(this.doc),
       !this.desc || GRAMMAR_SUPPLEMENTED.has(this.meta.language) ? backend.highlights(this.doc) : null,
+      // Compact folds render the original statement with the Go syntax mode.
+      this.meta.language === "go" && !this.initialFolds ? this.loadLanguage() : null,
     ]);
     if (this.closed) return;
     if (counter !== this.changeCounter) {
@@ -640,7 +706,7 @@ export class DocModel {
     }
     if (folds.status === "fulfilled") {
       for (const s of this.slots) s.reconfigure([setBackendFolds.of(folds.value)]);
-      if (!this.initialFolds) {
+      if (!this.initialFolds && this.slots.size) {
         this.initialFolds = true;
         this.foldByDefault();
       }
@@ -656,36 +722,37 @@ export class DocModel {
     }
   }
 
-  /** Code Folding › "Fold by default": file header, imports, documentation comments. */
+  /** Code Folding › "Fold by default". */
   private foldByDefault() {
-    const f = prefsOf(this.settings()).folding;
-    if (!f.fileHeader && !f.imports && !f.docComments) return;
+    const settings = this.settings();
+    const f = prefsOf(settings).folding;
+    if (!f.fileHeader && !f.imports && !f.docComments && !f.goShortBlocks) return;
+    const margin = hardWrapAt(settings, this.info);
     for (const s of this.slots) {
       const state = s.currentState();
       const folds = state.field(backendFolds, false) ?? [];
+      if (!folds.length) continue;
       const info = this.info;
-      const firstCodeLine = (() => {
-        for (let n = 1; n <= state.doc.lines; n++) {
-          const t = state.doc.line(n).text.trim();
-          if (t && !t.startsWith("#!")) return n;
-        }
-        return 0;
-      })();
+      const head = state.selection.main.head;
+      const firstCode = firstCodeLine(state);
       const chosen = folds.filter((r) => {
         if (r.kind === "imports") return f.imports;
+        if (r.kind === "compact")
+          return (
+            f.goShortBlocks &&
+            !state.selection.ranges.some(({ from, to }) => r.from < to && from < r.to) &&
+            compactFoldFits(state, r, margin)
+          );
         if (r.kind !== "comment") return false;
         // A file header must sit at the top AND start with a comment token.
         // Keeping the position check keeps ordinary doc comments further down
         // under "documentation comments"; the token check keeps a Python module
         // docstring (which opens with quotes) out of the file-header toggle.
-        const first = state.doc.lineAt(r.from);
-        const header = isFileHeaderFold(first.number, firstCodeLine, first.text, info?.lineComment, info?.blockComment);
-        return header ? f.fileHeader : f.docComments;
+        return isHeaderComment(state, r, firstCode, info) ? f.fileHeader : f.docComments;
       });
       const effects: StateEffect<unknown>[] = chosen.map((r) => foldEffect.of({ from: r.from, to: r.to }));
       // Folding the header / imports shifts everything below: keep a navigation
       // target (caret revealed on open) in view.
-      const head = state.selection.main.head;
       if (effects.length && head > 0 && !chosen.some((r) => r.from < head && head <= r.to))
         effects.push(EditorView.scrollIntoView(head, { y: "center" }));
       if (effects.length) s.reconfigure(effects);
@@ -701,6 +768,7 @@ export class DocModel {
       if (reason === "explicit") {
         for (const p of _saveParticipants()) {
           try {
+            // oxlint-disable-next-line no-await-in-loop -- participants run in priority order and may edit the document; each must see earlier edits
             await p.beforeSave(this.ctx(), slot?.handle ?? null, "explicit");
           } catch (e) {
             console.warn(`save participant ${p.id} failed`, e);
@@ -725,6 +793,7 @@ export class DocModel {
           protectLines: g.keepTrailingOnCaretLine ? protectLines : new Set(),
           allLines: g.stripTrailingScope === "all",
           trailingBlankLines: g.removeTrailingBlankLines,
+          keepEnd: this.endRestored,
         });
         if (changes.length) slot.dispatchLocal({ changes, userEvent: "input.save" });
       }

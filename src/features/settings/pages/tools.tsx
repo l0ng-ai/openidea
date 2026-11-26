@@ -260,7 +260,7 @@ function TerminalOptions() {
       <SettingSelect
         k="terminal.maxFps"
         label="Maximum refresh rate"
-        hint="Caps how often fast terminal output is painted. Hidden windows always paint more slowly."
+        hint="Caps how often fast output is sent and painted in the terminal and the Run and Debug consoles. Hidden windows always paint more slowly."
         options={TERMINAL_MAX_FPS_OPTIONS}
       />
     </>
@@ -786,7 +786,7 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.newTaskApprovals",
             label: "New tasks start",
             options: NEW_TASK_APPROVAL_OPTIONS,
-            hint: "Without asking means the agent's bypass or full-access mode, where command permissions don't apply",
+            hint: "Without asking uses the agent's bypass or full-access mode, which skips Command Rules.",
           },
         ],
       },
@@ -799,19 +799,13 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.whileRunning",
             label: "While the agent works, sending",
             options: WHILE_RUNNING_OPTIONS,
-            hint: "The other way is a modifier away: ⌘↵ with Enter, ⌘⇧↵ with ⌘↵",
+            hint: "For the other choice, press ⌘↵ (or ⌘⇧↵ when sending with ⌘↵).",
           },
         ],
       },
       {
         title: "Conversation",
         options: [
-          {
-            kind: "toggle",
-            key: "agents.foldTurns",
-            label: "Fold a finished turn's work",
-            hint: "Reasoning and tool calls before the reply fold into one line under its message",
-          },
           {
             kind: "select",
             key: "agents.toolCalls",
@@ -829,7 +823,7 @@ export const TOOLS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "agents.smoothText",
             label: "Reveal streaming text smoothly",
-            hint: "Text appears at a steady pace instead of in bursts",
+            hint: "Text appears at a steady pace instead of in bursts.",
           },
           {
             kind: "toggle",
@@ -842,18 +836,17 @@ export const TOOLS_PAGES: PageSpec[] = [
         title: "Shown in the Task Header",
         options: [
           { kind: "toggle", key: "agents.showContextUsage", label: "Context window usage" },
-          { kind: "toggle", key: "agents.showWorkTime", label: "Time spent on the task" },
           {
             kind: "toggle",
             key: "agents.showUsageLimits",
             label: "Usage limits",
-            hint: "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)",
+            hint: "5-hour and weekly limits, when the agent reports them (Claude Code).",
           },
           {
             kind: "toggle",
             key: "agents.showCost",
             label: "Session cost",
-            hint: "What the session has cost so far, as the agent reports it (API pricing, also shown on subscriptions)",
+            hint: "As the agent reports it, at API pricing.",
           },
         ],
       },

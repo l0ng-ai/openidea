@@ -385,6 +385,26 @@ describe("store", () => {
     expect(usePlugins.getState().activeTheme).toBeNull();
   });
 
+  it("keeps a theme applied by an event over an older plugin list that predates it", async () => {
+    await refreshPlugins();
+    const applied = await backend.setTheme("theme-harbor-night", "harbor-night");
+    await backend.setTheme(null, null);
+    // The list is read before the theme lands and answers after its event.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const stale = await backend.list();
+    setPluginsBackend({ ...backend, list: () => gate.then(() => stale) });
+    const refresh = refreshPlugins();
+    handlePluginEvent({ type: "themeChanged", theme: applied });
+    release();
+    await refresh;
+    expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night");
+    // A list requested after the event is taken as it is.
+    setPluginsBackend(backend);
+    await refreshPlugins();
+    expect(usePlugins.getState().activeTheme).toBeNull();
+  });
+
   it("applies the plugin theme the Appearance setting selects, and clears it for a built-in one", async () => {
     const stop = [syncProjection(), followThemeSetting()];
     try {
@@ -1606,6 +1626,75 @@ describe("marketplace", () => {
       await user.click(screen.getByRole("button", { name: "Install" }));
       await done;
       expect(consents[0]![1]).toMatchObject({ signerChange: true });
+      stop();
+    });
+
+    it("lets the install consent dialog select and clear all optional permissions at once", async () => {
+      const consents = updatesBackend({
+        b: preview("b", "2.0.0", {
+          needsConsent: true,
+          capabilities: [
+            { id: "editor.read", description: "Read", risk: "low", optional: false, granted: false },
+            { id: "storage", description: "Store data", risk: "low", optional: true, granted: false },
+            { id: "net:api.example", description: "Net", risk: "medium", optional: true, granted: false },
+            { id: "process:git", description: "Run git", risk: "high", optional: true, granted: false },
+          ],
+        }),
+      });
+      const stop = provideConsentDialog();
+      const user = userEvent.setup();
+      render(<ConsentDialogHost />);
+      const done = installFromDisk("b");
+
+      const selectAll = (await screen.findByRole("checkbox", {
+        name: "Allow all optional permissions",
+      })) as HTMLInputElement;
+      // Low-risk optional permission starts checked while medium/high stay unchecked -> indeterminate.
+      expect(selectAll.checked).toBe(false);
+      expect(selectAll.indeterminate).toBe(true);
+      expect(screen.getByText("1/3")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      // Clicking from indeterminate checks every optional permission and surfaces the high-risk warning.
+      await user.click(selectAll);
+      expect(selectAll.checked).toBe(true);
+      expect(selectAll.indeterminate).toBe(false);
+      expect(screen.getByText("3/3")).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent("running arbitrary code");
+
+      // Clicking again clears all optional permissions.
+      await user.click(selectAll);
+      expect(selectAll.checked).toBe(false);
+      expect(selectAll.indeterminate).toBe(false);
+      expect(screen.getByText("0/3")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      // Selecting all again and installing passes every optional capability to the backend.
+      await user.click(selectAll);
+      await user.click(screen.getByRole("button", { name: "Install" }));
+      await done;
+      expect(consents[0]![1].optional.sort()).toEqual(["net:api.example", "process:git", "storage"]);
+      stop();
+    });
+
+    it("hides the select-all checkbox when there is at most one optional permission", async () => {
+      updatesBackend({
+        b: preview("b", "2.0.0", {
+          needsConsent: true,
+          capabilities: [
+            { id: "editor.read", description: "Read", risk: "low", optional: false, granted: false },
+            { id: "net:api.example", description: "Net", risk: "medium", optional: true, granted: false },
+          ],
+        }),
+      });
+      const stop = provideConsentDialog();
+      const user = userEvent.setup();
+      render(<ConsentDialogHost />);
+      const done = installFromDisk("b");
+      await screen.findByRole("checkbox", { name: "Allow net:api.example" });
+      expect(screen.queryByRole("checkbox", { name: "Allow all optional permissions" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      await done;
       stop();
     });
 

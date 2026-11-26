@@ -283,6 +283,7 @@ mod tests {
             has_more: false,
             elapsed_ms: 0.0,
             execution_ms: 0.0,
+            truncated: Vec::new(),
         }
     }
 
