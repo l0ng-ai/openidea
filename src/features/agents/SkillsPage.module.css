@@ -1,12 +1,18 @@
+/* One line per skill: name, muted description, then the mode picker. */
+.row {
+  min-height: var(--h-row);
+  padding-block: 2px;
+}
+
 .skillName {
-  font-weight: 600;
+  flex-shrink: 0;
   color: var(--fg-strong);
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .subtitle {
+  flex: 1;
+  min-width: 0;
   color: var(--fg-muted);
   font-size: var(--fs-small);
   overflow: hidden;
@@ -14,18 +20,18 @@
   white-space: nowrap;
 }
 
-.modeControls {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
+/* Sized to its label and right-aligned, so the chevrons line up without a blank column. */
+.modeSelect {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
-.modeSelect {
-  min-width: 96px;
+.modeSelect > span {
+  flex: none;
 }
 
 .scopeSelect {
-  min-width: 104px;
+  min-width: 120px;
 }
 
 .hint {
