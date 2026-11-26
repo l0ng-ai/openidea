@@ -6,7 +6,7 @@
  */
 import { executeAction } from "@/platform/actions";
 import { formatArgs, parseArgs } from "@/platform/commandLine";
-import { call, commands, type RunConfig } from "@/platform/ipc";
+import { call, commands, onIdeEvent, type FileEntry, type RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { maybeEditorService, type RunAnythingItem, type RunAnythingProvider } from "@/workbench/contributions";
@@ -38,6 +38,8 @@ export interface PackageBins {
   label: string;
   /** Installed executables; `from` is the direct dependency that provides one. */
   bins: { name: string; from?: string }[];
+  /** Yarn 2+: `yarn <bin>` runs only the package's direct dependencies' executables. */
+  yarnBerry?: boolean;
 }
 
 type PackageJson = Record<string, unknown>;
@@ -56,9 +58,9 @@ export function directDependencies(pkg: PackageJson): string[] {
   return [...new Set(names)];
 }
 
-/** `.bin` entry names without the Windows shims' extensions (`eslint.cmd`, `eslint.ps1`). */
+/** `.bin` entry names without the Windows shims' extensions (`eslint.cmd`, `eslint.ps1`, Bun's `eslint.bunx`). */
 export function binEntryNames(names: readonly string[]): string[] {
-  return [...new Set(names.map((n) => n.replace(/\.(?:cmd|ps1|exe|bat)$/i, "")))];
+  return [...new Set(names.map((n) => n.replace(/\.(?:cmd|ps1|exe|bat|bunx)$/i, "")))];
 }
 
 const slash = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -74,23 +76,53 @@ export function ancestorDirs(rel: string): string[] {
   return out;
 }
 
-async function readJson(path: string): Promise<PackageJson | null> {
-  try {
-    const v: unknown = JSON.parse(await call(commands.fsReadText(path)));
-    return v && typeof v === "object" ? (v as PackageJson) : null;
-  } catch {
-    return null;
-  }
+// Disk reads shared by every load until something under `node_modules` or a `package.json` changes.
+const reads = new Map<string, Promise<unknown>>();
+function memo<T>(key: string, read: () => Promise<T>): Promise<T> {
+  if (!reads.has(key)) reads.set(key, read());
+  return reads.get(key) as Promise<T>;
 }
+
+/** Forgets what was read from disk (file changes; tests). */
+export function clearPackageBinsCache() {
+  reads.clear();
+  cache = null;
+}
+
+const readJson = (path: string) =>
+  memo(`json:${path}`, async (): Promise<PackageJson | null> => {
+    try {
+      const v: unknown = JSON.parse(await call(commands.fsReadText(path)));
+      return v && typeof v === "object" ? (v as PackageJson) : null;
+    } catch {
+      return null;
+    }
+  });
+
+const exists = (path: string) =>
+  memo(`exists:${path}`, () =>
+    call(commands.fsReadText(path)).then(
+      () => true,
+      () => false,
+    ),
+  );
+
+const readDir = (path: string) =>
+  memo(`dir:${path}`, () => call(commands.fsReadDir(path)).catch((): FileEntry[] => []));
 
 async function readBinDir(dir: string): Promise<string[]> {
-  const entries = await call(commands.fsReadDir(`${dir}/node_modules/.bin`)).catch(() => []);
-  return binEntryNames(entries.filter((e) => e.kind !== "dir").map((e) => e.name));
+  const entries = await readDir(`${dir}/node_modules/.bin`);
+  // Directories and dangling links (an uninstalled package's leftover) are not executables.
+  const runnable = entries.filter((e) => e.kind === "file" || (e.kind === "symlink" && e.targetKind === "file"));
+  return binEntryNames(runnable.map((e) => e.name));
 }
 
-/** The first non-null result, in order (all looked up at once). */
-async function firstOf<T>(lookups: Promise<T | null>[]): Promise<T | null> {
-  return (await Promise.all(lookups)).find((v) => v !== null) ?? null;
+/** Whether `dir/node_modules` has `dep` (`@scope/name` looked up in its scope folder). */
+async function hasModule(dir: string, dep: string): Promise<boolean> {
+  const slashAt = dep.indexOf("/");
+  const folder = slashAt > 0 ? `${dir}/node_modules/${dep.slice(0, slashAt)}` : `${dir}/node_modules`;
+  const name = slashAt > 0 ? dep.slice(slashAt + 1) : dep;
+  return (await readDir(folder)).some((e) => e.name === name);
 }
 
 async function loadPackage(root: string, dir: string): Promise<PackageBins | null> {
@@ -102,7 +134,10 @@ async function loadPackage(root: string, dir: string): Promise<PackageBins | nul
   const owners = new Map<string, string>();
   await Promise.all(
     directDependencies(pkg).map(async (dep) => {
-      const manifest = await firstOf(chain.map((d) => readJson(`${d}/node_modules/${dep}/package.json`)));
+      // Only the nearest copy's manifest is read; listings tell where it is.
+      const found = await Promise.all(chain.map((d) => hasModule(d, dep)));
+      const home = chain.find((_, i) => found[i]);
+      const manifest = home === undefined ? null : await readJson(`${home}/node_modules/${dep}/package.json`);
       for (const bin of manifest ? declaredBins(dep, manifest) : []) if (!owners.has(bin)) owners.set(bin, dep);
     }),
   );
@@ -111,6 +146,13 @@ async function loadPackage(root: string, dir: string): Promise<PackageBins | nul
     .sort((a, b) => Number(!a.from) - Number(!b.from) || a.name.localeCompare(b.name));
   const label = typeof pkg.name === "string" && pkg.name ? pkg.name : dir || (root.split("/").pop() ?? "");
   return { dir, label, bins };
+}
+
+/** Yarn 2+ in the project: a `.yarnrc.yml`, or `packageManager: yarn@2…` in the root `package.json`. */
+async function isYarnBerry(root: string): Promise<boolean> {
+  const pm = (await readJson(`${root}/package.json`))?.packageManager;
+  if (typeof pm === "string" && pm.startsWith("yarn@")) return !pm.startsWith("yarn@1.");
+  return exists(`${root}/.yarnrc.yml`);
 }
 
 // ponytail: workspaces with more packages list the first ones only; index members lazily if that bites.
@@ -132,20 +174,19 @@ export async function loadPackages(
         .join("/")
     : "";
   const candidates = ancestorDirs(fileDir);
-  const present = await Promise.all(
-    candidates.map((d) =>
-      call(commands.fsReadText(`${join(base, d)}/package.json`)).then(
-        () => true,
-        () => false,
-      ),
-    ),
-  );
+  const present = await Promise.all(candidates.map((d) => exists(`${join(base, d)}/package.json`)));
   const current = candidates.find((_, i) => present[i]);
   const members = configs
     .filter((c) => c.kind === "npm" && c.detected)
-    .map((c) => slash((c.cwd ?? "").replace(/^\.\/?/, "")));
+    .map((c) => slash((c.cwd ?? "").replace(/^\.(?:\/|$)/, "")));
   const dirs = [...new Set([...(current === undefined ? [] : [current]), "", ...members])].slice(0, MAX_PACKAGES);
-  return (await Promise.all(dirs.map((d) => loadPackage(base, d)))).filter((p): p is PackageBins => !!p);
+  const [yarnBerry, ...loaded] = await Promise.all([isYarnBerry(base), ...dirs.map((d) => loadPackage(base, d))]);
+  return loaded.filter((p): p is PackageBins => !!p).map((p) => (yarnBerry ? { ...p, yarnBerry } : p));
+}
+
+/** What `runner` can run in `pkg`: Yarn 2+ refuses executables that aren't the package's direct dependencies'. */
+export function runnableBins(runner: Runner, pkg: PackageBins): PackageBins["bins"] {
+  return runner.command === "yarn" && pkg.yarnBerry ? pkg.bins.filter((b) => b.from) : pkg.bins;
 }
 
 export function execConfig(runner: Runner, name: string, args: readonly string[], pkg: PackageBins): RunConfig {
@@ -171,7 +212,7 @@ export function execItems(query: string, packages: readonly PackageBins[]): RunA
   const { runner, name: typed } = parsed;
   const word = typed.toLowerCase();
   return packages.flatMap((pkg) =>
-    pkg.bins
+    runnableBins(runner, pkg)
       .filter((b) => b.name.toLowerCase().includes(word))
       .sort((a, b) => Number(!a.name.toLowerCase().startsWith(word)) - Number(!b.name.toLowerCase().startsWith(word)))
       .map((b): RunAnythingItem => {
@@ -188,6 +229,9 @@ export function execItems(query: string, packages: readonly PackageBins[]): RunA
       }),
   );
 }
+
+/** Characters a shell expands or interprets; quotes and backslashes are split by `parseArgs`. */
+const SHELL_SYNTAX = /[|&;<>$`*?~{}()[\]%!#\n]/;
 
 let cache: { key: string; promise: Promise<PackageBins[]>; value?: PackageBins[] } | null = null;
 const listeners = new Set<() => void>();
@@ -221,18 +265,30 @@ export const packageBinsRunAnything: RunAnythingProvider = {
   },
   async execute(line) {
     const parsed = parseExecLine(line);
-    // Shell syntax (pipes, `&&`, variables) stays with the shell.
-    if (!parsed?.name || /[|&;<>$`]/.test(line)) return false;
-    const pkg = (await packages()).find((p) => p.bins.some((b) => b.name === parsed.name));
+    // Shell syntax (pipes, `&&`, variables, globs, `~`, braces, `%VAR%`…) stays with the shell.
+    if (!parsed?.name || SHELL_SYNTAX.test(line)) return false;
+    const pkg = (await packages()).find((p) => runnableBins(parsed.runner, p).some((b) => b.name === parsed.name));
     if (!pkg) return false;
     const args = parseArgs(parsed.rest, usePlatform.getState().os === "windows");
     await executeAction("run.runConfig", execConfig(parsed.runner, parsed.name, args, pkg));
     return true;
   },
   watch(onChange) {
-    // A new popup reads the disk again: packages may have been installed since.
-    cache = null;
     listeners.add(onChange);
     return () => listeners.delete(onChange);
   },
 };
+
+const AFFECTS_BINS = /(?:^|\/)(?:node_modules|package\.json|\.yarnrc\.yml)(?:\/|$)/;
+
+/** Drops the cache when installs or manifests change (`node_modules` is excluded, so it reports as a folder). */
+export function watchPackageBinsChanges(): () => void {
+  const changed = (paths: readonly string[]) => {
+    if (paths.some((p) => AFFECTS_BINS.test(slash(p)))) clearPackageBinsCache();
+  };
+  const disposers = [
+    onIdeEvent("fsChanged", (e) => changed([...e.created, ...e.modified, ...e.removed])),
+    onIdeEvent("excludedDirsChanged", (e) => changed(e.dirs)),
+  ];
+  return () => disposers.forEach((d) => d());
+}

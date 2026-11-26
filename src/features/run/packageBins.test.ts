@@ -4,38 +4,54 @@ import { commands, type FileEntry, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { provideEditorService, type EditorService } from "@/workbench/contributions";
 import {
+  clearPackageBinsCache,
   declaredBins,
   execConfig,
   execItems,
   loadPackages,
   packageBinsRunAnything,
   parseExecLine,
+  watchPackageBinsChanges,
 } from "./packageBins";
 import { useRun } from "./store";
 
-// A pnpm-less hoisted workspace: the root and `packages/web`.
+const events = vi.hoisted(() => new Map<string, (e: unknown) => void>());
+vi.mock("@/platform/ipc", async (original) => ({
+  ...(await original<typeof import("@/platform/ipc")>()),
+  onIdeEvent: vi.fn((type: string, handler: (e: unknown) => void) => {
+    events.set(type, handler);
+    return () => events.delete(type);
+  }),
+}));
+
+// A hoisted workspace: the root and `packages/web`.
 const FILES: Record<string, unknown> = {
   "/p/package.json": { name: "mono", devDependencies: { eslint: "9" } },
   "/p/node_modules/eslint/package.json": { bin: { eslint: "bin/eslint.js" } },
   "/p/node_modules/@prisma/cli/package.json": { bin: "build/index.js" },
   "/p/packages/web/package.json": { name: "web", dependencies: { "@prisma/cli": "5", "left-pad": "1" } },
 };
-const BIN_DIRS: Record<string, string[]> = {
-  "/p/node_modules/.bin": ["eslint", "eslint.cmd", "eslint.ps1", "tsc", "cli"],
-  "/p/packages/web/node_modules/.bin": ["vite"],
+const DIRS: Record<string, string[]> = {
+  "/p/node_modules": [".bin", "eslint", "@prisma"],
+  "/p/node_modules/@prisma": ["cli"],
+  // `gone` is a dangling link left by an uninstalled package.
+  "/p/node_modules/.bin": ["eslint", "eslint.cmd", "eslint.ps1", "tsc", "cli", "gone"],
+  "/p/packages/web/node_modules": [".bin"],
+  "/p/packages/web/node_modules/.bin": ["vite", "vite.bunx"],
 };
 const ok = <T>(data: T) => ({ status: "ok" as const, data });
 const missing = { status: "error" as const, error: { kind: "notFound", message: "missing" } as never };
-const entry = (name: string) => ({ name, kind: "file" }) as FileEntry;
+const entry = (name: string) => ({ name, kind: "symlink", targetKind: name === "gone" ? null : "file" }) as FileEntry;
 const webConfig = { id: "npm:web:dev", kind: "npm", detected: true, cwd: "packages/web" } as RunConfig;
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  clearPackageBinsCache();
   vi.spyOn(commands, "fsReadText").mockImplementation(async (path) =>
     path in FILES ? ok(JSON.stringify(FILES[path])) : missing,
   );
   vi.spyOn(commands, "fsReadDir").mockImplementation(async (path) =>
-    path in BIN_DIRS ? ok(BIN_DIRS[path]!.map(entry)) : missing,
+    path in DIRS ? ok(DIRS[path]!.map(entry)) : missing,
   );
 });
 
@@ -72,7 +88,49 @@ describe("package executables", () => {
     ]);
     // A root file puts the root package first.
     expect((await loadPackages("/p", "/p/README.md", [webConfig])).map((p) => p.dir)).toEqual(["", "packages/web"]);
-    expect(commands.fsReadDir).not.toHaveBeenCalledWith(expect.not.stringMatching(/node_modules\/\.bin$/));
+    // An absent dependency (`left-pad`) costs no manifest read.
+    expect(commands.fsReadText).not.toHaveBeenCalledWith(expect.stringContaining("left-pad"));
+  });
+
+  it("reads the disk once until something under node_modules or a package.json changes", async () => {
+    const dispose = watchPackageBinsChanges();
+    await loadPackages("/p", "/p/packages/web/src/main.ts", [webConfig]);
+    const reads = () =>
+      vi.mocked(commands.fsReadDir).mock.calls.length + vi.mocked(commands.fsReadText).mock.calls.length;
+    const first = reads();
+    await loadPackages("/p", "/p/README.md", [webConfig]);
+    expect(reads()).toBe(first);
+    events.get("fsChanged")!({ created: ["/p/src/a.ts"], modified: [], removed: [] });
+    await loadPackages("/p", "/p/README.md", [webConfig]);
+    expect(reads()).toBe(first);
+    events.get("excludedDirsChanged")!({ dirs: ["/p/node_modules"] });
+    await loadPackages("/p", "/p/README.md", [webConfig]);
+    expect(reads()).toBeGreaterThan(first);
+    dispose();
+  });
+
+  it("offers Yarn 2+ only the package's direct dependencies' executables", async () => {
+    FILES["/p/.yarnrc.yml"] = "nodeLinker: node-modules";
+    try {
+      const packages = await loadPackages("/p", "/p/packages/web/src/main.ts", [webConfig]);
+      expect(execItems("yarn", packages).map((i) => [i.label, i.detail])).toEqual([
+        ["yarn cli", "@prisma/cli · web"],
+        ["yarn eslint", "mono"],
+      ]);
+      expect(execItems("npx", packages)).toHaveLength(7);
+    } finally {
+      delete FILES["/p/.yarnrc.yml"];
+    }
+  });
+
+  it("keeps a member folder that starts with a dot", async () => {
+    FILES["/p/.storybook/package.json"] = { name: "sb" };
+    try {
+      const dot = { ...webConfig, cwd: ".storybook" };
+      expect((await loadPackages("/p", null, [dot])).map((p) => p.dir)).toEqual(["", ".storybook"]);
+    } finally {
+      delete FILES["/p/.storybook/package.json"];
+    }
   });
 
   it("filters by the typed name and completes with a trailing space", async () => {
@@ -131,7 +189,18 @@ describe("package executables", () => {
     );
     expect(await packageBinsRunAnything.execute!("npx create-vite app")).toBe(false);
     expect(await packageBinsRunAnything.execute!("yarn install")).toBe(false);
-    expect(await packageBinsRunAnything.execute!("npx eslint . && echo done")).toBe(false);
+    const shellLines = [
+      "npx eslint . && echo done",
+      "npx tsc src/*.ts",
+      "npx vite ~/site",
+      "npx vite {a,b}",
+      "npx vite (x)",
+      "npx vite %PORT%",
+      "npx vite $PORT",
+    ];
+    expect(await Promise.all(shellLines.map((l) => packageBinsRunAnything.execute!(l)))).toEqual(
+      shellLines.map(() => false),
+    );
     expect(run).toHaveBeenCalledTimes(1);
     unwatch();
   });
