@@ -28,7 +28,7 @@ Inlay hints show parameter names at literal arguments, inferred variable types a
 
 ### Project-wide type errors
 
-The language server checks open files only. To keep the type errors of the whole project in the Problems tool window, turn on **TypeScript Project Errors (tsc --watch)** in the Problems tool window's ⋮ menu (off by default, saved in the project settings). The IDE then runs the project's own `node_modules/.bin/tsc --noEmit --watch` for each `tsconfig.json` that no other one references (`tsc -b --watch` for a solution with project references, which writes its referenced projects' outputs as `tsc -b` does) and replaces the errors after every compilation. Files open in an editor show the language server's errors instead. Nothing runs without a local `typescript` or in Restricted Mode.
+The language server checks open files only. To keep the type errors of the whole project in the Problems tool window, turn on **TypeScript Project Errors (tsc --watch)** in the Problems tool window's ⋮ menu (off by default, saved in the project settings). The IDE then runs the project's own `node_modules/.bin/tsc --noEmit --watch` for each `tsconfig.json` that no other one references (`tsc -b --watch` for a solution with project references) and replaces the errors after every compilation. It never writes into the project: outputs and `.tsbuildinfo` files go to a temporary folder. Configurations in folders that are ignored (`.gitignore`), excluded, hidden, or named `fixtures`, `examples` or `testdata` are skipped. Files open in an editor show the language server's errors instead, and an error that Build also reported is listed once. Nothing runs without a local `typescript` or in Restricted Mode.
 
 ### TypeScript version
 

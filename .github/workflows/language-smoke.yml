@@ -283,6 +283,10 @@ jobs:
       # The binaries from the build job, run from the crate directory as `cargo test` does.
       - working-directory: crates/ide-host
         run: ../../smoke-bin/language_smoke --ignored --exact ${{ matrix.language }}
+      # Problems › TypeScript Project Errors runs the project's own tsc: the global install stands in.
+      - if: matrix.language == 'typescript'
+        working-directory: crates/ide-host
+        run: ../../smoke-bin/language_smoke --ignored --exact typescript_project_errors
       - if: matrix.language == 'java'
         working-directory: crates/ide-host
         run: ../../smoke-bin/project_smoke --ignored --exact maven_sync jdk maven_launch_classpath_uses_the_runner_jdk_classifier
