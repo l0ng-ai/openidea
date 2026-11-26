@@ -12,7 +12,7 @@ import { create } from "zustand";
 import { setContext } from "@/platform/context";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { isSameOrInside } from "@/platform/paths";
-import { basename, dirname, useProject } from "@/platform/project";
+import { basename, dirname, relativePath, useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
   _emitEditorEvent,
@@ -60,6 +60,7 @@ import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow, projectLocation } from "@/platform/remote";
 import { auxiliaryWindow } from "@/platform/auxWindow";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
+import { FILE_COLOR_NAMES, ownFileColor } from "@/platform/fileColors";
 import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
   activateTab,
@@ -2550,6 +2551,9 @@ export class EditorController implements SlotHost {
       { kind: "separator" },
       ...(path
         ? ([
+            ...(inProject && path !== project!.root
+              ? ([{ label: "File Color", submenu: fileColorMenuItems(path) }, { kind: "separator" }] as MenuItem[])
+              : []),
             {
               label: "Copy Path/Reference…",
               submenu: [
@@ -2636,6 +2640,26 @@ export class EditorController implements SlotHost {
           ]),
     ];
   }
+}
+
+/**
+ * File Color submenu of a file tab: the project view's File Color rows as action items carrying
+ * the path (features/project-tree owns the model and the titles), so both menus agree.
+ */
+function fileColorMenuItems(path: string): MenuItem[] {
+  const { project, settings } = useProject.getState();
+  const current = project ? ownFileColor(relativePath(project.root, path), false, settings)?.toLowerCase() : null;
+  return [
+    ...FILE_COLOR_NAMES.map((name): MenuItem => ({
+      kind: "action",
+      action: `file.${name}`,
+      arg: path,
+      checked: current === name,
+    })),
+    { kind: "separator" },
+    ...(current ? [{ kind: "action" as const, action: "file.clearColor", arg: path }] : []),
+    { kind: "action", action: "file.editColors" },
+  ];
 }
 
 /** Open In › for a file: Project View, Finder / Explorer / Files, associated app, Terminal. */

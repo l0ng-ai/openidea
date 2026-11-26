@@ -114,6 +114,8 @@ All folding commands are also in **Code › Folding**. Fold regions come from th
 
 Indentation and other style options are under **Settings › Editor › Code Style**, with a page per language. `.editorconfig` files in the project are read too.
 
+Java has an **Imports** tab for IntelliSort-style options: **Class count to use import with '\*'** switches to a wildcard import once that many classes of one package are used, and **Names count to use static import with '\*'** does the same for statically imported names (999 keeps single imports). Both are passed through to the Java language server, whose defaults are 5 and 3, as in IDEA.
+
 To format on every save, enable **Reformat code** (and optionally **Optimize imports**) in **Settings › Tools › Actions on Save**. Trailing spaces and the final line break on save are set in **Settings › Editor › General**, section **Save Files**.
 
 ## Tabs
@@ -145,17 +147,21 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 
 ## View options
 
-| Action                 | macOS | Windows / Linux |
-| ---------------------- | ----- | --------------- |
-| **Increase Font Size** | `⌥⇧.` | `Alt+Shift+.`   |
-| **Decrease Font Size** | `⌥⇧,` | `Alt+Shift+,`   |
-| **Scroll to Center**   | `⌃L`  | `Ctrl+M`        |
-| **Scroll Up**          | —     | `Ctrl+Up`       |
-| **Scroll Down**        | —     | `Ctrl+Down`     |
-| **Scroll to Top**      | —     | —               |
-| **Scroll to Bottom**   | —     | —               |
+| Action                                | macOS | Windows / Linux |
+| ------------------------------------- | ----- | --------------- |
+| **Increase Font Size**                | `⌥⇧.` | `Alt+Shift+.`   |
+| **Decrease Font Size**                | `⌥⇧,` | `Alt+Shift+,`   |
+| **Scroll to Center**                  | `⌃L`  | `Ctrl+M`        |
+| **Scroll Up**                         | —     | `Ctrl+Up`       |
+| **Scroll Down**                       | —     | `Ctrl+Down`     |
+| **Scroll Up and Move if Necessary**   | —     | —               |
+| **Scroll Down and Move if Necessary** | —     | —               |
+| **Move Up and Scroll**                | —     | —               |
+| **Move Down and Scroll**              | —     | —               |
+| **Scroll to Top**                     | —     | —               |
+| **Scroll to Bottom**                  | —     | —               |
 
-**Scroll Up** and **Scroll Down** move the view by one line and leave the caret where it is, even when it scrolls out of sight. **Scroll to Top** and **Scroll to Bottom** show the start and the end of the file; the caret stays where it is too. They have no default shortcut: run them from Find Action or assign one in **Settings › Keymap**.
+**Scroll Up** and **Scroll Down** move the view by one line and leave the caret where it is, even when it scrolls out of sight. **Scroll Up and Move if Necessary** and **Scroll Down and Move if Necessary** also move the view by one line, but bring a caret the view doesn't show to its first or last line. **Move Up and Scroll** and **Move Down and Scroll** move the caret one line and the view with it, so the caret stays in the same place on screen; their **with Selection** variants select as they go. **Scroll to Top** and **Scroll to Bottom** show the start and the end of the file; the caret stays where it is too. They have no default shortcut: run them from Find Action or assign one in **Settings › Keymap**.
 
 - **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
 - **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.

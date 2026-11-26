@@ -159,6 +159,10 @@ pub struct ColumnInfo {
     pub nullable: bool,
     pub default: Option<String>,
     pub primary_key: bool,
+    /// `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -174,6 +178,10 @@ pub struct IndexInfo {
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbTableDetails")]
 pub struct TableDetails {
+    /// The table's comment; `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
     pub columns: Vec<ColumnInfo>,
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKey>,
@@ -1123,11 +1131,18 @@ impl DbManager {
                 let nullable = flag(&it.next().flatten());
                 let default = it.next().flatten();
                 let primary_key = flag(&it.next().flatten());
-                Some(ColumnInfo { name, data_type, nullable, default, primary_key })
+                let comment = it.next().flatten().filter(|c| !c.is_empty());
+                Some(ColumnInfo { name, data_type, nullable, default, primary_key, comment })
             })
             .collect();
         if driver == DbDriver::Jdbc {
-            return Ok(TableDetails { columns, indexes: vec![], foreign_keys: vec![], triggers: vec![] });
+            return Ok(TableDetails {
+                comment: None,
+                columns,
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+            });
         }
         let mut indexes: Vec<IndexInfo> = Vec::new();
         for r in pool.rows(&sql::indexes(driver, schema, table), MAX_META_ROWS).await? {
@@ -1179,7 +1194,17 @@ impl DbManager {
                 Some(TriggerInfo { name, timing, events })
             })
             .collect();
-        Ok(TableDetails { columns, indexes, foreign_keys, triggers })
+        let comment = match sql::table_comment(driver, schema, table) {
+            Some(q) => pool.rows(&q, 1).await.map_or_else(
+                |e| {
+                    tracing::warn!("table comment: {}", e.message);
+                    None
+                },
+                |rows| rows.into_iter().next().and_then(|r| r.into_iter().next().flatten()).filter(|c| !c.is_empty()),
+            ),
+            None => None,
+        };
+        Ok(TableDetails { comment, columns, indexes, foreign_keys, triggers })
     }
 
     /// The object privileges granted on `table`; empty, without a query, on the engines

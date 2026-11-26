@@ -1674,6 +1674,8 @@
   "Status Bar Widget": "Status Bar Widget",
   "Show main toolbar": "Show main toolbar",
   "Navigation bar": "Navigation bar",
+  "Choose a symbol": "Choose a symbol",
+  "Choose Symbol…": "Choose Symbol…",
   "Don't show": "Don't show",
   "Don't Show": "Don't Show",
   "Show status bar": "Show status bar",
@@ -4149,6 +4151,13 @@
   "Run '{command}' in '{rel}' to install them.": "Run '{command}' in '{rel}' to install them.",
   "Run '{command}' to install them.": "Run '{command}' to install them.",
   "Install Node.js Dependencies": "Install Node.js Dependencies",
+  "Imports": "Imports",
+  "Class count to use import with '*'": "Class count to use import with '*'",
+  "Use a wildcard import once this many classes of one package are used (5 by default; 999 keeps single-class imports).": "Use a wildcard import once this many classes of one package are used (5 by default; 999 keeps single-class imports).",
+  "Class count to use import with *": "Class count to use import with *",
+  "Names count to use static import with '*'": "Names count to use static import with '*'",
+  "Use a wildcard static import once this many names are imported statically (3 by default; 999 keeps single imports).": "Use a wildcard static import once this many names are imported statically (3 by default; 999 keeps single imports).",
+  "Names count to use static import with *": "Names count to use static import with *",
   "Watch for changes": "Watch for changes",
   "Rerun Automatically": "Rerun Automatically",
   "Debug runs the tests once, without watching.": "Debug runs the tests once, without watching.",
@@ -4197,5 +4206,8 @@
   "Where Clause": "Where Clause",
   "SQL INSERT": "SQL INSERT",
   "SQL UPDATE": "SQL UPDATE",
-  "SQL DELETE": "SQL DELETE"
+  "SQL DELETE": "SQL DELETE",
+  "SVG editor layout": "SVG editor layout",
+  "Resize SVG preview": "Resize SVG preview",
+  "The SVG source is not valid.": "The SVG source is not valid."
 }

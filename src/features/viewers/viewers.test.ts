@@ -84,8 +84,13 @@ describe("file kinds", () => {
       component: () => null,
     });
     try {
-      expect((await resolveFileEditor("/p/icon.svg"))?.input.kind).toBe("image");
+      // SVG files open as text with the image viewer beside it; a plugin's wrapper wins over it.
+      expect(await resolveFileEditor("/p/icon.svg")).toBeNull();
+      expect(await resolveFileEditor("/p/logo.png").then((r) => r?.input.kind)).toBe("image");
       expect(await resolveFileEditor("/p/arch.diagram.svg")).toBeNull();
+      const wrappers = useTextEditorWrappers.getState().wrappers;
+      expect(textEditorWrapperFor(wrappers, "/p/icon.svg")?.id).toBe("viewers.svg");
+      expect(textEditorWrapperFor(wrappers, "/p/arch.diagram.svg")?.id).toBe("plugin.acme.diagram.canvas");
     } finally {
       offWrapper();
       offViewers();

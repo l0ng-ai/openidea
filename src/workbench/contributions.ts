@@ -706,6 +706,8 @@ export async function openFileExternally(path: string): Promise<boolean> {
 export interface TextEditorWrapperContribution {
   keepAlive?: boolean;
   id: string;
+  /** Yields to any other wrapper matching the file (a plugin's editor for `*.diagram.svg`). */
+  fallback?: boolean;
   matches(path: string): boolean;
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
   /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
@@ -733,8 +735,13 @@ export function textEditorWrapperFor(
   wrappers: ReadonlyMap<string, TextEditorWrapperContribution>,
   path: string,
 ): TextEditorWrapperContribution | undefined {
-  for (const w of wrappers.values()) if (w.matches(path)) return w;
-  return undefined;
+  let fallback: TextEditorWrapperContribution | undefined;
+  for (const w of wrappers.values()) {
+    if (!w.matches(path)) continue;
+    if (!w.fallback) return w;
+    fallback ??= w;
+  }
+  return fallback;
 }
 
 /**

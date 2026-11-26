@@ -81,10 +81,12 @@ import {
   cursorParagraphBackward,
   cursorParagraphForward,
   scrollDown,
+  scrollDownAndMove,
   scrollToBottom,
   scrollToCenter,
   scrollToTop,
   scrollUp,
+  scrollUpAndMove,
   selectCodeBlockEnd,
   selectCodeBlockStart,
   selectPageBottom,
@@ -95,7 +97,14 @@ import {
 } from "./cm/caretCommands";
 import { isOverwrite, toggleOverwrite } from "./cm/overwrite";
 import { isColumnMode, toggleColumnMode } from "./cm/columnMode";
-import { cloneCaretAbove, cloneCaretBelow } from "./cm/verticalMotion";
+import {
+  cloneCaretAbove,
+  cloneCaretBelow,
+  moveDownAndScroll,
+  moveDownAndScrollWithSelection,
+  moveUpAndScroll,
+  moveUpAndScrollWithSelection,
+} from "./cm/verticalMotion";
 import { pasteAsPlainText, pasteFromHistory, unwrapAtCaret } from "./extras";
 import { cyclicExpandWord } from "./wordCompletion";
 import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOffset } from "./copyReference";
@@ -1059,6 +1068,28 @@ export function registerEditorActions(): () => void {
     caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
     caret("editor.scrollUp", "Scroll Up", (v) => scrollUp(v), { category: "Editor Actions" }),
     caret("editor.scrollDown", "Scroll Down", (v) => scrollDown(v), { category: "Editor Actions" }),
+    caret("editor.scrollUpAndMove", "Scroll Up and Move if Necessary", (v) => scrollUpAndMove(v), {
+      category: "Editor Actions",
+    }),
+    caret("editor.scrollDownAndMove", "Scroll Down and Move if Necessary", (v) => scrollDownAndMove(v), {
+      category: "Editor Actions",
+    }),
+    caret("editor.moveUpAndScroll", "Move Up and Scroll", (v) => moveUpAndScroll(v), { category: "Editor Actions" }),
+    caret("editor.moveDownAndScroll", "Move Down and Scroll", (v) => moveDownAndScroll(v), {
+      category: "Editor Actions",
+    }),
+    caret(
+      "editor.moveUpAndScrollWithSelection",
+      "Move Up and Scroll with Selection",
+      (v) => moveUpAndScrollWithSelection(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.moveDownAndScrollWithSelection",
+      "Move Down and Scroll with Selection",
+      (v) => moveDownAndScrollWithSelection(v),
+      { category: "Editor Actions" },
+    ),
     caret("editor.scrollToTop", "Scroll to Top", (v) => scrollToTop(v), { category: "Editor Actions" }),
     caret("editor.scrollToBottom", "Scroll to Bottom", (v) => scrollToBottom(v), { category: "Editor Actions" }),
     caret("editor.moveToPageTop", "Move Caret to Page Top", (v) => cursorPageTop(v), { category: "Editor Actions" }),

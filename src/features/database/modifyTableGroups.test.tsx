@@ -43,7 +43,7 @@ const rows = (group: string) =>
     .queryAllByRole("option")
     .map((o) => o.textContent);
 
-afterEach(() => useDatabase.setState({ dialog: null, details: {} } as never));
+afterEach(() => useDatabase.setState({ dialog: null, details: {}, sources: [] } as never));
 
 describe("Modify Table's list (DataGrip)", () => {
   it("groups the columns, keys, foreign keys and indexes, and filters them by name or type", () => {
@@ -75,5 +75,38 @@ describe("Modify Table's list (DataGrip)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add Column" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Primary key" }));
     expect(rows("Keys")).toEqual(["PRIMARY KEY(id, column_2)"]);
+  });
+
+  it("reads and edits the table's and the columns' comments where the engine keeps them", () => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "pg", driver: "postgres" }],
+      details: {
+        [detailsKey("pg", "public", "orders")]: {
+          status: "ok",
+          value: {
+            comment: "Customer orders",
+            columns: [column("id", "integer", true), { ...column("note", "text"), comment: "Free text" }],
+            indexes: [],
+            foreignKeys: [],
+            triggers: [],
+          },
+        },
+      },
+    } as never);
+    openDialog({ kind: "modifyTable", id: "pg", schema: "public", table: "orders", focusColumn: "note" });
+    render(<ObjectDialogs />);
+    expect(screen.getByLabelText("Comment:")).toHaveProperty("value", "Customer orders");
+    expect(screen.getByLabelText("Column comment")).toHaveProperty("value", "Free text");
+    fireEvent.change(screen.getByLabelText("Column comment"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Comment:"), { target: { value: "Orders" } });
+    const preview = document.body.textContent ?? "";
+    expect(preview).toContain("comment on table public.orders is 'Orders';");
+    expect(preview).toContain("comment on column public.orders.note is null;");
+  });
+
+  it("has no comment fields on an engine without comments", () => {
+    open();
+    expect(screen.queryByLabelText("Comment:")).toBeNull();
+    expect(screen.queryByLabelText("Column comment")).toBeNull();
   });
 });

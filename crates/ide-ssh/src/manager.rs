@@ -152,6 +152,8 @@ impl SshManager {
         let config = self.config(id)?;
         let secret = self.secret(&config);
         let session = Arc::new(self.connect(id, &SshTarget::from(&config), secret.as_deref()).await?);
+        // The shared session carries the config's port forwards, restarted on every reconnect.
+        session.start_forwards().await;
         self.sessions.lock().insert(id.to_owned(), session.clone());
         Ok(session)
     }
