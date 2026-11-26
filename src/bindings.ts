@@ -337,6 +337,7 @@ export const commands = {
 	/**  Cucumber feature files and step definition files, for step navigation. */
 	cucumberSources: () => typedError<StepSource[], IdeError>(__TAURI_INVOKE("cucumber_sources")),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
+	dbApproveDucklakeSource: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_ducklake_source", { source })),
 	/**  Records the exact helper and destination reviewed in the local data-source dialog. */
 	dbApproveExternalTunnel: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_external_tunnel", { source })),
 	dbApproveJdbcSource: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_jdbc_source", { source })),
@@ -347,6 +348,7 @@ export const commands = {
 	/**  The query consoles of data source `id`; `create` adds the next one first. */
 	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
 	dbCreateDatabase: (id: string, template: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_create_database", { id, template, statement })),
+	dbCreateDucklake: (jdbcDriver: string, directory: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_create_ducklake", { jdbcDriver, directory })),
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
@@ -5145,6 +5147,7 @@ export type DataSource_Deserialize = {
 	properties?: DbProperty[],
 	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
 	snowflake?: DbSnowflake | null,
+	duckLake?: DbDuckLake_Deserialize | null,
 	/**
 	 *  Stored app-wide and listed in every project. Implied by the file it is read from,
 	 *  so not written to it.
@@ -5192,6 +5195,7 @@ export type DataSource_Serialize = {
 	properties: DbProperty[],
 	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
 	snowflake: DbSnowflake | null,
+	duckLake?: DbDuckLake_Serialize | null,
 	/**
 	 *  Stored app-wide and listed in every project. Implied by the file it is read from,
 	 *  so not written to it.
@@ -5295,6 +5299,29 @@ export type DbDriver = "sqlite" | "postgres" |
 "sqlServer" | "clickhouse" | 
 /**  Oracle Database (pure-Rust thin driver, no client library). */
 "oracle" | "snowflake" | "jdbc";
+
+/**  How to open an existing DuckLake catalog read-only through DuckDB. */
+export type DbDuckLake = DbDuckLake_Serialize | DbDuckLake_Deserialize;
+
+export type DbDuckLakeKind = "file" | "secret";
+
+/**  How to open an existing DuckLake catalog read-only through DuckDB. */
+export type DbDuckLake_Deserialize = {
+	kind: DbDuckLakeKind,
+	/**  A local catalog file or an existing DuckDB secret name. */
+	value: string,
+	/**  An existing local data directory overriding the catalog's data path. */
+	dataPath?: string | null,
+};
+
+/**  How to open an existing DuckLake catalog read-only through DuckDB. */
+export type DbDuckLake_Serialize = {
+	kind: DbDuckLakeKind,
+	/**  A local catalog file or an existing DuckDB secret name. */
+	value: string,
+	/**  An existing local data directory overriding the catalog's data path. */
+	dataPath?: string | null,
+};
 
 export type DbDumpContent = "all" | "schemaOnly" | "dataOnly";
 

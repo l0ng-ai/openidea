@@ -1,11 +1,133 @@
 use ide_core::{CancellationToken, IdeResult};
-use ide_db::{DataSource, DbDriver, DbJdbcDriver, DbManager, DbProperty, SortKey};
+use ide_db::{DataSource, DbDriver, DbDuckLake, DbDuckLakeKind, DbJdbcDriver, DbManager, DbProperty, SortKey};
 use std::{path::Path, sync::Arc};
 
 fn manager(dir: &Path) -> DbManager {
     let ssh = Arc::new(ide_ssh::SshManager::new(dir.join("ssh.json")));
     DbManager::new(dir.join("project"), dir.join("passwords.json"), dir.join("history.json"), ssh)
         .with_global_sources(dir.join("global"))
+}
+
+fn duck_lake_source(catalog: &str) -> DataSource {
+    DataSource {
+        id: "lake".into(),
+        name: "DuckLake".into(),
+        driver: DbDriver::Jdbc,
+        vendor: "duckdb".into(),
+        jdbc_driver: "duck".into(),
+        url: "jdbc:duckdb:".into(),
+        read_only: true,
+        duck_lake: Some(DbDuckLake { kind: DbDuckLakeKind::File, value: catalog.into(), data_path: None }),
+        ..Default::default()
+    }
+}
+
+fn duck_lake_driver(jar: String) -> DbJdbcDriver {
+    DbJdbcDriver {
+        id: "duck".into(),
+        name: "DuckDB".into(),
+        vendor: Some("duckdb".into()),
+        jars: vec![jar],
+        class_name: "org.duckdb.DuckDBDriver".into(),
+        url_template: "jdbc:duckdb:".into(),
+    }
+}
+
+#[tokio::test]
+async fn duck_lake_settings_are_validated_and_covered_by_project_approval() -> IdeResult<()> {
+    let tmp = tempfile::tempdir()?;
+    let jar = tmp.path().join("fixture.jar");
+    std::fs::write(&jar, [])?;
+    let db = manager(tmp.path());
+    let profile = duck_lake_driver(jar.display().to_string());
+    let source = duck_lake_source("lake/catalog.ducklake");
+    let mut other_profile = profile.clone();
+    other_profile.class_name = "test.NotDuckDB".into();
+    db.save_jdbc_driver(other_profile)?;
+    assert!(db.approve_ducklake_source(&source).is_err());
+    let directory = tmp.path().join("create");
+    assert!(db.create_ducklake("duck", directory.to_str().unwrap()).await.is_err());
+    assert!(!directory.exists());
+    db.save_jdbc_driver(profile)?;
+    assert!(db.approve_ducklake_source(&DataSource { duck_lake: None, ..source.clone() }).is_err());
+
+    let mut invalid_secret = source.clone();
+    invalid_secret.duck_lake =
+        Some(DbDuckLake { kind: DbDuckLakeKind::Secret, value: "key=value".into(), data_path: None });
+    let mut data_path = source.clone();
+    data_path.duck_lake.as_mut().unwrap().data_path = Some("s3://example/ducklake".into());
+    let mut scripted = source.clone();
+    scripted.options.startup_script = "CREATE TABLE t (n int)".into();
+    for invalid in [
+        invalid_secret,
+        data_path,
+        scripted,
+        DataSource { driver: DbDriver::Sqlite, ..source.clone() },
+        DataSource { url: "jdbc:duckdb:unrelated.duckdb".into(), ..source.clone() },
+        DataSource { read_only: false, ..source.clone() },
+        DataSource { save_password: true, ..source.clone() },
+        DataSource {
+            properties: vec![DbProperty { name: "access_mode".into(), value: "READ_WRITE".into() }],
+            ..source.clone()
+        },
+    ] {
+        assert!(db.save_sources(vec![invalid.clone()]).await.is_err());
+        assert!(db.approve_ducklake_source(&invalid).is_err());
+    }
+    assert!(db.sources()?.is_empty());
+
+    db.approve_ducklake_source(&DataSource { global: true, ..source.clone() })?;
+    db.save_sources(vec![source.clone()]).await?;
+    assert_eq!(db.source("lake")?, source);
+    let err = db.pool("lake").await.err().expect("global validation must not approve a project connection");
+    assert!(err.message.contains("Review this project"));
+    assert!(db.set_password("lake", Some("unused".into()), true).await.is_err());
+    assert!(db.test(&source, Some("unused".into()), None).await.is_err());
+    db.approve_ducklake_source(&source)?;
+    let mut changed = source;
+    changed.duck_lake.as_mut().unwrap().value = "another/catalog.ducklake".into();
+    db.save_sources(vec![changed]).await?;
+    let err = db.pool("lake").await.err().expect("new catalog path must be approved");
+    assert!(err.message.contains("Review this project"));
+    assert!(serde_json::from_value::<DbDuckLake>(serde_json::json!({"kind":"create", "value":"lake"})).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires DUCKDB_JDBC_JAR, DuckLake extension access, and Java 17+"]
+async fn duck_lake_creates_only_explicitly_and_reopens_read_only() -> IdeResult<()> {
+    let tmp = tempfile::tempdir()?;
+    let db = manager(tmp.path());
+    let jar = std::env::var("DUCKDB_JDBC_JAR").expect("DUCKDB_JDBC_JAR");
+    db.save_jdbc_driver(duck_lake_driver(jar))?;
+    let source = duck_lake_source("lake's files/catalog.ducklake");
+    let directory = tmp.path().join("project").join("lake's files");
+    let path = directory.to_str().unwrap();
+    db.save_sources(vec![source.clone()]).await?;
+    let err = db.test(&source, None, None).await.expect_err("Test must not create a missing catalog");
+    assert!(err.message.contains("does not exist"), "{}", err.message);
+    assert!(!directory.exists());
+    db.approve_ducklake_source(&source)?;
+    assert!(db.pool("lake").await.is_err());
+    assert!(!directory.exists());
+
+    db.create_ducklake("duck", path).await?;
+    assert!(directory.join("catalog.ducklake").is_file());
+    let err = db.create_ducklake("duck", path).await.expect_err("Create must reject an existing directory");
+    assert!(err.message.contains("already exists"), "{}", err.message);
+    assert!(db.test(&source, None, None).await?.contains("DuckDB"));
+
+    let cancel = CancellationToken::new();
+    let result = db
+        .execute("lake", "SELECT readonly FROM duckdb_databases() WHERE database_name = current_database()", 1, &cancel)
+        .await?;
+    assert_eq!(result.rows, [vec![Some("true".into())]]);
+    assert!(db.schemas("lake").await?.contains(&"main".into()));
+    assert!(db.tables("lake", "main").await?.is_empty());
+    let err = db.execute("lake", "CREATE TABLE main.rejected(id INTEGER)", 1, &cancel).await;
+    assert!(err.is_err(), "the attached catalog must be read-only");
+    db.disconnect("lake").await;
+    Ok(())
 }
 
 #[tokio::test]

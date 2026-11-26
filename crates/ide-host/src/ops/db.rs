@@ -34,6 +34,11 @@ pub enum ExecutionEvent {
 }
 
 #[command(trust = trusted)]
+pub fn db_approve_ducklake_source(host: &Host, window: &str, source: DataSource) -> IdeResult<()> {
+    host.project(window)?.db.approve_ducklake_source(&source)
+}
+
+#[command(trust = trusted)]
 pub fn db_approve_jdbc_source(host: &Host, window: &str, source: DataSource) -> IdeResult<()> {
     host.project(window)?.db.approve_jdbc_source(&source)
 }
@@ -73,6 +78,12 @@ pub async fn db_save_sources(host: &Host, window: &str, sources: Vec<DataSource>
     let db = host.project(window)?.db.clone();
     db.save_sources(sources).await?;
     sources_changed(host, window)
+}
+
+#[command(trust = trusted)]
+pub async fn db_create_ducklake(host: &Host, window: &str, jdbc_driver: String, directory: String) -> IdeResult<()> {
+    let db = host.project(window)?.db.clone();
+    db.create_ducklake(&jdbc_driver, &directory).await
 }
 
 #[command(trust = trusted)]
@@ -672,6 +683,7 @@ ide_command::domain!(
     db_console_path,
     db_consoles,
     db_create_database,
+    db_create_ducklake,
     db_database_catalog,
     db_databases,
     db_ddl,
@@ -684,6 +696,7 @@ ide_command::domain!(
     db_history,
     db_jdbc_driver_classes,
     db_jdbc_drivers,
+    db_approve_ducklake_source,
     db_approve_jdbc_source,
     db_save_jdbc_driver,
     db_remove_jdbc_driver,

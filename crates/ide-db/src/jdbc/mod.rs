@@ -2,6 +2,7 @@
 //! can run driver-specific initialization. A project source may connect only with the
 //! settings its user last accepted in the dialog; the approval lives outside the project.
 use crate::local_settings::persist_local;
+use crate::source::{DUCKDB_URL, DbDuckLakeKind, duck_lake_path};
 use crate::{DataSource, DbManager, QueryResult, ResultColumn};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ use tokio::sync::Mutex;
 use tokio::time::{Instant as Deadline, timeout_at};
 
 const LIMIT: usize = 16 * 1024 * 1024;
+const DUCKDB_CLASS: &str = "org.duckdb.DuckDBDriver";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -150,7 +152,10 @@ impl DbManager {
             &source.options,
         ))
         .map_err(|e| IdeError::internal(e.to_string()))?;
-        if self.jdbc_password_isolated(source) {
+        if let Some(lake) = &source.duck_lake {
+            settings.extend_from_slice(b"\0ducklake\0");
+            serde_json::to_writer(&mut settings, lake).map_err(|e| IdeError::internal(e.to_string()))?;
+        } else if self.jdbc_password_isolated(source) {
             settings.extend_from_slice(b"\0jdbc-password");
         }
         Ok((
@@ -164,8 +169,57 @@ impl DbManager {
         if source.driver != crate::DbDriver::Jdbc || source.plugin_owner.is_some() {
             return Err(IdeError::invalid("Expected a user-managed JDBC data source"));
         }
+        if source.duck_lake.is_some() {
+            return self.approve_ducklake_source(source);
+        }
+        self.record_jdbc_approval(source)
+    }
+
+    pub fn approve_ducklake_source(&self, source: &DataSource) -> IdeResult<()> {
+        if source.duck_lake.is_none() {
+            return Err(IdeError::invalid("Expected a DuckLake data source"));
+        }
+        source.validate_duck_lake()?;
+        self.duck_lake_driver(&source.jdbc_driver)?.validate()?;
+        if source.global {
+            return Ok(());
+        }
+        self.record_jdbc_approval(source)
+    }
+
+    fn record_jdbc_approval(&self, source: &DataSource) -> IdeResult<()> {
         let (path, fingerprint) = self.jdbc_approval(source)?;
         persist_local(&path, fingerprint.as_bytes())
+    }
+
+    fn jdbc_driver_for(&self, id: &str, vendor: &str) -> IdeResult<DbJdbcDriver> {
+        let driver = self
+            .jdbc_drivers()?
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| IdeError::invalid("Select an installed JDBC driver profile"))?;
+        if !vendor.is_empty() && driver.vendor.as_deref() != Some(vendor) {
+            return Err(IdeError::invalid("The JDBC driver profile is not associated with this data source type"));
+        }
+        Ok(driver)
+    }
+
+    fn duck_lake_driver(&self, id: &str) -> IdeResult<DbJdbcDriver> {
+        let driver = self.jdbc_driver_for(id, "duckdb")?;
+        if driver.class_name != DUCKDB_CLASS {
+            return Err(IdeError::invalid("Select a DuckDB driver profile with the official DuckDB JDBC driver class"));
+        }
+        Ok(driver)
+    }
+
+    /// Creates a lake in a new directory through a separate, disposable JDBC session.
+    pub async fn create_ducklake(&self, jdbc_driver: &str, directory: &str) -> IdeResult<()> {
+        duck_lake_path(directory, false)?;
+        let driver = self.duck_lake_driver(jdbc_driver)?;
+        let fields = duck_lake_fields("create", directory.to_owned(), "");
+        let pool = JdbcPool::open(driver, self.jdbc_registry()?.with_file_name("jdbc"), fields).await?;
+        pool.close().await;
+        Ok(())
     }
 
     pub(crate) async fn open_pool(
@@ -174,6 +228,7 @@ impl DbManager {
         password: Option<&str>,
         testing: bool,
     ) -> IdeResult<crate::Pool> {
+        source.validate_duck_lake()?;
         if source.driver != crate::DbDriver::Jdbc {
             return crate::Pool::connect(source, password, Some(&self.root)).await;
         }
@@ -188,19 +243,40 @@ impl DbManager {
                 ));
             }
         }
-        let driver = self
-            .jdbc_drivers()?
-            .into_iter()
-            .find(|d| d.id == source.jdbc_driver)
-            .ok_or_else(|| IdeError::invalid("Select an installed JDBC driver profile"))?;
-        if !source.vendor.is_empty() && driver.vendor.as_deref() != Some(source.vendor.as_str()) {
-            return Err(IdeError::invalid("The JDBC driver profile is not associated with this data source type"));
-        }
-        JdbcPool::connect(source, password, driver, self.jdbc_registry()?.with_file_name("jdbc"))
-            .await
-            .map(Box::new)
-            .map(crate::Pool::Jdbc)
+        let cache = self.jdbc_registry()?.with_file_name("jdbc");
+        let pool = if let Some(lake) = &source.duck_lake {
+            let driver = self.duck_lake_driver(&source.jdbc_driver)?;
+            let (mode, value) = match lake.kind {
+                DbDuckLakeKind::Secret => ("secret", lake.value.clone()),
+                DbDuckLakeKind::File => {
+                    let path = self.root.join(&lake.value);
+                    let value = path.to_str().ok_or_else(|| IdeError::invalid("Invalid DuckLake catalog file path"))?;
+                    duck_lake_path(value, false)?;
+                    ("file", value.to_owned())
+                }
+            };
+            let fields = duck_lake_fields(mode, value, lake.data_path.as_deref().unwrap_or_default());
+            JdbcPool::open(driver, cache, fields).await?
+        } else {
+            let driver = self.jdbc_driver_for(&source.jdbc_driver, &source.vendor)?;
+            JdbcPool::connect(source, password, driver, cache).await?
+        };
+        Ok(crate::Pool::Jdbc(Box::new(pool)))
     }
+}
+
+fn duck_lake_fields(mode: &str, value: String, data_path: &str) -> Vec<String> {
+    vec![
+        "openDuckLake".into(),
+        DUCKDB_CLASS.into(),
+        DUCKDB_URL.into(),
+        String::new(),
+        String::new(),
+        (mode != "create").to_string(),
+        mode.into(),
+        value,
+        data_path.to_owned(),
+    ]
 }
 
 struct Bridge {
@@ -375,10 +451,9 @@ impl JdbcPool {
         driver: DbJdbcDriver,
         cache: PathBuf,
     ) -> IdeResult<Self> {
-        driver.validate()?;
         let mut fields = vec![
             "open".to_string(),
-            driver.class_name,
+            driver.class_name.clone(),
             source.url.clone(),
             source.user.clone(),
             password.unwrap_or_default().to_owned(),
@@ -390,6 +465,11 @@ impl JdbcPool {
             }
             fields.extend([p.name.clone(), p.value.clone()]);
         }
+        Self::open(driver, cache, fields).await
+    }
+
+    async fn open(driver: DbJdbcDriver, cache: PathBuf, fields: Vec<String>) -> IdeResult<Self> {
+        driver.validate()?;
         let bridge = tokio::task::spawn_blocking(move || Bridge::start(&cache, &driver.jars))
             .await
             .map_err(|e| IdeError::internal(e.to_string()))??;
