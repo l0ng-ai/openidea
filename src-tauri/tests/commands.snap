@@ -18,6 +18,7 @@ agent_delete                                 trusted            project_host bin
 agent_entries                                always             project_host bindings async
 agent_external_sessions                      trusted            project_host bindings async
 agent_fork                                   trusted            project_host bindings async
+agent_fork_session                           trusted            project_host bindings async
 agent_grouped_changes                        trusted            project_host bindings async
 agent_hermes_profiles                        trusted            project_host bindings async
 agent_import_session                         trusted            project_host bindings async
@@ -495,7 +496,10 @@ plugin_read_intellij_theme                   always             desktop      bin
 plugin_reload                                outside_restricted desktop      bindings async
 plugin_revoke_net_host                       outside_restricted desktop      bindings async
 plugin_roll_back                             outside_restricted desktop      bindings async
+plugin_run_anything_run                      trusted            project_host bindings async
+plugin_run_anything_suggest                  trusted            project_host bindings async
 plugin_run_command                           trusted            project_host bindings async
+plugin_run_configuration_complete            trusted            project_host bindings async
 plugin_run_targets                           trusted            project_host bindings async
 plugin_search                                trusted            project_host bindings async
 plugin_secrets                               trusted            desktop      bindings async

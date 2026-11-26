@@ -1892,3 +1892,40 @@ fn workspace_roots_join_the_thread_roots() {
     apply_thread_config(&json!({ "cwd": "/w/api", "mcpServers": [] }), &mut request);
     assert!(request.get("runtimeWorkspaceRoots").is_none());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ephemeral_session_starts_an_ephemeral_thread() {
+    for ephemeral in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_string_lossy().into_owned();
+        let server = Arc::new(TrustServer {
+            cwd: cwd.clone(),
+            disabled: false,
+            other_project: false,
+            write_error: false,
+            overridden: false,
+            calls: Mutex::default(),
+        });
+        let client = Arc::new(Client::default());
+        let (ours, theirs) = tokio::io::duplex(1 << 16);
+        let (read, write) = tokio::io::split(theirs);
+        let native = Peer::connect_framed(read, write, server.clone(), Framing::Lines);
+        let acp = attach(client.clone(), |events| {
+            let (read, write) = tokio::io::split(ours);
+            Ok(Peer::connect_framed(read, write, events, Framing::Lines))
+        })
+        .unwrap();
+        request(&acp, "initialize", json!({})).await.unwrap();
+        let mut params = json!({"cwd": cwd, "mcpServers": []});
+        if ephemeral {
+            params["_meta"] = json!({"openidea": {"ephemeral": true}});
+        }
+        request(&acp, "session/new", params).await.unwrap();
+        let calls = server.calls.lock();
+        let (_, start) = calls.iter().find(|(m, _)| m == "thread/start").unwrap();
+        assert_eq!(start.get("ephemeral"), ephemeral.then_some(&Value::Bool(true)), "{start}");
+        drop(calls);
+        acp.kill();
+        native.kill();
+    }
+}

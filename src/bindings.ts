@@ -64,6 +64,11 @@ export const commands = {
 	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
 	/**  Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`). */
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
+	/**
+	 *  Forks a recorded external session into a new task: its first turn continues the recording
+	 *  as the agent's own fork, under an id the host chooses. `cwd` must be where it was recorded.
+	 */
+	agentForkSession: (provider: string, sessionId: string, cwd: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork_session", { provider, sessionId, cwd })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
 	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
@@ -1314,12 +1319,21 @@ export const commands = {
 	pluginRevokeNetHost: (id: string, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_revoke_net_host", { id, host })),
 	/**  Goes back to the version the last update of `id` replaced. */
 	pluginRollBack: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_roll_back", { id })),
+	/**
+	 *  Runs a Run Anything line starting with the plugin's `prefix` (API 1.18): whether
+	 *  the plugin claimed it.
+	 */
+	pluginRunAnythingRun: (pluginId: string, prefix: string, line: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_run_anything_run", { pluginId, prefix, line })),
+	/**  Run Anything entries of the plugin declaring `prefix` for the field's `text` (API 1.18). */
+	pluginRunAnythingSuggest: (pluginId: string, prefix: string, text: string) => typedError<RunAnythingItem[], IdeError>(__TAURI_INVOKE("plugin_run_anything_suggest", { pluginId, prefix, text })),
 	/**  Runs a plugin command in the context of this window's project and focused editor. */
 	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null, editor: {
 	path: string,
 	language: string,
 	selections: Range[],
 } | null, paths: string[] | null, settingsScope: "global" | "project" | null, commandChain: string[] | null, request: number | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain, request })),
+	/**  Completions for a field of a plugin's own run configuration (API 1.18). */
+	pluginRunConfigurationComplete: (configId: string, field: string, text: string, caret: number) => typedError<RunConfigCompletion[], IdeError>(__TAURI_INVOKE("plugin_run_configuration_complete", { configId, field, text, caret })),
 	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
 	/**
 	 *  One page of `plugin_id`'s results for its search `category`. Cancellable with
@@ -1588,7 +1602,9 @@ export const commands = {
 	 *  Edits go through the document layer as one patch per file, so open editors
 	 *  update live and undo the whole file's replacements in one step. Unsaved
 	 *  editor buffers are replaced in place and left unsaved; other open documents
-	 *  are saved, and files that were not open are opened transiently, saved and closed.
+	 *  are saved unless the file changed on disk meanwhile (then the replacement stays
+	 *  unsaved, as autosave does), and files that were not open are opened
+	 *  transiently, saved and closed.
 	 * 
 	 *  With `all_in_scope` (Replace All after the search hit its match limit) the
 	 *  scope is searched again without the limit and every match in it is replaced,
@@ -6909,7 +6925,9 @@ export type EventKind = "document-changed" | "websocket-ready" | "file-closed" |
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | 
 /**  A project was closed (or its window closed): the project root path. */
-"project-closed" | "scheduled";
+"project-closed" | 
+/**  Paths outside the project watched with `events.watch-paths` changed (API 1.18). */
+"watched-files-changed" | "scheduled";
 
 export type ExceptionClassBreakpoint = {
 	id: string,
@@ -10352,6 +10370,11 @@ export type NewAgentTask = {
 	 *  `!` command runs in it first.
 	 */
 	idle?: boolean,
+	/**
+	 *  A throwaway task (Generate Commit Message): it isn't saved, so it doesn't outlive a
+	 *  restart, and the agent keeps no session history of its own for it.
+	 */
+	ephemeral?: boolean,
 };
 
 /**  The approvals new agent tasks start with. */
@@ -11065,6 +11088,11 @@ export type PluginJavaAgent = {
 	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
+	/**
+	 *  The title of the executor the agent is bound to (API 1.18): "Run with <title>" and
+	 *  "Debug with <title>" launch with it; other launches leave it out.
+	 */
+	executor?: string | null,
 };
 
 /**
@@ -11496,6 +11524,8 @@ export type ProfileSpec =
  *  out when another one did.
  */
 { kind: "cpuProfiles"; dir: IpcPath; root: IpcPath } | 
+/**  One `.cpuprofile` the user opened (saved by `node --cpu-prof`, Chrome DevTools, CI). */
+{ kind: "cpuProfileFile"; path: IpcPath } | 
 /**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
  *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the
@@ -12424,6 +12454,14 @@ export type RubySettings = {
 	interpreter?: string,
 };
 
+/**  A Run Anything entry from a plugin's `run-anything-provider` export (API 1.18). */
+export type RunAnythingItem = {
+	label: string,
+	detail: string | null,
+	/**  The line Tab completes and Enter runs; `label` when absent. */
+	line: string | null,
+};
+
 /**  Snapshot and live output binding returned when reattaching to a running process. */
 export type RunAttach = RunAttach_Serialize | RunAttach_Deserialize;
 
@@ -12442,6 +12480,16 @@ export type RunAttach_Serialize = {
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
+
+/**  A completion for a field of a plugin's own run configuration (API 1.18). */
+export type RunConfigCompletion = {
+	label: string,
+	detail: string | null,
+	/**  Replaces the UTF-16 range `[replace_start, replace_end)` of the field's text. */
+	insert: string,
+	replaceStart: number,
+	replaceEnd: number,
+};
 
 export type RunConfig_Deserialize = {
 	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */
@@ -12541,6 +12589,11 @@ export type RunExtras_Deserialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -12591,6 +12644,11 @@ export type RunExtras_Serialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -14590,7 +14648,12 @@ export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged }
 /**  Problems of the window's files changed; plugins re-read `problems`. */
 { kind: "problemsChanged" } | 
 /**  A project closed (API 1.18); payload is the canonical absolute root path. */
-{ kind: "projectClosed"; value: string } | { kind: "scheduled" };
+{ kind: "projectClosed"; value: string } | 
+/**
+ *  Changes to paths outside the project watched with `events.watch-paths` (API 1.18);
+ *  `project` is the project the watch belongs to, `generation` is unset.
+ */
+{ kind: "watchedFilesChanged"; value: FilesChanged } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

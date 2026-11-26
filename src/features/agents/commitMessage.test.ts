@@ -392,6 +392,8 @@ describe("generateCommitMessage", () => {
       provider: "claude",
       config: [{ id: "model", value: "smart" }],
       isolation: "local",
+      // The agent keeps no history of it.
+      ephemeral: true,
     });
     expect(request.prompt.text).toContain(PATCH.trimEnd());
     expect(request.prompt.text).toContain("- feat: earlier");

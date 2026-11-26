@@ -304,6 +304,7 @@
   "menu.refactor.extractConstant": "Ввести константу…",
   "menu.refactor.extractField": "Ввести поле…",
   "menu.refactor.extractInterface": "Извлечь интерфейс…",
+  "menu.refactor.extractTypeAlias": "Извлечь псевдоним типа…",
   "menu.refactor.extractMethod": "Извлечь метод…",
   "menu.refactor.extractParameter": "Ввести параметр…",
   "menu.refactor.extractVariable": "Ввести переменную…",

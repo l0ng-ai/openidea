@@ -36,7 +36,7 @@ function useComparable(id: number): SelectOption[] {
     .sort((a, b) => a.createdMs - b.createdMs || a.id - b.id);
   return [
     { value: NO_COMPARISON, label: "No comparison" },
-    ...others.map((info) => ({ value: String(info.id), label: info.label })),
+    ...others.map((info) => ({ value: String(info.id), verbatim: true, label: info.label })),
   ];
 }
 
