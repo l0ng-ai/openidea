@@ -217,6 +217,61 @@ impl SecretStore for FileSecretStore {
     }
 }
 
+/// Plugin secrets in the OS credential store (Secret Service, Windows Credential
+/// Manager), like saved SSH and agent values. Without a credential store a value
+/// stays in the owner-only [`FileSecretStore`] file, which also still answers for
+/// values saved there by an older version until they are set again.
+pub struct CredentialSecretStore {
+    store: ide_ssh::secrets::SecretFile,
+    fallback: FileSecretStore,
+}
+
+impl CredentialSecretStore {
+    /// `dir`: the plugins' data directory (the index file and the fallback files live there).
+    pub fn new(dir: PathBuf) -> Self {
+        Self::with_store(ide_ssh::secrets::SecretFile::new(dir.join("plugin-secrets.json")), dir)
+    }
+
+    fn with_store(store: ide_ssh::secrets::SecretFile, dir: PathBuf) -> Self {
+        Self { store, fallback: FileSecretStore { dir } }
+    }
+
+    fn key(plugin: &str, name: &str) -> String {
+        format!("{plugin}/{name}")
+    }
+
+    /// Drops a value from the fallback file, writing it only when it held one.
+    fn forget_fallback(&self, plugin: &str, name: &str) -> Result<(), String> {
+        if self.fallback.get(plugin, name).is_none() {
+            return Ok(());
+        }
+        self.fallback.set(plugin, name, None)
+    }
+}
+
+impl SecretStore for CredentialSecretStore {
+    fn get(&self, plugin: &str, name: &str) -> Option<String> {
+        self.store.get(&Self::key(plugin, name)).or_else(|| self.fallback.get(plugin, name))
+    }
+
+    fn set(&self, plugin: &str, name: &str, value: Option<&str>) -> Result<(), String> {
+        let key = Self::key(plugin, name);
+        match value {
+            Some(v) => match self.store.set(&key, v) {
+                Ok(()) => self.forget_fallback(plugin, name),
+                Err(e) => {
+                    tracing::warn!("plugin secrets: {key} is kept in the plugin's data directory: {}", e.message);
+                    self.fallback.set(plugin, name, Some(v))
+                }
+            },
+            None => {
+                self.store.delete(&key);
+                self.forget_fallback(plugin, name)
+            }
+        }
+    }
+}
+
 /// Largest response body a plugin receives.
 const MAX_RESPONSE: usize = 16 << 20;
 /// Largest stdout / stderr kept from a process by default.
@@ -4208,6 +4263,67 @@ mod tests {
         secrets.set("acme.lint", "key", Some("after")).unwrap();
         assert_eq!(secrets.get("acme.lint", "key").as_deref(), Some("after"));
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+    }
+
+    /// Plugin secrets go to the credential store; a value an older version left in
+    /// the owner-only file keeps working until it is set again, and then leaves the file.
+    #[test]
+    fn plugin_secrets_go_to_the_credential_store() {
+        ide_ssh::secrets::testing::use_memory_store();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        FileSecretStore { dir: dir.clone() }.set("acme.lint", "old", Some("legacy-3f9a")).unwrap();
+        let secrets = CredentialSecretStore::new(dir.clone());
+        assert_eq!(secrets.get("acme.lint", "old").as_deref(), Some("legacy-3f9a"));
+
+        secrets.set("acme.lint", "token", Some("value-7c1e")).unwrap();
+        secrets.set("acme.lint", "old", Some("moved-5d2b")).unwrap();
+        let on_disk = ide_ssh::secrets::testing::files_containing(tmp.path(), "value-7c1e");
+        assert_eq!(on_disk, Vec::<PathBuf>::new());
+        assert_eq!(ide_ssh::secrets::testing::files_containing(tmp.path(), "legacy-3f9a"), Vec::<PathBuf>::new());
+        let again = CredentialSecretStore::new(dir);
+        assert_eq!(again.get("acme.lint", "token").as_deref(), Some("value-7c1e"));
+        assert_eq!(again.get("acme.lint", "old").as_deref(), Some("moved-5d2b"));
+        assert_eq!(again.get("other.plugin", "token"), None);
+
+        again.set("acme.lint", "token", None).unwrap();
+        assert_eq!(again.get("acme.lint", "token"), None);
+    }
+
+    /// Without a credential store a value stays in the owner-only file.
+    #[test]
+    fn plugin_secrets_without_a_credential_store_stay_in_the_file() {
+        struct NoStore;
+        impl ide_ssh::secrets::Vault for NoStore {
+            fn available(&self) -> bool {
+                false
+            }
+            fn get(&self, _: &str, _: &str) -> ide_ssh::secrets::StoreResult<String> {
+                Err(ide_ssh::secrets::StoreError::NoDefaultStore)
+            }
+            fn set(&self, _: &str, _: &str, _: &str) -> ide_ssh::secrets::StoreResult<()> {
+                Err(ide_ssh::secrets::StoreError::NoDefaultStore)
+            }
+            fn delete(&self, _: &str, _: &str) -> ide_ssh::secrets::StoreResult<()> {
+                Err(ide_ssh::secrets::StoreError::NoDefaultStore)
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        let store = ide_ssh::secrets::SecretFile::with_vault(
+            dir.join("plugin-secrets.json"),
+            |v| serde_json::from_value(v).ok(),
+            Arc::new(NoStore),
+        );
+        let secrets = CredentialSecretStore::with_store(store, dir.clone());
+        secrets.set("acme.lint", "token", Some("value-7c1e")).unwrap();
+        assert_eq!(
+            ide_ssh::secrets::testing::files_containing(tmp.path(), "value-7c1e"),
+            [dir.join("acme.lint").join("secrets.json")]
+        );
+        assert_eq!(secrets.get("acme.lint", "token").as_deref(), Some("value-7c1e"));
+        secrets.set("acme.lint", "token", None).unwrap();
+        assert_eq!(secrets.get("acme.lint", "token"), None);
     }
 
     #[cfg(unix)]
