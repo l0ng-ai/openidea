@@ -201,6 +201,12 @@ describe("languages settings", () => {
     expect(v.prettier).toMatchObject({ prefer: false, runOnSave: false });
   });
 
+  it("gives dprint opt-in settings without a language list", () => {
+    expect(validateLanguages({}).dprint).toEqual({ ...DEFAULT_LANGUAGES.prettier, languages: [] });
+    const v = validateLanguages({ dprint: { path: " ./bin/dprint ", prefer: true, runOnSave: true } });
+    expect(v.dprint).toMatchObject({ path: "./bin/dprint", languages: [], prefer: true, runOnSave: true });
+  });
+
   it("enables Ruff for Python by default and keeps its settings separate", () => {
     expect(validateLanguages({}).ruff).toMatchObject({
       path: "",
@@ -389,6 +395,7 @@ describe("language pages", () => {
       "Prettier",
       "oxfmt",
       "Biome",
+      "dprint",
       "Ruby",
       "Rust",
       "TypeScript",

@@ -15,6 +15,47 @@ const OXFMT_CONFIGS: [&str; 4] = [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.conf
 /// A Biome configuration, or Biome installed as a project dependency (it then uses its defaults).
 const BIOME_MARKERS: [&str; 3] = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome/package.json"];
 
+/// dprint's configuration files, and dprint installed as a project dependency.
+const DPRINT_MARKERS: [&str; 5] =
+    ["dprint.json", ".dprint.json", "dprint.jsonc", ".dprint.jsonc", "node_modules/dprint/package.json"];
+
+fn dprint_project(file: &Path) -> bool {
+    DPRINT_MARKERS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some())
+}
+
+/// `dprint editor-info` output by configuration file and its modification time.
+// ponytail: a configuration's `extends` files are not watched; editing one needs a change of the main file.
+type EditorInfoCache = std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, String)>>;
+static DPRINT_EDITOR_INFO: std::sync::LazyLock<EditorInfoCache> = std::sync::LazyLock::new(Default::default);
+
+/// Whether the dprint configuration found for `file` (from its folder, as dprint finds it) has a
+/// plugin for it.
+fn dprint_covers(tools: &Tools, custom: Option<&Path>, file: &Path) -> IdeResult<bool> {
+    let dir = file.parent().ok_or_else(|| IdeError::invalid("dprint: file has no directory"))?;
+    let config = DPRINT_MARKERS[..4]
+        .iter()
+        .filter_map(|name| formatter::find_up(file, Path::new(name)))
+        .max_by_key(|path| path.components().count());
+    let modified = config.as_ref().and_then(|c| std::fs::metadata(c).and_then(|m| m.modified()).ok());
+    let cached = config.as_ref().zip(modified).and_then(|(config, modified)| {
+        let cache = DPRINT_EDITOR_INFO.lock().unwrap_or_else(|e| e.into_inner());
+        cache.get(config).filter(|(at, _)| *at == modified).map(|(_, info)| info.clone())
+    });
+    let info = match cached {
+        Some(info) => info,
+        None => {
+            let mut command = tools.formatter_command("dprint", file, custom)?;
+            command.current_dir(dir);
+            let info = formatter::dprint_editor_info(command)?;
+            if let (Some(config), Some(modified)) = (config, modified) {
+                DPRINT_EDITOR_INFO.lock().unwrap_or_else(|e| e.into_inner()).insert(config, (modified, info.clone()));
+            }
+            info
+        }
+    };
+    formatter::dprint_covers(&info, file)
+}
+
 /// Reformat Code uses Biome below a Biome configuration or installation, unless the nearest
 /// configuration turns its formatter off (Biome lints, another tool formats).
 fn biome_formats(file: &Path) -> bool {
@@ -492,10 +533,38 @@ async fn provider_edits(
         }
         return Ok(Some(edits));
     }
-    let mut selected = external_tool(options.tool, language.as_ref(), &snap.path, &settings.languages)?;
+    // dprint formats what its configuration covers, before the language's own formatters.
+    let dprint = &settings.languages.dprint;
+    let forced_dprint = options.tool == Some(ExternalFormatter::Dprint);
+    let auto_dprint =
+        options.tool.is_none() && (dprint.prefer || dprint_project(&snap.path)) && project.require_trust().is_ok();
+    let mut selected = None;
+    if forced_dprint || auto_dprint {
+        host.require_trust(window)?;
+        let tools = Tools::new(&host.local_data_dir);
+        let custom = ide_sdk::apply::setting_path(&project.root, &dprint.path);
+        let path = snap.path.clone();
+        let covers = tokio::task::spawn_blocking(move || dprint_covers(&tools, custom.as_deref(), &path))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?;
+        match covers {
+            Ok(true) => selected = Some(ExternalFormatter::Dprint),
+            Ok(false) if forced_dprint => {
+                return Err(
+                    IdeError::invalid("The dprint configuration has no plugin for this file").with_tool("dprint")
+                );
+            }
+            Ok(false) => {}
+            Err(e) => return Err(e.with_tool("dprint")),
+        }
+    }
+    if selected.is_none() {
+        selected = external_tool(options.tool, language.as_ref(), &snap.path, &settings.languages)?;
+    }
     // Black is selected only when configured or preferred: the Ruff server's formatting doesn't replace it.
     if let Some(tool) = selected
         && options.tool.is_none()
+        && tool != ExternalFormatter::Dprint
         && tool != ExternalFormatter::Black
         && !settings.languages.formatter(tool).prefer
         && match doc {
@@ -519,9 +588,9 @@ async fn provider_edits(
             .map_err(|e| IdeError::internal(e.to_string()));
     };
     let tool_settings = settings.languages.formatter(selected);
-    // Black takes over from the language server in its projects, so Format on save runs it too.
-    let runs_on_save =
-        tool_settings.run_on_save || (selected == ExternalFormatter::Black && settings.editor.format_on_save);
+    // Black and dprint take over from the language server in their projects, so Format on save runs them too.
+    let runs_on_save = tool_settings.run_on_save
+        || (matches!(selected, ExternalFormatter::Black | ExternalFormatter::Dprint) && settings.editor.format_on_save);
     if options.on_save && !runs_on_save {
         return Ok(None);
     }
@@ -529,7 +598,16 @@ async fn provider_edits(
     if snap.read_only {
         return Err(IdeError::invalid("The file is read-only"));
     }
-    let config = language.and_then(|l| l.formatter).expect("external_tool selects languages with a formatter");
+    let config = language
+        .and_then(|l| l.formatter)
+        .or_else(|| {
+            (selected == ExternalFormatter::Dprint).then(|| ide_language::FormatterConfig {
+                tool: "dprint".into(),
+                parser: String::new(),
+                range: false,
+            })
+        })
+        .expect("external_tool selects languages with a formatter");
     let tool = selected.name();
     let name = formatter::display_name(tool);
     let mut custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
@@ -896,6 +974,57 @@ mod tests {
         assert!(!black_configured(&file));
         std::fs::write(repo.join("pkg/pyproject.toml"), "[tool.black]\n").unwrap();
         assert_eq!(black_pyproject(&file), Some(repo.join("pkg/pyproject.toml")));
+    }
+
+    #[test]
+    fn a_dprint_configuration_or_dependency_marks_a_dprint_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("web/src/app.ts");
+        assert!(!dprint_project(&file));
+        for marker in DPRINT_MARKERS {
+            let path = dir.path().join("web").join(marker);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{}").unwrap();
+            assert!(dprint_project(&file), "{marker}");
+            assert!(!dprint_project(&dir.path().join("api/main.ts")), "{marker}");
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dprint_coverage_comes_from_editor_info_cached_per_configuration() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let config = root.join("dprint.json");
+        std::fs::write(&config, "{}").unwrap();
+        // Shell builtins only: the command runs with the tools' empty PATH.
+        let info = r#"{"plugins":[{"fileExtensions":["ts"],"fileNames":["Dockerfile"]}]}"#;
+        let fake = root.join("fake-dprint");
+        let script = format!(
+            "#!/bin/sh\necho run >> \"$0.runs\"\n[ -f fail ] && {{ echo 'bad config' >&2; exit 1; }}\nprintf '%s' '{info}'\n"
+        );
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools::with_paths(root.join("tools"), Default::default(), ide_tools::platform::Platform::current());
+        let runs = || std::fs::read_to_string(root.join("fake-dprint.runs")).unwrap_or_default().lines().count();
+
+        assert!(dprint_covers(&tools, Some(&fake), &root.join("src/app.ts")).unwrap());
+        assert!(dprint_covers(&tools, Some(&fake), &root.join("src/Dockerfile")).unwrap());
+        // Not covered: the usual formatter takes the file.
+        assert!(!dprint_covers(&tools, Some(&fake), &root.join("src/main.py")).unwrap());
+        assert_eq!(runs(), 1);
+
+        // A changed configuration is read again, and its error is dprint's.
+        std::fs::write(root.join("src/fail"), "").unwrap();
+        let later = std::fs::metadata(&config).unwrap().modified().unwrap() + std::time::Duration::from_secs(5);
+        std::fs::File::options().write(true).open(&config).unwrap().set_modified(later).unwrap();
+        let error = dprint_covers(&tools, Some(&fake), &root.join("src/app.ts")).unwrap_err();
+        assert!(error.message.contains("bad config"), "{}", error.message);
+        assert_eq!(error.data, Some(ide_core::error::ErrorData::Tool { tool: "dprint".into(), missing: false }));
+        assert_eq!(runs(), 2);
     }
 
     #[test]

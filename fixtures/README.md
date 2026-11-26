@@ -22,6 +22,7 @@ something to show.
 | `tailwind-app/`  | Node 22+, pnpm/npm, Tailwind CSS 4, React                       | `pnpm dev`                          | —                    | —                                     | `flex` conflicting with `block` in `src/App.tsx`         |
 | `zig-app/`       | Zig 0.17                                                        | `zig build run`                     | `zig build test`     | —                                     | —                                                        |
 | `biome-app/`     | Node 22+, `@biomejs/biome` (`npm install`)                      | `npm start`                         | —                    | —                                     | `let` never reassigned, `==` and a duplicate CSS `color` (Biome) |
+| `dprint-app/`    | Node 22+, `dprint` (`npm install`)                              | `npm start`                         | —                    | —                                     | unformatted `src/index.ts` / `src/data.json` (dprint); `README.md` keeps Prettier |
 | `stylelint-app/` | Node 22+, `stylelint` (`npm install`)                           | —                                   | —                    | —                                     | long hex colour, unknown property, empty block, duplicate selector (Stylelint) |
 | `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
 
@@ -45,7 +46,7 @@ git init -q && git add -A && git commit -qm "initial"   # for the VCS checks
 ```
 
 Then open the folder with **File › Open…** (`⌘⇧⌥O`) or from the Welcome screen.
-For `ts-app` / `playwright-app` / `mocha-app` / `polyglot/web` run `pnpm install` first (`npm install` for `biome-app` and `stylelint-app`); for `python-app` create a
+For `ts-app` / `playwright-app` / `mocha-app` / `polyglot/web` run `pnpm install` first (`npm install` for `biome-app`, `dprint-app` and `stylelint-app`); for `python-app` create a
 venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`); for
 `php-app` run `composer install` (debugging it needs Xdebug in the PHP on `PATH`).
 

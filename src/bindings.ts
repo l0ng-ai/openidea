@@ -6968,11 +6968,11 @@ export type ExternalDiffSide = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff" | "black";
+export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "dprint" | "ruff" | "black";
 
-/**  An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Biome, dprint, Ruff, Black) and the languages it formats. */
 export type ExternalFormatterSettings = {
-	/**  Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH. */
+	/**  Empty path: project node_modules (Prettier/oxfmt/Biome/dprint), managed installation, then PATH. */
 	path?: string,
 	/**  Ruff only: directory containing its configuration, or a configuration file. */
 	configurationDirectory?: string,
@@ -9223,6 +9223,8 @@ export type LanguagesSettings = {
 	prettier?: ExternalFormatterSettings,
 	oxfmt?: ExternalFormatterSettings,
 	biome?: ExternalFormatterSettings,
+	/**  dprint formats every file its configuration covers: `languages` is unused. */
+	dprint?: ExternalFormatterSettings,
 	ruff?: ExternalFormatterSettings,
 	black?: ExternalFormatterSettings,
 	java?: JavaSettings,

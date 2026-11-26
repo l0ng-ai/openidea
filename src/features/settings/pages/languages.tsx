@@ -25,6 +25,7 @@ const PrettierPage = lazyPage("languages.prettier", () =>
 );
 const OxfmtPage = lazyPage("languages.oxfmt", () => import("../languages/FormatterPage").then((m) => m.OxfmtPage));
 const BiomePage = lazyPage("languages.biome", () => import("../languages/FormatterPage").then((m) => m.BiomePage));
+const DprintPage = lazyPage("languages.dprint", () => import("../languages/FormatterPage").then((m) => m.DprintPage));
 const DocstringsPage = lazyPage("python.docstrings", () =>
   import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
 );
@@ -225,6 +226,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 403.7,
     keywords: ["formatter", "linter", "biome", "biome.json", "format on save", "node_modules"],
     component: BiomePage,
+  },
+  {
+    id: "languages.dprint",
+    projectScope: true,
+    defaultScope: "project",
+    title: "dprint",
+    group: LANGUAGES_GROUP,
+    order: 403.8,
+    keywords: ["formatter", "dprint", "dprint.json", "format on save", "node_modules"],
+    component: DprintPage,
   },
   {
     id: "python.docstrings",

@@ -230,11 +230,15 @@ function editorAction(
   return { id, title, category, when: EDITOR_WHEN, run: withEditor(run), ...extra };
 }
 
-/** Whether saving a `language` file formats it: Format on save, or Run on save of an external formatter. */
+/**
+ * Whether saving a `language` file formats it: Format on save, or Run on save of an external
+ * formatter. dprint's covers any language its configuration does (the backend decides).
+ */
 export function formatsOnSave(settings: Settings | null, language: string): boolean {
-  const { prettier, oxfmt, biome, ruff, black } = validateLanguages(settings?.languages);
+  const { prettier, oxfmt, biome, dprint, ruff, black } = validateLanguages(settings?.languages);
   return (
     !!settings?.editor?.formatOnSave ||
+    dprint.runOnSave ||
     [prettier, oxfmt, biome, ruff, black].some(
       (formatter) => formatter.runOnSave && formatter.languages.includes(language),
     )
@@ -324,6 +328,13 @@ export function registerLspActions(): () => void {
       "Code",
       (v) => formatDocument(v, { explicit: true, tool: "biome" }),
       { keywords: ["format", "biome"] },
+    ),
+    editorAction(
+      "code.reformatWithDprint",
+      "Reformat with dprint",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "dprint" }),
+      { keywords: ["format", "dprint"] },
     ),
     editorAction(
       "code.reformatWithRuff",
