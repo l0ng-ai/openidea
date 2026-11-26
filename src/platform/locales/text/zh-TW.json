@@ -9362,5 +9362,7 @@
   "Allowed command pattern": "允許的命令模式",
   "Blocked command pattern": "封鎖的命令模式",
   "Mode applies to": "模式作用範圍",
+  "Catalog browsing requires a DuckDB data source": "瀏覽目錄需要 DuckDB 資料來源",
+  "View Data": "檢視資料",
   "Allow all optional permissions": "允許全部可選權限"
 }

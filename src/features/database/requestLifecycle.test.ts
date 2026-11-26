@@ -11,6 +11,7 @@ const backend = vi.hoisted(() => ({
   tables: vi.fn(),
   objects: vi.fn(),
   details: vi.fn(),
+  catalogDetails: vi.fn(),
   connect: vi.fn(),
   disconnect: vi.fn(),
   completion: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbTables: backend.tables,
       dbSchemaObjects: backend.objects,
       dbTableDetails: backend.details,
+      dbCatalogTableDetails: backend.catalogDetails,
       dbConnect: backend.connect,
       dbDisconnect: backend.disconnect,
       dbCompletion: backend.completion,
@@ -66,6 +68,9 @@ import {
   renameSource,
   revealInTree,
   saveSource,
+  schemasKey,
+  tablesKey,
+  detailsKey,
   runSql,
   executeConsole,
   useDatabase,
@@ -159,6 +164,45 @@ beforeEach(() => {
 afterEach(() => {
   useProject.setState(initialProject, true);
   useDatabase.setState(initial, true);
+});
+
+it("loads distinct DuckDB catalog metadata on one source and discards detached entries on refresh", async () => {
+  const duck: DataSource = { id: "duck", name: "DuckDB", driver: "jdbc", vendor: "duckdb" };
+  const catalog = "other.db:archive/one";
+  const schema = "main";
+  const table = "items";
+  useDatabase.setState({ sources: [duck], loaded: true, connected: new Set(["duck"]) });
+  backend.databases.mockResolvedValue(ok({ current: "memory", names: ["memory", catalog] }));
+  backend.catalog.mockImplementation(async (_id, name) =>
+    ok([{ name: schema, tables: [{ name: table, kind: name === catalog ? "view" : "table" }] }]),
+  );
+  backend.catalogDetails.mockResolvedValue(ok({ columns: [], indexes: [], foreignKeys: [], triggers: [] }));
+
+  await loadDatabases("duck");
+  await loadSchemas("duck", "memory");
+  await loadSchemas("duck", catalog);
+  await loadDetails("duck", schema, table, catalog);
+  expect(backend.catalog).toHaveBeenCalledWith("duck", "memory");
+  expect(backend.catalog).toHaveBeenCalledWith("duck", catalog);
+  expect(backend.catalogDetails).toHaveBeenCalledWith("duck", catalog, schema, table);
+  expect(backend.details).not.toHaveBeenCalled();
+  expect(useDatabase.getState().tables[tablesKey("duck", schema, "memory")]).toEqual({
+    status: "ok",
+    value: [{ name: table, kind: "table" }],
+  });
+  expect(useDatabase.getState().tables[tablesKey("duck", schema, catalog)]).toEqual({
+    status: "ok",
+    value: [{ name: table, kind: "view" }],
+  });
+
+  backend.catalog.mockClear();
+  backend.databases.mockResolvedValue(ok({ current: "memory", names: ["memory"] }));
+  await refresh("duck");
+  expect(backend.catalog.mock.calls).toEqual([["duck", "memory"]]);
+  expect(useDatabase.getState().schemas[schemasKey("duck", catalog)]).toBeUndefined();
+  expect(useDatabase.getState().tables[tablesKey("duck", schema, catalog)]).toBeUndefined();
+  expect(useDatabase.getState().details[detailsKey("duck", schema, table, catalog)]).toBeUndefined();
+  expect([...useDatabase.getState().connected]).toEqual(["duck"]);
 });
 
 it("completes live DuckDB attachments through the source and refreshes after session commands", async () => {

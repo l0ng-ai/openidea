@@ -25,6 +25,7 @@ export interface Span {
 
 export interface Resolved extends Span {
   symbol: SqlSymbol | null;
+  catalogTable?: { catalog: string; schema: string; table: string };
   /** Set when the name should resolve but doesn't. */
   problem?: string;
 }
@@ -180,7 +181,11 @@ export class SqlResolver {
         // Table functions (`generate_series(1, 3)`), `DROP TABLE IF EXISTS`.
         if (isP(next, "(") && !isIntoTarget(toks, i)) return null;
         if (t.kind === "word" && (t.upper === "IF" || t.upper === "ONLY" || t.upper === "LATERAL")) return null;
-        if (this.driver === "duckdb" && qualifier && qualifier.length > 1) return { ...span, symbol: null };
+        if (this.driver === "duckdb" && qualifier && qualifier.length > 1) {
+          const catalogTable =
+            qualifier.length === 2 ? { catalog: qualifier[0]!, schema: qualifier[1]!, table: name } : undefined;
+          return { ...span, symbol: null, catalogTable };
+        }
         const schema = qualifier?.at(-1) ?? null;
         const cte = schema ? undefined : a.ctes.find((c) => eq(c.name, name));
         if (cte) return { ...span, symbol: { kind: "cte", name: cte.name, def: { from: cte.from, to: cte.to } } };

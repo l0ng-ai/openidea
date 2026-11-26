@@ -11,12 +11,21 @@ import { tableInput } from "./tableInput";
 const backend = vi.hoisted(() => ({
   driver: "clickhouse" as DbDriver,
   page: vi.fn(),
+  catalogPage: vi.fn(),
   applyEdits: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/platform/ipc")>();
-  return { ...actual, commands: { ...actual.commands, dbTablePage: backend.page, dbApplyEdits: backend.applyEdits } };
+  return {
+    ...actual,
+    commands: {
+      ...actual.commands,
+      dbTablePage: backend.page,
+      dbCatalogTablePage: backend.catalogPage,
+      dbApplyEdits: backend.applyEdits,
+    },
+  };
 });
 
 vi.mock("./store", () => ({
@@ -67,6 +76,30 @@ beforeEach(() => {
 });
 
 describe("table editor capabilities", () => {
+  it("routes a catalog preview to its explicit catalog on the base connection", async () => {
+    backend.driver = "jdbc";
+    backend.page.mockClear();
+    backend.catalogPage.mockResolvedValue({ status: "ok", data: page });
+    const catalog = 'other.db:"part';
+    await act(async () => {
+      render(<TableEditor input={tableInput("source", "main", "users", catalog)} />);
+    });
+    expect(await screen.findByRole("gridcell", { name: "Ann" })).toBeVisible();
+    expect(backend.catalogPage).toHaveBeenCalledWith(
+      expect.any(Number),
+      "source",
+      catalog,
+      "main",
+      "users",
+      null,
+      [],
+      0,
+      500,
+    );
+    expect(backend.page).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Add Row" })).toBeNull();
+  });
+
   it.each(["clickhouse", "jdbc"] as const)(
     "keeps %s rows read-only even when metadata marks a primary key",
     async (driver) => {

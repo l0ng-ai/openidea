@@ -1151,14 +1151,45 @@ impl DbManager {
             .collect())
     }
 
+    async fn duckdb_catalog_pool(&self, id: &str) -> IdeResult<Arc<Pool>> {
+        let source = self.source(id)?;
+        if id != source.id || source.driver != DbDriver::Jdbc || source.vendor != "duckdb" {
+            return Err(IdeError::invalid("Catalog browsing requires a DuckDB data source"));
+        }
+        self.pool(id).await
+    }
+
+    pub async fn catalog_table_details(
+        &self,
+        id: &str,
+        catalog: &str,
+        schema: &str,
+        table: &str,
+    ) -> IdeResult<TableDetails> {
+        let pool = self.duckdb_catalog_pool(id).await?;
+        Self::table_details_on(&pool, Some(catalog), schema, table).await
+    }
+
     pub async fn table_details(&self, id: &str, schema: &str, table: &str) -> IdeResult<TableDetails> {
         let pool = self.pool(id).await?;
-        if let Pool::Snowflake(p) = &*pool {
+        Self::table_details_on(&pool, None, schema, table).await
+    }
+
+    async fn table_details_on(
+        pool: &Pool,
+        catalog: Option<&str>,
+        schema: &str,
+        table: &str,
+    ) -> IdeResult<TableDetails> {
+        if let Pool::Snowflake(p) = pool {
             return snowflake::meta::table_details(p, schema, table).await;
         }
         let driver = pool.driver();
-        let rows = match &*pool {
-            Pool::Jdbc(p) => p.metadata(&["columns", schema, table]).await?,
+        let rows = match pool {
+            Pool::Jdbc(p) => match catalog {
+                Some(catalog) => p.metadata(&["columns", schema, table, catalog]).await?,
+                None => p.metadata(&["columns", schema, table]).await?,
+            },
             _ => pool.rows(&sql::columns(driver, schema, table), MAX_META_ROWS).await?,
         };
         let columns = rows
@@ -1855,18 +1886,54 @@ impl DbManager {
         limit: u64,
         cancel: &CancellationToken,
     ) -> IdeResult<TablePage> {
-        let details = self.table_details(id, schema, table).await?;
         let pool = self.pool(id).await?;
-        let mut result = if let Pool::Jdbc(p) = &*pool {
+        Self::table_page_on(&pool, None, schema, table, filter, sort, offset, limit, cancel).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn catalog_table_page(
+        &self,
+        id: &str,
+        catalog: &str,
+        schema: &str,
+        table: &str,
+        filter: Option<&str>,
+        sort: &[SortKey],
+        offset: u64,
+        limit: u64,
+        cancel: &CancellationToken,
+    ) -> IdeResult<TablePage> {
+        let pool = self.duckdb_catalog_pool(id).await?;
+        Self::table_page_on(&pool, Some(catalog), schema, table, filter, sort, offset, limit, cancel).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn table_page_on(
+        pool: &Pool,
+        catalog: Option<&str>,
+        schema: &str,
+        table: &str,
+        filter: Option<&str>,
+        sort: &[SortKey],
+        offset: u64,
+        limit: u64,
+        cancel: &CancellationToken,
+    ) -> IdeResult<TablePage> {
+        let details = Self::table_details_on(pool, catalog, schema, table).await?;
+        let mut result = if let Pool::Jdbc(p) = pool {
             let q = &p.identifier_quote;
-            let names = [schema, table].into_iter().chain(sort.iter().map(|k| k.column.as_str()));
+            let names =
+                catalog.into_iter().chain((catalog.is_some() || !schema.is_empty()).then_some(schema)).chain([table]);
             if q.is_empty()
-                && names.into_iter().any(|name| !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                && names
+                    .clone()
+                    .chain(sort.iter().map(|k| k.column.as_str()))
+                    .any(|name| !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
             {
                 return Err(IdeError::invalid("This JDBC driver cannot quote the selected identifier"));
             }
             let quote = |s: &str| format!("{q}{}{q}", s.replace(q, &format!("{q}{q}")));
-            let name = if schema.is_empty() { quote(table) } else { format!("{}.{}", quote(schema), quote(table)) };
+            let name = names.map(quote).collect::<Vec<_>>().join(".");
             let sql = sql::table_select(&name, filter, sort, quote);
             p.page(&sql, offset, limit, cancel).await?
         } else {

@@ -137,6 +137,14 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
     submenu: [...extra, act("db.jumpToConsole", n)],
   });
 
+  if ("catalog" in n && n.catalog !== undefined) {
+    return [
+      ...(t ? [act("db.editData", n, { label: "View Data" })] : []),
+      refresh,
+      { label: "Copy/Paste", submenu: [copyRef] },
+    ];
+  }
+
   if (driver === "jdbc" && n.kind !== "source") {
     return [
       newConsole,

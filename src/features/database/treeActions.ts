@@ -11,7 +11,7 @@ import { registerActions, type Action } from "@/platform/actions";
 import { editorService, notifications, showServiceView, toolWindowService } from "@/workbench/contributions";
 import { splitTarget } from "./model";
 import { nodeTarget, objectOf, schemaObjectOf, tableFolder, tableOf, type DbNode } from "./nodes";
-import { canDrop, canModifyTable, canRename, reference, scriptSql, type ScriptKind } from "./objects";
+import { canDrop, canModifyTable, canRename, quoteIdent, reference, scriptSql, type ScriptKind } from "./objects";
 import {
   DB_TOOL_WINDOW,
   OUTPUT_TAB,
@@ -95,8 +95,8 @@ function rowAnchor(): { x: number; y: number } {
   return r ? { x: r.left + 24, y: r.bottom + 2 } : { x: window.innerWidth / 2, y: window.innerHeight / 3 };
 }
 
-export function openTableData(id: string, schema: string, table: string) {
-  void editorService().openInput(tableInput(id, schema, table), { focus: true });
+export function openTableData(id: string, schema: string, table: string, catalog?: string) {
+  void editorService().openInput(tableInput(id, schema, table, catalog), { focus: true });
 }
 
 /** Tables of a schema, loading them if needed. */
@@ -122,6 +122,7 @@ async function showDiagram(nodes: DbNode[], popup: boolean): Promise<void> {
   const add = (id: string, schema: string, name: string) =>
     refs.set(detailsKey(id, schema, name), { id, schema, name });
   for (const n of nodes) {
+    if ("catalog" in n && n.catalog !== undefined) continue;
     if (n.kind === "table") add(n.id, n.schema, n.table.name);
     else if (
       n.kind === "schema" ||
@@ -287,10 +288,10 @@ function refreshNode(n: DbNode | null) {
   }
   const id = nodeTarget(n);
   if (!id) return;
-  if (n.kind === "schema" || n.kind === "folder") void loadTables(id, n.schema);
+  if (n.kind === "schema" || n.kind === "folder") void loadTables(id, n.schema, n.catalog);
   else if (tableOf(n)) {
     const t = tableOf(n)!;
-    void loadDetails(t.id, t.schema, t.table);
+    void loadDetails(t.id, t.schema, t.table, t.catalog);
   } else void refresh(id);
 }
 
@@ -368,7 +369,7 @@ export function registerDatabaseTreeActions(): () => void {
       run: ({ arg }) => {
         const n = nodeFrom(arg);
         const t = n && tableOf(n);
-        if (t) openTableData(t.id, t.schema, t.table);
+        if (t) openTableData(t.id, t.schema, t.table, t.catalog);
       },
     }),
     tree({
@@ -381,7 +382,7 @@ export function registerDatabaseTreeActions(): () => void {
         const o = n && schemaObjectOf(n);
         if (o) return void openObjectDdl(o.id, o.schema, o.kind, o.name);
         const t = n && tableOf(n);
-        if (t) void openDdl(t.id, t.schema, t.table);
+        if (t && t.catalog === undefined) void openDdl(t.id, t.schema, t.table);
       },
     }),
     tree({
@@ -595,7 +596,13 @@ export function registerDatabaseTreeActions(): () => void {
         if (n.kind === "source") return void copy(n.source.name ?? "", tx("Cannot copy the name"));
         if (n.kind === "database") return void copy(n.name, tx("Cannot copy the name"));
         const o = objectOf(n);
-        if (id && o) void copy(reference(driverOf(id), o), tx("Cannot copy the reference"));
+        if (!id || !o) return;
+        if ("catalog" in n && n.catalog !== undefined) {
+          const parts = n.kind === "schema" ? [n.catalog, n.schema] : [n.catalog, o.schema, o.name];
+          if (n.kind === "column") parts.push(n.column.name);
+          return void copy(parts.map((name) => quoteIdent("jdbc", name)).join("."), tx("Cannot copy the reference"));
+        }
+        void copy(reference(driverOf(id), o), tx("Cannot copy the reference"));
       },
     }),
     tree({

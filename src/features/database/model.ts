@@ -339,7 +339,14 @@ export function targetOf(id: string, database: string | null, current: string | 
 }
 
 /** Key of the Database tree node of database `name` of data source `id`. */
-export const databaseKey = (id: string, name: string) => `${id}/@${name}`;
+export const databaseKey = (id: string, name: string, catalog = false) =>
+  `${id}/@${catalog ? encodeURIComponent(name) : name}`;
+
+export const treeIdentifier = (name: string, catalog?: string) =>
+  catalog === undefined ? name : encodeURIComponent(name);
+
+export const schemaNodeKey = (id: string, schema: string, catalog?: string) =>
+  catalog === undefined ? `${id}/${schema}` : `${databaseKey(id, catalog, true)}/${treeIdentifier(schema, catalog)}`;
 
 /**
  * `expanded` without the Database tree nodes that show what target `id` loaded (a data source

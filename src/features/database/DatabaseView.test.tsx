@@ -4,7 +4,8 @@ import { DatabaseView } from "./DatabaseView";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { registerDatabaseTreeActions } from "./treeActions";
-import { tablesKey, useDatabase } from "./store";
+import { schemasKey, tablesKey, useDatabase } from "./store";
+import { databaseKey, schemaNodeKey, treeIdentifier } from "./model";
 import { tableInput } from "./tableInput";
 import { useEditorRegistry } from "@/editor/api";
 import { provideEditorService, provideToolWindowService, type EditorInput } from "@/workbench/contributions";
@@ -156,6 +157,58 @@ describe("Select Opened File", () => {
     await nextFrame();
     expect(useDatabase.getState().selectedNode?.key).toBe("pg/audit");
   });
+});
+
+it("opens and reveals distinct DuckDB tables when the catalog is their only difference", async () => {
+  const id = "duck";
+  const schema = "main";
+  const table = 'items/"quoted';
+  const catalogs = ["memory", "other.db:archive/one"];
+  const schemas = Object.fromEntries(
+    catalogs.map((catalog) => [schemasKey(id, catalog), { status: "ok" as const, value: [schema] }]),
+  );
+  const tables = Object.fromEntries(
+    catalogs.map((catalog) => [
+      tablesKey(id, schema, catalog),
+      { status: "ok" as const, value: [{ name: table, kind: "table" as const }] },
+    ]),
+  );
+  const openInput = vi.fn();
+  let active: EditorInput | null = null;
+  provideEditorService({ openInput, activeInput: () => active } as never);
+  provideToolWindowService({ show: vi.fn() } as never);
+  useDatabase.setState({
+    sources: [{ id, name: "DuckDB", driver: "jdbc", vendor: "duckdb" }],
+    databases: { duck: { status: "ok", value: { current: "memory", names: catalogs } } },
+    schemas,
+    tables,
+    details: {},
+    objects: {},
+    treeExpanded: new Set([
+      id,
+      ...catalogs.flatMap((catalog) => {
+        const key = schemaNodeKey(id, schema, catalog);
+        return [databaseKey(id, catalog, true), key, `${key}/tables`];
+      }),
+    ]),
+  });
+  render(<DatabaseView />);
+  const tree = within(screen.getByRole("tree", { name: "Data sources" }));
+  const entries = tree.getAllByText(table);
+  expect(entries).toHaveLength(2);
+  const first = tableInput(id, schema, table, catalogs[0]);
+  active = tableInput(id, schema, table, catalogs[1]);
+  fireEvent.doubleClick(entries[0]!);
+  expect(openInput).toHaveBeenNthCalledWith(1, first, { focus: true });
+  fireEvent.mouseDown(entries[1]!, { button: 0 });
+  await act(() => executeAction("db.editData"));
+  expect(openInput).toHaveBeenNthCalledWith(2, active, { focus: true });
+  expect(first.key).not.toBe(active.key);
+  await act(() => executeAction("db.selectOpened"));
+  await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  expect(useDatabase.getState().selectedNode?.key).toBe(
+    `${schemaNodeKey(id, schema, catalogs[1])}/tables/${treeIdentifier(table, catalogs[1])}`,
+  );
 });
 
 describe("Expand All", () => {

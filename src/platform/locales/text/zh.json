@@ -10530,6 +10530,8 @@
   "Blocked command pattern": "阻止的命令模式",
   "Mode applies to": "模式作用范围",
   "Could not load the frames: {0}": "无法加载栈帧：{0}",
+  "Catalog browsing requires a DuckDB data source": "浏览目录需要 DuckDB 数据源",
+  "View Data": "查看数据",
   "Allow all optional permissions": "允许全部可选权限",
   "Extract Embedded Images…": "提取嵌入的图片…",
   "The document changed or is no longer editable.": "文档已更改或无法再编辑。",

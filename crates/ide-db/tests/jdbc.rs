@@ -289,6 +289,69 @@ async fn duckdb_named_memory_lives_until_disconnect() -> IdeResult<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires DUCKDB_JDBC_JAR and a local Java 17+ runtime"]
+async fn duckdb_named_catalog_page_uses_the_source_session_and_exact_names() -> IdeResult<()> {
+    let tmp = tempfile::tempdir()?;
+    let db = manager(tmp.path());
+    register_duckdb(&db, Some("duckdb"))?;
+    db.save_sources(vec![DataSource {
+        id: "test".into(),
+        name: "DuckDB".into(),
+        driver: DbDriver::Jdbc,
+        vendor: "duckdb".into(),
+        global: true,
+        jdbc_driver: "duck".into(),
+        url: "jdbc:duckdb:".into(),
+        ..Default::default()
+    }])
+    .await?;
+
+    let stop = CancellationToken::new();
+    let file = tmp.path().join("attachment.duckdb");
+    let file = ide_db::sql::quote_literal(DbDriver::Jdbc, &file.to_string_lossy());
+    let catalog = r#"archive.db:with/"quote"#;
+    let schema = "some.schema_%";
+    let table = r#"same."table"#;
+    let quote = |name: &str| ide_db::sql::quote_ident(DbDriver::Jdbc, name);
+    let base_table = format!("memory.{}.{}", quote(schema), quote(table));
+    let attached_table = format!("{}.{}.{}", quote(catalog), quote(schema), quote(table));
+    for statement in [
+        "SET threads = 1".into(),
+        format!("ATTACH {file} AS {}", quote(catalog)),
+        format!("CREATE SCHEMA memory.{}", quote(schema)),
+        format!("CREATE SCHEMA {}.{}", quote(catalog), quote(schema)),
+        format!("CREATE TABLE {base_table} (base_only INTEGER PRIMARY KEY)"),
+        format!("CREATE TABLE {attached_table} (attached_only INTEGER PRIMARY KEY)"),
+        format!("INSERT INTO {base_table} VALUES (3)"),
+        format!("INSERT INTO {attached_table} VALUES (42), (41)"),
+    ] {
+        db.execute("test", &statement, 1, &stop).await?;
+    }
+
+    let details = db.catalog_table_details("test", catalog, schema, table).await?;
+    assert_eq!(details.columns.len(), 1);
+    assert_eq!(details.columns[0].name, "attached_only");
+    assert!(details.columns[0].primary_key);
+    let sort = [SortKey { column: "attached_only".into(), descending: true }];
+    let attached = db.catalog_table_page("test", catalog, schema, table, None, &sort, 0, 1, &stop).await?;
+    assert_eq!(attached.result.rows, [vec![Some("42".into())]]);
+    assert!(attached.result.has_more);
+    assert_eq!(db.connected(), ["test"]);
+
+    db.execute("test", &format!("USE {}.{}", quote(catalog), quote(schema)), 1, &stop).await?;
+    let initial = db.catalog_table_page("test", "memory", schema, table, None, &[], 0, 1, &stop).await?;
+    assert_eq!(initial.result.rows, [vec![Some("3".into())]]);
+    assert_eq!(initial.details.columns[0].name, "base_only");
+    assert_eq!(db.databases("test").await?.current, catalog);
+    db.execute("test", "USE memory", 1, &stop).await?;
+    db.execute("test", &format!("DETACH {}", quote(catalog)), 1, &stop).await?;
+    assert!(db.catalog_table_page("test", catalog, schema, table, None, &[], 0, 1, &stop).await.is_err());
+    assert_eq!(db.connected(), ["test"]);
+    db.disconnect("test").await;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "requires CLICKHOUSE_JDBC_CLASSPATH and a loopback ClickHouse fixture on CLICKHOUSE_JDBC_TEST_PORT"]
 async fn clickhouse_vendor_driver_reads_catalog_and_results() -> IdeResult<()> {
     let tmp = tempfile::tempdir()?;

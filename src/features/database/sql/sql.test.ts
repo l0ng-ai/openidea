@@ -192,6 +192,11 @@ describe("DuckDB SQL", () => {
     expect(labels(run("select o.| from main.orders o"), "column")).toContain("total");
     const sql = "select o.total from " + remote + " o";
     const resolver = new SqlResolver(sql, "duckdb", model);
+    expect(resolver.resolveAt(sql.indexOf(".orders") + 2)?.catalogTable).toEqual({
+      catalog: database,
+      schema: "main",
+      table: "orders",
+    });
     expect(resolver.problems()).toEqual([]);
     expect(resolver.resolveAt(sql.indexOf("total"))?.symbol).toBeNull();
     expect(resolver.resolveAt(sql.indexOf("orders"))?.symbol).toBeNull();

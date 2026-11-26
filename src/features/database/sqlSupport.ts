@@ -23,7 +23,7 @@ import { formatSql } from "./sql/format";
 import { editorPrefs, sqlCaseStyle } from "@/platform/editorSettings";
 import { SqlResolver, type SqlSymbol } from "./sql/resolve";
 import { useProject } from "@/platform/project";
-import { consoleSchema, consoleSource, revealInTree, sourceById, useDatabase } from "./store";
+import { consoleSchema, consoleSource, duckdbCatalogTree, revealInTree, sourceById, useDatabase } from "./store";
 
 /** Producer id of the console's diagnostics (Problems view, hover). */
 const INSPECTIONS = "sql-inspections";
@@ -114,9 +114,14 @@ function definition(path: string, sql: SqlText): ContributedDefinition {
     if (sql.at && !sql.at(view.state, pos)) return false;
     const r = resolver(path, view.state, sql).resolveAt(pos);
     const sym = r?.symbol;
+    const id = consoleSource(path);
+    if (r?.catalogTable && id && duckdbCatalogTree(sourceById(id))) {
+      const { catalog, schema, table } = r.catalogTable;
+      void revealInTree(id, schema, table, undefined, undefined, catalog);
+      return true;
+    }
     // Outside SQL names, other providers (the XML language server) may know the place.
     if (!sym && sql.at) return false;
-    const id = consoleSource(path);
     const reveal = (t: DbCompletionTable, column?: string) => {
       if (id) void revealInTree(id, t.schema, t.name, t.kind, column);
     };

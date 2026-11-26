@@ -46,7 +46,7 @@ import {
   connect,
   loadSchemas,
   loadDatabases,
-  listsDatabases,
+  listsTreeDatabases,
   sourceById,
   newConsole,
   openConsole,
@@ -237,7 +237,7 @@ export function activate(): () => void {
           const connected = await connect(id);
           if (!current()) return;
           if (!connected) throw new Error(tx("Database connection failed"));
-          if (listsDatabases(sourceById(id))) await loadDatabases(id);
+          if (listsTreeDatabases(sourceById(id))) await loadDatabases(id);
           else await loadSchemas(id);
         },
       },

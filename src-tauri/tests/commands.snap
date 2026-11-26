@@ -105,6 +105,8 @@ cucumber_sources                             trusted            desktop      bin
 db_apply_edits                               trusted            project_host bindings async
 db_approve_external_tunnel                   trusted            desktop      bindings async
 db_approve_jdbc_source                       trusted            project_host bindings sync
+db_catalog_table_details                     trusted            project_host bindings async
+db_catalog_table_page                        trusted            project_host bindings async
 db_completion                                trusted            project_host bindings async
 db_connect                                   trusted            project_host bindings async
 db_connected                                 trusted            project_host bindings sync
