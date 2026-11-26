@@ -1463,6 +1463,7 @@ export const commands = {
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
 	unity?: UnityProjectInfo | null,
+	unreal?: UnrealProjectInfo | null,
 } | null>("project_current"),
 	/**
 	 *  File › Rename Project…: the project's display name (title bar, recent
@@ -11626,6 +11627,7 @@ export type ProjectInfo_Deserialize = {
 	settings: Settings_Deserialize,
 	workspace?: Workspace_Deserialize | null,
 	unity?: UnityProjectInfo | null,
+	unreal?: UnrealProjectInfo | null,
 };
 
 export type ProjectInfo_Serialize = {
@@ -11637,6 +11639,7 @@ export type ProjectInfo_Serialize = {
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
 	unity?: UnityProjectInfo | null,
+	unreal?: UnrealProjectInfo | null,
 };
 
 /**  An interpreter another project uses: the project root and the SDK itself. */
@@ -14358,6 +14361,22 @@ export type UnityProjectInfo = {
 	/**  File names relative to the Unity root, in stable order. */
 	solutions: string[],
 	projects: string[],
+};
+
+/**  A located engine, shown so a project without run configurations says why. */
+export type UnrealEngine = {
+	/**  `5.8` for a launcher install, or the registry key a source build registered under. */
+	id: string,
+	/**  Absolute engine root. */
+	root: string,
+};
+
+export type UnrealProjectInfo = {
+	/**
+	 *  The engine the project builds against. `None` means none could be located, which is the
+	 *  only reason such a project offers no run configuration at all.
+	 */
+	engine: UnrealEngine | null,
 };
 
 /**  A requirement the project's interpreter does not satisfy. */

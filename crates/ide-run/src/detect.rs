@@ -84,11 +84,16 @@ pub(crate) fn detect_with_profiles(
         }
     }
     detect_projects(root, &["build.zig"], zig::detect, &mut out);
-    dotnet::detect(root, &mut out);
+    // A UE project's `.sln` lists the engine's own tool projects; expanding it would bury the
+    // run menu under dozens of `.NET Project` entries that cannot run from here.
+    if !ide_workspace::unreal::is_project(root) {
+        dotnet::detect(root, &mut out);
+    }
     detect_projects(root, &["Makefile", "makefile", "GNUmakefile"], detect_make, &mut out);
     detect_projects(root, &["justfile", "Justfile", ".justfile"], detect_just, &mut out);
     detect_godot(root, &mut out);
     detect_projects(root, &["pubspec.yaml"], detect_flutter, &mut out);
+    detect_unreal(root, &mut out);
     crate::external::detect(root, &mut out);
 
     let mut seen = HashSet::new();
@@ -1608,6 +1613,49 @@ pub(crate) fn just_recipes(src: &str) -> Vec<String> {
 
 // ---------------------------------------------------------------- godot
 
+// ---------------------------------------------------------------- unreal
+
+/// Unreal Engine projects (`.uproject`) run through the engine's editor executable, which reads
+/// its start-up mode from the command line: no flag is the editor, `-game` the game and `-server`
+/// a dedicated server. All three exist for every project, blueprint-only ones included, because
+/// the mode is decided at start-up rather than built.
+fn detect_unreal(root: &Path, out: &mut Vec<RunConfig>) {
+    detect_projects_matching(root, |dir| ide_workspace::unreal::project_file(dir).is_some(), detect_one_unreal, out);
+}
+
+/// One Unreal project: the editor, the game and a dedicated server, all run by the same
+/// `UnrealEditor.exe` and differing only in the flag.
+fn detect_one_unreal(root: &Path, out: &mut Vec<RunConfig>) {
+    let Some(info) = ide_workspace::unreal::detect(root) else { return };
+    // Detection already resolved the engine; a project without one offers nothing to run.
+    let Some(found) = info.engine.as_ref() else {
+        tracing::debug!("no Unreal Engine installation for {}", root.display());
+        return;
+    };
+    let engine =
+        ide_workspace::unreal::engine::EngineInstall { id: found.id.clone(), root: PathBuf::from(&found.root) };
+    let Some(project) = ide_workspace::unreal::project_file(root) else { return };
+    let editor = engine.editor().to_string_lossy().into_owned();
+    out.extend(unreal_configs(&project, &editor));
+}
+
+/// The editor, the game and a dedicated server: the three start-up modes the engine documents,
+/// all run by `UnrealEditor.exe` and differing only in the flag.
+fn unreal_configs(project: &Path, editor: &str) -> Vec<RunConfig> {
+    let project = project.to_string_lossy().into_owned();
+    [
+        ("unreal:editor", "Unreal Editor", None),
+        ("unreal:game", "Unreal Game", Some("-game")),
+        ("unreal:server", "Unreal Server", Some("-server")),
+    ]
+    .into_iter()
+    .map(|(id, name, flag)| {
+        let args: Vec<&str> = std::iter::once(project.as_str()).chain(flag).collect();
+        config(id.to_owned(), name, "unreal", editor, &args).debug("lldb-dap")
+    })
+    .collect()
+}
+
 // ---------------------------------------------------------------- rebar3 / mix
 
 /// rebar3 (Erlang): the shell with the applications started, the EUnit tests and, with
@@ -1688,5 +1736,25 @@ fn detect_just(root: &Path, out: &mut Vec<RunConfig>) {
             c = c.test();
         }
         out.push(c);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_unreal_project_offers_the_editor_the_game_and_a_dedicated_server() {
+        let configs = unreal_configs(Path::new("/p/Game.uproject"), "UE/UnrealEditor.exe");
+        let listed: Vec<(&str, &str)> = configs.iter().map(|c| (c.id.as_str(), c.name.as_str())).collect();
+        assert_eq!(
+            listed,
+            [("unreal:editor", "Unreal Editor"), ("unreal:game", "Unreal Game"), ("unreal:server", "Unreal Server"),]
+        );
+        assert_eq!(configs[0].args, ["/p/Game.uproject"]);
+        assert_eq!(configs[1].args, ["/p/Game.uproject", "-game"]);
+        assert_eq!(configs[2].args, ["/p/Game.uproject", "-server"]);
+        assert!(configs.iter().all(|c| c.command == "UE/UnrealEditor.exe" && c.cwd.is_none()));
+        assert!(configs.iter().all(|c| c.debug_adapter.as_deref() == Some("lldb-dap") && c.kind == "unreal"));
     }
 }

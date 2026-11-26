@@ -1529,6 +1529,7 @@ mod tests {
                 settings: Default::default(),
                 workspace: None,
                 unity: None,
+                unreal: None,
             })
             .unwrap())
         }

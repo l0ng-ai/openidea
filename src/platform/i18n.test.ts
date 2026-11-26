@@ -356,6 +356,9 @@ describe("catalogs", () => {
     "DuckDB",
     "JDBC URL",
     "path/to/database.duckdb",
+    // Unreal Engine projects: the product name and the .uproject path placeholder.
+    "Unreal Engine",
+    "…/Game.uproject",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 

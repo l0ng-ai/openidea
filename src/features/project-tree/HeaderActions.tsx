@@ -21,9 +21,12 @@ export function useProjectTitleMenu(): { label: string; items: MenuItem[] } {
   const mode = useProjectTree((s) => s.mode);
   const scope = useProjectTree((s) => s.scope);
   const unity = useProjectTree((s) => s.unity);
+  const unreal = useProjectTree((s) => s.unreal);
+  // The engine panes only exist in a project of that engine.
+  const available = (id: string) => (id !== "unity" || Boolean(unity)) && (id !== "unreal" || Boolean(unreal));
   // User scopes (Settings › Scopes) follow the built-in panes, as in IDEA.
   const scopes = userScopes(useProject((s) => (s.settings as { scopes?: unknown } | null)?.scopes));
-  const items: MenuItem[] = VIEW_MODES.filter(([id]) => id !== "unity" || unity).map(([id, label]) => ({
+  const items: MenuItem[] = VIEW_MODES.filter(([id]) => available(id)).map(([id, label]) => ({
     id,
     label,
     checked: id === mode,
