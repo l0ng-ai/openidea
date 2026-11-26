@@ -51,6 +51,12 @@ describe("workspace table references", () => {
     }
     expect(workspaceSourceAliasError(names, { left: "  ", right: "события" })).toBeNull();
   });
+  it("never binds an empty quoted reference to a blank alias", () => {
+    const names = workspaceSourceNames("Sales", "Events");
+    expect(() =>
+      workspaceJoinQuery('SELECT * FROM #"".public.t a JOIN #right.public.t b ON a.id=b.id', names, { left: "" }),
+    ).toThrow();
+  });
   it.each([
     { left: "events" },
     { right: "left" },

@@ -43,6 +43,7 @@ export function workspaceSourceSide(
   names: SourceNames,
   aliases: Partial<SourceNames> = {},
 ): Side | undefined {
+  if (!name) return undefined;
   const folded = name.toLowerCase();
   return sides.find(
     (side) => folded === side || name === names[side] || folded === aliases[side]?.trim().toLowerCase(),
