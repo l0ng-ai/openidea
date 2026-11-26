@@ -13,6 +13,7 @@ import {
   installMouseShortcuts,
   isMouseBinding,
   keyboardDispatchSuspended,
+  normalizeBinding,
   strokeOf,
 } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
@@ -121,8 +122,10 @@ function installHistoryShortcuts(): () => void {
       return;
     const go = (run: () => boolean, action: string) => {
       // Mouse / swipe bindings are the mouse shortcuts' business.
-      const bound = bindingsFor(action).filter((b) => !isMouseBinding(b) && !b.startsWith("Swipe"));
-      if (!bound.includes(stroke)) return false;
+      const bound = bindingsFor(action)
+        .filter((b) => !isMouseBinding(b) && !b.startsWith("Swipe"))
+        .map(normalizeBinding);
+      if (!bound.includes(normalizeBinding(stroke))) return false;
       e.preventDefault();
       e.stopPropagation();
       return run();
@@ -130,8 +133,10 @@ function installHistoryShortcuts(): () => void {
     if (go(selectPreviousPage, "navigate.back")) return;
     go(selectNextPage, "navigate.forward");
   };
-  window.addEventListener("keydown", onKey);
-  return () => window.removeEventListener("keydown", onKey);
+  // Capture phase, like the workbench dispatcher: the window's browser guards cancel ⌘[ / ⌘]
+  // in the bubble phase, before a bubble listener added later would see them.
+  window.addEventListener("keydown", onKey, true);
+  return () => window.removeEventListener("keydown", onKey, true);
 }
 
 /**
