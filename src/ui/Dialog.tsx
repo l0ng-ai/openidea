@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { usePlatform } from "@/platform/platformInfo";
 import { Button, IconButton } from "./Button";
-import { Icon } from "./icons";
 import { FOCUSABLE, dismissPopups, onWindowDeactivate, openLayer, trapTab } from "./popupState";
 import { PopupAncestry } from "./Popup";
 import { tx, useGivenTx } from "@/platform/i18n";
@@ -462,20 +461,9 @@ function DialogInner({
             </div>
           )
         ) : platform === "mac" ? (
+          // A sheet over the window, as the dialog windows look: the title heads the content, no
+          // window buttons of its own (Esc and Cancel close it).
           <div className={clsx(styles.titleBar, styles.macTitleBar)} data-dialog-drag="" data-dialog-titlebar="">
-            <span className={styles.lights}>
-              <button
-                type="button"
-                tabIndex={-1}
-                className={clsx(styles.light, styles.lightClose)}
-                aria-label={tx("Close")}
-                onClick={onClose}
-              >
-                <Icon name="close" size={10} className={styles.lightGlyph} />
-              </button>
-              <button type="button" tabIndex={-1} disabled className={styles.light} aria-label={tx("Minimize")} />
-              <button type="button" tabIndex={-1} disabled className={styles.light} aria-label={tx("Zoom")} />
-            </span>
             <span className={styles.title}>{title}</span>
           </div>
         ) : (
