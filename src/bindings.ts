@@ -14276,6 +14276,11 @@ export type TypeScriptSettings = {
 	 *  vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
 	 */
 	tsserverMaxMemory?: number,
+	/**
+	 *  Problems › TypeScript project errors: the project's own `tsc --watch` per root
+	 *  `tsconfig.json` reports the errors of files that are not open.
+	 */
+	watchProblems?: boolean,
 };
 
 /**  A misspelt word. */

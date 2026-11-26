@@ -4097,6 +4097,7 @@
   "Rerun Automatically": "Rerun Automatically",
   "Debug runs the tests once, without watching.": "Debug runs the tests once, without watching.",
   "Watch mode needs a command or script that ends with Jest or Vitest: the tests run once.\n": "Watch mode needs a command or script that ends with Jest or Vitest: the tests run once.\n",
+  "TypeScript Project Errors (tsc --watch)": "TypeScript Project Errors (tsc --watch)",
   "Spaces": "Spaces",
   "Punctuation": "Punctuation",
   "After comma": "After comma",

@@ -267,6 +267,9 @@ impl crate::Host {
             if let Some(phpstan) = &project.phpstan {
                 phpstan.interrupt();
             }
+            if let Some(watch) = &project.tsc_watch {
+                watch.apply(&self.runtime);
+            }
             if !trusted {
                 if let Some(plugins) = self.plugin_host() {
                     plugins.withdraw_project_run_targets(&project.root);

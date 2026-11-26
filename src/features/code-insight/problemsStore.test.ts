@@ -64,6 +64,35 @@ describe("counts", () => {
   });
 });
 
+describe("a problem two sources report", () => {
+  beforeEach(() => clearProblems());
+
+  it("is listed and counted once (Build's tsc step and the tsc watcher)", () => {
+    const counts = () => useProblems.getState().counts.error;
+    const listed = () => fileDiagnostics(useProblems.getState().map, "/p/b.ts").map((x) => x.source);
+    applyDiagnosticsEvent("/p/b.ts", "tsc", [d(1, "error", "tsc"), d(2, "error", "tsc")]);
+    applyDiagnosticsEvent("/p/b.ts", "build", [d(1, "error", "build")]);
+    expect(listed()).toEqual(["build", "tsc"]);
+    expect(counts()).toBe(2);
+    expect(projectCounts(useProblems.getState().map).error).toBe(2);
+    // Either source alone still shows it.
+    applyDiagnosticsEvent("/p/b.ts", "tsc", []);
+    expect(listed()).toEqual(["build"]);
+    expect(counts()).toBe(1);
+    applyDiagnosticsEvent("/p/b.ts", "build", []);
+    expect(listed()).toEqual([]);
+    expect(counts()).toBe(0);
+  });
+
+  it("keeps other sources as they are, and different problems on one line", () => {
+    let map = mergeDiagnostics(mergeDiagnostics(new Map(), "/a", "ra", [d(1)]), "/a", "eslint", [d(1)]);
+    expect(fileDiagnostics(map, "/a")).toHaveLength(2);
+    map = mergeDiagnostics(map, "/a", "build", [{ ...d(1), message: "another" }]);
+    map = mergeDiagnostics(map, "/a", "tsc", [d(1)]);
+    expect(fileDiagnostics(map, "/a")).toHaveLength(4);
+  });
+});
+
 describe("store + decorations", () => {
   beforeEach(() => clearProblems());
 
