@@ -486,6 +486,12 @@ pub struct LanguageCodeStyle {
     /// SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identifier_case: Option<String>,
+    /// IntelliSort: keep static imports before ordinary ones when organizing imports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_static_imports_first: Option<bool>,
+    /// IntelliSort: use a wildcard import once this many classes of one package are used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_count_to_use_import_with_wildcard: Option<u32>,
 }
 
 /// Editor › Code Style (General tab + per-language overrides).

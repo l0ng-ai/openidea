@@ -34,6 +34,7 @@ import { evaluateWhen } from "@/platform/context";
 import { isolateHistory } from "@codemirror/commands";
 import { textEditsToChanges } from "./positions";
 import { tx } from "@/platform/i18n";
+import { applyJavaImportStyle } from "./intelliSort";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
 export const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
@@ -131,16 +132,21 @@ export async function removeUnusedImports(view: EditorView): Promise<boolean> {
 }
 
 const optimizeImports = async (v: EditorView) => {
+  const finish = () => {
+    if (docOf(v)?.language === "java") applyJavaImportStyle(v);
+  };
   if (await removeUnusedImports(v)) {
     // Then sort what is left; there may be nothing to sort.
     await applyKindSilently(v, "source.organizeImports");
+    finish();
     return;
   }
-  return runKindAction(v, "source.organizeImports", {
+  await runKindAction(v, "source.organizeImports", {
     whole: true,
     none: "Optimize imports is not available",
     label: "Optimize Imports",
   });
+  finish();
 };
 
 /** Rearrange Code: class members in arrangement order (Python), as one undo step. */

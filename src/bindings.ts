@@ -9084,6 +9084,10 @@ export type LanguageCodeStyle_Deserialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**  IntelliSort: keep static imports before ordinary ones when organizing imports. */
+	keepStaticImportsFirst?: boolean | null,
+	/**  IntelliSort: use a wildcard import once this many classes of one package are used. */
+	classCountToUseImportWithWildcard?: number | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -9108,6 +9112,10 @@ export type LanguageCodeStyle_Serialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**  IntelliSort: keep static imports before ordinary ones when organizing imports. */
+	keepStaticImportsFirst?: boolean | null,
+	/**  IntelliSort: use a wildcard import once this many classes of one package are used. */
+	classCountToUseImportWithWildcard?: number | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */

@@ -10399,5 +10399,11 @@
   "Granted with grant option": "已授予（可转授）",
   "No privileges are granted on this table.": "此表未授予任何权限。",
   "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授权者可以将该权限再授予他人。",
-  "Separate several prefixes with commas: they are tried in order, then the official source.": "多个前缀用逗号分隔：按顺序尝试，最后回退到官方源。"
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "多个前缀用逗号分隔：按顺序尝试，最后回退到官方源。",
+  "IntelliSort": "IntelliSort",
+  "Keep static imports first": "静态导入排在前面",
+  "Static imports stay above ordinary imports when Optimize Imports organizes the file.": "优化导入时，静态导入保持在普通导入之前。",
+  "Class count to use import with '*'": "使用通配符导入的类数",
+  "Use a wildcard import once this many classes of one package are used; 999 keeps single-class imports.": "当同一个包使用达到该数量的类时使用通配符导入；999 表示始终保留单类导入。",
+  "Class count to use import with *": "使用通配符导入的类数"
 }

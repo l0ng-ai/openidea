@@ -157,6 +157,11 @@ const COMMENTS = {
   keywords: ["Line comment at first column", "Add a space at line comment start"],
 };
 const CASE = { id: "case", label: "Case", keywords: ["Keywords", "Identifiers", "To upper", "To lower"] };
+const IMPORTS = {
+  id: "imports",
+  label: "Imports",
+  keywords: ["IntelliSort", "static imports", "wildcard", "class count", "import with *"],
+};
 
 const WORD_CASES: SelectOption<SqlWordCase>[] = [
   { value: "upper", label: "To upper" },
@@ -251,6 +256,34 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
             label="Add a space at line comment start"
           />
         </>
+      ),
+    });
+  }
+  if (lang.id === "java") {
+    tabs.push({
+      ...IMPORTS,
+      content: (
+        <FormGroup>
+          <Toggle
+            checked={own.keepStaticImportsFirst ?? false}
+            onChange={(v) => set({ keepStaticImportsFirst: v })}
+            label="Keep static imports first"
+            hint="Static imports stay above ordinary imports when Optimize Imports organizes the file."
+          />
+          <Row
+            label="Class count to use import with '*'"
+            hint="Use a wildcard import once this many classes of one package are used; 999 keeps single-class imports."
+          >
+            <NumberInput
+              value={own.classCountToUseImportWithWildcard ?? 5}
+              onChange={(n) => set({ classCountToUseImportWithWildcard: n })}
+              min={1}
+              max={999}
+              integer
+              aria-label="Class count to use import with *"
+            />
+          </Row>
+        </FormGroup>
       ),
     });
   }
@@ -408,7 +441,14 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
           ...keywords,
         ]),
         ...(lang.id === "java"
-          ? ["Formatting profile", "IntelliJ IDEA", "Custom Eclipse formatter XML", "Eclipse formatter XML"]
+          ? [
+              "Formatting profile",
+              "IntelliJ IDEA",
+              "Custom Eclipse formatter XML",
+              "Eclipse formatter XML",
+              IMPORTS.label,
+              ...IMPORTS.keywords,
+            ]
           : []),
         ...(lang.id === "php" ? ["Alignment", "Align key-value pairs", "Align consecutive assignments"] : []),
         ...(lang.id === "sql" ? [CASE.label, ...CASE.keywords, "Do not change"] : []),

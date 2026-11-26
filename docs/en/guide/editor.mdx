@@ -116,6 +116,8 @@ All folding commands are also in **Code › Folding**. Fold regions come from th
 
 Indentation and other style options are under **Settings › Editor › Code Style**, with a page per language. `.editorconfig` files in the project are read too.
 
+Java has an **Imports** tab for IntelliSort-style options: **Keep static imports first** places static imports above ordinary ones, and **Class count to use import with '\*'** switches to a wildcard import once that many classes of one package are used (the default is 5; 5 or fewer imports gives 999, which keeps single-class imports). Both apply when **Optimize Imports** organizes a Java file.
+
 To format on every save, enable **Reformat code** (and optionally **Optimize imports**) in **Settings › Tools › Actions on Save**. Trailing spaces and the final line break on save are set in **Settings › Editor › General**, section **Save Files**.
 
 ## Tabs

@@ -4081,5 +4081,12 @@
   "Granted with grant option": "Granted with grant option",
   "No privileges are granted on this table.": "No privileges are granted on this table.",
   "* With grant option: the grantee may grant the privilege to others.": "* With grant option: the grantee may grant the privilege to others.",
-  "Separate several prefixes with commas: they are tried in order, then the official source.": "Separate several prefixes with commas: they are tried in order, then the official source."
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "Separate several prefixes with commas: they are tried in order, then the official source.",
+  "Imports": "Imports",
+  "IntelliSort": "IntelliSort",
+  "Keep static imports first": "Keep static imports first",
+  "Static imports stay above ordinary imports when Optimize Imports organizes the file.": "Static imports stay above ordinary imports when Optimize Imports organizes the file.",
+  "Class count to use import with '*'": "Class count to use import with '*'",
+  "Use a wildcard import once this many classes of one package are used; 999 keeps single-class imports.": "Use a wildcard import once this many classes of one package are used; 999 keeps single-class imports.",
+  "Class count to use import with *": "Class count to use import with *"
 }

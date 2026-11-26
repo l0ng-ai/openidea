@@ -47,6 +47,10 @@ export interface LanguageCodeStyle {
   /** SQL › Case: Reformat Code's case for keywords and unquoted identifiers. */
   keywordCase?: SqlWordCase;
   identifierCase?: SqlWordCase;
+  /** IntelliSort: keep static imports before ordinary ones when optimizing imports. */
+  keepStaticImportsFirst?: boolean;
+  /** IntelliSort: use a wildcard import once this many classes of one package are used. */
+  classCountToUseImportWithWildcard?: number;
 }
 
 /** IDEA's SQL word case: To upper / To lower / Do not change. */
