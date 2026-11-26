@@ -44,6 +44,15 @@
 //! width = 110                      # pixels, 40–400
 //! when = "plugin.<id>.enabled"     # optional
 //!
+//! [[contributes.overlays]]
+//! id = "stage"
+//! web = "web/stage.html"           # floats over the workbench, never takes the focus (API 1.18)
+//! width = 320                      # pixels, 40–800; the page can resize it within those bounds
+//! height = 240
+//! anchor = "bottom-right"          # top-left … bottom-right (nine); the page can move it
+//! when = "plugin.<id>.showing"     # optional
+//! interactive = true               # optional; false lets every click through to the IDE
+//!
 //! [[contributes.fileIcons]]
 //! id = "drawing"
 //! patterns = ["*.excalidraw"]
@@ -82,8 +91,9 @@ pub const SETTINGS: &str = "settings";
 pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const EDITOR_PANELS: &str = "editorPanels";
+pub const OVERLAYS: &str = "overlays";
 /// The points whose declarations can name a `web` page (served, messaged, sent view events).
-pub const WEB_POINTS: [&str; 3] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS];
+pub const WEB_POINTS: [&str; 4] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS, OVERLAYS];
 pub const FILE_ICONS: &str = "fileIcons";
 pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
@@ -887,6 +897,69 @@ pub(super) fn editor_panel(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
     Ok(out)
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OverlayDecl {
+    id: String,
+    web: String,
+    width: u32,
+    height: u32,
+    #[serde(default = "default_overlay_anchor")]
+    anchor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    when: Option<String>,
+    #[serde(default = "default_true")]
+    interactive: bool,
+}
+
+fn default_overlay_anchor() -> String {
+    "bottom-right".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Where an overlay can sit in the window (the page may move it to another).
+pub const OVERLAY_ANCHORS: [&str; 9] = [
+    "top-left",
+    "top-center",
+    "top-right",
+    "middle-left",
+    "center",
+    "middle-right",
+    "bottom-left",
+    "bottom-center",
+    "bottom-right",
+];
+const OVERLAY_SIZE: std::ops::RangeInclusive<u32> = 40..=800;
+
+/// `[[contributes.overlays]]` (API 1.18): a web page floating over the workbench at
+/// one of nine anchors, shown while `when` holds. It never takes the keyboard focus,
+/// sits under dialogs and popups, and sees nothing of the IDE, so it needs no
+/// capability.
+pub(super) fn overlay(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: OverlayDecl = decode(OVERLAYS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{OVERLAYS}"), 18)?;
+    validate_item_id(&d.id, "overlay id")?;
+    let what = format!("overlay {:?}", d.id);
+    for (name, value) in [("width", d.width), ("height", d.height)] {
+        if !OVERLAY_SIZE.contains(&value) {
+            return Err(format!("{what}: `{name}` is {}–{} pixels", OVERLAY_SIZE.start(), OVERLAY_SIZE.end()));
+        }
+    }
+    if !OVERLAY_ANCHORS.contains(&d.anchor.as_str()) {
+        return Err(format!("{what}: `anchor` is one of {}", OVERLAY_ANCHORS.join(", ")));
+    }
+    if let Some(when) = &d.when {
+        validate_when(when).map_err(|e| format!("{what}: {e}"))?;
+    }
+    let files = super::web::web_files(pkg, &d.web, &what)?;
+    let mut out = UiDecl::new(d.id.clone(), d.id.clone(), json(&d)?);
+    out.files = files;
+    Ok(out)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FileIconDecl {
@@ -1516,6 +1589,53 @@ web = "web/view.html"
         // `net:ask` is not a listed host: the install page would not show the origin.
         let ask = header.replace("\"net:example.com\"", "\"net:ask\"");
         assert!(check(VIEWS, &view_with(r#"["https://example.com"]"#), &ask).unwrap_err().contains("capability"));
+    }
+
+    #[test]
+    fn overlays_validate_api_size_anchor_when_and_page() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/overlay");
+        // A Windows checkout may have CRLF line ends; the edits below match on `\n`.
+        let source = std::fs::read_to_string(root.join("plugin.toml")).unwrap().replace("\r\n", "\n");
+        let check = |source: &str| {
+            let manifest = ide_extension::Manifest::parse(source)?;
+            let decl = manifest.declarations(OVERLAYS).into_iter().next().unwrap();
+            overlay(&Package::new(manifest, root.clone()), decl)
+        };
+        let valid = check(&source).unwrap();
+        assert_eq!(valid.key, "probe");
+        assert_eq!(
+            valid.json,
+            serde_json::json!({
+                "id": "probe", "web": "web/index.html", "width": 260, "height": 140,
+                "anchor": "bottom-right", "interactive": true,
+            })
+        );
+        assert_eq!(valid.files, [PathBuf::from("web/index.html")]);
+        let placed =
+            check(&source.replace("height = 140", "height = 140\nanchor = \"top-center\"\ninteractive = false"));
+        let placed = placed.unwrap();
+        assert_eq!(placed.json["anchor"], "top-center");
+        assert_eq!(placed.json["interactive"], false);
+        let when = source.replace("height = 140", "height = 140\nwhen = \"plugin.overlay.showing\"");
+        assert_eq!(check(&when).unwrap().json["when"], "plugin.overlay.showing");
+        for size in ["40", "800"] {
+            assert!(check(&source.replace("width = 260", &format!("width = {size}"))).is_ok(), "{size}");
+        }
+        for (bad, error) in [
+            (source.replace("^1.18", "^1.17"), "1.18"),
+            (source.replace("width = 260", "width = 39"), "40–800"),
+            (source.replace("height = 140", "height = 801"), "`height`"),
+            (source.replace("height = 140\n", ""), "height"),
+            (source.replace("height = 140", "height = 140\nanchor = \"left\""), "anchor"),
+            (source.replace("height = 140", "height = 140\nwhen = \"a &&\""), "when"),
+            (source.replace("height = 140", "height = 140\nfocus = true"), "focus"),
+            (source.replace("web/index.html", "index.html"), "directory of its own"),
+            (source.replace("web/index.html", "web/missing.html"), "no such file"),
+            (source.replace(r#"id = "probe""#, r#"id = "Pro Be""#), "id"),
+        ] {
+            let err = check(&bad).unwrap_err();
+            assert!(err.contains(error), "{bad}\n→ {err}");
+        }
     }
 
     fn package_with_catalogs(files: &[(&str, &str)]) -> (tempfile::TempDir, Package) {

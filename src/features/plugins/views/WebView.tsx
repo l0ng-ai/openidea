@@ -168,6 +168,22 @@ export const MAX_HIGHLIGHT_LINES = 2000;
 
 /** The query that gives an editor panel's page `openidea.editor` (frame-bridge.js). */
 export const EDITOR_PANEL_QUERY = "openidea=editor-panel";
+/** The query that gives an overlay's page `openidea.overlay` (frame-bridge.js). */
+export const OVERLAY_QUERY = "openidea=overlay";
+
+/** Where an overlay floats: one of nine anchors of the window, and its size in pixels. */
+export interface OverlayPlacement {
+  anchor: string;
+  width: number;
+  height: number;
+}
+
+/** An overlay frame's placement, which its page reads and changes (`openidea.overlay`). */
+export interface FrameOverlay {
+  get(): OverlayPlacement;
+  /** Applies what `args` names (anchor, width, height) and returns the placement; throws on invalid values. */
+  place(args: Record<string, unknown>): OverlayPlacement;
+}
 
 const finite = (v: unknown, what: string) => {
   if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`${what} must be a number`);
@@ -263,6 +279,8 @@ export interface WebViewProps {
   binaryPath?: string;
   /** The text editor an editor panel follows; none elsewhere. */
   editor?: FrameEditor | null;
+  /** An overlay's placement: the frame shows nothing until its page loads and never takes the focus. */
+  overlay?: FrameOverlay | null;
 }
 
 export function WebView({
@@ -274,6 +292,7 @@ export function WebView({
   doc = null,
   binaryPath,
   editor = null,
+  overlay = null,
 }: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
@@ -478,6 +497,11 @@ export function WebView({
           if (to - from > MAX_HIGHLIGHT_LINES) throw new Error(`at most ${MAX_HIGHLIGHT_LINES} lines at a time`);
           return [op === "editor.wrapped" ? editor.wrapped(from, to) : editor.highlights(from, to)];
         }
+        case "overlay.get":
+        case "overlay.place": {
+          if (!overlay) throw new Error("this view is not an overlay");
+          return [op === "overlay.get" ? overlay.get() : overlay.place(args)];
+        }
         case "saveFile":
         case "openFile": {
           // One dialog at a time per frame.
@@ -553,8 +577,10 @@ export function WebView({
       window.removeEventListener("pagehide", onUnload);
       currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, eventEditor, editor, hasCode, post, page]);
+  }, [pluginId, view, document, doc, eventEditor, editor, overlay, hasCode, post, page]);
 
+  // An overlay floats over the workbench: no spinner or error card in its place.
+  if (overlay && (!page || "error" in page)) return null;
   if (!page)
     return (
       <div className={styles.empty}>
@@ -567,6 +593,7 @@ export function WebView({
         {page.error}
       </EmptyState>
     );
+  const frameQuery = editor ? EDITOR_PANEL_QUERY : overlay ? OVERLAY_QUERY : null;
   // No `allow-same-origin`: an opaque origin without access to the IDE. `onLoad` sends the theme.
   const iframe = (
     <iframe
@@ -576,7 +603,8 @@ export function WebView({
       title={label}
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}
-      src={editor ? `${page.url}${page.url.includes("?") ? "&" : "?"}${EDITOR_PANEL_QUERY}` : page.url}
+      tabIndex={overlay ? -1 : undefined}
+      src={frameQuery ? `${page.url}${page.url.includes("?") ? "&" : "?"}${frameQuery}` : page.url}
       onLoad={() => {
         postTheme();
         setLoadedPage(page);
