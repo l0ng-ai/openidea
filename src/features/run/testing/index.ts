@@ -4,6 +4,7 @@ import { isJunitRunner } from "../application";
 import { cargoParser } from "./cargo";
 import { goParser } from "./go";
 import { jsParser } from "./js";
+import { withJasmineHook } from "./jasmine";
 import { jvmParser } from "./jvm";
 import { withMochaHook } from "./mocha";
 import { withNodeTestReporter } from "./nodeTest";
@@ -48,6 +49,7 @@ export type Framework =
   | "playwright"
   | "node-test"
   | "mocha"
+  | "jasmine"
   | "pytest"
   | "unittest"
   | "phpunit"
@@ -68,6 +70,7 @@ export function frameworkFor(config: FrameworkConfig): Framework {
   if (config.testRunner === "node-test" || /(^|[\s/\\])(node|tsx)(\.exe)?(\s+-\S*)*\s+--test(\s|$)/.test(cmd))
     return "node-test";
   if (config.testRunner === "mocha" || /(^|[\s/\\])_?mocha(\.cmd|\.js)?(\s|$)/.test(cmd)) return "mocha";
+  if (config.testRunner === "jasmine" || /(^|[\s/\\])jasmine(\.cmd|\.js)?(\s|$)/.test(cmd)) return "jasmine";
   if (isJunitRunner(config)) return "jvm";
   switch (config.kind) {
     case "dotnet-test":
@@ -134,6 +137,7 @@ function rubyVerbose<T extends Pick<RunConfig, "kind" | "command" | "args">>(con
 export function withTestReporting<T extends FrameworkConfig>(config: T): T {
   if (frameworkFor(config) === "node-test") return { ...config, env: withNodeTestReporter(config.env ?? {}) };
   if (frameworkFor(config) === "mocha") return { ...config, env: withMochaHook(config.env ?? {}) };
+  if (frameworkFor(config) === "jasmine") return { ...config, env: withJasmineHook(config.env ?? {}) };
   if (frameworkFor(config) === "playwright") {
     // The list reporter prints a line per test; a project's own (`html`, `dot` on CI) may print none.
     const chosen = config.args.some((a) => a === "--reporter" || a.startsWith("--reporter="));
@@ -178,6 +182,7 @@ export function createTestParser(config: FrameworkConfig): TestOutputParser {
       return playwrightParser();
     case "node-test":
     case "mocha":
+    case "jasmine":
       return recordsParser();
     case "pytest":
       return pytestParser();

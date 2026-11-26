@@ -66,6 +66,8 @@ RSpec 有自己的配置类型（**RSpec 测试**）和检测到的 `rspec` 配�
 
 **重新运行失败的测试**（在“运行”工具窗口工具栏和“查找操作”中）只运行上一次失败的测试，会按各个工具自己的过滤语法生成命令。支持 Cargo、Jest / Vitest、Playwright、`node --test`、Mocha、pytest、Django、PHPUnit、Go、Maven / Gradle 和 .NET，以及插件接入的测试框架。
 
+Jasmine 运行也支持，用 `--filter=` 选出失败的测试。
+
 ### 监视模式（Jest、Vitest）
 
 在 Jest 或 Vitest 测试配置中打开 **修改选项 › 监视更改**，或在测试树工具栏打开 **自动重新运行**，测试运行器会持续监视文件（`jest --watchAll`、`vitest watch`）。每次编辑后测试会在同一个标签页中重新运行，每一轮的结果替换树中上一轮的结果。点击 **停止**、关闭这个开关或关闭标签页都会结束监视进程。调试、**重新运行失败的测试**和运行选中的测试都只运行一次。运行 `vitest run` 的脚本会通过包管理器以 `vitest watch` 启动；除了 Jest 或 Vitest 还运行其他命令的脚本（`jest && eslint .`、`tsc && vitest run`）只运行一次。
