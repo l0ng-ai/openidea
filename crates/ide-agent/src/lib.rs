@@ -450,6 +450,10 @@ struct TaskFile {
     /// The user named the task: its agent's own title updates no longer replace it.
     #[serde(default, skip_serializing_if = "is_false")]
     title_renamed: bool,
+    /// [`NewAgentTask::ephemeral`]: the task file is never written, and new sessions ask the
+    /// agent not to save their history.
+    #[serde(default, skip_serializing_if = "is_false")]
+    ephemeral: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -502,6 +506,8 @@ struct TaskState {
     pending_rollback: u32,
     /// The user named the task; see `TaskFile::title_renamed`.
     title_renamed: bool,
+    /// [`NewAgentTask::ephemeral`].
+    ephemeral: bool,
     /// A turn is running or about to (prompts arriving now are queued).
     busy: bool,
     /// Background tasks the agent reported as running (`run_in_background` commands and
@@ -1023,6 +1029,7 @@ impl AgentManager {
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: true,
+            ephemeral: false,
         };
         let handle = Task::restore(file, self.shared.clone());
         self.tasks.write().insert(task.id.clone(), handle.clone());
@@ -1151,6 +1158,7 @@ impl AgentManager {
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: false,
+            ephemeral: req.ephemeral,
         };
         let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = !req.idle;
@@ -1516,6 +1524,7 @@ impl AgentManager {
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: total - keep,
                 title_renamed: s.title_renamed,
+                ephemeral: s.ephemeral,
             }
         };
         // Copying may have started the source's agent: it stops again once idle.
@@ -2420,6 +2429,7 @@ impl Task {
                 turns,
                 pending_rollback: file.pending_rollback,
                 title_renamed: file.title_renamed,
+                ephemeral: file.ephemeral,
                 busy: false,
                 background_tasks: Vec::new(),
                 shell_context: Vec::new(),
@@ -2675,7 +2685,9 @@ impl Task {
         let mut file = self.file.lock();
         // Read before the copy: whatever was asked for up to now is in it.
         let asked = self.saves_asked.load(Ordering::Acquire);
-        if file.deleted || file.saved >= asked {
+        // A throwaway task is never written: one its caller couldn't delete (a window closed
+        // while it ran) is gone after a restart.
+        if file.deleted || file.saved >= asked || self.state.lock().ephemeral {
             return;
         }
         let copy = {
@@ -2695,6 +2707,7 @@ impl Task {
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: s.pending_rollback,
                 title_renamed: s.title_renamed,
+                ephemeral: s.ephemeral,
             }
         };
         let bytes = serde_json::to_vec(&copy);
@@ -3424,7 +3437,10 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
+                let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
+                if self.state.lock().ephemeral {
+                    mark_ephemeral(&mut params);
+                }
                 let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
                     |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
                         Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },
@@ -4480,6 +4496,15 @@ fn session_params(cwd: &str, mcp: &McpForSession, skills: Option<&skills::Delive
         params["_meta"] = json!({ "openidea": meta });
     }
     params
+}
+
+/// `_meta.openidea.ephemeral` of `session/new`: the native drivers start the session without
+/// saving it (Claude Code `--no-session-persistence`, Codex `ephemeral` threads).
+fn mark_ephemeral(params: &mut Value) {
+    if !params["_meta"]["openidea"].is_object() {
+        params["_meta"]["openidea"] = json!({});
+    }
+    params["_meta"]["openidea"]["ephemeral"] = json!(true);
 }
 
 fn is_false(b: &bool) -> bool {
