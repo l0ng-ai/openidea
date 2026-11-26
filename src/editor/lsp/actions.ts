@@ -2,7 +2,14 @@
 import { generateActionIcon, isGenerateAction } from "./generate";
 import type { EditorView } from "@codemirror/view";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
-import { activeEditor, editorsFor, registerSaveParticipant, whenSynced, type TextEditorHandle } from "@/editor/api";
+import {
+  activeEditor,
+  editorsFor,
+  focusedCellEditor,
+  registerSaveParticipant,
+  whenSynced,
+  type TextEditorHandle,
+} from "@/editor/api";
 import { call, commands } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
@@ -67,6 +74,13 @@ export const GENERATE_KEY_WHEN = GENERATE_LANGUAGES.map((id) => `editorLangId ==
 
 function withEditor(run: (view: EditorView) => unknown): Action["run"] {
   return () => {
+    // While a notebook cell editor has focus it is the editor the action runs in
+    // (the notebook publishes the editor context keys for it), never the last text tab.
+    const cell = focusedCellEditor();
+    if (cell) {
+      void run(cell);
+      return;
+    }
     const ed = activeEditor();
     if (!ed) return;
     void run(ed.view);
@@ -439,6 +453,9 @@ export function registerLspActions(): () => void {
       category: "Refactor",
       when: "projectOpen",
       run: ({ ctx }) => {
+        // A focused notebook cell is the editor here, like for Show Context Actions.
+        const cell = focusedCellEditor();
+        if (cell && evaluateWhen(EDITOR_WHEN, ctx)) return refactorThis(cell, startRename);
         const ed = activeEditor();
         if (ed && evaluateWhen(EDITOR_WHEN, ctx)) return refactorThis(ed.view, startRename);
         showNothingHere();
