@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
 import type { View, ViewEvent } from "@/bindings";
-import { registerAction } from "@/platform/actions";
+import { executeAction, registerAction } from "@/platform/actions";
 import { bindingsFor, effectiveBindings, registerExtensionBindings, useKeymap } from "@/platform/keymap";
 import { createMemoryPluginsBackend, setPluginsBackend, type PluginsBackend } from "../backend";
 import { commandArgs, defineBuiltinUiPoints } from "../points";
@@ -11,7 +11,7 @@ import { clearUiContributions, syncUiContributions } from "../projection";
 import { pluginMenuItems, pluginViewItemMenuItems, withPluginSetting } from "../uiPoints";
 import { matchesPattern } from "../views/customEditor";
 import { FRAME_CSP, FRAME_TAG, frameDocument, frameTheme, type FrameTheme } from "../views/frame";
-import { PluginView, treeNodes, wantedViewport } from "../views/PluginView";
+import { focusedViewItem, PluginView, treeNodes, wantedViewport } from "../views/PluginView";
 import { bumpView } from "../views/viewStore";
 
 let undefinePoints: () => void = () => {};
@@ -339,6 +339,70 @@ describe("PluginView", () => {
     expect(screen.getByText("1 namespace")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(events).toContainEqual({ kind: "button", id: "refresh" }));
+  });
+
+  it("gives a shortcut-run command the selected item of the plugin's focused view", async () => {
+    const item = (key: string, label: string) => ({
+      key,
+      parent: null,
+      label,
+      icon: null,
+      detail: null,
+      expandable: false,
+      expanded: false,
+    });
+    const tree: View = {
+      toolbar: [],
+      body: { kind: "tree", value: [item("task:build", "build"), item("task:test", "test")] },
+      status: null,
+    };
+    const backend = backendWith(() => tree);
+    const runCommand = vi.fn(async () => null);
+    setPluginsBackend({ ...backend, runCommand });
+    syncUiContributions(
+      [
+        { pluginId: "jobs", point: "commands", key: "open", decl: { id: "open", title: "Open Source" } },
+        { pluginId: "jobs", point: "commands", key: "sync", decl: { id: "sync", title: "Sync" } },
+        {
+          pluginId: "jobs",
+          point: "menus",
+          key: "viewItem.context/tasks/open",
+          decl: { menu: "viewItem.context", view: "tasks", command: "open", when: "viewItemKind == task" },
+        },
+      ],
+      [
+        { id: "jobs", name: "Jobs", status: "active", enabled: true } as unknown as Parameters<
+          typeof syncUiContributions
+        >[1][number],
+      ],
+    );
+    const user = userEvent.setup();
+    render(
+      <PluginView
+        pluginId="jobs"
+        view="tasks"
+        label="Tasks"
+        itemMenu={(key) => pluginViewItemMenuItems("jobs", "tasks", key)}
+      />,
+    );
+    expect(focusedViewItem("jobs", "plugin.jobs.open")).toBeNull();
+    await user.click(await screen.findByText("test"));
+    await waitFor(() => expect(focusedViewItem("jobs", "plugin.jobs.open")).toBe("task:test"));
+    expect(focusedViewItem("other", "plugin.other.open")).toBeNull();
+    // Only a command the item's menu offers gets the item.
+    expect(focusedViewItem("jobs", "plugin.jobs.sync")).toBeNull();
+    await executeAction("plugin.jobs.sync");
+    expect(runCommand).toHaveBeenLastCalledWith("jobs", "sync", null, null, []);
+    await executeAction("plugin.jobs.open");
+    expect(runCommand).toHaveBeenLastCalledWith("jobs", "open", "task:test", null, []);
+    // A menu's own argument wins over the focused view.
+    await executeAction("plugin.jobs.open", "task:build");
+    expect(runCommand).toHaveBeenLastCalledWith("jobs", "open", "task:build", null, []);
+    // Focus elsewhere: nothing selected for the command.
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(focusedViewItem("jobs", "plugin.jobs.open")).toBeNull();
+    await executeAction("plugin.jobs.open");
+    expect(runCommand).toHaveBeenLastCalledWith("jobs", "open", null, null, []);
   });
 
   it("opens the item menu on right-click", async () => {

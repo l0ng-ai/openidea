@@ -535,7 +535,6 @@
   color: var(--fg-secondary);
   font: inherit;
   white-space: nowrap;
-  cursor: pointer;
 }
 .sectionTab:hover {
   background: var(--bg-toolbar-hover);
@@ -602,7 +601,6 @@
   color: var(--fg);
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 .sideItem:hover {
   background: var(--bg-hover);
@@ -788,7 +786,6 @@
   color: var(--fg);
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 .psNavItem > span {
   min-width: 0;

@@ -5998,5 +5998,6 @@
   "Allowed command pattern": "Padrão de comando permitido",
   "Blocked command pattern": "Padrão de comando bloqueado",
   "Mode applies to": "O modo se aplica a",
-  "Context": "Contexto"
+  "Context": "Contexto",
+  "Allow all optional permissions": "Permitir todas as permissões opcionais"
 }

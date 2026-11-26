@@ -59,7 +59,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.17";
+pub const API_VERSION: &str = "1.18";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -115,7 +115,12 @@ pub trait HostApi: Send + Sync {
     fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError>;
 
     /// Registers a project-scoped wrapper after validating its process grant and pin.
-    fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError>;
+    fn register_run_target(
+        &self,
+        root: &Path,
+        target: crate::PluginRunTarget,
+        generation: Option<u64>,
+    ) -> Result<(), HostError>;
     /// Withdraws this plugin's target, preserving the user's remembered prompt answer.
     fn unregister_run_target(&self, root: &Path, id: &str);
 
@@ -417,7 +422,18 @@ pub trait HostApi: Send + Sync {
     /// Delivers every event of `kind`, dropping its path filter.
     fn subscribe(&self, kind: EventKind);
     /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
-    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        self.subscribe_paths_with_options(kind, globs, None)
+    }
+    /// Delivers `kind` with optional debounce window in milliseconds (API 1.18).
+    fn subscribe_paths_with_options(
+        &self,
+        kind: &str,
+        globs: Vec<String>,
+        debounce_ms: Option<u32>,
+    ) -> Result<(), HostError>;
+    /// Monotonically increasing project generation (API 1.18).
+    fn project_generation(&self, root: &Path) -> Result<u64, HostError>;
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
@@ -966,6 +982,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::ProblemsChanged => {
             wit_events::Event::Other(wit_types::Extension { kind: "problems-changed".into(), data: "{}".into() })
         }
+        WorkbenchEvent::ProjectClosed(p) => wit_events::Event::Other(wit_types::Extension {
+            kind: "project-closed".into(),
+            data: serde_json::to_string(&p).expect("path serializes"),
+        }),
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,
         WorkbenchEvent::ActionPerformed(a) => wit_events::Event::ActionPerformed(wit_events::ActionPerformed {
             action: a.action,
@@ -2391,6 +2411,7 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
             kind: "sort".into(),
             data: format!(r#"{{"column":{column},"descending":{descending}}}"#),
         }),
+        ViewEvent::Closed => W::Other(wit_types::Extension { kind: "closed".into(), data: "{}".into() }),
     }
 }
 
@@ -2842,6 +2863,12 @@ mod tests {
         assert_eq!(fields[0].value, FieldValue::Label("Title \"quoted\"".into()));
         assert_eq!(fields[1].value, FieldValue::ReadonlyText { text: "one\ntwo".into(), multiline: true });
         assert_eq!(fields[2].value, FieldValue::ReadonlyText { text: "author".into(), multiline: false });
+    }
+
+    #[test]
+    fn a_closed_dialog_leaves_as_an_other_event() {
+        let wit_vt::ViewEvent::Other(extension) = event_to_wit_view(ViewEvent::Closed) else { panic!("other") };
+        assert_eq!((extension.kind.as_str(), extension.data.as_str()), ("closed", "{}"));
     }
 
     #[test]

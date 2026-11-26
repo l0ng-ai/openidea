@@ -455,6 +455,21 @@ function saveRemotes(list: RecentRemote[]) {
   } catch {
     /* storage unavailable */
   }
+  syncRemoteRecentMenu();
+}
+
+/** Hands the recent remote projects to File › Open Recent, which lists them among the local ones. */
+export function syncRemoteRecentMenu() {
+  if (!isTauri()) return;
+  const projects = recentRemotes().map((r) => ({
+    location: remoteLocation(r.target, r.path),
+    name: r.name,
+    detail: `${r.host || targetName(r.target)}:${r.path}`,
+    openedAtMs: r.openedAtMs,
+  }));
+  void Promise.resolve()
+    .then(() => commands.menuSetRemoteRecent(projects))
+    .catch(() => {});
 }
 
 const sameRemote = (a: Pick<RecentRemote, "target" | "path">, b: Pick<RecentRemote, "target" | "path">) =>

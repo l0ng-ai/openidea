@@ -9349,5 +9349,6 @@
   "Blocked commands": "封鎖的命令",
   "Allowed command pattern": "允許的命令模式",
   "Blocked command pattern": "封鎖的命令模式",
-  "Mode applies to": "模式作用範圍"
+  "Mode applies to": "模式作用範圍",
+  "Allow all optional permissions": "允許全部可選權限"
 }

@@ -8811,5 +8811,6 @@
   "Blocked commands": "Engellenen komutlar",
   "Allowed command pattern": "İzin verilen komut kalıbı",
   "Blocked command pattern": "Engellenen komut kalıbı",
-  "Mode applies to": "Modun uygulandığı yer"
+  "Mode applies to": "Modun uygulandığı yer",
+  "Allow all optional permissions": "Tüm isteğe bağlı izinlere izin ver"
 }

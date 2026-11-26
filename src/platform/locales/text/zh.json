@@ -839,6 +839,8 @@
   "Cannot start PTY: process:{program} capability not granted.": "无法启动 PTY：未授予 process:{program} 权限。",
   "Marker Icons": "行标记图标",
   "Editor Panels": "编辑器面板",
+  "Overlays": "浮层",
+  "Dialogs": "对话框",
   "this data source does not list databases": "此数据源不支持列出数据库",
   "commit or roll back before clearing the selected database": "清除所选数据库前，请先提交或回滚事务",
   "connect_timeout must be greater than zero": "connect_timeout 必须大于零",
@@ -10406,5 +10408,7 @@
   "Blocked commands": "阻止的命令",
   "Allowed command pattern": "允许的命令模式",
   "Blocked command pattern": "阻止的命令模式",
-  "Mode applies to": "模式作用范围"
+  "Mode applies to": "模式作用范围",
+  "Could not load the frames: {0}": "无法加载栈帧：{0}",
+  "Allow all optional permissions": "允许全部可选权限"
 }

@@ -6285,5 +6285,6 @@
   "Allowed command pattern": "허용된 명령 패턴",
   "Blocked command pattern": "차단된 명령 패턴",
   "Mode applies to": "모드 적용 범위",
-  "Context": "컨텍스트"
+  "Context": "컨텍스트",
+  "Allow all optional permissions": "모든 선택 권한 허용"
 }

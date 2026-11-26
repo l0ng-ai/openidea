@@ -5819,5 +5819,6 @@
   "Allowed command pattern": "Motif de commande autorisée",
   "Blocked command pattern": "Motif de commande bloquée",
   "Mode applies to": "Le mode s'applique à",
-  "Context": "Contexte"
+  "Context": "Contexte",
+  "Allow all optional permissions": "Autoriser toutes les autorisations facultatives"
 }

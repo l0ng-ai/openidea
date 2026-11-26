@@ -594,8 +594,8 @@ export const commands = {
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
 	 *  visibility and type-alias kinds), tree-sitter otherwise.
-	 *  Tree-sitter answers come from the per-document tree cache (incremental
-	 *  re-parse); large documents get no syntax structure.
+	 *  Normal files reuse the per-document tree cache. Large Markdown files use
+	 *  the syntax parser's size limit for heading outlines.
 	 */
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
@@ -1162,6 +1162,8 @@ export const commands = {
 	 *  disabled in place (no rebuild).
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
+	/**  The Remote Development projects of the frontend's recent list, for Open Recent. */
+	menuSetRemoteRecent: (projects: RemoteRecent[]) => __TAURI_INVOKE<void>("menu_set_remote_recent", { projects }),
 	/**
 	 *  Index definitions named `name` within the roots `from` may navigate into (its own root
 	 *  plus its configured dependencies).
@@ -6430,8 +6432,8 @@ export type DocumentInfo = {
 	 */
 	canReloadEncoding: boolean,
 	/**
-	 *  Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
-	 *  structure and folding are disabled; the editor should drop heavy features.
+	 *  Marks files above `ide_vfs::LARGE_FILE_THRESHOLD` for reduced editor
+	 *  features such as disabling language servers and folding.
 	 */
 	large?: boolean,
 	/**  Effective `.editorconfig` properties, when any section applies. */
@@ -6868,7 +6870,9 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
 export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "caret-moved" | "action-performed" | "vcs-changed" | 
 /**  Problems of the window's files changed (a language server or a report). */
-"problems-changed" | "scheduled";
+"problems-changed" | 
+/**  A project was closed (or its window closed): the project root path. */
+"project-closed" | "scheduled";
 
 export type ExceptionClassBreakpoint = {
 	id: string,
@@ -7314,6 +7318,10 @@ export type FileTypeAssociation = {
 
 /**  Debounced worktree changes. Paths use the same absolute form as `file-saved`. */
 export type FilesChanged = {
+	/**  Canonical absolute root of the project where changes occurred (API 1.18). */
+	project?: string | null,
+	/**  Project state generation at the time this batch was emitted (API 1.18). */
+	generation?: number | null,
 	created: string[],
 	modified: string[],
 	removed: string[],
@@ -12166,6 +12174,19 @@ export type RemoteProject_Serialize = {
 	project: ProjectInfo_Serialize,
 };
 
+/**
+ *  A recent Remote Development project (SSH, WSL, Dev Container), kept by the frontend: Open
+ *  Recent lists it among the local projects, as Manage Projects does.
+ */
+export type RemoteRecent = {
+	/**  `ssh://host/path`, `wsl://Ubuntu/path`…: what `file.openRecentProject` gets back. */
+	location: string,
+	name: string,
+	/**  Where it lives, as shown after the name (`me@host:/srv/app`). */
+	detail: string,
+	openedAtMs: number | null,
+};
+
 export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;
 
 export type RemoteSession_Deserialize = {
@@ -14350,7 +14371,7 @@ export type ViewButton = {
 };
 
 /**  A user action in a view. */
-export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean } | { kind: "tableSelect"; row: number } | { kind: "tableActivate"; row: number };
+export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean } | { kind: "tableSelect"; row: number } | { kind: "tableActivate"; row: number } | { kind: "closed" };
 
 export type ViewField = {
 	key: string,
@@ -14530,7 +14551,9 @@ export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged }
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
 { kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "caretMoved"; value: CaretMoved } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
 /**  Problems of the window's files changed; plugins re-read `problems`. */
-{ kind: "problemsChanged" } | { kind: "scheduled" };
+{ kind: "problemsChanged" } | 
+/**  A project closed (API 1.18); payload is the canonical absolute root path. */
+{ kind: "projectClosed"; value: string } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

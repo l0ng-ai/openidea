@@ -6175,5 +6175,6 @@
   "Allowed command pattern": "Patrón de comando permitido",
   "Blocked command pattern": "Patrón de comando bloqueado",
   "Mode applies to": "El modo se aplica a",
-  "Context": "Contexto"
+  "Context": "Contexto",
+  "Allow all optional permissions": "Permitir todos los permisos opcionales"
 }

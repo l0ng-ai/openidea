@@ -10149,5 +10149,6 @@
   "Blocked commands": "Заблокированные команды",
   "Allowed command pattern": "Шаблон разрешённой команды",
   "Blocked command pattern": "Шаблон заблокированной команды",
-  "Mode applies to": "Режим действует для"
+  "Mode applies to": "Режим действует для",
+  "Allow all optional permissions": "Разрешить все необязательные разрешения"
 }
