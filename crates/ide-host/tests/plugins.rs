@@ -1391,6 +1391,65 @@ fn ungranted_capabilities_are_denied_not_trapped() {
     assert_eq!(f.workspace.text("src/notes.txt"), "one two three\nfour five\n");
 }
 
+/// A missing `agents` grant is an error the plugin can handle, not a trap.
+#[test]
+fn ungranted_agents_fork_is_denied_not_trapped() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    let err = f
+        .host
+        .run_command("misbehave", "fork-session", Some("claude 11111111-2222-3333-4444-555555555555 /tmp"), f.inv())
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("agents"), "{err:?}");
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes), (PluginStatus::Active, 0), "the instance lives on");
+    assert_eq!(info.stats.errors, 0, "a missing grant is not the plugin failing");
+}
+
+/// With the `agents` grant the call reaches the core fork over a real project:
+/// an unknown session is the core's `not-found`, not a denial or a host stub.
+#[tokio::test]
+async fn granted_agents_fork_reaches_the_core() {
+    let f = fixture(Limits::default());
+    // Hermetic: the core scans the home transcript folders; a real ~/.codex with
+    // thousands of rollouts would time the command out.
+    // SAFETY: set before the Host reads HOME; nextest isolates this test's process.
+    unsafe { std::env::set_var("HOME", f._tmp.path().join("home")) };
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: f._tmp.path().join("config"),
+        data_dir: f._tmp.path().join("data"),
+        local_data_dir: f._tmp.path().join("local"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    host.trust.decide(&f.project, true, false).unwrap();
+    host.open_project("main", &f.project).unwrap();
+    f.host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
+
+    // `misbehave` with the `agents` grant, which needs API 1.18.
+    let pkg = f._tmp.path().join("misbehave-agents");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let text = text
+        .replace("required = [\"project.read\"]", "required = [\"project.read\", \"agents\"]")
+        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.18\"");
+    std::fs::write(&manifest, text).unwrap();
+    f.install(&pkg);
+
+    let session = "11111111-2222-3333-4444-555555555555";
+    let arg = format!("claude {session} {}", f.project.to_str().unwrap());
+    let err = f.run("misbehave", "fork-session", Some(&arg)).unwrap_err();
+    assert!(err.contains("unknown claude session"), "{err}");
+    // Detached: the blocking close joins the LSP/index workers, which can stall under nextest.
+    host.close_project_detached("main");
+}
+
 /// A trap drops the instance, which restarts on next use after a
 /// backoff that doubles; only consecutive crashes stop the plugin.
 #[test]
@@ -1652,7 +1711,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 24, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 25, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -7669,7 +7728,7 @@ fn contributes_skills_needs_api_1_15_and_warns_without_failing_plugin_on_bad_ent
         "id = \"acme.mixed-skills\"\n\
          name = \"Mixed Skills\"\n\
          version = \"1.0.0\"\n\
-         engines.openidea = \"^1.15\"\n\n\
+         engines.openidea = \"^1.18\"\n\n\
          [[contributes.skills]]\npath = \"skills/good-skill/SKILL.md\"\n\
          [[contributes.skills]]\npath = \"../outside/SKILL.md\"\n\
          [[contributes.skills]]\npath = \"skills/not-skill-md/README.md\"\n\

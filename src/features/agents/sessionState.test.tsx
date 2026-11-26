@@ -15,6 +15,7 @@ import { ChangesTab } from "./session/ChangesTab";
 import {
   acceptChanges,
   disconnect,
+  forkExternalSession,
   hideImportSessions,
   importExternalSessions,
   refreshChanges,
@@ -56,6 +57,7 @@ const backend = vi.hoisted(() => ({
     updatedMs: number;
   }>,
   imported: [] as Array<[string, string]>,
+  forked: [] as Array<[string, string, string]>,
   importError: null as string | null,
   importErrors: new Map<string, string>(),
   importWait: null as Promise<void> | null,
@@ -152,6 +154,20 @@ vi.mock("@/platform/ipc", async (original) => ({
         data: {
           ...task(`imported-${sessionId}`),
           id: `imported-${sessionId}`,
+          title: found.title,
+          provider,
+        },
+      };
+    },
+    agentForkSession: async (provider: string, sessionId: string, cwd: string) => {
+      backend.forked.push([provider, sessionId, cwd]);
+      const found = backend.external.find((e) => e.provider === provider && e.sessionId === sessionId);
+      if (!found) throw new Error("unknown session");
+      return {
+        status: "ok",
+        data: {
+          ...task(`forked-${sessionId}`),
+          id: `forked-${sessionId}`,
           title: found.title,
           provider,
         },
@@ -266,6 +282,7 @@ beforeEach(() => {
   // The flat list unless a test asks for the grouped view, so counts and selections stay as before.
   useChangesOptions.setState({ groupByCommit: false, scope: "task" });
   backend.imported = [];
+  backend.forked = [];
   backend.importError = null;
   backend.importErrors = new Map();
   backend.importWait = null;
@@ -2611,6 +2628,19 @@ describe("batch import", () => {
     expect(finished).toBe(true);
     expect(backend.imported).toEqual([["claude", "a"]]);
     expect(backend.errors).toEqual([]);
+  });
+});
+
+describe("fork external session", () => {
+  it("forks a recorded session into a new task and opens it", async () => {
+    backend.external = [{ provider: "claude", sessionId: "a", title: "First", cwd: "/work/app", updatedMs: 0 }];
+    useAgents.setState({ sessionLocation: "toolWindow", docked: null });
+    await act(() => forkExternalSession("claude", "a", "/work/app"));
+    expect(backend.forked).toEqual([["claude", "a", "/work/app"]]);
+    expect(useAgents.getState().docked).toBe("forked-a");
+    expect(useAgents.getState().tasks.has("forked-a")).toBe(true);
+    expect(useAgents.getState().external).toHaveLength(0);
+    expect(useAgents.getState().importing.size).toBe(0);
   });
 });
 
