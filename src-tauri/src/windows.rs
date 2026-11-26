@@ -1069,7 +1069,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         (config.min_width, config.min_height) = (Some(min.0), Some(min.1));
     }
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(webview_profile(app, b)).on_new_window(open_popup_in_browser).build())
+        .and_then(|b| macos_webview_configuration(webview_profile(app, b)).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -1907,7 +1907,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     // display's Space, so macOS keeps it too.
     #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
-    let window = builder.and_then(|b| dev_font_preferences(webview_profile(app, b)).build()).map_err(|e| {
+    let window = builder.and_then(|b| macos_webview_configuration(webview_profile(app, b)).build()).map_err(|e| {
         windows.forget(&label);
         IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
     })?;
@@ -2443,18 +2443,41 @@ fn webview_profile<'a>(
     builder
 }
 
-/// Reproduce WKWebView's user-font restriction before WKWebView creation. The
-/// private selector and environment override are absent from release builds.
-#[cfg(all(debug_assertions, target_os = "macos"))]
-fn dev_font_preferences(
+/// Configure macOS `WKWebViewConfiguration` before `WKWebView` creation:
+/// - Disable macOS 15+ Apple Intelligence Writing Tools so its floating selection
+///   affordance does not appear over Markdown previews, Quick Documentation, or editors.
+/// - In debug builds, optionally reproduce WKWebView's user-font restriction when
+///   `OPENIDEA_DEV_DISALLOW_USER_FONTS=1` is set (absent from release builds).
+#[cfg(target_os = "macos")]
+fn macos_webview_configuration(
     builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    let config = unsafe {
+        objc2_web_kit::WKWebViewConfiguration::new(
+            objc2::MainThreadMarker::new().expect("window creation on main thread"),
+        )
+    };
+    if configure_macos_webview_configuration(&config) {
+        return builder.with_webview_configuration(config);
+    }
+    builder
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_webview_configuration(config: &objc2_web_kit::WKWebViewConfiguration) -> bool {
+    use objc2::{msg_send, sel};
+    use objc2_app_kit::NSWritingToolsBehavior;
+    use objc2_foundation::NSObjectProtocol;
+
+    let mut configured = false;
+    if config.respondsToSelector(sel!(setWritingToolsBehavior:)) {
+        unsafe {
+            let _: () = msg_send![config, setWritingToolsBehavior: NSWritingToolsBehavior::None];
+        }
+        configured = true;
+    }
+    #[cfg(debug_assertions)]
     if std::env::var("OPENIDEA_DEV_DISALLOW_USER_FONTS").as_deref() == Ok("1") {
-        use objc2::{MainThreadMarker, msg_send, sel};
-        use objc2_foundation::NSObjectProtocol;
-        let config = unsafe {
-            objc2_web_kit::WKWebViewConfiguration::new(MainThreadMarker::new().expect("window creation on main thread"))
-        };
         let preferences = unsafe { config.preferences() };
         if preferences.respondsToSelector(sel!(_setShouldAllowUserInstalledFonts:)) {
             unsafe {
@@ -2462,15 +2485,16 @@ fn dev_font_preferences(
             }
             let allowed: bool = unsafe { msg_send![&preferences, _shouldAllowUserInstalledFonts] };
             tracing::info!(allowed, "Development user-installed fonts override");
-            return builder.with_webview_configuration(config);
+            configured = true;
+        } else {
+            tracing::warn!("WKPreferences user-font development selector unavailable");
         }
-        tracing::warn!("WKPreferences user-font development selector unavailable");
     }
-    builder
+    configured
 }
 
-#[cfg(not(all(debug_assertions, target_os = "macos")))]
-fn dev_font_preferences(
+#[cfg(not(target_os = "macos"))]
+fn macos_webview_configuration(
     builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
     builder
@@ -2558,6 +2582,25 @@ mod tests {
             a.preferred_dark_theme = id.into();
             assert_eq!(frame_color(&a, false), color);
             assert_eq!(frame_color(&a, true), color);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_webview_configuration_disables_writing_tools() {
+        use objc2::{MainThreadMarker, msg_send, sel};
+        use objc2_app_kit::NSWritingToolsBehavior;
+        use objc2_foundation::NSObjectProtocol;
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let config = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+        let configured = configure_macos_webview_configuration(&config);
+        if config.respondsToSelector(sel!(writingToolsBehavior)) {
+            assert!(configured);
+            let behavior: NSWritingToolsBehavior = unsafe { msg_send![&config, writingToolsBehavior] };
+            assert_eq!(behavior, NSWritingToolsBehavior::None);
         }
     }
 
