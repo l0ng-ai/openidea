@@ -15,11 +15,14 @@ import { installMissingServerPrompts, installServerWarningPrompts, missingKey, p
 import { resetTestForm, stagedFor, TestSettingsForm } from "./settingsForm";
 
 type Note = Parameters<NotificationService["notify"]>[0];
+const focusConsume = vi.fn();
+const FOCUS_CONTEXT = { focus: "pyrefly", consume: focusConsume } as const;
 let notes: Note[];
 let backend: MemoryToolsBackend;
 
 beforeEach(() => {
   notes = [];
+  focusConsume.mockClear();
   provideNotificationService({ notify: (n) => void notes.push(n) });
   backend = new MemoryToolsBackend(sampleTools(), 1);
   setToolsBackend(backend);
@@ -476,9 +479,8 @@ describe("LanguageServersPage", () => {
   });
 
   it("opens on the tool it was asked to show (languages.servers#<tool>)", async () => {
-    const consume = vi.fn();
     render(
-      <SettingsPageFocusContext.Provider value={{ focus: "pyrefly", consume }}>
+      <SettingsPageFocusContext.Provider value={FOCUS_CONTEXT}>
         <TestSettingsForm>
           <LanguageServersPage />
         </TestSettingsForm>
@@ -487,7 +489,7 @@ describe("LanguageServersPage", () => {
     await waitFor(() => expect(toolItem("pyrefly")).toHaveAttribute("aria-current", "true"));
     expect(language("Python")).toHaveAttribute("aria-current", "true");
     expect(screen.getByLabelText("Python tools")).toContainElement(toolItem("pyrefly"));
-    expect(consume).toHaveBeenCalled();
+    expect(focusConsume).toHaveBeenCalled();
   });
 
   it("jumps to a missing tool from the language's banner", async () => {
@@ -595,7 +597,7 @@ describe("LanguageServersPage", () => {
 });
 
 describe("tools.install action", () => {
-  it("installs installable tools and opens the page for the rest", async () => {
+  it("installs installable tools and opens the page on the rest", async () => {
     const { executeAction, registerAction } = await import("@/platform/actions");
     const { activate } = await import("../index");
     const opened: unknown[] = [];
@@ -612,7 +614,8 @@ describe("tools.install action", () => {
       expect(useTools.getState().tools.find((t) => t.name === "gopls")?.status).toBe("installed");
       expect(opened).toEqual([]);
       await executeAction("tools.install", "solargraph");
-      expect(opened).toEqual(["languages.servers"]);
+      // Opened on that tool, where its manual install hint is.
+      expect(opened).toEqual(["languages.servers#solargraph"]);
     } finally {
       disposers.reverse().forEach((d) => d());
     }

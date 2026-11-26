@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyKeymapSettings,
+  bindingsFor,
   formatBinding,
   dispatchMouseShortcut,
   installKeyboardDispatcher,
+  installMouseShortcuts,
   isMouseBinding,
   isValidBinding,
+  keyboardDispatchSuspended,
   mouseStrokeOf,
   normalizeBinding,
   PRESETS,
@@ -76,6 +80,37 @@ describe("mouse shortcuts", () => {
     expect(shortcutLabel("t.mouseFirst")).toBeUndefined();
   });
 
+  it.each([
+    ["en", "Wheel Up", "Wheel Down"],
+    ["zh", "滚轮向上", "滚轮向下"],
+  ])("formats wheel directions in %s", async (locale, up, down) => {
+    const originalLocale = useI18n.getState().locale;
+    try {
+      await setLocale(locale);
+      expect(formatBinding("ctrl+wheelup", false)).toBe(`Ctrl+${up}`);
+      expect(formatBinding("meta+shift+wheeldown", true)).toBe(`⇧⌘${down}`);
+    } finally {
+      await setLocale(originalLocale);
+    }
+  });
+
+  it("loads canonical single-stroke wheel bindings from preset and custom overrides", () => {
+    const original = useKeymap.getState();
+    const overrides = {
+      "t.wheel": ["alt+ctrl+wheelup", "Ctrl+Alt+WheelUp", "WheelDown", "Ctrl+K WheelDown", "Alt Alt+WheelUp"],
+    };
+    try {
+      for (const id of ["intellij-windows", "user:wheel"]) {
+        applyKeymapSettings(id, overrides, { "user:wheel": { parent: "intellij-windows", overrides } });
+        expect(bindingsFor("t.wheel")).toEqual(["Ctrl+Alt+WheelUp", "WheelDown"]);
+        expect(bindingsFor("t.wheel").every(isMouseBinding)).toBe(true);
+        expect(primaryKeyBinding("t.wheel")).toBeUndefined();
+      }
+    } finally {
+      useKeymap.setState(original);
+    }
+  });
+
   describe("dispatch", () => {
     let uninstall = () => {};
     const back = vi.fn();
@@ -104,6 +139,45 @@ describe("mouse shortcuts", () => {
       for (const e of events) target.dispatchEvent(e);
       return events;
     };
+
+    const wheel = (init: WheelEventInit, at: number, ticks?: number) => {
+      const event = new WheelEvent("wheel", { deltaY: -1, bubbles: true, cancelable: true, ...init });
+      Object.defineProperty(event, "timeStamp", { value: at });
+      if (ticks !== undefined) Object.defineProperty(event, "wheelDeltaY", { value: ticks });
+      editor.dispatchEvent(event);
+      return event;
+    };
+
+    it("consumes one shortcut per notch and leaves unmatched and horizontal scroll events alone", () => {
+      useKeymap.setState({ overrides: { "navigate.back": ["Ctrl+WheelUp"], "navigate.forward": ["WheelDown"] } });
+      const scroll = vi.fn();
+      editor.addEventListener("wheel", scroll);
+      expect(wheel({ ctrlKey: true, deltaMode: WheelEvent.DOM_DELTA_LINE }, 1).defaultPrevented).toBe(true);
+      expect(wheel({ ctrlKey: true }, 2, 120).defaultPrevented).toBe(true);
+      expect(wheel({ ctrlKey: true }, 3, 120).defaultPrevented).toBe(true);
+      expect(wheel({ deltaY: 1, deltaMode: WheelEvent.DOM_DELTA_LINE }, 4).defaultPrevented).toBe(true);
+      expect(wheel({ ctrlKey: true, deltaY: 1 }, 5).defaultPrevented).toBe(false);
+      expect(wheel({ ctrlKey: true, deltaY: 0, deltaX: -10 }, 6).defaultPrevented).toBe(false);
+      expect(wheel({ deltaMode: WheelEvent.DOM_DELTA_LINE }, 7).defaultPrevented).toBe(false);
+      expect(back).toHaveBeenCalledTimes(3);
+      expect(forward).toHaveBeenCalledOnce();
+      expect(scroll).toHaveBeenCalledTimes(3);
+    });
+
+    it("swallows a bound trackpad burst without repeating the action or taking over unbound momentum", () => {
+      useKeymap.setState({ overrides: { "navigate.back": ["Alt+WheelUp"], "navigate.forward": ["Alt+WheelDown"] } });
+      expect(wheel({ deltaY: -30 }, 0).defaultPrevented).toBe(false);
+      expect(wheel({ altKey: true, deltaY: -20 }, 20).defaultPrevented).toBe(false);
+      expect(back).not.toHaveBeenCalled();
+      expect(wheel({ altKey: true, deltaY: -30 }, 200).defaultPrevented).toBe(true);
+      expect(wheel({ altKey: true, deltaY: -20 }, 220).defaultPrevented).toBe(true);
+      expect(wheel({ altKey: true, deltaY: -10 }, 240).defaultPrevented).toBe(true);
+      expect(back).toHaveBeenCalledOnce();
+      expect(wheel({ altKey: true, deltaY: 20 }, 260).defaultPrevented).toBe(true);
+      expect(forward).toHaveBeenCalledOnce();
+      expect(wheel({ altKey: true, deltaY: -30 }, 450).defaultPrevented).toBe(true);
+      expect(back).toHaveBeenCalledTimes(2);
+    });
 
     it("does not prepare the editor for a disabled mouse action", () => {
       const run = vi.fn();
@@ -228,6 +302,92 @@ describe("mouse shortcuts", () => {
       const [down] = click(editor, 0, { altKey: true, metaKey: true });
       expect(down!.defaultPrevented).toBe(false);
       expect(reached).toHaveBeenCalledOnce();
+      expect(back).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("installMouseShortcuts (windows without the workbench dispatcher)", () => {
+    let uninstall = () => {};
+    const back = vi.fn();
+    const forward = vi.fn();
+    let target: HTMLElement;
+
+    beforeEach(() => {
+      back.mockReset();
+      forward.mockReset();
+      registerAction({ id: "navigate.back", title: "Back", run: back });
+      registerAction({ id: "navigate.forward", title: "Forward", run: forward });
+      useKeymap.setState({ preset: "intellij-windows", overrides: {} });
+      document.body.innerHTML = `<div id="page"><p>settings</p></div>`;
+      target = document.getElementById("page")!;
+      uninstall = installMouseShortcuts(window);
+    });
+    afterEach(() => {
+      uninstall();
+      document.body.innerHTML = "";
+    });
+
+    const click = (t: Element, button: number, init: MouseEventInit = {}) => {
+      const events = (["mousedown", "mouseup", "auxclick"] as const).map(
+        (type) => new MouseEvent(type, { button, bubbles: true, cancelable: true, ...noMods, ...init }),
+      );
+      for (const e of events) t.dispatchEvent(e);
+      return events;
+    };
+
+    it("runs navigate.back / navigate.forward from the side buttons", async () => {
+      click(target, 3);
+      await Promise.resolve();
+      expect(back).toHaveBeenCalledOnce();
+      expect(forward).not.toHaveBeenCalled();
+      click(target, 4);
+      await Promise.resolve();
+      expect(forward).toHaveBeenCalledOnce();
+    });
+
+    it("swallows the side-button events so the webview does not navigate history", () => {
+      const reached = vi.fn();
+      target.addEventListener("mousedown", reached);
+      target.addEventListener("mouseup", reached);
+      target.addEventListener("auxclick", reached);
+      const events = click(target, 3);
+      expect(events.every((e) => e.defaultPrevented)).toBe(true);
+      expect(reached).not.toHaveBeenCalled();
+      expect(back).toHaveBeenCalledOnce();
+    });
+
+    it("leaves left, middle and right clicks alone", () => {
+      const reached = vi.fn();
+      target.addEventListener("mousedown", reached);
+      for (const button of [0, 1, 2]) {
+        const [down] = click(target, button);
+        expect(down!.defaultPrevented).toBe(false);
+      }
+      expect(reached).toHaveBeenCalledTimes(3);
+      expect(back).not.toHaveBeenCalled();
+    });
+
+    it("follows a keymap override on a modifier + side button", async () => {
+      useKeymap.setState({ overrides: { "navigate.back": ["Shift+Button4"], "navigate.forward": ["Shift+Button5"] } });
+      // Without the modifier the side button is unbound now.
+      click(target, 3);
+      await Promise.resolve();
+      expect(back).not.toHaveBeenCalled();
+      expect(forward).not.toHaveBeenCalled();
+      click(target, 3, { shiftKey: true });
+      await Promise.resolve();
+      expect(back).toHaveBeenCalledOnce();
+      click(target, 4, { shiftKey: true });
+      await Promise.resolve();
+      expect(forward).toHaveBeenCalledOnce();
+    });
+
+    it("does nothing while shortcuts are being recorded", async () => {
+      const resume = suspendKeyboardDispatch();
+      expect(keyboardDispatchSuspended()).toBe(true);
+      click(target, 3);
+      resume();
+      await Promise.resolve();
       expect(back).not.toHaveBeenCalled();
     });
   });

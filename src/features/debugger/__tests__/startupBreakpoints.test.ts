@@ -25,6 +25,7 @@ import {
 
 const ipc = vi.hoisted(() => ({
   debugSetBreakpoints: vi.fn(),
+  debugReplaceBreakpoints: vi.fn(async () => ({ status: "ok", data: null })),
   debugStart: vi.fn(async () => ({ status: "ok", data: 42 })),
   debugStop: vi.fn(async () => ({ status: "ok", data: null })),
   debugCapabilities: vi.fn(async () => ({ status: "ok", data: {} })),
@@ -73,10 +74,14 @@ it.each([undefined, true, false])(
         const show = vi.fn();
         provideToolWindowService({ show } as unknown as ToolWindowService);
         if (prepared) {
+          // oxlint-disable-next-line no-await-in-loop -- prepared and direct starts share tool-window/session state; the show assertion must follow this start
           await startPreparedSession({ id: "java", name: "Java" } as never, async () => config("launch"), {
             show: foreground,
           });
-        } else await startSession(config("launch"), { show: foreground });
+        } else {
+          // oxlint-disable-next-line no-await-in-loop -- prepared and direct starts share tool-window/session state; the show assertion must follow this start
+          await startSession(config("launch"), { show: foreground });
+        }
         if (showOnStart && foreground !== false) expect(show).toHaveBeenCalledWith("debug");
         else expect(show).not.toHaveBeenCalled();
       }
@@ -163,6 +168,24 @@ it("drains an in-flight update and sends pending removals before startup", async
   await starting;
   expect(ipc.debugSetBreakpoints).toHaveBeenLastCalledWith("/p/Main.java", []);
   expect(ipc.debugStart).toHaveBeenCalledOnce();
+});
+
+it("hands the window's whole list to the backend before startup, even after a failed removal (#6116)", async () => {
+  ipc.debugSetBreakpoints.mockResolvedValueOnce({ status: "ok", data: [] }).mockRejectedValueOnce(new Error("lost"));
+  addBreakpoint("/p/Main.java", 4);
+  await vi.advanceTimersByTimeAsync(120);
+  removeAllBreakpoints();
+  await vi.advanceTimersByTimeAsync(120);
+  addBreakpoint("/p/Other.java", 7);
+  ipc.debugSetBreakpoints.mockResolvedValue({ status: "ok", data: [] });
+  ipc.debugReplaceBreakpoints.mockClear();
+  await startSession(config("launch"));
+  expect(ipc.debugReplaceBreakpoints).toHaveBeenCalledExactlyOnceWith({
+    "/p/Other.java": [expect.objectContaining({ line: 7, enabled: true })],
+  });
+  expect(ipc.debugReplaceBreakpoints.mock.invocationCallOrder[0]).toBeLessThan(
+    ipc.debugStart.mock.invocationCallOrder[0]!,
+  );
 });
 
 it("flushes persisted breakpoints immediately after project loading", async () => {
@@ -364,4 +387,30 @@ it("prefers the same configuration over another selected tab with the same name"
   await startSession({ ...config("launch"), name: "Same" }, { runConfig: runConfig("b") });
   expect(tabIds()).toEqual([1, 3]);
   expect(useDebug.getState().sessions[3]?.runConfig?.id).toBe("b");
+});
+
+it("keeps a rerun tab in place and selected while its adapter starts", async () => {
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 1 }).mockResolvedValueOnce({ status: "ok", data: 2 });
+  await startSession({ ...config("launch"), name: "main.c" });
+  await startSession({ ...config("launch"), name: "layout.c" });
+  useDebug.setState({ active: 1 });
+
+  let respond!: (r: { status: "ok"; data: number }) => void;
+  ipc.debugStart.mockImplementationOnce(() => new Promise((resolve) => (respond = resolve)) as never);
+  const rerun = rerunSession(1);
+  await vi.advanceTimersByTimeAsync(0);
+  handleDebugEvent(1, { kind: "terminated" });
+  // Stopped, the old tab still holds its place and the selection.
+  expect(tabIds()).toEqual([1, 2]);
+  expect(useDebug.getState().active).toBe(1);
+
+  // The adapter announces the new session before `debugStart` returns: it takes the tab at once.
+  handleDebugEvent(3, { kind: "started", name: "main.c", adapter: "lldb", parent: null } as never);
+  expect(tabIds()).toEqual([3, 2]);
+  expect(useDebug.getState().active).toBe(3);
+
+  respond({ status: "ok", data: 3 });
+  await rerun;
+  expect(tabIds()).toEqual([3, 2]);
+  expect(useDebug.getState().active).toBe(3);
 });

@@ -1343,7 +1343,8 @@ esac"#,
             archive = archive.display()
         ),
     );
-    let downloads = ToolDownloadSettings { github_mirror: "https://mirror.test/".into() };
+    // The first mirror is down: the next one is tried before the official host.
+    let downloads = ToolDownloadSettings { github_mirror: "https://down.mirror.test/, https://mirror.test/".into() };
     let emit = |_: InstallEvent| {};
     env.tools()
         .with_downloads(downloads)
@@ -1351,8 +1352,14 @@ esac"#,
         .unwrap();
     let asked = fs::read_to_string(&log).unwrap();
     // A configured mirror is tried first — waiting for a slow official host would defeat it.
-    let mirror_at = asked.find("https://mirror.test/https://github.com/").expect("the mirror is tried");
-    assert!(!asked[..mirror_at].contains("releases/download"), "the mirror goes first: {asked}");
+    let down_at = asked.find("https://down.mirror.test/https://github.com/").expect("the first mirror is tried");
+    let mirror_at = asked.find("https://mirror.test/https://github.com/").expect("the second mirror is tried");
+    assert!(down_at < mirror_at, "mirrors go in order: {asked}");
+    assert!(!asked[..down_at].contains("releases/download"), "the mirrors go first: {asked}");
+    assert!(
+        !asked.lines().any(|l| l.starts_with("https://github.com/") && l.contains("releases/download")),
+        "the official host is not needed: {asked}"
+    );
 }
 
 /// A mirror may only deliver bytes something can vouch for; the official host may not.

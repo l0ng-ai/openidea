@@ -58,7 +58,7 @@ export function activate(): void | (() => void) {
     onOpenTabsChange: (fn) => useTabs.subscribe(fn),
     openTabs: () => ctrl.openTabs(),
     tabInput: (paneId, tabId) => ctrl.tabInput(paneId, tabId),
-    activeInput: () => ctrl.activeInput(),
+    activeInput: (options) => ctrl.activeInput(options),
     onActiveInputChange: (fn) => ctrl.onActiveInputChange(fn),
     closePath: (path) => ctrl.closePath(path),
     closeInput: (key) => ctrl.closeInput(key),
@@ -66,6 +66,7 @@ export function activate(): void | (() => void) {
     cancelClose: () => ctrl.cancelClose(),
     forgetSavedTabs: () => ctrl.forgetSavedTabs(),
     keepSavedTabs: () => ctrl.keepSavedTabs(),
+    flushSession: () => ctrl.saveSession(),
     documentHistory: (command) => ctrl.documentHistory(command),
     chooseDeclaration: async (targets, name, anchor) =>
       openPopup({

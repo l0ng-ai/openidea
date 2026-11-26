@@ -1,5 +1,6 @@
 //! Class-table snapshots of a debugged JVM, read over the HotSpot attach listener or, where
-//! that is unavailable, counted by the debugger; and the JVM's objects through the debugger.
+//! that is unavailable, counted by the debugger; the JVM's objects through the debugger; and
+//! its thread dumps.
 
 mod fallback;
 mod heap;
@@ -10,6 +11,7 @@ mod snapshot;
 pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
+mod threads;
 
 use crate::session::Session;
 use crate::session::Suspension;
@@ -28,6 +30,8 @@ pub(crate) use inspect::{fields, instances, referrers, set_inspector, vm_target,
 pub(crate) use scan::watch_for_attached_jvm;
 pub(crate) use scan::{JvmFinder, attach_target, find_attached_jvm, find_local_jvm, local_jdwp_port};
 use snapshot::{AttachProbe, JdkProbe, take_snapshot};
+pub use threads::{JvmThreadDump, JvmThreadsResult, JvmThreadsUnavailable, VirtualThreadsNote, run_jvm_thread_dump};
+pub(crate) use threads::{debugged_run_thread_dump, session_thread_dump};
 
 pub const JVM_MEMORY_ADAPTERS: &[&str] = &["java-debug", crate::kotlin::ADAPTER, crate::kotlin_lsp::ADAPTER];
 pub const HISTOGRAM_TIMEOUT: Duration = Duration::from_secs(10);
@@ -190,6 +194,25 @@ fn histogram_pid(session: &Session) -> Result<Option<i32>, JvmMemoryUnavailable>
     Ok(None)
 }
 
+/// Whether `session` is a JVM session attached to `run` that may hold `pid`: its JVM is `pid` or
+/// not located yet.
+pub(crate) fn attached_to_run(session: &Session, run: ide_core::RunId, pid: u32) -> bool {
+    let located = session.jvm_pid.load(Ordering::Acquire);
+    session.run == Some(run)
+        && JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str())
+        && !session.terminated.load(Ordering::Acquire)
+        && (located <= 0 || located == i64::from(pid))
+}
+
+/// Whether `session` debugs the JVM `pid`: the program it launched or the JVM its attach found.
+pub(crate) fn debugs_jvm(session: &Session, pid: u32) -> bool {
+    let jvm = if session.request == "launch" { launch_pid(session) } else { session.jvm_pid.load(Ordering::Acquire) };
+    JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str())
+        && !session.terminated.load(Ordering::Acquire)
+        && jvm > 0
+        && jvm == i64::from(pid)
+}
+
 /// The JVM a launch session started: the one the IDE started for an app-launched (Kotlin)
 /// session, else the program the adapter reported; 0 when neither is known.
 pub(crate) fn launch_pid(session: &Session) -> i64 {
@@ -206,6 +229,8 @@ pub(crate) enum JvmTarget<'a> {
     /// The JVM of an attach session. While `pid` is 0 it is looked up by `jdwp_port`, which is
     /// `None` for a remote JVM.
     Attached { pid: &'a AtomicI64, jdwp_port: Option<u16> },
+    /// A JVM the session debugs, found from outside it (in a run's process tree).
+    Known(i32),
     /// Known without asking any JVM: no histogram can be taken, for this reason.
     Unavailable(JvmMemoryUnavailable),
 }
@@ -261,6 +286,7 @@ async fn histogram(
 fn lookup(target: JvmTarget<'_>) -> Result<Lookup, JvmMemoryUnavailable> {
     match target {
         JvmTarget::Launched(pid) => Ok(Lookup::Tree(pid)),
+        JvmTarget::Known(pid) => Ok(Lookup::Known(pid)),
         JvmTarget::Attached { pid, jdwp_port } => match i32::try_from(pid.load(Ordering::Acquire)) {
             Ok(p) if p > 0 => Ok(Lookup::Known(p)),
             _ => jdwp_port.map(Lookup::Scan).ok_or(JvmMemoryUnavailable::AttachedJvmNotFound),

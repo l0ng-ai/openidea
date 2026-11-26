@@ -22,6 +22,7 @@ describe("TUI row measurement", () => {
     startTuiRowObserver();
     for (let n = 0; n < 3; n++) {
       row.replaceChildren(document.createElement("span"));
+      // oxlint-disable-next-line no-await-in-loop -- yield a microtask between rebuilds so the observer receives separate deliveries
       if (separate) await Promise.resolve();
     }
     expect(stopTuiRowObserver()).toBe(3);

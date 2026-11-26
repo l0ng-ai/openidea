@@ -24,10 +24,11 @@ const ms = (key: string, max = 5000) => ({ kind: "number" as const, key, min: 0,
 export function useLanguages(): Array<{ id: string; name: string }> {
   const [langs, setLangs] = useState<Array<{ id: string; name: string }>>([]);
   useEffect(() => {
-    if (!isTauri()) return;
     let live = true;
-    void commands
-      .languages()
+    const languages = isTauri()
+      ? commands.languages()
+      : import("@/editor/core/backend").then(({ docBackend }) => docBackend().languages());
+    void languages
       .then(
         (list) =>
           live && setLangs(list.map((l) => ({ id: l.id, name: l.name })).sort((a, b) => a.name.localeCompare(b.name))),
@@ -76,6 +77,17 @@ function LanguageChecks({ k, label, disabled }: { k: string; label: string; disa
 function BreadcrumbLanguages() {
   const [show] = useSetting<boolean>(`${P}.breadcrumbs.show`);
   return <LanguageChecks k={`${P}.breadcrumbs.disabledLanguages`} label="Show breadcrumbs for:" disabled={!show} />;
+}
+
+function StickyLanguages() {
+  const [show] = useSetting<boolean>(`${P}.stickyScroll`);
+  return (
+    <LanguageChecks
+      k={`${P}.codeEditing.stickyLinesDisabledLanguages`}
+      label="Show sticky lines for:"
+      disabled={!show}
+    />
+  );
 }
 
 function InlayLanguages() {
@@ -512,6 +524,7 @@ const FOLDING = editorPage({
         { t: "check", key: `${P}.folding.fileHeader`, label: "File header" },
         { t: "check", key: `${P}.folding.imports`, label: "Imports" },
         { t: "check", key: `${P}.folding.docComments`, label: "Documentation comments" },
+        { t: "check", key: `${P}.folding.goShortBlocks`, label: "Short Go error guards and case clauses" },
       ],
     },
   ],
@@ -882,7 +895,7 @@ const STICKY = editorPage({
   id: "editor.general.stickyLines",
   title: "Sticky Lines",
   order: 10,
-  keywords: ["sticky scroll"],
+  keywords: ["sticky scroll", "Markdown"],
   sections: [
     {
       items: [
@@ -894,6 +907,7 @@ const STICKY = editorPage({
             { t: "number", key: `${P}.codeEditing.stickyLinesMax`, label: "Maximum number of lines", min: 1, max: 20 },
           ],
         },
+        { t: "custom", label: "Show sticky lines for:", keywords: ["languages"], component: StickyLanguages },
       ],
     },
   ],

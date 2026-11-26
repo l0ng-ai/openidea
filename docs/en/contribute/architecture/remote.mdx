@@ -28,6 +28,7 @@ flowchart LR
 | Piece                             | Where                                                                         |
 | --------------------------------- | ----------------------------------------------------------------------------- |
 | Server binary                     | `crates/ide-host/src/bin/server.rs` (`openidea-server`)                       |
+| Persistent daemon and attach      | `crates/ide-host/src/daemon.rs` (`openidea-server --attach` / `--daemon`)     |
 | Protocol and dispatcher           | `crates/ide-host/src/rpc.rs`                                                  |
 | Client: connect, install, forward | `src-tauri/src/remote_dev.rs`                                                 |
 | WSL and dev container transports  | `src-tauri/src/remote_wsl.rs`, `src-tauri/src/remote_container.rs`            |
@@ -38,10 +39,11 @@ flowchart LR
 ## The server
 
 ```text
-openidea-server --stdio | --mcp-stdio [--project <path>] | --connect <host> <port> | --version
+openidea-server --stdio | --attach <project-path> | --mcp-stdio [--project <path>] | --connect <host> <port> | --version
 ```
 
-- `--stdio` serves one desktop client over stdin/stdout. stdout carries the protocol, so logs go to stderr (filter with `OPENIDEA_LOG`).
+- `--attach <project-path>` bridges stdin/stdout to a detached daemon on a `0600` Unix socket in a `0700` directory. The socket key is stable across builds. The relay checks the daemon's build before attaching; a different build can replace it only when no window, live workload, or unsaved document remains. Idle or explicit shutdown keeps the socket bound until cleanup is complete.
+- `--stdio` serves a single desktop client directly over stdin/stdout and exits on EOF. stdout carries the protocol, so logs go to stderr (filter with `OPENIDEA_LOG`).
 - Its state lives under `OPENIDEA_SERVER_HOME` (default `~/.openidea`), in `config/` and `data/`. Language definitions can be added in `config/languages/`.
 - An SSH exec channel gets a minimal environment, so on every start the server takes the login shell's environment and adds the IDE-managed tools directory to `PATH`.
 - `--version` prints the app version and the protocol version.
@@ -64,7 +66,7 @@ JSON-RPC 2.0 with `Content-Length` framing (`ide-jsonrpc`), over the server's st
 | notification `plugin`   | server → client | `{ window, event }` from code plugins of the remote project                                                                                          |
 | request `plugin_secret` | server → client | `{ plugin, name }` → `string` or `null`: a secret from the desktop's keychain                                                                        |
 
-The protocol version is `PROTOCOL_VERSION` in `rpc.rs`. Errors are `IdeError`s carried as JSON in the JSON-RPC error message, so the frontend sees the same `kind` / `message` as for a local command.
+The protocol version is `PROTOCOL_VERSION` in `rpc.rs`; the desktop refuses a server that speaks another one. Change it when an existing command's argument or result changes shape. A binary argument is an `IpcBytes` (a base64 string in JSON, `string` in the bindings), never a `Vec<u8>`, which is an array of numbers about 3.6 times the size. Errors are `IdeError`s carried as JSON in the JSON-RPC error message, so the frontend sees the same `kind` / `message` as for a local command.
 
 ## Routing commands
 

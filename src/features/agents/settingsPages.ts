@@ -2,24 +2,23 @@ import { lazyComponent } from "@/ui";
 import { registerSettingsPages } from "@/workbench/contributions";
 import { AGENTS_GROUP, MCP_PAGE, POLICY_PAGE, REGISTRY_PAGE, SKILLS_PAGE } from "./model";
 
-/** Settings › Agents › Coding Agents, External MCP Servers, Skills, and Command Permissions (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
   return registerSettingsPages([
     {
       id: REGISTRY_PAGE,
-      title: "Coding Agents",
+      title: "Agent Setup",
       group: AGENTS_GROUP,
       // First in Agents, which sits after Languages & Frameworks and before Tools.
       order: 450,
-      keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
+      keywords: ["agent", "acp", "registry", "install", "update", "Coding Agents"],
       component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
     },
     {
       id: MCP_PAGE,
-      title: "External MCP Servers",
+      title: "MCP Connections",
       group: AGENTS_GROUP,
       order: 475,
-      keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
+      keywords: ["mcp", "model context protocol", "servers", "tools", "agent", "External MCP Servers"],
       component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
     },
     {
@@ -32,10 +31,10 @@ export function activateSettingsPages(): () => void {
     },
     {
       id: POLICY_PAGE,
-      title: "Command Permissions",
+      title: "Command Rules",
       group: AGENTS_GROUP,
       order: 490,
-      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
+      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "Command Permissions", "exec"],
       component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
     },
   ]);

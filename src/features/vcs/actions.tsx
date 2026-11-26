@@ -13,6 +13,7 @@ import {
   editorService,
   maybeEditorService,
   notifications,
+  projectViewContextLead,
   projectViewSelection,
   toolWindowService,
   type WorktreeReview,
@@ -53,6 +54,7 @@ import {
   showUnstashDialog,
 } from "./changeOps";
 import { setAmend, showsIgnoredFiles, toggleIgnoredFiles, useCommit } from "./commitStore";
+import { commitDialogTreeSelection } from "./commitDialogSelection";
 import { amendPreviewNode } from "./amendPreview";
 import { SELECT_AMEND_TARGET, type EarlierAmend } from "./amendTargets";
 import { TOGGLE_IGNORED_FILES } from "./ignoredFiles";
@@ -71,6 +73,7 @@ import {
   type DiffData,
 } from "./diffInput";
 import { buildChangeTree, changeFileNodes, changeGroupPaths, selectedChangeNodes, type ChangeNode } from "./changes";
+import { currentChangeModules } from "./changeModules";
 import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
 import {
@@ -189,6 +192,9 @@ export function currentChangeTree(): ChangeNode[] {
     undefined,
     commit.groupByRepo,
     commit.showUnversionedSeparately,
+    [],
+    currentChangeModules(),
+    commit.groupByModule,
   );
 }
 
@@ -224,6 +230,8 @@ function showDiffTargets(tree: readonly ChangeNode[], paths: readonly string[], 
 function changedPaths(arg: unknown): string[] {
   const explicit = argPaths(arg);
   if (explicit?.length) return explicit;
+  const dialog = commitDialogTreeSelection();
+  if (dialog) return dialog.paths;
   const sel = useCommit.getState().selection;
   return commitWindowFocused() ? sel : [];
 }
@@ -259,7 +267,8 @@ function gutterTarget(arg: unknown, flag: "staged" | "unstaged"): GutterChangeTa
 /** Files the current context refers to: argument, commit view selection, or the active file. */
 function contextPaths(arg: unknown): string[] {
   const changed = changedPaths(arg);
-  if (changed.length) return changed;
+  // The Commit dialog tree's selection is final, even when it is empty.
+  if (changed.length || commitDialogTreeSelection()) return changed;
   const active = maybeEditorService()?.activePath();
   return active ? [active] : [];
 }
@@ -269,22 +278,31 @@ function contextPaths(arg: unknown): string[] {
  * else the Project view's — it keeps its selection while another view has focus — else the
  * active file.
  */
-function selectedPaths(arg: unknown): string[] {
+function selectedPaths(arg: unknown, project = projectViewSelection()): string[] {
   const changed = changedPaths(arg);
   if (changed.length) return changed;
+  // The Commit dialog tree's selection is final, even when it is empty.
+  if (commitDialogTreeSelection()) return [];
   if (commitWindowFocused() && useCommit.getState().selectionKeys.some((key) => key.startsWith("amend:"))) return [];
   if (commitWindowFocused() && stagingAreaOn() && showsIgnoredFiles(useVcs.getState().root ?? "")) {
     const { selectionKeys } = useCommit.getState();
     if (selectionKeys.length && selectionKeys.every((key) => key === "group:ignored" || key.startsWith("ignored:")))
       return [];
   }
-  const project = projectViewSelection();
   return project.length ? project : contextPaths(arg);
 }
 
-/** Paths a file action targets: the Project view's selection while it has focus, else the open file. */
+/**
+ * Like {@link selectedPaths}, but the Project view's selection counts only while the tree has
+ * focus or owns the context: over the editor the active file wins.
+ */
+function focusedSelection(arg: unknown, ctx: { projectViewFocus?: unknown }): string[] {
+  return selectedPaths(arg, ctx.projectViewFocus || projectViewContextLead() ? projectViewSelection() : []);
+}
+
+/** Uses the Project view's selection while the tree has focus or owns the context. */
 function focusedPaths(arg: unknown, ctx: { projectViewFocus?: unknown }): string[] {
-  return ctx.projectViewFocus ? selectedPaths(arg) : contextPaths(arg);
+  return ctx.projectViewFocus || projectViewContextLead() ? selectedPaths(arg) : contextPaths(arg);
 }
 
 /**
@@ -332,6 +350,7 @@ const OPERATIONS: MenuItem[] = [
   { kind: "action", action: "vcs.compareWithBranch" },
   { kind: "separator" },
   { kind: "action", action: "vcs.branches" },
+  { kind: "action", action: "vcs.copyBranchName" },
   { kind: "action", action: "vcs.push" },
   { kind: "action", action: "vcs.stash" },
   { kind: "action", action: "vcs.unstash" },
@@ -724,6 +743,16 @@ export function registerVcsActions(): () => void {
         if (!explicit?.length && ed?.view.hasFocus) {
           if (rollbackSelectedLines(ed.view, ed.ctx.path) || stagingAreaOn()) return;
         }
+        // The Commit dialog's tree, while it owns the focus, targets its own selection;
+        // an empty selection is final and does not fall back to the checked changes.
+        const dialog = commitDialogTreeSelection();
+        if (dialog && !explicit?.length) {
+          if (dialog.paths.length) {
+            const files = rollbackCandidates(dialog.paths);
+            if (files.length) showRollbackDialog(files);
+          }
+          return;
+        }
         // The Commit window's subject is its tree selection; when the selection holds
         // nothing rollbackable (unversioned files, stale paths), the checked changes are
         // instead — as IDEA's toolbar Rollback acts on the checked changes there.
@@ -771,7 +800,7 @@ export function registerVcsActions(): () => void {
         }
         const line =
           arg && typeof arg === "object" && "line" in arg ? Number((arg as { line: unknown }).line) : undefined;
-        const paths = selectedPaths(arg);
+        const paths = focusedSelection(arg, ctx);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
           return;
@@ -798,6 +827,7 @@ export function registerVcsActions(): () => void {
         }
         for (const target of targets.slice(0, 5)) {
           const data = typeof target === "string" ? groupDiffData(tree, target) : changeNodeDiffData(tree, target);
+          // oxlint-disable-next-line no-await-in-loop -- diff tabs open in selection order
           await openVcsDiff({ ...data, line }, { preview: targets.length === 1 });
         }
       },
@@ -809,9 +839,9 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       keyWhen: "!editorTextFocus",
-      run: ({ arg }) => {
+      run: ({ arg, ctx }) => {
         const requested = arg && typeof arg === "object" && "left" in arg && "right" in arg ? (arg as DiffData) : null;
-        const path = selectedPaths(arg)[0];
+        const path = focusedSelection(arg, ctx)[0];
         const data = requested ?? focusedDiffNavigator()?.viewer?.()?.data ?? (path ? workingDiffData(path) : null);
         if (!data) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
@@ -826,8 +856,8 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "diff",
       when: VCS,
-      run: async ({ arg }) => {
-        const paths = selectedPaths(arg);
+      run: async ({ arg, ctx }) => {
+        const paths = focusedSelection(arg, ctx);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Open or select a file or folder to compare" });
           return;

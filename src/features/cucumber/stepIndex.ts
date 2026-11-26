@@ -49,6 +49,7 @@ function stepIndex(): Promise<StepIndex> {
       const index: StepIndex = { definitions: [], steps: [] };
       for (const s of sources) {
         const path = ipcPath(s.path);
+        // oxlint-disable-next-line no-await-in-loop -- keep source order in the index without unbounded parallel dialect loading
         if (s.feature) index.steps.push({ path, text: s.text, items: featureSteps(s.text, await dialectOf(s.text)) });
         else {
           const items = stepDefinitions(s.text, path);

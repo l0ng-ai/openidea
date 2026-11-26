@@ -20,8 +20,10 @@ import {
   useKeymap,
 } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
+import { syncRemoteRecentMenu } from "@/platform/remote";
 import { useContributions, useMenuSlotItems, useStandaloneEditor } from "@/workbench/contributions";
-import { isDistractionFree, useDistractionFree } from "@/workbench/distractionFree";
+import { useDistractionFree } from "@/workbench/distractionFree";
+import { javaFileNameOf, menuLabelParams } from "@/workbench/menuLabels";
 import { orderStatusItems } from "@/workbench/StatusBar";
 import { statusWidgetRows } from "@/workbench/statusBarWidgets";
 import { useToolWindowLayouts } from "@/workbench/toolwindows/layouts";
@@ -101,11 +103,7 @@ export function menuAccelerator(binding: string): string | undefined {
 export function buildMenuConfig(os: HostOs): MenuConfig {
   const labels: Record<string, string> = {};
   // Per-window state some labels follow (View › Appearance › Enter / Exit Distraction Free Mode).
-  const params = {
-    os,
-    distractionFree: isDistractionFree() ? "on" : "off",
-    toolWindows: toolWindowsRestorable() ? "hidden" : "shown",
-  };
+  const params = menuLabelParams(os);
   for (const key of keysWithPrefix("menu.")) labels[key] = t(key, params);
   labels["menu.layout.applyNamed"] = tx("Apply");
   labels["menu.layout.restoreNamed"] = tx("Restore");
@@ -261,6 +259,7 @@ export function installMenuBridge(): () => void {
     .catch(() => {});
 
   push();
+  syncRemoteRecentMenu();
   const onFocus = () => {
     push();
     pushEnablement(true);
@@ -288,7 +287,10 @@ export function installMenuBridge(): () => void {
     }),
     useToolWindowLayouts.subscribe(push),
     useMenuSlotItems.subscribe(push),
-    useContextKeys.subscribe(() => pushEnablement()),
+    useContextKeys.subscribe((s, prev) => {
+      pushEnablement();
+      if (javaFileNameOf(s.editorPath) !== javaFileNameOf(prev.editorPath)) push();
+    }),
     useActions.subscribe(() => pushEnablement()),
     // Project membership and names also change the Open Recent list.
     useProject.subscribe((s, prev) => {

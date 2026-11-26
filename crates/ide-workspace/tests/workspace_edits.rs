@@ -127,6 +127,30 @@ fn later_failure_preserves_disk_and_unsaved_buffer() {
     assert!(after.dirty);
 }
 
+/// Undoing a workspace edit keeps the warning about a file changed on disk under unsaved
+/// edits: autosave still leaves the external change alone.
+#[test]
+fn rollback_keeps_a_disk_conflict_of_an_unsaved_buffer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = tmp.path().join("first.txt");
+    std::fs::write(&first, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&first).unwrap();
+    docs.edit(info.id, info.version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: "own".into() }] })
+        .unwrap();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+    // An external write the undo record still accepts (same bytes, new mtime) under the unsaved buffer.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(&first, "old\n").unwrap();
+    docs.on_disk_changed(std::slice::from_ref(&first));
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    let snap = docs.snapshot(info.id).unwrap();
+    assert_eq!(snap.text, "own\n");
+    assert!(snap.dirty);
+    assert!(!docs.autosave(info.id).unwrap(), "autosave must not overwrite the external change");
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "old\n");
+}
+
 #[test]
 fn create_conflict_does_not_modify_earlier_files() {
     let tmp = tempfile::tempdir().unwrap();
@@ -520,7 +544,8 @@ fn rename_after_restoring_inplace_typing_saves_but_real_unsaved_work_stays_dirty
         docs.edit(info.id, version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: text.into() }] })
             .unwrap();
     }
-    assert!(docs.snapshot(info.id).unwrap().dirty);
+    // Typing reverted to the text on disk leaves the document clean.
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
     docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     assert!(!docs.snapshot(info.id).unwrap().dirty);
@@ -598,7 +623,8 @@ fn undo_accepts_typing_that_was_reverted_to_the_saved_refactoring() {
         )
         .unwrap();
     }
-    assert!(docs.snapshot(info.id).unwrap().dirty);
+    // Typing reverted to the saved refactoring leaves the document clean.
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
     docs.undo_workspace_edit(id).unwrap();
     assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
     assert_eq!(docs.snapshot(info.id).unwrap().text, "old");
@@ -678,4 +704,26 @@ fn replacing_a_directory_symlink_does_not_resolve_later_child_paths_through_its_
         assert_eq!(std::fs::read_to_string(target.join("file.txt")).unwrap(), "old target\n");
         assert_eq!(std::fs::read_to_string(link.join("file.txt")).unwrap(), "new file\n");
     }
+}
+
+#[test]
+fn an_overwritten_open_file_keeps_the_editorconfig_charset() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = tmp.path().join("A.java");
+    std::fs::write(&path, "class A {}\n").unwrap();
+    let docs = documents();
+    let mut defaults = docs.file_defaults();
+    defaults.project_fallback = "iso-8859-15".into();
+    docs.set_file_defaults(defaults);
+    let doc = docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+
+    docs.apply_workspace_edit(&WorkspaceEdit {
+        files: vec![FileEdit::Create { path: path.clone().into(), overwrite: true }],
+        ..Default::default()
+    })
+    .unwrap();
+
+    assert_eq!(docs.snapshot(doc.id).unwrap().encoding, "utf-8");
 }

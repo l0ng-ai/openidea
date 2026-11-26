@@ -11,7 +11,7 @@
  * of the file in batches; results are cached per document text, and markers
  * follow their lines in between.
  * The cache outlives the editor view (switching tabs remounts it) until other
- * files change or a language server settles: on some servers (jdtls) every
+ * files change, a language server settles or its classpath changes: on some servers (jdtls) every
  * implementation search walks the whole workspace, so asking again is costly.
  * Library sources ask no inheritors from the server (`isLibrarySource`).
  */
@@ -25,6 +25,7 @@ import { isNavigating, onNavigation } from "@/editor/lsp/foreground";
 import { readManyFileLines, withDocument } from "@/editor/lsp/files";
 import { locationItems, navigateTo, pinToFind } from "@/editor/lsp/navigation";
 import { openPopup } from "@/editor/lsp/popupStore";
+import type { DeclarationTarget } from "@/editor/lsp/syntaxFallback";
 import {
   commands,
   isCancelled,
@@ -54,7 +55,7 @@ import {
   type MarkerCandidate,
   type MarkerGroup,
 } from "./lineMarkers";
-import { overridersInType, superMethodTargets, type SuperDeps, type SuperMethod } from "./structureNav";
+import { overridersInType, superMethodTargets, type SuperDeps } from "./structureNav";
 import {
   classLocation,
   declarationKey,
@@ -118,11 +119,15 @@ function watchChanges() {
     // documents: re-render them instead of waiting for an edit or a settling server.
     for (const plugin of live) plugin.refreshSoon();
   });
-  // Answers (outlines too) given while a server was starting or indexing may be incomplete.
-  onServerSettled(() => {
+  // Answers (outlines too) given while a server was starting or importing may be incomplete.
+  const refreshCaches = () => {
     docMarkers.clear();
     forgetInheritanceGraph();
     for (const plugin of live) plugin.refreshSoon();
+  };
+  onServerSettled(refreshCaches);
+  onIdeEvent("lspRefresh", (e) => {
+    if (e.kind === "inheritance") refreshCaches();
   });
   // Go to Declaration and the like go first: in-flight marker requests are cancelled and
   // asked again once the navigation is done.
@@ -272,18 +277,23 @@ export async function fillMarkers(
   // The inheritance graph's direct subclasses, keyed by the *declaration* each base
   // resolves to (path + position), so classes sharing a bare name never mix up.
   const subclassesOf = new Map<string, ClassInheritance[]>();
+  const baseAnswers: Array<{ cls: ClassInheritance; decls: ClassInheritance[] | Promise<ClassInheritance[]> }> = [];
   for (const cls of graph ?? []) {
     for (const base of new Set(cls.bases)) {
       // Only this file's classes are looked up below: read another file's imports only
       // when its base may name one of them, not for every shared or library base name.
       const exact = resolver ? resolver.exact(base, cls.path) : [];
       const named = exact.length || !byName.get(base)?.some((c) => c.path === path) ? exact : null;
-      for (const decl of named ?? (await resolver!.resolve(base, cls.path))) {
-        const key = declarationKey(decl);
-        subclassesOf.set(key, [...(subclassesOf.get(key) ?? []), cls]);
-      }
+      baseAnswers.push({ cls, decls: named ?? resolver!.resolve(base, cls.path) });
     }
   }
+  const resolvedBases = await Promise.all(baseAnswers.map(({ decls }) => decls));
+  baseAnswers.forEach(({ cls }, i) => {
+    for (const decl of resolvedBases[i]!) {
+      const key = declarationKey(decl);
+      subclassesOf.set(key, [...(subclassesOf.get(key) ?? []), cls]);
+    }
+  });
   const classOf = (c: MarkerCandidate): ClassInheritance | null => {
     // A class candidate is its own declaration; a method's is the `owner` it records.
     const at = c.method ? c.owner : { line: c.line, col: c.col };
@@ -297,52 +307,57 @@ export async function fillMarkers(
     const subs = subclassesOf.get(declarationKey(owner)) ?? [];
     if (!c.method) return subs.map(classLocation);
     const bare = c.symbol.replace(/\s*[(<].*$/, "");
+    const outlines = await Promise.all(
+      subs.map((sub) => deps.supers.outline(sub.path).catch(() => [] as OutlineItem[])),
+    );
     const targets: Location[] = [];
-    for (const sub of subs) {
-      const outline = await deps.supers.outline(sub.path).catch(() => [] as OutlineItem[]);
-      const m = methodInOutline(outline, sub, bare);
+    subs.forEach((sub, i) => {
+      const m = methodInOutline(outlines[i]!, sub, bare);
       if (m) targets.push({ path: sub.path, range: m.selection_range });
-    }
+    });
     return targets;
   };
   if (byName.size) {
-    for (let i = 0; i < down.length; i++) {
-      const c = down[i]!;
-      const owner = classOf(c);
-      if (!owner) continue;
-      // Merge, never replace: a server that answers sees one root, so its list can miss
-      // the subclasses living in an attached project while still being non-empty.
-      implementations[i] = withoutSelf(
-        path,
-        c,
-        mergeLocations(implementations[i] ?? [], await subclassDeclarations(c, owner)),
-      );
-    }
+    await Promise.all(
+      down.map(async (c, i) => {
+        const owner = classOf(c);
+        if (!owner) return;
+        // Merge, never replace: a server that answers sees one root, so its list can miss
+        // the subclasses living in an attached project while still being non-empty.
+        implementations[i] = withoutSelf(
+          path,
+          c,
+          mergeLocations(implementations[i] ?? [], await subclassDeclarations(c, owner)),
+        );
+      }),
+    );
   }
-  const supers: SuperMethod[][] = [];
-  for (const c of up) supers.push(await superMethodTargets(path, c.owner!, c.symbol, deps.supers));
-  if (byName.size) {
-    for (let i = 0; i < up.length; i++) {
-      const c = up[i]!;
-      const self = classOf(c);
-      if (!self) continue;
-      const found = resolver ? await superMethodsFrom(resolver, self, c.symbol, deps) : [];
-      if (!found.length) continue;
-      const known = supers[i]!;
-      // Same merge rule as ↓: add the graph's super methods to what the server answered.
-      const extra = found.map((f) => f.location).filter((l) => !known.some((s) => sameDeclarationLine(s.location, l)));
-      const owners = [...new Set(found.map((f) => f.owner))].sort((a, b) => a.localeCompare(b));
-      entry(c).supers = {
-        kind: "overriding",
-        line: c.line,
-        col: c.col,
-        method: c.method,
-        name: c.name,
-        targets: [...known.map((s) => s.location), ...extra],
-        tooltip: tx`Overrides method in ${owners.join(", ")}`,
-        chooserTitle: tx`Choose Super Method of ${c.name} (${known.length + extra.length} found)`,
-      };
-    }
+  const supers = await Promise.all(up.map((c) => superMethodTargets(path, c.owner!, c.symbol, deps.supers)));
+  if (byName.size && resolver) {
+    await Promise.all(
+      up.map(async (c, i) => {
+        const self = classOf(c);
+        if (!self) return;
+        const found = await superMethodsFrom(resolver, self, c.symbol, deps);
+        if (!found.length) return;
+        const known = supers[i]!;
+        // Same merge rule as ↓: add the graph's super methods to what the server answered.
+        const extra = found
+          .map((f) => f.location)
+          .filter((l) => !known.some((s) => sameDeclarationLine(s.location, l)));
+        const owners = [...new Set(found.map((f) => f.owner))].sort((a, b) => a.localeCompare(b));
+        entry(c).supers = {
+          kind: "overriding",
+          line: c.line,
+          col: c.col,
+          method: c.method,
+          name: c.name,
+          targets: [...known.map((s) => s.location), ...extra],
+          tooltip: tx`Overrides method in ${owners.join(", ")}`,
+          chooserTitle: tx`Choose Super Method of ${c.name} (${known.length + extra.length} found)`,
+        };
+      }),
+    );
   }
   // Go: an implementation request on a type or method answers the interfaces it satisfies.
   let satisfied: Location[][] = [];
@@ -399,20 +414,27 @@ async function superMethodsFrom(
   for (let d = 0; d < depth && level.length; d++) {
     const next: ClassInheritance[] = [];
     const found: { location: Location; owner: string }[] = [];
-    for (const cls of level) {
-      for (const base of cls.bases) {
-        // Same rule as the graph: a base the imports name, else a unique one.
-        for (const baseCls of await resolver.resolve(base, cls.path)) {
-          if (seen.has(key(baseCls))) continue;
-          seen.add(key(baseCls));
-          const outline = await deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[]);
-          const m = methodInOutline(outline, baseCls, bare);
-          if (m) found.push({ location: { path: baseCls.path, range: m.selection_range }, owner: base });
-          // Not declared there: keep walking that class's own bases.
-          else next.push(baseCls);
-        }
+    const pairs = level.flatMap((cls) => cls.bases.map((base) => ({ cls, base })));
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; resolves within a level are parallel
+    const resolved = await Promise.all(pairs.map(({ cls, base }) => resolver.resolve(base, cls.path)));
+    const toOutline: Array<{ baseCls: ClassInheritance; base: string }> = [];
+    pairs.forEach(({ base }, i) => {
+      for (const baseCls of resolved[i]!) {
+        if (seen.has(key(baseCls))) continue;
+        seen.add(key(baseCls));
+        toOutline.push({ baseCls, base });
       }
-    }
+    });
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; outlines within a level are parallel
+    const outlines = await Promise.all(
+      toOutline.map(({ baseCls }) => deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[])),
+    );
+    toOutline.forEach(({ baseCls, base }, i) => {
+      const m = methodInOutline(outlines[i]!, baseCls, bare);
+      if (m) found.push({ location: { path: baseCls.path, range: m.selection_range }, owner: base });
+      // Not declared there: keep walking that class's own bases.
+      else next.push(baseCls);
+    });
     if (found.length) return found;
     level = next;
   }
@@ -441,35 +463,38 @@ async function fromHierarchy(
     const key = `${c.owner.line}:${c.owner.col}`;
     byOwner.set(key, [...(byOwner.get(key) ?? []), c]);
   }
-  for (const methods of byOwner.values()) {
-    if (methods.length < 2) continue;
-    const owner = methods[0]!.owner!;
-    const subtypes = await allSubtypes(path, owner, supers, methods.length - 1);
-    if (!subtypes) continue;
-    const type = down.find((c) => !c.method && c.line === owner.line && c.col === owner.col);
-    if (type)
-      known.set(
-        type,
-        subtypes.map((s) => ({ path: s.path, range: s.selectionRange })),
-      );
-    for (const m of methods) {
-      const targets: Location[] = [];
-      let unsure = false;
-      for (const s of subtypes) {
-        const outline = await supers.outline(s.path).catch((e) => {
-          if (isCancelled(e)) throw e;
-          return null;
-        });
-        const found = outline && overridersInType(outline, s, m.symbol);
-        if (!found) {
-          unsure = true;
-          break;
+  await Promise.all(
+    [...byOwner.values()].map(async (methods) => {
+      if (methods.length < 2) return;
+      const owner = methods[0]!.owner!;
+      const subtypes = await allSubtypes(path, owner, supers, methods.length - 1);
+      if (!subtypes) return;
+      const type = down.find((c) => !c.method && c.line === owner.line && c.col === owner.col);
+      if (type)
+        known.set(
+          type,
+          subtypes.map((s) => ({ path: s.path, range: s.selectionRange })),
+        );
+      for (const m of methods) {
+        const targets: Location[] = [];
+        let unsure = false;
+        for (const s of subtypes) {
+          // oxlint-disable-next-line no-await-in-loop -- stop at the first subtype whose overrides are uncertain
+          const outline = await supers.outline(s.path).catch((e) => {
+            if (isCancelled(e)) throw e;
+            return null;
+          });
+          const found = outline && overridersInType(outline, s, m.symbol);
+          if (!found) {
+            unsure = true;
+            break;
+          }
+          for (const o of found) targets.push({ path: s.path, range: o.selection_range });
         }
-        for (const o of found) targets.push({ path: s.path, range: o.selection_range });
+        if (!unsure) known.set(m, targets);
       }
-      if (!unsure) known.set(m, targets);
-    }
-  }
+    }),
+  );
   return known;
 }
 
@@ -485,6 +510,7 @@ async function allSubtypes(path: string, pos: Pos, supers: SuperDeps, budget: nu
       if (++asked > budget) return null;
       let found: HierarchyItem[];
       try {
+        // oxlint-disable-next-line no-await-in-loop -- budgeted walk: stop on the request budget or cancellation
         found = await supers.subtypes!(t.path, t.pos);
       } catch (e) {
         if (isCancelled(e)) throw e;
@@ -542,13 +568,32 @@ async function markerTargets(marker: LineMarker, doc: DocId | null): Promise<Loc
   }
 }
 
-/** Opens the single target, or the chooser over several. */
+/** Resolves each declaration's targets before opening the shared chooser. */
 export async function openMarkerTargets(
-  marker: LineMarker,
+  markers: readonly [LineMarker, ...LineMarker[]],
   anchor: { x: number; y: number },
   doc: DocId | null = null,
 ) {
-  const targets = await markerTargets(marker, doc);
+  const [first] = markers;
+  const merged = markers.length > 1;
+  let targets: DeclarationTarget[] = (
+    await Promise.all(
+      markers.map(async (marker) => {
+        const locations = await markerTargets(marker, doc);
+        // Generated methods can share a source location. Keep their names visible in the chooser.
+        return merged && marker.method ? locations.map((target) => ({ ...target, name: marker.name })) : locations;
+      }),
+    )
+  ).flat();
+  if (merged) {
+    const seen = new Set<string>();
+    targets = targets.filter(({ path, range, name }) => {
+      const key = JSON.stringify([path, range.start.line, range.start.col, name]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
   if (targets.length === 1) {
     await navigateTo(targets[0]!);
     return;
@@ -556,9 +601,9 @@ export async function openMarkerTargets(
   openPopup({
     kind: "list",
     anchor,
-    title: marker.chooserTitle,
+    title: merged ? tx`Choose Inheritance Target (${targets.length} found)` : first.chooserTitle,
     items: await locationItems(targets),
-    pin: pinToFind(marker.name, targets),
+    pin: pinToFind([...new Set(markers.map((m) => m.name))].join(", "), targets),
   });
 }
 
@@ -587,41 +632,50 @@ function place(doc: Text, markers: readonly LineMarker[]): PlacedMarker[] {
 }
 
 const sameMarkers = (a: readonly PlacedMarker[], b: readonly PlacedMarker[]) =>
-  a.length === b.length &&
-  a.every(
-    (m, i) => m.pos === b[i]!.pos && m.marker.kind === b[i]!.marker.kind && m.marker.tooltip === b[i]!.marker.tooltip,
-  );
+  a.length === b.length && a.every((m, i) => m.pos === b[i]!.pos && m.marker === b[i]!.marker);
 
 class InheritanceMarker extends GutterMarker {
-  constructor(readonly marker: LineMarker) {
+  readonly kind: LineMarker["kind"];
+  readonly tooltip: string;
+
+  constructor(readonly markers: readonly [LineMarker, ...LineMarker[]]) {
     super();
+    const [first] = markers;
+    this.kind = first.kind;
+    this.tooltip =
+      markers.length === 1 ? first.tooltip : [...new Set(markers.map((m) => `${m.name} — ${m.tooltip}`))].join("\n");
   }
+
   override eq(other: GutterMarker): boolean {
-    return (
-      other instanceof InheritanceMarker &&
-      other.marker.kind === this.marker.kind &&
-      other.marker.tooltip === this.marker.tooltip
-    );
+    return other instanceof InheritanceMarker && other.kind === this.kind && other.tooltip === this.tooltip;
   }
+
   override toDOM(): Node {
     const el = document.createElement("div");
-    el.className = `${styles.marker} cm-openidea-lineMarker-${this.marker.kind}`;
-    el.dataset.kind = this.marker.kind;
-    el.title = this.marker.tooltip;
+    el.className = `${styles.marker} cm-openidea-lineMarker-${this.kind}`;
+    el.dataset.kind = this.kind;
+    el.title = this.tooltip;
     el.setAttribute("role", "button");
-    el.setAttribute("aria-label", this.marker.tooltip);
-    el.innerHTML = gutterIconMarkup(MARKER_ICONS[this.marker.kind]) ?? "";
+    el.setAttribute("aria-label", this.tooltip);
+    el.innerHTML = gutterIconMarkup(MARKER_ICONS[this.kind]) ?? "";
     return el;
   }
 }
 
-const gutterMarkers = new WeakMap<readonly PlacedMarker[], RangeSet<GutterMarker>>();
+const gutterMarkers = new WeakMap<readonly PlacedMarker[], RangeSet<InheritanceMarker>>();
 
-function markerSet(placed: readonly PlacedMarker[]): RangeSet<GutterMarker> {
+function markerSet(placed: readonly PlacedMarker[]): RangeSet<InheritanceMarker> {
   let set = gutterMarkers.get(placed);
   if (!set) {
+    const groups = new Map<string, { pos: number; markers: [LineMarker, ...LineMarker[]] }>();
+    for (const { pos, marker } of placed) {
+      const key = `${pos}:${marker.kind}`;
+      const group = groups.get(key);
+      if (group) group.markers.push(marker);
+      else groups.set(key, { pos, markers: [marker] });
+    }
     set = RangeSet.of(
-      placed.map((m) => new InheritanceMarker(m.marker).range(m.pos)),
+      [...groups.values()].map(({ pos, markers }) => new InheritanceMarker(markers).range(pos)),
       true,
     );
     gutterMarkers.set(placed, set);
@@ -740,6 +794,7 @@ class MarkersPlugin {
       const batches = markerBatches(candidates, text.lineAt(from).number - 1, text.lineAt(to).number - 1);
       for (const batch of batches) {
         const request = (this.request = nextRequestId());
+        // oxlint-disable-next-line no-await-in-loop -- batches are ordered; cancellation, staleness and UI updates follow each
         await fillMarkers(ctx.path, batch, groups, markerDeps(ctx, items, request, entry.cache), entry.cache);
         if (this.request === request) this.request = null;
         if (stale()) return;
@@ -829,10 +884,14 @@ export function markerDeps(
   };
 }
 
-function markerAt(view: EditorView, lineFrom: number, el: Element | null): LineMarker | null {
-  const onLine = view.state.field(markersField).filter((m) => m.pos === lineFrom);
-  const kind = (el?.closest(`.${styles.marker}`) as HTMLElement | null)?.dataset.kind;
-  return (onLine.find((m) => m.marker.kind === kind) ?? (onLine.length === 1 ? onLine[0] : null))?.marker ?? null;
+function markerAt(view: EditorView, lineFrom: number, kind: string | undefined): InheritanceMarker | undefined {
+  let match: InheritanceMarker | undefined;
+  markerSet(view.state.field(markersField)).between(lineFrom, lineFrom, (pos, _to, marker) => {
+    if (pos !== lineFrom || marker.kind !== kind) return;
+    match = marker;
+    return false;
+  });
+  return match;
 }
 
 export function implementationGutter(ctx: EditorDocContext): Extension {
@@ -846,13 +905,13 @@ export function implementationGutter(ctx: EditorDocContext): Extension {
       markers: (view) => markerSet(view.state.field(markersField)),
       mousedown: (view, block, e) => {
         if (e.button !== 0) return false;
-        const target = e.target instanceof Element ? e.target : null;
-        if (!target?.closest(`.${styles.marker}`)) return false;
-        const marker = markerAt(view, block.from, target);
+        const target = e.target instanceof Element ? e.target.closest<HTMLElement>(`.${styles.marker}`) : null;
+        if (!target) return false;
+        const marker = markerAt(view, block.from, target.dataset.kind);
         if (!marker) return false;
         e.preventDefault();
-        const rect = (target.closest(`.${styles.marker}`) ?? target).getBoundingClientRect();
-        void openMarkerTargets(marker, { x: rect.left, y: rect.bottom + 2 }, ctx.doc);
+        const rect = target.getBoundingClientRect();
+        void openMarkerTargets(marker.markers, { x: rect.left, y: rect.bottom + 2 }, ctx.doc);
         return true;
       },
     }),

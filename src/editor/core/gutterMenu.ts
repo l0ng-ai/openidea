@@ -21,15 +21,46 @@ function toggle(label: string, key: string, on: boolean): MenuItem {
   return { label, checked: on, run: () => void setEditorSetting(key, !on) };
 }
 
+/** A global editor setting that is both a gutter Appearance item and a View toggle action. */
+export interface AppearanceSwitch {
+  title: string;
+  /** Key under `editor.` in the global settings. */
+  key: string;
+  on: () => boolean;
+}
+
+const editorSettings = () => useProject.getState().settings?.editor;
+
+/** The gutter Appearance switches that IDEA also has as actions (EditorGutterToggleGlobal*), plus Show Whitespaces. */
+export const appearanceSwitches = {
+  lineNumbers: {
+    title: "Show Line Numbers",
+    key: "appearance.lineNumbers",
+    on: () => editorPrefs().appearance.lineNumbers,
+  },
+  indentGuides: {
+    title: "Show Indent Guides",
+    key: "appearance.indentGuides",
+    on: () => editorPrefs().appearance.indentGuides,
+  },
+  whitespaces: { title: "Show Whitespaces", key: "showWhitespace", on: () => !!editorSettings()?.showWhitespace },
+  stickyLines: { title: "Show Sticky Lines", key: "stickyScroll", on: () => editorSettings()?.stickyScroll !== false },
+} satisfies Record<string, AppearanceSwitch>;
+
+export const toggleAppearance = (s: AppearanceSwitch): Promise<void> => setEditorSetting(s.key, !s.on());
+
+const switchItem = (s: AppearanceSwitch) => toggle(s.title, s.key, s.on());
+
 function appearanceItems(): MenuItem[] {
   const p = editorPrefs();
-  const whitespace = !!useProject.getState().settings?.editor?.showWhitespace;
+  const s = appearanceSwitches;
   return [
-    toggle("Show Line Numbers", "appearance.lineNumbers", p.appearance.lineNumbers),
+    switchItem(s.lineNumbers),
     toggle("Show Gutter Icons", "showGutterIcons", p.showGutterIcons),
     toggle("Show Folding Outline", "folding.showOutline", p.folding.showOutline),
-    toggle("Show Indent Guides", "appearance.indentGuides", p.appearance.indentGuides),
-    toggle("Show Whitespaces", "showWhitespace", whitespace),
+    switchItem(s.indentGuides),
+    switchItem(s.stickyLines),
+    switchItem(s.whitespaces),
     toggle("Show Method Separators", "appearance.methodSeparators", p.appearance.methodSeparators),
     toggle("Show Breadcrumbs", "breadcrumbs.show", p.breadcrumbs.show),
   ];

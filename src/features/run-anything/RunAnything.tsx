@@ -4,7 +4,7 @@
  * the selected entry, or the line itself: a provider that claims it, else the
  * shell in the project directory, its output in the Run tool window.
  */
-import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
@@ -29,6 +29,7 @@ export async function runCommandLine(line: string): Promise<void> {
   pushHistory(root, text);
   for (const p of runAnythingProviderList()) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- providers are tried in order; the first that claims the line wins and later providers must not run.
       if (p.execute && (await p.execute(text))) return;
     } catch (e) {
       console.error(`run anything provider ${p.id} failed`, e);
@@ -55,13 +56,21 @@ function RunAnythingPopup({ root }: { root: string }) {
   const [line, setLine] = useState("");
   const [active, setActive] = useState(-1);
   const [history, setHistory] = useState(() => readHistory(root));
+  // Providers answering later (plugins) ask for the rows to be built again.
+  const [arrived, setArrived] = useState(0);
+  useEffect(() => {
+    const bump = () => setArrived((n) => n + 1);
+    const offs = runAnythingProviderList().map((p) => p.subscribe?.(bump));
+    return () => offs.forEach((off) => off?.());
+  }, []);
   const rows = useMemo(
     () =>
       buildRows(line.trim(), history, runAnythingProviderList(), (h) => {
         close();
         void runCommandLine(h);
       }),
-    [line, history],
+    // `arrived`: a provider's late answer for the current line.
+    [line, history, arrived],
   );
   const selected = rows[active];
   const first = firstSelectable(rows, isSection);

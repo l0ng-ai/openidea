@@ -66,25 +66,35 @@ export async function inheritedMembers(
   let level: Array<{ path: string; pos: Pos }> = [{ path, pos: type.selection_range.start }];
   for (let d = 0; d < depth && level.length; d++) {
     const next: Array<{ path: string; pos: Pos }> = [];
-    for (const t of level) {
-      const supers = await deps.supertypes(t.path, t.pos).catch(() => [] as HierarchyItem[]);
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; supertype queries within a level are parallel
+    const supersLists = await Promise.all(
+      level.map((t) => deps.supertypes(t.path, t.pos).catch(() => [] as HierarchyItem[])),
+    );
+    // Walk in level order so dedupe (`seen`) and nearest-declaration hiding (`own`) keep their meaning.
+    const toOutline: HierarchyItem[] = [];
+    for (const supers of supersLists) {
       for (const s of supers) {
         const key = `${s.path}:${s.selectionRange.start.line}`;
         if (seen.has(key)) continue;
         seen.add(key);
         next.push({ path: s.path, pos: s.selectionRange.start });
-        const decl = typeAt(await outlineOf(s.path), s.selectionRange.start);
-        // Overloads within one supertype all show; a nearer declaration hides farther ones.
-        const declared: string[] = [];
-        for (const m of decl?.children ?? []) {
-          const name = baseName(m.name);
-          if (SKIPPED.has(m.kind) || isTypeKind(m.kind) || own.has(name)) continue;
-          declared.push(name);
-          out.push({ item: m, path: s.path, owner: baseName(s.name) });
-        }
-        declared.forEach((n) => own.add(n));
+        toOutline.push(s);
       }
     }
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; outlines within a level are parallel
+    const outlineLists = await Promise.all(toOutline.map((s) => outlineOf(s.path)));
+    toOutline.forEach((s, i) => {
+      const decl = typeAt(outlineLists[i]!, s.selectionRange.start);
+      // Overloads within one supertype all show; a nearer declaration hides farther ones.
+      const declared: string[] = [];
+      for (const m of decl?.children ?? []) {
+        const name = baseName(m.name);
+        if (SKIPPED.has(m.kind) || isTypeKind(m.kind) || own.has(name)) continue;
+        declared.push(name);
+        out.push({ item: m, path: s.path, owner: baseName(s.name) });
+      }
+      declared.forEach((n) => own.add(n));
+    });
     level = next;
   }
   return out;

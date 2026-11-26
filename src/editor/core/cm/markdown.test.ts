@@ -32,11 +32,13 @@ const highlighter = tagHighlighter([
 
 async function markdownState(doc: string) {
   const support = await loadSupport(findLanguageDescription("Markdown", "/p/README.md")!);
-  for (const info of ["shell", "json", "yaml"]) {
-    const language = fencedCodeMode(info)!.language;
-    // A block language not loaded yet: Markdown parses the block again once it is.
-    if (language instanceof LanguageDescription) await language.load();
-  }
+  await Promise.all(
+    ["shell", "json", "yaml"].map(async (info) => {
+      const language = fencedCodeMode(info)!.language;
+      // A block language not loaded yet: Markdown parses the block again once it is.
+      if (language instanceof LanguageDescription) await language.load();
+    }),
+  );
   return completedSyntaxState(EditorState.create({ doc, extensions: [support!] }));
 }
 

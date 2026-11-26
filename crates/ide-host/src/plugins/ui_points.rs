@@ -5,7 +5,8 @@
 //!
 //! ```toml
 //! [[contributes.menus]]
-//! menu = "editor.context"          # projectView.context, editorTab.context, tools, viewItem.context, commit.message
+//! menu = "editor.context"          # projectView.context, editorTab.context, tools, viewItem.context, commit.message,
+//!                                  # services.context / services.toolbar (API 1.18: the Services tree's own nodes)
 //! command = "check"
 //! when = "editorLang == java"
 //! # view = "<view id>"             # required for (only allowed on) viewItem.context
@@ -36,12 +37,29 @@
 //! priority = "default"             # or "option": only through Open With
 //! layout = "tab"                   # or "split" / "preview": beside the text editor
 //! web = "web/index.html"           # a web page from the package instead of rendered content
+//! frames = ["https://example.com"] # API 1.16: origins the page may embed; each needs `net:<host>`
 //!
 //! [[contributes.editorPanels]]
 //! id = "minimap"
 //! web = "web/index.html"           # beside each editor group's text editor; needs `editor.read`
 //! width = 110                      # pixels, 40–400
 //! when = "plugin.<id>.enabled"     # optional
+//!
+//! [[contributes.overlays]]
+//! id = "stage"
+//! web = "web/stage.html"           # floats over the workbench, never takes the focus (API 1.18)
+//! width = 320                      # pixels, 40–800; the page can resize it within those bounds
+//! height = 240
+//! anchor = "bottom-right"          # top-left … bottom-right (nine); the page can move it
+//! when = "plugin.<id>.showing"     # optional
+//! interactive = true               # optional; false lets every click through to the IDE
+//!
+//! [[contributes.dialogs]]
+//! id = "preview"
+//! title = "SQL Preview"            # the dialog's title bar
+//! web = "web/preview.html"         # modal, resizable; opened by `views.reveal("preview")` (API 1.18)
+//! width = 900                      # pixels, 320–1600
+//! height = 600                     # pixels, 200–1200
 //!
 //! [[contributes.fileIcons]]
 //! id = "drawing"
@@ -81,8 +99,11 @@ pub const SETTINGS: &str = "settings";
 pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const EDITOR_PANELS: &str = "editorPanels";
+pub const OVERLAYS: &str = "overlays";
+pub const DIALOGS: &str = "dialogs";
+pub const RUN_ANYTHING: &str = "runAnything";
 /// The points whose declarations can name a `web` page (served, messaged, sent view events).
-pub const WEB_POINTS: [&str; 3] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS];
+pub const WEB_POINTS: [&str; 5] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS, OVERLAYS, DIALOGS];
 pub const FILE_ICONS: &str = "fileIcons";
 pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
@@ -92,7 +113,10 @@ pub const SERVER_COMMANDS: &str = "serverCommands";
 const VIEW_ITEM_MENU: &str = "viewItem.context";
 /// The toolbar above the commit message (Commit tool window and dialog).
 const COMMIT_MESSAGE_MENU: &str = "commit.message";
-const MENU_IDS: [&str; 10] = [
+/// The Services tool window's context menu and toolbar for the IDE's own nodes (run
+/// configurations, Docker containers…): the command gets the selected services.
+const SERVICES_MENUS: [&str; 2] = ["services.context", "services.toolbar"];
+const MENU_IDS: [&str; 12] = [
     "editor.context",
     "projectView.context",
     "editorTab.context",
@@ -103,6 +127,8 @@ const MENU_IDS: [&str; 10] = [
     "mainToolbar",
     "problems.context",
     "searchResults.context",
+    SERVICES_MENUS[0],
+    SERVICES_MENUS[1],
 ];
 const MAX_TITLE: usize = 256;
 const MAX_SETTINGS: usize = 200;
@@ -166,6 +192,9 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     }
     if d.menu == COMMIT_MESSAGE_MENU {
         pkg.manifest.needs_api(&format!("contributes.menus: {COMMIT_MESSAGE_MENU}"), 3)?;
+    }
+    if SERVICES_MENUS.contains(&d.menu.as_str()) {
+        pkg.manifest.needs_api(&format!("contributes.menus: {}", d.menu), 18)?;
     }
     if let Some(w) = &d.when {
         validate_when(w).map_err(|e| format!("contributes.menus: {e}"))?;
@@ -641,6 +670,65 @@ struct ViewDecl {
     /// A web page of the package (`web/index.html`) instead of content the code renders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web: Option<String>,
+    /// Origins the web page may embed in `<iframe>`s (API 1.16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    frames: Vec<String>,
+}
+
+/// Most origins one web page may declare in `frames`.
+const MAX_FRAMES: usize = 16;
+
+/// Checks a web page's `frames` and returns them as origins (`https://host[:port]`).
+/// Each is HTTPS, or HTTP to a loopback host, and must be covered by a `net:` or
+/// `net.http:` capability of the manifest, so the install page lists it; the page
+/// gets only the ones the user granted.
+fn frame_origins(pkg: &Package, frames: &[String], web: bool, what: &str) -> Result<Vec<String>, String> {
+    if frames.is_empty() {
+        return Ok(Vec::new());
+    }
+    pkg.manifest.needs_api(&format!("{what}: `frames`"), 16)?;
+    if !web {
+        return Err(format!("{what}: `frames` is for a web page (`web`)"));
+    }
+    if frames.len() > MAX_FRAMES {
+        return Err(format!("{what}: at most {MAX_FRAMES} `frames`"));
+    }
+    let mut origins = Vec::new();
+    for frame in frames {
+        let origin = frame_origin(frame).map_err(|e| format!("{what}: frames: {frame:?}: {e}"))?;
+        let cap = ide_plugin::net_capability(&origin).map_err(|e| format!("{what}: frames: {frame:?}: {e}"))?;
+        if !pkg.manifest.capabilities.all().any(|c| c.covers(&cap)) {
+            return Err(format!("{what}: frames: {frame:?} needs the `{cap}` capability (required or optional)"));
+        }
+        if !origins.contains(&origin) {
+            origins.push(origin);
+        }
+    }
+    Ok(origins)
+}
+
+/// `https://host[:port]` (or `http://` to a loopback host) with nothing after it.
+fn frame_origin(frame: &str) -> Result<String, String> {
+    let url = url::Url::parse(frame).map_err(|e| format!("not a URL ({e})"))?;
+    let loopback = matches!(
+        url.host(),
+        Some(url::Host::Domain("localhost")) | Some(url::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST))
+    ) || url.host() == Some(url::Host::Ipv6(std::net::Ipv6Addr::LOCALHOST));
+    match url.scheme() {
+        "https" => {}
+        "http" if loopback => {}
+        _ => return Err("an origin is https://, or http:// to localhost".into()),
+    }
+    if url.host_str().is_none_or(|h| h.contains('*')) {
+        return Err("name one exact host".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("no user name or password".into());
+    }
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return Err("an origin only: no path, query or fragment".into());
+    }
+    Ok(url.origin().ascii_serialization())
 }
 
 /// The files of a `web` entry, or a check that the code renders the view.
@@ -655,7 +743,7 @@ fn web_or_code(pkg: &Package, web: Option<&str>, what: &str) -> Result<Vec<PathB
 }
 
 pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
-    let d: ViewDecl = decode(VIEWS, decl)?;
+    let mut d: ViewDecl = decode(VIEWS, decl)?;
     validate_item_id(&d.id, "view id")?;
     title(VIEWS, &d.title)?;
     if let Some(group) = &d.group {
@@ -668,6 +756,7 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     }
 
     let files = web_or_code(pkg, d.web.as_deref(), &format!("view {:?}", d.id))?;
+    d.frames = frame_origins(pkg, &d.frames, d.web.is_some(), &format!("view {:?}", d.id))?;
     if !["left", "right", "bottom", SERVICES_LOCATION].contains(&d.location.as_str()) {
         return Err(format!("view {:?}: `location` is left, right, bottom or services", d.id));
     }
@@ -734,6 +823,11 @@ struct CustomEditorDecl {
     layout: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web: Option<String>,
+    /// Origins the web page may embed (API 1.16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    frames: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binary: Option<bool>,
 }
 
 fn default_priority() -> String {
@@ -758,17 +852,24 @@ fn file_patterns(patterns: &[String], what: &str) -> Result<(), String> {
 }
 
 pub(super) fn custom_editor(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
-    let d: CustomEditorDecl = decode(CUSTOM_EDITORS, decl)?;
+    let mut d: CustomEditorDecl = decode(CUSTOM_EDITORS, decl)?;
     validate_item_id(&d.id, "custom editor id")?;
     title(CUSTOM_EDITORS, &d.title)?;
     let what = format!("custom editor {:?}", d.id);
     let files = web_or_code(pkg, d.web.as_deref(), &what)?;
+    d.frames = frame_origins(pkg, &d.frames, d.web.is_some(), &what)?;
     file_patterns(&d.patterns, &what)?;
     if d.priority != "default" && d.priority != "option" {
         return Err(format!("{what}: `priority` is default or option"));
     }
     if !["tab", "split", "preview"].contains(&d.layout.as_str()) {
         return Err(format!("{what}: `layout` is tab, split or preview"));
+    }
+    if let Some(binary) = d.binary {
+        pkg.manifest.needs_api("contributes.customEditors.binary", 16)?;
+        if binary && (d.web.is_none() || d.layout != "tab") {
+            return Err(format!("{what}: `binary` requires a web editor with `layout = \"tab\"`"));
+        }
     }
     let mut out = UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?);
     out.files = files;
@@ -783,6 +884,9 @@ struct EditorPanelDecl {
     width: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     when: Option<String>,
+    /// Origins the page may embed (API 1.16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    frames: Vec<String>,
 }
 
 const EDITOR_PANEL_WIDTH: std::ops::RangeInclusive<u32> = 40..=400;
@@ -791,7 +895,7 @@ const EDITOR_PANEL_WIDTH: std::ops::RangeInclusive<u32> = 40..=400;
 /// editor group, beside its text editor. It sees each file the group shows, so it
 /// needs `editor.read`.
 pub(super) fn editor_panel(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
-    let d: EditorPanelDecl = decode(EDITOR_PANELS, decl)?;
+    let mut d: EditorPanelDecl = decode(EDITOR_PANELS, decl)?;
     pkg.manifest.needs_api(&format!("contributes.{EDITOR_PANELS}"), 9)?;
     validate_item_id(&d.id, "editor panel id")?;
     let what = format!("editor panel {:?}", d.id);
@@ -805,7 +909,111 @@ pub(super) fn editor_panel(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
         return Err(format!("{what}: needs the `editor.read` capability (the page sees the files editors show)"));
     }
     let files = super::web::web_files(pkg, &d.web, &what)?;
+    d.frames = frame_origins(pkg, &d.frames, true, &what)?;
     let mut out = UiDecl::new(d.id.clone(), d.id.clone(), json(&d)?);
+    out.files = files;
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OverlayDecl {
+    id: String,
+    web: String,
+    width: u32,
+    height: u32,
+    #[serde(default = "default_overlay_anchor")]
+    anchor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    when: Option<String>,
+    #[serde(default = "default_true")]
+    interactive: bool,
+}
+
+fn default_overlay_anchor() -> String {
+    "bottom-right".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Where an overlay can sit in the window (the page may move it to another).
+pub const OVERLAY_ANCHORS: [&str; 9] = [
+    "top-left",
+    "top-center",
+    "top-right",
+    "middle-left",
+    "center",
+    "middle-right",
+    "bottom-left",
+    "bottom-center",
+    "bottom-right",
+];
+const OVERLAY_SIZE: std::ops::RangeInclusive<u32> = 40..=800;
+
+/// `[[contributes.overlays]]` (API 1.18): a web page floating over the workbench at
+/// one of nine anchors, shown while `when` holds. It never takes the keyboard focus,
+/// sits under dialogs and popups, and sees nothing of the IDE, so it needs no
+/// capability.
+pub(super) fn overlay(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: OverlayDecl = decode(OVERLAYS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{OVERLAYS}"), 18)?;
+    validate_item_id(&d.id, "overlay id")?;
+    let what = format!("overlay {:?}", d.id);
+    for (name, value) in [("width", d.width), ("height", d.height)] {
+        if !OVERLAY_SIZE.contains(&value) {
+            return Err(format!("{what}: `{name}` is {}–{} pixels", OVERLAY_SIZE.start(), OVERLAY_SIZE.end()));
+        }
+    }
+    if !OVERLAY_ANCHORS.contains(&d.anchor.as_str()) {
+        return Err(format!("{what}: `anchor` is one of {}", OVERLAY_ANCHORS.join(", ")));
+    }
+    if let Some(when) = &d.when {
+        validate_when(when).map_err(|e| format!("{what}: {e}"))?;
+    }
+    let files = super::web::web_files(pkg, &d.web, &what)?;
+    let mut out = UiDecl::new(d.id.clone(), d.id.clone(), json(&d)?);
+    out.files = files;
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DialogDecl {
+    id: String,
+    title: String,
+    web: String,
+    width: u32,
+    height: u32,
+}
+
+const DIALOG_WIDTH: std::ops::RangeInclusive<u32> = 320..=1600;
+const DIALOG_HEIGHT: std::ops::RangeInclusive<u32> = 200..=1200;
+
+/// `[[contributes.dialogs]]` (API 1.18): a package web page in a modal, resizable IDE
+/// dialog with a title bar, opened by the plugin's code with `views.reveal(id)` in the
+/// invoking window. Like a web view it sees nothing of the IDE beyond its messages, so
+/// it needs no capability.
+pub(super) fn dialog(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: DialogDecl = decode(DIALOGS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{DIALOGS}"), 18)?;
+    validate_item_id(&d.id, "dialog id")?;
+    let what = format!("dialog {:?}", d.id);
+    // `views.reveal(id)` opens it, so it can't share an id with a tool window.
+    if pkg.manifest.declarations(VIEWS).iter().any(|v| v.get("id").and_then(|i| i.as_str()) == Some(&d.id)) {
+        return Err(format!("{what}: a view has the same id"));
+    }
+    if d.title.trim().is_empty() || d.title.len() > 256 {
+        return Err(format!("{what}: `title` is 1–256 bytes"));
+    }
+    for (name, value, range) in [("width", d.width, DIALOG_WIDTH), ("height", d.height, DIALOG_HEIGHT)] {
+        if !range.contains(&value) {
+            return Err(format!("{what}: `{name}` is {}–{} pixels", range.start(), range.end()));
+        }
+    }
+    let files = super::web::web_files(pkg, &d.web, &what)?;
+    let mut out = UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?);
     out.files = files;
     Ok(out)
 }
@@ -1035,6 +1243,44 @@ pub(super) fn commit_check(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
     Ok(UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?))
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RunAnythingDecl {
+    /// The first word of the Run Anything lines the plugin answers (`task`).
+    prefix: String,
+    /// The heading of its entries (default: the plugin's name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+}
+
+/// Whether `prefix` can start a Run Anything line: a lowercase word of letters, digits,
+/// `.`, `_` or `-` that commands begin with (`task`, `just`, `make`).
+pub(super) fn valid_run_anything_prefix(prefix: &str) -> bool {
+    (1..=32).contains(&prefix.len())
+        && prefix.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && prefix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+/// `[[contributes.runAnything]]` (API 1.18): Run Anything lines starting with `prefix`
+/// are suggested and run by the plugin's `run-anything-provider` export.
+pub(super) fn run_anything(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: RunAnythingDecl = decode(RUN_ANYTHING, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{RUN_ANYTHING}"), 18)?;
+    if !valid_run_anything_prefix(&d.prefix) {
+        return Err(format!(
+            "contributes.{RUN_ANYTHING}: `prefix` {:?} is one lowercase word (letters, digits, `.`, `_`, `-`; at most 32)",
+            d.prefix
+        ));
+    }
+    if let Some(t) = &d.title {
+        title(RUN_ANYTHING, t)?;
+    }
+    if pkg.manifest.wasm.is_none() {
+        return Err(format!("contributes.{RUN_ANYTHING}: needs `wasm` (its lines run in the plugin's code)"));
+    }
+    Ok(UiDecl::new(d.prefix.clone(), d.title.clone().unwrap_or_default(), json(&d)?))
+}
+
 /// A command a language server's code lens, code action or inlay hint carries and
 /// leaves to the client, and the plugin command that runs it.
 #[derive(Debug, Deserialize, Serialize)]
@@ -1133,6 +1379,27 @@ mod tests {
                 assert!(menu(&pkg, toml::from_str(&format!("menu='{location}'\ncommand='foreign'")).unwrap()).is_err());
             }
         }
+    }
+
+    #[test]
+    fn services_menus_require_api_1_18() {
+        for location in SERVICES_MENUS {
+            for (api, valid) in [("^1.17", false), ("^1.18", true)] {
+                let manifest = ide_extension::Manifest::parse(&format!("id='test'\nname='Test'\nversion='1.0.0'\nengines.openidea='{api}'\n[[contributes.commands]]\nid='reload'\ntitle='Reload'")).unwrap();
+                let pkg = Package::new(manifest, std::path::PathBuf::from("/unused"));
+                let decl = toml::from_str(&format!(
+                    "menu='{location}'\ncommand='reload'\nwhen=\"serviceKind == 'spring-boot' && serviceRunning\""
+                ))
+                .unwrap();
+                assert_eq!(menu(&pkg, decl).is_ok(), valid, "{api}:{location}");
+            }
+        }
+        let manifest = ide_extension::Manifest::parse("id='test'\nname='Test'\nversion='1.0.0'\nengines.openidea='^1.18'\n[[contributes.commands]]\nid='reload'\ntitle='Reload'").unwrap();
+        let pkg = Package::new(manifest, std::path::PathBuf::from("/unused"));
+        let grouped = toml::from_str("menu='services.context'\ncommand='reload'\nsubmenu='Hot Reload'").unwrap();
+        assert!(menu(&pkg, grouped).is_ok());
+        let toolbar = toml::from_str("menu='services.toolbar'\ncommand='reload'\nsubmenu='Hot Reload'").unwrap();
+        assert!(menu(&pkg, toolbar).unwrap_err().contains("only for context menus"));
     }
 
     #[test]
@@ -1331,6 +1598,241 @@ mod tests {
         // Declared as optional, the capability is still shown at install.
         let optional = source.replace("required = [", "optional = [");
         assert!(check(&optional).is_ok());
+    }
+
+    #[test]
+    fn binary_custom_editor_requires_api_1_16() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("web")).unwrap();
+        std::fs::write(dir.path().join("web/view.html"), "").unwrap();
+        let check = |engine: &str, binary: &str| {
+            let source = format!(
+                r#"id = "p"
+name = "P"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.customEditors]]
+id = "data"
+title = "Data"
+patterns = ["*.bin"]
+web = "web/view.html"
+{binary}
+"#
+            );
+            let manifest = ide_extension::Manifest::parse(&source)?;
+            let decl = manifest.declarations(CUSTOM_EDITORS).into_iter().next().unwrap();
+            custom_editor(&Package::new(manifest, dir.path().to_path_buf()), decl)
+        };
+        for value in [true, false] {
+            let field = format!("binary = {value}");
+            assert_eq!(check("^1.16", &field).unwrap().json["binary"], value);
+            assert_eq!(
+                check("^1.15", &field).unwrap_err(),
+                r#"contributes.customEditors.binary is new in plugin API 1.16: set engines.openidea to "^1.16""#
+            );
+        }
+        assert!(check("^1.15", "").unwrap().json.get("binary").is_none());
+    }
+
+    #[test]
+    fn web_pages_declare_frames_their_net_capabilities_cover() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("web")).unwrap();
+        std::fs::write(dir.path().join("web/index.html"), "<iframe></iframe>").unwrap();
+        let header = "id = \"p\"\nname = \"P\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.16\"\nwasm = \"p.wasm\"\n\
+            [capabilities]\nrequired = [\"editor.read\", \"net:example.com\", \"net:*.games.test\", \"net:localhost\"]\n";
+        let check = |point: &str, body: &str, header: &str| {
+            let manifest = ide_extension::Manifest::parse(&format!("{header}[[contributes.{point}]]\n{body}"))?;
+            let decl = manifest.declarations(point).into_iter().next().unwrap();
+            let pkg = Package::new(manifest, dir.path().to_path_buf());
+            match point {
+                VIEWS => view(&pkg, decl),
+                CUSTOM_EDITORS => custom_editor(&pkg, decl),
+                _ => editor_panel(&pkg, decl),
+            }
+        };
+        let view_with =
+            |frames: &str| format!("id = \"v\"\ntitle = \"V\"\nweb = \"web/index.html\"\nframes = {frames}\n");
+        let ok = check(
+            VIEWS,
+            &view_with(r#"["https://EXAMPLE.com/", "https://a.games.test:8443", "http://localhost:5173"]"#),
+            header,
+        )
+        .unwrap();
+        assert_eq!(
+            ok.json["frames"],
+            serde_json::json!(["https://example.com", "https://a.games.test:8443", "http://localhost:5173"])
+        );
+        assert!(
+            check(VIEWS, "id = \"v\"\ntitle = \"V\"\nweb = \"web/index.html\"\n", header)
+                .unwrap()
+                .json
+                .get("frames")
+                .is_none()
+        );
+        let editor = "id = \"e\"\ntitle = \"E\"\npatterns = [\"*.x\"]\nweb = \"web/index.html\"\nframes = [\"https://example.com\"]\n";
+        assert_eq!(
+            check(CUSTOM_EDITORS, editor, header).unwrap().json["frames"],
+            serde_json::json!(["https://example.com"])
+        );
+        let panel = "id = \"m\"\nweb = \"web/index.html\"\nwidth = 110\nframes = [\"https://example.com\"]\n";
+        assert_eq!(
+            check(EDITOR_PANELS, panel, header).unwrap().json["frames"],
+            serde_json::json!(["https://example.com"])
+        );
+
+        for (frames, error) in [
+            (r#"["https://other.com"]"#, "`net:other.com` capability"),
+            (r#"["https://games.test"]"#, "`net:games.test` capability"),
+            (r#"["http://example.com"]"#, "https://, or http:// to localhost"),
+            (r#"["ftp://example.com"]"#, "https://, or http:// to localhost"),
+            (r#"["https://example.com/room"]"#, "no path"),
+            (r#"["https://example.com?x"]"#, "no path"),
+            (r#"["https://example.com/#x"]"#, "no path"),
+            (r#"["https://*.games.test"]"#, "one exact host"),
+            (r#"["https://me@example.com"]"#, "user name"),
+            (r#"["example.com"]"#, "not a URL"),
+            (r#"["data:text/html,x"]"#, "https://"),
+        ] {
+            let err = check(VIEWS, &view_with(frames), header).unwrap_err();
+            assert!(err.contains(error), "{frames} → {err}");
+        }
+        let many = format!("[{}]", vec!["\"https://example.com\""; 17].join(", "));
+        assert!(check(VIEWS, &view_with(&many), header).unwrap_err().contains("at most 16"));
+        let older = header.replace("^1.16", "^1.15");
+        assert!(check(VIEWS, &view_with(r#"["https://example.com"]"#), &older).unwrap_err().contains("1.16"));
+        let code_view = "id = \"v\"\ntitle = \"V\"\nframes = [\"https://example.com\"]\n";
+        assert!(check(VIEWS, code_view, header).unwrap_err().contains("for a web page"));
+        // `net:ask` is not a listed host: the install page would not show the origin.
+        let ask = header.replace("\"net:example.com\"", "\"net:ask\"");
+        assert!(check(VIEWS, &view_with(r#"["https://example.com"]"#), &ask).unwrap_err().contains("capability"));
+    }
+
+    #[test]
+    fn overlays_validate_api_size_anchor_when_and_page() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/overlay");
+        // A Windows checkout may have CRLF line ends; the edits below match on `\n`.
+        let source = std::fs::read_to_string(root.join("plugin.toml")).unwrap().replace("\r\n", "\n");
+        let check = |source: &str| {
+            let manifest = ide_extension::Manifest::parse(source)?;
+            let decl = manifest.declarations(OVERLAYS).into_iter().next().unwrap();
+            overlay(&Package::new(manifest, root.clone()), decl)
+        };
+        let valid = check(&source).unwrap();
+        assert_eq!(valid.key, "probe");
+        assert_eq!(
+            valid.json,
+            serde_json::json!({
+                "id": "probe", "web": "web/index.html", "width": 260, "height": 140,
+                "anchor": "bottom-right", "interactive": true,
+            })
+        );
+        assert_eq!(valid.files, [PathBuf::from("web/index.html")]);
+        let placed =
+            check(&source.replace("height = 140", "height = 140\nanchor = \"top-center\"\ninteractive = false"));
+        let placed = placed.unwrap();
+        assert_eq!(placed.json["anchor"], "top-center");
+        assert_eq!(placed.json["interactive"], false);
+        let when = source.replace("height = 140", "height = 140\nwhen = \"plugin.overlay.showing\"");
+        assert_eq!(check(&when).unwrap().json["when"], "plugin.overlay.showing");
+        for size in ["40", "800"] {
+            assert!(check(&source.replace("width = 260", &format!("width = {size}"))).is_ok(), "{size}");
+        }
+        for (bad, error) in [
+            (source.replace("^1.18", "^1.17"), "1.18"),
+            (source.replace("width = 260", "width = 39"), "40–800"),
+            (source.replace("height = 140", "height = 801"), "`height`"),
+            (source.replace("height = 140\n", ""), "height"),
+            (source.replace("height = 140", "height = 140\nanchor = \"left\""), "anchor"),
+            (source.replace("height = 140", "height = 140\nwhen = \"a &&\""), "when"),
+            (source.replace("height = 140", "height = 140\nfocus = true"), "focus"),
+            (source.replace("web/index.html", "index.html"), "directory of its own"),
+            (source.replace("web/index.html", "web/missing.html"), "no such file"),
+            (source.replace(r#"id = "probe""#, r#"id = "Pro Be""#), "id"),
+        ] {
+            let err = check(&bad).unwrap_err();
+            assert!(err.contains(error), "{bad}\n→ {err}");
+        }
+    }
+
+    #[test]
+    fn dialogs_validate_api_title_size_id_and_page() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("web")).unwrap();
+        std::fs::write(dir.path().join("web/preview.html"), "<p>SQL</p>").unwrap();
+        let source = r#"id = "sql"
+name = "SQL"
+version = "0.1.0"
+engines.openidea = "^1.18"
+
+[[contributes.dialogs]]
+id = "preview"
+title = "SQL Preview"
+web = "web/preview.html"
+width = 900
+height = 600
+"#;
+        let check = |source: &str| {
+            let manifest = ide_extension::Manifest::parse(source)?;
+            let decl = manifest.declarations(DIALOGS).into_iter().next().unwrap();
+            dialog(&Package::new(manifest, dir.path().to_path_buf()), decl)
+        };
+        let valid = check(source).unwrap();
+        assert_eq!((valid.key.as_str(), valid.label.as_str()), ("preview", "SQL Preview"));
+        assert_eq!(
+            valid.json,
+            serde_json::json!({"id": "preview", "title": "SQL Preview", "web": "web/preview.html", "width": 900, "height": 600})
+        );
+        assert_eq!(valid.files, [PathBuf::from("web/preview.html")]);
+        for (bad, error) in [
+            (source.replace("^1.18", "^1.17"), "1.18"),
+            (source.replace("width = 900", "width = 319"), "320–1600"),
+            (source.replace("height = 600", "height = 1201"), "`height`"),
+            (source.replace(r#"title = "SQL Preview""#, r#"title = " ""#), "title"),
+            (
+                source.replace(
+                    "height = 600",
+                    "height = 600
+modal = false",
+                ),
+                "modal",
+            ),
+            (source.replace("web/preview.html", "web/missing.html"), "no such file"),
+            (source.replace(r#"id = "preview""#, r#"id = "Pre View""#), "id"),
+            (format!("{source}\n[[contributes.views]]\nid = \"preview\"\ntitle = \"P\"\n"), "same id"),
+        ] {
+            let err = check(&bad).unwrap_err();
+            assert!(err.contains(error), "{bad}\n→ {err}");
+        }
+    }
+
+    #[test]
+    fn run_anything_validates_api_prefix_title_and_code() {
+        let source = "id = \"go\"\nname = \"Go\"\nversion = \"0.1.0\"\nengines.openidea = \"^1.18\"\nwasm = \"p.wasm\"\n\n[[contributes.runAnything]]\nprefix = \"task\"\n";
+        let check = |source: &str| {
+            let manifest = ide_extension::Manifest::parse(source)?;
+            let decl = manifest.declarations(RUN_ANYTHING).into_iter().next().unwrap();
+            run_anything(&Package::new(manifest, std::env::temp_dir()), decl)
+        };
+        let valid = check(source).unwrap();
+        assert_eq!((valid.key.as_str(), valid.json.clone()), ("task", serde_json::json!({"prefix": "task"})));
+        assert_eq!(check(&format!("{source}title = \"Go Task\"\n")).unwrap().json["title"], "Go Task");
+        for prefix in ["go-task", "mvn.w", "x2"] {
+            assert!(check(&source.replace("\"task\"", &format!("{prefix:?}"))).is_ok(), "{prefix}");
+        }
+        for (bad, error) in [
+            (source.replace("^1.18", "^1.17"), "1.18".to_owned()),
+            (source.replace("wasm = \"p.wasm\"\n", ""), "wasm".to_owned()),
+            (format!("{source}command = \"x\"\n"), "command".to_owned()),
+        ]
+        .into_iter()
+        .chain(
+            ["Task", "task build", "", "-x", "t/x", &"t".repeat(33)]
+                .map(|p| (source.replace("\"task\"", &format!("{p:?}")), "prefix".to_owned())),
+        ) {
+            let err = check(&bad).unwrap_err();
+            assert!(err.contains(&error), "{bad}\n→ {err}");
+        }
     }
 
     fn package_with_catalogs(files: &[(&str, &str)]) -> (tempfile::TempDir, Package) {

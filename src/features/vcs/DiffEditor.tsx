@@ -16,7 +16,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
-import { Compartment, Prec, Text, type ChangeSet, type Extension } from "@codemirror/state";
+import { Compartment, Prec, Text, type ChangeSet, type EditorSelection, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
 import {
   MergeView,
@@ -39,6 +39,7 @@ import { auxiliaryWindow } from "@/platform/auxWindow";
 import { getContext, setContext } from "@/platform/context";
 import { editorPrefs } from "@/platform/editorSettings";
 import { call, commands } from "@/platform/ipc";
+import { reducedMotion } from "@/platform/motion";
 import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -233,6 +234,26 @@ function revealPos(v: EditorView, pos: number) {
   });
 }
 
+function keepViewState(state: DiffViewState, side: Side): Extension {
+  return EditorView.updateListener.of((u) => {
+    const uncollapsed = u.transactions.flatMap((tr) =>
+      tr.effects.filter((e) => e.is(uncollapseUnchanged)).map((e) => e.value as number),
+    );
+    // A pane nobody touched keeps nothing, so its doc isn't held for the tab's lifetime.
+    if (!u.docChanged && !u.selectionSet && !uncollapsed.length) return;
+    const saved = state[side];
+    const expanded = saved?.doc === u.startState.doc ? saved.expanded.map((pos) => u.changes.mapPos(pos)) : [];
+    state[side] = { doc: u.state.doc, selection: u.state.selection, expanded: [...expanded, ...uncollapsed] };
+  });
+}
+
+/** Puts back a pane's selection and expanded lines, if its doc hasn't changed since. */
+function restoreViewState(state: DiffViewState, side: Side, view: EditorView) {
+  const saved = state[side];
+  if (!saved || !saved.doc.eq(view.state.doc)) return;
+  view.dispatch({ selection: saved.selection, effects: saved.expanded.map((pos) => uncollapseUnchanged.of(pos)) });
+}
+
 /** The panes as diff viewer contributions see them. */
 function viewerHost(views: Views, data: DiffData, mode: DiffMode, focused: () => "a" | "b"): DiffViewerHost {
   const chunks = () => getChunks(views.b.state)?.chunks ?? [];
@@ -342,6 +363,16 @@ function typedSidesOf(data: DiffData): { left?: Text; right?: Text } {
   return typed;
 }
 
+/** A pane's selection and the unchanged lines expanded in it, for its doc. */
+interface PaneViewState {
+  doc: Text;
+  selection: EditorSelection;
+  expanded: number[];
+}
+
+/** What a diff's panes keep across rebuilds and remounts, filled in by the diff editor. */
+export type DiffViewState = Partial<Record<Side, PaneViewState>>;
+
 export interface DiffEditorProps {
   input: EditorInput;
   documentOwner?: string;
@@ -363,6 +394,8 @@ export interface DiffEditorProps {
    * toolbar, side-by-side panes always aligned, and not taking the editor tab's focus.
    */
   fit?: boolean;
+  /** Kept by a host that unmounts the diff (an all-in-one diff block scrolled away) to restore it. */
+  viewState?: DiffViewState;
 }
 
 export function DiffEditor(props: DiffEditorProps) {
@@ -395,6 +428,7 @@ function TwoPaneDiff({
   onJumpToSource,
   onClose,
   fit = false,
+  viewState,
   gitModes,
   metadataLoading,
 }: DiffEditorProps & { gitModes?: [string | null, string | null]; metadataLoading: boolean }) {
@@ -404,9 +438,12 @@ function TwoPaneDiff({
   inputKey.current = input.key;
   // Swap Sides shows the request's sides the other way round; another request starts unswapped.
   const [swappedFor, setSwappedFor] = useState<DiffData | null>(null);
-  // The one-side viewer puts its only editable document into the unified editor.
-  const indexOnlyLeft = isIndex(input_.left) && input_.right.type === "text" && input_.right.absent;
-  const swapped = !!indexOnlyLeft || swappedFor === input_;
+  // The one-side viewer puts its only editable document into the unified editor. A deleted
+  // file's diff shows the original text as the document itself: the absent side stays on the
+  // left as the diff's original, as for a staged deletion.
+  const deletedOneSided =
+    !(input_.left.type === "text" && input_.left.absent) && input_.right.type === "text" && !!input_.right.absent;
+  const swapped = deletedOneSided || swappedFor === input_;
   const data = useMemo(
     () => (swapped ? { ...input_, left: input_.right, right: input_.left } : input_),
     [input_, swapped],
@@ -728,6 +765,7 @@ function TwoPaneDiff({
       notes: "left" | "right",
       key: Side,
     ): Extension[] => [
+      viewState ? keepViewState(viewState, key) : [],
       stage && key === indexSide ? stage.extension() : [],
       stage && key === indexSide
         ? EditorView.contentAttributes.of({ "aria-label": tx(sideLabel(key === "a" ? left : right)) })
@@ -1004,6 +1042,10 @@ function TwoPaneDiff({
         destroyPanes();
       };
     }
+    if (viewState && !carry) {
+      if (views.a) restoreViewState(viewState, "a", views.a);
+      restoreViewState(viewState, views.a ? "b" : mainSide(views), views.b);
+    }
     viewsRef.current = views;
     const built = viewerHost(views, dataRef.current, viewMode, () => focusedSide.current);
     const detach = contribs.map((c) => c.attach?.(built));
@@ -1057,6 +1099,7 @@ function TwoPaneDiff({
     right,
     swapped,
     reload,
+    viewState,
   ]);
 
   useEffect(() => {
@@ -1239,7 +1282,7 @@ function TwoPaneDiff({
             write: (top) => {
               const options: ScrollToOptions = {
                 top: Math.max(0, top),
-                behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+                behavior: reducedMotion() ? "instant" : "smooth",
               };
               if (views.panes) views.panes.scrollTo(onA ? "a" : "b", options);
               else scroller.scrollTo(options);
@@ -1748,7 +1791,7 @@ function TwoPaneDiff({
   return (
     <div
       ref={rootRef}
-      className={clsx(styles.root, fit && styles.fit, indexOnlyLeft && styles.indexDeletion)}
+      className={clsx(styles.root, fit && styles.fit, deletedOneSided && styles.indexDeletion)}
       onKeyDown={onKeyDown}
       onFocusCapture={() => {
         setFocusedDiffNavigator(nav.current);
@@ -1931,7 +1974,13 @@ function TwoPaneDiff({
               chunkInfo.moves > 0 &&
               (chunkInfo.moves === 1 ? tx(" · 1 moved block") : tx` · ${chunkInfo.moves} moved blocks`)}
           </span>
-          {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
+          {contribs.map((c, i) => {
+            if (!c.Toolbar) return null;
+            return (
+              // oxlint-disable-next-line react/no-array-index-key -- contributions have no stable id; position is the identity
+              <c.Toolbar key={i} host={viewer} />
+            );
+          })}
           {toolbarActions}
           {canExternal && (
             <IconButton
@@ -1948,7 +1997,7 @@ function TwoPaneDiff({
               size="small"
               onClick={() => {
                 void Promise.resolve(indexDoc?.save())
-                  .then(() => executeAction("vcs.showDiffInNewWindow", indexOnlyLeft ? input_ : data))
+                  .then(() => executeAction("vcs.showDiffInNewWindow", deletedOneSided ? input_ : data))
                   .catch(() => {});
               }}
             />
@@ -2003,15 +2052,25 @@ function TwoPaneDiff({
           </span>
         </div>
       ) : (
+        // A deleted file's swapped viewer still reads in the request's order: revision → (deleted).
         <div className={labels}>
-          <span className={styles.label} title={sourceLabels ? `${captionA} → ${captionB}` : undefined}>
-            <span className={styles.labelText}>{sideLabel(left)}</span>
-            {sourceLabels && <PaneTitleDetail {...titleA} />}
+          <span
+            className={styles.label}
+            title={
+              sourceLabels ? (deletedOneSided ? `${captionB} → ${captionA}` : `${captionA} → ${captionB}`) : undefined
+            }
+          >
+            <span className={styles.labelText}>{sideLabel(deletedOneSided ? right : left)}</span>
+            {sourceLabels && <PaneTitleDetail {...(deletedOneSided ? titleB : titleA)} />}
             {unifiedOnLeft && <span className={styles.badge}>{tx("editable")}</span>}
-            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>} →
-            <span className={styles.labelText}>{sideLabel(right)}</span>
-            {sourceLabels && <PaneTitleDetail {...titleB} />}
-            {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
+            {eolDiffers && (deletedOneSided ? eolB : eolA) && (
+              <span className={styles.badge}>{deletedOneSided ? badgeB : badgeA}</span>
+            )}{" "}
+            →<span className={styles.labelText}>{sideLabel(deletedOneSided ? left : right)}</span>
+            {sourceLabels && <PaneTitleDetail {...(deletedOneSided ? titleA : titleB)} />}
+            {eolDiffers && (deletedOneSided ? eolA : eolB) && (
+              <span className={styles.badge}>{deletedOneSided ? badgeA : badgeB}</span>
+            )}
           </span>
         </div>
       )}

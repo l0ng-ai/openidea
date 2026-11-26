@@ -31,6 +31,7 @@ import {
 } from "@codemirror/commands";
 import { SearchCursor } from "@codemirror/search";
 import { humpLeft, humpRight, wordStartLeft } from "../model/camelHumps";
+import { cycleIdentifierCase, wordSpan } from "../model/identifierCase";
 
 type Node = ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]>;
 
@@ -135,22 +136,8 @@ export const duplicateLineOrSelection: Command = (view) => {
   if (state.readOnly) return false;
   if (state.selection.ranges.every((r) => r.empty)) {
     const spans = foldedLineSpans(state);
-    if (!spans) return copyLineDown(view);
     // On a folded region's line the whole folded block is duplicated.
-    const changes = state.changes(
-      spans.map((s) => ({ from: s.to, insert: state.lineBreak + state.sliceDoc(s.from, s.to) })),
-    );
-    const ranges = state.selection.ranges.map((r) => {
-      const s = spans.find((sp) => sp.from <= r.head && r.head <= sp.to)!;
-      return EditorSelection.cursor(changes.mapPos(r.head, -1) + s.to - s.from + state.lineBreak.length);
-    });
-    view.dispatch({
-      changes,
-      selection: EditorSelection.create(ranges, state.selection.mainIndex),
-      scrollIntoView: true,
-      userEvent: "input.duplicate",
-    });
-    return true;
+    return spans ? duplicateSpans(view, spans) : copyLineDown(view);
   }
   const tr = state.changeByRange((r) => {
     if (r.empty) {
@@ -169,6 +156,33 @@ export const duplicateLineOrSelection: Command = (view) => {
   view.dispatch(state.update(tr, { scrollIntoView: true, userEvent: "input.duplicate" }));
   return true;
 };
+
+/** IDEA's Duplicate Entire Lines: every line a caret or selection touches is copied below, and the copy keeps the selection. */
+export const duplicateEntireLines: Command = (view) => {
+  if (view.state.readOnly) return false;
+  const spans = foldedLineSpans(view.state);
+  return spans ? duplicateSpans(view, spans) : copyLineDown(view);
+};
+
+/** Copies each span below itself and moves every selection range onto its copy. */
+function duplicateSpans(view: EditorView, spans: Array<{ from: number; to: number }>): boolean {
+  const { state } = view;
+  const changes = state.changes(
+    spans.map((s) => ({ from: s.to, insert: state.lineBreak + state.sliceDoc(s.from, s.to) })),
+  );
+  const ranges = state.selection.ranges.map((r) => {
+    const s = spans.find((sp) => sp.from <= r.from && r.from <= sp.to)!;
+    const onCopy = (pos: number) => changes.mapPos(s.to, -1) + pos - s.from + 1;
+    return EditorSelection.range(onCopy(r.anchor), onCopy(r.head));
+  });
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
+    scrollIntoView: true,
+    userEvent: "input.duplicate",
+  });
+  return true;
+}
 
 /** ⌘⌫: Delete Line — on a folded region's line, every line of the folded block. */
 export const deleteLine: Command = (view) => {
@@ -417,6 +431,79 @@ function leadingCommentStart(state: EditorState, a: number): number {
 
 export type StatementMove = { spec: TransactionSpec } | "noop" | "line";
 
+/** A `case` / `default` label whose branch body follows as its siblings (Go, JavaScript, Java). */
+const CASE_LABEL = /^(Case|CaseLabel|DefaultLabel|SwitchLabel)$/;
+
+/**
+ * Move Statement on a `case` label of a switch whose branches are flat
+ * (label, then the body as siblings): the branch, from its first stacked
+ * label to its last non-blank line, swaps with the neighbouring branch, as
+ * IDEA's case block mover does. `noop` at the first / last branch.
+ */
+function planCaseMove(state: EditorState, label: Node, up: boolean): StatementMove {
+  const doc = state.doc;
+  const block = label.parent!;
+  const close = doc.lineAt(block.to).number;
+  const isLabel = (l: number) => {
+    const n = statementStartingAt(state, l);
+    return !!n && CASE_LABEL.test(n.type.name) && n.parent?.from === block.from && n.parent.to === block.to;
+  };
+  const start = (l: number) => {
+    while (l > 1 && isLabel(l - 1)) l--;
+    return l;
+  };
+  // The line where the branch starting at `l` ends: its last non-blank line before the next branch or the closing brace.
+  const end = (l: number) => {
+    let k = l + 1;
+    while (k < close && isLabel(k)) k++;
+    while (k < close && !isLabel(k)) k++;
+    k--;
+    while (k > l && firstToken(state, k) === null) k--;
+    return k;
+  };
+  const a = start(doc.lineAt(label.from).number);
+  const b = end(a);
+  let s: number;
+  let e: number;
+  if (up) {
+    let p = a - 1;
+    while (p > 0 && doc.line(p).from > block.from && !isLabel(p)) p--;
+    if (p < 1 || doc.line(p).from <= block.from || !isLabel(p)) return "noop";
+    s = start(p);
+    e = end(s);
+  } else {
+    let n = b + 1;
+    while (n < close && !isLabel(n)) n++;
+    if (n >= close) return "noop";
+    s = n;
+    e = end(n);
+  }
+  const [first, second] = up
+    ? [
+        { s, e },
+        { s: a, e: b },
+      ]
+    : [
+        { s: a, e: b },
+        { s, e },
+      ];
+  const from = doc.line(first.s).from;
+  const to = doc.line(second.e).to;
+  const textFirst = state.sliceDoc(from, doc.line(first.e).to);
+  const textSecond = state.sliceDoc(doc.line(second.s).from, to);
+  const between = state.sliceDoc(doc.line(first.e).to, doc.line(second.s).from);
+  const head = state.selection.main.head;
+  const movedFrom = up ? from : from + textSecond.length + between.length;
+  return {
+    spec: {
+      changes: { from, to, insert: textSecond + between + textFirst },
+      selection: EditorSelection.cursor(movedFrom + (head - doc.line(a).from)),
+      scrollIntoView: true,
+      userEvent: "move.line",
+    },
+  };
+}
+
 /**
  * Move Statement as in IDEA: the statement around the caret (whole lines)
  * moves past the next statement; into a block when the neighbour is a block
@@ -429,6 +516,7 @@ export function planStatementMove(state: EditorState, up: boolean): StatementMov
   const head = state.selection.main.head;
   const cur = statementAround(state, head);
   if (!cur) return "line";
+  if (CASE_LABEL.test(cur.type.name) && cur.parent) return planCaseMove(state, cur, up);
   const doc = state.doc;
   if (/^[{}]$/.test(cur.type.name)) {
     for (let g: Node | null = cur.parent; g; g = g.parent)
@@ -970,6 +1058,49 @@ export const toggleCase: Command = (view) => {
   return true;
 };
 
+const NAME_CHAR = /[\p{L}\p{N}_$-]/u;
+
+/**
+ * ⇧⌥U: Cycle the Case of the identifier at each caret (which stays selected)
+ * or of each selection, from the style it is written in: snake_case →
+ * SCREAMING_SNAKE_CASE → kebab-case → camelCase → PascalCase.
+ */
+export const cycleCase: Command = (view) => {
+  const { state } = view;
+  if (state.readOnly) return false;
+  /** The `-`-joined name at or right before `pos`. */
+  const nameAt = (pos: number): { from: number; to: number } | null => {
+    const char = (at: number) => at >= 0 && at < state.doc.length && NAME_CHAR.test(state.sliceDoc(at, at + 1));
+    if (!char(pos) && !char(pos - 1)) return null;
+    let from = pos;
+    let to = pos;
+    while (char(from - 1)) from--;
+    while (char(to)) to++;
+    return { from, to };
+  };
+  let changed = false;
+  const tr = state.changeByRange((r) => {
+    const name = r.empty ? nameAt(r.head) : r;
+    if (!name) return { range: r };
+    const span = wordSpan(state.sliceDoc(name.from, name.to));
+    if (!span) return { range: r };
+    const from = name.from + span.from;
+    const insert = cycleIdentifierCase(state.sliceDoc(from, name.from + span.to));
+    if (insert === null) return { range: r };
+    changed = true;
+    const set = state.changes({ from, to: name.from + span.to, insert });
+    return {
+      changes: set,
+      range: r.empty
+        ? EditorSelection.range(from, from + insert.length)
+        : EditorSelection.range(set.mapPos(r.anchor), set.mapPos(r.head)),
+    };
+  });
+  if (!changed) return false;
+  view.dispatch(state.update(tr, { userEvent: "input.case" }));
+  return true;
+};
+
 /** ⌥⇧G: Add Carets to Ends of Selected Lines. */
 export const addCaretsToLineEnds: Command = (view) => {
   const { state } = view;
@@ -987,6 +1118,41 @@ export const addCaretsToLineEnds: Command = (view) => {
   if (ranges.length === state.selection.ranges.length && state.selection.ranges.every((r) => r.empty)) return false;
   view.dispatch({
     selection: EditorSelection.create(ranges, ranges.length - 1),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+};
+
+/** Swap Selection Boundaries: moves each selection's caret to its other end, keeping the selection. */
+export const swapSelectionBoundaries: Command = (view) => {
+  const { selection } = view.state;
+  if (selection.ranges.every((r) => r.empty)) return false;
+  view.dispatch({
+    selection: EditorSelection.create(
+      selection.ranges.map((r) => EditorSelection.range(r.head, r.anchor)),
+      selection.mainIndex,
+    ),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+};
+
+/**
+ * IDEA's Select Line at Caret: each caret or selection grows to the whole lines it touches,
+ * with the line break after them; a folded region's lines go together with the line it is shown on.
+ */
+export const selectLineAtCaret: Command = (view) => {
+  const { state } = view;
+  const ranges = state.selection.ranges.map((r) => {
+    const end = r.to > r.from && state.doc.lineAt(r.to).from === r.to ? r.to - 1 : r.to;
+    const span = visualLineSpan(state, r.from, end);
+    const to = Math.min(span.to + 1, state.doc.length);
+    return r.head < r.anchor ? EditorSelection.range(to, span.from) : EditorSelection.range(span.from, to);
+  });
+  view.dispatch({
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
     scrollIntoView: true,
     userEvent: "select",
   });

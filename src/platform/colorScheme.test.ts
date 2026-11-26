@@ -131,6 +131,25 @@ describe("color schemes", () => {
     expect(split).toContain("--syn-builtin-function: #56a8f5 !important");
   });
 
+  it("offers TypeScript's interface, type alias and type parameter, in the class name's style until set (#5619)", () => {
+    const page = ATTRIBUTES.filter((a) => a.path[0] === "JavaScript and TypeScript").map((a) => a.id);
+    expect(page).toEqual(
+      expect.arrayContaining(["javascript.interface", "javascript.typeAlias", "javascript.typeParameter"]),
+    );
+    const customs = {
+      "custom-t": {
+        name: "T",
+        parent: "dark" as const,
+        attributes: { "javascript.className": { foreground: "#123456" } },
+      },
+    };
+    for (const id of ["javascript.interface", "javascript.typeAlias", "javascript.typeParameter"])
+      expect(resolvedAttribute("custom-t", id, customs)?.foreground).toBe("#123456");
+    const css = schemeCss("dark", { dark: { "javascript.interface": { foreground: "#4ec9b0" } } });
+    expect(css).toContain("--syn-javascript-interface: #4ec9b0 !important");
+    expect(css).not.toMatch(/:root \{[^}]*--syn-javascript-interface/);
+  });
+
   it("shows an unset Global function in the function declaration style, then its own (#4059)", () => {
     const fn = resolvedAttribute("dark", "functionDeclaration");
     expect(resolvedAttribute("dark", "javascript.globalFunction")).toEqual(fn);
@@ -152,6 +171,22 @@ describe("color schemes", () => {
     const css = schemeCss("dark", { dark: { "csharp.keyword": { foreground: "#224466" } } });
     expect(css).toContain('.cm-editor[data-language="C#"]');
     expect(css).toContain("--syn-keyword: #224466 !important");
+  });
+
+  it("offers a C/C++ scheme page and scopes its overrides to C and C++ editors only", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "cpp.packageReference")?.path).toEqual(["C/C++"]);
+    expect(ATTRIBUTES.find((a) => a.id === "cpp.predefined")?.language).toBe("C/C++");
+    const css = schemeCss("dark", {
+      dark: { "cpp.packageReference": { foreground: "#224466" }, "cpp.predefined": { italic: true } },
+    });
+    const block = css.slice(css.indexOf('.cm-editor[data-language="C"]'));
+    expect(block).toContain('.cm-editor [data-language="C"]');
+    expect(block).toContain('.cm-editor[data-language="C++"]');
+    expect(block).toContain('.cm-editor [data-language="C++"]');
+    expect(block).toContain("--syn-namespace: #224466 !important");
+    expect(block).toContain("--syn-builtin-italic: italic !important");
+    expect(css).not.toContain('data-language="Java"]');
+    expect(css.indexOf('.cm-editor[data-language="C"]')).toBeGreaterThan(css.indexOf(":root"));
   });
 
   it("offers a Julia scheme page and scopes Julia overrides to Julia editors", () => {

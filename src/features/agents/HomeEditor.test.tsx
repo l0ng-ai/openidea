@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { AgentConfigOption, AgentProvider, CustomAgentInput, NewAgentTask } from "@/bindings";
+import type { AgentConfigOption, AgentProvider, CustomAgentInput, NewAgentTask, ProjectInfo } from "@/bindings";
 import { useProject } from "@/platform/project";
 import { HomeEditor } from "./HomeEditor";
 import homeStyles from "./Home.module.css";
@@ -12,6 +12,7 @@ const backend = vi.hoisted(() => ({
   probe: vi.fn(),
   saveCustom: vi.fn(),
   hermesProfiles: [] as { name: string; label: string }[],
+  branches: [] as { name: string; remote: boolean }[],
 }));
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok", data });
 vi.mock("@/platform/ipc", async (original) => ({
@@ -30,7 +31,7 @@ vi.mock("@/platform/ipc", async (original) => ({
       }),
     agentProbe: (provider: string, refresh: boolean) => backend.probe(provider, refresh),
     vcsBranchInfo: () => ok({ head: "main" }),
-    vcsBranches: () => ok([]),
+    vcsBranches: () => ok(backend.branches),
     agentCreate: (req: NewAgentTask) => backend.create(req),
     agentHermesProfiles: () => ok(backend.hermesProfiles),
     agentCustomSave: (input: CustomAgentInput) => {
@@ -58,6 +59,7 @@ const option = (id: string, category: string, values: string[], current: string)
 
 beforeEach(() => {
   disconnect();
+  backend.branches = [];
   backend.create.mockReset().mockImplementation((req: NewAgentTask) => ok({ id: "new", config: req.config }));
   backend.probe.mockReset().mockImplementation(() => ok(null));
   backend.providers = [
@@ -100,9 +102,8 @@ async function chooseModel(model: string) {
 
 async function chooseEffort(effort: string) {
   fireEvent.click(settingsButton());
-  const group = screen.getByRole("radiogroup", { name: "Effort Level" });
-  fireEvent.click(within(group).getByRole("radio", { name: effort }));
-  fireEvent.keyDown(document, { key: "Escape" });
+  const list = screen.getByRole("listbox", { name: "Effort Level" });
+  fireEvent.click(within(list).getByRole("option", { name: effort }));
 }
 
 it("switches model-specific levels and restores each draft effort before starting", async () => {
@@ -188,21 +189,79 @@ it("ignores old provider-wide effort choices and refreshes unsupported per-model
 });
 
 it.each([
-  [undefined, "full-access"],
-  ["ask", undefined],
-] as const)("with new-task approvals %s, sends mode %s", async (newTaskApprovals, mode) => {
-  const provider = { ...backend.providers[0]!, config: [option("mode", "mode", ["ask", "full-access"], "ask")] };
-  useAgents.setState({ providers: [provider] });
-  const settings = useProject.getState().settings;
-  useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, newTaskApprovals } } as never });
-  try {
-    render(<HomeEditor />);
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
-    await waitFor(() => expect(backend.create).toHaveBeenCalled());
-    expect(backend.create.mock.calls[0]![0].config.find((c: { id: string }) => c.id === "mode")?.value).toBe(mode);
-  } finally {
-    useProject.setState({ settings });
-  }
+  [undefined, "ask", "full-access"],
+  ["ask", "ask", "ask"],
+  ["ask", "full-access", "ask"],
+] as const)(
+  "with new-task approvals %s and agent default %s, sends mode %s",
+  async (newTaskApprovals, agentDefault, mode) => {
+    const provider = {
+      ...backend.providers[0]!,
+      config: [option("mode", "mode", ["ask", "full-access"], agentDefault)],
+    };
+    useAgents.setState({ providers: [provider] });
+    const settings = useProject.getState().settings;
+    useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, newTaskApprovals } } as never });
+    try {
+      render(<HomeEditor />);
+      fireEvent.click(screen.getByRole("button", { name: "Start" }));
+      await waitFor(() => expect(backend.create).toHaveBeenCalled());
+      expect(backend.create.mock.calls[0]![0].config.find((c: { id: string }) => c.id === "mode")?.value).toBe(mode);
+    } finally {
+      useProject.setState({ settings });
+    }
+  },
+);
+
+it("switches Cursor per-model context and fast options cleanly without sending stale model params", async () => {
+  const cursor: AgentProvider = {
+    ...backend.providers[0]!,
+    id: "cursor",
+    name: "Cursor",
+    config: [
+      option("mode", "mode", ["agent", "plan", "ask"], "agent"),
+      option("model", "model", ["grok-4.7", "gemini-4-neon"], "grok-4.7"),
+      option("openidea.cursor.approval", "approval", ["ask", "bypass"], "ask"),
+    ],
+    thoughtLevels: {
+      "grok-4.7": [
+        option("reasoning_effort", "thought_level", ["low", "high"], "high"),
+        option("context", "model_config", ["256k", "500k"], "256k"),
+        {
+          id: "fast",
+          category: "model_config",
+          name: "Fast",
+          description: null,
+          current: "true",
+          defaultValue: "true",
+          via: "option",
+          values: [
+            { value: "false", name: "Off", description: null },
+            { value: "true", name: "Fast", description: null },
+          ],
+        },
+      ],
+      "gemini-4-neon": [
+        option("reasoning_effort", "thought_level", ["low", "high"], "high"),
+        option("context", "model_config", ["300k", "1m"], "300k"),
+      ],
+    },
+  };
+  useAgents.setState({ providers: [cursor], draft: savedDraft({ provider: "cursor", config: {} }) });
+  render(<HomeEditor />);
+  // Cursor defaults fast off even though the agent reported true, and omits off switches from multi-setting summaries.
+  expect(settingsButton()).toHaveTextContent("high · 256k");
+  await chooseModel("gemini-4-neon");
+  expect(settingsButton()).toHaveTextContent("high · 300k");
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(backend.create).toHaveBeenCalled());
+  expect(backend.create.mock.calls[0]![0].config).toEqual([
+    { id: "mode", value: "agent" },
+    { id: "model", value: "gemini-4-neon" },
+    { id: "openidea.cursor.approval", value: "bypass" },
+    { id: "reasoning_effort", value: "high" },
+    { id: "context", value: "300k" },
+  ]);
 });
 
 it("applies fitWidth on the New Task page only when fitWindowWidth is enabled", () => {
@@ -274,4 +333,47 @@ it("offers Hermes profiles next to the model and starts the chosen one with -p",
     args: ["-p", "Dom 2", "acp"],
   });
   await waitFor(() => expect(screen.getByRole("button", { name: "Hermes profile" })).toHaveTextContent("Dom 2"));
+});
+
+it("shows workspace folder and branch names as written in Chinese", async () => {
+  const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+  await setLocale("zh");
+  try {
+    // Precondition: the zh catalog translates these words, so a translated label would differ.
+    expect(tx("dev")).not.toBe("dev");
+    expect(tx("test")).not.toBe("test");
+    backend.branches = [
+      { name: "dev", remote: false },
+      { name: "test", remote: false },
+    ];
+    useProject.setState({
+      project: {
+        root: "/ws",
+        name: "Workspace",
+        trusted: true,
+        isGit: true,
+        workspace: { version: 1, name: "Workspace", projects: ["/ws/dev", "/ws/test"] },
+      } as ProjectInfo,
+    });
+    useAgents.setState({ draft: { ...useAgents.getState().draft, isolation: "worktree" } });
+    render(<HomeEditor />);
+    const projectPicker = screen.getByRole("button", { name: tx("Project") });
+    expect(projectPicker).toHaveTextContent(/^dev$/);
+    fireEvent.click(projectPicker);
+    expect(
+      within(screen.getByRole("listbox"))
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["dev/ws/dev", "test/ws/test"]);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+    fireEvent.click(await screen.findByRole("button", { name: tx("Base branch") }));
+    expect(
+      within(screen.getByRole("listbox"))
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["dev", "test"]);
+  } finally {
+    _resetI18nForTests();
+    useProject.setState({ project: null });
+  }
 });

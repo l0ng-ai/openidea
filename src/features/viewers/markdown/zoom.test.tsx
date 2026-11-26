@@ -19,6 +19,7 @@ let activeSlot: Partial<EditorSlot> | null = null;
 vi.mock("@/editor/core/controller", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   editorController: () => ({
+    slotFor: () => activeSlot,
     get activeSlot() {
       return activeSlot;
     },
@@ -47,7 +48,7 @@ describe("editor font size actions", () => {
     views.push(view);
     return view;
   };
-  const activate = (view: EditorView) => (activeSlot = { view, disposed: false });
+  const activate = (view: EditorView) => (activeSlot = { view, live: view, disposed: false });
   const zoom = (view: EditorView) => view.state.field(fontZoom);
 
   beforeEach(() => {

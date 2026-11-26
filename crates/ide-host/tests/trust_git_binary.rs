@@ -1,24 +1,15 @@
 //! Which git executable each window's repositories run. Its own test binary: the default
 //! executable (global settings) is process-wide.
 #![cfg(unix)]
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_host::{Host, ops};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 
 fn host(base: &Path) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }))
+    Arc::new(Host::new(common::host_config(base)))
 }
 
 /// A repository with `tools/git`: it appends a line to `marker`, waits while `gate` exists,

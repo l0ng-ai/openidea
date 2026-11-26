@@ -15,6 +15,8 @@ export interface ColorMatch {
   to: number;
   text: string;
   format: ColorFormat;
+  /** A hex literal with its alpha first (`#AARRGGBB`, `#ARGB`), as XAML writes it. */
+  argb?: boolean;
 }
 
 /** Style sheet languages: named colors and unquoted hex values are colors there. */
@@ -22,6 +24,16 @@ const STYLE_SHEETS = new Set(["css", "scss", "sass", "less", "stylus", "postcss"
 /** Markup that embeds style sheets (`<style>`, `style="…"`): unquoted hex values too. */
 const MARKUP = new Set(["html", "vue", "svelte", "astro", "xml", "xhtml"]);
 export const isMarkupLanguage = (language: string): boolean => MARKUP.has(language);
+/** Languages whose hex colors put the alpha first: `#AARRGGBB` / `#ARGB` (XAML). */
+const ALPHA_FIRST = new Set(["axaml"]);
+
+/** The literal as CSS reads it: an alpha-first hex with its alpha moved to the end. */
+export function cssColor(color: ColorMatch): string {
+  if (!color.argb) return color.text;
+  const digits = color.text.slice(1);
+  const alpha = digits.length === 8 ? 2 : 1;
+  return `#${digits.slice(alpha)}${digits.slice(0, alpha)}`;
+}
 /** Prose: `#123` is an issue, `#fab` a heading or a tag. */
 const PROSE = new Set(["markdown", "plaintext", "text", "restructuredtext", "asciidoc", "git-commit"]);
 
@@ -66,7 +78,10 @@ export function findColors(line: string, language: string, isColorName: (word: s
         continue;
       if (!isColorName(text)) continue;
     } else if (format === "hex" && !looseHex && !/["'`]$/.test(line.slice(0, from))) continue;
-    out.push({ from, to: from + text.length, text, format });
+    const argb = format === "hex" && ALPHA_FIRST.has(language) && (text.length === 5 || text.length === 9);
+    out.push(
+      argb ? { from, to: from + text.length, text, format, argb } : { from, to: from + text.length, text, format },
+    );
   }
   return out;
 }
@@ -104,7 +119,8 @@ export function formatColor(rgba: Rgba, original: ColorMatch): string {
   if (original.format === "hex" || original.format === "name") {
     const short = original.text.length === 4 || original.text.length === 5;
     const hadAlpha = original.format === "hex" && (original.text.length === 5 || original.text.length === 9);
-    let hex = toHex6(rgba) + (hadAlpha || hasAlpha ? hex2(alpha * 255) : "");
+    const a = hadAlpha || hasAlpha ? hex2(alpha * 255) : "";
+    let hex = original.argb ? `#${a}${toHex6(rgba).slice(1)}` : toHex6(rgba) + a;
     // `#abc` stays short when the new color has a short form.
     if (short && /^#(?:([0-9a-f])\1)+$/.test(hex)) hex = `#${hex.slice(1).replace(/(.)\1/g, "$1")}`;
     return /[A-F]/.test(original.text) ? hex.toUpperCase() : hex;

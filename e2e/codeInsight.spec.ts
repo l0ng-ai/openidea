@@ -274,6 +274,7 @@ test("completion clips long parameters before the suggestion name and return typ
   });
   await expect(row.locator(".cm-lsp-type")).toHaveText(returnType);
   await page.setViewportSize({ width: 820, height: 760 });
+  await page.evaluate(() => document.fonts.ready);
   await expect
     .poll(() =>
       row.evaluate((el) => {

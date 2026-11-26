@@ -252,17 +252,10 @@ pub fn window_take_settings_init(
     let owner = AppState::owner_window(window.label());
     let launch = windows.take_launch(window.label());
     let (remote, project) = if let Some(c) = state.remote_dev.get(owner) {
-        let session = crate::remote_dev::RemoteSession {
-            target: c.target.clone(),
-            root: c.root.clone(),
-            host: c.host.clone(),
-            os: c.os.clone(),
-            commands: c.commands.clone(),
-        };
         // Leave `project` empty on remote sessions: the Settings page tree renders immediately
         // from local client settings, and `projectCurrent()` fills in project-scoped settings
         // right after first paint without keeping a shadow cache in sync.
-        (Some(session), None)
+        (Some(c.snapshot()), None)
     } else {
         let project = state.project(owner).ok().filter(|p| !p.light).map(|p| ide_host::ops::project::info(&p));
         (None, project)
@@ -341,6 +334,10 @@ pub struct CloseContext {
     pub quitting: bool,
     /// Number of open project windows (settings windows excluded), including the caller.
     pub windows: u32,
+    /// Whether this window currently has auxiliary document windows that must settle first.
+    pub has_document_windows: bool,
+    /// Whether this close runs alongside other windows or on a background tab (prompts serialize and raise).
+    pub batch: bool,
 }
 
 #[desktop_command(trust = always)]
@@ -357,10 +354,40 @@ pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, W
         Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
         _ => all.len(),
     };
-    CloseContext { quitting: windows.quitting(), windows: count as u32 }
+    let quitting = windows.quitting();
+    let has_document_windows = !windows::document_windows(&app, window.label()).is_empty();
+    let hidden_tab = windows.groups.lock().group(window.label()).is_some_and(|g| g.selected != window.label());
+    let batch = quitting || pending.len() > 1 || windows.in_tab_close_batch(window.label()) || hidden_tab;
+    CloseContext { quitting, windows: count as u32, has_document_windows, batch }
 }
 
-/// Quits: closes every window, each of which runs its own unsaved-changes check.
+/// Acquires the interactive prompt turn for a batch close and brings this window forward.
+/// Returns `false` if the batch was cancelled while waiting.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_begin_prompt(app: AppHandle, window: WebviewWindow) -> bool {
+    crate::window_groups::begin_prompt(&app, &window).await
+}
+
+/// Releases the interactive prompt turn held by this window.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_end_prompt(app: AppHandle, window: Window) {
+    crate::window_groups::end_prompt(&app, window.label());
+}
+
+/// Signals that this window passed its close checks and waits for peers closing in the same
+/// batch/tab group so they hide together in one frame. Returns `false` if the batch was cancelled.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_ready_to_close(app: AppHandle, window: WebviewWindow) -> bool {
+    crate::window_groups::ready_to_close(&app, &window).await
+}
+
+/// Quits: closes every window in parallel, each of which runs its own unsaved-changes check.
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
@@ -369,15 +396,17 @@ pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
         return;
     }
     windows.set_quitting(true);
-    windows::continue_quit(&app, None);
+    windows::start_quit(&app);
 }
 
 /// A window vetoed the quit (user cancelled its unsaved-changes prompt).
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
+pub fn app_cancel_quit(app: AppHandle, window: Window, windows: State<'_, WindowsState>) {
     windows.set_quitting(false);
+    windows.abort_all_closing(Some(window.label()));
+    windows.close_settled(window.label());
     tauri::async_runtime::spawn(async move {
         let _ = crate::window_groups::persist(&app).await;
     });
@@ -434,7 +463,23 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
     }
     let home = dirs::home_dir();
     let config = menu_state.config.lock().clone();
-    menu::model(&spec, &menu::recent_items(&state.recent.list(), home.as_deref()), &config)
+    let remote = menu_state.remote_recent.lock().clone();
+    menu::model(&spec, &menu::recent_items(&state.recent.list(), &remote, home.as_deref()), &config)
+}
+
+/// The Remote Development projects of the frontend's recent list, for Open Recent.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn menu_set_remote_recent(
+    app: AppHandle,
+    menu_state: State<'_, MenuState>,
+    state: State<'_, AppState>,
+    projects: Vec<menu::RemoteRecent>,
+) {
+    if menu::store_remote_recent(&menu_state, projects) {
+        menu::install(&app, &menu_state, &state.recent.list());
+    }
 }
 
 /// Action ids the focused window cannot run now: their native menu items are
@@ -568,7 +613,19 @@ fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> 
     }
 }
 
-fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+/// Bounds connection establishment (TCP and TLS) for the updater. reqwest divides this
+/// across a host's resolved addresses, so a CDN hostname with four A records gets about
+/// 3.75s each — enough for a slow link, while still leaving the 60s check budget intact.
+const UPDATER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn configure_updater_client(
+    builder: reqwest::ClientBuilder,
+    proxy: &ide_core::proxy_settings::ProxySettings,
+) -> reqwest::ClientBuilder {
+    ide_http::client::with_proxy(builder, proxy).connect_timeout(UPDATER_CONNECT_TIMEOUT)
+}
+
+pub(crate) fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
         return Ok(None);
@@ -591,7 +648,7 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
         builder = builder.target(target);
     }
     builder
-        .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
+        .configure_client(move |b| configure_updater_client(b, &proxy))
         .endpoints(endpoints)
         .map_err(|e| IdeError::invalid(e.to_string()))?
         .build()
@@ -666,24 +723,23 @@ pub enum UpdateProgress {
 /// Limits download events to one per whole percent (or per 256 KiB without a length).
 #[derive(Default)]
 struct ProgressThrottle {
-    downloaded: u64,
     last_step: Option<u64>,
 }
 
 impl ProgressThrottle {
     const UNKNOWN_STEP: u64 = 256 * 1024;
 
-    fn chunk(&mut self, len: usize, total: Option<u64>) -> Option<UpdateProgress> {
-        self.downloaded += len as u64;
+    /// Converts the downloader's absolute byte count into a throttled event.
+    fn report(&mut self, downloaded: u64, total: Option<u64>) -> Option<UpdateProgress> {
         let step = match total {
-            Some(t) if t > 0 => self.downloaded.min(t) * 100 / t,
-            _ => self.downloaded / Self::UNKNOWN_STEP,
+            Some(t) if t > 0 => downloaded.min(t) * 100 / t,
+            _ => downloaded / Self::UNKNOWN_STEP,
         };
         if self.last_step == Some(step) {
             return None;
         }
         self.last_step = Some(step);
-        Some(UpdateProgress::Downloading { downloaded: self.downloaded as f64, total: total.map(|t| t as f64) })
+        Some(UpdateProgress::Downloading { downloaded: downloaded as f64, total: total.map(|t| t as f64) })
     }
 }
 
@@ -721,28 +777,22 @@ pub async fn app_install_update(
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
     let result = async {
-        let updater = updater(&app, source)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
-        let update = tokio::select! {
-            r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
-        }
-        .ok_or_else(|| IdeError::not_found("no update available"))?;
         let mut throttle = ProgressThrottle::default();
         let progress = on_progress.clone();
-        let download = update.download(
-            move |len, total| {
-                if let Some(p) = throttle.chunk(len, total) {
+        let downloaded = tokio::select! {
+            result = crate::updates::download_update(&app, source, &token, move |done, total| {
+                if let Some(p) = throttle.report(done, total) {
                     let _ = progress.send(p);
                 }
-            },
-            || {},
-        );
-        let bytes = tokio::select! {
-            r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+            }) => result?,
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
+        let crate::updates::DownloadedUpdate { update, bytes, path } = downloaded;
+        if token.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || {
+        let installed = tauri::async_runtime::spawn_blocking(move || {
             #[cfg(windows)]
             if update.target.ends_with("-portable") {
                 let exe = tauri::utils::platform::current_exe()?;
@@ -751,7 +801,11 @@ pub async fn app_install_update(
             update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
         })
         .await
-        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+        if installed.is_ok() {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        installed
     }
     .await;
     state.host.end_request(request);
@@ -764,7 +818,9 @@ pub async fn app_install_update(
 /// can show the UI's language and fall back to English. An install records the
 /// notes it saw, so this is only for an update installed outside the app.
 /// `Ok(None)` when the manifest covers another version or carries no notes.
-#[desktop_command(trust = trusted)]
+/// Reads only the public manifest, like the update check: the page usually opens
+/// in a window without a project.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_release_notes(
@@ -880,22 +936,33 @@ mod tests {
     #[test]
     fn throttle_reports_each_whole_percent_once() {
         let mut t = ProgressThrottle::default();
-        assert_eq!(downloading(t.chunk(1, Some(1000))), Some((1.0, Some(1000.0))));
-        assert_eq!(downloading(t.chunk(5, Some(1000))), None);
-        assert_eq!(downloading(t.chunk(4, Some(1000))), Some((10.0, Some(1000.0))));
-        let reported = (0..99).filter(|_| t.chunk(10, Some(1000)).is_some()).count();
-        assert_eq!(reported, 99);
-        assert_eq!(t.downloaded, 1000);
+        assert_eq!(downloading(t.report(1, Some(1000))), Some((1.0, Some(1000.0))));
+        assert_eq!(downloading(t.report(9, Some(1000))), None);
+        assert_eq!(downloading(t.report(10, Some(1000))), Some((10.0, Some(1000.0))));
+        let reported = (11..=100).filter(|percent| t.report(percent * 10, Some(1000)).is_some()).count();
+        assert_eq!(reported, 90);
     }
 
     #[test]
     fn throttle_without_length_reports_per_step() {
         let mut t = ProgressThrottle::default();
-        assert!(t.chunk(10, None).is_some());
-        assert!(t.chunk(1024, None).is_none());
-        assert_eq!(downloading(t.chunk(256 * 1024, None)), Some(((256 * 1024 + 1034) as f64, None)));
+        assert!(t.report(10, None).is_some());
+        assert!(t.report(1024, None).is_none());
+        assert_eq!(downloading(t.report(256 * 1024 + 1034, None)), Some(((256 * 1024 + 1034) as f64, None)));
         // A zero length is treated as unknown, not divided by.
-        assert!(ProgressThrottle::default().chunk(1, Some(0)).is_some());
+        assert!(ProgressThrottle::default().report(1, Some(0)).is_some());
+    }
+
+    #[test]
+    fn throttle_uses_absolute_bytes_after_a_full_download_restart() {
+        let mut t = ProgressThrottle::default();
+        let total = 100 * 1024 * 1024;
+        assert_eq!(downloading(t.report(40 * 1024 * 1024, None)), Some(((40 * 1024 * 1024) as f64, None)));
+        assert_eq!(downloading(t.report(1024, Some(total))), Some((1024.0, Some(total as f64))));
+        assert_eq!(
+            downloading(t.report(50 * 1024 * 1024, Some(total))),
+            Some(((50 * 1024 * 1024) as f64, Some(total as f64)))
+        );
     }
 
     #[test]
@@ -905,6 +972,18 @@ mod tests {
         assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
         // A build without an update endpoint stays without one.
         assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
+    }
+
+    #[test]
+    fn updater_client_bounds_connection_setup() {
+        let proxy = ide_core::proxy_settings::ProxySettings::default();
+        let builder = configure_updater_client(reqwest::ClientBuilder::new(), &proxy);
+        // reqwest has no getter for this; its ClientBuilder Debug prints non-default settings.
+        let debug = format!("{builder:?}");
+        assert!(
+            debug.contains(&format!("connect_timeout: {:?}", UPDATER_CONNECT_TIMEOUT)),
+            "the updater must not wait forever on an unreachable CDN address: {debug}"
+        );
     }
 
     #[test]
@@ -933,9 +1012,12 @@ ide_command::desktop_domain!(
     menu_model,
     menu_refresh,
     menu_set_disabled,
+    menu_set_remote_recent,
+    window_begin_prompt,
     window_close_context,
     window_complete_launch,
     window_cycle,
+    window_end_prompt,
     window_flash_taskbar,
     window_is_fullscreen,
     window_new,
@@ -949,6 +1031,7 @@ ide_command::desktop_domain!(
     window_open_projects,
     window_open_remote,
     window_open_settings,
+    window_ready_to_close,
     window_set_smooth_scrolling,
     window_set_titlebar_height,
     window_take_launch,

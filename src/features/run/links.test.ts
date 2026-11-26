@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { findOutputLinks, joinPath, type OutputLink } from "./links";
 
@@ -120,6 +121,39 @@ describe("findOutputLinks", () => {
   it("returns links sorted and non-overlapping", () => {
     const links = findOutputLinks("a.rs:1 then b.ts:2:3");
     expect(links.map((l) => l.start)).toEqual([0, 12]);
+  });
+
+  it("detects links at start, middle and end of a line just under the 4,000-character limit", () => {
+    const pad = (n: number) => "x".repeat(n);
+    const midJvm = "at com.acme.Service.run(Service.kt:99)";
+    const midPy = 'File "app/worker.py", line 17';
+    const midUrl = "https://example.dev/docs(v2)";
+    const tail = "end/file.go:88";
+
+    let line = "target.txt:1:1 ";
+    line += pad(1900 - line.length) + " " + midJvm + " " + midPy + " " + midUrl + " ";
+    line += pad(3999 - tail.length - 1 - line.length) + " " + tail;
+
+    expect(line.length).toBe(3_999);
+    const links = findOutputLinks(line);
+    expect(
+      links.map((l) => (l.kind === "url" ? l.url : `${l.target.path}:${l.target.line}:${l.target.col ?? ""}`)),
+    ).toEqual([
+      "target.txt:1:1",
+      "com/acme/Service.kt:99:",
+      "app/worker.py:17:",
+      "https://example.dev/docs(v2)",
+      "end/file.go:88:",
+    ]);
+  });
+
+  it("scans long lines without links in linear time", () => {
+    const t0 = performance.now();
+    for (const s of ["x".repeat(3_999), "a.b.".repeat(999), "a/b/".repeat(999), "x:".repeat(1_999)]) {
+      expect(findOutputLinks(s)).toEqual([]);
+    }
+    // The backtracking patterns took over 150 ms for the first four lines alone; a linear scan takes well under 1 ms.
+    expect(performance.now() - t0).toBeLessThan(50);
   });
 });
 

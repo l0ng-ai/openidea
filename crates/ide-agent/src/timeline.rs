@@ -1,12 +1,15 @@
 //! Folds ACP `session/update` notifications into a task's entries.
 
-use crate::model::{AgentEntry, AgentPlanItem, AgentSubagentStatus, AgentToolDiff, AgentToolStatus};
+use crate::model::{AgentEntry, AgentImage, AgentPlanItem, AgentSubagentStatus, AgentToolDiff, AgentToolStatus};
 use ide_core::IpcPath;
 use serde_json::Value;
 use std::collections::HashMap;
 
 /// Tool output kept per call; longer output keeps its tail.
 const MAX_OUTPUT: usize = 64 * 1024;
+
+/// Image files a read tool names that are shown when it reports none itself.
+const MAX_READ_IMAGES: usize = 4;
 
 #[derive(Default)]
 pub(crate) struct Timeline {
@@ -84,6 +87,7 @@ impl Timeline {
                     status: tool_status(update.get("status")).unwrap_or(AgentToolStatus::Pending),
                     locations: locations(update.get("locations")),
                     output: None,
+                    images: Vec::new(),
                     diffs: Vec::new(),
                     started_ms: Some(crate::now_ms()),
                     ended_ms: None,
@@ -150,7 +154,7 @@ impl Timeline {
     }
 
     fn merge_tool(&mut self, index: usize, update: &Value) {
-        let AgentEntry::Tool { title, kind, status, locations: locs, output, diffs, ended_ms, .. } =
+        let AgentEntry::Tool { title, kind, status, locations: locs, output, images, diffs, ended_ms, .. } =
             &mut self.entries[index]
         else {
             return;
@@ -170,38 +174,17 @@ impl Timeline {
         if update.get("locations").is_some_and(Value::is_array) {
             *locs = locations(update.get("locations"));
         }
-        let Some(content) = update.get("content").and_then(Value::as_array) else { return };
-        let mut text = String::new();
-        let mut new_diffs = Vec::new();
-        for item in content {
-            match item.get("type").and_then(Value::as_str) {
-                Some("content") => {
-                    if let Some(t) = content_text(item.get("content")) {
-                        if !text.is_empty() {
-                            text.push('\n');
-                        }
-                        text.push_str(&t);
-                    }
-                }
-                Some("diff") => {
-                    let old = item.get("oldText").and_then(Value::as_str).unwrap_or_default();
-                    let new = item.get("newText").and_then(Value::as_str).unwrap_or_default();
-                    let (added, removed) = line_stats(old, new);
-                    new_diffs.push(AgentToolDiff { path: IpcPath(str_field(item, "path").into()), added, removed });
-                }
-                _ => {}
-            }
+        if let Some(content) = update.get("content").and_then(Value::as_array) {
+            merge_content(content, output, images, diffs);
         }
-        if !text.is_empty() {
-            // The command a call announced (`$ cmd`) stays above the result that replaces it.
-            let command = output.as_deref().and_then(|o| o.lines().next()).filter(|l| l.starts_with("$ "));
-            if let Some(command) = command.filter(|c| !text.starts_with(c)) {
-                text = format!("{command}\n{text}");
-            }
-            *output = Some(tail(text));
-        }
-        if !new_diffs.is_empty() {
-            *diffs = new_diffs;
+        // Agents that only name the image a read tool opened (Cursor): show the file itself.
+        if *status == AgentToolStatus::Completed && kind == "read" && images.is_empty() {
+            images.extend(
+                locs.iter()
+                    .filter(|p| p.0.is_absolute())
+                    .take(MAX_READ_IMAGES)
+                    .filter_map(|p| crate::images::from_file(&p.0)),
+            );
         }
     }
 
@@ -368,6 +351,54 @@ fn subagent_status(state: &Value) -> Option<(AgentSubagentStatus, Option<String>
     })
 }
 
+/// Folds a tool update's content into its output, diffs and images.
+fn merge_content(
+    content: &[Value],
+    output: &mut Option<String>,
+    images: &mut Vec<AgentImage>,
+    diffs: &mut Vec<AgentToolDiff>,
+) {
+    let mut text = String::new();
+    let mut new_diffs = Vec::new();
+    let mut new_images = Vec::new();
+    for item in content {
+        match item.get("type").and_then(Value::as_str) {
+            Some("content") => {
+                let content = item.get("content");
+                if let Some(image) = content.and_then(crate::images::from_content) {
+                    new_images.push(image);
+                } else if let Some(t) = content_text(content) {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&t);
+                }
+            }
+            Some("diff") => {
+                let old = item.get("oldText").and_then(Value::as_str).unwrap_or_default();
+                let new = item.get("newText").and_then(Value::as_str).unwrap_or_default();
+                let (added, removed) = line_stats(old, new);
+                new_diffs.push(AgentToolDiff { path: IpcPath(str_field(item, "path").into()), added, removed });
+            }
+            _ => {}
+        }
+    }
+    if !text.is_empty() {
+        // The command a call announced (`$ cmd`) stays above the result that replaces it.
+        let command = output.as_deref().and_then(|o| o.lines().next()).filter(|l| l.starts_with("$ "));
+        if let Some(command) = command.filter(|c| !text.starts_with(c)) {
+            text = format!("{command}\n{text}");
+        }
+        *output = Some(tail(text));
+    }
+    if !new_diffs.is_empty() {
+        *diffs = new_diffs;
+    }
+    if !new_images.is_empty() {
+        *images = new_images;
+    }
+}
+
 /// The text of a list of content blocks, one per line.
 pub(crate) fn blocks_text(content: Option<&Value>) -> String {
     let blocks = content.and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
@@ -418,6 +449,7 @@ fn tail(mut text: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::AgentImage;
     use serde_json::json;
 
     #[test]
@@ -437,6 +469,72 @@ mod tests {
         }
         assert!(t.apply(&update).changed.is_empty());
         assert!(matches!(&t.entries[0], AgentEntry::Question { chosen: Some(answer), .. } if answer == "One"));
+    }
+
+    #[test]
+    fn tool_images_survive_updates_text_truncation_and_serialization() {
+        use base64::Engine;
+        let mut t = Timeline::default();
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "preview", "title": "Render", "kind": "execute"}));
+        let mut old = serde_json::to_value(&t.entries[0]).unwrap();
+        old.as_object_mut().unwrap().remove("images");
+        let legacy: AgentEntry = serde_json::from_value(old).unwrap();
+        assert!(matches!(legacy, AgentEntry::Tool { images, .. } if images.is_empty()));
+        let data = base64::engine::general_purpose::STANDARD.encode(vec![0; MAX_OUTPUT]);
+        let update = json!({"sessionUpdate": "tool_call_update", "toolCallId": "preview", "content": [
+            {"type": "content", "content": {"type": "text", "text": "x".repeat(MAX_OUTPUT + 100)}},
+            {"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": data}}
+        ]});
+        t.apply(&update);
+        t.apply(&update);
+        t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "preview", "status": "completed"}));
+        let AgentEntry::Tool { images, output, status, .. } = &t.entries[0] else { panic!() };
+        assert_eq!(images, &vec![AgentImage { mime_type: "image/png".into(), data, name: None }]);
+        assert!(output.as_ref().unwrap().len() < MAX_OUTPUT + 100);
+        assert_eq!(*status, AgentToolStatus::Completed);
+        let saved = serde_json::to_string(&t.entries[0]).unwrap();
+        assert_eq!(serde_json::from_str::<AgentEntry>(&saved).unwrap(), t.entries[0]);
+    }
+
+    #[test]
+    fn tool_images_come_from_linked_files_and_resource_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("out.png");
+        std::fs::write(&png, b"\x89PNG\r\n").unwrap();
+        let mut t = Timeline::default();
+        t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "r", "title": "Read", "kind": "read"}));
+        t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "r", "content": [
+            {"type": "content", "content": {"type": "text", "text": "Read the image"}},
+            {"type": "content", "content": {"type": "resource_link", "uri": crate::file_uri(&png), "name": "out.png"}},
+            {"type": "content", "content": {"type": "resource", "resource": {"uri": "mem:1", "mimeType": "image/gif", "blob": "R0lG"}}}
+        ]}));
+        let AgentEntry::Tool { images, output, .. } = &t.entries[0] else { panic!() };
+        let types: Vec<&str> = images.iter().map(|i| i.mime_type.as_str()).collect();
+        assert_eq!(types, ["image/png", "image/gif"]);
+        assert_eq!(output.as_deref(), Some("Read the image"));
+    }
+
+    #[test]
+    fn a_completed_read_shows_the_image_file_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("icon.png");
+        std::fs::write(&png, b"\x89PNG\r\n").unwrap();
+        let text = dir.path().join("a.rs");
+        std::fs::write(&text, b"fn main() {}").unwrap();
+        let mut t = Timeline::default();
+        for (id, path) in [("img", &png), ("src", &text)] {
+            t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": id, "title": "Read", "kind": "read",
+                "locations": [{"path": path}]}));
+        }
+        let images = |t: &Timeline, i: usize| match &t.entries[i] {
+            AgentEntry::Tool { images, .. } => images.len(),
+            _ => panic!(),
+        };
+        assert_eq!(images(&t, 0), 0, "not before the read completes");
+        for id in ["img", "src"] {
+            t.apply(&json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed"}));
+        }
+        assert_eq!((images(&t, 0), images(&t, 1)), (1, 0));
     }
 
     #[test]

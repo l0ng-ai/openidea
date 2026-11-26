@@ -16,7 +16,7 @@
  * - uses the clipboard, when the plugin was granted `clipboard`;
  * - passes on IDE shortcuts it doesn't handle itself (Save, Close…).
  */
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { tx } from "@/platform/i18n";
 import { dispatchForwardedKey } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
@@ -61,6 +61,8 @@ export interface FrameDocument {
   read(): DocumentState & { readOnly: boolean; name: string };
   /** The bytes of the file on disk, for binary documents (read-only, so the disk is current). */
   bytes(): Promise<Uint8Array>;
+  size?(): Promise<number>;
+  readRange?(offset: number, length: number): Promise<Uint8Array>;
   /** Applies the frame's edits as one change; throws `stale` when not at `version`. Returns the new version. */
   edit(version: number, changes: readonly TextChange[]): number;
   /** Changes made other than through `edit` (the text editor, Undo, other windows). */
@@ -166,6 +168,29 @@ export const MAX_HIGHLIGHT_LINES = 2000;
 
 /** The query that gives an editor panel's page `openidea.editor` (frame-bridge.js). */
 export const EDITOR_PANEL_QUERY = "openidea=editor-panel";
+/** The query that gives an overlay's page `openidea.overlay` (frame-bridge.js). */
+export const OVERLAY_QUERY = "openidea=overlay";
+/** The query that gives a plugin dialog's page `openidea.dialog` (frame-bridge.js). */
+export const DIALOG_QUERY = "openidea=dialog";
+
+/** A plugin dialog's frame: its page can close the dialog (`openidea.dialog.close()`). */
+export interface FrameDialog {
+  close(): void;
+}
+
+/** Where an overlay floats: one of nine anchors of the window, and its size in pixels. */
+export interface OverlayPlacement {
+  anchor: string;
+  width: number;
+  height: number;
+}
+
+/** An overlay frame's placement, which its page reads and changes (`openidea.overlay`). */
+export interface FrameOverlay {
+  get(): OverlayPlacement;
+  /** Applies what `args` names (anchor, width, height) and returns the placement; throws on invalid values. */
+  place(args: Record<string, unknown>): OverlayPlacement;
+}
 
 const finite = (v: unknown, what: string) => {
   if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`${what} must be a number`);
@@ -258,8 +283,13 @@ export interface WebViewProps {
   document?: FrameDocument | null;
   /** The backend document, for messages to the plugin's code. */
   doc?: number | null;
+  binaryPath?: string;
   /** The text editor an editor panel follows; none elsewhere. */
   editor?: FrameEditor | null;
+  /** An overlay's placement: the frame shows nothing until its page loads and never takes the focus. */
+  overlay?: FrameOverlay | null;
+  /** A plugin dialog's page: it can close the dialog, and Escape there closes it. */
+  pluginDialog?: FrameDialog | null;
 }
 
 export function WebView({
@@ -269,7 +299,10 @@ export function WebView({
   header = "default",
   document = null,
   doc = null,
+  binaryPath,
   editor = null,
+  overlay = null,
+  pluginDialog = null,
 }: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
@@ -278,6 +311,10 @@ export function WebView({
   const headless = ownHeader && page !== null && "url" in page && loadedPage === page;
   useOwnToolWindowHeader(headless);
   const hasCode = plugin?.hasCode ?? false;
+  const eventEditor = useMemo(
+    () => (binaryPath ? { path: binaryPath, language: "binary", selections: [] } : undefined),
+    [binaryPath],
+  );
   const clipboard = plugin?.capabilities.some((c) => c.id === "clipboard" && c.granted) ?? false;
   const anyAction = plugin?.capabilities.some((c) => c.id === "ide.commands" && c.granted) ?? false;
   const anyActionRef = useRef(anyAction);
@@ -409,6 +446,27 @@ export function WebView({
           const bytes = await document.bytes();
           return [bytes, [bytes.buffer]];
         }
+        case "document.size": {
+          if (!document?.size) throw new Error("this view shows no binary document");
+          return [await document.size()];
+        }
+        case "document.readRange": {
+          if (!document?.readRange) throw new Error("this view shows no binary document");
+          const { offset, length } = args;
+          if (
+            typeof offset !== "number" ||
+            !Number.isSafeInteger(offset) ||
+            offset < 0 ||
+            typeof length !== "number" ||
+            !Number.isSafeInteger(length) ||
+            length < 0 ||
+            length > 1024 * 1024 ||
+            !Number.isSafeInteger(offset + length)
+          )
+            throw new Error("invalid byte range (at most 1 MiB per read)");
+          const bytes = await document.readRange(offset, length);
+          return [bytes, [bytes.buffer]];
+        }
         case "document.edit":
         case "document.replace": {
           if (!document) throw new Error("this view shows no document");
@@ -448,6 +506,16 @@ export function WebView({
             throw new Error("lines are 0 ≤ fromLine ≤ toLine, whole numbers");
           if (to - from > MAX_HIGHLIGHT_LINES) throw new Error(`at most ${MAX_HIGHLIGHT_LINES} lines at a time`);
           return [op === "editor.wrapped" ? editor.wrapped(from, to) : editor.highlights(from, to)];
+        }
+        case "dialog.close": {
+          if (!pluginDialog) throw new Error("this view is not a dialog");
+          pluginDialog.close();
+          return [null];
+        }
+        case "overlay.get":
+        case "overlay.place": {
+          if (!overlay) throw new Error("this view is not an overlay");
+          return [op === "overlay.get" ? overlay.get() : overlay.place(args)];
         }
         case "saveFile":
         case "openFile": {
@@ -507,7 +575,7 @@ export function WebView({
         if (ptys.handle(m.text)) return;
         if (hasCode) {
           pluginsBackend()
-            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
+            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc, eventEditor)
             .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
         }
       }
@@ -524,8 +592,10 @@ export function WebView({
       window.removeEventListener("pagehide", onUnload);
       currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, editor, hasCode, post, page]);
+  }, [pluginId, view, document, doc, eventEditor, editor, overlay, pluginDialog, hasCode, post, page]);
 
+  // An overlay floats over the workbench: no spinner or error card in its place.
+  if (overlay && (!page || "error" in page)) return null;
   if (!page)
     return (
       <div className={styles.empty}>
@@ -538,6 +608,7 @@ export function WebView({
         {page.error}
       </EmptyState>
     );
+  const frameQuery = editor ? EDITOR_PANEL_QUERY : overlay ? OVERLAY_QUERY : pluginDialog ? DIALOG_QUERY : null;
   // No `allow-same-origin`: an opaque origin without access to the IDE. `onLoad` sends the theme.
   const iframe = (
     <iframe
@@ -547,7 +618,8 @@ export function WebView({
       title={label}
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}
-      src={editor ? `${page.url}${page.url.includes("?") ? "&" : "?"}${EDITOR_PANEL_QUERY}` : page.url}
+      tabIndex={overlay ? -1 : undefined}
+      src={frameQuery ? `${page.url}${page.url.includes("?") ? "&" : "?"}${frameQuery}` : page.url}
       onLoad={() => {
         postTheme();
         setLoadedPage(page);

@@ -4,6 +4,7 @@ import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 declare global {
   interface Window {
     __dbLifecycle: { release: (fail: boolean) => void; releaseSave?: () => void };
+    __releaseConsoleDeactivate?: () => void;
   }
 }
 
@@ -77,6 +78,76 @@ for (const fail of [false, true]) {
     await expect(panel.getByText("Old metadata failed", { exact: true })).toHaveCount(0);
   });
 }
+
+test("deactivation keeps an open console idle until the user requests metadata", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const storePath = "/src/features/database/store.ts";
+    const contributionsPath = "/src/workbench/contributions.ts";
+    const { useDatabase, bindConsole } = await import(storePath);
+    const { editorService, toolWindowService } = await import(contributionsPath);
+    const id = "console-lifecycle";
+    const path = "/app-data/consoles/db/console-lifecycle/console.sql";
+    const source = {
+      id,
+      name: "Console database",
+      driver: "postgres",
+      database: "app",
+      externalTunnel: { executable: "/opt/example/forwarder", arguments: ["{localPort}"] },
+    };
+    let firstSchemas = true;
+    let finishSchemas!: (schemas: string[]) => void;
+    const pendingSchemas = new Promise<string[]>((resolve) => {
+      finishSchemas = resolve;
+    });
+    Object.assign(window.__ipc.handlers, {
+      db_sources: () => [source],
+      db_connected: () => [id],
+      db_databases: () => ({ names: ["app"], current: "app" }),
+      db_completion: () => ({ defaultSchema: "public", tables: [], foreignKeys: [] }),
+      db_schemas: () => {
+        if (!firstSchemas) return ["reporting"];
+        firstSchemas = false;
+        return pendingSchemas;
+      },
+      db_disconnect: () =>
+        new Promise<void>((resolve) => {
+          window.__releaseConsoleDeactivate = () => {
+            resolve();
+            finishSchemas(["old_schema"]);
+          };
+        }),
+    });
+    useDatabase.setState({ sources: [source], loaded: true, connected: new Set([id]), schemas: {}, databases: {} });
+    toolWindowService().show("database", true);
+    bindConsole(path, id);
+    await editorService().openFile(path, { focus: true });
+  });
+  const panel = page.locator('section[aria-label="Database"]');
+  const toolbar = page.getByRole("toolbar", { name: "Query Console", exact: true });
+  await expect(toolbar).toBeVisible();
+  await expect.poll(async () => (await ipcCalls(page, "db_schemas")).length).toBe(1);
+  await expect.poll(async () => (await ipcCalls(page, "db_completion")).length).toBe(1);
+
+  await panel.getByRole("treeitem").filter({ hasText: "Console database" }).click();
+  await panel.getByRole("button", { name: /^Deactivate/ }).click();
+  await expect.poll(() => ipcCalls(page, "db_disconnect")).toEqual([{ id: "console-lifecycle", wholeSource: true }]);
+  await page.evaluate(async () => {
+    await new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())));
+    window.__releaseConsoleDeactivate!();
+  });
+  await expect(panel.locator('[title="Connected"]')).toHaveCount(0);
+  await expect(toolbar).toBeVisible();
+  expect(await ipcCalls(page, "db_schemas")).toHaveLength(1);
+  expect(await ipcCalls(page, "db_databases")).toHaveLength(1);
+  expect(await ipcCalls(page, "db_completion")).toHaveLength(1);
+
+  const picker = toolbar.getByRole("button", { name: "Database and schema" });
+  await picker.click();
+  await page.getByRole("option", { name: "reporting", exact: true }).click();
+  await expect(picker).toHaveText("app.reporting");
+  await expect(panel.locator('[title="Connected"]')).toHaveCount(1);
+});
 
 test("deleting a data source ignores its delayed metadata", async ({ workbench: page }) => {
   const { panel } = await setup(page);

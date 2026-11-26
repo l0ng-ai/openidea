@@ -6,10 +6,13 @@
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
 import { t } from "@/platform/i18n";
+import { commands, isTauri, type TerminalSessionInfo } from "@/platform/ipc";
 import { basename } from "@/platform/project";
+import { isRemoteWindow, parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { toolWindowService } from "@/workbench/contributions";
+import { maybeEditorService, toolWindowService } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
+import { CLI_KIND, cliData } from "./cli";
 import { completionAlert, completionPrefs, raiseCompletionNotification, type CompletionInfo } from "./completion";
 import { readStored, writeStored, type StoredTerminals } from "./persist";
 import { TerminalSession, type SessionOptions, type SessionSnapshot } from "./session";
@@ -112,13 +115,8 @@ function notifyCompletion(key: string, info: CompletionInfo) {
   });
 }
 
-function createSession(cwd: string, command?: SessionOptions["command"], fallbackRoot?: string): TerminalSession {
-  const key = `s${++seq}`;
-  const session = new TerminalSession({
-    key,
-    cwd,
-    command,
-    fallbackRoot,
+function sessionOwner(): Pick<SessionOptions, "onChange" | "onFocus" | "onCompletion" | "onExit"> {
+  return {
     onChange: (k, snapshot) => useTerminals.setState((s) => ({ sessions: { ...s.sessions, [k]: snapshot } })),
     onFocus: (k) => {
       const tab = tabOfSession(k);
@@ -137,25 +135,36 @@ function createSession(cwd: string, command?: SessionOptions["command"], fallbac
       // Wait for the surviving pane to re-mount before giving xterm the caret.
       else if (hadFocus) requestAnimationFrame(() => activeSession()?.focus());
     },
+  };
+}
+
+function createSession(
+  cwd: string,
+  command?: SessionOptions["command"],
+  fallbackRoot?: string,
+  attachTerminalId?: number | null,
+): TerminalSession {
+  const key = `s${++seq}`;
+  const session = new TerminalSession({
+    key,
+    cwd,
+    command,
+    fallbackRoot,
+    attachTerminalId,
+    ...sessionOwner(),
   });
   sessions.set(key, session);
-  useTerminals.setState((s) => ({ sessions: { ...s.sessions, [key]: session.state } }));
   return session;
 }
 
-function disposeSession(key: string) {
+function disposeSession(key: string, kill = true) {
   const session = sessions.get(key);
   const focus = document.activeElement;
   // Removing the focused pane fires no blur, so `terminalFocus` would stay set (⌘T would keep
   // opening terminal tabs). Another pane taking the caret sets it again.
   if (focus && session?.host?.contains(focus)) publishFocus(false);
-  session?.dispose();
+  session?.dispose(kill);
   sessions.delete(key);
-  useTerminals.setState((s) => {
-    const next = { ...s.sessions };
-    delete next[key];
-    return { sessions: next };
-  });
 }
 
 /** Next free default name: "Local", "Local (2)", … */
@@ -241,6 +250,7 @@ export function newTab(cwd: string, name?: string, command?: SessionOptions["com
   };
   useTerminals.setState((s) => ({
     tabs: [...s.tabs, tab],
+    sessions: { ...s.sessions, [session.key]: session.state },
     selected: { ...s.selected, [tab.group]: tab.id },
     activeTab: tab.id,
   }));
@@ -296,7 +306,96 @@ export function closeTab(id: string) {
   const tab = useTerminals.getState().tabs.find((t) => t.id === id);
   if (!tab) return;
   disposeSession(tab.session);
-  useTerminals.setState((s) => withoutTab(s, id));
+  useTerminals.setState((s) => {
+    const next = { ...s.sessions };
+    delete next[tab.session];
+    return { ...withoutTab(s, id), sessions: next };
+  });
+}
+
+export interface TerminalDropTarget {
+  group?: string;
+  index?: number;
+  edge?: SplitEdge;
+}
+
+export interface AdoptedTabMeta {
+  name: string;
+  customName?: string | null;
+  shell?: string | null;
+}
+
+/** Spawns a fresh session for an unstarted restored editor tab being moved to Terminal. */
+export function createDetachedSession(cwd: string, shell?: string | null, fallbackRoot?: string): TerminalSession {
+  const session = new TerminalSession({
+    key: `s${++seq}`,
+    cwd,
+    command: shell ? { program: shell, args: [], shell: true } : undefined,
+    fallbackRoot,
+    ...sessionOwner(),
+  });
+  return session;
+}
+
+/**
+ * Move to Terminal: adopts `session` (moved from an editor tab) into `target`
+ * (a group's strip slot, a group's end, or a new split at `edge`), keeping its PTY and scrollback.
+ */
+export function adoptTab(session: TerminalSession, meta: AdoptedTabMeta, target?: TerminalDropTarget): TerminalTab {
+  sessions.set(session.key, session);
+  session.rebind(sessionOwner());
+  const s = useTerminals.getState();
+  const groups = layoutGroups(s.layout);
+  const fallback = s.tabs.find((t) => t.id === s.activeTab)?.group ?? groups[0]!;
+  const anchor = target?.group && groups.includes(target.group) ? target.group : fallback;
+  if (target?.edge && groupTabs(s.tabs, anchor).length > 0) {
+    const group = newGroupId();
+    const orientation: SplitOrientation = target.edge === "left" || target.edge === "right" ? "horizontal" : "vertical";
+    const tab: TerminalTab = {
+      id: `t${++seq}`,
+      name: meta.name,
+      customName: meta.customName ?? null,
+      shell: meta.shell ?? null,
+      session: session.key,
+      group,
+    };
+    useTerminals.setState((st) => ({
+      tabs: [...st.tabs, tab],
+      sessions: { ...st.sessions, [session.key]: session.state },
+      layout: splitLayout(
+        st.layout,
+        anchor,
+        group,
+        orientation,
+        `split${++splitSeq}`,
+        target.edge === "left" || target.edge === "top",
+      ),
+      selected: { ...st.selected, [group]: tab.id },
+      activeTab: tab.id,
+    }));
+    return tab;
+  }
+  const tab: TerminalTab = {
+    id: `t${++seq}`,
+    name: meta.name,
+    customName: meta.customName ?? null,
+    shell: meta.shell ?? null,
+    session: session.key,
+    group: anchor,
+  };
+  useTerminals.setState((st) => {
+    const others = st.tabs.filter((t) => t.group !== anchor);
+    const strip = groupTabs(st.tabs, anchor);
+    const at = target?.index !== undefined ? Math.max(0, Math.min(target.index, strip.length)) : strip.length;
+    strip.splice(at, 0, tab);
+    return {
+      tabs: [...others, ...strip],
+      sessions: { ...st.sessions, [session.key]: session.state },
+      selected: { ...st.selected, [anchor]: tab.id },
+      activeTab: tab.id,
+    };
+  });
+  return tab;
 }
 
 /**
@@ -307,6 +406,7 @@ export function detachTab(id: string): TerminalSession | undefined {
   const tab = useTerminals.getState().tabs.find((t) => t.id === id);
   const session = tab && sessions.get(tab.session);
   if (!tab || !session) return undefined;
+  if (document.activeElement && session.host?.contains(document.activeElement)) publishFocus(false);
   sessions.delete(tab.session);
   useTerminals.setState((s) => {
     const next = { ...s.sessions };
@@ -344,8 +444,8 @@ export function requestCloseSession(key: string): Promise<boolean> {
   return tab ? requestCloseTab(tab.id) : Promise.resolve(false);
 }
 
-export function closeAll() {
-  for (const t of useTerminals.getState().tabs) disposeSession(t.session);
+export function closeAll(kill = true) {
+  for (const t of useTerminals.getState().tabs) disposeSession(t.session, kill);
   useTerminals.setState({ tabs: [], layout: newGroupId(), selected: {}, activeTab: null, sessions: {} });
 }
 
@@ -467,6 +567,7 @@ export function splitTab(id: string, orientation: SplitOrientation, move = false
   };
   useTerminals.setState((st) => ({
     tabs: [...st.tabs, copy],
+    sessions: { ...st.sessions, [session.key]: session.state },
     layout,
     selected: { ...st.selected, [group]: copy.id },
     activeTab: copy.id,
@@ -585,7 +686,12 @@ export function publishFocus(focused: boolean) {
 }
 
 /** Project whose tabs `useTerminals` currently holds. Null before the first bind and after unbind. */
+/** Project root directory whose tabs `useTerminals` currently holds. */
 let boundProject: string | null = null;
+/** Storage scope (`projectLocation(root)`) of the bound project. */
+let boundScope: string | null = null;
+/** Whether the bound project runs on a persistent remote server. */
+let boundRemote = false;
 /** Set while swapping projects, so closing the old tabs is not saved as the new project's layout. */
 let restoring = false;
 
@@ -593,36 +699,59 @@ function sessionCwd(key: string): string {
   return sessions.get(key)?.state.cwd ?? "";
 }
 
+function sessionTerminalId(key: string): number | null {
+  const s = sessions.get(key);
+  return s?.persistedTerminalId ?? s?.state.terminalId ?? null;
+}
+
 function capture(): StoredTerminals {
   const s = useTerminals.getState();
   const tabs = s.tabs.flatMap((t) => {
     const cwd = sessionCwd(t.session);
-    return cwd ? [{ id: t.id, name: t.name, customName: t.customName, cwd, group: t.group, shell: t.shell }] : [];
+    const terminalId = sessionTerminalId(t.session);
+    return cwd
+      ? [
+          {
+            id: t.id,
+            name: t.name,
+            customName: t.customName,
+            cwd,
+            group: t.group,
+            shell: t.shell,
+            ...(terminalId !== null ? { terminalId } : {}),
+          },
+        ]
+      : [];
   });
   return { v: 1, tabs, layout: s.layout, selected: s.selected, activeTab: s.activeTab };
 }
 
-function remember() {
-  if (restoring || !boundProject) return;
-  writeStored(boundProject, capture());
+export function rememberTerminals() {
+  if (restoring || !boundScope) return;
+  writeStored(boundScope, capture());
 }
 
-function cwdSignature(s: TerminalState): string {
-  return s.tabs.map((t) => s.sessions[t.session]?.cwd ?? "").join("\n");
+function sessionSignature(s: TerminalState): string {
+  return s.tabs
+    .map((t) => {
+      const snap = s.sessions[t.session];
+      return `${snap?.cwd ?? ""}\t${snap?.terminalId ?? ""}`;
+    })
+    .join("\n");
 }
 
 useTerminals.subscribe((s, prev) => {
-  if (restoring || !boundProject) return;
+  if (restoring || !boundScope) return;
   if (
     s.tabs === prev.tabs &&
     s.layout === prev.layout &&
     s.selected === prev.selected &&
     s.activeTab === prev.activeTab &&
-    cwdSignature(s) === cwdSignature(prev)
+    sessionSignature(s) === sessionSignature(prev)
   ) {
     return;
   }
-  remember();
+  rememberTerminals();
 });
 
 function remapLayout(node: GroupLayout, mapGroup: (group: string) => string): GroupLayout {
@@ -634,8 +763,8 @@ function remapLayout(node: GroupLayout, mapGroup: (group: string) => string): Gr
   };
 }
 
-/** Opens the saved tabs in fresh sessions. Group ids are new, so they don't collide with ones minted later. */
-function restore(saved: StoredTerminals, root: string) {
+/** Opens the saved tabs in fresh sessions (or reattaches live remote PTYs). Group ids are new. */
+function restore(saved: StoredTerminals, root: string, remote: boolean) {
   const groupOf = new Map<string, string>();
   const mapGroup = (group: string) => {
     let mapped = groupOf.get(group);
@@ -645,14 +774,20 @@ function restore(saved: StoredTerminals, root: string) {
   const layout = remapLayout(saved.layout, mapGroup);
   const idOf = new Map<string, string>();
   const tabs: TerminalTab[] = [];
+  const toAttach: TerminalSession[] = [];
+  const snapshots: Record<string, SessionSnapshot> = {};
   for (const savedTab of saved.tabs) {
+    const attachId = remote ? (savedTab.terminalId ?? null) : null;
     const session = createSession(
       savedTab.cwd,
       savedTab.shell ? { program: savedTab.shell, args: [], shell: true } : undefined,
       // A saved directory may have been deleted since the last run: start in the project root then.
       root,
+      attachId,
     );
+    if (attachId !== null) toAttach.push(session);
     const id = `t${seq}`;
+    snapshots[session.key] = session.state;
     idOf.set(savedTab.id, id);
     tabs.push({
       id,
@@ -672,35 +807,100 @@ function restore(saved: StoredTerminals, root: string) {
     if (id) selected[group] = id;
   }
   const activeTab = (saved.activeTab && idOf.get(saved.activeTab)) || tabs[0]?.id || null;
-  useTerminals.setState({ tabs, layout, selected, activeTab });
+  useTerminals.setState({ tabs, layout, selected, activeTab, sessions: snapshots });
+  for (const session of toAttach) void session.start();
+}
+
+/** Adopts any live PTYs on a remote daemon that were not already claimed by a saved tab or CLI editor tab. */
+async function reconcileRemoteTerminals(scope: string, root: string) {
+  if (!isTauri()) return;
+  let live: TerminalSessionInfo[];
+  try {
+    live = await commands.termList();
+  } catch {
+    return;
+  }
+  if (boundScope !== scope || !live.length) return;
+  const claimed = new Set<number>();
+  for (const s of sessions.values()) {
+    const id = s.persistedTerminalId ?? s.state.terminalId;
+    if (id != null) claimed.add(id);
+  }
+  for (const tab of maybeEditorService()?.openTabs?.() ?? []) {
+    if (tab.input.kind === CLI_KIND) {
+      const tid = cliData(tab.input)?.terminalId;
+      if (tid != null) claimed.add(tid);
+    }
+  }
+  const unclaimed = live.filter((info) => !claimed.has(info.id));
+  if (!unclaimed.length) return;
+  for (const info of unclaimed) {
+    const session = createSession(info.cwd || root, undefined, root, info.id);
+    const { tabs, layout, activeTab } = useTerminals.getState();
+    const tab: TerminalTab = {
+      id: `t${seq}`,
+      name: defaultTabName(info.title || undefined),
+      customName: null,
+      shell: null,
+      session: session.key,
+      group: tabs.find((t) => t.id === activeTab)?.group ?? layoutGroups(layout)[0]!,
+    };
+    useTerminals.setState((s) => ({
+      tabs: [...s.tabs, tab],
+      sessions: { ...s.sessions, [session.key]: session.state },
+      selected: { ...s.selected, [tab.group]: s.selected[tab.group] ?? tab.id },
+      activeTab: s.activeTab ?? tab.id,
+    }));
+    void session.start();
+  }
+}
+
+let pendingRemoteRestore: Promise<void> | null = null;
+
+export function waitForTerminalRestore(): Promise<void> {
+  return pendingRemoteRestore ?? Promise.resolve();
 }
 
 /**
  * Points the terminal at `root`, remembering the project it was bound to.
- * The same root again is a no-op, so a tool window re-render doesn't reopen tabs.
+ * The same project location again is a no-op, so a tool window re-render doesn't reopen tabs.
  */
-export function syncTerminalProject(root: string | null) {
-  if (root === boundProject) return;
-  if (boundProject) writeStored(boundProject, capture());
+export function syncTerminalProject(root: string | null, scope: string | null = projectLocation(root)) {
+  if (scope === boundScope) return;
+  if (boundScope) writeStored(boundScope, capture());
+  const wasRemote = boundRemote;
+  const nextRemote = !!scope && (isRemoteWindow() || parseRemoteLocation(scope) !== null);
   restoring = true;
   boundProject = root;
+  boundScope = scope;
+  boundRemote = nextRemote;
+  pendingRemoteRestore = null;
   try {
-    closeAll();
-    if (!root) return;
-    const saved = readStored(root);
-    if (saved?.tabs.length) restore(saved, root);
+    closeAll(!wasRemote);
+    if (!root || !scope) return;
+    const saved = readStored(scope);
+    if (saved?.tabs.length) restore(saved, root, nextRemote);
   } finally {
     restoring = false;
+  }
+  if (nextRemote && scope && root) {
+    const p = reconcileRemoteTerminals(scope, root).finally(() => {
+      if (pendingRemoteRestore === p) pendingRemoteRestore = null;
+    });
+    pendingRemoteRestore = p;
   }
 }
 
 /** Drops the in-memory sessions without writing the empty layout over the project that owned them. */
 export function unbindTerminals() {
-  if (boundProject) writeStored(boundProject, capture());
+  if (boundScope) writeStored(boundScope, capture());
+  const wasRemote = boundRemote;
   restoring = true;
   boundProject = null;
+  boundScope = null;
+  boundRemote = false;
   try {
-    closeAll();
+    closeAll(!wasRemote);
   } finally {
     restoring = false;
   }

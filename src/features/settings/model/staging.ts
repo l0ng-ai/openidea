@@ -4,6 +4,7 @@
  * IDEA's Configurable `isModified` / `apply` / `reset` cycle.
  */
 import { create } from "zustand";
+import { overrideActions } from "@/platform/actions";
 import { call, commands, isTauri, type Settings } from "@/platform/ipc";
 import { loadSettings, useProject } from "@/platform/project";
 import { lastSettingsPage, rememberSettingsPage } from "./lastPage";
@@ -74,6 +75,13 @@ export interface SettingsDialogState {
   externalApplied: Record<string, unknown>;
   /** Scope chosen per page (Global / This project). */
   scopes: Record<string, Scope>;
+  /**
+   * Pages visited while this dialog is open (back / forward navigation, like
+   * IDEA's ⇧⌥←). Kept in the store so every entry point — header buttons,
+   * breadcrumb links, the keymap's navigate.back / navigate.forward — walks
+   * the same history.
+   */
+  history: { stack: string[]; index: number };
   saving: boolean;
   error: string | null;
   pagesLoading: boolean;
@@ -97,6 +105,7 @@ export const useSettingsDialog = create<SettingsDialogState>(() => ({
   stagedExternal: {},
   externalApplied: {},
   scopes: {},
+  history: { stack: [], index: -1 },
   saving: false,
   error: null,
   pagesLoading: false,
@@ -129,6 +138,7 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean; glo
     stagedSecrets: {},
     stagedExternal: {},
     externalApplied: {},
+    history: { stack: [target.pageId], index: 0 },
     saving: false,
     error: null,
   });
@@ -216,11 +226,68 @@ export function closeSettings() {
   });
 }
 
+let disposePageHistoryActions: (() => void) | null = null;
+
+/**
+ * While Settings is open, its page history takes over the workbench keymap's
+ * navigate.back / navigate.forward (⌘[, ⌘], mouse side buttons, swipes);
+ * closing hands them back to the actions registered before. In the workbench
+ * window those usually drive the editor's back / forward; the native Settings
+ * window has no competing registration, so this simply installs the actions.
+ */
+export function trackPageHistoryActions(): () => void {
+  const take = () => {
+    disposePageHistoryActions ??= overrideActions([
+      { id: "navigate.back", title: "Back", category: "Navigate", run: () => void selectPreviousPage() },
+      { id: "navigate.forward", title: "Forward", category: "Navigate", run: () => void selectNextPage() },
+    ]);
+  };
+  const give = () => {
+    disposePageHistoryActions?.();
+    disposePageHistoryActions = null;
+  };
+  if (useSettingsDialog.getState().open) take();
+  const unsubscribe = useSettingsDialog.subscribe((s, prev) => {
+    if (s.open !== prev.open) (s.open ? take : give)();
+  });
+  return () => {
+    unsubscribe();
+    give();
+  };
+}
+
 /** Shows `pageId` (`page#focus` also selects `focus` on it). */
 export function selectPage(pageId: string) {
   const target = splitPageTarget(pageId);
-  useSettingsDialog.setState(target);
+  useSettingsDialog.setState((s) => {
+    // A navigation to the page right next in history walks it (back / forward);
+    // anything else truncates the forward entries, like a browser location bar.
+    const at = s.history.stack[s.history.index];
+    if (at === target.pageId) return target;
+    const back = s.history.stack[s.history.index - 1] === target.pageId;
+    const forward = s.history.stack[s.history.index + 1] === target.pageId;
+    const history = back
+      ? { stack: s.history.stack, index: s.history.index - 1 }
+      : forward
+        ? { stack: s.history.stack, index: s.history.index + 1 }
+        : { stack: [...s.history.stack.slice(0, s.history.index + 1), target.pageId], index: s.history.index + 1 };
+    return { ...target, history };
+  });
   if (!useSettingsDialog.getState().newProjects) rememberSettingsPage(target.pageId);
+}
+
+export function selectPreviousPage(): boolean {
+  const { history } = useSettingsDialog.getState();
+  if (history.index <= 0) return false;
+  selectPage(history.stack[history.index - 1]!);
+  return true;
+}
+
+export function selectNextPage(): boolean {
+  const { history } = useSettingsDialog.getState();
+  if (history.index >= history.stack.length - 1) return false;
+  selectPage(history.stack[history.index + 1]!);
+  return true;
 }
 
 export function setQuery(query: string) {
@@ -408,6 +475,7 @@ export async function persistChanges(
   let error: string | null = null;
   for (const c of changes) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- writes are ordered, stop at the first failure, and each response replaces the shared project settings
       const settings = await deps.set(c.scope, c.key, JSON.stringify(c.value));
       useProject.setState({ settings });
       written.push(stageKey(c.scope, c.key));
@@ -455,6 +523,7 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
       if (current.stagedSecrets[id] !== secret) continue;
       try {
         if (config && config.auth !== "openSsh" && deps.backend) {
+          // oxlint-disable-next-line no-await-in-loop -- staged secrets are re-read from live state each iteration; the first failure stops the loop
           await deps.setSecret(id, secret, config.saveSecret);
         }
         useSettingsDialog.setState((s) => {
@@ -472,6 +541,7 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
     for (const [id, change] of external) {
       if (useSettingsDialog.getState().stagedExternal[id] !== change) continue;
       try {
+        // oxlint-disable-next-line no-await-in-loop -- each change rechecks live staged state and publishes its applied value before the next
         const value = await change.apply();
         useSettingsDialog.setState((s) => {
           const stagedExternal = { ...s.stagedExternal };

@@ -1,4 +1,5 @@
 //! Interpreters / toolchains (`ide-sdk`): discovery, Python virtualenvs and packages.
+use super::{blocking, blocking_value, join_error};
 use crate::Host;
 use crate::ops::Channel;
 use ide_command::command;
@@ -12,10 +13,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod container_python;
 pub use container_python::{ContainerPython, sdk_container_python, sdk_container_python_refresh};
-
-fn join_err(e: impl std::fmt::Display) -> IdeError {
-    IdeError::internal(e.to_string())
-}
 
 /// Executables found for "run this file", and where single files are compiled to.
 #[derive(Clone, Debug, serde::Serialize, specta::Type)]
@@ -48,7 +45,7 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
         (Some(p), SdkKind::Python) => ide_sdk::apply::python_interpreter(&p.root, &p.settings.effective()),
         _ => None,
     };
-    tokio::task::spawn_blocking(move || {
+    blocking_value(move || {
         let mut sdks = ide_sdk::detect(kind, root.as_deref());
         if let Some(path) = current
             && !sdks.iter().any(|s| *s.path == *path)
@@ -59,7 +56,6 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
         sdks
     })
     .await
-    .map_err(join_err)
 }
 
 /// The Python interpreters of the recently opened projects, each with its project.
@@ -78,7 +74,7 @@ pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeRe
         .filter(|root| current.as_deref() != Some(root.as_path()))
         .filter(|root| host.trust.window_trusted(root).unwrap_or(false))
         .collect();
-    tokio::task::spawn_blocking(move || {
+    blocking_value(move || {
         // Each project resolves its configured interpreter, else its own virtualenv. The
         // probes run `python`, so keep them off the async runtime and bound how many run at
         // once: the recent list can hold ~30 projects, and each probe starts a process.
@@ -107,7 +103,6 @@ pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeRe
         found.into_iter().map(|(_, interpreter)| interpreter).collect()
     })
     .await
-    .map_err(join_err)
 }
 
 /// An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run.
@@ -115,9 +110,47 @@ pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeRe
 pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<Sdk>> {
     host.require_trust_if_project(window)?;
     let root = host.project(window).ok().map(|p| p.root.clone());
-    tokio::task::spawn_blocking(move || Ok(ide_sdk::python_interpreter_sdk(&path, root.as_deref())))
-        .await
-        .map_err(join_err)?
+    blocking(move || Ok(ide_sdk::python_interpreter_sdk(&path, root.as_deref()))).await
+}
+
+/// `sys.path` of the interpreter `python`, for All Interpreters › Show Paths.
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_sys_path(
+    host: &Host,
+    window: &str,
+    python: PathBuf,
+    request: RequestId,
+) -> IdeResult<Vec<ide_core::IpcPath>> {
+    host.require_trust_if_project(window)?;
+    let cancel = host.begin_project_request(window, request);
+    let result = blocking(move || {
+        let paths = ide_sdk::libraries::python_sys_path(&python, &cancel);
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let paths = paths.ok_or_else(|| {
+            IdeError::invalid(format!(
+                "Cannot read sys.path of {}: the interpreter failed or did not answer in time",
+                python.display()
+            ))
+        })?;
+        Ok(paths.iter().map(|p| p.as_path().into()).collect())
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+/// For each folder added to an interpreter's paths, why it stays off the import path
+/// (`None`: it is used). The folders may not be saved yet.
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_user_path_problems(
+    host: &Host,
+    window: &str,
+    paths: Vec<String>,
+) -> IdeResult<Vec<Option<ide_sdk::apply::UserPathProblem>>> {
+    host.require_trust_if_project(window)?;
+    blocking_value(move || paths.iter().map(|p| ide_sdk::apply::user_path(p).err()).collect()).await
 }
 
 /// The interpreter of the workspace member `near` belongs to, else the project's.
@@ -158,9 +191,7 @@ pub async fn sdk_python_effective(
     let project = host.project(window)?;
     let config_dir = host.config_dir.clone();
     // Loading a member's settings needs more stack than a sync command's main thread has left.
-    tokio::task::spawn_blocking(move || Ok(effective_python(&config_dir, &project, near.as_deref()).map(Into::into)))
-        .await
-        .map_err(join_err)?
+    blocking(move || Ok(effective_python(&config_dir, &project, near.as_deref()).map(Into::into))).await
 }
 
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
@@ -183,7 +214,7 @@ pub async fn sdk_php_xdebug(
 ) -> IdeResult<ide_sdk::php::PhpXdebug> {
     host.require_trust(window)?;
     let cwd = cwd.or_else(|| host.project(window).ok().map(|p| p.root.clone()));
-    tokio::task::spawn_blocking(move || ide_sdk::php::xdebug(&php, cwd.as_deref())).await.map_err(join_err)?
+    blocking(move || ide_sdk::php::xdebug(&php, cwd.as_deref())).await
 }
 
 /// The PHP language level of the project `path` belongs to (a workspace member, by path, as
@@ -206,7 +237,7 @@ pub async fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) ->
     let project = host.project(window)?;
     let (project_root, project_settings) = (project.root.clone(), project.settings.effective());
     let config_dir = host.config_dir.clone();
-    tokio::task::spawn_blocking(move || {
+    blocking_value(move || {
         let member = ide_workspace::workspace::Workspace::load(&project_root).ok().flatten().and_then(|w| {
             w.projects.into_iter().filter(|p| path.starts_with(p)).max_by_key(|p| p.components().count())
         });
@@ -221,7 +252,6 @@ pub async fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) ->
         }
     })
     .await
-    .map_err(join_err)
 }
 
 /// The Composer project `path` belongs to, when its dependencies need `composer install`.
@@ -245,12 +275,11 @@ pub async fn sdk_php_composer_install(
         return Ok(None);
     }
     let root = project.root.clone();
-    tokio::task::spawn_blocking(move || {
+    blocking_value(move || {
         ide_sdk::php::composer_install(&path, &root)
             .map(|(root, reason)| ComposerInstallState { root: ide_core::IpcPath::from(root), reason })
     })
     .await
-    .map_err(join_err)
 }
 
 /// SDK / library source folders shown under "External Libraries" in the Project view,
@@ -311,7 +340,7 @@ pub async fn sdk_project_libraries(
         return Err(IdeError::cancelled());
     }
     let groups =
-        ide_sdk::libraries::merge_groups([libraries.map_err(join_err)?, dependencies.map_err(join_err)?].concat());
+        ide_sdk::libraries::merge_groups([libraries.map_err(join_error)?, dependencies.map_err(join_error)?].concat());
     if host.project(window).is_ok_and(|current| std::sync::Arc::ptr_eq(&current, &project)) {
         host.mcp_reports
             .set_libraries(window, groups.iter().flat_map(|g| g.roots.iter().map(|r| r.path.0.clone())).collect());
@@ -328,15 +357,27 @@ pub async fn sdk_locate_tools(
     near: Option<PathBuf>,
 ) -> IdeResult<LocatedTools> {
     host.require_trust(window)?;
-    tokio::task::spawn_blocking(move || LocatedTools {
+    blocking_value(move || LocatedTools {
         tools: ide_sdk::locate::locate_tools(&names, near.as_deref()),
         compile_dir: ide_sdk::locate::compile_dir().into(),
     })
     .await
-    .map_err(join_err)
 }
 
-/// Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`.
+/// The environments the window's project defines for Hatch, `default` first (hatch must be on PATH).
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_hatch_envs(host: &Host, window: &str, request: RequestId) -> IdeResult<Vec<String>> {
+    host.require_trust_if_project(window)?;
+    let root = host.project(window)?.root.clone();
+    let cancel = host.begin_project_request(window, request);
+    let result = blocking(move || ide_sdk::python::hatch_envs(&root, &cancel)).await;
+    host.end_request(request);
+    result
+}
+
+/// Creates a Python environment and streams its output through `on_output`.
+/// With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
+#[allow(clippy::too_many_arguments)]
 #[command(trust = outside_restricted)]
 pub async fn sdk_python_create_venv(
     host: &Host,
@@ -344,20 +385,20 @@ pub async fn sdk_python_create_venv(
     tool: ide_sdk::python::VenvTool,
     base: PathBuf,
     location: PathBuf,
+    install_packages: bool,
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<Sdk> {
     host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result = tokio::task::spawn_blocking(move || {
-        ide_sdk::python::create_venv(tool, &base, &location, &cancel, &|line| {
+    let result = blocking(move || {
+        ide_sdk::python::create_venv(tool, &base, &location, install_packages, &cancel, &|line| {
             let _ = on_output.send(line);
         })
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    result?
+    result
 }
 
 #[command(trust = outside_restricted)]
@@ -365,14 +406,30 @@ pub async fn sdk_python_packages(
     host: &Host,
     window: &str,
     python: PathBuf,
+    outdated: bool,
     request: RequestId,
 ) -> IdeResult<Vec<PythonPackage>> {
     host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result =
-        tokio::task::spawn_blocking(move || ide_sdk::python::list_packages(&python, &cancel)).await.map_err(join_err);
+    let result = blocking(move || ide_sdk::python::list_packages(&python, outdated, &cancel)).await;
     host.end_request(request);
-    result?
+    result
+}
+
+/// A package index other than PyPI that installing from `python` uses; `None` for PyPI.
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_package_index(
+    host: &Host,
+    window: &str,
+    python: PathBuf,
+    request: RequestId,
+) -> IdeResult<Option<String>> {
+    host.require_trust_if_project(window)?;
+    let project_root = host.project(window).ok().map(|p| p.root.clone());
+    let cancel = host.begin_project_request(window, request);
+    let result = blocking(move || ide_sdk::python::configured_index(&python, project_root.as_deref(), &cancel)).await;
+    host.end_request(request);
+    result
 }
 
 /// Installs (`uninstall = false`) or removes a package; output streams through `on_output`.
@@ -391,7 +448,7 @@ pub async fn sdk_python_pip(
     host.require_trust_if_project(window)?;
     let project_root = host.project(window).ok().map(|p| p.root.clone());
     let cancel = host.begin_project_request(window, request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let send = |line: String| {
             let _ = on_output.send(line);
         };
@@ -401,21 +458,37 @@ pub async fn sdk_python_pip(
             ide_sdk::python::install_package(&python, &requirement, upgrade, project_root.as_deref(), &cancel, &send)
         }
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    result?
+    result
 }
 
 /// The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home.
 #[command(trust = trusted)]
 pub async fn sdk_jdk_at(path: String) -> IdeResult<Option<Sdk>> {
     // A macOS bundle too (Add JDK from Disk…).
-    tokio::task::spawn_blocking(move || {
-        ide_sdk::java::jdk_at(std::path::Path::new(&path)).map(|j| ide_sdk::jdk_sdk(&j))
+    blocking_value(move || ide_sdk::java::jdk_at(std::path::Path::new(&path)).map(|j| ide_sdk::jdk_sdk(&j))).await
+}
+
+/// `flutter --version --machine` of the Flutter SDK at `path`, or of the `flutter` on the
+/// search path when `path` is empty; `None` when there is no Flutter SDK.
+#[command(trust = trusted)]
+pub async fn sdk_flutter_at(
+    host: &Host,
+    window: &str,
+    path: String,
+) -> IdeResult<Option<ide_sdk::flutter::FlutterVersion>> {
+    let root = host.project(window).ok().map(|p| p.root.clone());
+    blocking_value(move || {
+        let root = root.unwrap_or_default();
+        let sdk = match ide_sdk::apply::setting_path(&root, &path) {
+            Some(sdk) => Some(sdk),
+            None => ide_core::tool_path::find_command("flutter", &ide_core::tool_path::search_path_in(&root), &root)
+                .and_then(|f| ide_sdk::flutter::sdk_of(&f)),
+        };
+        sdk.and_then(|sdk| ide_sdk::flutter::version(&sdk))
     })
     .await
-    .map_err(join_err)
 }
 
 #[cfg(all(test, unix))]
@@ -423,7 +496,6 @@ mod tests {
     use super::*;
     use crate::HostConfig;
     use std::path::Path;
-    use std::sync::Arc;
 
     fn fake_venv(root: &Path, name: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -437,22 +509,73 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_launch_takes_the_user_paths_of_the_interpreter_it_uses() {
+        use crate::ops::python::{debug_python, with_user_paths};
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let (root, bare, own) = (base.join("project"), base.join("bare"), base.join("own"));
+        let (for_main, for_own) = (base.join("for-main"), base.join("for-own"));
+        for dir in [&root, &bare, &own, &for_main, &for_own] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let (main_python, own_python) = (fake_venv(&root, ".venv"), fake_venv(&own, ".venv"));
+        ide_workspace::workspace::Workspace::attach(&root, "ws", vec![root.clone(), bare.clone(), own.clone()])
+            .unwrap();
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
+        host.trust.decide(&root, true, false).unwrap();
+        host.open_project("main", &root).unwrap();
+        let project = host.project("main").unwrap();
+        let text = |p: &Path| p.to_string_lossy().into_owned();
+        project
+            .settings
+            .set(
+                ide_workspace::SettingsScope::Global,
+                "languages.python.interpreterPaths",
+                serde_json::json!({ text(&main_python): [text(&for_main)], text(&own_python): [text(&for_own)] }),
+            )
+            .unwrap();
+        let paths = |command: Option<&str>, near: &Path| {
+            with_user_paths(Vec::new(), &host.config_dir, &project, command, Some(near))
+        };
+
+        // A member without a Python of its own runs on the primary project's interpreter;
+        // a member with its own virtualenv on that one.
+        assert_eq!(paths(None, &root), std::slice::from_ref(&for_main));
+        assert_eq!(paths(None, &bare), std::slice::from_ref(&for_main));
+        assert_eq!(paths(None, &own), std::slice::from_ref(&for_own));
+        // The interpreter a launch names wins over where it runs; a manager's command does not name one.
+        assert_eq!(paths(Some(&text(&own_python)), &bare), std::slice::from_ref(&for_own));
+        assert_eq!(paths(Some("uv"), &own), std::slice::from_ref(&for_own));
+        assert_eq!(paths(Some("python3"), &bare), std::slice::from_ref(&for_main));
+        // What is already on the path is neither repeated nor dropped.
+        let kept = with_user_paths(vec![root.clone(), for_main.clone()], &host.config_dir, &project, None, Some(&root));
+        assert_eq!(kept, [root.clone(), for_main]);
+
+        // Debug resolves a relative command against its working directory before sending it.
+        let debug_interpreter = bare.join("..").join(own_python.strip_prefix(&base).unwrap());
+        let mut launch = ide_dap::LaunchConfig {
+            name: "Python".into(),
+            adapter: "debugpy".into(),
+            request: "launch".into(),
+            program: None,
+            args: vec![],
+            cwd: Some(bare.as_path().into()),
+            env: Default::default(),
+            extra_json: Some(serde_json::json!({ "python": text(&debug_interpreter) }).to_string()),
+        };
+        assert_eq!(debug_python(&launch), Some(text(&debug_interpreter)));
+        assert_eq!(paths(debug_python(&launch).as_deref(), &bare), [for_own]);
+        launch.extra_json = Some(serde_json::json!({ "python": ["uv", "run", "python"] }).to_string());
+        assert_eq!(debug_python(&launch), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_hand_picked_venv_is_resolved_like_a_detected_interpreter() {
         let temp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(temp.path()).unwrap();
         let root = base.join("project");
         std::fs::create_dir(&root).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
 
@@ -506,17 +629,7 @@ mod tests {
         ]);
         std::fs::write(config.join("recent.json"), serde_json::to_vec(&recent).unwrap()).unwrap();
 
-        let host = Host::new(HostConfig {
-            config_dir: config,
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
 
@@ -536,6 +649,7 @@ mod tests {
 ide_command::domain!(
     sdk:
     sdk_detect,
+    sdk_flutter_at,
     sdk_jdk_at,
     sdk_locate_tools,
     sdk_php_composer_install,
@@ -545,8 +659,12 @@ ide_command::domain!(
     sdk_project_libraries,
     sdk_python_create_venv,
     sdk_python_effective,
+    sdk_python_hatch_envs,
     sdk_python_interpreter,
     sdk_python_packages,
+    sdk_python_package_index,
     sdk_python_pip,
     sdk_python_project_interpreters,
+    sdk_python_sys_path,
+    sdk_python_user_path_problems,
 );

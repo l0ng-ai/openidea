@@ -2,9 +2,9 @@ import type { commands } from "@/platform/ipc";
 
 /** Lets tests share their fixtures for batched and single execution. */
 export function streamExecution(execute: typeof commands.dbExecute): typeof commands.dbExecuteStream {
-  return async (request, id, statements, maxRows, schema, channel) => {
+  return async (request, id, statements, maxRows, schema, cellLimit, channel) => {
     channel.onmessage({ type: "started", index: 0 });
-    const reply = await execute(request, id, statements, 0, maxRows, schema);
+    const reply = await execute(request, id, statements, 0, maxRows, schema, cellLimit);
     if (reply.status === "error") channel.onmessage({ type: "done", error: reply.error });
     else {
       reply.data.forEach((outcome, index) => {

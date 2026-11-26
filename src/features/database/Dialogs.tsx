@@ -18,6 +18,7 @@ const DumpDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.Dum
 const RestoreDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.RestoreDialog));
 const MysqlDumpDialog = lazyComponent(() => import("./MysqlDumpDialogs").then((m) => m.MysqlDumpDialog));
 const MysqlRestoreDialog = lazyComponent(() => import("./MysqlDumpDialogs").then((m) => m.MysqlRestoreDialog));
+const DiagramPopup = lazyComponent(() => import("./DiagramView").then((m) => m.DiagramPopup));
 
 function PasswordDialog({ source, resolve }: { source: DataSource; resolve: (ok: boolean) => void }) {
   const [password, setPassword] = useState("");
@@ -229,6 +230,7 @@ export function DatabaseDialogs() {
     );
   if (dialog.kind === "mysqlRestore")
     return <MysqlRestoreDialog key={dialog.target} target={dialog.target} database={dialog.database} />;
+  if (dialog.kind === "diagram") return <DiagramPopup data={dialog.data} />;
   if (dialog.kind === "sshSecret")
     return (
       <SshSecretDialog key={dialog.source.id} source={dialog.source} prompt={dialog.prompt} resolve={dialog.resolve} />

@@ -31,7 +31,8 @@ pub fn setting_path(root: &Path, s: &str) -> Option<PathBuf> {
     Some(if p.is_absolute() { p } else { root.join(p) })
 }
 
-fn toml_has_table(file: &Path, table: &str) -> bool {
+/// Whether the TOML `file` has the dotted `table` (`tool.ruff`).
+pub fn toml_has_table(file: &Path, table: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(file) else { return false };
     let Ok(value) = toml::from_str::<toml::Value>(&text) else { return false };
     table.split('.').try_fold(&value, |value, key| value.get(key)).is_some_and(toml::Value::is_table)
@@ -66,9 +67,10 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 
 /// The project interpreter: the configured one, else a project virtualenv
 /// (`.venv`, `venv`, …) or pixi environment (`.pixi/envs/<env>`) in the project
-/// root, else the Python the project pins for mise / asdf. A configured
-/// interpreter whose executable is gone (uninstalled, moved) is skipped like
-/// PyCharm's "Invalid" SDKs, so runs fall back instead of failing on a dead path.
+/// root, else the project's Pipenv environment, else its `default` Hatch environment,
+/// else the Python the project pins for mise / asdf. A configured interpreter whose executable is gone (uninstalled,
+/// moved) is skipped like PyCharm's "Invalid" SDKs, so runs fall back instead of
+/// failing on a dead path.
 /// `None` when the project interpreter is a run target's (see [`crate::container_python`]).
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
     if s.languages.python.run_target().is_some() {
@@ -78,6 +80,72 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
         .filter(|p| p.is_file())
         .or_else(|| project_venv_python(root))
         .or_else(|| pinned::pinned_python(root))
+}
+
+/// An absolute or `~/` path from the settings; `None` for anything else.
+pub fn absolute_setting_path(s: &str) -> Option<PathBuf> {
+    setting_path(Path::new(""), s).filter(|p| p.is_absolute())
+}
+
+/// Why a folder added to an interpreter's paths stays off the import path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum UserPathProblem {
+    /// Not an existing folder.
+    Missing,
+    /// Not absolute or `~/`, or it holds the separator of `PYTHONPATH`.
+    Invalid,
+}
+
+/// A folder added to an interpreter's paths (All Interpreters › Show Paths), as it goes on the
+/// import path.
+pub fn user_path(s: &str) -> Result<PathBuf, UserPathProblem> {
+    let path = absolute_setting_path(s).ok_or(UserPathProblem::Invalid)?;
+    // `PYTHONPATH` cannot hold a path with its separator in it: joining would fail every launch.
+    if std::env::join_paths([&path]).is_err() {
+        return Err(UserPathProblem::Invalid);
+    }
+    if !path.is_dir() {
+        return Err(UserPathProblem::Missing);
+    }
+    Ok(path)
+}
+
+/// Whether the settings key `key` names the interpreter `python`. Paths are compared as
+/// written, not through symlinks: a virtualenv's `python` links to its base interpreter, and
+/// the two are different interpreters.
+fn names_interpreter(key: &str, python: &Path) -> bool {
+    let Some(key) = absolute_setting_path(key) else { return false };
+    if cfg!(windows) {
+        let fold = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+        fold(&key) == fold(python)
+    } else {
+        key == python
+    }
+}
+
+/// The folders the user added to `python`'s paths that can be imported from.
+pub fn interpreter_user_paths(python: &Path, s: &Settings) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for (interpreter, paths) in &s.languages.python.interpreter_paths {
+        if !names_interpreter(interpreter, python) {
+            continue;
+        }
+        for path in paths.iter().filter_map(|p| user_path(p).ok()) {
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// The interpreter a Python language server started for `server_root` analyses with: that
+/// folder's own virtualenv unless an interpreter is configured, else the project interpreter.
+pub fn python_server_interpreter(root: &Path, server_root: &Path, s: &Settings) -> Option<PathBuf> {
+    project_venv_python(server_root)
+        .filter(|_| non_empty(&s.languages.python.interpreter).is_none())
+        .or_else(|| python_interpreter(root, s))
 }
 
 /// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
@@ -853,13 +921,15 @@ pub(crate) fn merge(base: &mut Value, layer: Value) {
     }
 }
 
-/// Excludes project-relative Maven POM paths from JDTLS import, preserving user exclusions.
+/// Excludes project-relative Maven POM paths and the project's excluded folders (everything
+/// below them, such as checkouts in `.worktrees`) from JDTLS import, preserving user exclusions.
 /// `build_files` (`file:` URIs), when given, are the only build files jdtls imports: the
 /// exclusions cannot leave out a module of a reactor jdtls imports.
 pub fn configure_maven_import(
     cfg: &mut LanguageServerConfig,
     root: &Path,
     excluded_poms: &[PathBuf],
+    excluded_folders: &[String],
     build_files: Option<&[String]>,
 ) {
     if cfg.name != "jdtls" {
@@ -883,15 +953,22 @@ pub fn configure_maven_import(
                 json!("**/META-INF/maven/**"),
             ]
         });
-    for pom in excluded_poms {
-        let directory = root.join(pom).parent().unwrap_or(root).to_path_buf();
+    // Java NIO glob syntax treats these characters specially even in literal paths.
+    let glob = |directory: &Path| -> String {
         let directory = directory.to_string_lossy().replace('\\', "/");
-        // Java NIO glob syntax treats these characters specially even in literal paths.
-        let escaped: String =
-            directory.chars().flat_map(|c| if "*?[]{}\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
-        exclusions.push(json!(escaped));
+        directory.chars().flat_map(|c| if "*?[]{}\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect()
+    };
+    for pom in excluded_poms {
+        exclusions.push(json!(glob(root.join(pom).parent().unwrap_or(root))));
     }
-    if !excluded_poms.is_empty() {
+    // Builds below an excluded folder repeat the coordinates of the project's own builds (a
+    // checkout of the same repository) and would take their place: one project per name.
+    for folder in excluded_folders.iter().map(|f| f.trim_matches('/')).filter(|f| !f.is_empty()) {
+        let folder = glob(&root.join(folder));
+        exclusions.push(json!(format!("{folder}/**")));
+        exclusions.push(json!(folder));
+    }
+    if !excluded_poms.is_empty() || !excluded_folders.is_empty() {
         merge_init_options(cfg, json!({"settings": {"java": {"import": {"exclusions": exclusions}}}}));
         if let Some(files) = build_files {
             merge_init_options(cfg, json!({"projectConfigurations": files}));
@@ -907,8 +984,13 @@ pub fn configure_maven_import(
             && let Some(workspace) = cfg.args.get_mut(index + 1)
         {
             let mut hash = 0xcbf29ce484222325u64;
-            for pom in excluded_poms {
-                for byte in pom.to_string_lossy().bytes().chain([0]) {
+            let excluded = excluded_poms.iter().map(|pom| pom.to_string_lossy()).chain(
+                // Folders hash apart from POMs of the same name; projects without excluded
+                // folders keep the workspace their unlinked POMs already had.
+                excluded_folders.iter().map(|f| format!("folder:{f}").into()),
+            );
+            for path in excluded {
+                for byte in path.bytes().chain([0]) {
                     hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
                 }
             }
@@ -1116,13 +1198,31 @@ pub fn tool_command(root: &Path, s: &Settings, command: &str) -> Option<PathBuf>
     if command == godot::COMMAND {
         return godot::find(custom);
     }
-    custom
+    custom.or_else(|| flutter_sdk_tool(root, s, command))
+}
+
+/// `flutter` / `dart` of the Flutter SDK in Settings › Languages & Frameworks › Flutter, else
+/// `None` (the search path). Dart is the SDK's own (`bin/cache/dart-sdk`), else its `bin/dart`
+/// wrapper, which downloads it on first use.
+pub fn flutter_sdk_tool(root: &Path, s: &Settings, command: &str) -> Option<PathBuf> {
+    let bin = setting_path(root, &s.languages.flutter.sdk)?.join("bin");
+    let script = |name: &str| bin.join(if cfg!(windows) { format!("{name}.bat") } else { name.to_owned() });
+    match command {
+        "flutter" => Some(script("flutter")),
+        "dart" => Some(
+            Some(bin.join("cache/dart-sdk/bin").join(exe("dart")))
+                .filter(|d| d.is_file())
+                .unwrap_or_else(|| script("dart")),
+        ),
+        _ => None,
+    }
 }
 
 /// Points a run configuration launching a bare tool name at the executable from
-/// [`tool_command`] (Godot apps live outside the search path).
+/// [`tool_command`] (Godot apps live outside the search path; `flutter` / `dart` follow the
+/// Flutter SDK setting).
 pub fn resolve_run_command(config: &mut RunConfig, root: &Path, s: &Settings) {
-    if config.command == godot::COMMAND
+    if matches!(config.command.as_str(), godot::COMMAND | "flutter" | "dart")
         && let Some(path) = tool_command(root, s, &config.command)
     {
         config.command = path.to_string_lossy().into_owned();
@@ -1160,9 +1260,7 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     let name = name.as_str();
 
     if PYTHON_SERVERS.contains(&name) {
-        let python = project_venv_python(server_root)
-            .filter(|_| non_empty(&s.languages.python.interpreter).is_none())
-            .or_else(|| python_interpreter(root, s));
+        let python = python_server_interpreter(root, server_root, s);
         if let Some(python) = python {
             let p = python.to_string_lossy().into_owned();
             match name {
@@ -1688,7 +1786,8 @@ fn configure_angular(cfg: &mut LanguageServerConfig, root: &Path, server_root: &
     }
 }
 
-fn is_python_command(cmd: &str) -> bool {
+/// Whether `cmd` is a Python executable by its name (`python`, `python3.12`, `python.exe`).
+pub fn is_python_command(cmd: &str) -> bool {
     let name = Path::new(cmd).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
     name == "python"
@@ -1901,12 +2000,27 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
             "python" | "pytest" | "django-test" => {
-                let python = toolchain("python", &owner);
+                let command = Path::new(&c.command);
+                let own = !c.detected && command.components().count() > 1 && is_python_command(&c.command);
+                let python = if own {
+                    let cwd = root.join(c.cwd.as_deref().unwrap_or(Path::new("")));
+                    Some(ide_core::project_roots::resolve(&cwd, command))
+                } else {
+                    toolchain("python", &owner)
+                };
                 // The member's explicit interpreter, else the inherited one, else the
                 // member's own venv / pin.
-                if let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
+                if !own && let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
-                    if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
+                    // Options for the runner itself (`uv run --with rich …`, `--no-sync`,
+                    // `--project member`) only mean something to it: keep that command (#5874).
+                    let runner_options = runner
+                        && c.args.first().map(String::as_str) == Some("run")
+                        && c.args.get(1).is_some_and(|a| a.starts_with('-'));
+                    if (c.kind == "python" || c.kind == "django-test")
+                        && !runner_options
+                        && (runner || is_python_command(&c.command))
+                    {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
                             // `uv run python …` → `<interpreter> …`
                             let skip = if c.args.get(1).is_some_and(|a| is_python_command(a)) { 2 } else { 1 };
@@ -2133,9 +2247,12 @@ pub fn without_derived_in(config: &RunConfig, root: &Path, fallback: Option<&Pat
         && let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned())
     {
         // Generated configurations name the bare program (`java`), also on Windows where the
-        // derived path ends in `java.exe`.
-        let bare =
-            name.len().checked_sub(4).filter(|&at| name[at..].eq_ignore_ascii_case(".exe")).map(|at| &name[..at]);
+        // derived path ends in `java.exe` (`flutter.bat`).
+        let bare = name
+            .len()
+            .checked_sub(4)
+            .filter(|&at| name[at..].eq_ignore_ascii_case(".exe") || name[at..].eq_ignore_ascii_case(".bat"))
+            .map(|at| &name[..at]);
         for candidate in bare.into_iter().chain([name.as_str()]) {
             let mut probe = out.clone();
             probe.command = candidate.to_owned();
@@ -2246,6 +2363,81 @@ fn conda_activation(python: &Path, name: &str, conda_exe: Option<PathBuf>, on_pa
             )
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod python_user_path_tests {
+    use super::*;
+
+    fn venv(dir: &Path) -> PathBuf {
+        let python = dir.join(".venv").join(crate::bin_dir()).join(crate::exe("python"));
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(dir.join(".venv/pyvenv.cfg"), "").unwrap();
+        python
+    }
+
+    fn text(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn user_paths_follow_the_interpreter_and_skip_what_cannot_be_imported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (lib, other) = (root.join("shared"), root.join("other"));
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let python = venv(&root);
+        let other_python = root.join("other-python");
+
+        let mut s = Settings::default();
+        s.languages.python.interpreter_paths = [
+            // Gone, duplicated, relative and a file: none of them reach the import path.
+            (text(&python), vec![text(&lib), text(&root.join("gone")), text(&lib), "relative".into(), text(&python)]),
+            (text(&other_python), vec![text(&other)]),
+        ]
+        .into();
+        assert_eq!(interpreter_user_paths(&python, &s), std::slice::from_ref(&lib));
+        assert_eq!(interpreter_user_paths(&other_python, &s), [other]);
+        assert!(interpreter_user_paths(&root.join("unknown-python"), &s).is_empty());
+    }
+
+    #[test]
+    fn a_folder_that_stays_off_the_import_path_says_why() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        assert_eq!(user_path(&text(&root)), Ok(root.clone()));
+        assert_eq!(user_path(&text(&root.join("gone"))), Err(UserPathProblem::Missing));
+        assert_eq!(user_path("relative/dir"), Err(UserPathProblem::Invalid));
+        assert_eq!(user_path(" "), Err(UserPathProblem::Invalid));
+        // One entry with the separator in it would make `PYTHONPATH` impossible to build.
+        #[cfg(unix)]
+        {
+            let odd = root.join("libs:v2");
+            std::fs::create_dir(&odd).unwrap();
+            assert_eq!(user_path(&text(&odd)), Err(UserPathProblem::Invalid));
+            let mut s = Settings::default();
+            s.languages.python.interpreter_paths = [("/bin/python".into(), vec![text(&odd), text(&root)])].into();
+            assert_eq!(interpreter_user_paths(Path::new("/bin/python"), &s), [root]);
+        }
+    }
+
+    #[test]
+    fn a_language_server_takes_the_interpreter_of_its_own_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let sub = root.join("services/api");
+        let (python, sub_python) = (venv(&root), venv(&sub));
+        let mut s = Settings::default();
+        assert_eq!(python_server_interpreter(&root, &root, &s), Some(python.clone()));
+        assert_eq!(python_server_interpreter(&root, &sub, &s), Some(sub_python));
+        // A configured interpreter is the one every server of the project uses.
+        s.languages.python.interpreter = text(&python);
+        assert_eq!(python_server_interpreter(&root, &sub, &s), Some(python));
+        s.languages.python.interpreter = "target:docker".into();
+        assert_eq!(python_server_interpreter(&root, &root, &s), None);
     }
 }
 
@@ -2648,6 +2840,16 @@ mod maven_linkage_tests {
     }
 
     #[test]
+    fn gradle_classpath_script_applies_plugins_to_the_project() {
+        // Inside the script's closures a bare `apply` is the init script's own: on Gradle 7 the
+        // Eclipse plugin then fails to start and the whole import fails.
+        let script = include_str!("gradle-classpath.init.gradle");
+        let bare: Vec<&str> = script.lines().filter(|line| line.trim_start().starts_with("apply ")).collect();
+        assert!(bare.is_empty(), "{bare:?}");
+        assert!(script.contains("project.apply plugin: 'eclipse'"));
+    }
+
+    #[test]
     fn gradle_import_of_a_gradle_build_runs_on_the_project_jdk_like_the_ides_builds() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -2704,7 +2906,7 @@ mod maven_linkage_tests {
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
         merge_init_options(&mut cfg, json!({"settings":{"java":{"import":{"exclusions":["**/custom"]}}}}));
-        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()], None);
+        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()], &[], None);
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&json!("**/custom")));
@@ -2715,16 +2917,40 @@ mod maven_linkage_tests {
     }
 
     #[test]
+    fn import_excludes_the_projects_excluded_folders_and_changes_persistent_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = |p: &str| tmp.path().join(p).to_string_lossy().replace('\\', "/");
+        let workspace = |excluded: &[String]| {
+            let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+            cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
+            configure_maven_import(&mut cfg, tmp.path(), &[], excluded, None);
+            (serde_json::to_value(cfg.initialization_options).unwrap(), cfg.args[1].clone())
+        };
+        let (options, data) = workspace(&[".worktrees".into(), "out/[old]".into()]);
+        let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
+        // The folder and everything below it; glob characters in the path stay literal.
+        assert!(exclusions.contains(&json!(dir(".worktrees"))));
+        assert!(exclusions.contains(&json!(format!("{}/**", dir(".worktrees")))));
+        assert!(exclusions.contains(&json!(format!("{}/\\[old\\]/**", dir("out")))));
+        assert!(exclusions.contains(&json!("**/node_modules/**")));
+        assert!(options.get("projectConfigurations").is_none());
+        // Projects imported before the folder was excluded stay in the old workspace.
+        assert!(data.starts_with("/cache/jdtls-maven-"));
+        assert_ne!(data, workspace(&[".other".into()]).1);
+        assert_eq!(workspace(&[]).1, "/cache/jdtls");
+    }
+
+    #[test]
     fn import_lists_the_build_files_when_given() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         let files = ["file:///p/r/x/pom.xml".to_owned(), "file:///p/build.gradle".to_owned()];
-        configure_maven_import(&mut cfg, tmp.path(), &["r/y/pom.xml".into()], Some(&files));
+        configure_maven_import(&mut cfg, tmp.path(), &["r/y/pom.xml".into()], &[], Some(&files));
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         assert_eq!(options["projectConfigurations"], json!(files));
         // Nothing unlinked: jdtls finds the build files itself.
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
-        configure_maven_import(&mut cfg, tmp.path(), &[], Some(&files));
+        configure_maven_import(&mut cfg, tmp.path(), &[], &[], Some(&files));
         assert!(serde_json::to_value(cfg.initialization_options).unwrap().get("projectConfigurations").is_none());
     }
 

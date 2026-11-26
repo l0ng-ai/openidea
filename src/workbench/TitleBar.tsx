@@ -2,8 +2,9 @@ import { ContributedToolbar } from "./ContributedToolbar";
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
+import { isWebMode } from "@/platform/webBridge";
 import { shortcutLabel, useKeymap } from "@/platform/keymap";
-import { useProject } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import { BarButton, Icon, IconButton, Menu, type MenuItem, showContextMenu, T } from "@/ui";
 import { useChromeIconSize } from "@/ui/density";
 import { useContributions, useWorkbenchSlots, type TitleItemContribution } from "./contributions";
@@ -25,7 +26,7 @@ import {
 import { WindowControls } from "./WindowControls";
 import { captionButtons } from "./windowButtons";
 import { usePlatform } from "@/platform/platformInfo";
-import { projectInitials } from "./projectColor";
+import { ProjectAvatar } from "./ProjectBadge";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
 import { useContributedThemes } from "@/platform/themes";
 import { currentThemeChoice, useThemeOverride } from "./theme";
@@ -33,6 +34,8 @@ import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
 import { useDocumentTitle } from "./documentTitle";
 import { windowDragRegion } from "./window-drag";
+import { useToolbarCenter } from "./toolbarCenter";
+import { useProjectGradientAnchor } from "./projectGradient";
 import { useToolbarLabelWidth } from "./toolbarLabelWidth";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
@@ -55,8 +58,10 @@ function TitleItem({ item }: { item: TitleItemContribution }) {
 }
 
 function ProjectButton() {
-  const name = useProject((s) => s.project?.displayName || s.project?.name);
-  const root = useProject((s) => s.project?.root);
+  const name = useProject((s) =>
+    s.openingPath ? basename(s.openingPath) || s.openingPath : s.project?.displayName || s.project?.name,
+  );
+  const root = useProject((s) => s.openingPath ?? s.project?.root);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const actions = useActions((s) => s.actions);
@@ -83,8 +88,8 @@ function ProjectButton() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={styles.avatar} aria-hidden="true">
-          {projectInitials(label)}
+        <span className={styles.avatar} aria-hidden="true" data-project-widget-icon="">
+          <ProjectAvatar name={label} root={root} />
         </span>
         <span className={styles.widgetText} data-toolbar-label="">
           {label}
@@ -137,13 +142,18 @@ function VcsFallback() {
  * dialog and Restore Default. Also the title bar's context menu.
  */
 export function customizeToolbarItems(
-  shown: { left: string[]; right: string[] },
+  shown: { left: string[]; center?: string[]; right: string[] },
   hidden: readonly string[],
   items: ReadonlyMap<string, TitleItemContribution>,
   toggle: (id: string) => void,
   reset: () => void,
 ): MenuItem[] {
-  const entries = [...shown.left, ...shown.right, ...hidden.filter((id) => !isActionEntry(id))];
+  const entries = [
+    ...shown.left,
+    ...(shown.center ?? []),
+    ...shown.right,
+    ...hidden.filter((id) => !isActionEntry(id)),
+  ];
   return [
     ...entries.map<MenuItem>((id) => ({
       id: `toolbar.${id}`,
@@ -298,7 +308,7 @@ function CompactTitle({ title }: { title?: string }) {
  * the caption buttons. `dialog`: a dialog window's bar (Settings), close button only.
  * `lightEdit`: a LightEdit window's bar, its title and the menu but no toolbar widgets.
  * `compact`: IDEA's compact header (Distraction Free, View › Appearance › Toolbar off).
- * `bare`: the window frame only, while a project opens.
+ * `bare`: the window frame only.
  */
 export function TitleBar({
   minimal = false,
@@ -317,6 +327,7 @@ export function TitleBar({
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
   const frameless = usePlatform((s) => s.framelessTitleBar);
+  const showMainMenu = frameless || isWebMode();
   const windowButtons = usePlatform((s) => s.windowButtons);
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
@@ -325,6 +336,9 @@ export function TitleBar({
   useNativeTitlebar(bar);
   const toolbar = !minimal && !lightEdit && !compact && !bare;
   useToolbarLabelWidth(toolbar ? bar : null);
+  const centered = toolbar && !menuExpanded && !minimal && shown.center.length > 0;
+  useToolbarCenter(bar, centered);
+  useProjectGradientAnchor(bar, toolbar);
   const className = clsx(
     styles.bar,
     overlay && styles.overlay,
@@ -332,7 +346,7 @@ export function TitleBar({
     frameless && captionButtons(windowButtons, "left", dialog).length > 0 && styles.captionsAtLeft,
     frameless && captionButtons(windowButtons, "right", dialog).length === 0 && styles.noCaptionsAtRight,
   );
-  // Where the title bar carries the main menu (Windows, Linux) it stays, or nothing
+  // Where the title bar carries the main menu (Windows, Linux, web) it stays, or nothing
   // would lead back out of Distraction Free Mode or bring the toolbar back.
   if (bare || compact)
     return (
@@ -343,13 +357,13 @@ export function TitleBar({
         data-titlebar={compact ? "compact" : "bare"}
       >
         {frameless && <WindowControls side="left" />}
-        {frameless && <MainMenu />}
+        {showMainMenu && <MainMenu />}
         {compact ? <CompactTitle title={title} /> : frameless && <div className={styles.drag} {...windowDragRegion} />}
         {frameless && <WindowControls side="right" />}
       </header>
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
-  const menuRow = frameless && !minimal && separateMenu;
+  const menuRow = showMainMenu && !minimal && separateMenu;
   const header = (
     <header
       ref={setBar}
@@ -362,14 +376,27 @@ export function TitleBar({
       }}
     >
       {frameless && <WindowControls side="left" dialog={dialog} />}
-      {frameless && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
+      {showMainMenu && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
         <span className={styles.windowTitle} {...windowDragRegion}>
           {typeof title === "string" ? <T>{title}</T> : title}
         </span>
       )}
       {toolbar && !menuExpanded && shown.left.map(entry)}
-      <div className={styles.drag} {...windowDragRegion} data-toolbar-spacer="" />
+      <div
+        className={styles.drag}
+        {...windowDragRegion}
+        data-toolbar-spacer=""
+        data-toolbar-center-spacer={centered ? "" : undefined}
+      />
+      {centered && (
+        <>
+          <div className={styles.centerGroup} data-toolbar-center="">
+            {shown.center.map(entry)}
+          </div>
+          <div className={styles.drag} {...windowDragRegion} data-toolbar-spacer="" />
+        </>
+      )}
       {!minimal && (
         <>
           {toolbar && !menuExpanded && shown.right.map(entry)}

@@ -11,11 +11,11 @@ test("local terminal stores clipboard media and pastes one shell-quoted argument
       configurable: true,
       value: { transformCallback: () => 1 },
     });
-    const stored: { id: number; data: number[]; mime: string }[] = [];
+    const stored: { id: number; data: string; mime: string }[] = [];
     const writes: string[] = [];
     commands.termSpawn = async () => ({ status: "ok", data: { id: 838, title: "pwsh", pid: 1 } });
     commands.clipboardFileList = async () => ({ status: "ok", data: [] });
-    commands.termStoreImage = async (id: number, data: number[], mime: string) => {
+    commands.termStoreImage = async (id: number, data: string, mime: string) => {
       stored.push({ id, data, mime });
       return { status: "ok", data: "C:\\Temp\\a'b c\\image.png" };
     };
@@ -31,13 +31,18 @@ test("local terminal stores clipboard media and pastes one shell-quoted argument
       await session.start();
       // xterm opens on a later frame, once the pane has a size.
       const openDeadline = Date.now() + 5000;
-      while (!container.querySelector("textarea") && Date.now() < openDeadline) {
+      while (!session.term.textarea && Date.now() < openDeadline) {
         await new Promise((resolve) => requestAnimationFrame(resolve));
       }
       const transfer = new DataTransfer();
       transfer.items.add(new File([new Uint8Array([137, 80, 78, 71])], "image.png", { type: "image/png" }));
-      const event = new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer });
-      container.querySelector("textarea")!.dispatchEvent(event);
+      const event = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        clipboardData: transfer,
+      });
+      session.term.textarea!.dispatchEvent(event);
       const deadline = Date.now() + 5000;
       while (!writes.length && Date.now() < deadline) await new Promise((resolve) => requestAnimationFrame(resolve));
       return { stored, writes, claimed: event.defaultPrevented };
@@ -47,6 +52,6 @@ test("local terminal stores clipboard media and pastes one shell-quoted argument
     }
   });
   expect(observed.claimed).toBe(true);
-  expect(observed.stored).toEqual([{ id: 838, data: [137, 80, 78, 71], mime: "image/png" }]);
+  expect(observed.stored).toEqual([{ id: 838, data: "iVBORw==", mime: "image/png" }]);
   expect(observed.writes).toEqual(["'C:\\Temp\\a''b c\\image.png'"]);
 });

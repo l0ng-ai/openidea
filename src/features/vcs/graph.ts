@@ -193,6 +193,19 @@ export function computeGraph(
   };
   const describe = (s: GraphSegment, lane: Lane) =>
     track ? { ...s, edge: `${lane.source ?? ""}\0${lane.id}`, source: lane.source, kind: lane.kind } : s;
+  // A lane keeps its slot until it reaches its target, so the rows it passes can share one
+  // straight segment (later passes copy a segment before editing it). Only tracked segments
+  // are shared: an untracked one is cheaper to rebuild than to look up. A lane's last row
+  // (`ends`) reuses its segment but doesn't cache it, so a lane spanning one row costs nothing.
+  const straight = new Map<Lane, GraphSegment>();
+  const straightOf = (l: Lane, i: number, ends = false) => {
+    let s = straight.get(l);
+    if (!s) {
+      s = describe(seg(i, i, l.color, l.dashed), l);
+      if (!ends) straight.set(l, s);
+    }
+    return s;
+  };
 
   let nextColor = state.nextColor;
   const rows: GraphRow[] = [];
@@ -214,7 +227,11 @@ export function computeGraph(
     const up: GraphSegment[] = [];
     const upTargets: string[] = [];
     lanes.forEachLane((l, i) => {
-      up.push(describe(seg(i, l.id === c.id ? lane : i, l.color, l.dashed), l));
+      up.push(
+        track && (l.id !== c.id || lane === i)
+          ? straightOf(l, i, l.id === c.id)
+          : describe(seg(i, l.id === c.id ? lane : i, l.color, l.dashed), l),
+      );
       upTargets.push(l.id);
     });
     for (const m of matching) lanes.vacate(m);
@@ -223,7 +240,7 @@ export function computeGraph(
     const down: GraphSegment[] = [];
     const downTargets: string[] = [];
     lanes.forEachLane((l, i) => {
-      down.push(describe(seg(i, i, l.color, l.dashed), l));
+      down.push(track ? straightOf(l, i) : seg(i, i, l.color, l.dashed));
       downTargets.push(l.id);
     });
 
@@ -356,30 +373,40 @@ export function collapseLinear<
  * A filtered log connects a commit to the nearest matching ancestor along every merge
  * path. Ancestors that another of the commit's connections already reaches would each
  * open a lane of their own without adding one, so their filtered edges are dropped;
- * real parents and collapsed-fragment connections stay as they are.
+ * real parents and collapsed-fragment connections stay as they are. Whether a target
+ * below the loaded page is reached cannot be told yet: while another connection
+ * already leads below the page, its filtered edge waits until the target is loaded.
  */
 export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit[] {
   const positions = new Map(commits.map((c, i) => [c.id, i]));
   const kindOf = (c: GraphCommit, i: number) => c.edgeTypes?.[i] ?? (c.dashed?.[i] ? "filtered" : "normal");
+  // Rows whose history continues below the page (parents come later in the log).
+  const leavesPage: boolean[] = [];
+  for (let at = commits.length - 1; at >= 0; at--) {
+    leavesPage[at] = commits[at]!.parents.some((p) => {
+      const pos = positions.get(p);
+      return pos == null || (pos > at && leavesPage[pos]!);
+    });
+  }
   return commits.map((c) => {
     if (c.parents.length < 2) return c;
     if (!c.parents.some((_, i) => kindOf(c, i) === "filtered")) return c;
-    // Walk the parents shallowest first, tracking the rows the kept connections reach:
-    // a filtered parent already covered by them adds nothing (and a dropped one was
-    // covered itself, so its own reach is covered too). Parents only appear later in
-    // the log, so no walk goes past the deepest parent of the commit.
+    // Walk the loaded parents shallowest first, tracking the rows the kept connections
+    // reach: a filtered parent already covered by them adds nothing (and a dropped one
+    // was covered itself, so its own reach is covered too). Parents only appear later
+    // in the log, so no walk goes past the deepest parent of the commit.
     const limit = Math.max(...c.parents.map((p) => positions.get(p) ?? -1));
     const drop = new Set<number>();
     const covered = new Set<number>();
-    for (const i of c.parents
-      .map((_, i) => i)
-      .sort((a, b) => (positions.get(c.parents[a]!) ?? Infinity) - (positions.get(c.parents[b]!) ?? Infinity))) {
-      const pos = positions.get(c.parents[i]!);
-      if (kindOf(c, i) === "filtered" && pos != null && covered.has(pos)) {
+    const indices = c.parents.map((_, i) => i);
+    const loaded = indices.filter((i) => positions.has(c.parents[i]!));
+    for (const i of loaded.sort((a, b) => positions.get(c.parents[a]!)! - positions.get(c.parents[b]!)!)) {
+      const pos = positions.get(c.parents[i]!)!;
+      if (kindOf(c, i) === "filtered" && covered.has(pos)) {
         drop.add(i);
         continue;
       }
-      for (const stack = pos == null ? [] : [pos]; stack.length;) {
+      for (const stack = [pos]; stack.length;) {
         const at = stack.pop()!;
         if (covered.has(at)) continue;
         covered.add(at);
@@ -389,8 +416,15 @@ export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit
         }
       }
     }
+    // Targets below the page: one connection leading there is enough until they load.
+    const unloaded = indices.filter((i) => !positions.has(c.parents[i]!));
+    const filteredBelow = unloaded.filter((i) => kindOf(c, i) === "filtered");
+    const leads =
+      unloaded.some((i) => kindOf(c, i) !== "filtered") ||
+      loaded.some((i) => !drop.has(i) && leavesPage[positions.get(c.parents[i]!)!]);
+    for (const i of leads ? filteredBelow : filteredBelow.slice(1)) drop.add(i);
     if (!drop.size) return c;
-    const keep = c.parents.map((_, i) => i).filter((i) => !drop.has(i));
+    const keep = indices.filter((i) => !drop.has(i));
     return {
       ...c,
       parents: keep.map((i) => c.parents[i]!),

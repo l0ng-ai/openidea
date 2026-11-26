@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { executeAction, registerActions } from "@/platform/actions";
-import { call, commands, onIdeEvent, type TrustDecisions, type TrustStatus } from "@/platform/ipc";
+import { call, callDesktop, commands, onIdeEvent, type TrustDecisions, type TrustStatus } from "@/platform/ipc";
 import { dirname, useProject } from "@/platform/project";
 import { initializeRemoteTrustMigration, isRemoteRoot } from "@/platform/remote";
 import { provideProjectTrustPrompt, type ProjectTrustScope } from "@/platform/projectTrust";
 import { askOverSplash } from "@/platform/splash";
-import { invokeLocal } from "@/platform/tauriCore";
 import { registerOverlay, registerSettingsPage, registerWorkbenchBanner } from "@/workbench/contributions";
 import { Button, Checkbox, Dialog, T } from "@/ui";
 import styles from "./trust.module.css";
@@ -94,6 +93,7 @@ async function untrustedAttachment() {
   const project = useProject.getState().project;
   if (!project?.workspace || project.workspace.projects[0] !== project.root) return null;
   for (const path of project.workspace.projects) {
+    // oxlint-disable-next-line no-await-in-loop -- returns the first untrusted project in workspace order; later paths are intentionally not queried after a hit.
     const status = await call(commands.projectTrustStatus(path)).catch(() => null);
     if (status && !status.trusted) return status;
   }
@@ -230,7 +230,7 @@ async function decide(trusted: boolean) {
   if (!path) return;
   const folder = trusted && pending.folder;
   if (pending.scope === "local") {
-    await invokeLocal("project_trust_set", { path, trusted, folder });
+    await callDesktop("project_trust_set", { path, trusted, folder });
   } else {
     await call(commands.projectTrustSet(path, trusted, folder));
     if (isRemoteRoot(path)) await call(commands.remoteTrustSet(trusted));
@@ -273,7 +273,7 @@ export function activate(): () => void {
   const disposers = [
     provideProjectTrustPrompt(async (path, scope) => {
       const status = await (scope === "local"
-        ? invokeLocal<TrustStatus>("project_trust_status", { path })
+        ? callDesktop<TrustStatus>("project_trust_status", { path })
         : call(commands.projectTrustStatus(path)));
       if (scope === "current" && isRemoteRoot(path)) {
         // The server's answer covers what runs there; commands run here need this machine's own.

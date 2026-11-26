@@ -1,5 +1,5 @@
 /**
- * Built-in run configuration types (Shell Script, Program, npm, Gradle, Maven,
+ * Built-in run configuration types (Shell Script, Program, npm, Node.js, Gradle, Maven,
  * Application, Spring Boot, Compound) and the helpers that turn a type's params into the launched
  * command line. Other features contribute types with `registerRunConfigType`.
  */
@@ -16,6 +16,7 @@ import {
   mavenForkedJvm,
   ROOT_MODULE,
   springBootType,
+  splitJvmArgs,
   type ForkedJvm,
 } from "./jvmTypes";
 import { tx } from "@/platform/i18n";
@@ -309,6 +310,84 @@ const npm: RunConfigTypeContribution = {
   },
 };
 
+/** Node options whose value is the next argument (`-r ./setup.js`); `-e` / `-p` take code, not a file. */
+const NODE_VALUE_OPTIONS = [
+  "-r",
+  "--require",
+  "--import",
+  "--loader",
+  "--experimental-loader",
+  "-C",
+  "--conditions",
+  "--env-file",
+  "-e",
+  "--eval",
+  "-p",
+  "--print",
+  "--run",
+  "--watch-path",
+  "--input-type",
+  "--inspect-port",
+  "--debug-port",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--env-file-if-exists",
+  "--disable-warning",
+];
+
+/** `[node options, file, application arguments]` of a Node command line; no file when only options follow. */
+export function splitNodeArgs(args: readonly string[]): [string[], string | null, string[]] {
+  let i = 0;
+  for (let a = args[0]; a?.startsWith("-"); a = args[i]) i += NODE_VALUE_OPTIONS.includes(a) ? 2 : 1;
+  const file = args[i];
+  return file === undefined ? [[...args], null, []] : [args.slice(0, i), file, args.slice(i + 1)];
+}
+
+/** Runs a file with Node.js (or a Node-compatible runner such as tsx): `node <options> <file> <arguments>`. */
+const node: RunConfigTypeContribution = {
+  id: "node",
+  label: "Node.js",
+  icon: "file-js",
+  description: "Run a JavaScript or TypeScript file with Node.js",
+  debugAdapter: "js-debug",
+  fields: [
+    {
+      key: "interpreter",
+      label: "Node interpreter",
+      mono: true,
+      browse: "file",
+      placeholder: "Project default",
+      hint: "The node executable, or a runner such as tsx; empty uses Settings › Languages & Frameworks › JavaScript Runtime.",
+    },
+    {
+      key: "nodeOptions",
+      label: "Node options",
+      mono: true,
+      placeholder: "e.g. --env-file=.env --max-old-space-size=4096",
+    },
+    { key: "file", label: "JavaScript file", mono: true, required: true, browse: "file" },
+    { key: "arguments", label: "Application arguments", mono: true },
+  ],
+  commandLine: (p) => ({
+    command: p.interpreter?.trim() || "node",
+    args: [...splitJvmArgs(p.nodeOptions), ...(p.file?.trim() ? [p.file.trim()] : []), ...splitJvmArgs(p.arguments)],
+  }),
+  paramsFrom(c) {
+    // `npx tsx …`, test runs and the like keep their own command line.
+    if (c.isTest || !["node", "tsx", "ts-node"].includes(commandName(c.command))) return null;
+    const [options, file, rest] = splitNodeArgs(c.args);
+    // Only a new configuration (params set, still empty) opens without a file; an older bare `node`
+    // stays a plain command rather than failing validation. `node --test` and `node -e …` run none.
+    if (!file && (c.args.length || !c.params)) return null;
+    return {
+      ...(c.command !== "node" ? { interpreter: c.command } : {}),
+      nodeOptions: formatArgs(options),
+      file: file ?? "",
+      arguments: formatArgs(rest),
+    };
+  },
+};
+
 const BUN_COMMANDS = ["run", "test"];
 
 const bun: RunConfigTypeContribution = {
@@ -530,6 +609,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   shell,
   program,
   npm,
+  node,
   bun,
   gradle,
   maven,
@@ -715,6 +795,8 @@ export function newConfigOfType(
     local: true,
     ...(folder ? { folder } : {}),
   };
+  // A new Shell Script runs in a terminal, as IDEA's "Execute in the terminal" does by default.
+  if (type.id === "shell") base.emulateTerminal = true;
   const copied: Partial<RunConfig> = {};
   if (template) {
     for (const key of TEMPLATE_KEYS) {

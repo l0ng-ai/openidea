@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { useMemo } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction } from "@/platform/actions";
@@ -6,6 +7,7 @@ import { CLEAR_COLOR, _setSchemeSource, resolvedAttribute } from "@/platform/col
 import { setLocale } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS } from "../model/schema";
+import { languagePageId } from "../pages/editor/colorSchemeMeta";
 import { openSettings, stage, stagedValue, useSettingsDialog } from "../model/staging";
 import { PageContext } from "../components/context";
 import { COLOR_SCHEME_PAGES } from "../pages/editor/colorScheme";
@@ -31,15 +33,17 @@ const run = (name: string) =>
   act(async () => {
     await executeAction(`editor.colorScheme.${name}`);
   });
-const schemePage = (id: string) => {
+function SchemePage({ id }: { id: string }) {
   const page = COLOR_SCHEME_PAGES.find((p) => p.id === id)!;
   const Page = page.component!;
-  render(
-    <PageContext.Provider value={{ pageId: page.id, scope: "project" }}>
+  const value = useMemo(() => ({ pageId: id, scope: "project" as const }), [id]);
+  return (
+    <PageContext.Provider value={value}>
       <Page />
-    </PageContext.Provider>,
+    </PageContext.Provider>
   );
-};
+}
+const schemePage = (id: string) => render(<SchemePage id={id} />);
 
 beforeAll(() => preloadBuiltinPage("editor.colorScheme"));
 beforeEach(() => {
@@ -64,10 +68,10 @@ describe("scheme actions", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Applied 16 values; skipped 2");
     expect(Object.values(useSettingsDialog.getState().staged).every((s) => s.scope === "global")).toBe(true);
     await run("export");
-    expect(mocks.write).toHaveBeenCalledWith("/schemes/export.icls", expect.any(Array));
-    expect(new TextDecoder().decode(new Uint8Array(mocks.write.mock.calls[0]![1]))).toContain(
-      'name="Forest &amp; Moss"',
-    );
+    expect(mocks.write).toHaveBeenCalledWith("/schemes/export.icls", expect.any(String));
+    expect(
+      new TextDecoder().decode(Uint8Array.from(atob(mocks.write.mock.calls[0]![1]), (c) => c.charCodeAt(0))),
+    ).toContain('name="Forest &amp; Moss"');
     mocks.confirm.mockResolvedValueOnce(false);
     await run("delete");
     expect(value("colorScheme")).toBe(id);
@@ -88,7 +92,7 @@ describe("scheme actions", () => {
       await executeAction("editor.colorScheme.export", "/chosen/custom-export.icls");
     });
     expect(mocks.save).not.toHaveBeenCalled();
-    expect(mocks.write).toHaveBeenCalledWith("/chosen/custom-export.icls", expect.any(Array));
+    expect(mocks.write).toHaveBeenCalledWith("/chosen/custom-export.icls", expect.any(String));
   });
 
   it("supports cancel, keep both and overwrite collisions", async () => {
@@ -191,6 +195,20 @@ describe("Julia scheme attributes", () => {
     expect(screen.getByRole("treeitem", { name: "Class name", selected: true })).toBeInTheDocument();
     act(() => fireEvent.click(within(preview).getByText("@show")));
     expect(screen.getByRole("treeitem", { name: "Metadata", selected: true })).toBeInTheDocument();
+  });
+});
+
+describe("C/C++ scheme attributes", () => {
+  it("previews C++ namespaces and standard-library symbols on their own page", () => {
+    expect(languagePageId("C/C++")).toBe("editor.colorScheme.c-cpp");
+    schemePage("editor.colorScheme.c-cpp");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText("app")));
+    expect(screen.getByRole("treeitem", { name: "Package reference", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(within(preview).getByText("cout")));
+    expect(screen.getByRole("treeitem", { name: "Predefined symbol", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(within(preview).getByText("size_t")));
+    expect(screen.getByRole("treeitem", { name: "Predefined type", selected: true })).toBeInTheDocument();
   });
 });
 

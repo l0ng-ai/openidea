@@ -1,4 +1,5 @@
 /** Menus of the Database tool window, laid out like IDEA's (New ▸, Copy/Paste ▸, SQL Scripts ▸ …). */
+import { choosePath } from "@/platform/choosePath";
 import type { MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { fileSourceName, parseSourceUrl } from "./model";
@@ -32,8 +33,7 @@ const act = (
 const sep: MenuItem = { kind: "separator" };
 
 async function sqliteFromFile() {
-  const { open } = await import("@/platform/dialog");
-  const file = await open({ multiple: false, directory: false, title: "SQLite Database File" });
+  const file = await choosePath({ directory: false, title: "SQLite Database File" });
   if (typeof file === "string") openSourceDialog(null, { driver: "sqlite", file, name: fileSourceName(file) });
 }
 
@@ -107,6 +107,12 @@ function dumpItems(n: DbNode, restore: boolean): MenuItem[] {
 function importExport(items: MenuItem[]): MenuItem[] {
   return items.length ? [{ label: "Import/Export", submenu: items }] : [];
 }
+
+/** Diagrams ▸ Show Diagram / Show Diagram Popup, of the tree's selection when it holds `n`. */
+const diagrams = (n: DbNode): MenuItem => ({
+  label: "Diagrams",
+  submenu: [act("db.showDiagram", n), act("db.showDiagramPopup", n)],
+});
 
 /** Context menu of a tree node (`null`: the empty area). */
 export function nodeMenu(n: DbNode | null): MenuItem[] {
@@ -198,6 +204,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         sqlScripts(n, false),
         ...(n.kind === "schema" ? [act("db.compareSchemas", n)] : []),
         ...importExport(dumpItems(n, true)),
+        ...(n.kind === "schema" || ["tables", "views", "materializedViews"].includes(n.folder) ? [diagrams(n)] : []),
         ...(n.kind === "schema" ? [sep, drop] : []),
       ];
     case "table":
@@ -229,6 +236,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         navigation([act("db.goToDdl", n)]),
         sep,
         sqlScripts(n, true),
+        ...(n.kind === "table" ? [diagrams(n)] : []),
         ...(n.kind === "table" && !view
           ? [
               {

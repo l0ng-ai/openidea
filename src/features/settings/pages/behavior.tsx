@@ -964,6 +964,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             label: "Adjust colors for red-green vision deficiency",
             hint: "For protanopia and deuteranopia.",
           },
+          {
+            kind: "toggle",
+            key: "appearance.reduceMotion",
+            label: "Reduce motion",
+            hint: "Turns off animations and transitions, such as spinners and popup fades. Always on when the system asks for reduced motion.",
+          },
         ],
       },
       {

@@ -77,7 +77,7 @@ pub fn prepare(
     env: Option<&str>,
     base_dir: Option<&Path>,
 ) -> IdeResult<PreparedRequest> {
-    let resolver = Resolver { file_vars, env: envs.variables(env) };
+    let resolver = Resolver { file_vars, env: envs.variables(env), env_first: env.is_some() };
     let mut missing = BTreeSet::new();
     let url = resolver.substitute(&raw.block.url, &mut missing);
     let headers: Vec<(String, String)> =
@@ -288,6 +288,18 @@ mod tests {
         assert_eq!(p.headers, vec![("Authorization".into(), "Bearer abc".into())]);
         // Included files are inserted verbatim (no substitution inside them).
         assert_eq!(p.body.as_deref(), Some("{\"id\": \"{{id}}\"}"));
+    }
+
+    #[test]
+    fn selected_environment_overrides_file_variables() {
+        let f = parse("@host = localhost:8080\n@path = {{host}}/v1\nGET http://{{path}}/x?env={{name}}\n");
+        let envs =
+            Environments::from_json(r#"{"$shared":{"host":"shared","name":"none"},"dev":{"host":"dev.test"}}"#, "")
+                .unwrap();
+        let url = |env| prepare(&f.requests[0], &f.variables, &envs, env, None).unwrap().url;
+        assert_eq!(url(Some("dev")), "http://dev.test/v1/x?env=none");
+        // No environment: the file's value wins over `$shared`.
+        assert_eq!(url(None), "http://localhost:8080/v1/x?env=none");
     }
 
     #[test]

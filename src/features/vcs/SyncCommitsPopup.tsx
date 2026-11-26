@@ -14,6 +14,7 @@ import { notifications } from "@/workbench/contributions";
 import { Button, Icon, List, Popup, Spinner, T, firstSelectable } from "@/ui";
 import type { PopupAnchor } from "@/ui/Popup";
 import { activeRepository } from "./activeRepository";
+import { branchWidgetAnchor, useBranchesPopup } from "./branchesPopupState";
 import { showChangesDiff, toLogChanges } from "./logChanges";
 import { formatTime } from "./model";
 import { currentRepoRoot, unfetchedBranch, useVcs } from "./store";
@@ -87,7 +88,7 @@ function syncSource(repo: string | null, info: BranchInfo, direction?: SyncDirec
 export function SyncCommitsPopupHost() {
   const source = useSyncCommits((s) => s.source);
   if (!source) return null;
-  const anchor: PopupAnchor = document.querySelector("[data-branches-widget]") ?? {
+  const anchor: PopupAnchor = branchWidgetAnchor(useBranchesPopup.getState().from) ?? {
     x: window.innerWidth / 2 - 280,
     y: 60,
   };

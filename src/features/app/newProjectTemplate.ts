@@ -76,6 +76,47 @@ export function isVisible(field: Field, values: Values): boolean {
   return Object.entries(field.visible).every(([id, allowed]) => allowed.includes(values[id] ?? ""));
 }
 
+/**
+ * The project folder's name: the generator's `directory` template (a .NET solution's name) over
+ * the values the form sends — a hidden field falls back to its default, as `ide-scaffold` does —
+ * or the project name.
+ */
+export function projectFolder(
+  directory: string | null | undefined,
+  fields: readonly Field[],
+  name: string,
+  edited: Values,
+): string {
+  if (!directory) return name.trim();
+  const shown = effectiveValues(fields, name, edited);
+  const sent = Object.fromEntries(
+    Object.entries(edited).filter(([id]) => {
+      const field = fields.find((f) => f.id === id);
+      return !field || isVisible(field, shown);
+    }),
+  );
+  return render(directory, effectiveValues(fields, name, sent)).trim() || name.trim();
+}
+
+/** `a` ≥ `b`, comparing the numeric parts of dotted versions (`ide-scaffold`'s `version_at_least`). */
+export function versionAtLeast(a: string, b: string): boolean {
+  const parts = (s: string) => {
+    const out: number[] = [];
+    for (const p of s.split(/[.+-]/)) {
+      const digits = /^\d+/.exec(p);
+      if (!digits) break;
+      out.push(Number(digits[0]));
+    }
+    return out;
+  };
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d) return d > 0;
+  }
+  return true;
+}
+
 /** Why `value` is not acceptable for `field`, or null. */
 export function fieldError(field: Field, value: string): string | null {
   if (field.kind.type !== "text" || !field.kind.pattern) return null;

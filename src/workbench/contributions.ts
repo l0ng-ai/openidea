@@ -18,6 +18,7 @@ import {
   type RefObject,
 } from "react";
 import type {
+  BuildKind,
   CommitSelection,
   ConsoleRule,
   FileMatches,
@@ -27,6 +28,8 @@ import type {
   RunId,
   SymbolKind,
 } from "@/bindings";
+import { getContext } from "@/platform/context";
+import { getAction } from "@/platform/actions";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -91,6 +94,11 @@ export interface ToolWindowContribution {
    * so it isn't reopened with the project.
    */
   sessionContent?: boolean;
+  /** Accepts pointer drags dropped onto this window's stripe button (even while hidden). */
+  onStripeDrop?: {
+    accepts(type: string, data: DragData): boolean;
+    drop(data: DragData): void;
+  };
 }
 
 export type StatusAlign = "left" | "right";
@@ -150,10 +158,23 @@ export interface EditorKindContribution {
    * tab keeps running; `useEditorShown` tells it whether it is the one shown.
    */
   keepAlive?: boolean;
+  /**
+   * Its input owns one live view (e.g. a terminal session's DOM + PTY) and cannot appear in
+   * two panes at once: splitting or "Open in Opposite Group" opens a fresh input from
+   * `splitInput`, or moves the tab instead.
+   */
+  singleton?: boolean;
+  /** Fresh input opened when splitting a `singleton` tab (e.g. a new shell in the same cwd). */
+  splitInput?(input: EditorInput): EditorInput | Promise<EditorInput | null> | null;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
   /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
   navigationInput?(input: EditorInput): EditorInput;
+  /**
+   * Whether Back/Forward can still navigate to this input (`open`: a tab with its key is open).
+   * Defaults to true; return false to skip deleted tasks or closed ephemeral sessions.
+   */
+  canNavigate?(input: EditorInput, open: boolean): boolean;
   /**
    * "Open in New Window" on its tabs: moves the tab to a lightweight window of this project
    * (`EditorService.openInWindow`) with whatever state it carries. False when it stayed here.
@@ -289,6 +310,8 @@ export interface ServiceProviderContribution {
   /** Toolbar buttons for a selected node of this provider. */
   actions?(item: ServiceTreeItem): ServiceItemAction[];
   menu?(item: ServiceTreeItem): MenuItem[];
+  /** The service a node stands for, as other contributors see it (plugins' Services menus); null for groups. */
+  context?(item: ServiceTreeItem): ServiceContext | null;
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
   /** Jump to Source (F4 / ⌘↓); a provider without it activates the node instead. */
@@ -305,6 +328,43 @@ export interface ServiceProviderContribution {
   addMenu?(): MenuItem[];
   /** Optional sibling display ordering; does not move services between groups. */
   reorder?: TreeReorder<ServiceTreeItem>;
+}
+
+/** A selected Services node as contributors outside its provider see it. */
+export interface ServiceContext {
+  /** The provider's id: `run`, `docker`. */
+  provider: string;
+  /** Stable within the provider: a run configuration's id, a container's id. */
+  id: string;
+  /** `spring-boot`, `application`, … (a run configuration's kind), `docker-container`. */
+  kind: string;
+  name: string;
+  running: boolean;
+  /** When a run configuration backs the service. */
+  runConfigurationId?: string;
+}
+
+/**
+ * Entries other features add to the Services tree's context menu and toolbar for the
+ * selected services (all of which have a {@link ServiceContext}).
+ */
+export interface ServiceSelectionContribution {
+  id: string;
+  menu?(services: ServiceContext[]): MenuItem[];
+  actions?(services: ServiceContext[]): ServiceItemAction[];
+}
+
+const serviceSelectionItems = new Map<string, ServiceSelectionContribution>();
+
+export function registerServiceSelectionItems(c: ServiceSelectionContribution): () => void {
+  serviceSelectionItems.set(c.id, c);
+  return () => {
+    if (serviceSelectionItems.get(c.id) === c) serviceSelectionItems.delete(c.id);
+  };
+}
+
+export function serviceSelectionContributions(): ServiceSelectionContribution[] {
+  return [...serviceSelectionItems.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export const useServiceProviders = create<{ providers: Map<string, ServiceProviderContribution> }>(() => ({
@@ -551,6 +611,7 @@ export async function resolveFileEditor(path: string): Promise<FileEditorResolut
         );
     };
     try {
+      // oxlint-disable-next-line no-await-in-loop -- providers are asked in order; the first to resolve wins and acquires resources
       const input = await p.resolve(path, {
         onAdmission: (commit, release) => acquisitions.push({ commit, rollback: release }),
       });
@@ -567,6 +628,7 @@ export async function resolveFileEditor(path: string): Promise<FileEditorResolut
     } catch (e) {
       console.warn(`file editor provider ${p.id} failed`, e);
     }
+    // oxlint-disable-next-line no-await-in-loop -- a failed provider's acquisitions must be rolled back before the next one runs
     await rollback();
   }
   return null;
@@ -626,6 +688,7 @@ export async function openFileExternally(path: string): Promise<boolean> {
   );
   for (const handler of handlers) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- handlers are asked in order; the first one to take the file wins
       if (handler.matches(path) && (await handler.open(path))) return true;
     } catch (e) {
       console.warn(`external file opener ${handler.id} failed`, e);
@@ -641,6 +704,7 @@ export async function openFileExternally(path: string): Promise<boolean> {
  * view stays alive.
  */
 export interface TextEditorWrapperContribution {
+  keepAlive?: boolean;
   id: string;
   matches(path: string): boolean;
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
@@ -712,6 +776,15 @@ export const OWNS_FILE_DROP = { "data-owns-file-drop": "" } as const;
 // Services implemented by one feature and consumed by others. The provider
 // calls `provide*` during activation; consumers call through the accessor.
 
+export type EditorDropEdge = "left" | "right" | "top" | "bottom";
+
+export interface EditorDropTarget {
+  paneId: string;
+  zone: EditorDropEdge | "center";
+  index?: number;
+  pinned?: boolean;
+}
+
 export interface OpenOptions {
   /** Select / reveal this range (0-based line, UTF-16 col). */
   selection?: { line: number; col: number; endLine?: number; endCol?: number };
@@ -719,8 +792,14 @@ export interface OpenOptions {
   preview?: boolean;
   /** Open to the side (split right). */
   side?: boolean;
+  /** Split `pane` (or the active pane) at this edge and open in the new group. */
+  edge?: EditorDropEdge;
   /** Open in this editor pane, in a tab of its own even when another pane shows the file. */
   pane?: string;
+  /** 0-based insertion index in the target pane's tab strip. */
+  index?: number;
+  /** Open as a pinned tab (e.g. dropped onto the pinned tabs row). */
+  pinned?: boolean;
   focus?: boolean;
   /** Open in the text editor even when a file editor provider claims the file (SVG as text). */
   asText?: boolean;
@@ -769,8 +848,8 @@ export interface EditorService {
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
   tabInput?(paneId: string, tabId: string): EditorInput | null;
-  /** Input of the active tab (any kind), if any. */
-  activeInput?(): EditorInput | null;
+  /** Input of the active tab, optionally restricted to the replaceable preview tab. */
+  activeInput?(options?: { previewOnly?: boolean }): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
   onActiveInputChange?(fn: (input: EditorInput | null) => void): () => void;
   /**
@@ -794,6 +873,8 @@ export interface EditorService {
   forgetSavedTabs?(): void;
   /** Writes them again when a close is cancelled after {@link forgetSavedTabs}. */
   keepSavedTabs?(): void;
+  /** Flushes the open editor tabs, splits and caret positions to storage immediately. */
+  flushSession?(): void;
   /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
   documentHistory?(command: "undo" | "redo"): boolean;
   /** Go to Declaration's chooser ("Choose Declaration of `name`") over `targets`, below `anchor`. */
@@ -1044,13 +1125,15 @@ export function registerCommitCheckProvider(p: CommitCheckProvider): () => void 
 }
 
 /**
- * Handles a pointer drag dropped on the editor content: features register handlers for
- * their own drag types (e.g. an agent task dragged from the tool window) without the
- * editor depending on them. The editor shows its center drop-zone for accepted types.
+ * Handles a pointer drag dropped on the editor area (a tab strip, a pane, or an edge split):
+ * features register handlers for their own drag types (e.g. an agent task or a terminal tab
+ * dragged from a tool window) without the editor depending on them.
  */
 export interface EditorDropHandler {
-  accepts(type: string): boolean;
-  drop(data: DragData): void;
+  accepts(type: string, data?: DragData): boolean;
+  /** Whether dropping near an editor pane's edge splits off a new group on that side. */
+  allowSplit?: boolean;
+  drop(data: DragData, target?: EditorDropTarget): void;
 }
 
 const editorDropHandlers: EditorDropHandler[] = [];
@@ -1064,16 +1147,21 @@ export function registerEditorDropHandler(handler: EditorDropHandler): () => voi
   };
 }
 
-/** Whether any registered handler takes this drag type. */
-export function acceptsEditorDrop(type: string): boolean {
-  return editorDropHandlers.some((h) => h.accepts(type));
+/** Whether any registered handler takes this drag. */
+export function acceptsEditorDrop(type: string, data?: DragData): boolean {
+  return editorDropHandlers.some((h) => h.accepts(type, data));
 }
 
-/** Hands a drag dropped on editor content to its registered handler, if any. */
-export function dropOnEditor(data: DragData): boolean {
-  const handler = editorDropHandlers.find((h) => h.accepts(data.type));
+/** Whether the handler taking this drag supports edge-split drop zones. */
+export function editorDropAllowsSplit(type: string, data?: DragData): boolean {
+  return !!editorDropHandlers.find((h) => h.accepts(type, data))?.allowSplit;
+}
+
+/** Hands a drag dropped on the editor to its registered handler, if any. */
+export function dropOnEditor(data: DragData, target?: EditorDropTarget): boolean {
+  const handler = editorDropHandlers.find((h) => h.accepts(data.type, data));
   if (!handler) return false;
-  handler.drop(data);
+  handler.drop(data, target);
   return true;
 }
 
@@ -1527,6 +1615,78 @@ export function menuGroupItems(menu: ContextMenuId, ctx: MenuGroupContext): Menu
   return out;
 }
 
+export interface GitMenuContext {
+  /** The file or directory the menu targets (one path, or the selection). */
+  paths: string[];
+  /** Whether any target is a directory (Git menus of folders scope some actions). */
+  dirs?: boolean[];
+  /** Show file-revision actions (Compare with Revision…, Show Current Revision): one file only. */
+  file?: boolean;
+  /** Show Add to .gitignore: the selection excludes the project root (which cannot be ignored). */
+  ignore?: boolean;
+  editorSelection?: boolean;
+}
+
+/**
+ * Git › shared by the editor, editor tab and project view menus (IDEA keeps the
+ * per-menu groups in sync). Items are plain action rows, so unregistered actions
+ * disappear and `vcsAvailable` gates enablement on its own.
+ */
+export function gitMenuItems({ paths, dirs, file, ignore, editorSelection }: GitMenuContext): MenuItem[] {
+  const arg = paths.length === 1 ? paths[0]! : paths;
+  const some = paths.length > 0;
+  const single = paths.length === 1 ? paths[0]! : null;
+  // Unregistered actions drop out (the project view's submenu() never shows an empty menu).
+  const act = (action: string, label?: string): MenuItem | null =>
+    getAction(action) ? { kind: "action", action, arg, ...(label ? { label } : {}) } : null;
+  const action = (id: string, label?: string): MenuItem | null =>
+    getAction(id) ? { kind: "action", action: id, ...(label ? { label } : {}) } : null;
+  const nonNull = (items: (MenuItem | null)[]): MenuItem[] => items.filter((i): i is MenuItem => i !== null);
+  const ignoreSubmenu = ignore
+    ? nonNull([act("vcs.ignoreShared", ".gitignore"), act("vcs.ignoreLocal", ".git/info/exclude")])
+    : [];
+  const github = nonNull([
+    action("github.pullRequests"),
+    action("github.createPullRequest"),
+    action("github.checkoutPullRequest"),
+    action("github.openInBrowser"),
+  ]);
+  const items: (MenuItem | null)[] = [
+    single && !dirs?.[0] ? act("vcs.commit", "Commit File…") : act("vcs.commit", "Commit…"),
+    act("vcs.addToVcs", "Add"),
+    ...(ignoreSubmenu.length ? [{ label: "Add to .gitignore", submenu: ignoreSubmenu } as MenuItem] : []),
+    { kind: "separator" },
+    ...(file ? ([act("vcs.annotate", "Annotate with Git Blame")] as (MenuItem | null)[]) : []),
+    act("vcs.showDiff", "Show Diff"),
+    ...(some ? ([act("vcs.compareWithBranch", "Compare with Branch…")] as (MenuItem | null)[]) : []),
+    ...(file ? ([act("vcs.compareWithRevision", "Compare with Revision…")] as (MenuItem | null)[]) : []),
+    ...(some ? ([act("vcs.showHistory", "Show History")] as (MenuItem | null)[]) : []),
+    ...(file ? ([act("vcs.showCurrentRevision", "Show Current Revision")] as (MenuItem | null)[]) : []),
+    ...(editorSelection ? [action("vcs.showHistoryForSelection", "Show History for Selection")] : []),
+    act("vcs.rollback", "Rollback…"),
+    { kind: "separator" },
+    action("vcs.push", "Push…"),
+    act("vcs.pull", "Pull…"),
+    action("vcs.fetch", "Fetch"),
+    { kind: "separator" },
+    act("vcs.merge", "Merge…"),
+    act("vcs.rebase", "Rebase…"),
+    { kind: "separator" },
+    action("vcs.branches", "Branches…"),
+    action("vcs.newBranch", "New Branch…"),
+    action("vcs.newTag", "New Tag…"),
+    action("vcs.resetHead", "Reset HEAD…"),
+    { kind: "separator" },
+    action("vcs.stash", "Stash Changes…"),
+    action("vcs.unstash", "Unstash Changes…"),
+    { kind: "separator" },
+    ...(github.length ? [{ label: "GitHub", icon: "github", submenu: github } as MenuItem] : []),
+    action("vcs.manageRemotes", "Manage Remotes…"),
+    action("vcs.clone", "Get from Version Control…"),
+  ];
+  return items.filter((i): i is MenuItem => i !== null);
+}
+
 // Project view selection, for actions run outside the project view (Find Action,
 // main menu) right after it had focus. Provided by features/project-tree.
 let projectSelection: (() => string[]) | undefined;
@@ -1567,6 +1727,11 @@ export interface ProjectViewLead {
  * editor takes over (focus, tab switch). `null` = the editor is the context.
  */
 export const useProjectViewLead = create<{ lead: ProjectViewLead | null }>(() => ({ lead: null }));
+
+/** The Project view lead while the editor does not have focus. */
+export function projectViewContextLead(): ProjectViewLead | null {
+  return getContext().editorFocus ? null : useProjectViewLead.getState().lead;
+}
 
 export function setProjectViewLead(lead: ProjectViewLead | null) {
   const prev = useProjectViewLead.getState().lead;
@@ -1622,6 +1787,13 @@ export interface RunExecutorContribution {
   supports(config: RunConfig): boolean;
   /** Plans the launch; null when it can't run (the executor has said why). */
   prepare(config: RunConfig): Promise<ExecutorLaunch | null>;
+  /**
+   * The launch starts under the debugger (a plugin's "Debug with …"): no Run before-launch
+   * pass of its own, and `finished` / `beforeStop` are not called.
+   */
+  debug?: boolean;
+  /** `prepare` handles a configuration on a run target itself (no container check before it). */
+  checksTarget?: boolean;
 }
 
 export const useRunExecutors = create<{ executors: Map<string, RunExecutorContribution> }>(() => ({
@@ -1788,14 +1960,17 @@ export function runUndoHandlers(command: "undo" | "redo", focused: Element): boo
   return [...undoHandlers].reverse().some((h) => h(command, focused));
 }
 
-/** Registers `nav` (the latest render's) for `toolWindow` while the calling view is mounted. */
-export function useOccurrenceNavigator(toolWindow: string, nav: OccurrenceNavigator["go"]) {
+/** Registers `nav` (the latest render's) for `toolWindow` (none when `null`) while the calling view is mounted. */
+export function useOccurrenceNavigator(toolWindow: string | null, nav: OccurrenceNavigator["go"]) {
   const latest = useRef(nav);
   useEffect(() => {
     latest.current = nav;
   });
   useEffect(
-    () => registerOccurrenceNavigator(toolWindow, { go: (dir, focus) => latest.current(dir, focus) }),
+    () =>
+      toolWindow
+        ? registerOccurrenceNavigator(toolWindow, { go: (dir, focus) => latest.current(dir, focus) })
+        : undefined,
     [toolWindow],
   );
 }
@@ -1916,6 +2091,11 @@ export interface RunAnythingProvider {
    * synchronous): Markdown offers run icons for such lines in code blocks.
    */
   accepts?(line: string): boolean;
+  /**
+   * For providers whose entries arrive later (a plugin's answer): `listener` is called when
+   * `items` would return something new, so the open popup asks again. Returns the unsubscribe.
+   */
+  subscribe?(listener: () => void): () => void;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();
@@ -2304,4 +2484,26 @@ export function registerSearchCategory(category: SearchCategory): () => void {
     searchCategoryProviders.delete(category.id);
     searchCategoriesChanged();
   };
+}
+
+export interface BuildCompletedEvent {
+  kind: "compileFile" | BuildKind;
+  file: string | null;
+  system: string;
+  userInitiated: boolean;
+}
+
+const buildCompletedListeners = new Set<(event: BuildCompletedEvent) => void>();
+
+/** Subscribes to successful Build / Rebuild / Recompile completions across workbench features. */
+export function onBuildCompleted(listener: (event: BuildCompletedEvent) => void): () => void {
+  buildCompletedListeners.add(listener);
+  return () => {
+    buildCompletedListeners.delete(listener);
+  };
+}
+
+/** Publishes a successful build completion to listeners (debugger HotSwap, server deployment sync…). */
+export function notifyBuildCompleted(event: BuildCompletedEvent): void {
+  notifyEach(buildCompletedListeners, (listener) => listener(event), "build completed");
 }

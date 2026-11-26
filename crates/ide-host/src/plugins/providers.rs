@@ -265,8 +265,20 @@ use ide_plugin::{
     ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending, PluginHover,
     PluginInlayHint, ProviderDocument, Runtime, SemanticToken,
 };
+use std::collections::BTreeSet;
 use std::sync::Weak;
 use std::time::{Duration, Instant};
+
+/// What the plugins answered for completion in the editor.
+#[derive(Debug, Default)]
+pub(crate) struct EditorCompletion {
+    /// Some plugin completes in the document, so an empty answer still asks again on typing.
+    pub covered: bool,
+    /// Items with the id of the plugin that gave them.
+    pub items: Vec<(String, CompletionItem)>,
+    /// Plugins that marked their items incomplete (API 1.16 `completion-list-provider`).
+    pub incomplete: BTreeSet<String>,
+}
 
 /// How long a superseded inline completion may take to return after its
 /// request was cancelled before it is interrupted.
@@ -333,12 +345,20 @@ impl PluginHost {
         owner: Option<&str>,
         f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> Vec<(Arc<LoadedPlugin>, R)> {
+        self.document_calls_where(kind, doc, |id| owner.is_none_or(|o| o == id), f)
+    }
+    /// [`Self::document_calls`] for the plugins whose id `keep` accepts.
+    pub(super) fn document_calls_where<R: Send + 'static>(
+        &self,
+        kind: ProviderKind,
+        doc: &ProviderDocument,
+        keep: impl Fn(&str) -> bool,
+        f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> Vec<(Arc<LoadedPlugin>, R)> {
         let plugins = self
             .provider_plugins(kind, &doc.language)
             .into_iter()
-            .filter(|p| {
-                p.dev_root.as_ref().is_none_or(|r| doc.path.starts_with(r)) && owner.is_none_or(|id| p.id() == id)
-            })
+            .filter(|p| p.dev_root.as_ref().is_none_or(|r| doc.path.starts_with(r)) && keep(p.id()))
             .collect();
         self.edit_calls_plugins(plugins, f)
     }
@@ -413,41 +433,48 @@ impl PluginHost {
         at: ide_core::Pos,
         trigger: Option<&str>,
     ) -> Vec<(String, CompletionItem)> {
-        self.provide_completion_for_editor(doc, at, trigger).1
+        self.provide_completion_for_editor(doc, at, trigger, None).items
     }
 
+    /// Completion from the plugins for the editor; with `only`, from those plugins alone (the ones
+    /// whose list was incomplete, asked again while the user types on).
     pub(crate) fn provide_completion_for_editor(
         &self,
         doc: &ProviderDocument,
         at: ide_core::Pos,
         trigger: Option<&str>,
-    ) -> (bool, Vec<(String, CompletionItem)>) {
+        only: Option<&BTreeSet<String>>,
+    ) -> EditorCompletion {
         // An injection-capable outer document (e.g. SQL embedded in text) may complete at other
         // positions even when `at` is outside an injection, so avoid marking document-wide backoff.
         let mut covered = self.has_document_providers(ProviderKind::Injections, doc);
-        let items = self
-            .feature_documents(doc, Some(at))
-            .into_iter()
-            .flat_map(|(doc, bounds)| {
-                if self.has_document_providers(ProviderKind::Completion, &doc) {
-                    covered = true;
+        let mut incomplete = BTreeSet::new();
+        let mut items = Vec::new();
+        for (doc, bounds) in self.feature_documents(doc, Some(at)) {
+            if self.has_document_providers(ProviderKind::Completion, &doc) {
+                covered = true;
+            }
+            let (d, t) = (Arc::new(doc.clone()), trigger.map(str::to_owned));
+            let answers = self.document_calls_where(
+                ProviderKind::Completion,
+                &doc,
+                |id| only.is_none_or(|ids| ids.contains(id)),
+                move |rt, timeout| rt.provide_completion_list(&d, at, t.as_deref(), timeout),
+            );
+            for (p, (list, more)) in answers {
+                if more {
+                    incomplete.insert(p.id().to_owned());
                 }
-                let (d, t) = (Arc::new(doc.clone()), trigger.map(str::to_owned));
-                self.document_calls(ProviderKind::Completion, &doc, move |rt, timeout| {
-                    rt.provide_completion(&d, at, t.as_deref(), timeout)
-                })
-                .into_iter()
-                .flat_map(|(p, items)| items.into_iter().map(move |i| (p.id().to_owned(), i)))
-                .filter_map(move |(p, mut i)| {
+                items.extend(list.into_iter().filter_map(|mut i| {
                     if i.replace.is_some_and(|r| !bounds.contains(r)) {
                         return None;
                     }
                     i.additional_edits.retain(|e| bounds.contains(e.range));
-                    Some((p, i))
-                })
-            })
-            .collect();
-        (covered, items)
+                    Some((p.id().to_owned(), i))
+                }));
+            }
+        }
+        EditorCompletion { covered, items, incomplete }
     }
 
     pub fn provide_code_actions(

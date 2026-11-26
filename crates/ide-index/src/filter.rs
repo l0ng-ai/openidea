@@ -305,6 +305,18 @@ impl PathFilter {
         builder.build().flatten().filter(|e| e.file_type().is_some_and(|t| t.is_dir())).map(|e| e.into_path()).collect()
     }
 
+    /// The folders directly in `dir` that the index would walk.
+    pub(crate) fn child_dirs(&self, dir: &Path) -> Vec<PathBuf> {
+        let Some(mut builder) = self.walker(dir) else { return Vec::new() };
+        builder
+            .max_depth(Some(1))
+            .build()
+            .flatten()
+            .filter(|e| e.depth() == 1 && e.file_type().is_some_and(|t| t.is_dir()))
+            .map(|e| e.into_path())
+            .collect()
+    }
+
     pub(crate) fn directories_with_names(&self, names: &HashSet<&OsStr>) -> Vec<PathBuf> {
         let matches = parking_lot::Mutex::new(Vec::new());
         for root in self.roots() {

@@ -14,6 +14,7 @@ import {
   buildRepositoryBranchTree,
   filterBranchTree,
   isFavoriteBranch,
+  mergedRefTooltip,
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, mergedBranchMenu, showTagContextMenu } from "../branchMenu";
@@ -364,23 +365,17 @@ export function BranchesPanel() {
                 : undefined;
             return branchDetail(n, availableRepositories.length, sync);
           }}
+          getTooltip={(n) => mergedRefTooltip(n, (r) => repoName(branchRoots[r] ?? r))}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
-            // IDEA: double click (or Enter) switches the log to that ref, or to every
-            // selected one when it is part of a multi-selection; checking out stays in the context menu.
+            // Double click (or Enter) filters the log to that branch, or to every selected one
+            // in a multi-selection; checking out stays in the context menu. Only the branch filter
+            // changes: repositories without the branch contribute no commits, and leaving the
+            // repository filter alone keeps every repository listed here, so clearing the branch
+            // filter restores the whole log.
             if (!n.ref) return;
-            if (n.repos) {
-              const sel = selected.has(n.key) ? [...new Set(targets.map((r) => r.ref))] : [n.ref];
-              setLogFilters({
-                branches: sel,
-                repositories: n.repos.length < availableRepositories.length ? n.repos : [],
-              });
-              return;
-            }
-            const repo = n.repo ?? scopedRepo;
-            const sel = selected.has(n.key) ? targets.filter((r) => r.repo === repo).map((r) => r.ref) : [n.ref];
-            setLogFilters({ branches: sel, repositories: repo ? [repo] : filters.repositories });
+            setLogFilters({ branches: selected.has(n.key) ? [...new Set(targets.map((r) => r.ref))] : [n.ref] });
           }}
           onContextMenu={(n, _sel, e) => {
             if (readOnly) {

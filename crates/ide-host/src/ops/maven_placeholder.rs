@@ -4,7 +4,7 @@
 //! poms the nearest pom declares itself are followed from there; a parent outside
 //! that walk that no pom declares is not.
 
-use super::doc::blocking;
+use super::blocking;
 use crate::Host;
 use ide_build::maven;
 use ide_core::{DocId, Location, Pos};

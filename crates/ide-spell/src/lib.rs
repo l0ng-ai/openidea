@@ -216,7 +216,7 @@ impl CustomDictionary {
 }
 
 /// The `.aff` next to a Hunspell `.dic` (`de_DE.dic` → `de_DE.aff`), if there is one.
-fn affix_file(path: &Path) -> Option<PathBuf> {
+pub fn affix_file(path: &Path) -> Option<PathBuf> {
     if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dic")) {
         return None;
     }
@@ -289,10 +289,10 @@ impl Speller {
     /// (`checkpointer`, `serializers`) and `-ed` / `-ing` / `-able` forms of
     /// programming terms (`stringified`) pass too.
     pub fn is_correct(&self, word: &str) -> bool {
-        if let Some(base) = word.strip_suffix("'s") {
-            return self.is_correct(base);
-        }
         let lower = word.to_lowercase();
+        if let Some(base) = word.strip_suffix("'s") {
+            return self.user_word(&lower) || self.is_correct(base);
+        }
         self.listed(word, &lower) || self.agent_noun(&lower) || self.term_form(&lower)
     }
 
@@ -792,11 +792,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ide-spell-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dic = dir.join("team.dic");
-        std::fs::write(&dic, "2\nfrobnicate/S\nQuuxify\n").unwrap();
+        std::fs::write(&dic, "3\nfrobnicate/S\nQuuxify\nZorblax's\n").unwrap();
         let s = Speller::new(["Openidea"], std::slice::from_ref(&dic));
         assert!(s.is_correct("openidea"));
         assert!(s.is_correct("frobnicate"));
         assert!(s.is_correct("quuxify"));
+        assert!(s.is_correct("Zorblax's"));
         assert!(!s.is_correct("zorblax"));
         let _ = std::fs::remove_dir_all(dir);
     }

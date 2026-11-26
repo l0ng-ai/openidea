@@ -250,8 +250,13 @@ impl Handler for NoopHandler {
 
 type Pending = HashMap<i64, oneshot::Sender<Result<Value, RpcError>>>;
 
+enum Outgoing {
+    Message(Vec<u8>),
+    Flush(oneshot::Sender<()>),
+}
+
 struct Inner {
-    out: mpsc::UnboundedSender<Vec<u8>>,
+    out: mpsc::UnboundedSender<Outgoing>,
     pending: Mutex<Pending>,
     next_id: AtomicI64,
     /// Set once the transport is gone; new requests fail fast.
@@ -275,7 +280,7 @@ impl Inner {
         }
         let body = serde_json::to_vec(value).map_err(|e| RpcError::Protocol(e.to_string()))?;
         tracing::trace!(target: "ide_jsonrpc::wire", "--> {}", String::from_utf8_lossy(&body));
-        self.out.send(body).map_err(|_| RpcError::Closed)
+        self.out.send(Outgoing::Message(body)).map_err(|_| RpcError::Closed)
     }
 
     /// Fails every in-flight request and refuses new ones.
@@ -479,6 +484,20 @@ impl Peer {
         Self::start(reader, writer, handler, true, None, Framing::ContentLength, None)
     }
 
+    /// Like [`Peer::connect`], with diagnostics from a launcher sharing the stdout stream.
+    pub fn connect_with_output<R, W>(
+        reader: R,
+        writer: W,
+        handler: Arc<dyn Handler>,
+        on_output: impl Fn(String) + Send + Sync + 'static,
+    ) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::start(reader, writer, handler, true, None, Framing::ContentLength, Some(Arc::new(on_output)))
+    }
+
     /// [`connect`](Self::connect) with the given wire framing.
     pub fn connect_framed<R, W>(reader: R, writer: W, handler: Arc<dyn Handler>, framing: Framing) -> Self
     where
@@ -520,7 +539,7 @@ impl Peer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel();
         let (closed, _) = watch::channel(None);
         let inner = Arc::new(Inner {
             out: out_tx,
@@ -547,7 +566,14 @@ impl Peer {
                         body = out_rx.recv() => body,
                         _ = kill.cancelled() => None,
                     };
-                    let Some(body) = body else { break };
+                    let body = match body {
+                        Some(Outgoing::Message(body)) => body,
+                        Some(Outgoing::Flush(done)) => {
+                            let _ = done.send(());
+                            continue;
+                        }
+                        None => break,
+                    };
                     if let Err(e) = framing.write(&mut writer, &body).await {
                         tracing::debug!("jsonrpc write failed: {e}");
                         if let Some(inner) = weak.upgrade() {
@@ -704,6 +730,13 @@ impl Peer {
             msg["params"] = params;
         }
         self.inner.send_value(&msg)
+    }
+
+    /// Waits until previously queued messages have been written.
+    pub async fn flush(&self) -> Result<(), RpcError> {
+        let (tx, rx) = oneshot::channel();
+        self.inner.out.send(Outgoing::Flush(tx)).map_err(|_| RpcError::Closed)?;
+        rx.await.map_err(|_| RpcError::Closed)
     }
 
     /// Resolves when the connection closes (process exit or EOF), with the exit code if known.

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EditorSelection } from "@codemirror/state";
 import { EditorController, openFilePaths, useEditorStatus, useTabErrors, useTabs } from "./controller";
 import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
@@ -8,6 +9,7 @@ import { resetDistractionFree, setDistractionFree } from "@/workbench/distractio
 import * as contributions from "@/workbench/contributions";
 import {
   registerEditorKind,
+  registerMenuGroup,
   registerTextEditorWrapper,
   setProjectViewLead,
   useProjectViewLead,
@@ -542,6 +544,82 @@ describe("EditorController", () => {
     }
   });
 
+  it("passes the caret line and the selected line range to Copy Agent Reference", async () => {
+    const path = "/p/a.ts";
+    ctrl = new EditorController(createMemoryBackend({ [path]: "first\nsecond\nthird\n" }));
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    try {
+      for (const [selection, lines] of [
+        [{ anchor: 7 }, { from: 2, to: 2 }],
+        [
+          { anchor: 0, head: 13 },
+          { from: 1, to: 2 },
+        ],
+      ] as const) {
+        view.dispatch({ selection });
+        ctrl.onContextMenu(slot, new MouseEvent("contextmenu"));
+        const copy = useContextMenuStore
+          .getState()
+          .menu!.items.find((item) => "label" in item && item.label === "Copy / Paste Special");
+        expect(copy).toMatchObject({
+          submenu: expect.arrayContaining([
+            expect.objectContaining({ action: "agents.copyAgentReference", arg: [{ path, lines }] }),
+          ]),
+        });
+      }
+    } finally {
+      hideContextMenu();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
+  it("offers the copy format Rich-Text Copy doesn't give in Copy / Paste Special", async () => {
+    const path = "/p/a.ts";
+    ctrl = new EditorController(createMemoryBackend({ [path]: "first\nsecond\nthird\n" }));
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    const settings = useProject.getState().settings;
+    const special = (richTextCopy: boolean, selection: EditorSelection) => {
+      useProject.setState({ settings: { editor: { general: { richTextCopy } } } as never });
+      view.dispatch({ selection });
+      ctrl!.onContextMenu(slot, new MouseEvent("contextmenu"));
+      const menu = useContextMenuStore
+        .getState()
+        .menu!.items.find((item) => "label" in item && item.label === "Copy / Paste Special");
+      return (menu as { submenu: { action?: string }[] }).submenu
+        .map((item) => item.action)
+        .filter((id) => id?.startsWith("code."));
+    };
+    try {
+      const one = EditorSelection.single(0, 5);
+      const two = EditorSelection.create([EditorSelection.range(0, 5), EditorSelection.range(6, 12)]);
+      expect(special(true, one)).toEqual(["code.copyAsPlainText", "code.pasteAsPlainText", "code.pasteFromHistory"]);
+      expect(special(false, one)).toEqual(["code.copyAsRichText", "code.pasteAsPlainText", "code.pasteFromHistory"]);
+      expect(special(true, two)[0]).toBe("code.copyAsPlainText");
+      // Rich text is copied from one selection only.
+      expect(special(false, two)[0]).toBe("code.pasteAsPlainText");
+      expect(special(true, EditorSelection.single(3))[0]).toBe("code.pasteAsPlainText");
+      expect(special(false, EditorSelection.single(3))[0]).toBe("code.pasteAsPlainText");
+    } finally {
+      useProject.setState({ settings });
+      hideContextMenu();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
   it("builds IDEA's editor tab menu", async () => {
     useProject.setState({
       project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
@@ -579,6 +657,46 @@ describe("EditorController", () => {
     useProject.setState({ project: null, settings: null });
   });
 
+  it("offers contributed Copy Path links in the tab menu like the other copy menus", async () => {
+    useProject.setState({
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
+      settings: {} as never,
+    });
+    const dispose = registerActions(
+      ["project.copyAbsolutePath", "project.copyFileName", "project.copyRelativePath"].map((id) => ({
+        id,
+        title: id,
+        run: () => undefined,
+      })),
+    );
+    const links = registerMenuGroup({
+      id: "test.link",
+      menus: ["copyPath"],
+      items: () => [{ id: "test.copyLink", label: "GitHub Link", verbatim: true, run: () => undefined }],
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const s = useTabs.getState();
+      const pane = s.panes[s.activePane]!;
+      const submenu = resolveMenuItems(ctrl.tabMenu(pane.id, pane.tabs[0]!)).find(
+        (i) => i.label === "Copy Path/Reference…",
+      )!.submenu!;
+      expect(resolveMenuItems(submenu).map((i) => (i.kind === "separator" ? "-" : i.label))).toEqual([
+        "Absolute Path",
+        "File Name",
+        "Path From Content Root",
+        "-",
+        "GitHub Link",
+      ]);
+    } finally {
+      dispose();
+      links();
+      useProject.setState({ project: null, settings: null });
+    }
+  });
+
   it.each(["editor", "tab"])(
     "offers grouped Git actions in the %s menu and preserves action enablement",
     async (menu) => {
@@ -591,7 +709,7 @@ describe("EditorController", () => {
           "vcs.compareWithRevision",
           "vcs.showHistory",
           "vcs.showCurrentRevision",
-          "vcs.showHistoryForSelection",
+          ...(menu === "editor" ? ["vcs.showHistoryForSelection"] : []),
           "vcs.rollback",
         ],
         ["vcs.push", "vcs.pull", "vcs.fetch"],
@@ -606,9 +724,9 @@ describe("EditorController", () => {
         "github.checkoutPullRequest",
         "github.openInBrowser",
       ];
-      const ids = [...groups.flat().filter((id) => id !== "GitHub"), ...github];
+      const ids = new Set([...groups.flat().filter((id) => id !== "GitHub"), ...github, "vcs.showHistoryForSelection"]);
       const dispose = registerActions(
-        ids.map((id) => ({
+        [...ids].map((id) => ({
           id,
           title: id,
           when: id === "vcs.clone" ? undefined : id.startsWith("github.") ? "projectOpen" : "vcsAvailable",
@@ -649,7 +767,8 @@ describe("EditorController", () => {
         expect(gitItems()).toContainEqual({
           kind: "action",
           action: "vcs.compareWithBranch",
-          arg: { path: "/p/a.ts" },
+          arg: "/p/a.ts",
+          label: "Compare with Branch…",
         });
 
         setContext("vcsAvailable", false);
@@ -673,6 +792,42 @@ describe("EditorController", () => {
     },
   );
 
+  it("scopes the tab menu's Git entries to its file, like the project view does", async () => {
+    useProject.setState({
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
+      settings: {} as never,
+    });
+    const dispose = registerActions(
+      ["vcs.commit", "vcs.ignoreShared", "vcs.ignoreLocal"].map((id) => ({ id, title: id, run: () => undefined })),
+    );
+    try {
+      setContext("vcsAvailable", true);
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const state = useTabs.getState();
+      const pane = state.panes[state.activePane]!;
+      const git = () => resolveMenuItems(ctrl!.tabMenu(pane.id, pane.tabs[0]!)).find((i) => i.label === "Git")!;
+      expect(git().submenu).toContainEqual({
+        kind: "action",
+        action: "vcs.commit",
+        arg: "/p/a.ts",
+        label: "Commit File…",
+      });
+      const gitMenu = git().submenu!;
+      expect(
+        resolveMenuItems(gitMenu)
+          .filter((i) => i.kind === "item")
+          .some((i) => i.label === "Add to .gitignore" && i.submenu?.length === 2),
+      ).toBe(true);
+      setContext("vcsAvailable", false);
+    } finally {
+      dispose();
+      useProject.setState({ project: null, settings: null });
+      setContext("vcsAvailable", false);
+    }
+  });
+
   it("switches an open image tab to a text tab when a matching text editor wrapper registers", async () => {
     ctrl = new EditorController(createMemoryBackend({ "/p/arch.diagram.svg": "<svg/>" }));
     ctrl.start();
@@ -688,6 +843,50 @@ describe("EditorController", () => {
       await vi.waitFor(() => expect(ctrl?.activeSlot?.model.path).toBe("/p/arch.diagram.svg"));
     } finally {
       offWrapper();
+    }
+  });
+
+  it("opens inputs at explicit strip indices or split edges and never clones singleton kinds", async () => {
+    let seq = 1;
+    const dispose = registerEditorKind({
+      kind: "singleton-term",
+      component: () => null,
+      title: (i) => i.key,
+      singleton: true,
+      splitInput: () => ({ kind: "singleton-term", key: `singleton-term:${++seq}` }),
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a", "/p/b.ts": "b" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      await ctrl.openFile("/p/b.ts", { focus: false });
+      const p1 = useTabs.getState().activePane;
+
+      // Explicit strip index inserts between a.ts and b.ts.
+      const term1 = { kind: "singleton-term", key: "singleton-term:1" };
+      await ctrl.openInput(term1, { pane: p1, index: 1, focus: false });
+      expect(useTabs.getState().panes[p1]!.tabs.map((t) => t.input.key)).toEqual([
+        "file:/p/a.ts",
+        "singleton-term:1",
+        "file:/p/b.ts",
+      ]);
+
+      // Splitting a singleton tab opens `splitInput` in the new pane instead of duplicating the key.
+      ctrl.activate(p1, useTabs.getState().panes[p1]!.tabs[1]!.id, false);
+      ctrl.split(p1, "row");
+      await vi.waitFor(() => expect(Object.keys(useTabs.getState().panes)).toHaveLength(2));
+      const p2 = Object.keys(useTabs.getState().panes).find((id) => id !== p1)!;
+      expect(useTabs.getState().panes[p1]!.tabs.map((t) => t.input.key)).toContain("singleton-term:1");
+      expect(useTabs.getState().panes[p2]!.tabs.map((t) => t.input.key)).toEqual(["singleton-term:2"]);
+
+      // Re-opening an already open singleton at an edge moves it into the new split instead of duplicating it.
+      await ctrl.openInput(term1, { pane: p2, edge: "bottom", focus: false });
+      const allTerm1 = Object.values(useTabs.getState().panes).flatMap((p) =>
+        p.tabs.filter((t) => t.input.key === "singleton-term:1"),
+      );
+      expect(allTerm1).toHaveLength(1);
+    } finally {
+      dispose();
     }
   });
 });
@@ -707,5 +906,127 @@ describe("editor action when clauses", () => {
     ["EDITOR_WHEN", EDITOR_WHEN],
   ])("%s leaves keys to a tool window's speed search, e.g. ⌘⌫ to Delete Line", (_, when) => {
     expect(evaluateWhen(when, { ...editorBehind, toolWindowFocus: true })).toBe(false);
+  });
+});
+
+describe("non-file tabs and split panes in Back / Forward", () => {
+  it("navigates back and forward across text files and non-path custom tabs while keeping Recent Locations text-only", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\ntwo\n", "/p/b.ts": "three\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const chat = { kind: "agent-session", key: "agent:task-1", data: { task: "task-1" } };
+    const cli = { kind: "cli", key: "cli:term-1", data: { name: "Local", command: "" } };
+    await ctrl.openInput(chat, { focus: false });
+    await ctrl.openInput(cli, { focus: false });
+    await ctrl.openFile("/p/b.ts", { focus: false });
+
+    await ctrl.back();
+    expect(ctrl.activeInput()?.key).toBe(cli.key);
+    await ctrl.back();
+    expect(ctrl.activeInput()?.key).toBe(chat.key);
+    await ctrl.back();
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+
+    await ctrl.forward();
+    expect(ctrl.activeInput()?.key).toBe(chat.key);
+    await ctrl.forward();
+    expect(ctrl.activeInput()?.key).toBe(cli.key);
+    await ctrl.forward();
+    expect(ctrl.activeSlot?.model.path).toBe("/p/b.ts");
+
+    expect(ctrl.nav.snapshot().entries.map((e) => e.path)).toEqual(["/p/a.ts", "/p/b.ts"]);
+  });
+
+  it("skips stale entries via canNavigate and collapses duplicates exposed by skipping them", async () => {
+    let taskExists = true;
+    const disposeTask = registerEditorKind({
+      kind: "ephemeral-task",
+      title: () => "Task",
+      component: () => null,
+      canNavigate: (_input, open) => open || taskExists,
+    });
+    const disposeCli = registerEditorKind({
+      kind: "ephemeral-cli",
+      title: () => "Terminal",
+      component: () => null,
+      canNavigate: (_input, open) => open,
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a\n", "/p/b.ts": "b\n" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const task = { kind: "ephemeral-task", key: "ephemeral:task-1" };
+      const cli = { kind: "ephemeral-cli", key: "ephemeral:cli-1" };
+      await ctrl.openInput(task, { focus: false });
+      await ctrl.openFile("/p/b.ts", { focus: false });
+      await ctrl.openInput(cli, { focus: false });
+      await ctrl.closeInput(cli.key);
+      await ctrl.closeInput(task.key);
+      taskExists = false;
+
+      // Closing cli activated b.ts; Back skips both closed cli and deleted task and lands directly on a.ts.
+      expect(ctrl.activeSlot?.model.path).toBe("/p/b.ts");
+      await ctrl.back();
+      expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+      await ctrl.forward();
+      expect(ctrl.activeSlot?.model.path).toBe("/p/b.ts");
+    } finally {
+      disposeTask();
+      disposeCli();
+    }
+  });
+
+  it("tracks split panes for both text and non-text tabs, and does not duplicate a moved tab", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a\n", "/p/b.ts": "b\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const p1 = useTabs.getState().activePane;
+
+    // Splitting duplicates a.ts into p2; Back / Forward returns to the recorded pane.
+    ctrl.split(p1, "row");
+    await vi.waitFor(() => expect(Object.keys(useTabs.getState().panes)).toHaveLength(2));
+    const p2 = Object.keys(useTabs.getState().panes).find((id) => id !== p1)!;
+    const p2Tab = useTabs.getState().panes[p2]!.active!;
+    await ctrl.ensureSlot(p2Tab);
+    expect(useTabs.getState().activePane).toBe(p2);
+
+    // Open a non-text tab in p2, then focus back into p1 via focusPane (simulating clicking the inactive pane).
+    const chat = { kind: "agent-session", key: "agent:task-1", data: { task: "task-1" } };
+    await ctrl.openInput(chat, { pane: p2, focus: false });
+    expect(useTabs.getState().activePane).toBe(p2);
+
+    ctrl.focusPane(p1);
+    expect(useTabs.getState().activePane).toBe(p1);
+    ctrl.focusPane(p2);
+    expect(useTabs.getState().activePane).toBe(p2);
+
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p1);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p2);
+    expect(ctrl.activeInput()?.key).toBe(chat.key);
+
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p2);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p1);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+
+    // Moving a tab to the opposite pane keeps Back immediate and avoids duplicating the tab in its old pane.
+    await ctrl.openFile("/p/b.ts", { pane: p1, focus: false });
+    const bTabId = useTabs.getState().panes[p1]!.active!;
+    ctrl.moveToOpposite(p1, bTabId);
+    expect(useTabs.getState().activePane).toBe(p2);
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p1);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+    await ctrl.forward();
+    expect(useTabs.getState().activePane).toBe(p2);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/b.ts");
+    expect(useTabs.getState().panes[p1]!.tabs.some((t) => t.input.path === "/p/b.ts")).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectInterpreter, Sdk } from "@/platform/ipc";
 import {
+  addUserPath,
   buildInterpreters,
   filterInterpreters,
   interpreterIcon,
@@ -113,6 +114,8 @@ describe("Python interpreter list", () => {
     expect(interpreterIcon("conda")).toBe("python-conda");
     expect(interpreterIcon("uv")).toBe("python-uv");
     expect(interpreterIcon("poetry")).toBe("python-poetry");
+    expect(interpreterIcon("pipenv")).toBe("file-pipenv");
+    expect(interpreterIcon("hatch")).toBe("python-hatch");
     expect(interpreterIcon("pyenv")).toBe("python-versions");
     expect(interpreterIcon("mise")).toBe("python-versions");
     expect(interpreterIcon("asdf")).toBe("python-versions");
@@ -143,5 +146,13 @@ describe("Python interpreter list", () => {
     ).toBe(false);
     // `~/.venv` and a project-relative `.venv` resolve to the same absolute path.
     expect(sameInterpreterPath("~/.venv/bin/python", ".venv/bin/python", "/home/me")).toBe(true);
+  });
+
+  it("adds a user path once, and not one the interpreter already has", () => {
+    const own = ["/usr/lib/python3.12", "/usr/lib/python3.12/site-packages"];
+    expect(addUserPath([], own, "/shared/lib")).toEqual(["/shared/lib"]);
+    expect(addUserPath(["/shared/lib"], own, "/shared/lib/")).toEqual(["/shared/lib"]);
+    expect(addUserPath(["/shared/lib"], own, "/usr/lib/python3.12")).toEqual(["/shared/lib"]);
+    expect(addUserPath(["C:\\Shared\\Lib"], [], "c:/shared/lib")).toEqual(["C:\\Shared\\Lib"]);
   });
 });

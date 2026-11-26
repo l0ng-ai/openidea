@@ -55,6 +55,7 @@ export async function runInteractiveCodeAction(doc: number, selected: CodeAction
       const current: CommandForm = form;
       const field = current.formFields[0]!;
       let next: CommandForm | null = current;
+      // oxlint-disable-next-line no-await-in-loop -- each prompt's answers feed the next form request; user prompts must be sequential
       const value = await promptInput({
         title: field.description,
         label: field.description,

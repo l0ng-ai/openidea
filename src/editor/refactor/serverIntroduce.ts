@@ -40,7 +40,12 @@ export const EXPRESSION_REFACTORINGS: ReadonlySet<RefactoringId> = new Set([
 ]);
 
 /** Refactorings whose result is a new name renamed in place afterwards. */
-const NAMING_REFACTORINGS: ReadonlySet<RefactoringId> = new Set([...EXPRESSION_REFACTORINGS, "extractMethod"]);
+const NAMING_REFACTORINGS: ReadonlySet<RefactoringId> = new Set([
+  ...EXPRESSION_REFACTORINGS,
+  "extractMethod",
+  "extractInterface",
+  "extractTypeAlias",
+]);
 
 export function introducesName(id: RefactoringId | null): boolean {
   return !!id && NAMING_REFACTORINGS.has(id);
@@ -184,7 +189,8 @@ function insertedTokens(before: Token[], after: Token[]): Token[] {
 }
 
 /** Names servers give new declarations before the user names them. */
-const SERVER_DEFAULT = /^(new[A-Z_]\w*|newLocal\w*|var_name\d*|fun_name\d*|extracted\w*|new_\w+|value\d*)$/;
+const SERVER_DEFAULT =
+  /^(new[A-Z_]\w*|NewType(?:_\d+)?|newLocal\w*|var_name\d*|fun_name\d*|extracted\w*|new_\w+|value\d*)$/;
 
 /**
  * The name a refactoring introduced, and every place the edit wrote it, from
@@ -263,6 +269,7 @@ async function expressionInfo(view: EditorView): Promise<{ kind: string; text: s
 
 async function docChange(view: EditorView, before: EditorView["state"]["doc"], ms = 1500): Promise<boolean> {
   for (let waited = 0; waited < ms && view.state.doc === before; waited += 20)
+    // oxlint-disable-next-line no-await-in-loop -- polling with early exit once the document changes
     await new Promise((r) => setTimeout(r, 20));
   return view.state.doc !== before;
 }

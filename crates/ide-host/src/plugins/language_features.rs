@@ -2,7 +2,7 @@
 use super::{PluginHost, ProviderKind};
 use ide_core::{IdeResult, Pos, Range};
 use ide_plugin::{ProviderDocument, language_features::*};
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 pub(crate) fn valid_range(doc: &ProviderDocument, range: Range) -> bool {
     valid_range_in(&ide_text::Document::new(&doc.text), range)
@@ -279,14 +279,18 @@ impl PluginHost {
     /// Optional API 1.14 hover actions. Only plugins declaring the
     /// `hover-actions` provider kind are asked; the released language-features
     /// export remains unchanged.
-    pub fn language_hover_actions(&self, doc: &ProviderDocument) -> Vec<(String, HoverAction)> {
+    /// `project`: the root of the project whose editor shows `doc`, the providers' invocation project.
+    pub fn language_hover_actions(&self, doc: &ProviderDocument, project: Option<&Path>) -> Vec<(String, HoverAction)> {
+        let project = project.map(Path::to_path_buf);
         let mut out = Vec::new();
         for (d, _bounds) in self.feature_documents(doc, None) {
             let snapshot = d.clone();
             let text = ide_text::Document::new(&snapshot.text);
             let d = Arc::new(d);
-            let results = self
-                .document_calls(ProviderKind::HoverActions, &snapshot, move |rt, t| rt.language_hover_actions(&d, t));
+            let project = project.clone();
+            let results = self.document_calls(ProviderKind::HoverActions, &snapshot, move |rt, t| {
+                rt.language_hover_actions(&d, project.as_deref(), t)
+            });
             for (p, items) in results {
                 let commands: std::collections::HashSet<_> =
                     self.ui.items(super::COMMANDS, Some(p.id())).into_iter().map(|c| c.key).collect();
@@ -304,14 +308,22 @@ impl PluginHost {
         out
     }
 
-    pub fn language_gutter_actions(&self, doc: &ProviderDocument) -> Vec<(String, GutterAction)> {
+    /// `project`: the root of the project whose editor shows `doc`, the providers' invocation project.
+    pub fn language_gutter_actions(
+        &self,
+        doc: &ProviderDocument,
+        project: Option<&Path>,
+    ) -> Vec<(String, GutterAction)> {
+        let project = project.map(Path::to_path_buf);
         let mut out = Vec::new();
         for (d, bounds) in self.feature_documents(doc, None) {
             let lines = d.text.split('\n').count() as u32;
             let snapshot = d.clone();
             let d = Arc::new(d);
-            let results = self
-                .document_calls(ProviderKind::GutterActions, &snapshot, move |rt, t| rt.language_gutter_actions(&d, t));
+            let project = project.clone();
+            let results = self.document_calls(ProviderKind::GutterActions, &snapshot, move |rt, t| {
+                rt.language_gutter_actions(&d, project.as_deref(), t)
+            });
             for (p, items) in results {
                 let commands: std::collections::HashSet<_> =
                     self.ui.items(super::COMMANDS, Some(p.id())).into_iter().map(|c| c.key).collect();

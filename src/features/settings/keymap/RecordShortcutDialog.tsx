@@ -2,17 +2,21 @@
  * IDEA's "Keyboard Shortcut" dialog: records a first (and optional second)
  * stroke and lists conflicts live; OK with conflicts asks whether to remove the
  * other assignments (Remove / Leave / Cancel). With `mouse` it is the "Mouse
- * Shortcut" dialog: a click on its pad records the button and modifiers.
+ * Shortcut" dialog: the pad records mouse buttons and wheel gestures.
  */
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Checkbox, Dialog, Icon, Kbd, T } from "@/ui";
 import type { Action } from "@/platform/actions";
+import { useEditorPrefs } from "@/platform/editorSettings";
 import {
   formatBinding,
+  isWheelBinding,
   mouseStrokeOf,
   normalizeBinding,
   parseDoubleModifier,
+  supportsWheelShortcut,
   suspendKeyboardDispatch,
+  wheelStrokeOf,
 } from "@/platform/keymap";
 import { isPageSwipe } from "@/platform/pageSwipe";
 import { ask } from "@/workbench/messages";
@@ -24,13 +28,13 @@ import { useTx } from "@/platform/i18n";
 import { usePlatform } from "@/platform/platformInfo";
 
 export interface RecordShortcutDialogProps {
-  action: Pick<Action, "id" | "title" | "category" | "when">;
-  actions: readonly Pick<Action, "id" | "title" | "category" | "when">[];
+  action: Pick<Action, "id" | "title" | "category" | "when" | "keyWhen">;
+  actions: readonly Pick<Action, "id" | "title" | "category" | "when" | "keyWhen">[];
   draft: KeymapDraft;
   onCancel: () => void;
   /** `removeConflicts`: also unbind the conflicting assignments. */
   onSubmit: (binding: string, conflicts: Conflict[], removeConflicts: boolean) => void;
-  /** Record a mouse shortcut (modified left clicks, middle or side buttons) instead of keys. */
+  /** Record a mouse button or wheel shortcut. */
   mouse?: boolean;
 }
 
@@ -42,9 +46,11 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
   const tx = useTx();
   const actionName = tx(action.title);
   const rectangularSelection = action.id === "editor.createRectangularSelectionOnMouseDrag";
+  const wheelZoom = useEditorPrefs().general.wheelZoom;
 
   const allowsSecond = !isPageSwipe(first) && !parseDoubleModifier(first);
   const binding = !mouse && allowsSecond && first && useSecond ? (second ? `${first} ${second}` : "") : first;
+  const zoomConflict = wheelZoom && isWheelBinding(binding) && /(?:^|\+)(Ctrl|Meta)\+/.test(binding);
   const conflicts = useMemo(
     () => (binding ? findConflicts(draft, binding, action.id, actions) : []),
     [binding, draft, action.id, actions],
@@ -96,7 +102,12 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
           </div>
         </div>
         {mouse ? (
-          <MouseRecorder value={first} onChange={setFirst} sideButtons={!rectangularSelection} />
+          <MouseRecorder
+            value={first}
+            onChange={setFirst}
+            sideButtons={!rectangularSelection}
+            wheel={supportsWheelShortcut(action.id)}
+          />
         ) : (
           <KeyStrokes
             first={first}
@@ -119,7 +130,7 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
               <T>The action already has this shortcut</T>
             </span>
           )}
-          {!already && binding && conflicts.length === 0 && (
+          {!already && binding && !zoomConflict && conflicts.length === 0 && (
             <span className={styles.recordHint}>
               <T>No conflicts</T>
             </span>
@@ -134,6 +145,16 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
               </div>
               <ConflictList conflicts={conflicts} />
             </>
+          )}
+          {zoomConflict && (
+            <div className={styles.conflictTitle}>
+              <Icon name="warning" size={14} className={styles.conflictIcon} />
+              <span>
+                <T>
+                  This shortcut takes precedence over Ctrl/Command+Mouse Wheel font zoom when the action is available.
+                </T>
+              </span>
+            </div>
           )}
         </div>
       </div>
@@ -208,17 +229,34 @@ function KeyStrokes({ first, second, useSecond, allowsSecond, setFirst, setSecon
   );
 }
 
-/** Shortcuts stay off while the dialog records mouse buttons and modifiers. */
+/** Shortcuts stay off while the dialog records mouse gestures. */
 function MouseRecorder({
   value,
   onChange,
   sideButtons,
+  wheel,
 }: {
   value: string;
   onChange: (binding: string) => void;
   sideButtons: boolean;
+  wheel: boolean;
 }) {
+  const padRef = useRef<HTMLDivElement>(null);
   useEffect(() => suspendKeyboardDispatch(), []);
+  useEffect(() => {
+    const pad = padRef.current;
+    if (!pad || !wheel) return;
+    const recordWheel = (e: WheelEvent) => {
+      const stroke = wheelStrokeOf(e);
+      if (!stroke) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onChange(stroke);
+    };
+    // React's wheel handler is passive.
+    pad.addEventListener("wheel", recordWheel, { passive: false });
+    return () => pad.removeEventListener("wheel", recordWheel);
+  }, [onChange, wheel]);
   const record = (e: MouseEvent<HTMLDivElement>) => {
     // Rectangular selection only handles left and middle buttons.
     if (!sideButtons && e.button > 1) return;
@@ -230,6 +268,7 @@ function MouseRecorder({
   };
   return (
     <div
+      ref={padRef}
       role="textbox"
       aria-readonly="true"
       aria-label="Mouse shortcut"
@@ -242,7 +281,9 @@ function MouseRecorder({
         <span className={styles.recorded}>{formatBinding(value)}</span>
       ) : (
         <span className={styles.recorderPlaceholder}>
-          {sideButtons ? (
+          {wheel ? (
+            <T>Scroll here, click with Ctrl, Alt or Command held, or use a middle or side mouse button</T>
+          ) : sideButtons ? (
             <T>Click here with Ctrl, Alt or Command held, or use a middle or side mouse button</T>
           ) : (
             <T>Click here with Ctrl, Alt or Command held, or use the middle mouse button</T>

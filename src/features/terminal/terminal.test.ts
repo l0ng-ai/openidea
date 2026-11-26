@@ -202,6 +202,19 @@ describe("terminal keys", () => {
     }
   });
 
+  it("pastes on plain Ctrl+V only on Windows", () => {
+    const ctrlV = key({ key: "v", code: "KeyV", ctrlKey: true });
+    try {
+      usePlatform.setState({ os: "windows" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "paste" });
+      usePlatform.setState({ os: "linux" });
+      expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+    expect(terminalKeyAction(ctrlV, false)).toEqual({ kind: "send", data: "\x16" });
+  });
+
   it("keeps Ctrl+C as interrupt on macOS even with a selection", () => {
     usePlatform.setState({ os: "macos" });
     expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), true)).not.toEqual({ kind: "copy" });
@@ -255,12 +268,19 @@ describe("terminal keys", () => {
       ["Ctrl+Shift+K", "vcs.push"],
       ["Shift+Escape", "toolwindow.hideActive"],
       ["Ctrl+W Ctrl+F", "terminal.find"],
+      ["Ctrl+T", "terminal.newInEditor"],
+      ["Ctrl+N", "terminal.new"],
     ];
     expect(isAllowedIdeShortcut("Ctrl+Shift+A", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+N", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+Shift+K", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Shift+Escape", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+W", bindings)).toBe(true);
+    // terminal.newInEditor only escapes in an editor terminal tab, and terminal.new only in the tool window.
+    expect(isAllowedIdeShortcut("Ctrl+T", bindings, false)).toBe(false);
+    expect(isAllowedIdeShortcut("Ctrl+T", bindings, true)).toBe(true);
+    expect(isAllowedIdeShortcut("Ctrl+N", [["Ctrl+N", "terminal.new"]], false)).toBe(true);
+    expect(isAllowedIdeShortcut("Ctrl+N", [["Ctrl+N", "terminal.new"]], true)).toBe(false);
     // Ctrl+E (end of line) and actions outside the list stay with the shell.
     expect(isAllowedIdeShortcut("Ctrl+E", bindings)).toBe(false);
     expect(isAllowedIdeShortcut("Ctrl+K", bindings)).toBe(false);
@@ -412,11 +432,12 @@ describe("terminalFont", () => {
   it("prefers the terminal's fallback over the editor's", () => {
     const font = terminalFont(
       { ...t, fallbackFontFamily: "Sarasa Mono SC" },
-      { ...editor, fallbackFont: "PingFang SC" },
+      { ...editor, fallbackFont: "Source Code Pro" },
       BASE,
     );
     expect(font.family).toContain('"Sarasa Mono SC"');
-    expect(font.family).not.toContain("PingFang SC");
+    // The CJK faces are always named (see the test below), so the editor's pick must not be one.
+    expect(font.family).not.toContain("Source Code Pro");
   });
 
   it("follows the editor's Typography Settings weights with Use editor font", () => {
@@ -445,6 +466,25 @@ describe("terminalFont", () => {
   it("turns the column width into letter spacing", () => {
     expect(terminalFont({ ...t, useEditorFont: false }, editor, BASE).letterSpacing).toBe(0);
     expect(terminalFont({ ...t, useEditorFont: false, columnWidth: 1.5 }, editor, BASE).letterSpacing).toBe(3);
+  });
+  it("names CJK faces after the icon fonts so a wide character keeps two cells", () => {
+    const { family } = terminalFont(t, editor, BASE);
+    // After the icon fonts: they must win their own glyphs, and only CJK falls through to these.
+    expect(family.indexOf('"Microsoft YaHei"')).toBeGreaterThan(family.indexOf('"Symbols Nerd Font"'));
+    expect(family).toContain('"PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC"');
+    expect(family.endsWith(', "Source Han Sans SC", monospace')).toBe(true);
+  });
+  it("names Latin monospace faces before the CJK ones, whose Latin glyphs are proportional", () => {
+    // A Linux box without the chosen font: Latin must stop at a monospace face, not Noto Sans CJK.
+    for (const font of [
+      terminalFont(t, editor, BASE),
+      terminalFont({ ...t, useEditorFont: false, fontFamily: "Missing Mono" }, editor, BASE),
+    ]) {
+      const at = (face: string) => font.family.indexOf(`"${face}"`);
+      expect(at("DejaVu Sans Mono")).toBeGreaterThan(at("Symbols Nerd Font"));
+      expect(at("Consolas")).toBeLessThan(at("Microsoft YaHei"));
+      expect(at("DejaVu Sans Mono")).toBeLessThan(at("Noto Sans CJK SC"));
+    }
   });
 });
 
@@ -511,6 +551,7 @@ describe("fit scheduling", () => {
     const fit = vi.fn();
     const f = fitScheduler(fit);
     f.schedule();
+    f.schedule();
     vi.advanceTimersToNextFrame();
     expect(fit).toHaveBeenCalledTimes(1);
     for (let i = 0; i < 30; i++) {
@@ -525,6 +566,19 @@ describe("fit scheduling", () => {
     f.cancel();
     vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
     expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a new terminal on the frame schedule until it can measure its grid", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const scheduler = fitScheduler(fit);
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    scheduler.schedule();
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("fits a lone second request after it settles without needing another request", () => {

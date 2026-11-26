@@ -18,6 +18,16 @@
   flex: 1;
   min-height: 0;
 }
+/* Matches the Run console's notice; sits above the output in the console font's pane. */
+.pane > .notice {
+  flex: none;
+  padding: 4px 12px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  line-height: normal;
+  color: var(--fg-subtle);
+  border-bottom: 1px solid var(--border);
+}
 
 .row {
   display: flex;

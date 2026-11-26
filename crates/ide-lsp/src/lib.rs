@@ -10,6 +10,7 @@ mod angular;
 mod arduino;
 mod caps;
 mod clang_tidy;
+mod closing_labels;
 mod compose;
 mod convert;
 mod external_project;
@@ -58,7 +59,7 @@ pub use message_requests::answer as answer_message_request;
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
-pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
+pub use uri::{path_to_uri_string, uri_target, uri_to_path};
 
 use caps::{ServerCaps, SyncKind};
 use convert::{Conv, lsp_range};
@@ -86,6 +87,7 @@ use std::time::Duration;
 use text::{DocText, Encoding};
 use types::*;
 
+const DART_SERVER: &str = "dart";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 const LONG_TIMEOUT: Duration = Duration::from_secs(30);
@@ -150,6 +152,14 @@ struct DocState {
     /// When the servers last got new text (open or change): diagnostics published before are stale.
     changed: std::time::Instant,
     flutter_outline: Option<FlutterOutline>,
+    /// The Dart server's closing labels for the current text; dropped on the next change.
+    closing_labels: Option<ClosingLabels>,
+}
+
+struct ClosingLabels {
+    server: ide_core::ServerId,
+    generation: u64,
+    hints: Vec<InlayHint>,
 }
 
 /// The widget tree last published for a document, valid while that server instance runs.
@@ -280,7 +290,7 @@ pub struct LspManager {
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
     /// Modification time of the archive behind a cached library class, so a jar
     /// replaced in place (a SNAPSHOT installed again) is read again.
-    virtual_stamps: Mutex<HashMap<String, std::time::SystemTime>>,
+    virtual_stamps: Mutex<HashMap<String, virtual_doc::ArchiveStamp>>,
     injections: injections::State,
     /// Open notebooks by path. Locked before `docs` when both are.
     notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
@@ -1218,6 +1228,11 @@ impl LspManager {
         self.shown_messages.lock().insert((server.to_owned(), text.to_owned()))
     }
 
+    /// Whether `server` has shown a message containing `needle` in this project.
+    pub(crate) fn shown_message_containing(&self, server: &str, needle: &str) -> bool {
+        self.shown_messages.lock().iter().any(|(s, text)| s == server && text.contains(needle))
+    }
+
     pub(crate) fn apply_edit_hook(&self) -> Option<ApplyEditHook> {
         self.apply_edit_hook.read().clone()
     }
@@ -1232,7 +1247,7 @@ impl LspManager {
         {
             return Some(text);
         }
-        let key = path.to_str().filter(|s| is_virtual_uri(s))?;
+        let key = path.to_str().filter(|s| ide_core::is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
     }
 
@@ -1298,6 +1313,7 @@ impl LspManager {
             notebook: None,
             changed: std::time::Instant::now(),
             flutter_outline: None,
+            closing_labels: None,
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1346,6 +1362,7 @@ impl LspManager {
         let Some(d) = docs.get_mut(&doc) else { return };
         d.version = version as i32;
         d.changed = std::time::Instant::now();
+        d.closing_labels = None;
 
         // Servers that have this document open on their current instance.
         let targets: Vec<(Arc<Server>, Running, SyncKind, Encoding)> = d
@@ -2073,21 +2090,10 @@ impl LspManager {
     /// References of the symbol at `pos`. With `project_wide`, files outside
     /// the servers' analysis scope that mention the name are opened for the
     /// search (see [`scope`]); without, only what the servers analyse counts
-    /// (cheap, for bulk scans over many symbols).
-    pub async fn references(
-        &self,
-        doc: DocId,
-        pos: Pos,
-        include_declaration: bool,
-        project_wide: bool,
-        cancel: CancellationToken,
-    ) -> IdeResult<References> {
-        self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
-    }
-
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources
-    /// are searched (`libraries_skipped`); with it and `project_wide`, those found
-    /// there arrive on `partial` before the dependencies and the JDK are searched.
+    /// (cheap, for bulk scans over many symbols). Java: without `libraries`,
+    /// only the workspace's sources are searched (`libraries_skipped`); with
+    /// it and `project_wide`, those found there arrive on `partial` before
+    /// the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -2443,6 +2449,34 @@ impl LspManager {
             .then(|| outline.items.clone())
     }
 
+    /// The arguments of the call at `pos` the Flutter Property Editor shows; `None` outside a
+    /// call, or when no Dart server serves the document.
+    pub async fn editable_arguments(&self, doc: DocId, pos: Pos) -> IdeResult<Option<EditableArguments>> {
+        let (snap, targets) = self.doc_targets(doc, "the property editor", |_| true).await?;
+        let Some(t) = targets.iter().find(|t| t.server.name == DART_SERVER) else { return Ok(None) };
+        self.call(t, "dart/textDocument/editableArguments", snap.pos_params(t, pos), None, DEFAULT_TIMEOUT).await
+    }
+
+    /// Sets the argument `name` of the call at `pos` to `value` (`None` passes null). The server
+    /// sends the edit back as `workspace/applyEdit`, which the apply-edit hook applies.
+    pub async fn edit_argument(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        name: String,
+        value: Option<ArgumentValue>,
+    ) -> IdeResult<()> {
+        let (snap, targets) = self.doc_targets(doc, "the property editor", |_| true).await?;
+        let t = targets
+            .iter()
+            .find(|t| t.server.name == DART_SERVER)
+            .ok_or_else(|| IdeError::unavailable("no Dart language server serves this document"))?;
+        let mut params = snap.pos_params(t, pos);
+        params["edit"] = json!({ "name": name, "newValue": value });
+        let _: Value = self.call(t, "dart/textDocument/editArgument", params, None, DEFAULT_TIMEOUT).await?;
+        Ok(())
+    }
+
     /// Records a published outline; whether what the open documents of `path` show changed.
     fn set_flutter_outline(
         &self,
@@ -2457,6 +2491,37 @@ impl LspManager {
             d.flutter_outline = items.clone().map(|items| FlutterOutline { server: server.id, generation, items });
         }
         changed
+    }
+
+    /// Records published closing labels; whether what the open documents of `path` show changed.
+    fn set_closing_labels(
+        &self,
+        path: &Path,
+        server: &Server,
+        generation: u64,
+        enc: Encoding,
+        labels: Vec<closing_labels::Label>,
+    ) -> bool {
+        let mut changed = false;
+        for d in self.docs.lock().values_mut().filter(|d| d.path == path && d.notebook.is_none()) {
+            // Not `self.conv`: it would lock `docs` again for a UTF-8 server's text.
+            let text = d.text.clone();
+            let conv = Conv::new(enc, move |_: &Path| Some(text.clone()));
+            let hints = closing_labels::hints(&conv, path, &d.text, labels.clone());
+            changed |= !hints.is_empty() || d.closing_labels.as_ref().is_some_and(|c| !c.hints.is_empty());
+            d.closing_labels = Some(ClosingLabels { server: server.id, generation, hints });
+        }
+        changed
+    }
+
+    fn closing_label_hints(&self, doc: DocId, range: Range) -> Vec<InlayHint> {
+        let docs = self.docs.lock();
+        let Some(d) = docs.get(&doc) else { return Vec::new() };
+        let Some(c) = d.closing_labels.as_ref() else { return Vec::new() };
+        if !d.servers.iter().any(|a| a.server.id == c.server && a.server.is_live(c.generation)) {
+            return Vec::new();
+        }
+        c.hints.iter().filter(|h| range.start <= h.position && h.position <= range.end).cloned().collect()
     }
 
     pub async fn workspace_symbols(&self, query: &str, cancel: CancellationToken) -> IdeResult<Vec<WorkspaceSymbol>> {
@@ -2641,6 +2706,26 @@ impl LspManager {
         Ok(())
     }
 
+    /// Where other files import `doc`'s file (VS Code's Find File References): tsserver's
+    /// `fileReferences` through vtsls' `typescript.tsserverRequest`, which also answers for a
+    /// `.vue` component with the Vue TypeScript plugin (vtsls' own command refuses non-TS
+    /// documents). Unavailable when no TypeScript server serves the document.
+    pub async fn file_references(&self, doc: DocId, cancel: CancellationToken) -> IdeResult<Vec<Location>> {
+        let snap = self.snapshot(doc)?;
+        let targets =
+            self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == ts_file_moves::COMMAND)).await;
+        let t = targets
+            .iter()
+            .find(|t| t.server.config.tsserver_project)
+            .ok_or_else(|| IdeError::unavailable("No language server finds file references"))?;
+        let params = json!({
+            "command": ts_file_moves::COMMAND,
+            "arguments": ["fileReferences", { "file": snap.path }],
+        });
+        let result: Value = self.call(t, "workspace/executeCommand", params, Some(&cancel), LONG_TIMEOUT).await?;
+        Ok(ts_file_moves::file_references(&result))
+    }
+
     /// Whether a server of `doc` (`server`, when given) provides the command `name`. Code actions
     /// can carry commands other editors' extensions run themselves after the edit (vtsls'
     /// `_typescript.didOrganizeImports`): no server provides those.
@@ -2796,7 +2881,7 @@ impl LspManager {
         })
     }
 
-    /// Renames across the project: like [`Self::references`], files outside the
+    /// Renames across the project: like [`Self::references_streaming`], files outside the
     /// server's analysis scope that mention the name are opened for the request.
     /// Every server that can rename there does: the Angular server adds the
     /// templates to vtsls's edit, whose own edits win where both change the same text.
@@ -3301,6 +3386,7 @@ impl LspManager {
             }
         }
         let mut v = out.finish(Vec::new())?;
+        v.extend(self.closing_label_hints(doc, range));
         v.sort_by_key(|h| h.position);
         Ok(v)
     }
@@ -3410,6 +3496,71 @@ impl LspManager {
             }
         }
         out.finish(Vec::new())
+    }
+
+    /// The colors the servers find in the document (`textDocument/documentColor`), each tagged with
+    /// its server for [`Self::color_presentations`]. An answer for an older version is dropped.
+    pub async fn document_colors(&self, doc: DocId) -> IdeResult<Vec<DocumentColor>> {
+        let (snap, targets) = self.doc_targets(doc, "document colors", |c| c.has("colorProvider")).await?;
+        let requests = targets.iter().map(|t| {
+            let params = json!({ "textDocument": snap.ident() });
+            async move {
+                let colors = self
+                    .call_retrying::<_, Option<Vec<lsp::ColorInformation>>>(
+                        t,
+                        "textDocument/documentColor",
+                        params,
+                        DEFAULT_TIMEOUT,
+                    )
+                    .await;
+                (t, colors)
+            }
+        });
+        let mut out = Outcome::new();
+        for (t, r) in join_all(requests).await {
+            match r {
+                Ok(colors) => {
+                    let conv = self.conv(t.enc());
+                    let acc = out.value.get_or_insert_with(Vec::new);
+                    acc.extend(
+                        colors
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|c| convert::document_color(&conv, &snap.path, t.server.id, c)),
+                    );
+                }
+                Err(e) => out.fail(e),
+            }
+        }
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        out.finish(Vec::new())
+    }
+
+    /// How `color.server` would write `color` at its range (`textDocument/colorPresentation`).
+    pub async fn color_presentations(&self, doc: DocId, color: DocumentColor) -> IdeResult<Vec<ColorPresentation>> {
+        let snap = self.snapshot(doc)?;
+        let Some(server) = snap.servers.iter().find(|s| s.id == color.server) else { return Ok(Vec::new()) };
+        let Some(t) = self.ready_targets(std::slice::from_ref(server), |c| c.has("colorProvider")).await.pop() else {
+            return Ok(Vec::new());
+        };
+        let params = json!({
+            "textDocument": snap.ident(),
+            "color": { "red": color.red, "green": color.green, "blue": color.blue, "alpha": color.alpha },
+            "range": snap.range(&t, color.range),
+        });
+        let list: Option<Vec<lsp::ColorPresentation>> =
+            self.call(&t, "textDocument/colorPresentation", params, None, DEFAULT_TIMEOUT).await?;
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        let conv = self.conv(t.enc());
+        Ok(list
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| convert::color_presentation(&conv, &snap.path, color.range, p))
+            .collect())
     }
 
     pub async fn call_hierarchy(
@@ -3629,6 +3780,16 @@ impl LspManager {
         archives.sort();
         archives.dedup();
         archives
+    }
+
+    /// Drop cached text after JDT LS reopens the archives. A request could have
+    /// read the old attachment while the binary already had its new timestamp.
+    pub fn invalidate_library_archives(&self, archives: &std::collections::HashSet<PathBuf>) {
+        if !archives.is_empty() {
+            self.virtual_docs
+                .lock()
+                .retain(|uri, _| !virtual_doc::archive(uri).is_some_and(|archive| archives.contains(&archive)));
+        }
     }
 
     /// Contents of a virtual document, from the server that owns `uri`:

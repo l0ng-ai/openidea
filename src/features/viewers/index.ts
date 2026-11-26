@@ -15,6 +15,7 @@ import {
   registerEditorKind,
   registerExternalFileOpenHandler,
   registerFileEditorProvider,
+  registerMenuGroup,
   registerTextEditorWrapper,
   textEditorWrapperFor,
   useTextEditorWrappers,
@@ -35,6 +36,7 @@ import { HexViewer } from "./HexViewer";
 import { registerMarkdownLiveSource } from "./markdown/live";
 import { setMarkdownMode, useMarkdownSourceHidden, type MarkdownMode } from "./markdown/modes";
 import { MarkdownLayoutActions } from "./markdown/MarkdownLayoutActions";
+import { canExtractImages, extractImages, EXTRACT_IMAGES, EXTRACT_IMAGES_TITLE } from "./markdown/extractImages";
 
 const titleOf = (input: EditorInput) => basename(input.path ?? input.key);
 const iconOf = (input: EditorInput) => fileIconName(titleOf(input));
@@ -82,6 +84,14 @@ function markdownActions(): Action[] {
     mode("markdown.editorOnly", "Editor Only", "editor", "editor-only"),
     mode("markdown.editorAndPreview", "Editor and Preview", "split", "editor-preview"),
     mode("markdown.previewOnly", "Preview Only", "preview", "preview-only"),
+    {
+      id: EXTRACT_IMAGES,
+      title: EXTRACT_IMAGES_TITLE,
+      category: "Markdown",
+      when: "textEditorActive && !editorReadOnly",
+      enabled: () => canExtractImages(),
+      run: extractImages,
+    },
   ];
 }
 
@@ -124,12 +134,21 @@ export function activate(): () => void {
     }),
     registerTextEditorWrapper({
       id: "viewers.markdown",
+      keepAlive: true,
       matches: isMarkdownPath,
-      component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)),
+      component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor), {
+        prefetch: true,
+      }),
       tabActions: MarkdownLayoutActions,
       useSourceHidden: useMarkdownSourceHidden,
     }),
     registerMarkdownLiveSource(),
+    registerMenuGroup({
+      id: EXTRACT_IMAGES,
+      menus: ["editor"],
+      items: (_menu, { paths: [path] }) =>
+        path === activeEditor()?.ctx.path && canExtractImages() ? [{ kind: "action", action: EXTRACT_IMAGES }] : [],
+    }),
     registerActions([...imageActions(), ...markdownActions()]),
   ];
   return () => disposers.reverse().forEach((d) => d());

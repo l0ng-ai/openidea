@@ -147,6 +147,13 @@
         "prefer-rest-params": "error",
         "prefer-spread": "error"
       }
+    },
+    {
+      "files": ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
+      "excludeFiles": ["e2e/**"],
+      "rules": {
+        "no-await-in-loop": "error"
+      }
     }
   ]
 }

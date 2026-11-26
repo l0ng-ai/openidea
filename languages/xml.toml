@@ -1,6 +1,6 @@
 id = "xml"
 name = "XML"
-extensions = ["xml", "xsd", "xsl", "xslt", "svg", "plist", "csproj", "fsproj", "vbproj", "props", "targets", "nuspec", "xaml", "axaml", "resx", "wsdl", "fxml", "iml", "jnlp", "rss", "atom", "xliff", "xlf", "storyboard", "xib", "tld", "pom"]
+extensions = ["xml", "xsd", "xsl", "xslt", "svg", "plist", "csproj", "fsproj", "vbproj", "props", "targets", "nuspec", "xaml", "resx", "wsdl", "fxml", "iml", "jnlp", "rss", "atom", "xliff", "xlf", "storyboard", "xib", "tld", "pom"]
 filenames = ["NuGet.Config", "Directory.Build.targets", "web.config", "app.config"]
 first-line = "^<\\?xml\\b"
 block-comment = ["<!--", "-->"]

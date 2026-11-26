@@ -54,10 +54,12 @@ async function open(path: string, from?: EditorSlot) {
   return slot;
 }
 async function replace(text: string) {
-  for (const d of backend.docs.values()) {
-    backend.patch(d.id, [{ from: 0, to: 3, insert: text }], true);
-    await backend.save(d.id);
-  }
+  await Promise.all(
+    [...backend.docs.values()].map(async (d) => {
+      backend.patch(d.id, [{ from: 0, to: 3, insert: text }], true);
+      await backend.save(d.id);
+    }),
+  );
   backend.files.set("/p/closed.java", text);
 }
 async function rename() {

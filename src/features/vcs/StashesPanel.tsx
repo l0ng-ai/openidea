@@ -158,7 +158,7 @@ export function StashesPanel({ orientation = "vertical" }: { orientation?: "vert
             aria-label="Repository"
             value={repo}
             onChange={(root) => void selectRepo(root)}
-            options={repos.map((root) => ({ value: root, label: repoName(root) }))}
+            options={repos.map((root) => ({ value: root, label: repoName(root), verbatim: true }))}
           />
         )}
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => setTick((n) => n + 1)} />

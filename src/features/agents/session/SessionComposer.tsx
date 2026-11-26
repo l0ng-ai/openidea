@@ -71,6 +71,7 @@ function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntr
         <div className={styles.trayPlan}>
           {plan.items.map((item, i) => (
             <div
+              // oxlint-disable-next-line react/no-array-index-key -- plan items can repeat; position is the identity
               key={i}
               className={clsx(
                 styles.planItem,
@@ -142,8 +143,7 @@ export function SessionComposer({
   head,
   changes,
   commits,
-  changesOpen,
-  onToggleChanges,
+  onOpenChanges,
   onOpenSubagent,
 }: {
   task: AgentTask;
@@ -153,8 +153,7 @@ export function SessionComposer({
   head: string | null;
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
-  changesOpen: boolean;
-  onToggleChanges: () => void;
+  onOpenChanges: () => void;
   onOpenSubagent: (id: string) => void;
 }) {
   const { sendWith, whileRunning } = useAgentSettings();
@@ -377,12 +376,10 @@ export function SessionComposer({
       />
       <SessionStatus
         task={task}
-        entries={entries}
         head={head}
         changes={changes}
         commits={commits}
-        changesOpen={changesOpen}
-        onToggleChanges={onToggleChanges}
+        onOpenChanges={onOpenChanges}
         effortAnnouncement={effortAnnouncement}
       />
     </div>

@@ -1,5 +1,7 @@
 import { tx, txPart } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { getAction, isActionEnabled } from "@/platform/actions";
+import { useContextKeys } from "@/platform/context";
 import { isMacHost } from "@/platform/keymap";
 import { Icon, IconButton, SearchField, Spinner, type MenuItem } from "@/ui";
 import clsx from "clsx";
@@ -109,6 +111,13 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   const root = useVcs((s) => s.root);
   const repositories = useLogRepositories();
   const readOnly = useReadOnlyLog();
+  useGitLog((s) => s.selection);
+  useGitLog((s) => s.selected);
+  // The commit context menu's rule (the action's `when` and `enabled`), recomputed on each selection.
+  const canCherryPick = useContextKeys((ctx) => {
+    const action = getAction("vcs.log.cherryPick");
+    return !!action && isActionEnabled(action, ctx);
+  });
   const bookmarks = useGitLog((s) => s.bookmarks);
   const showBranches = useLogOptions((s) => s.showBranches);
   const comparison = useGitLog((s) => !!s.logTabs.find((t) => t.id === (scope ?? s.shownLog))?.comparison);
@@ -202,12 +211,14 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
     );
     menuBelow(anchor, [
       ...recentFilterValues("authors").map((authors) => ({
+        verbatim: true,
         label: authors.join(", "),
         run: () => setLogFilters({ authors }),
       })),
       { label: ME, checked: filters.authors.includes(ME), run: () => setLogFilters({ authors: [ME] }) },
       ...(authors.length ? [{ kind: "separator" as const }] : []),
       ...authors.slice(0, 30).map((a) => ({
+        verbatim: true,
         label: a,
         checked: filters.authors.includes(a),
         run: () => setLogFilters({ authors: [a] }),
@@ -519,6 +530,9 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
             void refreshLogDetails(repositories);
           }}
         />
+        {!readOnly && !fileHistory && (
+          <IconButton icon="cherry-pick" size="small" action="vcs.log.cherryPick" disabled={!canCherryPick} />
+        )}
         <IconButton
           icon="sort"
           title="Graph Options"

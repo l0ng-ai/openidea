@@ -1,4 +1,4 @@
-import type { AgentEntry, AgentTask } from "@/bindings";
+import type { AgentEntry, AgentImage, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import {
@@ -27,6 +27,8 @@ import {
   type RefObject,
 } from "react";
 import { useAgentSettings } from "../agentSettings";
+import { clampSelectionToRow } from "./clampSelection";
+import { ImageStrip } from "../ImageStrip";
 import {
   entriesKey,
   isBusy,
@@ -40,18 +42,12 @@ import {
 import { selectionIn } from "../selection";
 import styles from "../Session.module.css";
 import { useAgents } from "../store";
-import { foldedTurns, thoughtDurations } from "../timeline";
-import {
-  conversationRows,
-  foldTurnRows,
-  isProcessEntry,
-  type ConversationRow,
-  type EntryRow,
-} from "./conversationRows";
+import { thoughtDurations } from "../timeline";
+import { conversationRows, isProcessEntry, rowEntries, type ConversationRow, type EntryRow } from "./conversationRows";
 import { FindBar } from "./FindBar";
-import { OpenFolds, RevealFold } from "./Folds";
+import { KeepFoldHeader, OpenFolds } from "./Folds";
 import { Entry } from "./messages";
-import { ProcessRun, TurnFold } from "./ProcessRows";
+import { ProcessRun } from "./ProcessRows";
 import { type QuestionAnswer } from "./QuestionForm";
 import { providerName } from "./shared";
 import { WorkingRow } from "./WorkingRow";
@@ -130,6 +126,14 @@ function useOffscreenRows(
     mark();
     const rows = new MutationObserver(mark);
     rows.observe(el, { childList: true });
+    // Earlier rows load in front of the first one shown, which then loses its author header while
+    // it may be off-screen: lay it out again, or it keeps the height it had with the header.
+    const authors = new MutationObserver((records) => {
+      for (const { target } of records)
+        if (target.parentNode === el) (target as Element).removeAttribute("data-measured");
+      mark();
+    });
+    authors.observe(el, { subtree: true, attributes: true, attributeFilter: ["data-author"] });
     const resize = new ResizeObserver(() => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
@@ -142,12 +146,18 @@ function useOffscreenRows(
       cancelAnimationFrame(frame);
       window.clearTimeout(timer);
       rows.disconnect();
+      authors.disconnect();
       resize.disconnect();
     };
   }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
   // Keep independent of `visible`: when a kept-alive tab hides, `data-selection` must stay until
   // the selection leaves and WebKit clears off-screen rows' highlights before skipping again.
-  useSelectionVisibility(ref, enabled);
+  useSelectionVisibility(ref, enabled, `.${styles.conversationRow}`);
+}
+
+/** Images remain visible beside the work's folded summary, without duplicating them when it opens. */
+function toolImages(row: ConversationRow): AgentImage[] {
+  return rowEntries(row).flatMap((entry) => (entry.type === "tool" ? (entry.images ?? []) : []));
 }
 
 interface StreamProps {
@@ -168,14 +178,38 @@ interface StreamProps {
 
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
+/** How long a conversation stays behind other tabs before it drops the entries painted above its tail. */
+const HIDDEN_TRIM_MS = 30_000;
 
-function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
+function scrollsY(el: Element): boolean {
+  if (el.scrollHeight - el.clientHeight <= 1) return false;
+  const overflow = getComputedStyle(el).overflowY;
+  return overflow === "auto" || overflow === "scroll";
+}
+
+/** The innermost container under `target` that scrolls vertically: a tool output, a run of calls, or `root`. */
+function scrollOwner(target: EventTarget | null, root: HTMLElement): HTMLElement {
   for (let el = target instanceof Element ? target : null; el && el !== root; el = el.parentElement) {
-    if (el.scrollTop <= 0) continue;
-    const overflow = getComputedStyle(el).overflowY;
-    if (overflow === "auto" || overflow === "scroll") return true;
+    if (el instanceof HTMLElement && scrollsY(el)) return el;
+  }
+  return root;
+}
+
+/** Whether a container inside `root` under `target` can still scroll up. */
+function scrollsUpInside(target: EventTarget | null, root: HTMLElement): boolean {
+  for (let el = target instanceof Element ? target : null; el && el !== root; el = el.parentElement) {
+    if (el.scrollTop > 0 && scrollsY(el)) return true;
   }
   return false;
+}
+
+/** A wheel gesture's events arrive closer together than this; a pause starts a new one. */
+const WHEEL_GESTURE_MS = 150;
+
+/** Keeps a double- or triple-click selection within the message it was made in. */
+function clampMultiClick(target: EventTarget) {
+  const row = target instanceof Element ? target.closest(`.${styles.conversationRow}`) : null;
+  if (row) clampSelectionToRow(document.getSelection(), row);
 }
 
 export function Stream({
@@ -191,6 +225,8 @@ export function Stream({
   drafts,
 }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
+  // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
+  const visible = useEditorShown();
   useSelectionBoundary(ref);
   const [openFolds] = useState(() => new Map<string, boolean>());
   const key = entriesKey(task.id, subagent?.id ?? null);
@@ -199,7 +235,7 @@ export function Stream({
   const restored = useRef(false);
   const previousLength = useRef(entries?.length ?? 0);
   /** Scrolled away from the end: offer one click back to the latest message. */
-  const [away, setAway] = useState(() => positions.get(key)?.stick === false);
+  const [away, setAway] = useState(false);
   // Opened at the end, the last entries come first and the earlier ones follow in batches:
   // reopening a long conversation paints at once. A kept offset needs them all.
   const [shown, setShown] = useState(() => (positions.get(key)?.stick === false ? Infinity : ENTRY_BATCH));
@@ -223,25 +259,32 @@ export function Stream({
   const stopFollowing = useCallback(
     (target: EventTarget | null) => {
       const el = ref.current;
-      if (!el || el.scrollHeight <= el.clientHeight || scrollsInside(target, el)) return;
+      if (!el || el.scrollHeight <= el.clientHeight || scrollsUpInside(target, el)) return;
       scrollingUp.current = true;
       if (!position.current.stick) return;
       position.current = { top: el.scrollTop, stick: false };
       positions.set(key, position.current);
-      setAway(true);
     },
     [key, positions],
   );
+  const updateJumpVisibility = useCallback((el: HTMLElement) => {
+    // An upward gesture releases following before anything moves. Only offer a jump
+    // when there is actual content below the viewport, excluding the fold spacer.
+    setAway(
+      !position.current.stick &&
+        el.scrollHeight - el.clientHeight - el.scrollTop > (parseFloat(getComputedStyle(el).paddingBottom) || 0) + 1,
+    );
+  }, []);
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
   const loadEarlier = useCallback(() => {
     const el = ref.current;
-    if (!el || start <= 0 || dragging.current || anchor.current) return;
+    if (!visible || !el || start <= 0 || dragging.current || anchor.current) return;
     const first = el.firstElementChild;
     if (!position.current.stick && first) anchor.current = { el: first, top: first.getBoundingClientRect().top };
     startTransition(() => setShown((n) => n + ENTRY_BATCH));
-  }, [start]);
+  }, [start, visible]);
   const loadTimer = useRef<number | null>(null);
   /** Load the next batch once the user stops scrolling near the top. */
   const loadWhenStill = useCallback(() => {
@@ -277,19 +320,56 @@ export function Stream({
   useEffect(() => {
     // Following the end, paint the rest in the background. A user who scrolled away
     // gets them only after stopping near the top (`loadWhenStill`), so the scrollbar
-    // is not resized mid-drag.
-    if (start > 0 && position.current.stick && !dragging.current)
+    // is not resized mid-drag. A hidden tab paints nothing more.
+    if (visible && start > 0 && position.current.stick && !dragging.current)
       startTransition(() => setShown((n) => n + ENTRY_BATCH));
-  }, [start]);
-  // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
-  const visible = useEditorShown();
-  const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
+  }, [start, visible]);
+  useEffect(() => {
+    // A conversation read to its end gives back the history painted above its recent entries
+    // once it stays behind other tabs: a few kept-alive tabs would otherwise hold every turn
+    // as DOM. One scrolled away keeps them, its offset needs the rows above.
+    if (visible) return;
+    const timer = window.setTimeout(() => {
+      const stream = ref.current;
+      if (!stream || !position.current.stick) return;
+      // A row can still hold an unsent edit or a selection after scrolling to the end.
+      if (
+        stream.querySelector(`.${styles.editMessage}`) ||
+        stream.contains(stream.ownerDocument.activeElement) ||
+        selectionIn(stream)
+      )
+        return;
+      setShown(ENTRY_BATCH);
+    }, HIDDEN_TRIM_MS);
+    return () => window.clearTimeout(timer);
+  }, [visible]);
+  const { toolCalls, fitWindowWidth } = useAgentSettings();
   useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
+  /**
+   * Blank space after the conversation that lets a section folded near the end keep its header
+   * in place. It is only ever what the view shows below the content: scrolling up or new rows
+   * take it back without moving anything.
+   */
+  const slack = useRef(0);
+  const setSlack = useCallback((px: number) => {
+    slack.current = px;
+    if (px) ref.current?.style.setProperty("--stream-slack", `${px}px`);
+    else ref.current?.style.removeProperty("--stream-slack");
+  }, []);
+  const trimSlack = useCallback(() => {
+    const el = ref.current;
+    if (!el || slack.current === 0) return;
+    const content = el.scrollHeight - slack.current;
+    const next = Math.max(0, Math.min(slack.current, Math.ceil(el.scrollTop + el.clientHeight - content)));
+    if (next !== slack.current) setSlack(next);
+  }, [setSlack]);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
-    if (el && position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
-  }, []);
+    if (!el) return;
+    if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+    updateJumpVisibility(el);
+  }, [updateJumpVisibility]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
@@ -314,10 +394,12 @@ export function Stream({
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
+    trimSlack();
     if (position.current.stick) {
       if (!dragging.current) el.scrollTop = el.scrollHeight;
     } else if (!restored.current) el.scrollTop = position.current.top;
     restored.current = true;
+    updateJumpVisibility(el);
   });
   useLayoutEffect(() => {
     // Prepending earlier entries moved the first painted row down: follow it, so the same
@@ -328,52 +410,80 @@ export function Stream({
     anchor.current = null;
     if (position.current.stick || !from.el.isConnected) return;
     scroller.scrollTop += from.el.getBoundingClientRect().top - from.top;
+    updateJumpVisibility(scroller);
   });
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
+      trimSlack();
       if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+      updateJumpVisibility(el);
     });
     observer.observe(el);
     return () => {
       observer.disconnect();
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
-  }, [key, positions]);
-  // How far the end was below the view when a section was toggled, before its content renders.
-  const gapAtToggle = useRef(Infinity);
+  }, [key, positions, trimSlack, updateJumpVisibility]);
+  /**
+   * The wheel scrolls the innermost container under the pointer, and only that one: a run of
+   * calls from its headers, a tool output from its text, the conversation elsewhere. A container
+   * at its edge doesn't hand the rest to the conversation; a gesture stays with the container
+   * it started in.
+   */
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const toggled = () => {
-      gapAtToggle.current = el.scrollHeight - el.scrollTop - el.clientHeight;
+    let gesture: { owner: HTMLElement; at: number } | null = null;
+    const onWheel = (e: WheelEvent) => {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey) return;
+      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      const now = performance.now();
+      const latched = gesture && now - gesture.at < WHEEL_GESTURE_MS && gesture.owner.isConnected;
+      const owner = latched ? gesture!.owner : scrollOwner(e.target, el);
+      gesture = { owner, at: now };
+      if (owner !== el) {
+        const room = e.deltaY < 0 ? owner.scrollTop : owner.scrollHeight - owner.clientHeight - owner.scrollTop;
+        if (room <= 1) e.preventDefault();
+        return;
+      }
+      markUserScroll();
+      if (e.deltaY < 0) stopFollowing(e.target);
+      else if (e.deltaY > 0) scrollingUp.current = false;
     };
-    el.addEventListener("toggle", toggled, true);
-    return () => el.removeEventListener("toggle", toggled, true);
-  }, []);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [markUserScroll, stopFollowing]);
   /**
-   * An opened section grew the conversation below its header: with the end in view, stay at
-   * it; otherwise bring what it shows into view. Either way its header stays on screen, and
-   * following stops when that leaves the end out of view.
+   * The reader opened or closed a section: put its header back where it was, in the run or
+   * output that scrolls it and then in the conversation. Following stops when that leaves any
+   * of the end out of view, so the next chunk doesn't pull the header away.
    */
-  const revealFold = useCallback(
-    (fold: HTMLElement) => {
+  const keepFoldHeader = useCallback(
+    (header: HTMLElement, top: number) => {
       const el = ref.current;
-      if (!el || dragging.current) return;
-      const view = el.getBoundingClientRect();
-      const box = fold.getBoundingClientRect();
-      const atEnd = position.current.stick || gapAtToggle.current < 40;
-      gapAtToggle.current = Infinity;
-      const below = atEnd ? el.scrollHeight - el.scrollTop - el.clientHeight : box.bottom - view.bottom;
-      if (below > 0) el.scrollTop += Math.max(0, Math.min(below, box.top - view.top));
-      if (atEnd && el.scrollHeight - el.scrollTop - el.clientHeight >= 40) {
+      if (!el?.contains(header)) return;
+      // Opened, the section fills the room left by an earlier fold first.
+      trimSlack();
+      for (let s = header.parentElement; s; s = s.parentElement) {
+        const moved = header.getBoundingClientRect().top - top;
+        if (Math.abs(moved) < 1) break;
+        if (s === el) {
+          const short = Math.ceil(el.scrollTop + moved + el.clientHeight - el.scrollHeight);
+          if (short > 0) setSlack(slack.current + short);
+          el.scrollTop += moved;
+          break;
+        }
+        if (scrollsY(s)) s.scrollTop += moved;
+      }
+      if (position.current.stick && el.scrollHeight - el.scrollTop - el.clientHeight >= 1) {
         position.current = { top: el.scrollTop, stick: false };
         positions.set(key, position.current);
-        setAway(true);
       }
+      updateJumpVisibility(el);
     },
-    [key, positions],
+    [key, positions, setSlack, trimSlack, updateJumpVisibility],
   );
   /** Back to the end of the stream; following resumes from there. */
   const jumpToLatest = useCallback(() => {
@@ -396,9 +506,8 @@ export function Stream({
   // Keep the row stable when earlier history is prepended; its author can move with the work.
   const rows = useMemo(() => {
     if (!entries) return [];
-    const rows = conversationRows(entries, start, toolCalls === "grouped");
-    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start, busy)) : rows;
-  }, [entries, start, busy, foldTurns, toolCalls, finding]);
+    return conversationRows(entries, start, toolCalls === "grouped");
+  }, [entries, start, toolCalls]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
     const byAgent = (row: ConversationRow) =>
@@ -431,30 +540,60 @@ export function Stream({
     ),
     [task, turns, replies, times, thinking, lastIndex, busy, drafts, onOpenSubagent, onDiagramDrawn],
   );
-  const renderConversationRow = (row: ConversationRow): ReactNode =>
-    row.kind === "turn" ? (
-      <TurnFold row={row} entries={entries ?? []}>
-        {row.rows.map((inner) => (
-          <div key={inner.index} className={styles.conversationRow}>
-            {renderConversationRow(inner)}
+  const renderConversationRow = useCallback(
+    (row: ConversationRow): ReactNode =>
+      row.kind === "process" ? (
+        <ProcessRun
+          row={row}
+          task={task}
+          lastIndex={lastIndex}
+          busy={busy}
+          thinking={thinking}
+          onDiagramDrawn={onDiagramDrawn}
+        />
+      ) : (
+        renderRow(row)
+      ),
+    [task, lastIndex, busy, thinking, onDiagramDrawn, renderRow],
+  );
+  const agentName = providerName(task.provider);
+  // Switching tabs changes visibility without changing the conversation rows.
+  const renderedRows = useMemo(
+    () =>
+      rows.map((row) => {
+        const images = toolImages(row);
+        return (
+          <div
+            key={row.index}
+            className={styles.conversationRow}
+            data-message={
+              (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+            }
+            data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+            data-author={authorHeaders.has(row.index) || undefined}
+          >
+            {authorHeaders.has(row.index) && (
+              <div className={styles.agentAuthor}>
+                <div className={styles.role}>
+                  <Icon name={providerIcon(task.provider)} size={13} />
+                  <span>{agentName}</span>
+                </div>
+              </div>
+            )}
+            {renderConversationRow(row)}
+            {images.length > 0 && (
+              <div className={styles.toolImages}>
+                <ImageStrip images={images} />
+              </div>
+            )}
           </div>
-        ))}
-      </TurnFold>
-    ) : row.kind === "process" ? (
-      <ProcessRun
-        row={row}
-        task={task}
-        lastIndex={lastIndex}
-        busy={busy}
-        thinking={thinking}
-        onDiagramDrawn={onDiagramDrawn}
-      />
-    ) : (
-      renderRow(row)
-    );
+        );
+      }),
+    [rows, authorHeaders, task.provider, agentName, renderConversationRow],
+  );
   return (
     <OpenFolds.Provider value={openFolds}>
-      <RevealFold.Provider value={revealFold}>
+      <KeepFoldHeader.Provider value={keepFoldHeader}>
         <div className={styles.streamArea}>
           {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
           <div
@@ -462,12 +601,6 @@ export function Stream({
             // The conversation is read and copied like a document; focusable so ⌘F reaches it.
             className={clsx(styles.stream, selectableText)}
             tabIndex={-1}
-            onWheel={(e) => {
-              if (e.defaultPrevented) return;
-              markUserScroll();
-              if (e.deltaY < 0 && !e.ctrlKey && !e.metaKey) stopFollowing(e.target);
-              else if (e.deltaY > 0 && !e.ctrlKey && !e.metaKey) scrollingUp.current = false;
-            }}
             onTouchStart={(e) => {
               touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
             }}
@@ -495,8 +628,16 @@ export function Stream({
               markUserScroll();
               scrollingUp.current = false;
             }}
+            onMouseDown={(e) => {
+              // WebKit makes a double- or triple-click selection after this handler.
+              if (e.detail >= 2) setTimeout(() => clampMultiClick(e.target));
+            }}
+            onMouseUp={(e) => {
+              if (e.detail >= 2) clampMultiClick(e.target);
+            }}
             onScroll={(e) => {
               const el = e.currentTarget;
+              trimSlack();
               const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
               const laidOut =
                 el.scrollHeight !== seenHeight.current.content || el.clientHeight !== seenHeight.current.view;
@@ -513,7 +654,7 @@ export function Stream({
               if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
               position.current = { top: el.scrollTop, stick };
               positions.set(key, position.current);
-              setAway(!position.current.stick);
+              updateJumpVisibility(el);
               // Reached the top of what is painted: fetch the earlier entries, but only
               // once the drag has settled.
               if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
@@ -560,33 +701,13 @@ export function Stream({
             ) : entries.length === 0 && !busy && !loadError ? (
               <EmptyState title="No conversation history" />
             ) : (
-              rows.map((row) => (
-                <div
-                  key={row.index}
-                  className={styles.conversationRow}
-                  data-message={
-                    (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-                  }
-                  data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-                  data-author={authorHeaders.has(row.index) || undefined}
-                >
-                  {authorHeaders.has(row.index) && (
-                    <div className={styles.agentAuthor}>
-                      <div className={styles.role}>
-                        <Icon name={providerIcon(task.provider)} size={13} />
-                        <span>{providerName(task.provider)}</span>
-                      </div>
-                    </div>
-                  )}
-                  {renderConversationRow(row)}
-                </div>
-              ))
+              renderedRows
             )}
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>
           {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
         </div>
-      </RevealFold.Provider>
+      </KeepFoldHeader.Provider>
     </OpenFolds.Provider>
   );
 }

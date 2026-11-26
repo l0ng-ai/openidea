@@ -14,6 +14,36 @@ html {
   --fw-code: 400;
   --fw-code-bold: 700;
 }
+/* YaHei also covers kana and bopomofo. Prefer the matching UI faces for those ranges. */
+@font-face {
+  font-family: "Windows UI Kana";
+  src: local("Yu Gothic UI Regular"), local("YuGothicUI-Regular"), local("Meiryo UI");
+  font-weight: 400;
+  unicode-range: U+3040-30FF, U+31F0-31FF, U+FF66-FF9F;
+}
+@font-face {
+  font-family: "Windows UI Kana";
+  src: local("Yu Gothic UI Bold"), local("YuGothicUI-Bold"), local("Meiryo UI Bold");
+  font-weight: 700;
+  unicode-range: U+3040-30FF, U+31F0-31FF, U+FF66-FF9F;
+}
+@font-face {
+  font-family: "Windows UI Bopomofo";
+  src: local("Microsoft JhengHei UI"), local("MicrosoftJhengHeiUIRegular"), local("Microsoft JhengHei");
+  font-weight: 400;
+  unicode-range: U+3100-312F, U+31A0-31BF;
+}
+@font-face {
+  font-family: "Windows UI Bopomofo";
+  src: local("Microsoft JhengHei UI Bold"), local("MicrosoftJhengHeiUIBold"), local("Microsoft JhengHei Bold");
+  font-weight: 700;
+  unicode-range: U+3100-312F, U+31A0-31BF;
+}
+html[data-os="windows"] {
+  --ui-platform-fonts:
+    "Windows UI Kana", "Windows UI Bopomofo", "Microsoft YaHei UI", "Microsoft YaHei", "Microsoft JhengHei UI",
+    "Microsoft JhengHei", "Yu Gothic UI", Meiryo, "Malgun Gothic", var(--ui-system-fonts);
+}
 :root {
   /* Spacing scale on a 4px grid: --space-N = N * 4px. Used for gap. */
   --space-0-5: 2px;
@@ -288,7 +318,8 @@ html {
   /* Nerd Font icons (in agent task titles): an installed Nerd Font, set once the window is
      idle by appearanceRuntime. Last in the UI stack, so only glyphs no text font has use it. */
   --font-icons: sans-serif;
-  --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif, var(--font-icons);
+  --ui-system-fonts: system-ui, -apple-system, sans-serif;
+  --font-ui: "Inter Variable", Inter, var(--ui-platform-fonts, var(--ui-system-fonts)), var(--font-icons);
   /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
   --font-keys: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Menlo, monospace;

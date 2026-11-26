@@ -57,6 +57,8 @@ import {
 } from "./configs";
 import { gradleContainsModule } from "./gradleRun";
 import { EnvDialog } from "./EnvDialog";
+import { PluginArgsInput } from "./PluginArgsInput";
+import { pluginOwnedConfig } from "./pluginArgsCompletion";
 import { useBuildModel } from "@/platform/buildModel";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
 import { TomcatSettings } from "./TomcatSettings";
@@ -346,6 +348,12 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   });
   const [shown, setShown] = useState<ReadonlySet<OptionId>>(() => new Set());
   const [argsText, setArgsText] = useState<string | null>(null);
+  const setArgs = (text: string) => {
+    setArgsText(text);
+    const args = parseArgs(text);
+    const module = parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass ? config.module : undefined;
+    update({ args, params: {}, module });
+  };
   const [envText, setEnvText] = useState<string | null>(null);
   const [envFilesText, setEnvFilesText] = useState<string | null>(null);
   const [envOpen, setEnvOpen] = useState(false);
@@ -476,7 +484,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const targetOptions: SelectOption[] = [
     { value: "__default", label: "Default run target" },
     { value: "", label: "Local machine" },
-    ...runTargets.map((t) => ({ value: t.id, label: t.name.trim() || t.id })),
+    ...runTargets.map((t) => ({ value: t.id, verbatim: true, label: t.name.trim() || t.id })),
   ];
   if (config.target && !runTargets.some((t) => t.id === config.target))
     targetOptions.push({ value: config.target, label: txTemplate(`${config.target} (missing)`) });
@@ -622,21 +630,22 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 />
               </Field>
               <Field label="Arguments">
-                <Input
-                  mono
-                  aria-label="Arguments"
-                  value={argsText ?? formatArgs(config.args)}
-                  placeholder="Space separated; quote with ' or &quot;"
-                  onChange={(e) => {
-                    setArgsText(e.target.value);
-                    const args = parseArgs(e.target.value);
-                    const module =
-                      parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass
-                        ? config.module
-                        : undefined;
-                    update({ args, params: {}, module });
-                  }}
-                />
+                {pluginOwnedConfig(config) ? (
+                  <PluginArgsInput
+                    configId={config.id}
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={setArgs}
+                  />
+                ) : (
+                  <Input
+                    mono
+                    aria-label="Arguments"
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={(e) => setArgs(e.target.value)}
+                  />
+                )}
               </Field>
             </>
           )}
@@ -800,6 +809,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                     onClick: (e: MouseEvent<HTMLButtonElement>) => setTaskMenu({ index: i, anchor: e.currentTarget }),
                   };
                   return (
+                    // oxlint-disable-next-line react/no-array-index-key -- tasks of one kind can repeat; position is the identity
                     <div key={i} role="listitem" className={styles.taskTag}>
                       {t.kind === "command" ? (
                         <>
@@ -957,8 +967,9 @@ function TypeField({
   }, [field]);
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
-    const options = [...(field.options ?? []), ...loaded];
-    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value });
+    // Loaded options are detected data (JDKs, build modules), not catalog text.
+    const options: SelectOption[] = [...(field.options ?? []), ...loaded.map((o) => ({ ...o, verbatim: true }))];
+    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
     return (
       <Select
         value={value || (options[0]?.value ?? "")}

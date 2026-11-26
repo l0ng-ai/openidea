@@ -17,7 +17,8 @@ import {
 } from "./changelists";
 import { gitPersonKey, readConfiguredGitIdentity } from "./gitIdentity";
 import { stagingAreaOn } from "./staging";
-import { currentRepo, useVcs } from "./store";
+import { currentPlan } from "./commitSelection";
+import { useVcs } from "./store";
 
 export type AmendPreview =
   | { root: string; status: "loading" }
@@ -51,6 +52,8 @@ interface CommitState extends CommitAuthorDetails {
   groupByStaging: boolean;
   /** With several repositories, a node per repository above their files. */
   groupByRepo: boolean;
+  /** Group the changes by project / build module. */
+  groupByModule: boolean;
   /** Keep untracked files in their own group instead of Changes / Unstaged Changes. */
   showUnversionedSeparately: boolean;
   /** Project-specific visibility of Git-ignored files in the staging tree. */
@@ -107,6 +110,7 @@ export const useCommit = create<CommitState>(() => ({
   groupByDir: readBool("openidea.vcs.groupByDir", false),
   groupByStaging: readBool("openidea.vcs.groupByStaging", false),
   groupByRepo: readBool("openidea.vcs.groupByRepo", true),
+  groupByModule: readBool("openidea.vcs.groupByModule", false),
   showUnversionedSeparately: readBool("openidea.vcs.showUnversionedSeparately", true),
   ignoredVisibility: new Map(),
   diffPreview: readBool("openidea.vcs.diffPreview", true),
@@ -187,6 +191,15 @@ export function setGroupByRepo(v: boolean) {
   useCommit.setState({ groupByRepo: v });
   try {
     localStorage.setItem("openidea.vcs.groupByRepo", String(v));
+  } catch {
+    // ignore
+  }
+}
+
+export function setGroupByModule(v: boolean) {
+  useCommit.setState({ groupByModule: v });
+  try {
+    localStorage.setItem("openidea.vcs.groupByModule", String(v));
   } catch {
     // ignore
   }
@@ -439,24 +452,35 @@ export async function setAmend(on: boolean, target: EarlierAmend | null = null) 
   }
   const current = () => request === amendRequest && useCommit.getState().amend && useVcs.getState().root === project;
   let head = target?.commit;
-  try {
-    if (!head)
-      [head] = await call(
-        commands.vcsLog(previewRoot ?? currentRepo(), {
-          branch: "HEAD",
-          path: null,
-          author: null,
-          text: null,
-          range: null,
-          skip: 0,
-          limit: 1,
-        }),
-      );
-  } catch {
-    // No commits yet.
+  let messages = head ? [head.message] : [];
+  if (!head) {
+    // As IDEA: the single root's HEAD; with several, the HEAD of each repository the included
+    // files belong to (their messages joined), and none while nothing is included.
+    const sources = previewRoot ? [previewRoot] : amendedRepositories();
+    const heads = await Promise.all(
+      sources.map((repo) =>
+        call(
+          commands.vcsLog(repo, {
+            branch: "HEAD",
+            path: null,
+            author: null,
+            text: null,
+            range: null,
+            skip: 0,
+            limit: 1,
+          }),
+        ).then(
+          ([commit]) => commit,
+          // No commits yet.
+          () => undefined,
+        ),
+      ),
+    );
+    if (previewRoot) head = heads[0];
+    messages = heads.flatMap((commit) => (commit ? [commit.message] : []));
   }
   if (!current()) return;
-  const last = head?.message.replace(/\s+$/, "");
+  const last = [...new Set(messages.map((m) => m.replace(/\s+$/, "")).filter((m) => m.trim()))].join("\n");
   const beforeMessage = useCommit.getState().message;
   if (last && beforeMessage.trim() !== last.trim()) {
     if (!amendData) rememberMessage(beforeMessage);
@@ -493,6 +517,12 @@ export async function setAmend(on: boolean, target: EarlierAmend | null = null) 
     return;
   }
   if (current()) useCommit.setState({ amendPreview: null });
+}
+
+/** With several repositories, those holding the included files; none while nothing is included. */
+function amendedRepositories(): Array<string | null> {
+  const plan = currentPlan();
+  return plan.included.length ? plan.repositories : [];
 }
 
 function resetAmendDraft() {
@@ -545,7 +575,8 @@ export function keepMessageAfterCommit(committed: string, clear: boolean, finish
     finished.root &&
     (active || (finished.text !== null && readDraft(finished.root, finished.list) === finished.text))
   ) {
-    writeDraft(finished.root, finished.list, clear ? "" : null);
+    // Clear drops it. Otherwise the message left in the field is the next draft, including after a restart.
+    writeDraft(finished.root, finished.list, clear ? "" : messageAfterCommit(committed, false) || null);
   }
   if (!active) return;
   const message = messageAfterCommit(committed, clear);

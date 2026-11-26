@@ -89,6 +89,19 @@ describe("title bar gear menu", () => {
   });
 });
 
+describe("project widget while a project opens", () => {
+  it("names the opening project before it is open", () => {
+    const saved = useProject.getState();
+    useProject.setState({ project: null, openingPath: "/work/new-project" });
+    try {
+      render(<TitleBar />);
+      expect(screen.getByRole("button", { name: "new-project" })).toBeInTheDocument();
+    } finally {
+      useProject.setState(saved);
+    }
+  });
+});
+
 describe("title bar in Distraction Free Mode (bare)", () => {
   // The main menu is the way back out of a view mode that hides the toolbar:
   // the title bar's ☰ where the window is frameless (Windows), the OS menu bar elsewhere.

@@ -7,7 +7,14 @@ import clsx from "clsx";
 import { actionToggled, executeAction, executeActionFrom, getAction } from "@/platform/actions";
 import { onIdeEvent, type ProjectFileSet } from "@/platform/ipc";
 import { tx as translate, useTx } from "@/platform/i18n";
-import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
+import {
+  formatBinding,
+  hasPrimaryModifier,
+  hostBinding,
+  isMacHost,
+  registerKeyClaim,
+  shortcutLabel,
+} from "@/platform/keymap";
 import {
   Checkbox,
   Dialog,
@@ -70,6 +77,7 @@ import {
 } from "./store";
 import styles from "./SearchEverywhere.module.css";
 import { isImeKey } from "@/platform/ime";
+import { nativePath } from "@/platform/paths";
 
 type SeScope = "allPlaces" | ProjectFileSet;
 
@@ -83,9 +91,25 @@ const SE_SCOPES: Array<{ value: SeScope; label: string }> = [
 /** Keys the query field handles itself (`onKeyDown`), in every modifier combination. */
 const SEARCH_KEYS: ReadonlySet<string> = new Set(["Enter", "Tab", "ArrowUp", "ArrowDown", "PageUp", "PageDown"]);
 
+/**
+ * macOS's Ctrl+N / Ctrl+P (Emacs-style, as in the completion popup): the arrow key they stand for.
+ * Elsewhere Ctrl+N is a keymap action (Go to Class), so they stay unclaimed.
+ */
+function emacsArrow(e: {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}): "ArrowDown" | "ArrowUp" | null {
+  if (!isMacHost() || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return null;
+  const key = e.key.toLowerCase();
+  return key === "n" ? "ArrowDown" : key === "p" ? "ArrowUp" : null;
+}
+
 /** Keeps the global keymap off the keys the query field handles while it has focus. */
 export function claimSearchKeys(input: () => HTMLElement | null): () => void {
-  return registerKeyClaim((e) => e.target === input() && SEARCH_KEYS.has(e.key));
+  return registerKeyClaim((e) => e.target === input() && (SEARCH_KEYS.has(e.key) || emacsArrow(e) !== null));
 }
 const ROW = 24;
 const MIN_LIST_ROWS = 10;
@@ -416,7 +440,7 @@ function SearchEverywhereDialog() {
             { label: "Open", run: () => activate(row) },
             { label: "Open to the Side", shortcut: formatBinding("Shift+Enter"), run: () => activate(row, true) },
             { kind: "separator" },
-            { label: "Copy Path", run: () => copy(row.path) },
+            { label: "Copy Path", run: () => copy(nativePath(row.path)) },
             { label: "Copy Path from Project Root", run: () => copy(row.rel) },
             ...(row.kind === "symbol" ? [{ label: "Copy Name", run: () => copy(row.name) }] : []),
             ...(row.kind === "file" || row.kind === "text"
@@ -466,8 +490,9 @@ function SearchEverywhereDialog() {
         return;
       }
     }
-    if (!["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(e.key)) return;
-    const next = listNavigate(e.key, { items: rows, active, isSection: isSectionRow, wrap: !e.shiftKey, pageSize: 10 });
+    const key = emacsArrow(e) ?? e.key;
+    if (!["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(key)) return;
+    const next = listNavigate(key, { items: rows, active, isSection: isSectionRow, wrap: !e.shiftKey, pageSize: 10 });
     if (next === null) return;
     e.preventDefault();
     select(next, e);

@@ -139,6 +139,9 @@ pub struct BlameLine {
 pub struct BlockHistory {
     /// The selected lines in HEAD (0-based, inclusive); None when none of them is committed.
     pub head_lines: Option<(u32, u32)>,
+    /// Those lines as HEAD has them, each ending with `\n`; None from servers that predate it.
+    #[serde(default)]
+    pub head: Option<String>,
     pub revisions: Vec<BlockRevision>,
 }
 
@@ -933,12 +936,15 @@ mod ignore;
 mod index_writes;
 mod log_index;
 mod manage;
+mod metadata_watch;
+pub use metadata_watch::MetadataWatch;
 mod ops;
 mod patch;
 mod preserve;
 mod push_preview;
 mod push_report;
 mod rebase_editor;
+mod ref_decorations;
 mod worktree_config;
 pub use ops::UNSTAGED_CHANGES_PREVENT_REBASE;
 mod incoming;
@@ -1078,6 +1084,7 @@ pub struct Repo {
     cli_status: std::sync::atomic::AtomicBool,
     automatic_shelf: std::sync::RwLock<Option<shelf::AutomaticShelf>>,
     log_index: std::sync::Mutex<log_index::LogIndex>,
+    ref_decorations: std::sync::Mutex<ref_decorations::RefDecorations>,
     log_signatures: std::sync::Mutex<history::LogSignatureCache>,
     conflict_mutation: std::sync::Mutex<()>,
     amend_recovery: std::sync::Mutex<Option<commit_rewrite::PendingAmend>>,
@@ -1137,11 +1144,9 @@ impl Repo {
     /// dirty-scope refresh after a watcher batch. An empty list is the full status.
     pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
         let _scope = self.execution_scope();
-        // Restricted Mode starts no program of the repository, and the scoped read is `git status`
-        // with a pathspec: answer with the full gitoxide status instead.
-        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
-            return status::status(self);
-        }
+        // Restricted Mode reads this through git too: `cli::command` strips what the repository's
+        // config could run, and the status call empties its clean/process filters. The full
+        // gitoxide status it used to answer with walked the whole tree for one changed file.
         if paths.is_empty() {
             return status::status_paths(self, &[]);
         }
@@ -1326,10 +1331,15 @@ impl Repo {
     /// Reference names and peeled commit ids, including tags and detached HEAD.
     pub fn log_refs(&self) -> IdeResult<std::collections::BTreeMap<String, String>> {
         let repo = self.gix()?;
-        Ok(history::decorations(&repo)?
-            .into_iter()
-            .flat_map(|(id, names)| names.into_iter().map(move |name| (name, id.to_string())))
-            .collect())
+        let (decorations, _) = self.ref_decorations(&repo)?;
+        let mut refs = std::collections::BTreeMap::new();
+        for (id, names) in decorations.iter() {
+            let id = id.to_string();
+            for name in names {
+                refs.insert(name.clone(), id.clone());
+            }
+        }
+        Ok(refs)
     }
     pub fn log_users(&self) -> IdeResult<Vec<String>> {
         let _scope = self.execution_scope();
@@ -1486,7 +1496,8 @@ impl Repo {
     /// Local and remote branches; the current branch first, then most recent first.
     pub fn branches(&self) -> IdeResult<Vec<Branch>> {
         let _scope = self.execution_scope();
-        refs::branches(self)
+        let repo = self.gix()?;
+        self.cached_branches(&repo)
     }
     /// Stash entries, newest (`stash@{0}`) first.
     pub fn stashes(&self) -> IdeResult<Vec<Stash>> {

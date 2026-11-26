@@ -49,6 +49,7 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
   setCompactMode(a.compactMode);
   flag(root, "contrastScrollbars", a.contrastScrollbars);
   flag(root, "redGreen", a.redGreenVision);
+  flag(root, "reduceMotion", a.reduceMotion);
   flag(root, "toolWindowBg", a.differentToolWindowBackground, "different");
   flag(root, "projectColors", !a.projectColorsInToolbar, "off");
   flag(root, "menuIcons", !a.menuIcons, "off");

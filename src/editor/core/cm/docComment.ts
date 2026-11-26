@@ -2,9 +2,11 @@
  * Smart Keys › Enter › Insert documentation comment stub: Enter right after a `/**` that opens a
  * new comment closes it, the caret on the summary line. In PHP the stub of a function lists its
  * parameters (`@param`) and return type (`@return`), as PhpStorm does; in Java a method's,
- * constructor's or generic type's parameters, return value and exceptions, as IDEA does.
+ * constructor's or generic type's parameters, return value and exceptions, as IDEA does; in
+ * JavaScript / TypeScript a function's parameters and result, as WebStorm does.
  */
-import { syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, language, syntaxTree } from "@codemirror/language";
+import type { SyntaxNode } from "@lezer/common";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import type { Command } from "@codemirror/view";
 
@@ -219,79 +221,260 @@ function paramList(text: string, open: number): { params: string; after: string 
   return null;
 }
 
-/** `@param` / `@returns` lines for the JavaScript / TypeScript function declared in `text`. */
-export function jsDocTags(text: string): string[] {
-  const head = text.trimStart();
-  const decl =
-    /^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*[\w$]*\s*(?:<[^(]*>)?\s*(?=\()/.exec(head) ??
-    /^(?:export\s+)?(?:const|let|var)\s+[\w$]+\s*(?::[^=]+)?=\s*(?:async\s+)?(?:<[^(]*>)?\s*(?=\()/.exec(head) ??
-    /^(?:(?:public|private|protected|static|async|override|readonly|abstract|get|set)\s+)*(?!(?:if|for|while|switch|catch|return|function)\b)[\w$]+\s*(?:<[^(]*>)?\s*(?=\()/.exec(
-      head,
-    );
-  if (!decl) return [];
-  const list = paramList(head, decl[0].length);
-  if (!list) return [];
-  // A method or function declaration has its body next; an arrow has `=>`.
-  if (!/^\s*(:[^{=]*)?(\{|=>)/.test(list.after)) return [];
-  const tags = splitParams(list.params).flatMap((p) => {
-    const m = /^(?:(?:public|private|protected|readonly|override)\s+)*(?:\.\.\.)?([\w$]+)/.exec(p);
-    return m && m[1] !== "this" ? [`@param ${m[1]}`] : [];
-  });
-  const ret = /^\s*:\s*([^{=]+?)\s*(\{|=>)/.exec(list.after)?.[1];
-  if (ret && !/^(void|undefined|never|Promise<void>)$/.test(ret.replace(/\s+/g, ""))) tags.push("@returns");
-  return tags;
+/** The JSDoc type of a default value (`= "a"`, `= 1`, `= []`, `= new Map()`), when it shows one. */
+function defaultType(value: string): string | undefined {
+  if (/^["'`]/.test(value)) return "string";
+  if (/^-?\.?\d[\w.]*$/.test(value)) return value.endsWith("n") ? "bigint" : "number";
+  if (/^(true|false)$/.test(value)) return "boolean";
+  if (value.startsWith("[")) return "Array";
+  if (value.startsWith("{")) return "Object";
+  return /^new\s+([\w$.]+)/.exec(value)?.[1];
 }
 
-/** `:param` / `:return:` lines for the Python function whose header is `header` (reStructuredText, PyCharm's default). */
-export function pythonDocTags(header: string): string[] {
-  const m = /^\s*(?:async\s+)?def\s+(\w+)\s*(?=\()/.exec(header);
-  if (!m) return [];
-  const list = paramList(header, m[0].length);
-  if (!list) return [];
-  const tags = splitParams(list.params).flatMap((p) => {
-    const name = /^\**(\w+)/.exec(p)?.[1];
-    return name && name !== "self" && name !== "cls" ? [`:param ${name}:`] : [];
-  });
-  const returns = /->\s*([^:]+):/.exec(list.after)?.[1]?.trim();
-  if (m[1] !== "__init__" && returns !== "None") tags.push(":return:");
-  return tags;
+/** Code with string literals and comments emptied, so their text is not read as code. */
+const STRINGS_AND_COMMENTS = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`/g;
+/** What ends right before the `{` of a nested function body: `=>`, `function f(…)` or a method `f(…)`. */
+const NESTED_BODY =
+  /(?:=>|\bfunction\b[^{};]*|(?:^|[^\w$.])(?!(?:if|for|await|while|switch|catch|with)\b)[\w$]+\s*\([^(){};]*\))\s*$/;
+
+/**
+ * Whether the block at the start of `code` returns a value (`return x`), not counting the
+ * functions declared in it.
+ */
+// A text scan, not a parse: a regex literal or a `${}` with braces in a template can mislead it.
+function returnsValue(code: string): boolean {
+  const s = code.replace(STRINGS_AND_COMMENTS, '""');
+  let depth = 0;
+  let nested = Infinity;
+  for (const m of s.matchAll(/[{}]|\breturn\b[ \t]*([^\s;}])?/g)) {
+    if (m[0] === "{") {
+      depth++;
+      if (depth > 1 && nested === Infinity && NESTED_BODY.test(s.slice(Math.max(0, m.index - 200), m.index)))
+        nested = depth;
+    } else if (m[0] === "}") {
+      if (depth === nested) nested = Infinity;
+      if (--depth <= 0) return false;
+    } else if (m[1] && depth > 0 && nested === Infinity) return true;
+  }
+  return false;
 }
 
 /**
- * Enter between the quotes of a `"""` docstring opened right under a `def` (or `"""` alone at its
- * end): the docstring's lines with the function's `:param` / `:return:` fields, as PyCharm does.
+ * The declared result type in `after` (the code after a parameter list) and the body that follows
+ * it: a block for a method or function declaration, `=>` for an arrow. Null when neither follows.
  */
-export const enterInDocstring: Command = (view) => {
-  const { state } = view;
-  if (state.readOnly || state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
-  const head = state.selection.main.head;
-  const line = state.doc.lineAt(head);
-  const before = line.text.slice(0, head - line.from);
-  const after = line.text.slice(head - line.from);
-  const quote = /^\s*("""|''')$/.exec(before)?.[1];
-  if (!quote || (after.trim() && after.trim() !== quote)) return false;
-  // The function header ends on the closest line above with code.
-  let n = line.number - 1;
-  while (n >= 1 && !state.doc.line(n).text.trim()) n--;
-  if (n < 1 || !/:\s*(#.*)?$/.test(state.doc.line(n).text)) return false;
-  let start = n;
-  while (start > 1 && !/^\s*(async\s+)?def\b/.test(state.doc.line(start).text) && n - start < 20) start--;
-  const header = state.sliceDoc(state.doc.line(start).from, state.doc.line(n).to);
-  if (!/^\s*(async\s+)?def\b/.test(header)) return false;
-  const indent = /^\s*/.exec(before)![0];
-  const br = state.lineBreak;
-  const tags = pythonDocTags(header);
-  const summary = `${br}${indent}`;
-  const insert =
-    summary + (tags.length ? `${br}${tags.map((t) => `${indent}${t}`).join(br)}` : "") + `${br}${indent}${quote}`;
-  view.dispatch({
-    changes: { from: head, to: line.to, insert },
-    selection: EditorSelection.cursor(head + summary.length),
-    scrollIntoView: true,
-    userEvent: "input",
+function signature(after: string): { declared?: string; arrow: boolean; body: string } | null {
+  let s = after.trimStart();
+  let declared: string | undefined;
+  if (s.startsWith(":")) {
+    let depth = 0;
+    let i = 1;
+    for (; i < s.length; i++) {
+      const arrow = s.startsWith("=>", i);
+      // A `{` ends the type once some type is there (`{ x: number } {`, not `A | {`).
+      if (depth === 0 && (arrow || (s[i] === "{" && /[^\s|&:,]\s*$/.test(s.slice(1, i))))) break;
+      if (arrow) i++;
+      else if ("{(<[".includes(s[i]!)) depth++;
+      else if ("})>]".includes(s[i]!) && --depth < 0) return null;
+    }
+    declared = s.slice(1, i).trim();
+    s = s.slice(i);
+  }
+  if (s.startsWith("=>")) return { declared, arrow: true, body: s.slice(2).trimStart() };
+  return s.startsWith("{") ? { declared, arrow: false, body: s } : null;
+}
+
+/**
+ * `@param` / `@returns` lines for the JavaScript / TypeScript function declared in `text`, as
+ * WebStorm writes them: rest parameters as `...name`, a destructured one as `options`, and in
+ * JavaScript (`withTypes`) the `{type}` a default value shows. `@returns` when a declared result
+ * isn't void, or without one when the body returns a value; never for a constructor.
+ */
+export function jsDocTags(text: string, withTypes = false): string[] {
+  const head = text.trimStart();
+  const decl =
+    /^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*([\w$]*)\s*(?:<[^(]*>)?\s*(?=\()/.exec(head) ??
+    /^(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\s*\*?\s*[\w$]*\s*)?(?:<[^(]*>)?\s*(?=\(|[\w$]+\s*=>)/.exec(
+      head,
+    ) ??
+    /^(?:(?:public|private|protected|static|async|override|readonly|abstract|get|set)\s+)*\*?\s*(?!(?:if|for|while|switch|catch|return|function)\b)([\w$]+)\s*(?:<[^(]*>)?\s*(?=\()/.exec(
+      head,
+    );
+  if (!decl) return [];
+  // `x => …`: a single parameter without parentheses.
+  const bare = /^([\w$]+)\s*=>/.exec(head.slice(decl[0].length));
+  const list = bare
+    ? { params: bare[1]!, after: head.slice(decl[0].length + bare[1]!.length) }
+    : paramList(head, decl[0].length);
+  if (!list) return [];
+  const sig = signature(list.after);
+  if (!sig) return [];
+  let destructured = 0;
+  const tags = splitParams(list.params).flatMap((param) => {
+    const p = param.replace(/^(?:(?:public|private|protected|readonly|override)\s+)*/, "");
+    const rest = p.startsWith("...") ? "..." : "";
+    const q = p.slice(rest.length).trimStart();
+    let name: string;
+    let tail: string;
+    if (q[0] === "{" || q[0] === "[") {
+      let depth = 0;
+      let end = 0;
+      for (; end < q.length; end++) {
+        if ("{[(".includes(q[end]!)) depth++;
+        else if ("}])".includes(q[end]!) && --depth === 0) break;
+      }
+      name = `options${destructured++ || ""}`;
+      tail = q.slice(end + 1);
+    } else {
+      const n = /^[\w$]+/.exec(q)?.[0];
+      if (!n || n === "this") return [];
+      name = n;
+      tail = q.slice(n.length);
+    }
+    const value = /^\s*\??\s*(?::[^=]*)?=\s*([\s\S]+)$/.exec(tail)?.[1];
+    const type = withTypes && !rest && value ? defaultType(value.trim()) : undefined;
+    return [type ? `@param {${type}} ${rest}${name}` : `@param ${rest}${name}`];
   });
-  return true;
-};
+  if (decl[1] === "constructor") return tags;
+  const declared = sig.declared?.replace(/\s+/g, "");
+  // An arrow's expression body is its result.
+  const returns = declared
+    ? !/^(void|undefined|never|Promise<void>)$/.test(declared)
+    : (sig.arrow && !sig.body.startsWith("{")) || returnsValue(sig.body);
+  if (returns) tags.push("@returns");
+  return tags;
+}
+
+/** Python docstring formats (Settings › Python › Docstrings). */
+export type PythonDocFormat = "plain" | "rest" | "epytext" | "google" | "numpy";
+
+function pythonRaises(body: SyntaxNode, text: string): string[] {
+  const names = new Set<string>();
+  body.cursor().iterate((node) => {
+    if (node.name === "FunctionDefinition" || node.name === "ClassDefinition") return false;
+    if (node.name !== "RaiseStatement") return;
+    let target = node.node.firstChild?.nextSibling;
+    while (target?.name === "CallExpression" || target?.name === "ParenthesizedExpression") {
+      target = target.name === "CallExpression" ? target.firstChild : target.firstChild?.nextSibling;
+    }
+    if (target?.name === "VariableName" || target?.name === "MemberExpression") {
+      names.add(text.slice(target.from, target.to));
+    }
+    return false;
+  });
+  return [...names];
+}
+
+/** The lines below a Python function docstring's summary. */
+export function pythonDocStub(text: string, owner: SyntaxNode, format: PythonDocFormat): string[] {
+  if (format === "plain" || owner.name !== "FunctionDefinition") return [];
+  const params: string[] = [];
+  let start = true;
+  for (let param = owner.getChild("ParamList")?.firstChild; param; param = param.nextSibling) {
+    if (param.name === ",") start = true;
+    if (!start || param.name !== "VariableName") continue;
+    const name = text.slice(param.from, param.to);
+    if (name !== "self" && name !== "cls") params.push(name);
+    start = false;
+  }
+  const name = owner.getChild("VariableName");
+  const annotation = owner.getChild("TypeDef");
+  const returnType = annotation && text.slice(annotation.from + 2, annotation.to);
+  const returns =
+    !!name && text.slice(name.from, name.to) !== "__init__" && returnType?.replace(/[()\s]/g, "") !== "None";
+  const body = owner.getChild("Body");
+  const raises = body ? pythonRaises(body, text) : [];
+  switch (format) {
+    case "rest":
+    case "epytext": {
+      const [mark, raise] = format === "rest" ? [":", ":raises"] : ["@", "@raise"];
+      return [
+        ...params.map((p) => `${mark}param ${p}:`),
+        ...(returns ? [`${mark}return:`] : []),
+        ...raises.map((r) => `${raise} ${r}:`),
+      ];
+    }
+    case "google": {
+      const sections = [
+        params.length ? ["Args:", ...params.map((p) => `    ${p}:`)] : [],
+        returns ? ["Returns:", ""] : [],
+        raises.length ? ["Raises:", ...raises.map((r) => `    ${r}:`)] : [],
+      ].filter((s) => s.length);
+      return sectioned(sections);
+    }
+    case "numpy": {
+      const sections = [
+        params.length ? ["Parameters", "----------", ...params] : [],
+        returns ? ["Returns", "-------", ""] : [],
+        raises.length ? ["Raises", "------", ...raises] : [],
+      ].filter((s) => s.length);
+      return sectioned(sections);
+    }
+  }
+}
+
+/** Sections after a blank line below the summary, one blank line apart (a trailing blank line of a section kept once). */
+function sectioned(sections: string[][]): string[] {
+  const out: string[] = [];
+  for (const s of sections) {
+    if (out[out.length - 1] !== "") out.push("");
+    out.push(...s);
+  }
+  return out;
+}
+
+/**
+ * Enter between the quotes of a `"""` docstring opened right under a `def` or `class` (or `"""`
+ * alone at its end): the docstring's lines with the function's parameters, return value and raised
+ * exceptions in `format`, as PyCharm does.
+ */
+export function enterInDocstring(format: () => PythonDocFormat): Command {
+  return (view) => {
+    const { state } = view;
+    if (state.readOnly || state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
+    const head = state.selection.main.head;
+    const line = state.doc.lineAt(head);
+    const before = line.text.slice(0, head - line.from);
+    const after = line.text.slice(head - line.from);
+    const quote = /^\s*("""|''')$/.exec(before)?.[1];
+    if (!quote || (after.trim() && after.trim() !== quote)) return false;
+    const indent = /^\s*/.exec(before)![0];
+    const literal = ensureSyntaxTree(state, line.to, 50)?.resolveInner(head - quote.length, 1);
+    const statement = literal?.parent;
+    const body = statement?.parent;
+    const owner = body?.parent;
+    if (
+      literal?.name !== "String" ||
+      literal.from !== head - quote.length ||
+      statement?.name !== "ExpressionStatement" ||
+      body?.name !== "Body" ||
+      (owner?.name !== "FunctionDefinition" && owner?.name !== "ClassDefinition")
+    )
+      return false;
+    for (let prev = statement.prevSibling; prev; prev = prev.prevSibling) {
+      if (prev.name !== ":" && prev.name !== "Comment") return false;
+    }
+    const br = state.lineBreak;
+    const style = format();
+    let tags: string[] = [];
+    if (style !== "plain" && owner.name === "FunctionDefinition") {
+      // Close the opener in a temporary parse so an unfinished literal doesn't swallow the body.
+      const end = state.doc.line(Math.min(state.doc.lines, line.number + 2000)).to;
+      const text = state.sliceDoc(owner.from, head) + quote + state.sliceDoc(line.to, end);
+      const parsed = state.facet(language)?.parser.parse(text).topNode.firstChild;
+      if (parsed) tags = pythonDocStub(text, parsed, style);
+    }
+    const summary = `${br}${indent}`;
+    const insert = summary + tags.map((t) => br + (t ? indent + t : "")).join("") + `${br}${indent}${quote}`;
+    view.dispatch({
+      changes: { from: head, to: line.to, insert },
+      selection: EditorSelection.cursor(head + summary.length),
+      scrollIntoView: true,
+      userEvent: "input",
+    });
+    return true;
+  };
+}
 
 /**
  * Whether the comments at `pos` include `/* *\/` ones. Embedded languages list several comment
@@ -329,7 +512,7 @@ export function enterInDocComment(language: string | undefined): Command {
         : language === "java"
           ? javaDocTags(code)
           : /^(java|type)script(react)?$/.test(language ?? "")
-            ? jsDocTags(code)
+            ? jsDocTags(code, language!.startsWith("javascript"))
             : /^(c|cpp|objective-c|objective-cpp)$/.test(language ?? "")
               ? cDocTags(code)
               : [];

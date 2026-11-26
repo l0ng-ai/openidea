@@ -69,9 +69,12 @@ async function loadUserFont(name: string, alias: string): Promise<void> {
   const buffer = await invoke<ArrayBuffer>("user_font_data", { family: name });
   const headerLength = new DataView(buffer).getUint32(0, true);
   const start = 4 + headerLength;
-  const faces: { weight: number; style: string; offset: number; length: number }[] = JSON.parse(
-    new TextDecoder().decode(buffer.slice(4, start)),
-  );
+  const faces: {
+    weight: number;
+    style: string;
+    offset: number;
+    length: number;
+  }[] = JSON.parse(new TextDecoder().decode(buffer.slice(4, start)));
   await Promise.all(
     faces.map(async ({ weight, style, offset, length }) => {
       const face = new FontFace(alias, buffer.slice(start + offset, start + offset + length), {
@@ -88,9 +91,34 @@ async function loadUserFont(name: string, alias: string): Promise<void> {
   );
 }
 
+/**
+ * Linux: WebKitGTK looks a family up through fontconfig, and a rule that strongly aliases
+ * unknown families (CJK locales put Noto Sans CJK first) makes "JetBrains Mono" resolve to that
+ * proportional face instead of falling through to the bundled one (#5770). There the bundled
+ * face is named alone unless the native catalog lists an installed JetBrains Mono.
+ */
+let monoInstalled: boolean | null = null;
+const bundledMonoOnly = () => guessOs() === "linux" && monoInstalled !== true;
+const BUNDLED_MONO_STACK = '"JetBrains Mono Variable", ui-monospace, monospace';
+
+/** Records whether the system has JetBrains Mono installed (`installed`: the native catalog, not the bundled list). */
+export function noteInstalledFonts(installed: readonly string[], root?: HTMLElement): void {
+  monoInstalled = installed.some((name) => name.trim().toLowerCase() === BUNDLED_MONO_FAMILY.toLowerCase());
+  installMonoStack(root);
+}
+
+/** Overrides `--font-mono` with the bundled face alone where the system name can't be trusted (see above). */
+export function installMonoStack(root: HTMLElement | undefined = globalThis.document?.documentElement): void {
+  if (!root) return;
+  if (bundledMonoOnly()) root.style.setProperty("--font-mono", BUNDLED_MONO_STACK);
+  else root.style.removeProperty("--font-mono");
+}
+
 /** One resolver for primary, fallback and UI families, matching the bundled CSS registrations. */
 export function familyFaces(family: string): readonly string[] {
   const name = familyName(family);
+  if (name.toLowerCase() === BUNDLED_MONO_FAMILY.toLowerCase() && bundledMonoOnly())
+    return ['"JetBrains Mono Variable"'];
   const bundled = BUNDLED_FACES.get(name.toLowerCase());
   if (bundled) return bundled;
   if (!name || !isTauri() || guessOs() !== "macos" || typeof FontFace === "undefined") return [quoteFontFamily(name)];
@@ -120,6 +148,38 @@ const NERD_FONTS = [
   "FiraCode Nerd Font",
   "Hasklug Nerd Font",
   "CaskaydiaCove Nerd Font",
+];
+
+/**
+ * CJK faces, named after the icon fonts on a grid's font stack. Such a renderer measures each
+ * glyph once to derive its per-cell letter spacing, and when the face drawing wide characters is
+ * only implicit (the webview's own fallback) that measurement and the rendering can disagree by
+ * about a pixel per character: every wide character then takes less than its two cells, and rows
+ * that mix CJK with a full-width background — pi's overlay panel, a boxed CLI — drift left, by up
+ * to two cells across one panel. Naming the face makes measurement and rendering use the same one,
+ * whatever its own advance, and two cells stay two cells. The webview skips missing families, so
+ * one list covers every platform.
+ */
+export const CJK_FALLBACK_FACES = [
+  "Microsoft YaHei",
+  "PingFang SC",
+  "Noto Sans CJK SC",
+  "Noto Sans SC",
+  "Source Han Sans SC",
+];
+/**
+ * Monospace faces Linux and Windows ship, named before `CJK_FALLBACK_FACES` on a grid's font
+ * stack. Those CJK faces carry proportional Latin glyphs: when the chosen family and the
+ * `--font-mono` stack (macOS-only past the bundled font) don't take, plain text would be drawn by
+ * one of them inside cells measured for its widest glyph, every letter adrift in a wide cell.
+ * None of these has CJK glyphs, so wide characters still reach the named CJK faces.
+ */
+export const LATIN_MONO_FALLBACK_FACES = [
+  "DejaVu Sans Mono",
+  "Liberation Mono",
+  "Noto Sans Mono",
+  "Cascadia Mono",
+  "Consolas",
 ];
 /** In running text the proportional faces give icons their own width instead of one cell's. */
 const UI_NERD_FONTS = [
@@ -249,8 +309,11 @@ export async function fontsLoaded(family: string, size: number): Promise<void> {
   }
 }
 
+/** The theme's platform fallback stack from tokens.css (the Windows CJK faces, else the system UI font). */
+const UI_PLATFORM_FALLBACK = "var(--ui-platform-fonts, var(--ui-system-fonts))";
+
 /** Bundled aliases also apply when selected for the interface; `fallback` covers glyphs `family` lacks (empty = none). */
 export function uiFontFamily(family: string, fallback = ""): string {
   const fb = familyName(fallback);
-  return [...familyFaces(family), ...(fb ? familyFaces(fb) : []), "system-ui", "sans-serif"].join(", ");
+  return [...familyFaces(family), ...(fb ? familyFaces(fb) : []), UI_PLATFORM_FALLBACK].join(", ");
 }

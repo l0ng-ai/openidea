@@ -3,7 +3,8 @@
 use crate::state::AppState;
 use ide_command::desktop_command;
 use ide_core::{IdeResult, RunId};
-use ide_host::ops::coverage::{KEEP_RUNS, blocking};
+use ide_host::ops::blocking;
+use ide_host::ops::coverage::KEEP_RUNS;
 use ide_profiler::{Profile, ProfileMode, ProfilePrepared, ProfileSpec};
 use ide_run::{RunConfig, RunInfo};
 use tauri::{State, Window};

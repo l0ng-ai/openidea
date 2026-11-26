@@ -3,6 +3,10 @@
 //! per plugin whose `java.agent` capability the user granted, for Run and Debug alike,
 //! plus any `vmOptions` the declaration lists (before the agent).
 //!
+//! An agent bound to a plugin executor (`executor = "<title>"`, API 1.18) is added only to
+//! launches through that executor ("Run with <title>" / "Debug with <title>"), whose id is
+//! the plugin's id.
+//!
 //! The grant records the jar's content hash; an agent whose jar no longer has it is
 //! left out (with a console line) until the user approves it again. The desktop
 //! installs the [`JavaAgentSource`]; elsewhere (`openidea-server`) there is none, so
@@ -33,6 +37,8 @@ pub struct ContributedAgent {
     pub jdk: Option<String>,
     /// The jar's hash recorded when the user granted `java.agent`; `None`: not granted.
     pub approved_hash: Option<String>,
+    /// The title of the plugin executor the agent is bound to: added only to its launches.
+    pub executor: Option<String>,
 }
 
 /// The agents of the enabled plugins.
@@ -61,8 +67,42 @@ pub fn current() -> Agents {
 
 /// Like [`current`], gating `vmOptions` with `jdk = "jetbrains"` against `java`.
 pub fn current_for(java: Option<&Path>) -> Agents {
+    current_for_executor(java, None)
+}
+
+/// Like [`current_for`] for a launch through `executor` (a plugin id) or a plain one.
+pub fn current_for_executor(java: Option<&Path>, executor: Option<&str>) -> Agents {
     let source = SOURCE.read().clone();
-    source.map(|s| approved_for(&s.agents(), java)).unwrap_or_default()
+    match source {
+        Some(s) => for_executor(&s.agents(), java, executor),
+        None => {
+            Agents { options: Vec::new(), notes: executor.map(|e| missing_executor(e, None)).into_iter().collect() }
+        }
+    }
+}
+
+/// The agents a launch gets: those bound to no executor, plus the one of `executor` (a plugin
+/// id). A launch through an executor whose agent is not there or not granted says so.
+pub fn for_executor(agents: &[ContributedAgent], java: Option<&Path>, executor: Option<&str>) -> Agents {
+    let chosen: Vec<ContributedAgent> =
+        agents.iter().filter(|a| a.executor.is_none() || (executor == Some(a.plugin.as_str()))).cloned().collect();
+    let mut out = approved_for(&chosen, java);
+    if let Some(executor) = executor {
+        let own = agents.iter().find(|a| a.plugin == executor && a.executor.is_some());
+        if own.is_none_or(|a| a.approved_hash.is_none()) {
+            out.notes.push(missing_executor(executor, own.and_then(|a| a.executor.as_deref())));
+        }
+    }
+    out
+}
+
+fn missing_executor(plugin: &str, title: Option<&str>) -> String {
+    match title {
+        Some(title) => format!(
+            "{title} was not applied: the Java agent of plugin {plugin} needs the java.agent permission (Settings › Plugins)."
+        ),
+        None => format!("The executor of plugin {plugin} is not available: the plugin is disabled or was removed."),
+    }
 }
 
 /// Granted agents whose jar still has the hash approved for it; an ungranted one is
@@ -121,6 +161,27 @@ pub fn jdk_allows(java: Option<&Path>, filter: Option<&str>) -> bool {
 
 fn is_jetbrains_jdk(java: &Path) -> bool {
     release_field(java, "IMPLEMENTOR").is_some_and(|v| v.to_ascii_lowercase().contains("jetbrains"))
+}
+
+/// The JVM a configuration whose command is `command` starts, for the JDK filter. A path is
+/// itself. A bare `java` is the first one on `search`, as the launch finds it; when that is
+/// no JDK's own launcher (macOS's `/usr/bin/java` stub, which runs `JAVA_HOME`'s), it is
+/// `java_home`'s. `None` when neither is found.
+pub fn launched_java(command: &str, search: &std::ffi::OsStr, java_home: Option<&Path>) -> Option<PathBuf> {
+    let path = Path::new(command);
+    if path.components().count() > 1 {
+        return Some(path.to_path_buf());
+    }
+    let windows = cfg!(windows);
+    let found =
+        ide_core::process::find_executable_in(command, search, windows, std::env::var("PATHEXT").ok().as_deref());
+    if let Some(java) = &found
+        && release_field(java, "JAVA_VERSION").is_some()
+    {
+        return found;
+    }
+    let java = java_home.map(|home| home.join("bin").join(if windows { "java.exe" } else { "java" }));
+    java.filter(|java| java.is_file()).or(found)
 }
 
 /// `KEY="value"` from the JDK `release` file next to `bin/java` (or JDK 8's `jre/bin/java`).
@@ -226,6 +287,42 @@ fn split_text(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// A JDK home with `bin/java` and a `release` file naming `implementor`.
+    #[cfg(unix)]
+    fn jdk(root: &Path, name: &str, implementor: &str) -> PathBuf {
+        let home = root.join(name);
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("bin/java"), "#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(home.join("bin/java"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(home.join("release"), format!("JAVA_VERSION=\"21\"\nIMPLEMENTOR=\"{implementor}\"\n")).unwrap();
+        home
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bare_java_is_the_one_the_launch_finds() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let jbr = jdk(dir.path(), "jbr", "JetBrains s.r.o.");
+        let openjdk = jdk(dir.path(), "openjdk", "Eclipse Adoptium");
+        // A JDK's own launcher on the search path is what runs, whatever JAVA_HOME says.
+        let search = std::env::join_paths([jbr.join("bin")]).unwrap();
+        let java = launched_java("java", &search, Some(&openjdk)).unwrap();
+        assert!(jdk_allows(Some(&java), Some("jetbrains")));
+        // A stub outside any JDK (macOS /usr/bin/java) runs JAVA_HOME's.
+        let stub = dir.path().join("usr/bin");
+        std::fs::create_dir_all(&stub).unwrap();
+        std::fs::write(stub.join("java"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(stub.join("java"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let search = std::env::join_paths([stub]).unwrap();
+        let java = launched_java("java", &search, Some(&jbr)).unwrap();
+        assert!(jdk_allows(Some(&java), Some("jetbrains")));
+        assert!(!jdk_allows(launched_java("java", &search, Some(&openjdk)).as_deref(), Some("jetbrains")));
+        // A path is itself.
+        assert_eq!(launched_java("/opt/jdk/bin/java", &search, Some(&jbr)), Some(PathBuf::from("/opt/jdk/bin/java")));
+    }
+
     fn strings(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| (*s).to_owned()).collect()
     }
@@ -254,6 +351,7 @@ mod tests {
             vm_options: Vec::new(),
             jdk: None,
             approved_hash: granted.then(|| jar.hash.clone()),
+            executor: None,
         }
     }
 
@@ -393,6 +491,34 @@ mod tests {
         let mut again = strings(&["-XX:+AllowEnhancedClassRedefinition", "-cp", "x", "Main"]);
         add_to_args(&mut again, &["-XX:+AllowEnhancedClassRedefinition".into(), javaagent.clone()]);
         assert_eq!(again, strings(&["-XX:+AllowEnhancedClassRedefinition", "-cp", "x", &javaagent, "Main"]));
+    }
+
+    #[test]
+    fn an_executor_agent_loads_only_through_its_executor() {
+        let (plain_jar, bound_jar) = (jar(), jar());
+        let plain = agent(&plain_jar, None, true);
+        let mut bound = agent(&bound_jar, None, true);
+        bound.plugin = "acme.reload".into();
+        bound.executor = Some("Hot Reload".into());
+        let agents = [plain, bound.clone()];
+        let plain_opt = format!("-javaagent:{}", plain_jar.path.display());
+        let bound_opt = format!("-javaagent:{}", bound_jar.path.display());
+
+        let run = for_executor(&agents, None, None);
+        assert_eq!(run.options, std::slice::from_ref(&plain_opt), "a plain launch leaves the executor's agent out");
+        assert!(run.notes.is_empty());
+        let with = for_executor(&agents, None, Some("acme.reload"));
+        assert_eq!(with.options, [plain_opt.clone(), bound_opt]);
+        assert!(with.notes.is_empty());
+        // Another plugin's executor id: only the plain agent, and a note.
+        let other = for_executor(&agents, None, Some("acme.spring"));
+        assert_eq!(other.options, std::slice::from_ref(&plain_opt));
+        assert_eq!(other.notes.len(), 1);
+
+        bound.approved_hash = None;
+        let ungranted = for_executor(&[bound], None, Some("acme.reload"));
+        assert!(ungranted.options.is_empty());
+        assert!(ungranted.notes[0].starts_with("Hot Reload was not applied"), "{:?}", ungranted.notes);
     }
 
     #[test]

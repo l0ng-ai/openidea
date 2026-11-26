@@ -334,6 +334,12 @@ impl Shim {
         Some(history::transcript(self.config.config_dir.as_deref()?, cwd, id))
     }
 
+    /// Whether session `id` is in the configuration directory, copied there from another one
+    /// if need be (see [`history::adopt`]).
+    fn adopt(&self, cwd: &Path, id: &str) -> bool {
+        self.config.config_dir.as_deref().is_some_and(|dir| history::adopt(dir, cwd, id))
+    }
+
     /// The conversation a session started with `start` begins with.
     fn base_chain(&self, cwd: &Path, start: &Start) -> Result<Vec<Value>, String> {
         let (id, at) = match start {
@@ -435,10 +441,13 @@ impl Shim {
                 let id = params.get("sessionId").and_then(Value::as_str).ok_or_else(|| invalid("no sessionId"))?;
                 let cwd = self.cwd_of(&params);
                 let (start, pending) = match self.load_pending(id) {
-                    Some(s) => (s, true),
-                    None if self.transcript(&cwd, id).is_some_and(|p| p.exists()) => {
-                        (Start::Resume { id: id.to_owned(), at: None }, false)
+                    Some(s) => {
+                        if let Start::Resume { id: from, .. } | Start::Fork { from, .. } = &s {
+                            self.adopt(&cwd, from);
+                        }
+                        (s, true)
                     }
+                    None if self.adopt(&cwd, id) => (Start::Resume { id: id.to_owned(), at: None }, false),
                     None => return Err(invalid(format!("no Claude Code session {id} in {}", cwd.display()))),
                 };
                 let chain = self.base_chain(&cwd, &start).map_err(internal)?;
@@ -451,24 +460,43 @@ impl Shim {
                 Ok(json!({ "configOptions": session.st.lock().settings.options() }))
             }
             "session/fork" => {
-                let source = self.session(&params)?;
-                let id = new_uuid(false);
-                let (start, settings) = {
-                    let st = source.st.lock();
-                    let start = match &st.start {
-                        Start::New { .. } if !st.pending && st.titled_or_prompted() => {
-                            Start::Fork { from: source.id.clone(), id: id.clone(), at: None }
-                        }
-                        Start::New { .. } => Start::New { id: id.clone() },
-                        Start::Resume { id: from, at } | Start::Fork { from, at, .. } if st.pending => {
-                            Start::Fork { from: from.clone(), id: id.clone(), at: at.clone() }
-                        }
-                        _ => Start::Fork { from: source.id.clone(), id: id.clone(), at: None },
-                    };
-                    (start, st.settings.clone())
+                let source_id =
+                    params.get("sessionId").and_then(Value::as_str).ok_or_else(|| invalid("no sessionId"))?;
+                let source = self.sessions.lock().get(source_id).cloned();
+                // The host names the fork's session id so the task knows it before the CLI
+                // starts; only a canonical UUID is accepted.
+                let requested = params.pointer("/_meta/openidea/forkSessionId").and_then(Value::as_str);
+                if let Some(target) = requested
+                    && !crate::canonical_uuid(target)
+                {
+                    return Err(invalid("A fork session id must be a canonical UUID"));
+                }
+                let id = requested.map_or_else(|| new_uuid(false), str::to_owned);
+                if self.sessions.lock().contains_key(&id) {
+                    return Err(invalid(format!("session {id} is already open")));
+                }
+                let cwd = source.as_ref().map_or_else(|| self.cwd_of(&params), |session| session.cwd.clone());
+                let (start, settings) = match &source {
+                    Some(source) => {
+                        let st = source.st.lock();
+                        let start = match &st.start {
+                            Start::New { .. } if !st.pending && st.titled_or_prompted() => {
+                                Start::Fork { from: source.id.clone(), id: id.clone(), at: None }
+                            }
+                            Start::New { .. } => Start::New { id: id.clone() },
+                            Start::Resume { id: from, at } | Start::Fork { from, at, .. } if st.pending => {
+                                Start::Fork { from: from.clone(), id: id.clone(), at: at.clone() }
+                            }
+                            _ => Start::Fork { from: source.id.clone(), id: id.clone(), at: None },
+                        };
+                        (start, st.settings.clone())
+                    }
+                    // A recorded session is not open in this connection: the CLI forks it
+                    // from its transcript on disk when the task's first prompt starts it.
+                    None => (Start::Fork { from: source_id.to_owned(), id: id.clone(), at: None }, Settings::default()),
                 };
                 self.save_pending(&id, Some(&start));
-                let session = self.add_session(&id, source.cwd.clone(), start, true, &params);
+                let session = self.add_session(&id, cwd, start, true, &params);
                 session.st.lock().settings = settings;
                 let options = session.st.lock().settings.options();
                 Ok(json!({ "sessionId": id, "configOptions": options }))
@@ -505,7 +533,16 @@ impl Shim {
             "_openidea/context_usage" => {
                 let session = self.session(&params)?;
                 let proc = session.st.lock().proc.clone().ok_or_else(|| internal("Claude Code is not running"))?;
-                rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)
+                let usage = rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)?;
+                // The meter shows the same numbers as these details from now on.
+                let n = |k: &str| usage.get(k).and_then(Value::as_u64);
+                if let (Some(used), Some(size)) = (n("totalTokens"), n("maxTokens").filter(|m| *m > 0)) {
+                    let update = session.st.lock().tr.on_context_usage(used, size);
+                    if let Some(shim) = session.shim() {
+                        shim.notify(vec![update]);
+                    }
+                }
+                Ok(usage)
             }
             "_openidea/stop_task" => {
                 let session = self.session(&params)?;
@@ -1007,11 +1044,16 @@ impl Session {
         let mut updates = Vec::new();
         let mut finished = None;
         let mut read_title = false;
+        let mut refresh_usage = false;
         {
             let mut st = self.st.lock();
             let st = &mut *st;
             match kind {
                 "system" => match msg.get("subtype").and_then(Value::as_str) {
+                    Some("compact_boundary") => {
+                        refresh_usage = msg.pointer("/compact_metadata/post_tokens").is_none_or(Value::is_null);
+                        updates.extend(st.tr.on_message(&msg));
+                    }
                     Some("init") => {
                         st.terminal_only = strings(msg.get("terminal_slash_commands"));
                     }
@@ -1115,6 +1157,31 @@ impl Session {
         if read_title {
             self.read_title();
         }
+        if refresh_usage {
+            self.refresh_usage();
+        }
+    }
+
+    /// Sends what the context holds after a compaction that didn't report it, as Claude Code
+    /// counts it (`get_context_usage`); until then the meter would show the count from before.
+    fn refresh_usage(self: &Arc<Self>) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let Some(proc) = me.st.lock().proc.clone() else { return };
+            let usage = match proc.control(json!({ "subtype": "get_context_usage" })).await {
+                Ok(usage) => usage,
+                Err(e) => {
+                    tracing::debug!("reading claude context usage after compaction: {e}");
+                    return;
+                }
+            };
+            let n = |k: &str| usage.get(k).and_then(Value::as_u64);
+            let (Some(used), Some(size)) = (n("totalTokens"), n("maxTokens").filter(|m| *m > 0)) else { return };
+            let update = me.st.lock().tr.on_context_usage(used, size);
+            if let Some(shim) = me.shim() {
+                shim.notify(vec![update]);
+            }
+        });
     }
 
     /// Sends the session's title once it has one: the one in its transcript, or else one

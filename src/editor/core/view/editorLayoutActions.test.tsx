@@ -13,7 +13,7 @@ import { EditorAreaView } from "./EditorArea";
 
 vi.mock("../controller", async (original) => ({
   ...(await original<object>()),
-  editorController: () => ({ publishContext: vi.fn(), tabMenu: () => [] }),
+  editorController: () => ({ publishContext: vi.fn(), tabMenu: () => [], slotFor: () => null }),
 }));
 vi.mock("./TextEditorHost", () => ({ TextEditorHost: () => <input aria-label="Source" /> }));
 vi.mock("./FindBar", () => ({ FindBar: () => null }));
@@ -45,6 +45,7 @@ beforeEach(() => {
   disposers = [
     registerTextEditorWrapper({
       id: "test.markdown",
+      keepAlive: true,
       matches: (path) => path.endsWith(".md"),
       component: MarkdownEditor,
       tabActions: MarkdownLayoutActions,

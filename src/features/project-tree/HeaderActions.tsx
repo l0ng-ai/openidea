@@ -2,7 +2,18 @@ import { shortcutLabel } from "@/platform/keymap";
 import { IconButton, type MenuItem } from "@/ui";
 import { useProject } from "@/platform/project";
 import { userScopes } from "@/platform/scopes";
-import { VIEW_MODES, setScopeView, setViewMode, setViewOption, useProjectTree, type ViewOptions } from "./store";
+import { useEditorPrefs } from "@/platform/editorSettings";
+import {
+  VIEW_MODES,
+  hasVisibleSelection,
+  previewTabEnabled,
+  setPreviewTabEnabled,
+  setScopeView,
+  setViewMode,
+  setViewOption,
+  useProjectTree,
+  type ViewOptions,
+} from "./store";
 import type { SortKey } from "./model";
 
 /** The title's "Project ▾" pane switcher (IDEA: Project / Project Files / Open Files / …). */
@@ -26,6 +37,7 @@ export function useProjectTitleMenu(): { label: string; items: MenuItem[] } {
     for (const s of scopes)
       items.push({
         id: `scope:${s.name}`,
+        verbatim: true,
         label: s.name,
         checked: mode === "scope" && scope === s.name,
         run: () => setScopeView(s.name),
@@ -38,9 +50,22 @@ export function useProjectTitleMenu(): { label: string; items: MenuItem[] } {
 }
 
 /** The on / off view options. */
-export type ToggleOption = {
+type ViewToggle = {
   [K in keyof ViewOptions]-?: ViewOptions[K] extends boolean ? K : never;
 }[keyof ViewOptions];
+/** The view's switches, plus the editor's preview tab setting it shares (as in IDEA). */
+export type ToggleOption = ViewToggle | "previewTab";
+
+const toggleState = (key: ToggleOption, options: ViewOptions, preview: boolean) =>
+  key === "previewTab" ? preview : options[key];
+
+export const isToggled = (key: ToggleOption) =>
+  toggleState(key, useProjectTree.getState().options, previewTabEnabled());
+
+export function flipToggle(key: ToggleOption) {
+  if (key === "previewTab") void setPreviewTabEnabled(!previewTabEnabled());
+  else setViewOption(key, !useProjectTree.getState().options[key]);
+}
 
 const APPEARANCE_OPTIONS: Array<[ToggleOption, string]> = [
   ["showHidden", "Show Hidden Files"],
@@ -63,10 +88,11 @@ const BEHAVIOR_OPTIONS: Array<[ToggleOption, string]> = [
 
 export const OPTION_LABELS = [...APPEARANCE_OPTIONS, FOLDERS_FIRST, ...BEHAVIOR_OPTIONS];
 
-/** Header controls of the Project tool window (IDEA: Locate, Expand/Collapse All). */
+/** Header controls of the Project tool window. */
 export function ProjectHeaderActions() {
   // IDEA hides Select Opened File while Always Select Opened File keeps the tree in sync.
   const alwaysSelect = useProjectTree((s) => s.options.autoscrollFromSource);
+  const hasSelection = useProjectTree(hasVisibleSelection);
   return (
     <>
       {!alwaysSelect && (
@@ -78,7 +104,13 @@ export function ProjectHeaderActions() {
           size="small"
         />
       )}
-      <IconButton icon="expand-all" action="project.expandAll" title="Expand All" size="small" />
+      <IconButton
+        icon="expand-all"
+        action="project.expandSelected"
+        title="Expand Selected"
+        size="small"
+        disabled={!hasSelection}
+      />
       <IconButton icon="collapse-all" action="project.collapseAll" title="Collapse All" size="small" />
     </>
   );
@@ -93,22 +125,26 @@ export const SORT_LABELS: Array<[key: SortKey, actionLabel: string, menuLabel: s
 /** Project view options in the header's "⋮" menu. */
 export function useProjectHeaderMenu(): MenuItem[] {
   const options = useProjectTree((s) => s.options);
+  const preview = useEditorPrefs().tabs.previewTab;
+  const option = (key: ToggleOption, label: string): MenuItem => ({
+    id: key,
+    label,
+    checked: toggleState(key, options, preview),
+    run: () => flipToggle(key),
+  });
   const unity = useProjectTree((s) => s.mode === "unity");
   return [
     {
       label: "Behavior",
-      submenu: BEHAVIOR_OPTIONS.map(([key, label]) => option(key, label, options)),
+      submenu: BEHAVIOR_OPTIONS.map(([key, label]) => option(key, label)),
     },
     {
       label: "Appearance",
       submenu: [
         ...(unity
-          ? [
-              option("showUnityMeta", "Show Meta Files", options),
-              option("showUnityGenerated", "Show Generated Files", options),
-            ]
+          ? [option("showUnityMeta", "Show Meta Files"), option("showUnityGenerated", "Show Generated Files")]
           : []),
-        ...APPEARANCE_OPTIONS.map(([key, label]) => option(key, label, options)),
+        ...APPEARANCE_OPTIONS.map(([key, label]) => option(key, label)),
       ],
     },
     {
@@ -121,12 +157,8 @@ export function useProjectHeaderMenu(): MenuItem[] {
           run: () => setViewOption("sortBy", sortBy),
         })),
         { kind: "separator" },
-        option(...FOLDERS_FIRST, options),
+        option(...FOLDERS_FIRST),
       ],
     },
   ];
-}
-
-function option(key: ToggleOption, label: string, options: ViewOptions): MenuItem {
-  return { id: key, label, checked: options[key], run: () => setViewOption(key, !options[key]) };
 }

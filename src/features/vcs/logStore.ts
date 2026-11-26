@@ -1008,6 +1008,7 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
       const tab = s.logTabs.find((t) => t.id === s.shownLog);
       if (tab?.readOnly)
         for (const repo of tab.repositories ?? (tab.repo ? [tab.repo] : []))
+          // oxlint-disable-next-line no-await-in-loop -- external log windows open in repository order, one at a time
           await call(commands.vcsOpenExternalLog(repo));
       const { repositories: roots, ownerRoots } = logRepositoryScope(s);
       const limit = Math.min(replace ? Math.max(PAGE, s.commits.length) : PAGE, cap - loaded);
@@ -1256,6 +1257,7 @@ async function pageUntil(find: () => boolean) {
   const generation = useGitLog.getState().generation;
   while (!find() && !useGitLog.getState().done && useGitLog.getState().generation === generation) {
     const before = useGitLog.getState().commits.length;
+    // oxlint-disable-next-line no-await-in-loop -- each page mutates shared log state; progress and cancellation decide whether to continue
     await loadMore();
     if (useGitLog.getState().commits.length <= before) break;
   }
@@ -1288,6 +1290,7 @@ export async function revealCommit(id: string, repo = currentRepo(), tab = "log"
     while (valid()) {
       const pending = loadPromises.get(tab);
       if (!pending) break;
+      // oxlint-disable-next-line no-await-in-loop -- a pending load can queue the next one; settle them in order while validity is rechecked
       await pending;
     }
   };
@@ -1336,15 +1339,20 @@ export function displayedLogGraph() {
 export async function goToParent(c: Commit) {
   const generation = useGitLog.getState().generation;
   const find = () => {
-    const { graph, commits } = displayedLogGraph();
-    const parents = graph.find((x) => x.id === commitKey(c))?.parents ?? [];
-    return { parents, candidates: commits.filter((x) => parents.includes(commitKey(x))) };
+    const { graph, unpruned, commits } = displayedLogGraph();
+    const key = commitKey(c);
+    const parents = graph.find((x) => x.id === key)?.parents ?? [];
+    // A filtered connection below the loaded page is only decided once its target loads.
+    const pending = unpruned.find((x) => x.id === key)?.parents ?? [];
+    const loaded = new Set(commits.map(commitKey));
+    return {
+      parents,
+      complete: pending.every((p) => loaded.has(p)),
+      candidates: commits.filter((x) => parents.includes(commitKey(x))),
+    };
   };
   if (!find().parents.length) return;
-  await pageUntil(() => {
-    const { parents, candidates } = find();
-    return candidates.length === parents.length;
-  });
+  await pageUntil(() => find().complete);
   if (useGitLog.getState().generation !== generation) return;
   const { candidates } = find();
   const chosen = candidates.length > 1 ? await chooseLogCommit(candidates, "Select Parent Commit") : candidates[0];
@@ -1395,6 +1403,16 @@ export function isMine(c: Commit, user: string | null): boolean {
   );
 }
 
+/** The repositories Go to Hash/Branch/Tag looks in: the shown log's, else the filtered ones, else every root. */
+export function goToRefRepositories(state: LogState = useGitLog.getState()): (string | null)[] {
+  const logTab = state.logTabs.find((t) => t.id === state.shownLog);
+  if (logTab?.repositories?.length) return logTab.repositories;
+  if (logTab?.repo) return [logTab.repo];
+  if (state.filters.repositories?.length) return state.filters.repositories;
+  const roots = useVcs.getState().roots;
+  return roots.length ? roots : [currentRepo()];
+}
+
 /**
  * Go to Hash/Branch/Tag: selects the commit `rev` names, paging the log until it is
  * loaded (and clearing the filters when they hide it). False when there is no such commit.
@@ -1410,18 +1428,7 @@ export async function goToRef(rev: string, repository?: string | null): Promise<
     await load;
   };
   const logTab = state.logTabs.find((t) => t.id === state.shownLog);
-  const repos =
-    repository !== undefined
-      ? [repository]
-      : logTab?.repositories?.length
-        ? logTab.repositories
-        : logTab?.repo
-          ? [logTab.repo]
-          : state.filters.repositories?.length
-            ? state.filters.repositories
-            : useVcs.getState().roots.length
-              ? useVcs.getState().roots
-              : [currentRepo()];
+  const repos = repository !== undefined ? [repository] : goToRefRepositories(state);
   if (repos.length > 1) {
     const candidates = (
       await Promise.all(

@@ -53,6 +53,7 @@ export function hideSplash(): void {
   if (!el) return;
   const timeout = new Promise((resolve) => setTimeout(resolve, MAX_WAIT_MS));
   void Promise.race([Promise.all(holds), timeout]).then(async () => {
+    // oxlint-disable-next-line no-await-in-loop -- wait for dialog answers; new questions can arrive while we wait
     while (questions.size) await Promise.all(questions);
     // Two frames: let React commit the state the holds produced before uncovering it.
     requestAnimationFrame(() =>

@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
-import { isTauri } from "@/platform/ipc";
+import { choosePath } from "@/platform/choosePath";
 import { EDIT_SCOPES_ACTION, useCustomScopeList } from "@/platform/search";
 import { Button, IconButton, Input, Radio, Select, T } from "@/ui";
 import { SCOPE_LABELS, currentFile, type ScopeChoice, type ScopeKind } from "./scope";
@@ -40,10 +40,7 @@ export function AnalysisDialogHost() {
 }
 
 async function browseDirectory(initial: string): Promise<string | null> {
-  if (!isTauri()) return null;
-  const { open } = await import("@/platform/dialog");
-  const picked = await open({ directory: true, multiple: false, defaultPath: initial || undefined });
-  return typeof picked === "string" ? picked : null;
+  return choosePath({ directory: true, defaultPath: initial });
 }
 
 const KINDS: ScopeKind[] = ["project", "directory", "file", "changed", "custom"];
@@ -108,7 +105,13 @@ export function ScopeFields({
                   <Select<string>
                     className={styles.grow}
                     value={(selected ? value.custom : custom) ?? null}
-                    options={scopes.map((s) => ({ value: s.name, label: s.name, detail: s.pattern }))}
+                    options={scopes.map((s) => ({
+                      value: s.name,
+                      label: s.name,
+                      verbatim: true,
+                      detail: s.pattern,
+                      verbatimDetail: true,
+                    }))}
                     placeholder={scopes.length ? "Choose a scope" : "No custom scopes"}
                     disabled={!selected}
                     onChange={(custom) => onChange({ ...value, custom })}

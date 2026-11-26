@@ -79,3 +79,62 @@ export function findInLines(
   }
   return { matches, overflow: false, invalid: false };
 }
+
+/**
+ * Like `findInLines` over output whose long lines are cut into several rows: `continues(row)` says
+ * the next row carries on the same line. Rows are searched joined, and a match is reported on the
+ * row where it starts, its `end` running past that row when it crosses a cut.
+ */
+export function findInCutLines<T extends { id: number; text: string }>(
+  rows: readonly T[],
+  continues: (row: T) => boolean,
+  query: string,
+  options: FindOptions,
+): FindResult {
+  const joined: { id: number; text: string }[] = [];
+  const firstRow: number[] = [];
+  rows.forEach((row, i) => {
+    const prev = joined.length - 1;
+    if (i > 0 && continues(rows[i - 1]!)) joined[prev] = { id: joined[prev]!.id, text: joined[prev]!.text + row.text };
+    else {
+      joined.push(row);
+      firstRow.push(i);
+    }
+  });
+  const res = findInLines(joined, query, options);
+  const matches = res.matches.map((m) => {
+    let row = firstRow[m.line]!;
+    let offset = 0;
+    while (continues(rows[row]!) && m.start >= offset + rows[row]!.text.length) offset += rows[row++]!.text.length;
+    return { line: row, lineId: rows[row]!.id, start: m.start - offset, end: m.end - offset };
+  });
+  return { ...res, matches };
+}
+
+/** Highlights per row for `findInCutLines` matches: a match across a cut is marked on each row it covers. */
+export function marksByRow<T extends { text: string }>(
+  matches: readonly ConsoleMatch[],
+  activeIndex: number,
+  rows: readonly T[],
+  continues: (row: T) => boolean,
+): Map<number, { start: number; end: number; current: boolean }[]> {
+  const byRow = new Map<number, { start: number; end: number; current: boolean }[]>();
+  const add = (row: number, mark: { start: number; end: number; current: boolean }) => {
+    const marks = byRow.get(row);
+    if (marks) marks.push(mark);
+    else byRow.set(row, [mark]);
+  };
+  matches.forEach((match, i) => {
+    const current = i === activeIndex;
+    let { line, start, end } = match;
+    while (rows[line] && continues(rows[line]!) && end > rows[line]!.text.length) {
+      const len = rows[line]!.text.length;
+      add(line, { start, end: len, current });
+      start = 0;
+      end -= len;
+      line++;
+    }
+    add(line, { start, end, current });
+  });
+  return byRow;
+}

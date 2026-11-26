@@ -173,7 +173,7 @@ function moduleOptions(maven: readonly MavenProject[], gradle: readonly GradleMo
   return [
     ...maven
       .filter((p) => p.packaging !== "pom" || p.dependencies.length > 0)
-      .map((p) => ({ value: p.pom, label: p.displayName, detail: p.pom, icon: "maven-project" })),
+      .map((p) => ({ value: p.pom, label: p.displayName, verbatim: true, detail: p.pom, icon: "maven-project" })),
     // buildSrc's tasks can't be run from the build.
     ...gradle.flatMap((build) =>
       build.projects
@@ -181,6 +181,7 @@ function moduleOptions(maven: readonly MavenProject[], gradle: readonly GradleMo
         .map((p) => ({
           value: gradleProjectKey(build, p),
           label: p.name,
+          verbatim: true,
           detail: `${build.dir || "."} ${p.path}`,
           icon: p.path === ":" ? "gradle-project" : "gradle-module",
         })),
@@ -288,7 +289,7 @@ function UsageBlock({
           <span className={styles.stepLabel}>{moduleName}</span>
         </li>
         {usage.path.map((d, i) => (
-          <li key={i} className={styles.step} style={{ paddingLeft: (i + 1) * 16 }}>
+          <li key={`${coordinates(d)}:${d.scope}`} className={styles.step} style={{ paddingLeft: (i + 1) * 16 }}>
             <Icon name="library" size={16} className={styles.icon} />
             <span className={clsx(styles.stepLabel, i === usage.path.length - 1 && styles.stepTarget)}>
               {coordinates(d)}
@@ -335,8 +336,14 @@ function UsagesPane({
             </div>
           )}
           <div className={styles.usageList} aria-label={tx("Usages")}>
-            {sortedUsages(artifact.usages).map((u, i) => (
-              <UsageBlock key={i} usage={u} moduleName={moduleName} moduleIcon={moduleIcon} pom={pom} />
+            {sortedUsages(artifact.usages).map((u) => (
+              <UsageBlock
+                key={`${coordinates(u.dependency)}:${u.path.map((d) => coordinates(d)).join("/")}`}
+                usage={u}
+                moduleName={moduleName}
+                moduleIcon={moduleIcon}
+                pom={pom}
+              />
             ))}
           </div>
         </>
@@ -444,9 +451,13 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
   const selected = artifacts.find((a) => a.key === selectedKey) ?? null;
   const scopeOptions: SelectOption[] = [
     { value: ALL_SCOPES, label: tx("All scopes") },
-    ...scopesOf(artifacts).map((s) => ({ value: s, label: s })),
+    ...scopesOf(artifacts).map((s) => ({ value: s, label: s, verbatim: true })),
   ];
-  const configurationOptions: SelectOption[] = (configurations ?? []).map((c) => ({ value: c, label: c }));
+  const configurationOptions: SelectOption[] = (configurations ?? []).map((c) => ({
+    value: c,
+    label: c,
+    verbatim: true,
+  }));
   const refreshGradle = () => {
     if (configuration === null) void syncTool("gradle", buildDir);
     else setGeneration((g) => g + 1);

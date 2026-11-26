@@ -474,6 +474,33 @@ pub fn parse_container_stats(text: &str) -> Option<DockerContainerStats> {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct RawVolumeUsage {
+    name: String,
+    size: String,
+}
+
+/// `docker system df -v --format '{{json .Volumes}}'` volume name → human size.
+pub fn parse_volume_sizes(text: &str) -> BTreeMap<String, String> {
+    let trimmed = text.trim();
+    let items: Vec<RawVolumeUsage> = if trimmed.is_empty() || trimmed == "null" {
+        Vec::new()
+    } else if let Ok(parsed) = serde_json::from_str::<Option<Vec<RawVolumeUsage>>>(trimmed) {
+        parsed.unwrap_or_default()
+    } else {
+        lines::<RawVolumeUsage>(text).collect()
+    };
+    items
+        .into_iter()
+        .filter(|v| {
+            let size = v.size.trim();
+            !v.name.is_empty() && !size.is_empty() && !size.eq_ignore_ascii_case("n/a")
+        })
+        .map(|v| (v.name, v.size.trim().to_owned()))
+        .collect()
+}
+
+#[derive(Deserialize, Default)]
 #[serde(default)]
 struct RawVersion {
     #[serde(rename = "Client")]

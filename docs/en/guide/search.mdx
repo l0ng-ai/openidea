@@ -41,6 +41,7 @@ Classes and symbols come from the IDE's own index (available as soon as a file i
 - **Recent Files** lists recently opened files and the tool windows; type to filter.
 - **Recent Locations** shows the places you visited or edited with a few lines of code around each. Press the shortcut again (or check **Show changed only**) to see only edited places.
 - **Switcher** works like an application switcher: hold `⌃` / `Ctrl`, press `⇥` / `Tab` to move through open files and tool windows, and release to switch.
+- **Back** / **Forward** walks your navigation history across editor locations, split panes, and non-file editor tabs (such as diffs, agent chats, and terminal tabs), skipping entries for deleted tasks or closed terminal sessions.
 - **Select In…** reveals the current file in the Project view or another tool window.
 
 ## Find and replace in a file
@@ -54,6 +55,8 @@ Classes and symbols come from the IDE's own index (available as soon as a file i
 | **Open Results in Find Window** | `⌥F7` | `Alt+F7`        |
 
 The find bar at the top of the editor has match case, whole words and regex options. Matches are highlighted as you type. **Add Selection for Next Occurrence** (`⌃G` / `Alt+J`) and **Select All Occurrences** (`⌃⌘G` / `Ctrl+Alt+Shift+J`) turn matches into carets for multi-caret editing.
+
+**Find Word at Caret** (`Ctrl+F3` on Windows / Linux, no default shortcut on macOS) jumps to the next occurrence of the word at the caret, or of the selected text, without opening the find bar; **Find Previous Word at Caret** (`Ctrl+Shift+F3`) jumps back. As in IntelliJ IDEA the search is case-sensitive and literal, and it becomes the last search, so **Find Next Occurrence** goes on with it; the find bar's Match Case, Words and Regex options are set to match.
 
 ## Find and replace in files
 

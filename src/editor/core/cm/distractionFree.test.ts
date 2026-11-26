@@ -46,7 +46,7 @@ describe("editor in distraction free mode", () => {
     expect(view.dom.classList.contains("cm-openidea-distractionFree")).toBe(true);
     expect(view.dom.style.getPropertyValue("--openidea-df-columns").trim()).toBe("100");
     expect(view.contentDOM.getAttribute("style") ?? "").not.toContain("background-image");
-    expect(stickyExtension({} as EditorSettings)).toEqual([]);
+    expect(stickyExtension({} as EditorSettings, "markdown")).toEqual([]);
     dispose();
   });
 });

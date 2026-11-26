@@ -27,7 +27,12 @@ import {
 } from "./services";
 import { KIND_OPTIONS, categoryOf } from "./configs";
 import { startedPort } from "@/platform/serverPort";
-import { registerRunConfigType, useDebugRunSessions, type DebugServiceSession } from "@/workbench/contributions";
+import {
+  registerRunConfigType,
+  registerRunExecutor,
+  useDebugRunSessions,
+  type DebugServiceSession,
+} from "@/workbench/contributions";
 import { useRun, type RunSession } from "./store";
 
 const { startRun, stopServiceSessions, openUrl, showContextMenu } = vi.hoisted(() => ({
@@ -427,6 +432,33 @@ describe("running service count (the Services badge)", () => {
     expect(runningServiceCount()).toBe(2);
   });
 
+  it("describes a configuration node to other features and offers its executors", () => {
+    useRun.setState({ configs: [dev], sessions: [session("s1", dev, "running", 1)] });
+    const node = { key: "run:config:dev", label: "dev", icon: "" };
+    expect(runServiceProvider.context!(node)).toEqual({
+      provider: "runConfigurations",
+      id: "dev",
+      kind: dev.kind,
+      name: "dev",
+      running: true,
+      runConfigurationId: "dev",
+    });
+    expect(runServiceProvider.context!({ key: `run:type:${dev.kind}`, label: "", icon: "" })).toBeNull();
+    const off = registerRunExecutor({
+      id: "probe",
+      label: (name) => `Probe '${name}'`,
+      icon: "run",
+      action: "probe.run",
+      supports: (c) => c.id === "dev",
+      prepare: async () => null,
+    });
+    const labels = runServiceProvider.menu!(node).flatMap((e) =>
+      e.kind === "separator" || e.kind === "header" || e.kind === "action" ? [] : [e.label],
+    );
+    expect(labels).toContain("Probe 'dev'");
+    off();
+  });
+
   it("does not count a configuration removed from the window while it runs", () => {
     useRun.setState({ configs: [dev], sessions: [session("s1", dev, "running", 1)] });
     const node = { key: "run:config:dev", label: "dev", icon: "" };
@@ -786,6 +818,7 @@ describe("service selection", () => {
     leaf(runServiceProvider.menu!(item("dev")), "Remove from Services").run!();
     for (const id of ["run-all", "restart-all"]) {
       startRun.mockClear();
+      // oxlint-disable-next-line no-await-in-loop -- each action resets mocks and asserts its own calls before the next action runs
       await runServiceProvider.actions!(group)
         .find((a) => a.id === id)!
         .run();

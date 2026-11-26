@@ -155,6 +155,23 @@ fn flash_taskbar_unless_focused(app: &AppHandle) {
     });
 }
 
+/// Sends `event` to `peers` (failures ignored: a window may be closing) and then to `owner`,
+/// whose result is returned. The event is serialised once; `send` gets each window's copy of the
+/// JSON, which Tauri's `emit_to` would otherwise re-serialise per window (large for
+/// diagnostics of a big file).
+fn fan_out<T: serde::Serialize>(
+    event: &T,
+    peers: &[String],
+    owner: &str,
+    mut send: impl FnMut(&str, String) -> tauri::Result<()>,
+) -> tauri::Result<()> {
+    let json = serde_json::to_string(event)?;
+    for peer in peers {
+        let _ = send(peer, json.clone());
+    }
+    send(owner, json)
+}
+
 impl EventSink for TauriSink {
     fn emit(&self, event: IdeEvent) {
         if matches!(
@@ -180,13 +197,12 @@ impl EventSink for TauriSink {
         }
         let result = match &self.window {
             Some(label) => {
-                for target in crate::windows::document_windows(&self.app, label)
-                    .into_iter()
-                    .filter(|_| !matches!(&event, IdeEvent::McpRequest { .. } | IdeEvent::McpRequestClosed { .. }))
-                {
-                    let _ = self.app.emit_to(target.as_str(), IDE_EVENT, &event);
-                }
-                self.app.emit_to(label.as_str(), IDE_EVENT, &event)
+                let peers = if matches!(&event, IdeEvent::McpRequest { .. } | IdeEvent::McpRequestClosed { .. }) {
+                    Vec::new()
+                } else {
+                    crate::windows::document_windows(&self.app, label)
+                };
+                fan_out(&event, &peers, label, |window, json| self.app.emit_str_to(window, IDE_EVENT, json))
             }
             None => self.app.emit(IDE_EVENT, &event),
         };
@@ -210,6 +226,14 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let saved = events.clone();
         (coalescing_sink(Arc::new(move |event| saved.lock().push(event)), tokio::runtime::Handle::current()), events)
+    }
+
+    /// Waits for the coalescing window to flush `n` events (a fixed sleep is too short on slow CI timers).
+    async fn wait_for_events(events: &Mutex<Vec<IdeEvent>>, n: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while events.lock().len() < n && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     fn diagnostics(path: &str, source: &str, message: &str) -> IdeEvent {
@@ -240,6 +264,56 @@ mod tests {
         }
     }
 
+    /// Counts how often it is serialised.
+    struct CountingEvent<'a> {
+        event: &'a IdeEvent,
+        serialised: AtomicUsize,
+    }
+
+    impl serde::Serialize for CountingEvent<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.serialised.fetch_add(1, Ordering::Relaxed);
+            self.event.serialize(serializer)
+        }
+    }
+
+    #[test]
+    fn fan_out_serialises_once_for_every_window() {
+        let event = diagnostics("/p/a.rs", "rust-analyzer", "unused");
+        let counting = CountingEvent { event: &event, serialised: AtomicUsize::new(0) };
+        let peers: Vec<String> = (1..=7).map(|n| format!("comparison-project-1-{n}")).collect();
+        let mut sent = Vec::new();
+
+        fan_out(&counting, &peers, "project-1", |window, json| {
+            sent.push((window.to_owned(), json));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(counting.serialised.load(Ordering::Relaxed), 1);
+        let expected = serde_json::to_string(&event).unwrap();
+        let windows: Vec<&str> = sent.iter().map(|(window, _)| window.as_str()).collect();
+        assert_eq!(windows.len(), 8);
+        assert_eq!(windows.last(), Some(&"project-1"));
+        assert_eq!(windows[..7], peers.iter().map(String::as_str).collect::<Vec<_>>()[..]);
+        assert!(sent.iter().all(|(_, json)| json == &expected));
+    }
+
+    #[test]
+    fn fan_out_ignores_peer_failures_and_returns_the_owners_result() {
+        let event = task("indexing", false);
+        let peers = vec!["comparison-project-1-1".to_owned(), "comparison-project-1-2".to_owned()];
+        let mut reached = Vec::new();
+
+        let result = fan_out(&event, &peers, "project-1", |window, _| {
+            reached.push(window.to_owned());
+            if window == "project-1" { Err(tauri::Error::WebviewNotFound) } else { Err(tauri::Error::WindowNotFound) }
+        });
+
+        assert!(matches!(result, Err(tauri::Error::WebviewNotFound)));
+        assert_eq!(reached, ["comparison-project-1-1", "comparison-project-1-2", "project-1"]);
+    }
+
     #[tokio::test]
     async fn coalesces_diagnostics_by_path_and_source() {
         let (sink, events) = setup();
@@ -250,9 +324,7 @@ mod tests {
         sink.emit(diagnostics("/p/b.rs", "rust-analyzer", "other"));
 
         assert!(events.lock().is_empty());
-        tokio::task::yield_now().await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        tokio::task::yield_now().await;
+        wait_for_events(&events, 3).await;
 
         {
             let saved_events = events.lock();
@@ -315,7 +387,7 @@ mod tests {
         }
         assert_eq!(events.lock().len(), MAX_PENDING_DIAGNOSTICS);
 
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        wait_for_events(&events, MAX_PENDING_DIAGNOSTICS + 1).await;
         assert_eq!(events.lock().len(), MAX_PENDING_DIAGNOSTICS + 1);
     }
 

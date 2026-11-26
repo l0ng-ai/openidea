@@ -5,7 +5,8 @@
   gap: var(--space-2);
   padding: 6px 10px;
   border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
+  background: var(--bg-feedback-info);
+  box-shadow: inset 0 0 0 1px var(--border-feedback-info);
   color: var(--fg);
   font-size: var(--fs-small);
 }
@@ -59,7 +60,6 @@
 }
 
 .tagSuccess {
-  background: color-mix(in srgb, var(--success) 18%, var(--bg-elev));
   color: var(--success);
 }
 
@@ -116,7 +116,7 @@
   flex-direction: column;
   gap: var(--space-0-5);
   padding: 5px 8px;
-  border-radius: var(--radius-small, 3px);
+  border-radius: var(--radius-small);
   background: var(--bg-elev);
   box-shadow: inset 0 0 0 1px var(--border);
 }
@@ -246,13 +246,11 @@
 .segmentBtn {
   padding: 3px 10px;
   border: 0;
-  border-radius: var(--radius-small, 3px);
+  border-radius: var(--radius-small);
   background: transparent;
   color: var(--fg-muted);
   font: inherit;
   font-size: var(--fs-small);
-  font-weight: 500;
-  cursor: pointer;
 }
 
 .segmentActive {
@@ -279,7 +277,6 @@
   color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 
 .agentChip:hover {

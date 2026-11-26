@@ -193,11 +193,14 @@ export function identifierEnd(text: string, pos: number): number {
 }
 
 /** Completion trigger character for the text just before the caret, if any. */
-export function triggerCharacter(before: string): string | null {
+export function triggerCharacter(before: string, language?: string): string | null {
   const last = before.slice(-1);
   if (last === ".") return before.slice(-2) === ".." ? null : ".";
   if (last === ":") return before.slice(-2) === "::" ? ":" : null;
   if (last === ">") return before.slice(-2) === "->" ? ">" : null;
   if (last === "@") return "@";
+  // In Java, `(` right after an annotation name asks the server for its attributes, like IDEA;
+  // a method call's `(` does not open the popup.
+  if (last === "(") return language === "java" && /@[\w$.]+\s*\($/.test(before) ? "(" : null;
   return null;
 }

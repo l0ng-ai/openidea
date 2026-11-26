@@ -10,6 +10,7 @@ import {
   stagedValue,
   useSettingsDialog,
 } from "@/features/settings/model/staging";
+import { useI18n } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { createMemoryPluginsBackend, setPluginsBackend } from "../backend";
 import { projectSettings, type SettingsDecl } from "../settings";
@@ -316,4 +317,16 @@ it("keeps values that equal the setting's default instead of dropping them", () 
   expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toMatchObject({
     "example.helper": { enabled: false, name: "" },
   });
+});
+
+it("shows the plugin's setting titles as the plugin wrote them, keeping the IDE's own words translated", () => {
+  const previous = useI18n.getState().texts;
+  useI18n.setState({ texts: { ...previous, Enabled: "已启用", "Move Up": "上移" } });
+  try {
+    render(<Harness page="defaults" />);
+    expect(screen.getByRole("checkbox", { name: "Enabled" })).toBeInTheDocument();
+    expect(screen.queryByText("已启用")).not.toBeInTheDocument();
+  } finally {
+    useI18n.setState({ texts: previous });
+  }
 });

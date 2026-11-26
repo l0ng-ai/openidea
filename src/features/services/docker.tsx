@@ -256,7 +256,7 @@ function menu(item: ServiceTreeItem): MenuItem[] {
       { kind: "separator" },
       connectionState(c.id).disconnected
         ? { label: "Connect", run: () => void connectConnection(c.id) }
-        : { label: "Disconnect", run: () => disconnectConnection(c.id) },
+        : { label: "Disconnect", run: () => void disconnectConnection(c.id) },
       { label: "Edit Connection…", icon: "edit", run: () => openConnectionDialog(c) },
       { label: "Remove Connection", icon: "trash", danger: true, run: () => void removeConnectionPrompt(c) },
     );
@@ -583,6 +583,18 @@ export const dockerProvider: ServiceProviderContribution = {
   watch,
   actions,
   menu,
+  context: (item) => {
+    const t = resolveTarget(item.key);
+    if (t?.node.kind !== "container") return null;
+    const c = t.node.container;
+    return {
+      provider: DOCKER_PROVIDER,
+      id: c.id,
+      kind: "docker-container",
+      name: c.name,
+      running: c.state === "running",
+    };
+  },
   activate: (item) => {
     const t = resolveTarget(item.key);
     if (t?.node.kind === "container") useServices.setState({ detailTab: "log" });

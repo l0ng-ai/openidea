@@ -25,6 +25,8 @@ export const vscodeWindows: Record<string, string[]> = {
   "find.replaceInFile": ["Ctrl+H"],
   "find.next": ["F3"],
   "find.previous": ["Shift+F3"],
+  "editor.scrollUp": ["Ctrl+Up"],
+  "editor.scrollDown": ["Ctrl+Down"],
   "find.popup.nextResult": ["F3"],
   "find.popup.previousResult": ["Shift+F3"],
   "code.extendSelection": ["Alt+Shift+Right"],

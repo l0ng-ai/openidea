@@ -33,10 +33,11 @@ export function presentLogGraph(
     ? new Set(source.filter((c) => !fragments.merges.has(c.id)).map((c) => c.id))
     : fragments.merges;
   const linear = options.linearizeMerges ? linearizeMerges(collapsed?.graph ?? source, expanded) : null;
-  const graph = pruneFilteredEdges(linear?.graph ?? collapsed?.graph ?? source);
+  const unpruned = linear?.graph ?? collapsed?.graph ?? source;
+  const graph = pruneFilteredEdges(unpruned);
   const byId = new Map(all.map((c) => [commitKey(c), c]));
   const commits = graph.map((c) => byId.get(c.id)!);
   const laid = computeGraph(graph).rows;
   const rows = straightenLaneChanges(compactLanes(options.longEdges ? laid : hideLongEdges(laid)));
-  return { commits, graph, rows, linear, collapsed };
+  return { commits, graph, unpruned, rows, linear, collapsed };
 }

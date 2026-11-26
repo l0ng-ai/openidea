@@ -58,7 +58,7 @@ import {
 import styles from "./common.module.css";
 import resetStyles from "./ResetDialog.module.css";
 import tagStyles from "./TagDialog.module.css";
-import { ComparisonTree } from "./ComparisonTree";
+import { ComparisonTree, chainedDiff } from "./ComparisonTree";
 import { showWorktreeComparison } from "./compareTool";
 import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx, txPart } from "@/platform/i18n";
@@ -647,6 +647,7 @@ async function applyCommitSelection(commits: Commit[], kind: "cherryPick" | "rev
           if (cancelRequested()) throw new IpcError({ kind: "cancelled", message: "cancelled" });
           activeRepo = repo;
           const revisions = (pick ? group.reverse() : group).map((commit) => commit.id);
+          // oxlint-disable-next-line no-await-in-loop -- each repository runs in order under one shared request and cancellation state
           const origins = addOrigin ? await cherryPickOrigins(repo, group) : [];
           const op: GitOperation = pick
             ? {
@@ -659,6 +660,7 @@ async function applyCommitSelection(commits: Commit[], kind: "cherryPick" | "rev
           if (cancelRequested()) throw new IpcError({ kind: "cancelled", message: "cancelled" });
           const name = repo ? repoName(repo) : "";
           logConsole("cmd", `git ${describeOperation(op, repo)}${multiple && name ? ` (${name})` : ""}`);
+          // oxlint-disable-next-line no-await-in-loop -- the git command consumes the shared request/channel and cancellation is checked between targets
           const result = await call(commands.vcsOperation(repo, request, op, output()));
           if (result && "emptyCherryPicks" in result && result.emptyCherryPicks !== undefined) {
             empty[result.action] += result.emptyCherryPicks;
@@ -1275,9 +1277,10 @@ export function ChangesBetweenDialog({
   }, [native, onCaption, caption]);
   const showDiff = () => {
     if (!current) return;
-    if (onShowDiff) onShowDiff(diffFor(current));
+    const data = chainedDiff(tree, current, diffFor) ?? diffFor(current);
+    if (onShowDiff) onShowDiff(data);
     else {
-      void openVcsDiff(diffFor(current));
+      void openVcsDiff(data);
       // A diff window opens on top of this list (#1863); an editor tab would sit behind it.
       if (!vcsDiffInFront()) onClose();
     }

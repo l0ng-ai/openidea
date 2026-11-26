@@ -10,6 +10,7 @@
 import { executeAction, type Action } from "@/platform/actions";
 import { t, tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
+import { isWebMode } from "@/platform/webBridge";
 import {
   basename,
   confirmLeaveProject,
@@ -22,10 +23,10 @@ import {
 } from "@/platform/project";
 import { confirmProjectTrust } from "@/platform/projectTrust";
 import { ask } from "@/workbench/messages";
-import { connectRemote, isRemoteWindow } from "@/platform/remote";
+import { connectRemote, isRemoteWindow, parseRemoteLocation } from "@/platform/remote";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
-import { chooseProjectWindow } from "@/workbench/projectWindow";
+import { chooseProjectWindow, openRemoteProject, type ProjectWindowOverride } from "@/workbench/projectWindow";
 import { openTabColorPicker } from "@/workbench/TabColorPicker";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
 import { editorSwitching } from "@/editor/api";
@@ -84,6 +85,7 @@ type Positions = ReadonlyArray<{ path: string; line: number; column: number }>;
 async function openInEditor(files: readonly string[], positions: Positions = []): Promise<void> {
   for (const [i, path] of files.entries()) {
     const at = positions.find((p) => p.path === path);
+    // oxlint-disable-next-line no-await-in-loop -- tabs open in argument order so the last file is focused
     await editorService()
       .openFile(path, {
         focus: i === files.length - 1,
@@ -163,6 +165,13 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
   if (desktopOnly()) return;
   const s = useProject.getState();
   const inNew = newWindow || s.project !== null || s.lightEdit;
+  if (inNew && isWebMode()) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("project", path);
+    url.searchParams.set("newWindow", "1");
+    const opened = window.open(url.toString(), "_blank", "noopener");
+    if (opened) return;
+  }
   try {
     const outcome = await openProjectWindow(path, inNew, files);
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
@@ -173,18 +182,23 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
 
 /**
  * Opens `path` following "Open project in" when this window already has a
- * project or LightEdit session, then `files` in its editor.
+ * project or LightEdit session, then `files` in its editor. `override` (a
+ * modifier key on a recent project) picks the window instead.
  */
-export async function openProjectWithPolicy(path: string, files: readonly string[] = []): Promise<void> {
+export async function openProjectWithPolicy(
+  path: string,
+  files: readonly string[] = [],
+  override?: ProjectWindowOverride | null,
+): Promise<void> {
   if (desktopOnly()) return;
   const { project: current, lightEdit } = useProject.getState();
-  if (!current && !lightEdit) return openProjectInWindow(path, false, files);
+  if (!current && !lightEdit) return openProjectInWindow(path, override === "new", files);
   if (!isRemoteWindow() && current?.root === path) return openInEditor(files);
   if (!isRemoteWindow() && current?.workspace?.projects.includes(path)) {
     await executeAction("project.reveal", path);
     return openInEditor(files);
   }
-  const mode = await chooseProjectWindow(basename(path));
+  const mode = override ?? (await chooseProjectWindow(basename(path)));
   if (!mode) return;
   if (mode === "new") return openProjectInWindow(path, true, files);
   if (mode === "attach") {
@@ -202,6 +216,14 @@ export async function openProjectWithPolicy(path: string, files: readonly string
   } catch {
     if (await openHere(path)) await openInEditor(files);
   }
+}
+
+/** What the recent lists pass to `file.openRecentProject`: the path, plus the window a modifier key picked. */
+function recentProjectArg(arg: unknown): { path: string; window: ProjectWindowOverride | null } | null {
+  if (typeof arg === "string") return { path: arg, window: null };
+  if (!arg || typeof arg !== "object" || !("path" in arg) || typeof arg.path !== "string") return null;
+  const { window } = arg as { window?: unknown };
+  return { path: arg.path, window: window === "new" || window === "same" ? window : null };
 }
 
 async function attachProject(path: string, files: readonly string[] = []): Promise<void> {
@@ -379,6 +401,17 @@ export function windowActions(): Action[] {
         if (desktopOnly()) return;
         const path = await pickFolder(t("app.action.attachProject"));
         if (path) await attachProject(path);
+      },
+    },
+    {
+      // Import Module from Existing Sources for a folder without a build file.
+      id: "project.attachFolder",
+      title: t("app.action.attachProject"),
+      category: t("app.category.file"),
+      hidden: true,
+      when: "projectLocal",
+      run: async ({ arg }) => {
+        if (typeof arg === "string" && !desktopOnly()) await attachProject(arg);
       },
     },
     {
@@ -579,12 +612,22 @@ export function windowActions(): Action[] {
       run: openLightEditFileAsProject,
     },
     {
+      // The recent lists pass `{ path, window }` when a modifier key picks the window.
       id: "file.openRecentProject",
       title: t("app.action.openRecentProject"),
       category: t("app.category.file"),
       hidden: true,
       run: async (c) => {
-        if (typeof c.arg === "string") await openProjectWithPolicy(c.arg);
+        const recent = recentProjectArg(c.arg);
+        if (!recent) return;
+        // Open Recent lists Remote Development projects by their location (`ssh://host/path`).
+        const remote = parseRemoteLocation(recent.path);
+        if (!remote) return openProjectWithPolicy(recent.path, [], recent.window);
+        try {
+          await openRemoteProject(remote.target, remote.path, undefined, recent.window);
+        } catch (e) {
+          openFailed(remote.path, e);
+        }
       },
     },
     {
@@ -681,7 +724,20 @@ export function installLaunchHandling(): () => void {
     }
   });
   provideStartupLaunch(launch);
-  holdSplash(launch);
+  // Uncover once the launch project starts opening — the opening view shows the title bar and its
+  // own progress — rather than holding the splash over it until the project is fully open.
+  const shown = new Promise<void>((resolve) => {
+    const done = () => {
+      off();
+      resolve();
+    };
+    const off = useProject.subscribe((s) => {
+      if (s.openingPath !== null) done();
+    });
+    if (useProject.getState().openingPath !== null) done();
+    void launch.then(done, done);
+  });
+  holdSplash(shown);
   return () => {
     disposed = true;
     unlisten?.();

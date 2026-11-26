@@ -17,7 +17,7 @@ commands.lspSemanticTokens = async () => ({
   data: {
     tokenTypes: ["operator", "parameter"],
     tokenModifiers: ["declaration", "modification"],
-    data: [0, 4, 5, 0, 1, 0, 10, 6, 1, 2],
+    data: [1, 4, 5, 0, 1, 1, 10, 6, 1, 2],
   },
 });
 
@@ -35,7 +35,7 @@ document.body.append(host);
 const support = await loadSupport(findLanguageDescription("Kotlin", "Demo.kt")!);
 const view = new EditorView({
   parent: host,
-  doc: "fun greet(prefix: String) {}",
+  doc: "// before\nfun greet(prefix: String) {}\n// after",
   extensions: [
     support!,
     syntaxHighlightField,
@@ -49,4 +49,10 @@ const view = new EditorView({
       : []),
   ],
 });
-view.dispatch({ effects: setSyntaxHighlights.of({ kinds: ["function", "parameter"], data: [4, 9, 0, 10, 16, 1] }) });
+const start = view.state.doc.line(2).from;
+view.dispatch({
+  effects: setSyntaxHighlights.of({
+    kinds: ["function", "parameter"],
+    data: [start + 4, start + 9, 0, start + 10, start + 16, 1],
+  }),
+});

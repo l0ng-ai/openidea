@@ -72,7 +72,8 @@ import {
 import { referenceExtensions, setReferences } from "./composerEditor";
 import { referenceHover } from "./ReferenceChip";
 import { composerDraft, provideIdeContext, setIdeContext, updateComposer, useAgents } from "./store";
-import { ImagePreview, imageSrc } from "./ImagePreview";
+import { ImagePreview } from "./ImagePreview";
+import { imageSrc } from "./imageActions";
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
@@ -1294,7 +1295,12 @@ export function Composer(props: ComposerProps) {
             </span>
           ))}
           {images.map((img, i) => (
-            <span key={i} className={styles.image} title={img.name ?? undefined}>
+            <span
+              // oxlint-disable-next-line react/no-array-index-key -- identical images can repeat; position is the identity
+              key={i}
+              className={styles.image}
+              title={img.name ?? undefined}
+            >
               <button type="button" className={styles.previewImage} onClick={() => setPreview(img)}>
                 <img src={imageSrc(img)} alt={img.name ?? tx("Image")} />
               </button>
@@ -1317,7 +1323,9 @@ export function Composer(props: ComposerProps) {
       )}
       <div ref={hostRef} className={styles.field} />
       <div className={styles.bar} onMouseDown={(e) => e.stopPropagation()}>
-        <div className={styles.toolbar}>{props.toolbar}</div>
+        <div className={styles.toolbar} data-composer-toolbar="">
+          {props.toolbar}
+        </div>
         <div className={styles.actions}>
           <IconButton
             ref={addAnchor}

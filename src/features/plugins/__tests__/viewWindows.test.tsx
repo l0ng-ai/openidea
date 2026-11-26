@@ -30,6 +30,7 @@ function add(pluginId: string, decl: Partial<WindowView> & Pick<WindowView, "id"
 }
 
 beforeEach(() => {
+  localStorage.clear();
   useContextKeys.setState({}, true);
   show.mockClear();
   provideToolWindowService({ show } as never);
@@ -118,6 +119,26 @@ it("reveals the requested grouped tab and never reveals hidden or removed views"
   revealWindowView("spring", "beans");
   expect(show).not.toHaveBeenCalled();
   expect(screen.getByText("routes body")).toBeInTheDocument();
+});
+
+it("remembers the selected tab of a grouped plugin tool window across close and reopen", async () => {
+  const first = add("spring", { id: "routes", title: "Routes", group: "framework" });
+  const second = add("spring", { id: "beans", title: "Beans", group: "framework" });
+  const window1 = useContributions.getState().toolWindows.get(id)!;
+  const { unmount } = render(<window1.component id={id} />);
+  await userEvent.click(screen.getByRole("tab", { name: "Beans" }));
+  expect(screen.getByRole("tab", { name: "Beans" })).toHaveAttribute("aria-selected", "true");
+  unmount();
+  first.dispose();
+  second.dispose();
+
+  // Re-registering the plugin views in a reopened window restores the "Beans" selection.
+  add("spring", { id: "routes", title: "Routes", group: "framework" });
+  add("spring", { id: "beans", title: "Beans", group: "framework" });
+  const window2 = useContributions.getState().toolWindows.get(id)!;
+  render(<window2.component id={id} />);
+  expect(screen.getByRole("tab", { name: "Beans" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByText("beans body")).toBeVisible();
   // Avoid disposing the same declaration twice.
   disposers.pop();
 });

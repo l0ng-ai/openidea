@@ -514,7 +514,7 @@ export function SessionAssets({ task, entries, head, onFocusComposer }: SessionA
           >
             <Icon name={issueCount === 1 ? issueIcon(assets.createdIssues[0]!.state) : "issue-open"} size={13} />
             <span className={styles.pillLabel}>{issuePillLabel}</span>
-            {issueCount > 1 && <Icon name="chevron-down" size={11} className={styles.chevron} />}
+            <Icon name="chevron-down" size={11} className={styles.chevron} />
           </button>
           <AssetPopup
             open={activeCategory === "issues"}
@@ -538,7 +538,7 @@ export function SessionAssets({ task, entries, head, onFocusComposer }: SessionA
             aria-expanded={activeCategory === "references"}
             onClick={() => toggle("references")}
           >
-            <Icon name="toolwindow-bookmarks" size={13} />
+            <Icon name="toolwindow-bookmarks" size={13} className={styles.pillIcon} />
             <span className={styles.pillLabel}>{refPillLabel}</span>
             <Icon name="chevron-down" size={11} className={styles.chevron} />
           </button>
@@ -564,7 +564,7 @@ export function SessionAssets({ task, entries, head, onFocusComposer }: SessionA
             aria-expanded={activeCategory === "artifacts"}
             onClick={() => toggle("artifacts")}
           >
-            <Icon name="artifact" size={13} />
+            <Icon name="artifact" size={13} className={styles.pillIcon} />
             <span className={styles.pillLabel}>{artifactPillLabel}</span>
             <Icon name="chevron-down" size={11} className={styles.chevron} />
           </button>

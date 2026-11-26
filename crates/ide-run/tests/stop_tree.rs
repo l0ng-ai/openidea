@@ -195,5 +195,5 @@ fn a_stop_kills_the_jvm_a_launcher_started() {
 /// `javac` as the run would resolve it: on the process's PATH.
 fn which_javac() -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
-    ide_run::which::find_executable("javac", &path)
+    ide_core::process::find_executable("javac", &path)
 }
