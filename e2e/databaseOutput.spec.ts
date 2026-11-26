@@ -106,16 +106,49 @@ test("follows the active SQL console and preserves the selected client when anot
   expect(await ipcCalls(page, "db_execute")).toHaveLength(2);
 
   await open(alpha);
-  await client.click();
-  await page.getByRole("option", { name: /console\.sql · Retail SQLite/ }).click();
-  await run(alpha, "select 'Alpha while inspecting Beta'");
+  const retail = page.getByRole("option", { name: /console\.sql · Retail SQLite/ });
+  await client.press("ArrowDown");
+  await expect(retail).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(client).toHaveText("console.sql · Retail SQLite");
+
+  await client.press("ArrowDown");
+  await expect(retail).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Escape");
+  await expect(retail).toBeHidden();
+  await expect(client).toHaveText("console.sql · Retail SQLite");
+
+  await client.press("Escape");
+  await expect(editor).toBeFocused();
+  await expect(editor).toHaveText("select 'Alpha'");
+  await expect(client).toHaveText("console.sql · Retail SQLite");
+  await expect(panel.getByRole("gridcell", { name: "Beta row", exact: true })).toBeVisible();
+  expect(await ipcCalls(page, "db_execute")).toHaveLength(2);
+  await editor.press("Meta+A");
+  await page.keyboard.insertText("select 'Alpha while inspecting Beta'");
+  await editor.press("Meta+Enter");
+  await expect(editor).toBeFocused();
+  await expect(client).toHaveText("console.sql · Inventory SQLite");
   await expect(panel.getByRole("gridcell", { name: "Alpha row", exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("database-output-foreground-after.png"), animations: "disabled" });
 
   await run(alpha, "select 'Background failure'");
   await expect.poll(async () => (await ipcCalls(page, "db_execute")).length).toBe(4);
-  await open(beta);
+  await client.click();
+  await retail.click();
   await page.evaluate(() => window.__ipc.handlers["test:finishDbRequest"]?.({}));
+  await expect
+    .poll(() =>
+      page.evaluate(async (path) => {
+        const storePath = "/src/features/database/store.ts";
+        const { useDatabase } = await import(/* @vite-ignore */ storePath);
+        return Object.hasOwn(useDatabase.getState().executions, path);
+      }, alpha),
+    )
+    .toBe(false);
+  await expect(client).toHaveText("console.sql · Retail SQLite");
   await expect(panel.getByRole("gridcell", { name: "Beta row", exact: true })).toBeVisible();
 
   await client.click();
