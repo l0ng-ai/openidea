@@ -8833,5 +8833,15 @@
   "Keys": "Anahtarlar",
   "Triggers": "Tetikleyiciler",
   "Filter by name or type": "Ada veya türe göre filtrele",
-  "Filter columns": "Sütunları filtrele"
+  "Filter columns": "Sütunları filtrele",
+  "Package Registries": "Paket Kayıt Defterleri",
+  "Use only the configured package registries": "Yalnızca yapılandırılmış paket kayıt defterlerini kullan",
+  "For a company registry such as Nexus or Artifactory: installing tools and agents never retries against the public npm registry when the configured one refuses or misses a package, and the IDE fetches nothing from Maven Central, npm, PyPI or crates.io itself (the JUnit launcher, dependency version completion).": "Nexus veya Artifactory gibi bir şirket kayıt defteri için: araçlar ve ajanlar yüklenirken yapılandırılmış kayıt defteri bir paketi reddederse ya da bulamazsa genel npm kayıt defterinde yeniden denenmez ve IDE kendisi Maven Central, npm, PyPI veya crates.io'dan hiçbir şey indirmez (JUnit başlatıcısı, bağımlılık sürümü tamamlama).",
+  "SQL Updates": "SQL Güncelleme İfadeleri",
+  "SQL Deletes": "SQL Silme İfadeleri",
+  "Where Clause": "WHERE Koşulu",
+  "SQL INSERT": "SQL INSERT",
+  "SQL UPDATE": "SQL UPDATE",
+  "SQL DELETE": "SQL DELETE",
+  "Column comment": "Sütun yorumu"
 }

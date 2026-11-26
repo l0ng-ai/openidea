@@ -1084,4 +1084,35 @@ describe("the data view's context menu (DataGrip)", () => {
       "false",
     );
   });
+
+  it("copies the selected whole rows as SQL INSERT / UPDATE / DELETE (#6143)", async () => {
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const keyed = [{ ...columns[0]!, primaryKey: true }, columns[1]!];
+    const table = () => ({ columns: keyed, rows: data, table: "cities", driver: "postgres" as const });
+    render(
+      <>
+        <DataView
+          columns={keyed}
+          rowCount={2}
+          value={value}
+          panel={null}
+          onPanelChange={() => {}}
+          extractor={{ value: "csv", onChange: () => {}, table }}
+        />
+        <ContextMenuHost />
+      </>,
+    );
+    // Only the second row's city cell: the statements still cover its whole row.
+    fireEvent.mouseDown(screen.getAllByRole("gridcell")[3]!, { button: 0 });
+    const copyAs = async (entry: string) => {
+      fireEvent.contextMenu(screen.getByRole("grid"), { clientX: 5, clientY: 5 });
+      fireEvent.click(screen.getByRole("menuitem", { name: /^Copy as/ }));
+      await act(async () => void fireEvent.click(screen.getByRole("menuitem", { name: new RegExp(`^${entry}`) })));
+      return writeText.mock.lastCall?.[0];
+    };
+    expect(await copyAs("SQL INSERT")).toBe("INSERT INTO cities (id, city) VALUES (2, 'Beijing');");
+    expect(await copyAs("SQL UPDATE")).toBe("UPDATE cities SET city = 'Beijing' WHERE id = 2;");
+    expect(await copyAs("SQL DELETE")).toBe("DELETE FROM cities WHERE id = 2;");
+  });
 });

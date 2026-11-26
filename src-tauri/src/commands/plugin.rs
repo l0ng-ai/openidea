@@ -118,6 +118,9 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
     host.set_downloads(project_host.global_settings.effective().tool_downloads);
     #[cfg(target_os = "macos")]
     host.set_secret_store(Arc::new(KeychainSecrets));
+    // Secret Service / Windows Credential Manager elsewhere, like saved SSH and agent values.
+    #[cfg(not(target_os = "macos"))]
+    host.use_credential_store();
     ide_host::plugins::set_editor_providers(Some(&host));
     let weak = Arc::downgrade(project_host);
     host.set_project_policy(Arc::new(move |root| {

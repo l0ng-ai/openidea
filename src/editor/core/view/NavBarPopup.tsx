@@ -307,11 +307,13 @@ export function NavChildrenPopup({
   segment,
   anchor,
   openAbove = true,
+  label,
   onClose,
 }: {
   segment: NavSegment;
   anchor: HTMLElement;
   openAbove?: boolean;
+  label?: string;
   onClose: () => void;
 }) {
   const [stack, setStack] = useState<NavSegment[]>([segment]);
@@ -366,7 +368,7 @@ export function NavChildrenPopup({
       anchor={anchor}
       placement={openAbove ? "top-start" : "bottom-start"}
       onClose={onClose}
-      aria-label={top.label}
+      aria-label={label ?? top.label}
       className={styles.childPopup}
     >
       {stack.length > 1 && (

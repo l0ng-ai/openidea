@@ -276,6 +276,27 @@ describe("annotate Options", () => {
   const hidden = (v: EditorView) =>
     ["date", "author", "revision"].filter((c) => v.dom.classList.contains(`cm-vcs-blame-hide-${c}`));
 
+  it("prints Today/Yesterday in the date cell when pretty formatting is on", async () => {
+    const today = Date.now();
+    const yesterday = today - 86_400_000;
+    const recentLines: BlameLine[] = [
+      { commit: sha, author: "Aleks Zlateski", timeMs: today, summary: "today" },
+      { commit: otherSha, author: "Dan Crankshaw", timeMs: yesterday, summary: "yesterday" },
+    ];
+    mocks.blame.mockResolvedValue({ status: "ok", data: recentLines });
+    useProject.setState({ settings: { general: { dateFormat: { pretty: true } } } });
+    const created = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+    });
+    view = created;
+    await toggleAnnotations(created, "/repo/src/main.py");
+    const cell = (commit: string) =>
+      created.dom.querySelector<HTMLElement>(`.cm-vcs-blame [data-commit="${commit}"] .cm-vcs-blame-date`)?.textContent;
+    expect(cell(sha)).toBe("Today");
+    expect(cell(otherSha)).toBe("Yesterday");
+  });
+
   it("shows date and author by default and adds the revision from Options", async () => {
     view = await annotated();
     expect(
