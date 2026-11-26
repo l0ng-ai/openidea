@@ -1,6 +1,7 @@
 import { call, commands, isTauri } from "./ipc";
 import { ipcPath } from "./paths";
 import { toBase64 } from "./base64";
+import { usePlatform } from "./platformInfo";
 
 /** Native menu actions and async work can outlive WebKit's user activation. */
 export async function writeClipboardText(text: string): Promise<void> {
@@ -28,8 +29,10 @@ export async function writeClipboardPng(png: Promise<Blob>): Promise<void> {
  */
 export async function readClipboardPlainText(): Promise<string> {
   if (isTauri()) {
-    const text = await call(commands.clipboardText()).catch(() => null);
+    const text = await call(commands.clipboardText()).catch(() => undefined);
     if (text != null) return text;
+    // WebKit on macOS makes the user confirm the read with a "Paste" callout; the backend found no text.
+    if (text === null && usePlatform.getState().os === "macos") return "";
   }
   return (await navigator.clipboard?.readText()) ?? "";
 }
