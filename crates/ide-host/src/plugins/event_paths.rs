@@ -17,11 +17,21 @@ pub(super) struct Subscriptions {
 #[derive(Clone)]
 pub(super) struct PathFilter {
     pub globs: Vec<String>,
+    pub debounce: Option<std::time::Duration>,
     matchers: Vec<GlobMatcher>,
 }
 
 impl PathFilter {
+    #[allow(dead_code)]
     pub fn new(kind: &str, globs: Vec<String>) -> Result<Self, HostError> {
+        Self::with_debounce(kind, globs, None)
+    }
+
+    pub fn with_debounce(
+        kind: &str,
+        globs: Vec<String>,
+        debounce: Option<std::time::Duration>,
+    ) -> Result<Self, HostError> {
         if !matches!(kind, "file-opened" | "file-saved" | "files-changed" | "document-changed") {
             return Err(HostError::Invalid(
                 "subscribe-paths supports file-opened, file-saved, files-changed and document-changed".into(),
@@ -53,7 +63,7 @@ impl PathFilter {
                     .compile_matcher(),
             );
         }
-        Ok(Self { globs, matchers })
+        Ok(Self { globs, debounce, matchers })
     }
 
     pub fn matches(&self, root: &Path, path: &Path) -> bool {
@@ -78,7 +88,7 @@ impl Subscriptions {
             changed = self.kinds.entry(plugin.to_owned()).or_default().insert(kind);
         }
         let previous = self.paths.entry(plugin.to_owned()).or_default().insert(kind.to_owned(), filter.clone());
-        previous.is_none_or(|old| old.globs != filter.globs) | changed
+        previous.is_none_or(|old| old.globs != filter.globs || old.debounce != filter.debounce) | changed
     }
     pub fn unsubscribe(&mut self, plugin: &str, kind: &str) -> bool {
         let removed = self.paths.get_mut(plugin).is_some_and(|filters| filters.remove(kind).is_some());
@@ -120,6 +130,8 @@ impl PluginHost {
                             .collect::<Vec<_>>()
                     };
                     let batch = ide_plugin::FilesChanged {
+                        project: batch.project.clone(),
+                        generation: batch.generation,
                         created: paths(&batch.created),
                         modified: paths(&batch.modified),
                         removed: paths(&batch.removed),

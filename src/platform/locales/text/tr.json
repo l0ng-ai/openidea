@@ -4449,6 +4449,9 @@
   "Reload All Gradle Projects": "Tüm Gradle Projelerini Yeniden Yükle",
   "Reload All Maven Projects": "Tüm Maven Projelerini Yeniden Yükle",
   "Reload Changed Classes": "Değiştirilen Sınıfları Yeniden Yükle",
+  "Enhanced class redefinition": "Gelişmiş sınıf yeniden tanımlama",
+  "When debugging on JetBrains Runtime, Reload Changed Classes can also add or remove methods and fields": "JetBrains Runtime üzerinde hata ayıklarken Değiştirilen Sınıfları Yeniden Yükle, yöntem ve alan da ekleyip kaldırabilir",
+  "To add or remove methods and fields, turn on Enhanced class redefinition in the run configuration and debug on JetBrains Runtime.": "Yöntem ve alan eklemek veya kaldırmak için çalıştırma yapılandırmasında Gelişmiş sınıf yeniden tanımlamayı açın ve JetBrains Runtime üzerinde hata ayıklayın.",
   "Reload Environments": "Ortamları Yeniden Yükle",
   "Reload History": "Geçmişi Yeniden Yükle",
   "Reload List of Packages": "Paket Listesini Yeniden Yükle",
@@ -6451,7 +6454,7 @@
   "'{name}' needs an open file": "'{name}' için açık bir dosya gerekiyor",
   "Run a configuration (hold Shift to debug); the title bar widget passes \"select\" to only select one": "Bir yapılandırmayı çalıştırır (hata ayıklamak için Shift tuşunu basılı tutun); başlık çubuğu bileşeni yalnızca seçim yapmak için “select” iletir",
   "Runs with a contributed executor (`{ executor, config? }` or `{ executor, context }`): the given or selected configuration, or the context.": "Katkı sağlayan yürütücüyle (`{ executor, config? }` veya `{ executor, context }`) çalıştırır: verilen veya seçilen yapılandırmayı ya da bağlamı kullanır.",
-  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.": "Verilen `RunConfig` değerini kullanıcı yapılandırması olarak kaydeder ve Yapılandırmaları Düzenle bölümünde açar.",
+  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.": "Verilen `RunConfig` değerini kullanıcı yapılandırması olarak kaydeder ve Yapılandırmaları Düzenle bölümünde açar; bu id ile zaten kaydedilmiş olan değiştirilmeden açılır.",
   "No sources for this class": "Bu sınıfın kaynak kodu yok",
   "Error running '{name}'": "'{name}' çalıştırılırken hata",
   "No JDK can run '{name}'": "'{name}' çalıştırabilecek bir JDK yok",
@@ -8797,5 +8800,6 @@
   "Granted with grant option": "Yetki verme hakkıyla verildi",
   "No privileges are granted on this table.": "Bu tabloda verilmiş yetki yok.",
   "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION: yetki verilen bu yetkiyi başkalarına verebilir.",
-  "Separate several prefixes with commas: they are tried in order, then the official source.": "Birden fazla öneki virgülle ayırın: sırayla denenir, ardından resmi kaynak kullanılır."
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "Birden fazla öneki virgülle ayırın: sırayla denenir, ardından resmi kaynak kullanılır.",
+  "Allow all optional permissions": "Tüm isteğe bağlı izinlere izin ver"
 }

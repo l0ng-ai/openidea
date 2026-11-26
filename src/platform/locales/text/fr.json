@@ -1619,6 +1619,9 @@
   "Reload All Gradle Projects": "Recharger tous les projets Gradle",
   "Reload All Maven Projects": "Recharger tous les projets Maven",
   "Reload Changed Classes": "Recharger les classes modifiées",
+  "Enhanced class redefinition": "Redéfinition de classes étendue",
+  "When debugging on JetBrains Runtime, Reload Changed Classes can also add or remove methods and fields": "Lors du débogage sur JetBrains Runtime, Recharger les classes modifiées peut aussi ajouter ou supprimer des méthodes et des champs",
+  "To add or remove methods and fields, turn on Enhanced class redefinition in the run configuration and debug on JetBrains Runtime.": "Pour ajouter ou supprimer des méthodes et des champs, activez Redéfinition de classes étendue dans la configuration d'exécution et déboguez sur JetBrains Runtime.",
   "Reload Environments": "Recharger les environnements",
   "Reload History": "Recharger l'historique",
   "Reload List of Packages": "Recharger la liste des paquets",
@@ -3627,7 +3630,7 @@
   "'{name}' needs an open file": "'{name}' nécessite un fichier ouvert",
   "Run a configuration (hold Shift to debug); the title bar widget passes \"select\" to only select one": "Exécuter une configuration (maintenez Maj pour déboguer) ; le widget de la barre de titre passe « select » pour simplement en sélectionner une",
   "Runs with a contributed executor (`{ executor, config? }` or `{ executor, context }`): the given or selected configuration, or the context.": "Exécute avec un exécuteur fourni (`{ executor, config? }` ou `{ executor, context }`) : la configuration donnée ou sélectionnée, ou le contexte.",
-  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.": "Enregistre la `RunConfig` donnée comme configuration utilisateur et l'ouvre dans Modifier les configurations.",
+  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.": "Enregistre la `RunConfig` donnée comme configuration utilisateur et l'ouvre dans Modifier les configurations ; une configuration déjà enregistrée avec cet id s'ouvre sans modification.",
   "No sources for this class": "Aucune source pour cette classe",
   "Error running '{name}'": "Erreur lors de l'exécution de '{name}'",
   "No JDK can run '{name}'": "Aucun JDK ne peut exécuter '{name}'",
@@ -5771,5 +5774,6 @@
   "Search NuGet packages": "Rechercher des packages NuGet",
   "Install / Update": "Installer / mettre à jour",
   "Versions": "Versions",
-  "Transitive": "Transitif"
+  "Transitive": "Transitif",
+  "Allow all optional permissions": "Autoriser toutes les autorisations facultatives"
 }

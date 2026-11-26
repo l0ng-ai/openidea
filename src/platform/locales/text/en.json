@@ -1063,6 +1063,8 @@
   "Cannot start PTY: process:{program} capability not granted.": "Cannot start PTY: process:{program} capability not granted.",
   "Marker Icons": "Marker Icons",
   "Editor Panels": "Editor Panels",
+  "Overlays": "Overlays",
+  "Dialogs": "Dialogs",
   "this data source does not list databases": "this data source does not list databases",
   "commit or roll back before clearing the selected database": "commit or roll back before clearing the selected database",
   "connect_timeout must be greater than zero": "connect_timeout must be greater than zero",
@@ -4071,5 +4073,9 @@
   "Granted with grant option": "Granted with grant option",
   "No privileges are granted on this table.": "No privileges are granted on this table.",
   "* With grant option: the grantee may grant the privilege to others.": "* With grant option: the grantee may grant the privilege to others.",
-  "Separate several prefixes with commas: they are tried in order, then the official source.": "Separate several prefixes with commas: they are tried in order, then the official source."
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "Separate several prefixes with commas: they are tried in order, then the official source.",
+  "The backend of another OpenIDEA build, for example the one from before an upgrade, still has this project open, so this build can't open it. Stop that backend and open the project? Its terminals, runs and agent sessions end, and changes it hasn't saved are lost.": "The backend of another OpenIDEA build, for example the one from before an upgrade, still has this project open, so this build can't open it. Stop that backend and open the project? Its terminals, runs and agent sessions end, and changes it hasn't saved are lost.",
+  "Stop Backend and Open": "Stop Backend and Open",
+  "Could not load the frames: {0}": "Could not load the frames: {0}",
+  "Allow all optional permissions": "Allow all optional permissions"
 }

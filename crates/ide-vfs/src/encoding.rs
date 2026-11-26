@@ -8,8 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Files above this size open with expensive features (LSP, tree-sitter
-/// structure, folding) disabled.
+/// Files above this size open with reduced editor features.
 pub const LARGE_FILE_THRESHOLD: u64 = 5 * 1024 * 1024;
 /// Files above this size open read-only.
 pub const READ_ONLY_THRESHOLD: u64 = 50 * 1024 * 1024;

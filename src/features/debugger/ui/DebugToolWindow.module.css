@@ -200,6 +200,14 @@
   font-size: var(--fs-ui);
 }
 
+.framesError {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1-5);
+  overflow-wrap: anywhere;
+}
+
 /* variables */
 .variables {
   height: 100%;

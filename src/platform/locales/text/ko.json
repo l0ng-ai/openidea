@@ -1750,6 +1750,9 @@
   "Reload All Gradle Projects": "모든 Gradle 프로젝트 다시 로드",
   "Reload All Maven Projects": "모든 Maven 프로젝트 다시 로드",
   "Reload Changed Classes": "변경된 클래스 다시 로드",
+  "Enhanced class redefinition": "향상된 클래스 재정의",
+  "When debugging on JetBrains Runtime, Reload Changed Classes can also add or remove methods and fields": "JetBrains Runtime에서 디버그할 때 변경된 클래스 다시 로드로 메서드와 필드도 추가하거나 제거할 수 있습니다",
+  "To add or remove methods and fields, turn on Enhanced class redefinition in the run configuration and debug on JetBrains Runtime.": "메서드와 필드를 추가하거나 제거하려면 실행 구성에서 향상된 클래스 재정의를 켜고 JetBrains Runtime에서 디버그하세요.",
   "Reload Environments": "환경 다시 로드",
   "Reload History": "기록 다시 로드",
   "Reload List of Packages": "패키지 목록 다시 로드",
@@ -3814,7 +3817,7 @@
   "'{name}' needs an open file": "'{name}'에는 열린 파일이 필요합니다",
   "Run a configuration (hold Shift to debug); the title bar widget passes \"select\" to only select one": "구성 실행(Shift를 누르고 있으면 디버그). 제목 표시줄 위젯은 \"select\"를 전달하여 선택만 합니다",
   "Runs with a contributed executor (`{ executor, config? }` or `{ executor, context }`): the given or selected configuration, or the context.": "기여된 실행기로 실행합니다(`{ executor, config? }` 또는 `{ executor, context }`): 지정되거나 선택된 구성 또는 컨텍스트.",
-  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.": "지정된 `RunConfig`를 사용자 구성으로 저장하고 구성 편집에서 엽니다.",
+  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.": "지정된 `RunConfig`를 사용자 구성으로 저장하고 구성 편집에서 엽니다. 같은 id로 이미 저장된 구성은 변경 없이 엽니다.",
   "No sources for this class": "이 클래스의 소스가 없습니다",
   "Error running '{name}'": "'{name}' 실행 오류",
   "No JDK can run '{name}'": "'{name}'을(를) 실행할 수 있는 JDK가 없습니다",
@@ -6238,5 +6241,6 @@
   "Search NuGet packages": "NuGet 패키지 검색",
   "Install / Update": "설치 / 업데이트",
   "Versions": "버전",
-  "Transitive": "전이"
+  "Transitive": "전이",
+  "Allow all optional permissions": "모든 선택 권한 허용"
 }

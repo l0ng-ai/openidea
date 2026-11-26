@@ -2523,6 +2523,9 @@
   "Generate Sources and Update Folders": "產生原始碼並更新資料夾",
   "Runs generate-sources, then reloads the Maven projects so generated folders become source folders": "執行 generate-sources，然後重新載入 Maven 專案，使產生的資料夾成為原始碼資料夾",
   "Reload Changed Classes": "重新載入已更改的類別",
+  "Enhanced class redefinition": "增強類別重新定義",
+  "When debugging on JetBrains Runtime, Reload Changed Classes can also add or remove methods and fields": "在 JetBrains Runtime 上偵錯時，「重新載入已更改的類別」也可以新增或刪除方法和欄位",
+  "To add or remove methods and fields, turn on Enhanced class redefinition in the run configuration and debug on JetBrains Runtime.": "如需新增或刪除方法和欄位，請在執行組態中開啟「增強類別重新定義」，並使用 JetBrains Runtime 偵錯。",
   "Reload Environments": "重新載入環境",
   "Reload History": "重新載入歷史記錄",
   "Reload List of Packages": "重新載入軟體包清單",
@@ -4708,7 +4711,7 @@
   "'{name}' needs an open file": "'{name}' 需要一個已開啟的檔案",
   "Run a configuration (hold Shift to debug); the title bar widget passes \"select\" to only select one": "執行組態（按住 Shift 進行偵錯）；標題欄小部件傳入 \"select\" 時僅選擇組態",
   "Runs with a contributed executor (`{ executor, config? }` or `{ executor, context }`): the given or selected configuration, or the context.": "使用貢獻的執行器執行（`{ executor, config? }` 或 `{ executor, context }`）：給定或所選的組態，或者上下文。",
-  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.": "將給定的 `RunConfig` 儲存為使用者組態，並在「編輯組態」中開啟。",
+  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.": "將給定的 `RunConfig` 儲存為使用者組態，並在「編輯組態」中開啟；已儲存的同 id 組態直接開啟，不作變更。",
   "No sources for this class": "此類別沒有原始碼",
   "Error running '{name}'": "執行 '{name}' 時出錯",
   "No JDK can run '{name}'": "沒有可以執行 '{name}' 的 JDK",
@@ -9328,6 +9331,7 @@
   "Already in the project": "已在專案中",
   "{name} is inside the opened project, so its sources are already part of it.": "{name} 位於已開啟的專案內，其原始碼已屬於該專案。",
   "{name} has no pom.xml or Gradle build file. Attach it to this project as another root? Its source folders are detected automatically.": "{name} 沒有 pom.xml 或 Gradle 建置檔案。要將其作為另一個根附加到此專案嗎？其中的原始碼目錄會自動識別。",
+  "{name} has no pom.xml or Gradle build file, and a folder outside the project can't be attached as another root in this window. Move it into the project folder, or add a pom.xml or Gradle build file to it.": "{name} 沒有 pom.xml 或 Gradle 建置檔案，而且在此視窗中無法將專案外的資料夾附加為另一個根。請將其移到專案資料夾內，或為它新增 pom.xml 或 Gradle 建置檔案。",
   "Resets in {resetIn}": "{resetIn} 後重設",
   "NuGet Packages": "NuGet 包",
   "Refresh packages": "重新整理包清單",
@@ -9344,5 +9348,6 @@
   "No privileges are granted on this table.": "此資料表未授予任何權限。",
   "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授權者可以將該權限再授予他人。",
   "Separate several prefixes with commas: they are tried in order, then the official source.": "多個前綴以逗號分隔：依序嘗試，最後回退到官方來源。",
-  "Recent Find Usages": "最近的查詢用法"
+  "Recent Find Usages": "最近的查詢用法",
+  "Allow all optional permissions": "允許全部可選權限"
 }

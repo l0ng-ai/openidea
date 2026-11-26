@@ -18,15 +18,9 @@ fn tools() -> Option<(PathBuf, PathBuf)> {
     Some((home, mvn))
 }
 
-const ROOT_POM: &str = r#"<project><modelVersion>4.0.0</modelVersion><groupId>t</groupId><artifactId>root</artifactId><version>1</version><packaging>pom</packaging>
-<modules><module>lib</module><module>app</module></modules>
-<properties><maven.compiler.release>11</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
-<build><pluginManagement><plugins><plugin><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version>
-<configuration><parameters>true</parameters></configuration></plugin></plugins></pluginManagement></build></project>"#;
-const LIB_POM: &str = r#"<project><modelVersion>4.0.0</modelVersion><parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent><artifactId>lib</artifactId></project>"#;
-const APP_POM: &str = r#"<project><modelVersion>4.0.0</modelVersion><parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent><artifactId>app</artifactId>
-<dependencies><dependency><groupId>t</groupId><artifactId>lib</artifactId><version>1</version></dependency></dependencies>
-<build><resources><resource><directory>src/main/resources</directory><filtering>true</filtering></resource></resources></build></project>"#;
+const ROOT_POM: &str = include_str!("../../tests/fixtures/jbuild-maven/pom.xml");
+const LIB_POM: &str = include_str!("../../tests/fixtures/jbuild-maven/lib/pom.xml");
+const APP_POM: &str = include_str!("../../tests/fixtures/jbuild-maven/app/pom.xml");
 
 /// A `lib` ← `app` reactor built by the IDE's Java build with a real Maven and JDK.
 struct Fixture {

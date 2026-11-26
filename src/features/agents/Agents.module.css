@@ -49,6 +49,24 @@
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
 }
+/* Drop insertion indicator on a tree row while dragging to reorder tasks or custom groups. */
+.dropBefore::before,
+.dropAfter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--focus-ring);
+  pointer-events: none;
+  z-index: 1;
+}
+.dropBefore::before {
+  top: 0;
+}
+.dropAfter::after {
+  bottom: 0;
+}
 .title {
   flex: 0 1 auto;
   min-width: 0;
