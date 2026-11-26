@@ -1702,9 +1702,8 @@ export function appendContextBlock({ text, info }: { text: string; info: string 
   const selected = activeComposerKey();
   const task = useAgents.getState().tasks.get(selected);
   const key = task && task.status !== "archived" ? task.id : HOME;
-  const existing = composerDraft(key).text.trimEnd();
-  // End with a trailing newline so the composer caret lands after the fence and folds it into a card.
-  const block = `${fenced(text, info)}\n`;
+  const existing = composerDraft(key).text;
+  const block = fenced(text, info);
   updateComposer(key, { text: existing ? `${existing}\n\n${block}` : block });
   if (key === HOME) openHome();
   else openTask(key);

@@ -3,24 +3,12 @@ import { useTx } from "@/platform/i18n";
 import { type BrowserBounds, type RequestId } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
-import { Button, copyText, Icon, IconButton, Input } from "@/ui";
+import { Button, IconButton, Input } from "@/ui";
 import { appendAgentDraftBlock } from "@/workbench/contributions";
 import { closeBrowser, control, useBrowserSession, visit } from "./browserSession";
 import styles from "./Web.module.css";
 
 const EDGE = 8;
-
-function isVisibleAt(node: HTMLElement, x: number, y: number): boolean {
-  if (typeof document.elementsFromPoint !== "function") {
-    return document.elementFromPoint(x, y) === node;
-  }
-  for (const hit of document.elementsFromPoint(x, y)) {
-    // Transparent full-screen cursor locks during split or scrollbar drags don't visually cover the page.
-    if (hit.hasAttribute("data-drag-cursor-surface") || hit.hasAttribute("data-scrollbar-drag-surface")) continue;
-    return hit === node;
-  }
-  return false;
-}
 
 /** Native siblings sit above HTML. Hide the guest when workbench popups or dialogs need that space. */
 function Viewport({ id }: { id: RequestId }) {
@@ -34,30 +22,24 @@ function Viewport({ id }: { id: RequestId }) {
     function sync() {
       frame = 0;
       const rect = node.getBoundingClientRect();
-      const viewport = document.documentElement.getBoundingClientRect();
-      const viewportWidth = viewport.width || window.innerWidth;
-      const viewportHeight = viewport.height || window.innerHeight;
+      const dpr = window.devicePixelRatio;
       const visible =
         !document.hidden &&
         rect.width > 1 &&
         rect.height > 1 &&
-        viewportWidth > 0 &&
-        viewportHeight > 0 &&
         !document.querySelector('[aria-modal="true"], [data-popup]') &&
         // Corners sampled a little inside: the tool window's resize handles overlap its edges.
-        isVisibleAt(node, rect.left + EDGE, rect.top + EDGE) &&
-        isVisibleAt(node, rect.right - EDGE, rect.bottom - EDGE);
+        document.elementFromPoint(rect.left + EDGE, rect.top + EDGE) === node &&
+        document.elementFromPoint(rect.right - EDGE, rect.bottom - EDGE) === node;
       const bounds: BrowserBounds | null = visible
         ? {
-            x: rect.left,
-            y: rect.top,
-            width: rect.width,
-            height: rect.height,
-            viewportWidth,
-            viewportHeight,
+            x: Math.round(rect.left * dpr),
+            y: Math.round(rect.top * dpr),
+            width: Math.round(rect.right * dpr) - Math.round(rect.left * dpr),
+            height: Math.round(rect.bottom * dpr) - Math.round(rect.top * dpr),
           }
         : null;
-      const key = JSON.stringify({ bounds, dpr: window.devicePixelRatio });
+      const key = JSON.stringify(bounds);
       if (key !== previous) {
         previous = key;
         void control(id, { type: "layout", bounds });
@@ -69,7 +51,6 @@ function Viewport({ id }: { id: RequestId }) {
     }
     const resize = new ResizeObserver(schedule);
     resize.observe(node);
-    resize.observe(document.documentElement);
     const changes = new MutationObserver(schedule);
     changes.observe(document.body, { childList: true, subtree: true });
     window.addEventListener("resize", schedule);
@@ -92,17 +73,7 @@ function Viewport({ id }: { id: RequestId }) {
       void control(id, { type: "layout", bounds: null });
     };
   }, [id]);
-  return <div ref={slot} className={styles.viewport} data-native-surface="" />;
-}
-
-/** Short single-line summary for the fenced block header, e.g. `element <button>`. */
-function elementBlockInfo(html: string): string {
-  const clean = html
-    .replace(/[\r\n`]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const label = clean.length > 48 ? `${clean.slice(0, 47)}…` : clean;
-  return label ? `element ${label}` : "element";
+  return <div ref={slot} className={styles.viewport} />;
 }
 
 export function BrowserView() {
@@ -200,38 +171,19 @@ function Browser() {
       )}
       {element && (
         <div className={styles.details}>
-          <div className={styles.detailsHead}>
-            <Icon name="locate" size={14} />
-            <h3 className={styles.detailsTitle}>{t("Selected element")}</h3>
-            <IconButton
-              icon="close"
-              size="small"
-              title="Dismiss"
-              className={styles.detailsDismiss}
-              onClick={() => useBrowserSession.setState({ element: null })}
-            />
-          </div>
-          <div className={styles.detailsBody}>
-            <div className={styles.selector}>{element.selector}</div>
-            <pre className={styles.code}>{element.styles ? `${element.html}\n\n${element.styles}` : element.html}</pre>
-          </div>
-          <div className={styles.detailsActions}>
-            <Button size="small" variant="secondary" icon="copy" onClick={() => void copyText(text)}>
-              {t("Copy")}
-            </Button>
-            <Button
-              size="small"
-              variant="primary"
-              icon="toolwindow-agents"
-              onClick={() => {
-                if (appendAgentDraftBlock({ kind: "block", info: elementBlockInfo(element.html), text }))
-                  useBrowserSession.setState({ element: null });
-                else useBrowserSession.setState({ error: t("The agent composer is unavailable.") });
-              }}
-            >
-              {t("Add to Agent Draft")}
-            </Button>
-          </div>
+          <h3>{t("Selected element")}</h3>
+          <pre>{text}</pre>
+          <Button
+            variant="primary"
+            icon="toolwindow-agents"
+            onClick={() => {
+              if (appendAgentDraftBlock({ kind: "block", info: `text ${t("Selected element")}`, text }))
+                useBrowserSession.setState({ element: null });
+              else useBrowserSession.setState({ error: t("The agent composer is unavailable.") });
+            }}
+          >
+            {t("Add to Agent Draft")}
+          </Button>
         </div>
       )}
     </section>
