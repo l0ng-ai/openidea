@@ -312,7 +312,8 @@ function attachCodeCopy(pre: HTMLElement, source: string) {
   setCopied(false);
   button.addEventListener("click", (event) => {
     event.stopPropagation();
-    void writeClipboardText(source.trim()).then(
+    // Drop the blank lines around the code, but keep the first line's indentation.
+    void writeClipboardText(source.replace(/^\s*\n/, "").trimEnd()).then(
       () => {
         clearTimeout(timer);
         setCopied(true);

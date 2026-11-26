@@ -25,13 +25,13 @@ test("copies fenced Markdown code with hover or keyboard in both preview layouts
   context,
 }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  const bash = "printf '%s\\n' '<&>'\n\n  echo done";
+  const bash = "  printf '%s\\n' '<&>'\n\n  echo done";
   const python = "if True:\n    print('hello')";
   const plain = "first\n\n  second";
   const mermaid = "flowchart TD\n    A --> B";
   const source = [
     "# Examples",
-    "```bash\n\n  " + bash + "\n\n```",
+    "```bash\n\n" + bash + "\n\n```",
     "- Python\n\n  ~~~python\n  " + python.replace("\n", "\n  ") + "\n  ~~~",
     "```\n" + plain + "  \n```",
     "    indented code",
