@@ -163,10 +163,9 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   DEFAULT_PARAMETER: [["FOREGROUND", "--syn-param"]],
   DEFAULT_GLOBAL_VARIABLE: [["FOREGROUND", "--syn-global"]],
   DEFAULT_PREDEFINED_SYMBOL: [["FOREGROUND", "--syn-builtin"]],
-  DEFAULT_METADATA: [
-    ["FOREGROUND", "--syn-annotation"],
-    ["FOREGROUND", "--syn-decorator"],
-  ],
+  // Java annotations take the scheme's (or its parent's) annotation key, not DEFAULT_METADATA.
+  ANNOTATION_NAME_ATTRIBUTES: [["FOREGROUND", "--syn-annotation"]],
+  DEFAULT_METADATA: [["FOREGROUND", "--syn-decorator"]],
   DEFAULT_OPERATION_SIGN: [["FOREGROUND", "--syn-punct"]],
   DEFAULT_VALID_STRING_ESCAPE: [["FOREGROUND", "--syn-escape"]],
   DEFAULT_TAG: [["FOREGROUND", "--syn-tag"]],

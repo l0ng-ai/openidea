@@ -195,10 +195,32 @@ export class ModifiedRanges {
     }
   }
 
+  /**
+   * `changes` put back text from the VCS version (a rollback): what they inserted is not an edit
+   * of the user's, so save cleanup leaves it alone; ranges recorded there before are dropped.
+   */
+  restore(changes: ChangeSet) {
+    if (this.all) return;
+    this.map(changes);
+    const restored: Array<[number, number]> = [];
+    changes.iterChangedRanges((_fa, _ta, fromB, toB) => restored.push([fromB, toB]), true);
+    this.ranges = this.ranges.filter(([a, b]) => !restored.some(([from, to]) => from <= a && b <= to));
+  }
+
   clear() {
     this.ranges = [];
     this.all = false;
   }
+}
+
+/** User events of edits that put back text from the VCS version: a diff's revert arrow, a gutter rollback. */
+const RESTORE_EVENTS = ["revert", "input.rollback"];
+
+/** Whether `tr` (or an edit with user event `event`) puts back text from the VCS version. */
+export function restoresVcsText(tr: Transaction | string): boolean {
+  return typeof tr === "string"
+    ? RESTORE_EVENTS.some((e) => tr === e || tr.startsWith(`${e}.`))
+    : RESTORE_EVENTS.some((e) => tr.isUserEvent(e));
 }
 
 /** 0-based start lines of functions / methods in an outline (method separators). */
@@ -227,12 +249,14 @@ export function saveCleanupChanges(
     protectLines: Set<number>;
     allLines?: boolean;
     trailingBlankLines?: boolean;
+    /** The end of the text was restored from the VCS version: its blank lines and line break stay. */
+    keepEnd?: boolean;
   },
 ): Array<{ from: number; to: number; insert?: string }> {
   const changes: Array<{ from: number; to: number; insert?: string }> = [];
   const doc = state.doc;
   let blankFrom = doc.length;
-  if (opts.trailingBlankLines) {
+  if (opts.trailingBlankLines && !opts.keepEnd) {
     // Keep exactly one line break after the last non-blank line.
     const m = /\n[ \t\n]*$/.exec(doc.sliceString(Math.max(0, doc.length - 10_000)));
     if (m && m[0].indexOf("\n", 1) >= 0) blankFrom = doc.length - m[0].length + 1;
@@ -255,7 +279,7 @@ export function saveCleanupChanges(
     }
   }
   if (blankFrom < doc.length) changes.push({ from: blankFrom, to: doc.length });
-  else if (opts.finalNewline && doc.length > 0 && doc.sliceString(doc.length - 1) !== "\n")
+  else if (opts.finalNewline && !opts.keepEnd && doc.length > 0 && doc.sliceString(doc.length - 1) !== "\n")
     changes.push({ from: doc.length, to: doc.length, insert: "\n" });
   return changes;
 }
@@ -270,6 +294,8 @@ export class DocModel {
   /** Views outside the tab system sharing this document (e.g. the editable side of a diff). */
   readonly attachments = new Set<DocAttachmentTarget>();
   readonly modified = new ModifiedRanges();
+  /** The end of the text was last changed by a rollback to the VCS version (see [`restoresVcsText`]). */
+  private endRestored = false;
   info: LanguageInfo | undefined;
   /** Effective `.editorconfig` properties at open time. */
   editorconfig: EditorConfigProps | null = null;
@@ -448,9 +474,16 @@ export class DocModel {
     return this.slots.values().next().value ?? null;
   }
 
-  onLocal(changes: ChangeSet, origin: EditorSlot | DocAttachmentTarget) {
+  /** `restored`: the changes put back text from the VCS version ([`restoresVcsText`]). */
+  onLocal(changes: ChangeSet, origin: EditorSlot | DocAttachmentTarget, restored = false) {
     this.sync.local(changes);
-    this.modified.add(changes);
+    if (restored) this.modified.restore(changes);
+    else this.modified.add(changes);
+    let end = false;
+    changes.iterChangedRanges((_fromA, toA) => {
+      if (toA === changes.length) end = true;
+    });
+    if (end) this.endRestored = restored;
     this.changeCounter++;
     for (const s of this.slots)
       if (s !== origin) s.applyExternal(changes, [mirroredChange.of(true), Transaction.addToHistory.of(false)]);
@@ -760,6 +793,7 @@ export class DocModel {
           protectLines: g.keepTrailingOnCaretLine ? protectLines : new Set(),
           allLines: g.stripTrailingScope === "all",
           trailingBlankLines: g.removeTrailingBlankLines,
+          keepEnd: this.endRestored,
         });
         if (changes.length) slot.dispatchLocal({ changes, userEvent: "input.save" });
       }
