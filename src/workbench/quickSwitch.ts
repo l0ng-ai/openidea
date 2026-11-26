@@ -105,9 +105,10 @@ export function colorSchemeItems(current: string | undefined): MenuItem[] {
   ];
 }
 
-/** The existing view modes: Distraction Free Mode and Full Screen. */
+/** The existing view modes: Distraction Free Mode, Zen Mode and Full Screen. */
 export const VIEW_MODE_ITEMS: MenuItem[] = [
   { kind: "action", action: "editor.toggleZen" },
+  { kind: "action", action: "view.toggleZenMode" },
   { kind: "action", action: "window.toggleFullScreen" },
 ];
 

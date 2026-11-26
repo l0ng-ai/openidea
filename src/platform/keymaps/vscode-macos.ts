@@ -236,6 +236,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "editor.splitAndMoveRight": [],
   "editor.splitAndMoveDown": [],
   "editor.toggleZen": ["Meta+K Z"],
+  "view.toggleZenMode": [],
   "editor.toggleLineNumbers": [],
   "editor.toggleIndentGuides": [],
   "editor.toggleStickyLines": [],

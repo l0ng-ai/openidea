@@ -292,6 +292,8 @@ export const intellijMacos: Record<string, string[]> = {
   // (ToggleDistractionFreeMode has no default). ⌃⌘D is macOS's system-wide
   // "Look Up in Dictionary" hotkey, which never reaches the webview.
   "editor.toggleZen": [],
+  // ToggleZenMode has no default.
+  "view.toggleZenMode": [],
   "editor.toggleLineNumbers": [],
   "editor.toggleIndentGuides": [],
   "editor.toggleStickyLines": [],
