@@ -5001,6 +5001,7 @@ dependencies = [
 name = "ide-tools"
 version = "0.1.53"
 dependencies = [
+ "blake3",
  "flate2",
  "hex",
  "http",
