@@ -315,6 +315,12 @@ impl ViewEvent {
         }
         Some(TableSort { column: json_number(data, "column")?, descending: json_bool(data, "descending")? })
     }
+
+    /// The plugin dialog this event is for was closed (API 1.18): by its close button,
+    /// Escape, or its page's `openidea.dialog.close()`.
+    pub fn closed(&self) -> bool {
+        matches!(self, Self::Other { kind, .. } if kind == "closed")
+    }
 }
 
 /// The value of `"key":` in the host's flat JSON, up to the next `,` or `}`.
@@ -391,6 +397,8 @@ mod tests {
         }
         assert_eq!(event("select", r#"{"row":1}"#).table_select(), None);
         assert_eq!(event("table-select", r#"{"row":1}"#).table_activate(), None);
+        assert!(event("closed", "{}").closed());
+        assert!(!event("sort", "{}").closed());
     }
 
     #[test]

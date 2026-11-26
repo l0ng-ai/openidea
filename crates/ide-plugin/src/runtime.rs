@@ -2391,6 +2391,7 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
             kind: "sort".into(),
             data: format!(r#"{{"column":{column},"descending":{descending}}}"#),
         }),
+        ViewEvent::Closed => W::Other(wit_types::Extension { kind: "closed".into(), data: "{}".into() }),
     }
 }
 
@@ -2842,6 +2843,12 @@ mod tests {
         assert_eq!(fields[0].value, FieldValue::Label("Title \"quoted\"".into()));
         assert_eq!(fields[1].value, FieldValue::ReadonlyText { text: "one\ntwo".into(), multiline: true });
         assert_eq!(fields[2].value, FieldValue::ReadonlyText { text: "author".into(), multiline: false });
+    }
+
+    #[test]
+    fn a_closed_dialog_leaves_as_an_other_event() {
+        let wit_vt::ViewEvent::Other(extension) = event_to_wit_view(ViewEvent::Closed) else { panic!("other") };
+        assert_eq!((extension.kind.as_str(), extension.data.as_str()), ("closed", "{}"));
     }
 
     #[test]

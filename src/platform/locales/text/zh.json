@@ -840,6 +840,7 @@
   "Marker Icons": "行标记图标",
   "Editor Panels": "编辑器面板",
   "Overlays": "浮层",
+  "Dialogs": "对话框",
   "this data source does not list databases": "此数据源不支持列出数据库",
   "commit or roll back before clearing the selected database": "清除所选数据库前，请先提交或回滚事务",
   "connect_timeout must be greater than zero": "connect_timeout 必须大于零",
