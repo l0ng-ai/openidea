@@ -66,6 +66,10 @@ describe("IDEA keymap parity", () => {
     ["editor.scrollDown", [], ["Ctrl+Down"]],
     ["editor.scrollUpAndMove", [], []],
     ["editor.scrollDownAndMove", [], []],
+    ["editor.moveUpAndScroll", [], []],
+    ["editor.moveDownAndScroll", [], []],
+    ["editor.moveUpAndScrollWithSelection", [], []],
+    ["editor.moveDownAndScrollWithSelection", [], []],
     // Only IDEA's Xcode keymap binds these (Home / End).
     ["editor.scrollToTop", [], []],
     ["editor.scrollToBottom", [], []],
