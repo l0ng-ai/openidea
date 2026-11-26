@@ -1117,6 +1117,31 @@ pub struct MenuState {
     /// Visible menu last installed. Accelerators of actions that are not on the menu
     /// are not part of this, so they must not redraw the macOS menu bar.
     rendered: Mutex<Option<Vec<RenderedMenu>>>,
+    /// The Remote Development projects of the frontend's recent list.
+    pub remote_recent: Mutex<Vec<RemoteRecent>>,
+}
+
+/// A recent Remote Development project (SSH, WSL, Dev Container), kept by the frontend: Open
+/// Recent lists it among the local projects, as Manage Projects does.
+#[derive(Debug, Clone, PartialEq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRecent {
+    /// `ssh://host/path`, `wsl://Ubuntu/path`…: what `file.openRecentProject` gets back.
+    pub location: String,
+    pub name: String,
+    /// Where it lives, as shown after the name (`me@host:/srv/app`).
+    pub detail: String,
+    pub opened_at_ms: f64,
+}
+
+/// Stores the remote recent list; `false` when it is unchanged.
+pub fn store_remote_recent(state: &MenuState, next: Vec<RemoteRecent>) -> bool {
+    let mut current = state.remote_recent.lock();
+    if *current == next {
+        return false;
+    }
+    *current = next;
+    true
 }
 
 /// Stores `next` when it differs from the config last used to build the menu.
@@ -1193,18 +1218,28 @@ pub struct RecentItem {
     pub label: String,
 }
 
-pub fn recent_items(recent: &[ide_workspace::RecentProject], home: Option<&Path>) -> Vec<RecentItem> {
-    recent
-        .iter()
-        .take(MAX_RECENT)
-        .map(|p| {
-            let shown = match home.and_then(|h| p.path.strip_prefix(h).ok()) {
-                Some(rest) => format!("~/{}", rest.display()),
-                None => p.path.display().to_string(),
-            };
-            RecentItem { path: p.path.to_string_lossy().into_owned(), label: format!("{}  —  {shown}", p.name) }
-        })
-        .collect()
+/// The local and remote recent projects, most recently opened first.
+pub fn recent_items(
+    recent: &[ide_workspace::RecentProject],
+    remote: &[RemoteRecent],
+    home: Option<&Path>,
+) -> Vec<RecentItem> {
+    let local = recent.iter().map(|p| {
+        let shown = match home.and_then(|h| p.path.strip_prefix(h).ok()) {
+            Some(rest) => format!("~/{}", rest.display()),
+            None => p.path.display().to_string(),
+        };
+        let item =
+            RecentItem { path: p.path.to_string_lossy().into_owned(), label: format!("{}  —  {shown}", p.name) };
+        (p.opened_at_ms, item)
+    });
+    let remote = remote.iter().map(|r| {
+        (r.opened_at_ms, RecentItem { path: r.location.clone(), label: format!("{}  —  {}", r.name, r.detail) })
+    });
+    let mut items: Vec<(f64, RecentItem)> = local.chain(remote).collect();
+    // Stable: the local list's own order holds among equal times.
+    items.sort_by(|a, b| b.0.total_cmp(&a.0));
+    items.into_iter().take(MAX_RECENT).map(|(_, item)| item).collect()
 }
 
 /// One top-level menu, as it will actually be drawn.
@@ -1746,7 +1781,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
         return;
     }
     let home = dirs::home_dir();
-    let items = recent_items(recent, home.as_deref());
+    let items = recent_items(recent, &menu_state.remote_recent.lock(), home.as_deref());
     let config = menu_state.config.lock().clone();
     let disabled = menu_state.disabled.lock().clone();
     let rendered = render_bar(&prepared_spec(app, Os::current()), &config, &items);
@@ -2233,9 +2268,37 @@ mod tests {
             branch: None,
             missing: false,
         }];
-        let items = recent_items(&recent, Some(Path::new("/home/me")));
+        let items = recent_items(&recent, &[], Some(Path::new("/home/me")));
         assert_eq!(items[0].label, "openidea  —  ~/code/openidea");
         assert_eq!(items[0].path, "/home/me/code/openidea");
+    }
+
+    #[test]
+    fn remote_projects_join_the_recent_list_by_when_they_were_opened() {
+        let local = |path: &str, at: f64| ide_workspace::RecentProject {
+            path: path.into(),
+            name: path.rsplit('/').next().unwrap().into(),
+            opened_at_ms: at,
+            branch: None,
+            missing: false,
+        };
+        let recent = vec![local("/home/me/new", 30.0), local("/home/me/old", 10.0)];
+        let remote = [RemoteRecent {
+            location: "wsl://Ubuntu/home/me/api".into(),
+            name: "api".into(),
+            detail: "Ubuntu:/home/me/api".into(),
+            opened_at_ms: 20.0,
+        }];
+        let items = recent_items(&recent, &remote, Some(Path::new("/home/me")));
+        let paths: Vec<&str> = items.iter().map(|i| i.path.as_str()).collect();
+        assert_eq!(paths, ["/home/me/new", "wsl://Ubuntu/home/me/api", "/home/me/old"]);
+        assert_eq!(items[1].label, "api  —  Ubuntu:/home/me/api");
+
+        let many: Vec<_> = (0..20).map(|i| local(&format!("/p/{i}"), f64::from(i))).collect();
+        let items = recent_items(&many, &remote, None);
+        assert_eq!(items.len(), MAX_RECENT);
+        assert_eq!([items[0].path.as_str(), items[1].path.as_str()], ["wsl://Ubuntu/home/me/api", "/p/19"]);
+        assert_eq!(items[MAX_RECENT - 1].path, format!("/p/{}", 20 - MAX_RECENT + 1), "the remote one takes a slot");
     }
 
     #[test]
