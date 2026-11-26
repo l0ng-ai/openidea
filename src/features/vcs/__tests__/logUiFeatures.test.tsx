@@ -300,6 +300,26 @@ describe("log controls", () => {
     expect(rows[0]!.querySelector<HTMLElement>('[class*="colRepository"]')!.style.width).toBe("130px");
   });
 
+  it("without headers, a row strip on a leading Commit cell resizes the Repository column", async () => {
+    useVcs.setState({ roots: ["/repo", "/other"] });
+    const tip = { ...c("tip"), repo: "/repo" };
+    api.commits = [tip];
+    // Defaults: headers hidden, Commit first.
+    useLogOptions.setState({ showRepository: true });
+    render(<LogView />);
+    const rows = await within(screen.getByRole("listbox", { name: "Commits" })).findAllByRole("option");
+    const strip = rows[0]!.querySelector<HTMLElement>('[class*="colSubject"] > [class*="columnResize"]')!;
+    strip.setPointerCapture = vi.fn();
+    strip.hasPointerCapture = () => true;
+    strip.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(strip, { button: 0, pointerId: 9, clientX: 100 });
+    fireEvent.pointerMove(strip, { pointerId: 9, clientX: 130 });
+    fireEvent.pointerUp(strip, { pointerId: 9, clientX: 130 });
+    expect(useLogOptions.getState().columnWidths.repository).toBe(130);
+    // The strip swallows the press, so the row is not selected.
+    expect(useGitLog.getState().selected).toBeNull();
+  });
+
   it("exposes a full-height column divider on data rows", async () => {
     useLogOptions.setState({ showColumnHeaders: true });
     render(<LogView />);

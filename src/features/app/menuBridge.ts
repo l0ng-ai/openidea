@@ -20,6 +20,7 @@ import {
   useKeymap,
 } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
+import { syncRemoteRecentMenu } from "@/platform/remote";
 import { useContributions, useMenuSlotItems, useStandaloneEditor } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { javaFileNameOf, menuLabelParams } from "@/workbench/menuLabels";
@@ -258,6 +259,7 @@ export function installMenuBridge(): () => void {
     .catch(() => {});
 
   push();
+  syncRemoteRecentMenu();
   const onFocus = () => {
     push();
     pushEnablement(true);

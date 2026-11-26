@@ -40,6 +40,8 @@ The language server checks open files only. To keep the type errors of the whole
 
 The Vue, Astro and Angular servers use the selected version too. TypeScript 7 (the native port) has no language-service API, so the IDE installs `typescript-language-server`, Vue, Svelte and Astro servers together with `typescript@6`.
 
+The native TypeScript 7 server and the tsserver-based servers use the same **JavaScript and TypeScript** colour-scheme entries. Module-level functions use **Global function**; local calls use **Function call**. **Predefined function** applies when the server marks a symbol as a standard-library member. TypeScript 7.0.2 can omit that marker on case-insensitive filesystems ([TypeScript fix](https://github.com/microsoft/typescript-go/pull/4654)).
+
 ## Setup
 
 ### Installing the servers

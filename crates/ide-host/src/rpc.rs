@@ -32,6 +32,10 @@ use std::sync::{Arc, OnceLock};
 /// doesn't know the event would show stale output.
 pub const PROTOCOL_VERSION: u32 = 4;
 pub const SESSION_REPLACED: &str = "session_replaced";
+/// What `openidea-server --attach` reports when another build's backend keeps the project
+/// (clients match it to offer stopping that backend).
+pub const OTHER_BUILD_BUSY: &str = "Another build of OpenIDEA still has this project open, is running tasks, or has \
+     unsaved changes. Reconnect with that build, or stop its backend and open the project again.";
 pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// Advertised only by a persistent backend with an editable idle timeout.
@@ -71,6 +75,31 @@ pub struct EventMessage {
 pub struct ChannelMessage {
     pub id: u64,
     pub data: Value,
+}
+
+/// Streaming lifecycle signal delivered through a [`ChannelSink`].
+#[derive(Debug, Clone)]
+pub enum ChannelSignal {
+    /// Emitted when a command claims a `{ "$channel": id }` argument.
+    Opened(u64),
+    /// One serialized streaming payload.
+    Data(ChannelMessage),
+    /// Emitted automatically when the last clone of the command's channel emitter is dropped.
+    End(u64),
+}
+
+/// Delivers streaming values and lifecycle signals from a command back to its caller.
+pub type ChannelSink = Arc<dyn Fn(ChannelSignal) + Send + Sync>;
+
+struct ChannelDropGuard {
+    id: u64,
+    sink: ChannelSink,
+}
+
+impl Drop for ChannelDropGuard {
+    fn drop(&mut self) {
+        (self.sink)(ChannelSignal::End(self.id));
+    }
 }
 
 /// Holds the active client [`Peer`]: once for `--stdio` ([`OnceLock<Peer>`]) or
@@ -137,7 +166,7 @@ pub struct Call {
     pub host: Arc<Host>,
     pub window: String,
     pub args: Value,
-    peer: Arc<dyn PeerHandle>,
+    channel_sink: ChannelSink,
 }
 
 impl Call {
@@ -161,17 +190,24 @@ impl Call {
             .and_then(|v| v.get("$channel"))
             .and_then(Value::as_u64)
             .ok_or_else(|| IdeError::invalid(format!("argument {name}: expected a channel")))?;
-        let peer = self.peer.clone();
-        Ok(Arc::new(move |data: T| {
-            let Some(peer) = peer.current() else { return };
-            match serde_json::to_value(&data) {
-                Ok(data) => {
-                    let _ = peer.notify("channel", ChannelMessage { id, data });
-                }
-                Err(e) => tracing::warn!("channel {id}: {e}"),
-            }
+        let sink = self.channel_sink.clone();
+        sink(ChannelSignal::Opened(id));
+        let guard = ChannelDropGuard { id, sink };
+        Ok(Arc::new(move |data: T| match serde_json::to_value(&data) {
+            Ok(data) => (guard.sink)(ChannelSignal::Data(ChannelMessage { id: guard.id, data })),
+            Err(e) => tracing::warn!("channel {}: {e}", guard.id),
         }))
     }
+}
+
+fn peer_channel_sink(peer: Arc<dyn PeerHandle>) -> ChannelSink {
+    Arc::new(move |signal: ChannelSignal| {
+        if let ChannelSignal::Data(msg) = signal
+            && let Some(peer) = peer.current()
+        {
+            let _ = peer.notify("channel", msg);
+        }
+    })
 }
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -184,21 +220,42 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    pub fn add<F, Fut, T>(&mut self, name: &'static str, trust: TrustClass, f: F) -> &mut Self
+    fn wrap_handler<F, Fut, T>(f: F) -> HandlerFn
     where
         F: Fn(Call) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = IdeResult<T>> + Send + 'static,
         T: Serialize,
     {
         let f = Arc::new(f);
-        let handler: HandlerFn = Arc::new(move |call| {
+        Arc::new(move |call| {
             let fut = f(call);
             Box::pin(async move {
                 let value = fut.await?;
                 serde_json::to_value(value).map_err(|e| IdeError::internal(e.to_string()))
             })
-        });
+        })
+    }
+
+    pub fn add<F, Fut, T>(&mut self, name: &'static str, trust: TrustClass, f: F) -> &mut Self
+    where
+        F: Fn(Call) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = IdeResult<T>> + Send + 'static,
+        T: Serialize,
+    {
+        let handler = Self::wrap_handler(f);
         assert!(self.handlers.insert(name, (trust, handler)).is_none(), "command {name} is registered twice");
+        self
+    }
+
+    /// Registers or replaces `name` (used by the web server to add shell-level hooks such as recent-project tracking).
+    pub fn replace<F, Fut, T>(&mut self, name: &'static str, trust: TrustClass, f: F) -> &mut Self
+    where
+        F: Fn(Call) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = IdeResult<T>> + Send + 'static,
+        T: Serialize,
+    {
+        let handler = Self::wrap_handler(f);
+        self.handlers.insert(name, (trust, handler));
         self
     }
 
@@ -218,6 +275,23 @@ impl Dispatcher {
         let mut d = Self::default();
         ops::register_domains(&mut d);
         d
+    }
+
+    /// Invokes a command asynchronously with trust enforcement and a caller-supplied channel sink.
+    pub async fn invoke(
+        &self,
+        host: Arc<Host>,
+        window: String,
+        cmd: &str,
+        args: Value,
+        channel_sink: ChannelSink,
+    ) -> IdeResult<Value> {
+        let Some((trust, handler)) = self.handlers.get(cmd).cloned() else {
+            return Err(IdeError::unavailable(format!("command {cmd} is not available")));
+        };
+        host.authorize(&window, trust)?;
+        let call = Call { host, window, args, channel_sink };
+        handler(call).await
     }
 }
 
@@ -342,7 +416,7 @@ struct ServerHandler {
     daemon: Option<(ide_core::CancellationToken, RemoteIdlePolicy)>,
 }
 
-fn server_info(idle_policy: Option<RemoteIdlePolicy>) -> ServerInfo {
+pub(crate) fn server_info(idle_policy: Option<RemoteIdlePolicy>) -> ServerInfo {
     ServerInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: PROTOCOL_VERSION,
@@ -374,7 +448,12 @@ impl Handler for ServerHandler {
                     return Err((codes::METHOD_NOT_FOUND, format!("command {} is not available remotely", call.cmd)));
                 };
                 self.host.authorize(&call.window, trust).map_err(error_reply)?;
-                let c = Call { host: self.host.clone(), window: call.window, args: call.args, peer: self.peer.clone() };
+                let c = Call {
+                    host: self.host.clone(),
+                    window: call.window,
+                    args: call.args,
+                    channel_sink: peer_channel_sink(self.peer.clone()),
+                };
                 // Requests run on blocking-capable threads: wait for the command here.
                 self.host.runtime.block_on(handler(c)).map_err(error_reply)
             }

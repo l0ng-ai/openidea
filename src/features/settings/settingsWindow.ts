@@ -8,6 +8,14 @@ import { registerActions } from "@/platform/actions";
 import { logError } from "@/platform/errorLog";
 import { isImeKey } from "@/platform/ime";
 import { commands } from "@/platform/ipc";
+import {
+  bindingsFor,
+  installMouseShortcuts,
+  isMouseBinding,
+  keyboardDispatchSuspended,
+  normalizeBinding,
+  strokeOf,
+} from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { enableRemote } from "@/platform/remote";
 import { isPopupOpen } from "@/ui";
@@ -19,7 +27,9 @@ import {
   closeSettings,
   openSettings,
   rebaseSettings,
+  selectNextPage,
   selectPage,
+  selectPreviousPage,
   setNewProjects,
   setQuery,
   settingsTitle,
@@ -90,6 +100,46 @@ function installWindowKeys(): () => void {
 }
 
 /**
+ * Back / forward between the pages visited this session: the workbench keymap's
+ * navigate.back / navigate.forward (⌘[ / ⌘], mouse side buttons, two-finger
+ * swipes) from the standalone window. Runs the keymap's own bindings so a
+ * user's re-mapped shortcut keeps working; the dispatchers are window-local
+ * (the workbench one would fight the IME-free input handling of the pages).
+ */
+function installHistoryShortcuts(): () => void {
+  const onKey = (e: KeyboardEvent) => {
+    if (e.defaultPrevented || isImeKey(e) || keyboardDispatchSuspended()) return;
+    const stroke = strokeOf(e);
+    if (!stroke) return;
+    // Plain text fields keep their unmodified editing keys, as in the workbench
+    // dispatcher; a shortcut with a command modifier still reaches the keymap.
+    const el = e.target instanceof Element ? (e.target.closest(".cm-editor") ? null : (e.target as HTMLElement)) : null;
+    if (
+      el &&
+      (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) &&
+      !(e.metaKey || e.ctrlKey || e.altKey)
+    )
+      return;
+    const go = (run: () => boolean, action: string) => {
+      // Mouse / swipe bindings are the mouse shortcuts' business.
+      const bound = bindingsFor(action)
+        .filter((b) => !isMouseBinding(b) && !b.startsWith("Swipe"))
+        .map(normalizeBinding);
+      if (!bound.includes(normalizeBinding(stroke))) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      return run();
+    };
+    if (go(selectPreviousPage, "navigate.back")) return;
+    go(selectNextPage, "navigate.forward");
+  };
+  // Capture phase, like the workbench dispatcher: the window's browser guards cancel ⌘[ / ⌘]
+  // in the bubble phase, before a bubble listener added later would see them.
+  window.addEventListener("keydown", onKey, true);
+  return () => window.removeEventListener("keydown", onKey, true);
+}
+
+/**
  * The settings window (`settings-<parent>`): settings pages only, working on
  * the parent's project; Cancel / OK / Esc close the window.
  */
@@ -146,6 +196,14 @@ export function activateSettingsWindow(parent: string): () => void {
     trackIconThemePages(),
     unloadBuiltinPages,
     registerActions(settingsActions((page, newProjects) => relaunchSettings({ page, newProjects: !!newProjects }))),
+    // Mouse side buttons and the keymap's back / forward keys navigate the page
+    // history (the workbench dispatcher does not run in this window).
+    registerActions([
+      { id: "navigate.back", title: "Back", category: "Navigate", run: () => void selectPreviousPage() },
+      { id: "navigate.forward", title: "Forward", category: "Navigate", run: () => void selectNextPage() },
+    ]),
+    installMouseShortcuts(),
+    installHistoryShortcuts(),
     installActionProxies(parent),
     listenLaunch(bootstrap),
     installWindowKeys(),

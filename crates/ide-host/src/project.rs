@@ -223,6 +223,9 @@ impl Host {
                     ide_sdk::apply::configure_python_extra_paths(cfg, &paths);
                 }
                 if cfg.name == "jdtls" {
+                    // Before anything reads the install the command resolves to.
+                    let managed = ide_tools::tools_dir(&data_dir).join("jdtls").join("bin").join("jdtls");
+                    ide_sdk::jdtls::skip_plain_launcher_wrappers(cfg, &managed);
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {
                         Some(member) if member != window_root => build_cache.join(crate::project::project_key(member)),
@@ -316,7 +319,13 @@ impl Host {
                 ide_sdk::php::configure_intelephense_storage(cfg, &data_dir);
                 if cfg.name == "jdtls" {
                     let (excluded_poms, build_files) = jdtls_maven_import(root, &effective);
-                    ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms, build_files.as_deref());
+                    ide_sdk::apply::configure_maven_import(
+                        cfg,
+                        root,
+                        &excluded_poms,
+                        &effective.project_structure.excluded,
+                        build_files.as_deref(),
+                    );
                     ide_sdk::apply::configure_gradle_import(
                         cfg,
                         effective.languages.java.gradle.linked_projects.as_deref(),
@@ -2371,7 +2380,7 @@ mod maven_linkage_tests {
             serde_json::json!({"name": "jdtls", "command": "jdtls"}),
         )
         .unwrap();
-        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms, None);
+        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms, &[], None);
         let options = serde_json::to_value(server.initialization_options).unwrap();
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&serde_json::json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));

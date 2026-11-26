@@ -42,8 +42,8 @@ pub(crate) fn mask_bit(b: u8) -> u64 {
     match b.to_ascii_lowercase() {
         c @ b'a'..=b'z' => 1 << (c - b'a'),
         c @ b'0'..=b'9' => 1 << (26 + c - b'0'),
-        b'_' => 1 << 36,
-        b'-' => 1 << 37,
+        // One bit: file and folder matching takes `-` and `_` for each other.
+        b'_' | b'-' => 1 << 36,
         b'.' => 1 << 38,
         b'/' => 1 << 39,
         b'$' => 1 << 40,

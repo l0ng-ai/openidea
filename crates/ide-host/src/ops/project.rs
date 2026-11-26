@@ -287,6 +287,36 @@ fn refresh_workspace(project: &Project) {
     project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
 }
 
+/// Records `project` in `recent` (its branch, unless attached to a workspace, and display name).
+pub fn record_recent(recent: &ide_workspace::RecentProjects, project: &Project) -> IdeResult<()> {
+    let info = info(project);
+    let attached = info.workspace.as_ref().is_some_and(|w| !w.is_container(&project.root));
+    let branch = if attached {
+        None
+    } else {
+        project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
+    };
+    recent.touch(&project.root, branch)?;
+    recent.rename(&project.root, Some(&info.display_name))?;
+    Ok(())
+}
+
+/// File › Rename Project…: the display name of `window`'s project; an empty `name` restores the
+/// folder name. A workspace container renames the workspace, else it is stored in project settings.
+pub fn rename(host: &Host, window: &str, name: &str) -> IdeResult<Arc<Project>> {
+    let project = host.project(window)?;
+    let name = name.trim();
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)?
+        && workspace.is_container(&project.root)
+    {
+        save_workspace(host, window, name, workspace.projects)?;
+    } else {
+        let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
+        project.settings.set(SettingsScope::Project, "general.projectName", value)?;
+    }
+    Ok(project)
+}
+
 /// Attaches a trusted folder without replacing the current project.
 pub fn attach_workspace(host: &Host, window: &str, path: &Path) -> IdeResult<ide_core::IpcPath> {
     let project = host.project(window)?;

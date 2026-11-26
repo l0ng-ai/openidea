@@ -62,6 +62,8 @@ pub enum Capability {
     /// Load the plugin's Java agent into the JVMs of Java run configurations. Never
     /// declared: it comes from `[[contributes.javaAgents]]`.
     JavaAgent,
+    /// Fork a recorded native agent session into a new task in the open project (API 1.18).
+    Agents,
 }
 
 /// How a grant is presented (plan 4.2).
@@ -91,7 +93,8 @@ impl Capability {
             | Self::Secrets
             | Self::InputEvents
             | Self::Clipboard
-            | Self::ClipboardRead => Risk::Medium,
+            | Self::ClipboardRead
+            | Self::Agents => Risk::Medium,
             // A trusted project's own files name the programs the IDE starts (its settings, its
             // build scripts), so writing them is running code.
             Self::ProjectWrite
@@ -149,6 +152,7 @@ impl Capability {
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
             Self::FsWrite(path) => format!("Change files under {path}, outside the project"),
             Self::JavaAgent => "Run code inside the Java applications you start".into(),
+            Self::Agents => "Fork a recorded agent session into a new task in the open project".into(),
         }
     }
 
@@ -276,6 +280,7 @@ impl fmt::Display for Capability {
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
             Self::FsWrite(p) => write!(f, "fs.write:{p}"),
             Self::JavaAgent => f.write_str("java.agent"),
+            Self::Agents => f.write_str("agents"),
         }
     }
 }
@@ -355,6 +360,7 @@ impl FromStr for Capability {
             "clipboard" => Self::Clipboard,
             "clipboard.read" => Self::ClipboardRead,
             "java.agent" => Self::JavaAgent,
+            "agents" => Self::Agents,
             _ => return Err(format!("unknown capability {s:?}")),
         })
     }
