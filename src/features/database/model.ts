@@ -30,9 +30,18 @@ export function toTsv(header: readonly string[] | null, rows: ReadonlyArray<read
  * single-quoted with `'` doubled. `numeric(c)` decides quoting per column.
  */
 export function toOneRow(rows: ReadonlyArray<readonly Cell[]>, numeric: (col: number) => boolean): string {
-  const literal = (v: Cell, c: number) =>
-    v === null ? "NULL" : numeric(c) && Number.isFinite(Number(v)) ? v : `'${v.replace(/'/g, "''")}'`;
-  return rows.flatMap((r) => r.map(literal)).join(", ");
+  return rows.flatMap((r) => r.map((v, c) => sqlLiteral(v, numeric(c)))).join(", ");
+}
+
+/**
+ * A value as an SQL literal: NULL, a number unquoted in a numeric column, else single-quoted
+ * with `'` doubled (and `\\` doubled for drivers that read backslash escapes in strings).
+ */
+export function sqlLiteral(v: Cell, numeric: boolean, driver?: DbDriver): string {
+  if (v === null) return "NULL";
+  if (numeric && Number.isFinite(Number(v))) return v;
+  const escaped = driver === "clickhouse" || driver === "snowflake" ? v.replace(/\\/g, "\\\\") : v;
+  return `'${escaped.replace(/'/g, "''")}'`;
 }
 
 /** RFC 4180 CSV; NULL is an empty field. */

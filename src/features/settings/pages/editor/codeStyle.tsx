@@ -157,6 +157,11 @@ const COMMENTS = {
   keywords: ["Line comment at first column", "Add a space at line comment start"],
 };
 const CASE = { id: "case", label: "Case", keywords: ["Keywords", "Identifiers", "To upper", "To lower"] };
+const IMPORTS = {
+  id: "imports",
+  label: "Imports",
+  keywords: ["imports", "static imports", "wildcard", "class count", "import with *"],
+};
 
 const SPACES = { id: "spaces", label: "Spaces", keywords: ["Space", "Around binary operators", "Within braces"] };
 const PUNCTUATION = { id: "punctuation", label: "Punctuation", keywords: ["Semicolons", "Quotes"] };
@@ -295,6 +300,41 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
             label="Add a space at line comment start"
           />
         </>
+      ),
+    });
+  }
+  if (lang.id === "java") {
+    tabs.push({
+      ...IMPORTS,
+      content: (
+        <FormGroup>
+          <Row
+            label="Class count to use import with '*'"
+            hint="Use a wildcard import once this many classes of one package are used (5 by default; 999 keeps single-class imports)."
+          >
+            <NumberInput
+              value={own.classCountToUseImportWithStar ?? 5}
+              onChange={(n) => set({ classCountToUseImportWithStar: n })}
+              min={1}
+              max={999}
+              integer
+              aria-label="Class count to use import with *"
+            />
+          </Row>
+          <Row
+            label="Names count to use static import with '*'"
+            hint="Use a wildcard static import once this many names are imported statically (3 by default; 999 keeps single imports)."
+          >
+            <NumberInput
+              value={own.namesCountToUseStaticImportWithStar ?? 3}
+              onChange={(n) => set({ namesCountToUseStaticImportWithStar: n })}
+              min={1}
+              max={999}
+              integer
+              aria-label="Names count to use static import with *"
+            />
+          </Row>
+        </FormGroup>
       ),
     });
   }
@@ -501,7 +541,14 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
           ...keywords,
         ]),
         ...(lang.id === "java"
-          ? ["Formatting profile", "IntelliJ IDEA", "Custom Eclipse formatter XML", "Eclipse formatter XML"]
+          ? [
+              "Formatting profile",
+              "IntelliJ IDEA",
+              "Custom Eclipse formatter XML",
+              "Eclipse formatter XML",
+              IMPORTS.label,
+              ...IMPORTS.keywords,
+            ]
           : []),
         ...(lang.id === "php" ? ["Alignment", "Align key-value pairs", "Align consecutive assignments"] : []),
         ...(lang.id === "sql" ? [CASE.label, ...CASE.keywords, "Do not change"] : []),

@@ -132,6 +132,7 @@ pub(crate) async fn table_details(pool: &SnowflakePool, schema: &str, table: &st
                 nullable: yes(r.get("null?")),
                 default: r.get("default").filter(|d| !d.is_empty()).map(str::to_owned),
                 primary_key: yes(r.get("primary key")),
+                comment: r.get("comment").filter(|c| !c.is_empty()).map(str::to_owned),
             })
         })
         .collect();
@@ -140,7 +141,16 @@ pub(crate) async fn table_details(pool: &SnowflakePool, schema: &str, table: &st
         Ok(keys) => foreign_keys(&keys),
         Err(_) => Vec::new(),
     };
-    Ok(TableDetails { columns, indexes: Vec::new(), foreign_keys, triggers: Vec::new() })
+    // `LIKE` matches without case and with wildcards: the exact name picks the row.
+    let like = format!("SHOW TABLES LIKE {} IN SCHEMA {}", quote_literal(DRIVER, table), schema_path(pool, schema));
+    let comment = match show(pool, &like).await {
+        Ok(shown) => shown
+            .records()
+            .find(|r| r.get("name") == Some(table))
+            .and_then(|r| r.get("comment").filter(|c| !c.is_empty()).map(str::to_owned)),
+        Err(_) => None,
+    };
+    Ok(TableDetails { comment, columns, indexes: Vec::new(), foreign_keys, triggers: Vec::new() })
 }
 
 fn foreign_keys(shown: &Shown) -> Vec<ForeignKey> {

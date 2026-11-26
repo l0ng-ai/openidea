@@ -41,3 +41,19 @@ test("Copy Path/Reference keeps its preview and shortcut visible and can be resi
   await expect(popup).toBeHidden();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(path);
 });
+
+test("Copy Path/Reference… in the Project view previews what each row copies", async ({ workbench: page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByRole("treeitem", { name: "build.gradle.kts" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Copy Path/Reference…" }).click();
+
+  const popup = page.getByRole("dialog", { name: "Copy Path/Reference…" });
+  const name = popup.getByRole("option", { name: /^File Name/ });
+  await expect(name.locator('[title="build.gradle.kts"]')).toBeVisible();
+  await expect(popup.getByRole("option", { name: /^Path From Content Root/ })).toBeVisible();
+  await page.keyboard.type("file name");
+  await expect(name).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Enter");
+  await expect(popup).toBeHidden();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("build.gradle.kts");
+});
