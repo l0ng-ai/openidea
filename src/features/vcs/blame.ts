@@ -11,7 +11,7 @@ import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowS
 import { showContextMenu, type MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
-import { formatDate } from "./model";
+import { formatPrettyDay } from "@/platform/dateFormat";
 import { saveVcsSetting } from "./settingsUi";
 import { useVcs } from "./store";
 
@@ -318,7 +318,7 @@ function build(lines: BlameLine[], doc: Text): BlameState {
     let label = labels.get(line.commit);
     if (!label && !isUncommitted(line)) {
       label = {
-        date: formatDate(line.timeMs),
+        date: line.timeMs ? formatPrettyDay(line.timeMs) : "",
         author: shortAuthorName(line.author, names),
         revision: line.commit.slice(0, 8),
       };
