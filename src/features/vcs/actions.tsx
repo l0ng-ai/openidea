@@ -54,6 +54,7 @@ import {
   showUnstashDialog,
 } from "./changeOps";
 import { setAmend, showsIgnoredFiles, toggleIgnoredFiles, useCommit } from "./commitStore";
+import { commitDialogTreeSelection } from "./commitDialogSelection";
 import { amendPreviewNode } from "./amendPreview";
 import { SELECT_AMEND_TARGET, type EarlierAmend } from "./amendTargets";
 import { TOGGLE_IGNORED_FILES } from "./ignoredFiles";
@@ -229,6 +230,8 @@ function showDiffTargets(tree: readonly ChangeNode[], paths: readonly string[], 
 function changedPaths(arg: unknown): string[] {
   const explicit = argPaths(arg);
   if (explicit?.length) return explicit;
+  const dialog = commitDialogTreeSelection();
+  if (dialog) return dialog.paths;
   const sel = useCommit.getState().selection;
   return commitWindowFocused() ? sel : [];
 }
@@ -264,7 +267,8 @@ function gutterTarget(arg: unknown, flag: "staged" | "unstaged"): GutterChangeTa
 /** Files the current context refers to: argument, commit view selection, or the active file. */
 function contextPaths(arg: unknown): string[] {
   const changed = changedPaths(arg);
-  if (changed.length) return changed;
+  // The Commit dialog tree's selection is final, even when it is empty.
+  if (changed.length || commitDialogTreeSelection()) return changed;
   const active = maybeEditorService()?.activePath();
   return active ? [active] : [];
 }
@@ -277,6 +281,8 @@ function contextPaths(arg: unknown): string[] {
 function selectedPaths(arg: unknown): string[] {
   const changed = changedPaths(arg);
   if (changed.length) return changed;
+  // The Commit dialog tree's selection is final, even when it is empty.
+  if (commitDialogTreeSelection()) return [];
   if (commitWindowFocused() && useCommit.getState().selectionKeys.some((key) => key.startsWith("amend:"))) return [];
   if (commitWindowFocused() && stagingAreaOn() && showsIgnoredFiles(useVcs.getState().root ?? "")) {
     const { selectionKeys } = useCommit.getState();
@@ -729,6 +735,16 @@ export function registerVcsActions(): () => void {
         const ed = activeEditor();
         if (!explicit?.length && ed?.view.hasFocus) {
           if (rollbackSelectedLines(ed.view, ed.ctx.path) || stagingAreaOn()) return;
+        }
+        // The Commit dialog's tree, while it owns the focus, targets its own selection;
+        // an empty selection is final and does not fall back to the checked changes.
+        const dialog = commitDialogTreeSelection();
+        if (dialog && !explicit?.length) {
+          if (dialog.paths.length) {
+            const files = rollbackCandidates(dialog.paths);
+            if (files.length) showRollbackDialog(files);
+          }
+          return;
         }
         // The Commit window's subject is its tree selection; when the selection holds
         // nothing rollbackable (unversioned files, stale paths), the checked changes are
