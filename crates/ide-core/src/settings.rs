@@ -1212,6 +1212,8 @@ pub struct LanguagesSettings {
     pub prettier: ExternalFormatterSettings,
     pub oxfmt: ExternalFormatterSettings,
     pub biome: ExternalFormatterSettings,
+    /// dprint formats every file its configuration covers: `languages` is unused.
+    pub dprint: ExternalFormatterSettings,
     pub ruff: ExternalFormatterSettings,
     pub black: ExternalFormatterSettings,
     pub java: JavaSettings,
@@ -1238,6 +1240,7 @@ impl Default for LanguagesSettings {
                 languages: BIOME_LANGUAGES.iter().map(|&l| l.into()).collect(),
                 ..ExternalFormatterSettings::default()
             },
+            dprint: ExternalFormatterSettings { languages: Vec::new(), ..ExternalFormatterSettings::default() },
             ruff: ExternalFormatterSettings {
                 languages: vec!["python".into()],
                 ..ExternalFormatterSettings::default()
@@ -1315,6 +1318,7 @@ impl LanguagesSettings {
             ExternalFormatter::Prettier => &self.prettier,
             ExternalFormatter::Oxfmt => &self.oxfmt,
             ExternalFormatter::Biome => &self.biome,
+            ExternalFormatter::Dprint => &self.dprint,
             ExternalFormatter::Ruff => &self.ruff,
             ExternalFormatter::Black => &self.black,
         }
@@ -1328,6 +1332,7 @@ pub enum ExternalFormatter {
     Prettier,
     Oxfmt,
     Biome,
+    Dprint,
     Ruff,
     Black,
 }
@@ -1339,6 +1344,7 @@ impl ExternalFormatter {
             Self::Prettier => "prettier",
             Self::Oxfmt => "oxfmt",
             Self::Biome => "biome",
+            Self::Dprint => "dprint",
             Self::Ruff => "ruff",
             Self::Black => "black",
         }
@@ -1349,11 +1355,11 @@ impl ExternalFormatter {
 pub const BIOME_LANGUAGES: [&str; 8] =
     ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"];
 
-/// An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats.
+/// An external formatter (Prettier, oxfmt, Biome, dprint, Ruff, Black) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExternalFormatterSettings {
-    /// Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH.
+    /// Empty path: project node_modules (Prettier/oxfmt/Biome/dprint), managed installation, then PATH.
     pub path: String,
     /// Ruff only: directory containing its configuration, or a configuration file.
     pub configuration_directory: String,

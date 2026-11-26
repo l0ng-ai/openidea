@@ -1300,9 +1300,16 @@ export async function startTask(
     )
   )
     return;
-  const config = options.flatMap((o) =>
-    o.current !== null && o.values.some((v) => v.value === o.current) ? [{ id: o.id, value: o.current }] : [],
-  );
+  const model = options.find((o) => o.category === "model")?.current;
+  const defaults = providerDefaults(draft.provider);
+  const config = options.flatMap((o) => {
+    // An untouched Codex tier inherits the runtime's default; explicit Off must still be sent.
+    const value =
+      o.id === "service_tier"
+        ? ((model ? draft.thoughtLevels?.[model]?.[o.id] : undefined) ?? defaults[o.id] ?? null)
+        : o.current;
+    return value !== null && o.values.some((v) => v.value === value) ? [{ id: o.id, value }] : [];
+  });
   try {
     const task = await call(
       commands.agentCreate({

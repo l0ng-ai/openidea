@@ -614,8 +614,10 @@ export interface NavigationLocation {
   col: number;
   /** `Date.now()` when the location was last visited. */
   time: number;
-  /** A place that is a tab rather than a text position (a diff), opened with this input on Back. */
+  /** A place that is a tab rather than a text position (diff, agent chat, terminal tab…), opened with this input on Back. */
   input?: EditorInput;
+  /** Split pane holding the editor tab when recorded, so Back/Forward returns to the same split when it still exists. */
+  paneId?: string;
 }
 
 export interface NavigationHistorySnapshot {
