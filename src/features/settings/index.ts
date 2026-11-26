@@ -26,7 +26,7 @@ import {
   loadBuiltinPages,
   unloadBuiltinPages,
 } from "./dialog/LazySettingsDialog";
-import { openProjectStructure, openSettings, useSettingsDialog } from "./model/staging";
+import { openProjectStructure, openSettings, trackPageHistoryActions, useSettingsDialog } from "./model/staging";
 import {
   appearanceToggleActions,
   navigationBarActions,
@@ -110,6 +110,8 @@ export function activate(): () => void {
       },
     ]),
     provideSettingsSearchIndex(settingsSearchEntries),
+    // navigate.back / forward drive the page history while Settings is open.
+    trackPageHistoryActions(),
     isTauri() ? installSettingsHost() : () => {},
   ];
   return () => disposers.reverse().forEach((d) => d());
