@@ -3905,6 +3905,7 @@
   "Hold Shift to Run, F4 to edit, Delete to remove": "Удерживайте Shift для запуска, F4 — для редактирования, Delete — для удаления",
   "Send EOF": "Отправить EOF",
   "Fold Lines Like This": "Свернуть похожие строки",
+  "Pause Output": "Приостановить вывод",
   "Collapse folded lines": "Сворачивать свернутые строки",
   "Close Tool Window Tab": "Закрыть вкладку окна инструментов",
   "No open files": "Нет открытых файлов",
