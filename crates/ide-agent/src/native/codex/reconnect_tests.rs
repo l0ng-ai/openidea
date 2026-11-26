@@ -160,7 +160,7 @@ async fn explicit_tier_survives_standard_only_reconnect_before_immediate_prompt(
                 let current = mgr.task(&task.id).unwrap();
                 let mut s = current.state.lock();
                 let catalog = serde_json::from_value(
-                    json!({"fingerprint":"fixture", "config":catalog_config, "thoughtLevels":{"a":catalog_config.iter().filter(|o|crate::config::is_per_model_option(o)).collect::<Vec<_>>() }}),
+                    json!({"fingerprint":"fixture", "schema":2, "config":catalog_config, "thoughtLevels":{"a":catalog_config.iter().filter(|o|crate::config::is_per_model_option(o)).collect::<Vec<_>>() }}),
                 )
                 .unwrap();
                 mgr.shared
