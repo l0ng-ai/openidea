@@ -152,7 +152,9 @@ double click and Enter with `event.table_activate()` (API 1.3, absolute 0-based 
 Bodies, fields and events added by later APIs travel as `Other { kind, data }`: an IDE that
 doesn't know a body says it needs updating, and leaves out a field type it doesn't know.
 Item right-click menus use `viewItem.context` (see
-[Commands and actions](/en/plugins/guides/commands#menus)).
+[Commands and actions](/en/plugins/guides/commands#menus)). A command that menu offers for the selected item,
+run from its shortcut (or Find Action) while the view has the keyboard focus, gets that
+item's key as its argument, as from the menu; none when nothing is selected.
 
 ## Custom editors
 

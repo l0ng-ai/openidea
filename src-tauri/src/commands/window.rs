@@ -2,7 +2,6 @@
 
 use crate::menu::{self, MenuConfig, MenuState};
 use crate::state::AppState;
-use crate::windows::WorkbenchWindow;
 use crate::windows::{self, Launch, OpenOutcome, WindowsState};
 use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult, RequestId};
@@ -12,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, Window};
+use tauri::{AppHandle, State, WebviewWindow, Window};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -38,7 +37,7 @@ pub async fn window_open_project(
 #[specta::specta]
 pub async fn window_open_files(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     files: Vec<PathBuf>,
 ) -> IdeResult<Vec<ide_core::IpcPath>> {
     Ok(windows::open_files_window(&app, window.label(), files))
@@ -88,7 +87,7 @@ pub async fn window_new(app: AppHandle) -> IdeResult<String> {
 #[specta::specta]
 pub async fn window_open_settings(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     page: Option<String>,
     new_projects: bool,
     background: Option<String>,
@@ -103,7 +102,7 @@ pub async fn window_open_settings(
 #[specta::specta]
 pub async fn window_open_comparison(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     comparison: windows::ComparisonLaunch,
     background: Option<String>,
 ) -> IdeResult<()> {
@@ -117,7 +116,7 @@ pub async fn window_open_comparison(
 #[specta::specta]
 pub async fn window_open_diff(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     diff: windows::DiffLaunch,
     background: Option<String>,
 ) -> IdeResult<()> {
@@ -131,7 +130,7 @@ pub async fn window_open_diff(
 #[specta::specta]
 pub async fn window_open_editor(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     editor: windows::EditorLaunch,
     background: Option<String>,
 ) -> IdeResult<()> {
@@ -145,7 +144,7 @@ pub async fn window_open_editor(
 #[specta::specta]
 pub async fn window_open_deployment(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     server: String,
     paths: Vec<PathBuf>,
     background: Option<String>,
@@ -157,14 +156,14 @@ pub async fn window_open_deployment(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_cycle(app: AppHandle, window: WorkbenchWindow, forward: bool) {
+pub fn window_cycle(app: AppHandle, window: WebviewWindow, forward: bool) {
     windows::cycle(&app, window.label(), forward);
 }
 
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_toggle_fullscreen(window: WorkbenchWindow) -> IdeResult<bool> {
+pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
@@ -172,7 +171,7 @@ pub fn window_toggle_fullscreen(window: WorkbenchWindow) -> IdeResult<bool> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_toggle_zoom(window: WorkbenchWindow) -> IdeResult<bool> {
+pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_zoom::toggle(&window)
 }
 
@@ -183,7 +182,7 @@ pub fn window_toggle_zoom(window: WorkbenchWindow) -> IdeResult<bool> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_flash_taskbar(window: WorkbenchWindow, flash: bool) -> IdeResult<()> {
+pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()> {
     if flash && window.is_focused().unwrap_or(false) {
         return Ok(());
     }
@@ -196,7 +195,7 @@ pub fn window_flash_taskbar(window: WorkbenchWindow, flash: bool) -> IdeResult<(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_set_smooth_scrolling(window: WorkbenchWindow, enabled: bool) -> IdeResult<()> {
+pub fn window_set_smooth_scrolling(window: WebviewWindow, enabled: bool) -> IdeResult<()> {
     #[cfg(target_os = "linux")]
     window
         .with_webview(move |platform| crate::linux_webkit::set_smooth_scrolling(&platform, enabled))
@@ -210,7 +209,7 @@ pub fn window_set_smooth_scrolling(window: WorkbenchWindow, enabled: bool) -> Id
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_set_titlebar_height(window: WorkbenchWindow, height: f64) -> IdeResult<()> {
+pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResult<()> {
     if !height.is_finite() || !(1.0..=1000.0).contains(&height) {
         return Err(IdeError::invalid("invalid title bar height"));
     }
@@ -225,7 +224,7 @@ pub fn window_set_titlebar_height(window: WorkbenchWindow, height: f64) -> IdeRe
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_take_launch(window: WorkbenchWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
+pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
     windows.take_launch(window.label())
 }
 
@@ -246,7 +245,7 @@ pub struct SettingsWindowInit {
 #[specta::specta]
 pub fn window_take_settings_init(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     windows: State<'_, WindowsState>,
     state: State<'_, AppState>,
 ) -> SettingsWindowInit {
@@ -274,7 +273,7 @@ pub fn window_take_settings_init(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_complete_launch(window: WorkbenchWindow, windows: State<'_, WindowsState>) -> IdeResult<()> {
+pub fn window_complete_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> IdeResult<()> {
     windows.complete_launch(window.label());
     Ok(())
 }
@@ -296,7 +295,7 @@ pub struct OpenProject {
 #[specta::specta]
 pub fn window_open_projects(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> IdeResult<Vec<OpenProject>> {
     Ok(windows::project_window_labels(&app)
@@ -324,7 +323,7 @@ pub fn window_open_projects(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_is_fullscreen(window: WorkbenchWindow) -> bool {
+pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
     window.is_fullscreen().unwrap_or(false)
 }
 
@@ -367,7 +366,7 @@ pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, W
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_begin_prompt(app: AppHandle, window: WorkbenchWindow) -> bool {
+pub async fn window_begin_prompt(app: AppHandle, window: WebviewWindow) -> bool {
     crate::window_groups::begin_prompt(&app, &window).await
 }
 
@@ -384,7 +383,7 @@ pub fn window_end_prompt(app: AppHandle, window: Window) {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_ready_to_close(app: AppHandle, window: WorkbenchWindow) -> bool {
+pub async fn window_ready_to_close(app: AppHandle, window: WebviewWindow) -> bool {
     crate::window_groups::ready_to_close(&app, &window).await
 }
 
@@ -420,7 +419,7 @@ pub fn app_cancel_quit(app: AppHandle, window: Window, windows: State<'_, Window
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     app: AppHandle,
     menu_state: State<'_, MenuState>,
     state: State<'_, AppState>,
@@ -464,7 +463,23 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
     }
     let home = dirs::home_dir();
     let config = menu_state.config.lock().clone();
-    menu::model(&spec, &menu::recent_items(&state.recent.list(), home.as_deref()), &config)
+    let remote = menu_state.remote_recent.lock().clone();
+    menu::model(&spec, &menu::recent_items(&state.recent.list(), &remote, home.as_deref()), &config)
+}
+
+/// The Remote Development projects of the frontend's recent list, for Open Recent.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn menu_set_remote_recent(
+    app: AppHandle,
+    menu_state: State<'_, MenuState>,
+    state: State<'_, AppState>,
+    projects: Vec<menu::RemoteRecent>,
+) {
+    if menu::store_remote_recent(&menu_state, projects) {
+        menu::install(&app, &menu_state, &state.recent.list());
+    }
 }
 
 /// Action ids the focused window cannot run now: their native menu items are
@@ -472,7 +487,7 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn menu_set_disabled(window: WorkbenchWindow, app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
+pub fn menu_set_disabled(window: WebviewWindow, app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
     // The window whose menu runs: a project window also while its Settings window is focused.
     if menu::native_menu_bar()
         && windows::target_window(&app).is_some_and(|target| !owns_menu_config(window.label(), target.label()))
@@ -598,7 +613,19 @@ fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> 
     }
 }
 
-fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+/// Bounds connection establishment (TCP and TLS) for the updater. reqwest divides this
+/// across a host's resolved addresses, so a CDN hostname with four A records gets about
+/// 3.75s each — enough for a slow link, while still leaving the 60s check budget intact.
+const UPDATER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn configure_updater_client(
+    builder: reqwest::ClientBuilder,
+    proxy: &ide_core::proxy_settings::ProxySettings,
+) -> reqwest::ClientBuilder {
+    ide_http::client::with_proxy(builder, proxy).connect_timeout(UPDATER_CONNECT_TIMEOUT)
+}
+
+pub(crate) fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
         return Ok(None);
@@ -621,7 +648,7 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
         builder = builder.target(target);
     }
     builder
-        .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
+        .configure_client(move |b| configure_updater_client(b, &proxy))
         .endpoints(endpoints)
         .map_err(|e| IdeError::invalid(e.to_string()))?
         .build()
@@ -660,7 +687,7 @@ pub(crate) async fn check_update(app: &AppHandle, source: UpdateSource) -> IdeRe
 #[specta::specta]
 pub fn app_update_window_ready(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     ready: bool,
     system_locale: String,
 ) -> IdeResult<()> {
@@ -696,24 +723,23 @@ pub enum UpdateProgress {
 /// Limits download events to one per whole percent (or per 256 KiB without a length).
 #[derive(Default)]
 struct ProgressThrottle {
-    downloaded: u64,
     last_step: Option<u64>,
 }
 
 impl ProgressThrottle {
     const UNKNOWN_STEP: u64 = 256 * 1024;
 
-    fn chunk(&mut self, len: usize, total: Option<u64>) -> Option<UpdateProgress> {
-        self.downloaded += len as u64;
+    /// Converts the downloader's absolute byte count into a throttled event.
+    fn report(&mut self, downloaded: u64, total: Option<u64>) -> Option<UpdateProgress> {
         let step = match total {
-            Some(t) if t > 0 => self.downloaded.min(t) * 100 / t,
-            _ => self.downloaded / Self::UNKNOWN_STEP,
+            Some(t) if t > 0 => downloaded.min(t) * 100 / t,
+            _ => downloaded / Self::UNKNOWN_STEP,
         };
         if self.last_step == Some(step) {
             return None;
         }
         self.last_step = Some(step);
-        Some(UpdateProgress::Downloading { downloaded: self.downloaded as f64, total: total.map(|t| t as f64) })
+        Some(UpdateProgress::Downloading { downloaded: downloaded as f64, total: total.map(|t| t as f64) })
     }
 }
 
@@ -751,28 +777,22 @@ pub async fn app_install_update(
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
     let result = async {
-        let updater = updater(&app, source)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
-        let update = tokio::select! {
-            r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
-        }
-        .ok_or_else(|| IdeError::not_found("no update available"))?;
         let mut throttle = ProgressThrottle::default();
         let progress = on_progress.clone();
-        let download = update.download(
-            move |len, total| {
-                if let Some(p) = throttle.chunk(len, total) {
+        let downloaded = tokio::select! {
+            result = crate::updates::download_update(&app, source, &token, move |done, total| {
+                if let Some(p) = throttle.report(done, total) {
                     let _ = progress.send(p);
                 }
-            },
-            || {},
-        );
-        let bytes = tokio::select! {
-            r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+            }) => result?,
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
+        let crate::updates::DownloadedUpdate { update, bytes, path } = downloaded;
+        if token.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || {
+        let installed = tauri::async_runtime::spawn_blocking(move || {
             #[cfg(windows)]
             if update.target.ends_with("-portable") {
                 let exe = tauri::utils::platform::current_exe()?;
@@ -781,7 +801,11 @@ pub async fn app_install_update(
             update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
         })
         .await
-        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+        if installed.is_ok() {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        installed
     }
     .await;
     state.host.end_request(request);
@@ -794,7 +818,9 @@ pub async fn app_install_update(
 /// can show the UI's language and fall back to English. An install records the
 /// notes it saw, so this is only for an update installed outside the app.
 /// `Ok(None)` when the manifest covers another version or carries no notes.
-#[desktop_command(trust = trusted)]
+/// Reads only the public manifest, like the update check: the page usually opens
+/// in a window without a project.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_release_notes(
@@ -910,22 +936,33 @@ mod tests {
     #[test]
     fn throttle_reports_each_whole_percent_once() {
         let mut t = ProgressThrottle::default();
-        assert_eq!(downloading(t.chunk(1, Some(1000))), Some((1.0, Some(1000.0))));
-        assert_eq!(downloading(t.chunk(5, Some(1000))), None);
-        assert_eq!(downloading(t.chunk(4, Some(1000))), Some((10.0, Some(1000.0))));
-        let reported = (0..99).filter(|_| t.chunk(10, Some(1000)).is_some()).count();
-        assert_eq!(reported, 99);
-        assert_eq!(t.downloaded, 1000);
+        assert_eq!(downloading(t.report(1, Some(1000))), Some((1.0, Some(1000.0))));
+        assert_eq!(downloading(t.report(9, Some(1000))), None);
+        assert_eq!(downloading(t.report(10, Some(1000))), Some((10.0, Some(1000.0))));
+        let reported = (11..=100).filter(|percent| t.report(percent * 10, Some(1000)).is_some()).count();
+        assert_eq!(reported, 90);
     }
 
     #[test]
     fn throttle_without_length_reports_per_step() {
         let mut t = ProgressThrottle::default();
-        assert!(t.chunk(10, None).is_some());
-        assert!(t.chunk(1024, None).is_none());
-        assert_eq!(downloading(t.chunk(256 * 1024, None)), Some(((256 * 1024 + 1034) as f64, None)));
+        assert!(t.report(10, None).is_some());
+        assert!(t.report(1024, None).is_none());
+        assert_eq!(downloading(t.report(256 * 1024 + 1034, None)), Some(((256 * 1024 + 1034) as f64, None)));
         // A zero length is treated as unknown, not divided by.
-        assert!(ProgressThrottle::default().chunk(1, Some(0)).is_some());
+        assert!(ProgressThrottle::default().report(1, Some(0)).is_some());
+    }
+
+    #[test]
+    fn throttle_uses_absolute_bytes_after_a_full_download_restart() {
+        let mut t = ProgressThrottle::default();
+        let total = 100 * 1024 * 1024;
+        assert_eq!(downloading(t.report(40 * 1024 * 1024, None)), Some(((40 * 1024 * 1024) as f64, None)));
+        assert_eq!(downloading(t.report(1024, Some(total))), Some((1024.0, Some(total as f64))));
+        assert_eq!(
+            downloading(t.report(50 * 1024 * 1024, Some(total))),
+            Some(((50 * 1024 * 1024) as f64, Some(total as f64)))
+        );
     }
 
     #[test]
@@ -935,6 +972,18 @@ mod tests {
         assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
         // A build without an update endpoint stays without one.
         assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
+    }
+
+    #[test]
+    fn updater_client_bounds_connection_setup() {
+        let proxy = ide_core::proxy_settings::ProxySettings::default();
+        let builder = configure_updater_client(reqwest::ClientBuilder::new(), &proxy);
+        // reqwest has no getter for this; its ClientBuilder Debug prints non-default settings.
+        let debug = format!("{builder:?}");
+        assert!(
+            debug.contains(&format!("connect_timeout: {:?}", UPDATER_CONNECT_TIMEOUT)),
+            "the updater must not wait forever on an unreachable CDN address: {debug}"
+        );
     }
 
     #[test]
@@ -963,6 +1012,7 @@ ide_command::desktop_domain!(
     menu_model,
     menu_refresh,
     menu_set_disabled,
+    menu_set_remote_recent,
     window_begin_prompt,
     window_close_context,
     window_complete_launch,

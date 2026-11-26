@@ -12,7 +12,7 @@
 //! handle the key. IDE items therefore carry the native accelerator of their first
 //! keymap binding ([`MenuConfig::accelerators`]) so the menu draws the shortcut in
 //! its own column, and a menu event that such a key equivalent fires is dropped
-//! (`macos_native_action`): the keymap has already declined that key. Bindings with no
+//! ([`fires_natively`]): the keymap has already declined that key. Bindings with no
 //! native form (chords, double modifiers) show no shortcut, as in IDEA. Items with
 //! a spec accelerator fire natively for keys the keymap never binds: Quit and
 //! window cycling, next to the macOS clipboard/undo roles that text inputs need.
@@ -33,8 +33,6 @@ const RECENT_PREFIX: &str = "recent:";
 const DYNAMIC_PREFIX: &str = "dyn:";
 /// Action run for an Open Recent entry (argument: the project path).
 pub const OPEN_RECENT_ACTION: &str = "file.openRecentProject";
-pub(crate) const EDITOR_UNDO: &str = "dyn:edit.undo|editorHistory";
-pub(crate) const EDITOR_REDO: &str = "dyn:edit.redo|editorHistory";
 const MAX_RECENT: usize = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +110,7 @@ impl Native {
     }
 
     /// Accelerator the OS attaches implicitly (macOS), in keymap syntax.
+    #[cfg(test)]
     fn implicit_accelerator(self) -> Option<&'static str> {
         match self {
             Native::Undo => Some("Meta+Z"),
@@ -139,7 +138,7 @@ pub enum Entry {
     Action {
         id: &'static str,
         label: &'static str,
-        /// Native accelerator (Tauri syntax) that fires natively (`macos_native_action`) and wins
+        /// Native accelerator (Tauri syntax) that fires natively ([`fires_natively`]) and wins
         /// over the keymap's. Only for keys the webview never handles.
         accel: Option<&'static str>,
         /// Shortcut text after the label, for the Windows/Linux edit items without a keymap binding.
@@ -999,9 +998,6 @@ pub struct MenuConfig {
     /// Ids of the toggle actions currently on.
     #[serde(default)]
     pub checked: Vec<String>,
-    /// Whether the focused editor owns its undo history.
-    #[serde(default)]
-    pub editor_owns_history: bool,
 }
 
 /// An item of a frontend-listed menu slot.
@@ -1121,16 +1117,31 @@ pub struct MenuState {
     /// Visible menu last installed. Accelerators of actions that are not on the menu
     /// are not part of this, so they must not redraw the macOS menu bar.
     rendered: Mutex<Option<Vec<RenderedMenu>>>,
-    #[cfg(target_os = "macos")]
-    command_keys: Mutex<HashSet<crate::macos_webview_input::CommandKey>>,
+    /// The Remote Development projects of the frontend's recent list.
+    pub remote_recent: Mutex<Vec<RemoteRecent>>,
 }
 
-#[cfg(target_os = "macos")]
-impl MenuState {
-    pub(crate) fn routes_key(&self, event: &objc2_app_kit::NSEvent) -> bool {
-        crate::macos_webview_input::CommandKey::from_event(event)
-            .is_some_and(|key| self.command_keys.lock().contains(&key))
+/// A recent Remote Development project (SSH, WSL, Dev Container), kept by the frontend: Open
+/// Recent lists it among the local projects, as Manage Projects does.
+#[derive(Debug, Clone, PartialEq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRecent {
+    /// `ssh://host/path`, `wsl://Ubuntu/path`…: what `file.openRecentProject` gets back.
+    pub location: String,
+    pub name: String,
+    /// Where it lives, as shown after the name (`me@host:/srv/app`).
+    pub detail: String,
+    pub opened_at_ms: f64,
+}
+
+/// Stores the remote recent list; `false` when it is unchanged.
+pub fn store_remote_recent(state: &MenuState, next: Vec<RemoteRecent>) -> bool {
+    let mut current = state.remote_recent.lock();
+    if *current == next {
+        return false;
     }
+    *current = next;
+    true
 }
 
 /// Stores `next` when it differs from the config last used to build the menu.
@@ -1144,32 +1155,16 @@ pub fn store_config(state: &MenuState, next: MenuConfig) -> bool {
     true
 }
 
+/// Whether the item `id` performs its own key equivalent: only items with a spec accelerator.
+/// A keymap accelerator is drawn for display, and its key reached the menu because the
+/// keymap declined it, so an event it fires is dropped.
 #[cfg(any(target_os = "macos", test))]
-fn ids_with_accel(entries: &[Entry], out: &mut Vec<(&'static str, &'static str)>) {
-    for e in entries {
-        match e {
-            Entry::Submenu { children, .. } => ids_with_accel(children, out),
-            Entry::Action { id, accel: Some(a), .. } => out.push((id, a)),
-            _ => {}
-        }
-    }
-}
-
-/// Fixed menu shortcuts must still run when the focused webview declines the key.
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn macos_native_action(id: &str) -> bool {
-    matches!(id, EDITOR_UNDO | EDITOR_REDO) || has_spec_accelerator(id)
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn has_spec_accelerator(id: &str) -> bool {
-    static ACTIONS: std::sync::OnceLock<Vec<(&str, &str)>> = std::sync::OnceLock::new();
-    let actions = ACTIONS.get_or_init(|| {
-        let mut actions = Vec::new();
-        ids_with_accel(&spec(Os::Mac), &mut actions);
-        actions
-    });
-    actions.iter().any(|(action, _)| *action == id)
+pub fn fires_natively(spec: &[Entry], id: &str) -> bool {
+    spec.iter().any(|entry| match entry {
+        Entry::Submenu { children, .. } => fires_natively(children, id),
+        Entry::Action { id: action, accel, .. } => *action == id && accel.is_some(),
+        _ => false,
+    })
 }
 
 /// The action an item id stands for, if it is an IDE action item.
@@ -1223,18 +1218,28 @@ pub struct RecentItem {
     pub label: String,
 }
 
-pub fn recent_items(recent: &[ide_workspace::RecentProject], home: Option<&Path>) -> Vec<RecentItem> {
-    recent
-        .iter()
-        .take(MAX_RECENT)
-        .map(|p| {
-            let shown = match home.and_then(|h| p.path.strip_prefix(h).ok()) {
-                Some(rest) => format!("~/{}", rest.display()),
-                None => p.path.display().to_string(),
-            };
-            RecentItem { path: p.path.to_string_lossy().into_owned(), label: format!("{}  —  {shown}", p.name) }
-        })
-        .collect()
+/// The local and remote recent projects, most recently opened first.
+pub fn recent_items(
+    recent: &[ide_workspace::RecentProject],
+    remote: &[RemoteRecent],
+    home: Option<&Path>,
+) -> Vec<RecentItem> {
+    let local = recent.iter().map(|p| {
+        let shown = match home.and_then(|h| p.path.strip_prefix(h).ok()) {
+            Some(rest) => format!("~/{}", rest.display()),
+            None => p.path.display().to_string(),
+        };
+        let item =
+            RecentItem { path: p.path.to_string_lossy().into_owned(), label: format!("{}  —  {shown}", p.name) };
+        (p.opened_at_ms, item)
+    });
+    let remote = remote.iter().map(|r| {
+        (r.opened_at_ms, RecentItem { path: r.location.clone(), label: format!("{}  —  {}", r.name, r.detail) })
+    });
+    let mut items: Vec<(f64, RecentItem)> = local.chain(remote).collect();
+    // Stable: the local list's own order holds among equal times.
+    items.sort_by(|a, b| b.0.total_cmp(&a.0));
+    items.into_iter().take(MAX_RECENT).map(|(_, item)| item).collect()
 }
 
 /// One top-level menu, as it will actually be drawn.
@@ -1343,16 +1348,7 @@ fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -
             }
             Entry::Dynamic(slot) => out.extend(config.dynamic_items(slot).iter().map(|item| item.render(config))),
             Entry::Native(kind) => {
-                let text = config.label(kind.key(), kind.default_label());
-                match (kind, config.editor_owns_history) {
-                    (Native::Undo | Native::Redo, true) => out.push(RenderedItem::Action {
-                        id: if *kind == Native::Undo { EDITOR_UNDO } else { EDITOR_REDO }.into(),
-                        text,
-                        accel: kind.implicit_accelerator().map(Into::into),
-                        checked: None,
-                    }),
-                    _ => out.push(RenderedItem::Native { kind: *kind, text }),
-                }
+                out.push(RenderedItem::Native { kind: *kind, text: config.label(kind.key(), kind.default_label()) })
             }
             Entry::Separator => out.push(RenderedItem::Separator),
             Entry::RecentProjects if recent.is_empty() => out.push(RenderedItem::Placeholder {
@@ -1774,41 +1770,6 @@ pub fn restore_check<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, id:
     }
 }
 
-/// Workbench accelerators that AppKit could claim before Wry's child webview sees the key.
-/// A native role wins collisions, including Copy/Cut/Paste shared with the project tree.
-/// Editor history needs the page first for CodeMirror edits and a menu fallback if it declines.
-#[cfg(target_os = "macos")]
-fn workbench_command_keys(rendered: &[RenderedMenu]) -> HashSet<crate::macos_webview_input::CommandKey> {
-    use crate::macos_webview_input::CommandKey;
-    fn collect(items: &[RenderedItem], keys: &mut HashSet<CommandKey>, native: &mut HashSet<CommandKey>) {
-        for item in items {
-            let (binding, reserved) = match item {
-                RenderedItem::Submenu { items, .. } => {
-                    collect(items, keys, native);
-                    continue;
-                }
-                RenderedItem::Native { kind, .. } => (kind.implicit_accelerator(), true),
-                RenderedItem::Action { id, accel: Some(accel), .. } => (Some(accel.as_str()), has_spec_accelerator(id)),
-                _ => continue,
-            };
-            if let Some(key) = binding.and_then(CommandKey::from_binding) {
-                if reserved {
-                    native.insert(key);
-                } else {
-                    keys.insert(key);
-                }
-            }
-        }
-    }
-    let mut keys = HashSet::new();
-    let mut native = HashSet::new();
-    for menu in rendered {
-        collect(&menu.items, &mut keys, &mut native);
-    }
-    keys.retain(|key| !native.contains(key));
-    keys
-}
-
 /// Installs the app menu from the current config and recent list.
 ///
 /// The first install, and a change of the top-level menu ids, calls `set_menu`.
@@ -1820,7 +1781,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
         return;
     }
     let home = dirs::home_dir();
-    let items = recent_items(recent, home.as_deref());
+    let items = recent_items(recent, &menu_state.remote_recent.lock(), home.as_deref());
     let config = menu_state.config.lock().clone();
     let disabled = menu_state.disabled.lock().clone();
     let rendered = render_bar(&prepared_spec(app, Os::current()), &config, &items);
@@ -1834,19 +1795,22 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
         }
         _ => false,
     };
-    if !patched
-        && let Err(e) = build(app, Os::current(), &config, &items, &disabled).and_then(|menu| app.set_menu(menu))
-    {
-        tracing::warn!("failed to build the app menu: {e}");
+    if patched {
+        *slot = Some(rendered);
         return;
     }
-    #[cfg(target_os = "macos")]
-    {
-        *menu_state.command_keys.lock() = workbench_command_keys(&rendered);
-    }
-    *slot = Some(rendered);
+    let installed = match build(app, Os::current(), &config, &items, &disabled).and_then(|menu| app.set_menu(menu)) {
+        Ok(_) => {
+            *slot = Some(rendered);
+            true
+        }
+        Err(e) => {
+            tracing::warn!("failed to build the app menu: {e}");
+            false
+        }
+    };
     drop(slot);
-    if !patched {
+    if installed {
         // After the menu bar is installed. Holding `rendered` across this would deadlock a menu
         // click on the main thread, which also takes that lock.
         #[cfg(target_os = "macos")]
@@ -1881,6 +1845,16 @@ mod tests {
     use std::collections::{BTreeSet, HashSet};
 
     const ALL_OS: [Os; 3] = [Os::Mac, Os::Windows, Os::Linux];
+
+    fn ids_with_accel(entries: &[Entry], out: &mut Vec<(&'static str, &'static str)>) {
+        for e in entries {
+            match e {
+                Entry::Submenu { children, .. } => ids_with_accel(children, out),
+                Entry::Action { id, accel: Some(a), .. } => out.push((id, a)),
+                _ => {}
+            }
+        }
+    }
 
     fn natives(entries: &[Entry], out: &mut Vec<Native>) {
         for e in entries {
@@ -2174,46 +2148,13 @@ mod tests {
         assert!(accelerator_patchable(None, None));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn workbench_keys_follow_menu_remaps_and_yield_to_native_roles() {
-        use crate::macos_webview_input::CommandKey;
-        let mut config = MenuConfig::default();
-        config.accelerators.insert("find.inFile".into(), "Meta+F".into());
-        config.accelerators.insert("find.replaceInFile".into(), "Meta+R".into());
-        config.accelerators.insert("toolwindow.project".into(), "Meta+1".into());
-        config.dynamic.insert(DYNAMIC_TOOL_WINDOWS.into(), vec![dynamic_item("toolwindow.project", None, "Project")]);
+    fn only_spec_accelerators_fire_natively() {
         let spec = spec(Os::Mac);
-        let keys = workbench_command_keys(&render_bar(&spec, &config, &[]));
-        let key = |binding| CommandKey::from_binding(binding).unwrap();
-        for b in ["Meta+F", "Meta+R", "Meta+1"] {
-            assert!(keys.contains(&key(b)));
-        }
-        config.editor_owns_history = true;
-        let editor_keys = workbench_command_keys(&render_bar(&spec, &config, &[]));
-        for b in ["Meta+Z", "Shift+Meta+Z"] {
-            assert!(editor_keys.contains(&key(b)));
-        }
-        assert_eq!(route(&spec, EDITOR_UNDO).unwrap().arg.as_deref(), Some("editorHistory"));
-        config.editor_owns_history = false;
-        config.accelerators.insert("find.inFile".into(), "Alt+Meta+J".into());
-        for native in ["Meta+C", "Meta+V", "Meta+X", "Meta+Z", "Shift+Meta+Z", "Meta+A", "Meta+Q"] {
-            config.accelerators.insert("find.replaceInFile".into(), native.into());
-            let keys = workbench_command_keys(&render_bar(&spec, &config, &[]));
-            assert!(keys.contains(&key("Alt+Meta+J")));
-            assert!(!keys.contains(&key("Meta+F")));
-            assert!(!keys.contains(&key(native)));
-        }
-    }
-
-    #[test]
-    fn native_menu_accelerators_fire_when_the_keymap_declines() {
-        assert!(macos_native_action(EDITOR_UNDO));
-        assert!(macos_native_action(EDITOR_REDO));
-        assert!(macos_native_action("app.quit"));
-        assert!(macos_native_action("window.next"));
-        assert!(!macos_native_action("file.save"));
-        assert!(!macos_native_action("dyn:toolwindow.project"));
+        assert!(fires_natively(&spec, "app.quit"));
+        assert!(fires_natively(&spec, "window.next"));
+        assert!(!fires_natively(&spec, "file.save"));
+        assert!(!fires_natively(&spec, "dyn:toolwindow.project"));
     }
 
     #[test]
@@ -2327,9 +2268,37 @@ mod tests {
             branch: None,
             missing: false,
         }];
-        let items = recent_items(&recent, Some(Path::new("/home/me")));
+        let items = recent_items(&recent, &[], Some(Path::new("/home/me")));
         assert_eq!(items[0].label, "openidea  —  ~/code/openidea");
         assert_eq!(items[0].path, "/home/me/code/openidea");
+    }
+
+    #[test]
+    fn remote_projects_join_the_recent_list_by_when_they_were_opened() {
+        let local = |path: &str, at: f64| ide_workspace::RecentProject {
+            path: path.into(),
+            name: path.rsplit('/').next().unwrap().into(),
+            opened_at_ms: at,
+            branch: None,
+            missing: false,
+        };
+        let recent = vec![local("/home/me/new", 30.0), local("/home/me/old", 10.0)];
+        let remote = [RemoteRecent {
+            location: "wsl://Ubuntu/home/me/api".into(),
+            name: "api".into(),
+            detail: "Ubuntu:/home/me/api".into(),
+            opened_at_ms: 20.0,
+        }];
+        let items = recent_items(&recent, &remote, Some(Path::new("/home/me")));
+        let paths: Vec<&str> = items.iter().map(|i| i.path.as_str()).collect();
+        assert_eq!(paths, ["/home/me/new", "wsl://Ubuntu/home/me/api", "/home/me/old"]);
+        assert_eq!(items[1].label, "api  —  Ubuntu:/home/me/api");
+
+        let many: Vec<_> = (0..20).map(|i| local(&format!("/p/{i}"), f64::from(i))).collect();
+        let items = recent_items(&many, &remote, None);
+        assert_eq!(items.len(), MAX_RECENT);
+        assert_eq!([items[0].path.as_str(), items[1].path.as_str()], ["wsl://Ubuntu/home/me/api", "/p/19"]);
+        assert_eq!(items[MAX_RECENT - 1].path, format!("/p/{}", 20 - MAX_RECENT + 1), "the remote one takes a slot");
     }
 
     #[test]
@@ -2725,9 +2694,7 @@ mod tests {
                 ],
                 "{os:?}"
             );
-            let mut fixed = Vec::new();
-            ids_with_accel(children, &mut fixed);
-            assert!(!fixed.iter().any(|(id, _)| *id == "build.compileFile"));
+            assert!(!fires_natively(&entries, "build.compileFile"));
         }
         let entries = spec(Os::Mac);
         let mut base = MenuConfig::default();

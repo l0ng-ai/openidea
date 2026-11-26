@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { indentService, type LanguageSupport } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
@@ -9,10 +9,17 @@ import {
   codeBlockStart,
   cursorPageBottom,
   cursorPageTop,
+  cursorParagraphBackward,
+  cursorParagraphForward,
+  nextParagraphBoundary,
+  previousParagraphBoundary,
   scrollDown,
+  scrollToBottom,
+  scrollToTop,
   scrollUp,
   selectPageBottom,
   selectPageTop,
+  selectParagraphForward,
   splitLine,
 } from "./caretCommands";
 import { editorBaseKeymap } from "./baseKeymap";
@@ -101,6 +108,63 @@ describe("Scroll Up / Scroll Down", () => {
     scrollUp(view);
     expect(view.state.selection.eq(before)).toBe(true);
     expect(view.state.doc.toString()).toBe("a\nb\nc");
+  });
+});
+
+describe("Scroll to Top / Scroll to Bottom", () => {
+  /** jsdom has no layout: record where each command asks the view to scroll. */
+  function scrolls(text: string) {
+    const targets: { from: number; to: number; y: unknown }[] = [];
+    const view = make(text);
+    view.dispatch({
+      effects: StateEffect.appendConfig.of(
+        EditorView.scrollHandler.of(
+          (_, range, options) => (targets.push({ from: range.from, to: range.to, y: options.y }), true),
+        ),
+      ),
+    });
+    return { view, targets };
+  }
+  /** The view scrolls in its next measure, on an animation frame. */
+  const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+
+  it("scrolls to the very top, keeping the horizontal position", async () => {
+    const view = make("a\nb|\nc\nd");
+    let top = 120;
+    Object.defineProperty(view.scrollDOM, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => (top = v),
+    });
+    view.scrollDOM.scrollLeft = 40;
+    expect(scrollToTop(view)).toBe(true);
+    await frame();
+    expect(top).toBe(0);
+    expect(view.scrollDOM.scrollLeft).toBe(40);
+  });
+
+  it("brings the end of the file toward the middle", async () => {
+    const { view, targets } = scrolls("a\nb|\nc\nd");
+    expect(scrollToBottom(view)).toBe(true);
+    await frame();
+    expect(targets).toEqual([{ from: 7, to: 7, y: "center" }]);
+  });
+
+  it("leaves the carets, the selection and the document as they are", () => {
+    const { view } = scrolls("|a\nb\nc");
+    view.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, 3), EditorSelection.cursor(5)], 1) });
+    const before = view.state.selection;
+    scrollToBottom(view);
+    scrollToTop(view);
+    expect(view.state.selection.eq(before)).toBe(true);
+    expect(view.state.doc.toString()).toBe("a\nb\nc");
+  });
+
+  it("works in an empty file", async () => {
+    const { view, targets } = scrolls("|");
+    scrollToBottom(view);
+    await frame();
+    expect(targets).toEqual([{ from: 0, to: 0, y: "center" }]);
   });
 });
 
@@ -224,6 +288,75 @@ describe("code block navigation", () => {
     const { state, pos } = at("a|();");
     expect(codeBlockStart(state, pos)).toBeNull();
     expect(codeBlockEnd(state, pos)).toBeNull();
+  });
+});
+
+describe("paragraph navigation", () => {
+  // Lines: "a1", "a2", "", "b1", "b2", "  ", "c1", "c2".
+  const text = "a1\na2\n\nb1\nb2\n  \nc1\nc2";
+  const state = EditorState.create({ doc: text });
+  const empty = text.indexOf("\n\n") + 1;
+  const spaces = text.indexOf("  ");
+  const c1 = text.indexOf("c1");
+  const at = (s: string) => text.indexOf(s);
+
+  it("goes forward to the next blank line, whitespace-only included, or the end of the text", () => {
+    expect(nextParagraphBoundary(state, 0)).toBe(empty);
+    expect(nextParagraphBoundary(state, at("a2") + 1)).toBe(empty);
+    expect(nextParagraphBoundary(state, at("b1") + 1)).toBe(spaces);
+    // From a blank line: past it and the paragraph after it.
+    expect(nextParagraphBoundary(state, empty)).toBe(spaces);
+    expect(nextParagraphBoundary(state, spaces + 1)).toBe(text.length);
+    expect(nextParagraphBoundary(state, at("c2"))).toBe(text.length);
+  });
+
+  it("goes backward to the empty line before the paragraph, or the line after a whitespace-only one", () => {
+    expect(previousParagraphBoundary(state, at("c2") + 1)).toBe(c1);
+    expect(previousParagraphBoundary(state, at("b2") + 2)).toBe(empty);
+    expect(previousParagraphBoundary(state, at("a2") + 1)).toBe(0);
+    expect(previousParagraphBoundary(state, 0)).toBe(0);
+  });
+
+  it("goes backward past the paragraph above from a line start or a blank line", () => {
+    expect(previousParagraphBoundary(state, c1)).toBe(empty);
+    expect(previousParagraphBoundary(state, spaces + 2)).toBe(empty);
+    expect(previousParagraphBoundary(state, at("b1"))).toBe(0);
+    expect(previousParagraphBoundary(state, empty)).toBe(0);
+  });
+
+  it("does not stall on a whitespace-only line when pressed repeatedly", () => {
+    const stops: number[] = [];
+    let pos = text.length;
+    while (pos > 0) stops.push((pos = previousParagraphBoundary(state, pos)));
+    expect(stops).toEqual([c1, empty, 0]);
+    stops.length = 0;
+    while (pos < text.length) stops.push((pos = nextParagraphBoundary(state, pos)));
+    expect(stops).toEqual([empty, spaces, text.length]);
+  });
+
+  it("treats a document with no blank line as one paragraph", () => {
+    const one = EditorState.create({ doc: "x\ny" });
+    expect(nextParagraphBoundary(one, 0)).toBe(3);
+    expect(previousParagraphBoundary(one, 3)).toBe(0);
+    const blank = EditorState.create({ doc: "" });
+    expect(nextParagraphBoundary(blank, 0)).toBe(0);
+    expect(previousParagraphBoundary(blank, 0)).toBe(0);
+  });
+
+  it("moves every caret, merging carets that land together", () => {
+    const view = make("a|1\na|2\n\nb|1\nb2");
+    expect(cursorParagraphForward(view)).toBe(true);
+    expect(show(view)).toBe("a1\na2\n|\nb1\nb2|");
+    expect(cursorParagraphBackward(view)).toBe(true);
+    expect(show(view)).toBe("|a1\na2\n|\nb1\nb2");
+  });
+
+  it("with Selection extends each selection from its anchor", () => {
+    const view = make("a1\na|2\n\nb1");
+    selectParagraphForward(view);
+    expect(view.state.selection.main).toMatchObject({ anchor: 4, head: 6 });
+    selectParagraphForward(view);
+    expect(view.state.selection.main).toMatchObject({ anchor: 4, head: 9 });
   });
 });
 

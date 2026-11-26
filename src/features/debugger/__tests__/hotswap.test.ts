@@ -266,6 +266,37 @@ describe("HotSwap", () => {
     }
   });
 
+  it("points a refused structural change to Enhanced class redefinition when the configuration has it off", async () => {
+    const refused = "Failed to redefine classes: add method not implemented";
+    const hint = "turn on Enhanced class redefinition in the run configuration";
+    expect(hotSwapMessage(0, [refused], false, true).body).toContain(hint);
+    expect(hotSwapMessage(0, [refused], false, false).body).toBe(refused);
+    expect(hotSwapMessage(0, ["boom"], false, true).body).toBe("boom");
+
+    const withConfig = (kind: string, params: Record<string, string>) => ({
+      ...session(1, true),
+      runConfig: { id: kind, kind, params } as unknown as NonNullable<DebugSession["runConfig"]>,
+    });
+    ipc.debugRedefineClasses.mockImplementation(() => ipc.ok({ changedClasses: [], errorMessage: refused }));
+    for (const [s, shown] of [
+      [withConfig("application", {}), true],
+      [withConfig("spring-boot", {}), true],
+      [withConfig("application", { enhancedClassRedefinition: "true" }), false],
+      [withConfig("tomcat", {}), false],
+      [session(1, true), false],
+    ] as const) {
+      useDebug.setState({ sessions: { 1: s } });
+      // oxlint-disable-next-line no-await-in-loop -- one reload per session shape; each assertion reads its notification
+      await reloadChangedClasses(false);
+      expect(notes.at(-1)).toMatchObject({ level: "error", title: "Hot Swap failed" });
+      expect(String(notes.at(-1)!.body).includes(hint)).toBe(shown);
+    }
+
+    useDebug.setState({ sessions: { 1: withConfig("application", {}) } });
+    onHotCodeReplace(1 as DebugSessionId, { kind: "hotCodeReplace", changeType: "ERROR", message: refused });
+    expect(notes.at(-1)).toMatchObject({ title: "Hot Swap", body: expect.stringContaining(hint) });
+  });
+
   function pausedFrames(names: string[], restartFrame = true): DebugSession {
     return {
       ...session(1, true),

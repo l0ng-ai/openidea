@@ -31,6 +31,13 @@ function languageServices(type: string, doc: NotebookCellDoc | undefined) {
   return cellEditorExtensions({ doc: doc.doc, path: doc.uri, language: "python", uiMode: "Python", readOnly: false });
 }
 
+/** Created once: every `EditorView.theme` call mounts new CSS rules into the document. */
+const CELL_EDITOR_THEME = EditorView.theme({
+  "&.cm-editor": { height: "auto" },
+  // `auto`: past either end of a long cell the wheel scrolls the notebook.
+  "&.cm-editor .cm-scroller": { maxHeight: "640px", overflow: "auto", overscrollBehavior: "auto" },
+});
+
 export function CellEditor({
   session,
   id,
@@ -106,11 +113,7 @@ export function CellEditor({
       services.current.of(languageServices(type, initialDoc.current)),
       readonly.current.of(EditorState.readOnly.of(session.getState().frozen)),
       EditorView.lineWrapping,
-      EditorView.theme({
-        "&.cm-editor": { height: "auto" },
-        // `auto`: past either end of a long cell the wheel scrolls the notebook.
-        "&.cm-editor .cm-scroller": { maxHeight: "640px", overflow: "auto", overscrollBehavior: "auto" },
-      }),
+      CELL_EDITOR_THEME,
       adjacentEditor.of((direction, col) => session.revealAdjacent(id, direction, col)),
       EditorView.contentAttributes.of({
         "aria-label": tx(type === "code" ? "Python cell source" : "Markdown cell source"),
