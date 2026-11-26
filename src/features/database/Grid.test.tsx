@@ -969,3 +969,47 @@ it.each(["Escape", "Enter"])("%s closes the inline text editor without a second 
   if (key === "Escape") expect(onEdit).not.toHaveBeenCalled();
   else expect(onEdit).toHaveBeenCalledExactlyOnceWith(0, 0, "changed");
 });
+
+describe("local filter (#6022)", () => {
+  const columns = [
+    { name: "city", type: "text" },
+    { name: "type", type: "int" },
+  ];
+  const data = [
+    ["Shanghai", "1"],
+    ["Beijing", "2"],
+    ["Shenzhen", "2"],
+    ["Hangzhou", "3"],
+  ];
+  const value = (r: number, c: number) => data[r]?.[c] ?? null;
+  const cities = () =>
+    screen
+      .getAllByRole("gridcell")
+      .map((c) => c.textContent)
+      .filter((t) => /^[A-Z]/.test(t ?? ""));
+
+  it("starts with no value checked and keeps only the rows of the checked values (DataGrip)", () => {
+    render(<DataView columns={columns} rowCount={4} value={value} panel={null} onPanelChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Filter type" }));
+    const popup = screen.getByRole("dialog", { name: "Local filter of type" });
+    const box = (name: string) => within(popup).getByRole("checkbox", { name });
+    expect(
+      within(popup)
+        .getAllByRole("checkbox")
+        .every((b) => !(b as HTMLInputElement).checked),
+    ).toBe(true);
+
+    fireEvent.change(within(popup).getByRole("textbox", { name: "Search values" }), { target: { value: "2" } });
+    fireEvent.click(box("2"));
+    expect(cities()).toEqual(["Beijing", "Shenzhen"]);
+
+    fireEvent.change(within(popup).getByRole("textbox", { name: "Search values" }), { target: { value: "" } });
+    fireEvent.click(box("3"));
+    expect(cities()).toEqual(["Beijing", "Shenzhen", "Hangzhou"]);
+
+    // Unchecking every value removes the filter.
+    fireEvent.click(box("2"));
+    fireEvent.click(box("3"));
+    expect(cities()).toEqual(["Shanghai", "Beijing", "Shenzhen", "Hangzhou"]);
+  });
+});

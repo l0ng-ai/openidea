@@ -87,3 +87,20 @@ describe("cell editor focus", () => {
     await session.close();
   });
 });
+
+describe("cell editor theme", () => {
+  const cssRules = () => [...document.styleSheets].reduce((n, sheet) => n + sheet.cssRules.length, 0);
+
+  // Every cell mounting a freshly built theme would add CSS rules and restyle the whole notebook.
+  it("adds no CSS rules for each further cell", async () => {
+    const session = makeSession();
+    await session.load();
+    const cell = () => <CellEditor session={session} id="cell-a" source="typed text" type="code" frozen={false} />;
+    const first = render(cell());
+    const after = cssRules();
+    const others = [render(cell()), render(cell())];
+    expect(cssRules()).toBe(after);
+    [first, ...others].forEach((r) => r.unmount());
+    await session.close();
+  });
+});
