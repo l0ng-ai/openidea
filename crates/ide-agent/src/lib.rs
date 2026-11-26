@@ -379,6 +379,9 @@ struct TaskFile {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PendingModel {
+    /// Native Codex intent, including when this model cannot expose a Fast control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_service_tier: Option<AgentConfigChoice>,
     model: AgentConfigChoice,
     candidate: Option<AgentConfigValue>,
     options: Vec<AgentConfigOption>,
@@ -394,6 +397,11 @@ impl PendingModel {
         });
         wanted.push(self.model.clone());
         wanted.extend(self.choices.iter().cloned());
+        if let Some(choice) = &self.retained_service_tier
+            && !wanted.iter().any(|c| c.id == choice.id)
+        {
+            wanted.push(choice.clone());
+        }
     }
 }
 
@@ -442,7 +450,12 @@ impl TaskState {
             }
             task.config.retain(|o| !config::is_per_model_option(o));
             task.config.extend(pending.options.iter().cloned().map(|mut option| {
-                if let Some(choice) = pending.choices.iter().find(|choice| choice.id == option.id) {
+                if let Some(choice) = pending
+                    .choices
+                    .iter()
+                    .chain(pending.retained_service_tier.iter())
+                    .find(|choice| choice.id == option.id)
+                {
                     option.current = Some(choice.value.clone());
                 }
                 option
@@ -2134,7 +2147,7 @@ impl Task {
         config::add_client_options(&task.provider, &mut task.config);
         let conversation = Conversation::restore(file.entries, file.subagents);
         let mut wanted = file.wanted;
-        let pending_model = file.pending_switch.or_else(|| {
+        let mut pending_model = file.pending_switch.or_else(|| {
             let id = file.pending_model?;
             let index = wanted.iter().position(|choice| choice.id == id)?;
             let model = wanted.remove(index);
@@ -2149,8 +2162,14 @@ impl Task {
                 .and_then(|o| o.values.iter().find(|v| v.value == model.value))
                 .cloned();
             let options = catalog.thought_levels.get(&model.value).cloned().unwrap_or_default();
-            Some(PendingModel { model, candidate, options, choices: Vec::new() })
+            Some(PendingModel { model, candidate, options, choices: Vec::new(), retained_service_tier: None })
         });
+        if let Some(pending) = &mut pending_model
+            && pending.retained_service_tier.is_none()
+            && shared.spec(&task.provider).is_some_and(|spec| spec.driver == provider::Driver::Codex)
+        {
+            pending.retained_service_tier = wanted.iter().find(|c| c.id == "service_tier").cloned();
+        }
         Arc::new(Self {
             id: task.id.clone(),
             shared,
@@ -2624,7 +2643,13 @@ impl Task {
                 .filter(|pending| pending.model.value == value)
                 .map(|pending| pending.choices)
                 .unwrap_or_default();
+            let retained_service_tier = self
+                .shared
+                .spec(&provider)
+                .filter(|spec| spec.driver == provider::Driver::Codex)
+                .and_then(|_| s.wanted.iter().find(|c| c.id == "service_tier").cloned());
             s.pending_model = Some(PendingModel {
+                retained_service_tier,
                 model: AgentConfigChoice { id: target.id, value },
                 candidate: Some(candidate),
                 options,
@@ -2999,6 +3024,21 @@ impl Task {
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned();
 
+        let mut opening_params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
+        if spec.driver == provider::Driver::Codex {
+            let s = self.state.lock();
+            let mut wanted = s.wanted.clone();
+            if let Some(pending) = pending_model {
+                pending.apply(&mut wanted, &s.task.config);
+            }
+            // Restore intent even when the resumed model cannot expose the Fast control.
+            if let Some(fast) =
+                wanted.iter().find(|c| c.id == "service_tier").and_then(|c| c.value.parse::<bool>().ok())
+            {
+                opening_params["_meta"]["openidea"]["codexFast"] = json!(fast);
+            }
+        }
+
         let mut tried_auth = false;
         let mut session = None;
         let start_fresh = self.start_fresh.load(Ordering::Acquire);
@@ -3010,7 +3050,7 @@ impl Task {
         }
         if let (Some(id), true, false) = (saved, can_load, start_fresh) {
             self.replaying.store(true, Ordering::Release);
-            let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
+            let mut params = opening_params.clone();
             params["sessionId"] = json!(&id);
             let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
@@ -3050,7 +3090,7 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
+                let params = opening_params;
                 let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
                     |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
                         Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },

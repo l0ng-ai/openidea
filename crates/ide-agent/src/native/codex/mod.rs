@@ -486,7 +486,9 @@ impl CodexShim {
         let mut request = json!({ "cwd": params.get("cwd") });
         apply_thread_config(params, &mut request);
         let result = self.call("thread/start", request).await?;
-        let (id, options) = self.open_thread(&result, &models, None);
+        let mut settings = Settings::of(&result, &models);
+        settings.fast_override = params.pointer("/_meta/openidea/codexFast").and_then(Value::as_bool);
+        let (id, options) = self.open_thread(&result, &models, Some(settings));
         if id.is_empty() {
             return Err(error(codes::INTERNAL_ERROR, "codex started no thread"));
         }
@@ -503,7 +505,9 @@ impl CodexShim {
         let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
         apply_thread_config(params, &mut request);
         let result = self.call("thread/resume", request).await?;
-        let (_, options) = self.open_thread(&result, &models, None);
+        let mut settings = Settings::of(&result, &models);
+        settings.fast_override = params.pointer("/_meta/openidea/codexFast").and_then(Value::as_bool);
+        let (_, options) = self.open_thread(&result, &models, Some(settings));
         let cwd = self.state.lock().threads.get(id).and_then(|t| t.cwd.clone());
         let thread = result.get("thread").unwrap_or(&Value::Null);
         for update in translate::history(thread, cwd.as_deref()) {
@@ -1591,3 +1595,6 @@ fn mcp_text(response: &Value) -> String {
         .collect::<Vec<_>>();
     format!("MCP servers:\n{}", lines.join("\n"))
 }
+
+#[cfg(test)]
+mod reconnect_tests;
