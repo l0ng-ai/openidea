@@ -38,6 +38,7 @@ fn components() -> Vec<PathBuf> {
         repo().join("crates/ide-plugin/tests/fixtures/symbols/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/api14/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/execution/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/execution-output/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/decorations/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/search/dist/plugin.wasm"),
     ];
@@ -182,6 +183,21 @@ fn the_completion_list_component_exports_the_optional_completion_list_world() {
     // A plugin that does not export the optional world stays valid.
     let old = exports_of("plugins/official/test-runner/dist/plugin.wasm");
     assert!(!old.iter().any(|name| name.starts_with("openidea:plugin/completion-list-provider")));
+}
+
+#[test]
+fn the_execution_configurations_component_exports_the_optional_execution_configurations_world() {
+    let engine = PluginEngine::new().unwrap();
+    let exports_of = |path: &str| -> Vec<String> {
+        let component = engine.compile(&repo().join(path)).unwrap();
+        component.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect()
+    };
+    let exports = exports_of("crates/ide-plugin/tests/fixtures/execution-output/dist/plugin.wasm");
+    let exec = format!("openidea:plugin/execution-configurations@{API_VERSION}.0");
+    assert!(exports.iter().any(|name| name.starts_with(&exec)), "{exports:?}");
+    // An older-world plugin that only exports launch-configurations stays valid.
+    let old = exports_of("crates/ide-plugin/tests/fixtures/execution/dist/plugin.wasm");
+    assert!(!old.iter().any(|name| name.starts_with("openidea:plugin/execution-configurations")));
 }
 
 // --- a later host, simulated -------------------------------------------------------------

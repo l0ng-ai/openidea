@@ -341,6 +341,7 @@ macro_rules! __optional_exports {
     (mcp, $plugin:ty, $component:ident) => { $crate::__mcp_exports!($plugin, $component); };
     (run_configurations, $plugin:ty, $component:ident) => { $crate::__run_configurations_exports!($plugin, $component); };
     (launch_configurations, $plugin:ty, $component:ident) => { $crate::__launch_configurations_exports!($plugin, $component); };
+    (execution_configurations, $plugin:ty, $component:ident) => { $crate::__execution_configurations_exports!($plugin, $component); };
     (test_results, $plugin:ty, $component:ident) => { $crate::__test_results_exports!($plugin, $component); };
 
     (providers, $plugin:ty, $component:ident) => {
@@ -1307,6 +1308,37 @@ pub mod __rt {
             })
             .collect()
     }
+    pub fn execution_configurations<T: Plugin + crate::ExecutionConfigurations + Default>(
+        root: &str,
+    ) -> Vec<crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations::ExecutionConfiguration>
+    {
+        use crate::bindings::openidea::plugin::run::OutputMode as WitMode;
+        use crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations as w;
+        use crate::execution_configurations_bindings::openidea::plugin::launch_configurations as w_launch;
+        with::<T, _>(|p| p.execution_configurations(root))
+            .into_iter()
+            .map(|e| w::ExecutionConfiguration {
+                id: e.launch.config.id,
+                name: e.launch.config.name,
+                program: e.launch.config.program,
+                args: e.launch.config.args,
+                cwd: e.launch.config.cwd,
+                test: e.launch.config.test,
+                framework: e.launch.config.framework,
+                env: e.launch.env,
+                debugger: e.launch.debugger.map(|d| match d {
+                    crate::Debugger::Launch { language } => w_launch::Debugger::Launch(language),
+                    crate::Debugger::AttachChild { kind, command_contains } => {
+                        w_launch::Debugger::AttachChild(w_launch::AttachChild { kind, command_contains })
+                    }
+                }),
+                output_mode: match e.output_mode {
+                    crate::OutputMode::Pipes => WitMode::Pipes,
+                    crate::OutputMode::Pty => WitMode::Pty,
+                },
+            })
+            .collect()
+    }
     pub fn select_tests<T: Plugin + crate::TestResults + Default>(
         config: &str,
         tests: &[Vec<String>],
@@ -1544,6 +1576,17 @@ pub mod launch_configurations_bindings {
 }
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
+pub mod execution_configurations_bindings {
+    wit_bindgen::generate!({ world: "execution-configurations-provider", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_execution_configurations_world", default_bindings_module: "openidea_plugin::execution_configurations_bindings",
+        with: {
+            "openidea:plugin/types@1.18.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/run@1.18.0": crate::bindings::openidea::plugin::run,
+        },
+    });
+}
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
 pub mod test_results_bindings {
     wit_bindgen::generate!({ world: "test-results-provider", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_tests_world", default_bindings_module: "openidea_plugin::test_results_bindings",
@@ -1572,6 +1615,18 @@ macro_rules! __launch_configurations_exports {
             }
         }
         $crate::launch_configurations_bindings::__export_launch_configurations_world!($component with_types_in $crate::launch_configurations_bindings);
+    };
+}
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __execution_configurations_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations::Guest for $component {
+            fn configurations(root: String) -> Vec<$crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations::ExecutionConfiguration> {
+                $crate::__rt::execution_configurations::<$plugin>(&root)
+            }
+        }
+        $crate::execution_configurations_bindings::__export_execution_configurations_world!($component with_types_in $crate::execution_configurations_bindings);
     };
 }
 #[doc(hidden)]

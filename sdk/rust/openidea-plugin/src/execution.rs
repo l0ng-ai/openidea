@@ -204,10 +204,48 @@ pub struct PluginLaunchConfiguration {
     pub debugger: Option<Debugger>,
 }
 
+/// Output stream transport for a plugin-owned run configuration (API 1.18).
+///
+/// Ordinary pseudo-terminals combine stdout and stderr and can change
+/// buffering, input handling, and terminal behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutputMode {
+    /// Separate stdout and stderr pipes in the Run console (default).
+    #[default]
+    Pipes,
+    /// Pseudo-terminal ("Emulate terminal in output console").
+    Pty,
+}
+
+/// Per-launch options for [`host::start_run_with_options`](crate::host::start_run_with_options) (API 1.18).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStartOptions {
+    pub debug: bool,
+    /// Optional per-invocation override. A user-saved override wins over
+    /// this value, which wins over the plugin configuration default.
+    pub output_mode: Option<OutputMode>,
+}
+
+/// A run configuration with environment, debugger, and default output mode (API 1.18).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginExecutionConfiguration {
+    pub launch: PluginLaunchConfiguration,
+    /// Default output stream mode (`Pipes` or `Pty`).
+    pub output_mode: OutputMode,
+}
+
 /// Supplies complete project configurations with environments and debuggers (API 1.10);
 /// register with launch_configurations instead of run_configurations.
 pub trait LaunchConfigurations {
     fn launch_configurations(&mut self, project_root: &str) -> Vec<PluginLaunchConfiguration>;
+}
+/// Supplies complete project configurations with environment, debugger, and output mode (API 1.18);
+/// register with `execution_configurations` instead of `launch_configurations` or `run_configurations`.
+pub trait ExecutionConfigurations {
+    fn execution_configurations(&mut self, project_root: &str) -> Vec<PluginExecutionConfiguration>;
 }
 /// Parses bounded test output batches; register with test_results.
 pub trait TestResults {

@@ -1602,7 +1602,7 @@ impl HostApi for PluginApi {
         client: &str,
         config: &str,
         args: Vec<String>,
-        debug: bool,
+        options: ide_plugin::PluginRunStartOptions,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError> {
@@ -1613,15 +1613,40 @@ impl HostApi for PluginApi {
         let mut run =
             self.shared.workspace().ok_or(HostError::Cancelled)?.run_configuration(client, self.id(), config)?;
         let binary = self.approved_program_in_project(&run.command, self.shared.project_of(client).as_deref())?;
+        let user_override = !run.detected;
+        let debug = options.debug;
         if debug && run.debug_adapter.is_none() {
             return Err(HostError::Invalid("this configuration has no debugger".into()));
         }
         let program = run.command.clone();
-        if debug && run.extras.target.as_ref().is_some_and(|t| !t.is_empty()) {
+        let has_target = run.extras.target.as_ref().is_some_and(|t| !t.is_empty());
+        if debug && has_target {
             return Err(HostError::Invalid("debugging this target is not supported".into()));
         }
+        if debug && options.output_mode == Some(ide_plugin::PluginOutputMode::Pty) {
+            return Err(HostError::Invalid("terminal emulation cannot be used when debugging".into()));
+        }
         if debug {
+            run.extras.emulate_terminal = false;
             run.command = binary.to_string_lossy().into_owned();
+        } else {
+            // Precedence: user-saved override > per-invocation override > plugin default.
+            if !user_override && let Some(mode) = options.output_mode {
+                run.extras.emulate_terminal = mode == ide_plugin::PluginOutputMode::Pty;
+            }
+            if run.extras.emulate_terminal {
+                if run.is_test {
+                    return Err(HostError::Invalid("terminal emulation cannot be used for test configurations".into()));
+                }
+                if run.extras.stdin_file.is_some() {
+                    return Err(HostError::Invalid(
+                        "input cannot be redirected from a file when emulating a terminal".into(),
+                    ));
+                }
+                if has_target {
+                    return Err(HostError::Invalid("terminal emulation on this target is not supported".into()));
+                }
+            }
         }
         run.args.extend(args);
         let id = self.new_operation(

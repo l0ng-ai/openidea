@@ -438,6 +438,9 @@ fn validate_configurations(
         if let Some(cwd) = &c.cwd {
             ide_plugin::resolve_new_in_root(root, cwd).map_err(HostError::Invalid)?;
         }
+        if c.test && c.output_mode == ide_plugin::PluginOutputMode::Pty {
+            return Err(HostError::Invalid("test configurations cannot emulate a terminal".into()));
+        }
         validate_env(&c.env)?;
         validate_debugger(c.debugger.as_ref())?;
     }
@@ -611,6 +614,7 @@ impl PluginHost {
             .to_string_lossy()
             .into_owned();
         config.debug_adapter = owned.debug_adapter;
+        config.extras.emulate_terminal = false;
         Ok(config)
     }
 }
@@ -804,5 +808,17 @@ mod tests {
         assert!(!ok(AttachChild { kind: "java".into(), command_contains: None }));
         assert!(ok(AttachChild { kind: "dotnet".into(), command_contains: Some("Worker.dll".into()) }));
         assert!(!ok(AttachChild { kind: "dotnet".into(), command_contains: Some(String::new()) }));
+    }
+
+    #[test]
+    fn configurations_reject_pty_on_test_configurations() {
+        let root = std::env::temp_dir();
+        let mut c = launch(vec![], None);
+        c.output_mode = ide_plugin::PluginOutputMode::Pty;
+        assert!(validate_configurations(&root, std::slice::from_ref(&c)).is_ok());
+        c.test = true;
+        assert!(validate_configurations(&root, std::slice::from_ref(&c)).is_err());
+        c.output_mode = ide_plugin::PluginOutputMode::Pipes;
+        assert!(validate_configurations(&root, &[c]).is_ok());
     }
 }

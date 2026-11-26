@@ -2678,19 +2678,40 @@ impl bindings::openidea::plugin::run_targets::Host for StoreData {
 
 impl bindings::openidea::plugin::run::Host for StoreData {
     fn start(&mut self, config: String, args: Vec<String>, debug: bool) -> Fallible<String> {
+        self.start_with_options(
+            config,
+            args,
+            bindings::openidea::plugin::run::StartOptions { debug, output_mode: None },
+        )
+    }
+
+    fn start_with_options(
+        &mut self,
+        config: String,
+        args: Vec<String>,
+        options: bindings::openidea::plugin::run::StartOptions,
+    ) -> Fallible<String> {
+        use bindings::openidea::plugin::run::OutputMode as WitOutputMode;
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
         if args.len() > MAX_ARGS || args.iter().any(|a| a.len() > MAX_ARG_BYTES || a.contains('\0')) {
             return Ok(Err(wit::Error::Invalid("invalid run arguments".into())));
         }
+        let options = crate::PluginRunStartOptions {
+            debug: options.debug,
+            output_mode: options.output_mode.map(|m| match m {
+                WitOutputMode::Pipes => crate::PluginOutputMode::Pipes,
+                WitOutputMode::Pty => crate::PluginOutputMode::Pty,
+            }),
+        };
         Ok(self
             .host
             .start_run(
                 self.invocation.client.as_deref().unwrap(),
                 &config,
                 args,
-                debug,
+                options,
                 &self.cancel.token(),
                 self.remaining(),
             )
@@ -2703,6 +2724,14 @@ pub(crate) mod run_configurations_bindings {
 pub(crate) mod launch_configurations_bindings {
     wasmtime::component::bindgen!({ world: "launch-configurations-provider", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+pub(crate) mod execution_configurations_bindings {
+    wasmtime::component::bindgen!({ world: "execution-configurations-provider", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+        },
     });
 }
 pub(crate) mod test_results_bindings {
