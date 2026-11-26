@@ -822,6 +822,7 @@
   "Both paths of a rename or copy must be in the same Git repository": "Both paths of a rename or copy must be in the same Git repository",
   "Multiple patch files target the same path": "Multiple patch files target the same path",
   "Show Diff": "Show Diff",
+  "Update Snapshot": "Update Snapshot",
   "Patch Diff: {file}": "Patch Diff: {file}",
   "Patched Version": "Patched Version",
   "Base": "Base",

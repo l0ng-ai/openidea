@@ -59,6 +59,8 @@ import { flutterMachineOutput, isFlutterMachineRun } from "./flutterMachine";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
 import { testsBySubproject } from "./testing/gradleSubprojects";
+import { snapshotFailures, snapshotFailuresMatching, updateSnapshotConfigs } from "./testing/snapshots";
+import type { StateQuery } from "./testing/states";
 import { buildCMake, isCMakeBuild } from "./cmake";
 import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
@@ -1732,6 +1734,46 @@ export function canRunSelectedTests(sessionId: string, nodeIds: readonly string[
   const nodes = nodeIds.map((id) => tests.get(id)).filter((n) => !!n);
   const selection = testsConfigs(baseConfigOf(session), leafTestPaths(nodes), "");
   return selection instanceof Promise ? selection.then((configs) => configs.length > 0) : selection.length > 0;
+}
+
+/** The snapshot mismatches among (or under) a session's test-tree nodes that its configuration can update. */
+function snapshotSelection(sessionId: string, nodeIds: readonly string[]) {
+  const session = getSession(sessionId);
+  const tests = runtimes.get(sessionId)?.tests;
+  if (!session || !tests || isLive(session)) return null;
+  const nodes = snapshotFailures(nodeIds.map((id) => tests.get(id)).filter((n) => !!n));
+  const paths = nodes.map((n) => n.path);
+  const base = baseConfigOf(session);
+  const configs = updateSnapshotConfigs(base, paths);
+  return configs.length ? { session, base, paths, configs } : null;
+}
+
+/** Whether Update Snapshot applies to this test-tree selection (Jest / Vitest snapshot mismatches). */
+export function canUpdateSnapshots(sessionId: string, nodeIds: readonly string[]): boolean {
+  return snapshotSelection(sessionId, nodeIds) !== null;
+}
+
+/** "Update Snapshot": reruns the selection's snapshot mismatches with `-u` in the same tab. */
+export async function updateSnapshots(sessionId: string, nodeIds: readonly string[]): Promise<boolean> {
+  const selection = snapshotSelection(sessionId, nodeIds);
+  if (!selection) return false;
+  const { session, base, paths, configs } = selection;
+  const derived = await Promise.all(configs.map((c) => testsBySubproject(c, paths)));
+  if (getSession(sessionId) !== session || isLive(session)) return false;
+  derived.forEach((config, index) => void startRun(config, index === 0 ? sessionId : undefined, base));
+  return true;
+}
+
+/** The newest finished session whose snapshot mismatches match a gutter target, with those tests. */
+export function snapshotFailuresAt(query: StateQuery): { sessionId: string; nodeIds: string[] } | null {
+  const sessions = [...useRun.getState().sessions].sort((a, b) => b.startedAt - a.startedAt);
+  for (const session of sessions) {
+    const tests = runtimes.get(session.id)?.tests;
+    if (!tests || isLive(session)) continue;
+    const nodeIds = snapshotFailuresMatching(tests.roots, query).map((n) => n.id);
+    if (nodeIds.length && canUpdateSnapshots(session.id, nodeIds)) return { sessionId: session.id, nodeIds };
+  }
+  return null;
 }
 
 /** Whether the console takes typed input: the process runs and its stdin is open. */

@@ -188,6 +188,9 @@ export interface TestTreeViewProps {
   running: boolean;
   /** The run configuration's name (Export Test Results names the file after it). */
   name?: string;
+  /** Update Snapshot: reruns the selection's Jest / Vitest snapshot mismatches with `-u`. */
+  onUpdateSnapshots?: (ids: string[]) => void;
+  canUpdateSnapshots?: (ids: string[]) => boolean;
   /** Run / Debug the selected tests (context menu); absent when the configuration can't be narrowed. */
   onRunTests?: (ids: string[], debug: boolean) => void;
   canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
@@ -201,6 +204,8 @@ export function TestTreeView({
   onSelect,
   running,
   name = "Tests",
+  onUpdateSnapshots,
+  canUpdateSnapshots,
   onRunTests,
   canRunTests,
 }: TestTreeViewProps) {
@@ -280,6 +285,8 @@ export function TestTreeView({
       }
       if (ids.length === 1 && nodeStatus(node) === "failed" && parseComparison(node.output))
         items.push({ label: "Show Diff", icon: "diff", run: () => void showTestDiff(node) });
+      if (onUpdateSnapshots && canUpdateSnapshots?.(ids))
+        items.push({ label: "Update Snapshot", icon: "rerun", run: () => onUpdateSnapshots(ids) });
       if (ids.length === 1 && !node.children.length && nodeStatus(node) === "failed" && getAction(DIAGNOSE))
         items.push({ label: "Diagnose with Agent", icon: "toolwindow-agents", run: () => void diagnose(node, name) });
       items.push({
