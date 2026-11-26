@@ -716,6 +716,34 @@ pub(crate) fn symbols_named_within(
     out
 }
 
+/// Symbols of `kind` whose name starts with `prefix` (CSS custom properties: `--`), by path
+/// then position.
+pub(crate) fn symbols_prefixed(data: &IndexData, prefix: &str, kind: SymbolKind, limit: usize) -> Vec<SymbolMatch> {
+    let syms = &data.syms;
+    let mut out: Vec<SymbolMatch> = data
+        .files
+        .iter()
+        .flatten()
+        .flat_map(|e| {
+            (e.sym_start..e.sym_start + e.sym_len)
+                .filter(|&i| syms.kind(i) == kind && syms.name(i).starts_with(prefix))
+                .map(move |i| SymbolMatch {
+                    name: syms.name(i).to_string(),
+                    kind,
+                    container: syms.container(i).map(str::to_owned),
+                    path: e.path.clone().into(),
+                    rel_path: e.rel.to_string(),
+                    range: syms.range(i),
+                    score: 0,
+                    indices: Vec::new(),
+                })
+        })
+        .collect();
+    out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path).then_with(|| a.range.cmp(&b.range)));
+    out.truncate(limit);
+    out
+}
+
 /// Symbols named exactly one of `names` whose file is inside `root`, at most `limit` per
 /// name, by path then position: one walk over the index for every name an agent reply shows.
 pub(crate) fn symbols_named_any(data: &IndexData, names: &[String], root: &Path, limit: usize) -> Vec<SymbolMatch> {

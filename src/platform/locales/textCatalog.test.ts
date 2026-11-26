@@ -97,7 +97,9 @@ const UNTRANSLATED = new Set<string>([
   "Prettier",
   "oxfmt",
   "Biome",
+  "dprint",
   "Ruff",
+  "Cypress",
   "IntelliJ IDEA",
   "GitHub",
   "PHPStan",
@@ -111,6 +113,7 @@ const UNTRANSLATED = new Set<string>([
   "Edge",
   "Safari",
   "Firefox",
+  "Electron",
   "JaCoCo",
   // Docker run target placeholder values
   "compose.yaml",

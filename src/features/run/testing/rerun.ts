@@ -14,6 +14,7 @@ import { goTestParts, withoutGoSelection } from "../goArguments";
 import { withMavenTests } from "../mavenTests";
 import { frameworkFor } from "./index";
 import { dotnetFilter } from "./dotnet";
+import { cypressSelection } from "./cypress";
 import { playwrightProject, playwrightTitles } from "./playwright";
 import { withNodeTestNamePattern } from "./nodeTest";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
@@ -269,6 +270,13 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
     case "playwright":
       args = playwrightArgs(config, paths);
       break;
+    case "cypress": {
+      // Tree files may be relative to the specs' common folder (see `cypress.ts`): `**/` finds them from the project.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean)).map((f) => (f.startsWith("**/") ? f : `**/${f}`));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      return { ...config, ...cypressSelection(config, files, { grep: names }), name, detected: true };
+    }
     case "node-test": {
       // The files narrow a script's run when it gives `node --test` no patterns of its own; the names always do.
       const files = unique(paths.map((p) => p[0]!).filter(Boolean));
@@ -289,6 +297,16 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
       const base = after === null ? dropFlag(before, flags) : [...before, "--", ...dropFlag(after, flags)];
       const grep = names.length ? ["--grep", `^(?:${names.map(escapeRegExp).join("|")})$`] : [];
       args = appendScriptArgs(config.command, base, [...files, ...grep]);
+      break;
+    }
+    case "jasmine": {
+      // Jasmine's `--filter=` matches a spec's full name: its describe chain and name, space separated.
+      // A failed suite (`afterAll`) has no spec of that name: its name followed by a space matches its specs.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const filter = names.length ? [`--filter=^(?:${names.map(escapeRegExp).join("|")})(?: |$)`] : [];
+      args = appendScriptArgs(config.command, dropFlag(config.args, ["--filter"]), [...files, ...filter]);
       break;
     }
     case "pytest":

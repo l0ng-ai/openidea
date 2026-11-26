@@ -24,10 +24,15 @@ import {
 } from "@codemirror/language";
 import {
   copyLineDown,
+  cursorGroupLeft,
+  cursorGroupRight,
+  deleteGroupForward,
   deleteLine as deleteDocLine,
   insertNewlineAndIndent,
   moveLineDown,
   moveLineUp,
+  selectGroupLeft,
+  selectGroupRight,
 } from "@codemirror/commands";
 import { SearchCursor } from "@codemirror/search";
 import { humpLeft, humpRight, wordStartLeft } from "../model/camelHumps";
@@ -89,6 +94,21 @@ export const deleteHumpBackward = deleteHump(false);
 export const deleteHumpForward = deleteHump(true);
 /** ⌥⌫ / Ctrl+Backspace without CamelHumps: the whitespace before the caret and the word (or punctuation run) before it. */
 export const deleteWordBackward = deleteHump(false, false);
+
+/** The word moves and deletes the editor keys run in each mode (`caretExtension`): `[without CamelHumps, with CamelHumps]`. */
+const WORD_COMMANDS = {
+  left: [cursorGroupLeft, cursorHumpLeft],
+  right: [cursorGroupRight, cursorHumpRight],
+  selectLeft: [selectGroupLeft, selectHumpLeft],
+  selectRight: [selectGroupRight, selectHumpRight],
+  deleteToStart: [deleteWordBackward, deleteHumpBackward],
+  deleteToEnd: [deleteGroupForward, deleteHumpForward],
+} satisfies Record<string, [Command, Command]>;
+
+/** IDEA's "… in Different "CamelHumps" Mode": the word command of the mode "Use CamelHumps words" is not set to. */
+export function inDifferentHumpsMode(op: keyof typeof WORD_COMMANDS, camelHumps: boolean): Command {
+  return WORD_COMMANDS[op][camelHumps ? 0 : 1];
+}
 
 // --- lines / selections -------------------------------------------------------
 

@@ -4,6 +4,7 @@ import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { useKeymap } from "@/platform/keymap";
 import * as ipc from "@/platform/ipc";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
+import { useFullscreen } from "@/workbench/zenMode";
 import { registerStatusItem, registerToolWindow } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { _reloadLayouts, saveLayout } from "@/workbench/toolwindows/layouts";
@@ -330,6 +331,19 @@ describe("window-scoped menu labels", () => {
     expect(buildMenuConfig("macos").accelerators["editor.toggleZen"]).toBeUndefined();
     setDistractionFree(true);
     expect(buildMenuConfig("macos").labels["menu.editor.toggleZen"]).toBe("Exit Distraction Free Mode");
+    resetDistractionFree();
+  });
+
+  it("flips Enter / Exit Zen Mode only while Distraction Free Mode and full screen are both on", () => {
+    const label = () => buildMenuConfig("macos").labels["menu.view.toggleZenMode"];
+    expect(label()).toBe("Enter Zen Mode");
+    setDistractionFree(true);
+    expect(label()).toBe("Enter Zen Mode");
+    useFullscreen.setState({ on: true });
+    expect(label()).toBe("Exit Zen Mode");
+    setDistractionFree(false);
+    expect(label()).toBe("Enter Zen Mode");
+    useFullscreen.setState({ on: false });
     resetDistractionFree();
   });
 

@@ -1,0 +1,7 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<ellipse cx="3.1" cy="8.6" rx="1" ry="0.8" fill="#C8946A"/><ellipse cx="12.9" cy="8.6" rx="1" ry="0.8" fill="#C8946A"/><ellipse cx="5.4" cy="14.3" rx="1.1" ry="0.7" fill="#C8946A"/><ellipse cx="10.6" cy="14.3" rx="1.1" ry="0.7" fill="#C8946A"/>
+<path d="M3.6 3.4L3.7 1.1L5.5 2.2C6.2 1.8 7.1 1.6 8 1.6C8.9 1.6 9.8 1.8 10.5 2.2L12.3 1.1L12.4 3.4C12.8 4.1 13 4.9 13 5.8V11.2C13 13.2 10.9 14.6 8 14.6C5.1 14.6 3 13.2 3 11.2V5.8C3 4.9 3.2 4.1 3.6 3.4Z" fill="#3C7FE6"/>
+<circle cx="6" cy="5.4" r="1.7" fill="white"/><circle cx="10" cy="5.4" r="1.7" fill="white"/><circle cx="6" cy="5.5" r="0.7" fill="#1E1F22"/><circle cx="10" cy="5.5" r="0.7" fill="#1E1F22"/>
+<ellipse cx="8" cy="7.5" rx="0.9" ry="0.6" fill="#1E1F22"/><path d="M7.3 8H8.7V8.9C8.7 9.1 8.5 9.2 8.4 9.2H7.6C7.4 9.2 7.3 9.1 7.3 8.9V8Z" fill="white"/>
+<g transform="translate(7.5 7.5) scale(0.5625)"><circle cx="8" cy="8" r="7" fill="#FFF7F7" stroke="#DB3B4B" stroke-width="1.78"/><path d="M8.46217 11.5H9.46061V10.5943H8.59311C8.26575 10.5943 8.02023 10.3488 8.02023 10.0214V6.81878H9.46061L9.46606 5.91309H8.02023V4.5H7.07635V5.44934C7.07635 5.72214 6.88539 5.91309 6.6126 5.91309H5.90878L5.90332 6.81878H6.9836L6.98906 10.1142C6.98906 10.9108 7.61104 11.5 8.46217 11.5Z" fill="#DB3B4B"/></g>
+</svg>

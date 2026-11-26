@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Branch } from "@/bindings";
 import { BranchFilterPopup } from "../BranchFilterPopup";
@@ -33,6 +33,8 @@ const rowTexts = () => screen.getAllByRole("option").map((o) => o.textContent);
 afterEach(() => {
   localStorage.clear();
   useFavoriteBranches.setState({ key: "", names: null });
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("branch filter popup", () => {
@@ -92,5 +94,38 @@ describe("branch filter popup", () => {
     expect(document.querySelectorAll("mark")).toHaveLength(3);
     fireEvent.change(input, { target: { value: "missing" } });
     expect(screen.getByText("No matching branches")).toBeTruthy();
+  });
+
+  it("grows an opened group down to the window's bottom edge, keeping the usual limit with less room", () => {
+    const many = [branch("main", { current: true }), ...Array.from({ length: 40 }, (_, i) => branch(`feature-${i}`))];
+    const list = () => screen.getByRole("listbox", { name: "Branches" }).parentElement!;
+    // No layout in jsdom: a 1000 px window, and a popup 80 px taller than its list.
+    vi.stubGlobal("innerHeight", 1000);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute("data-popup") ? 80 + parseFloat(list().style.height) : 0;
+    });
+    const open = (anchorBottom: number) => {
+      const anchor = document.createElement("button");
+      anchor.getBoundingClientRect = () => ({ bottom: anchorBottom }) as DOMRect;
+      const view = render(
+        <BranchFilterPopup
+          anchor={anchor}
+          branches={many}
+          selected={[]}
+          onSelect={vi.fn()}
+          onSelectMany={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      );
+      fireEvent.click(screen.getByText("Local"));
+      return view;
+    };
+
+    // 1000 - 100 (anchor) - 10 (popup margins) - 80 (search, padding, Select…) leaves 810 px.
+    open(100);
+    expect(list().style.height).toBe("810px");
+    cleanup();
+    open(700);
+    expect(list().style.height).toBe("320px");
   });
 });

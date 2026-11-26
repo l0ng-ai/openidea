@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setContext } from "@/platform/context";
-import { EDITOR_AREA_SELECTOR, focusEditor, installFocusTracking } from "./focus";
+import { installFocusScopeTracking } from "@/ui/focusScope";
+import { EDITOR_AREA_SELECTOR, focusEditor, installFocusTracking, notifyFocusElement } from "./focus";
 
 describe("focus after popups", () => {
   afterEach(() => {
@@ -121,5 +122,46 @@ describe("focus tracking", () => {
       [null, false],
     ]);
     dispose();
+  });
+
+  it("tracks focus entering sandboxed plugin iframes and updates focus-scope highlighting", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    document.body.innerHTML = `
+      <div data-editor-area>
+        <section data-pane-id="p1" data-focus-scope=""><iframe id="ed-frame" tabindex="0"></iframe></section>
+      </div>
+      <section data-toolwindow="plugin.k8s.view" data-focus-scope="">
+        <iframe id="tw-frame" tabindex="0"></iframe>
+      </section>`;
+    const calls: Array<[string | null, boolean]> = [];
+    const disposeScope = installFocusScopeTracking();
+    const dispose = installFocusTracking((id, editor) => calls.push([id, editor]));
+
+    const twFrame = document.getElementById("tw-frame") as HTMLIFrameElement;
+    const edFrame = document.getElementById("ed-frame") as HTMLIFrameElement;
+    let active: Element | null = twFrame;
+    Object.defineProperty(document, "activeElement", { configurable: true, get: () => active });
+
+    // Window blur when activeElement is an iframe inside a tool window tracks it and marks its focus scope.
+    window.dispatchEvent(new Event("blur"));
+    // Repeated bridge notification for the same iframe is deduplicated.
+    notifyFocusElement(twFrame);
+    expect(calls).toEqual([["plugin.k8s.view", false]]);
+    expect(document.querySelector('[data-toolwindow="plugin.k8s.view"]')).toHaveAttribute("data-focus-active", "");
+
+    // Switching to an iframe inside an editor pane updates both tracking and focus-scope highlight.
+    active = edFrame;
+    notifyFocusElement(edFrame);
+    expect(calls).toEqual([
+      ["plugin.k8s.view", false],
+      [null, true],
+    ]);
+    expect(document.querySelector('[data-pane-id="p1"]')).toHaveAttribute("data-focus-active", "");
+    expect(document.querySelector('[data-toolwindow="plugin.k8s.view"]')).not.toHaveAttribute("data-focus-active");
+
+    Reflect.deleteProperty(document, "activeElement");
+    dispose();
+    disposeScope();
+    vi.restoreAllMocks();
   });
 });

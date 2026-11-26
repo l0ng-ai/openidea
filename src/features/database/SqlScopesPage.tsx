@@ -9,6 +9,7 @@ import { tx } from "@/platform/i18n";
 import { IconButton, Input, Select, T, type SelectOption } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { scopePath, validateResolutionScopes, type SqlResolutionScope } from "./resolutionScopes";
+import { sourceIcon } from "./model";
 import styles from "./SqlScopesPage.module.css";
 
 const KEY = "database.resolutionScopes";
@@ -42,7 +43,7 @@ export function SqlScopesPage() {
       value: s.id ?? "",
       label: s.name ?? s.id ?? "",
       verbatim: true,
-      icon: "database",
+      icon: sourceIcon(s),
     })),
   ];
   const sourceOptions = (current: string) =>

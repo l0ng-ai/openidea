@@ -2,7 +2,14 @@
 import { generateActionIcon, isGenerateAction } from "./generate";
 import type { EditorView } from "@codemirror/view";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
-import { activeEditor, editorsFor, registerSaveParticipant, whenSynced, type TextEditorHandle } from "@/editor/api";
+import {
+  activeEditor,
+  editorsFor,
+  focusedCellEditor,
+  registerSaveParticipant,
+  whenSynced,
+  type TextEditorHandle,
+} from "@/editor/api";
 import { call, commands } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
@@ -67,6 +74,13 @@ export const GENERATE_KEY_WHEN = GENERATE_LANGUAGES.map((id) => `editorLangId ==
 
 function withEditor(run: (view: EditorView) => unknown): Action["run"] {
   return () => {
+    // While a notebook cell editor has focus it is the editor the action runs in
+    // (the notebook publishes the editor context keys for it), never the last text tab.
+    const cell = focusedCellEditor();
+    if (cell) {
+      void run(cell);
+      return;
+    }
     const ed = activeEditor();
     if (!ed) return;
     void run(ed.view);
@@ -230,11 +244,15 @@ function editorAction(
   return { id, title, category, when: EDITOR_WHEN, run: withEditor(run), ...extra };
 }
 
-/** Whether saving a `language` file formats it: Format on save, or Run on save of an external formatter. */
+/**
+ * Whether saving a `language` file formats it: Format on save, or Run on save of an external
+ * formatter. dprint's covers any language its configuration does (the backend decides).
+ */
 export function formatsOnSave(settings: Settings | null, language: string): boolean {
-  const { prettier, oxfmt, biome, ruff, black } = validateLanguages(settings?.languages);
+  const { prettier, oxfmt, biome, dprint, ruff, black } = validateLanguages(settings?.languages);
   return (
     !!settings?.editor?.formatOnSave ||
+    dprint.runOnSave ||
     [prettier, oxfmt, biome, ruff, black].some(
       (formatter) => formatter.runOnSave && formatter.languages.includes(language),
     )
@@ -324,6 +342,13 @@ export function registerLspActions(): () => void {
       "Code",
       (v) => formatDocument(v, { explicit: true, tool: "biome" }),
       { keywords: ["format", "biome"] },
+    ),
+    editorAction(
+      "code.reformatWithDprint",
+      "Reformat with dprint",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "dprint" }),
+      { keywords: ["format", "dprint"] },
     ),
     editorAction(
       "code.reformatWithRuff",
@@ -428,6 +453,9 @@ export function registerLspActions(): () => void {
       category: "Refactor",
       when: "projectOpen",
       run: ({ ctx }) => {
+        // A focused notebook cell is the editor here, like for Show Context Actions.
+        const cell = focusedCellEditor();
+        if (cell && evaluateWhen(EDITOR_WHEN, ctx)) return refactorThis(cell, startRename);
         const ed = activeEditor();
         if (ed && evaluateWhen(EDITOR_WHEN, ctx)) return refactorThis(ed.view, startRename);
         showNothingHere();
@@ -447,6 +475,9 @@ export function registerLspActions(): () => void {
     ),
     editorAction("refactor.extractInterface", "Extract Interface…", "Refactor", (v) =>
       runRefactoring(v, "extractInterface"),
+    ),
+    editorAction("refactor.extractTypeAlias", "Extract Type Alias…", "Refactor", (v) =>
+      runRefactoring(v, "extractTypeAlias"),
     ),
     editorAction("refactor.move", "Move…", "Refactor", (v) => runRefactoring(v, "move")),
     editorAction("refactor.changeSignature", "Change Signature…", "Refactor", (v) =>

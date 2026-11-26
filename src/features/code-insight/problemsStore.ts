@@ -65,14 +65,26 @@ const SEVERITY_ORDER: Record<Severity, number> = { error: 0, warning: 1, info: 2
 // A file's sources map is replaced whenever its diagnostics change, so it keys the merged list.
 const merged = new WeakMap<FileDiagnostics, readonly Diagnostic[]>();
 
-/** All diagnostics of a file across sources, ordered by position then severity. */
+const sameProblem = (d: Diagnostic) =>
+  `${d.range.start.line}:${d.range.start.col}-${d.range.end.line}:${d.range.end.col} ${d.severity} ${d.message}`;
+
+/**
+ * All diagnostics of a file across sources, ordered by position then severity. An error both
+ * Build and the tsc watcher report is listed once.
+ */
 export function fileDiagnostics(map: ProblemsMap, path: string): readonly Diagnostic[] {
-  const sources = map.get(path);
+  return mergedSources(map.get(path));
+}
+
+function mergedSources(sources: FileDiagnostics | undefined): readonly Diagnostic[] {
   if (!sources) return [];
   let items = merged.get(sources);
   if (!items) {
-    items = [...sources.values()]
-      .flat()
+    // Build's tsc step and the tsc watcher (Problems › TypeScript Project Errors) print the same errors.
+    const build = sources.get("build");
+    const built = build && sources.has("tsc") ? new Set(build.map(sameProblem)) : null;
+    items = [...sources]
+      .flatMap(([source, list]) => (built && source === "tsc" ? list.filter((d) => !built.has(sameProblem(d))) : list))
       .sort(
         (a, b) =>
           a.range.start.line - b.range.start.line ||
@@ -153,7 +165,7 @@ export function countSeverities(diags: Iterable<Diagnostic>): SeverityCounts {
 
 export function projectCounts(map: ProblemsMap): SeverityCounts {
   const c: SeverityCounts = { error: 0, warning: 0, info: 0, hint: 0 };
-  for (const sources of map.values()) for (const items of sources.values()) for (const d of items) c[d.severity]++;
+  for (const sources of map.values()) for (const d of mergedSources(sources)) c[d.severity]++;
   return c;
 }
 
@@ -245,12 +257,13 @@ function applyTo(snapshot: ProblemsSnapshot, path: string, source: string, items
 
 export function applyDiagnosticsEvent(path: string, source: string, items: readonly Diagnostic[]) {
   useProblems.setState((s) => {
-    const before = s.map.get(path)?.get(source) ?? [];
+    // The file's sources map is replaced, not changed, so this is the list before the event.
+    const before = mergedSources(s.map.get(path));
     const raw = applyTo(s.raw, path, source, items);
     if (!raw) return s;
     const map = applyTo(s.map, path, source, applyProfile(inspectionProfile(), source, items));
     if (!map) return { raw };
-    return { raw, map, counts: recount(s.counts, before, map.get(path)?.get(source) ?? []) };
+    return { raw, map, counts: recount(s.counts, before, mergedSources(map.get(path))) };
   });
 }
 

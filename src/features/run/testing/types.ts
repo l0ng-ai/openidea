@@ -14,6 +14,8 @@ export interface TestLocation {
   resolve: "path" | "name" | "rubyTest";
   /** JVM frames: the class's binary name; `path` is then the file under its package directory. */
   className?: string;
+  /** No line: the describe chain and name of a JS test to find in the file (Cypress reports none). */
+  test?: string[];
 }
 
 export type TestEvent =
@@ -21,7 +23,11 @@ export type TestEvent =
   | { type: "result"; path: string[]; status: Exclude<TestStatus, "running">; durationMs?: number }
   | { type: "location"; path: string[]; location: TestLocation }
   | { type: "output"; path: string[]; line: string }
-  | { type: "summary"; passed?: number; failed?: number; skipped?: number; durationMs?: number };
+  | { type: "summary"; passed?: number; failed?: number; skipped?: number; durationMs?: number }
+  /** A watch mode cycle begins: its results replace the previous ones. */
+  | { type: "reset" }
+  /** A watch mode cycle has reported all its results. */
+  | { type: "end" };
 
 export interface TestOutputParser {
   feed(line: string): TestEvent[];

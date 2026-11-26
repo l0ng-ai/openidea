@@ -158,6 +158,50 @@ const COMMENTS = {
 };
 const CASE = { id: "case", label: "Case", keywords: ["Keywords", "Identifiers", "To upper", "To lower"] };
 
+const SPACES = { id: "spaces", label: "Spaces", keywords: ["Space", "Around binary operators", "Within braces"] };
+const PUNCTUATION = { id: "punctuation", label: "Punctuation", keywords: ["Semicolons", "Quotes"] };
+
+/** The TypeScript server's code style: JavaScript (and JSX) and TypeScript (and TSX). */
+const TS_STYLE_LANGUAGES = new Set(["javascript", "typescript"]);
+
+/** tsserver's space options and their defaults (vtsls'). */
+const TS_SPACES = [
+  { key: "insertSpaceAfterCommaDelimiter", label: "After comma", on: true },
+  { key: "insertSpaceAfterSemicolonInForStatements", label: "After semicolon in for statements", on: true },
+  { key: "insertSpaceBeforeAndAfterBinaryOperators", label: "Around binary operators", on: true },
+  { key: "insertSpaceAfterKeywordsInControlFlowStatements", label: "After control flow keywords", on: true },
+  {
+    key: "insertSpaceAfterFunctionKeywordForAnonymousFunctions",
+    label: "After function keyword in anonymous functions",
+    on: true,
+  },
+  { key: "insertSpaceBeforeFunctionParenthesis", label: "Before function declaration parentheses", on: false },
+  { key: "insertSpaceAfterConstructor", label: "After constructor keyword", on: false },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis", label: "Within parentheses", on: false },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets", label: "Within brackets", on: false },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingNonemptyBraces", label: "Within braces", on: true },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingEmptyBraces", label: "Within empty braces", on: true },
+  {
+    key: "insertSpaceAfterOpeningAndBeforeClosingTemplateStringBraces",
+    label: "Within template string interpolations",
+    on: false,
+  },
+  { key: "insertSpaceAfterOpeningAndBeforeClosingJsxExpressionBraces", label: "Within JSX expressions", on: false },
+  { key: "insertSpaceAfterTypeAssertion", label: "After type assertion", on: false },
+];
+
+const SEMICOLONS: SelectOption<NonNullable<LanguageCodeStyle["semicolons"]>>[] = [
+  { value: "ignore", label: "Keep as is" },
+  { value: "insert", label: "Use semicolons" },
+  { value: "remove", label: "Don't use semicolons" },
+];
+
+const QUOTES: SelectOption<NonNullable<LanguageCodeStyle["quotes"]>>[] = [
+  { value: "auto", label: "As in the file" },
+  { value: "single", label: "Single quotes" },
+  { value: "double", label: "Double quotes" },
+];
+
 const WORD_CASES: SelectOption<SqlWordCase>[] = [
   { value: "upper", label: "To upper" },
   { value: "lower", label: "To lower" },
@@ -254,6 +298,48 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
       ),
     });
   }
+  if (TS_STYLE_LANGUAGES.has(lang.id)) {
+    tabs.push(
+      {
+        ...SPACES,
+        content: (
+          <>
+            {TS_SPACES.map(({ key, label, on }) => (
+              <Toggle
+                key={key}
+                checked={own.spaces?.[key] ?? on}
+                onChange={(v) => set({ spaces: { ...own.spaces, [key]: v } })}
+                label={label}
+              />
+            ))}
+          </>
+        ),
+      },
+      {
+        ...PUNCTUATION,
+        content: (
+          <FormGroup>
+            <Row label="Semicolons">
+              <Select
+                value={own.semicolons ?? "ignore"}
+                options={SEMICOLONS}
+                onChange={(semicolons) => set({ semicolons })}
+                aria-label="Semicolons"
+              />
+            </Row>
+            <Row label="Quotes" hint="For the strings and imports the TypeScript server adds.">
+              <Select
+                value={own.quotes ?? "auto"}
+                options={QUOTES}
+                onChange={(quotes) => set({ quotes })}
+                aria-label="Quotes"
+              />
+            </Row>
+          </FormGroup>
+        ),
+      },
+    );
+  }
   if (lang.id === "sql") {
     const wordCase = sqlCaseOf(own);
     tabs.push({
@@ -289,6 +375,13 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
         <div className={styles.note}>
           {tx(
             "Ruff formats with the indent, tab character and hard wrap set here, and Black with the hard wrap, when no Ruff or Black configuration of the project or user applies. A file's .editorconfig values come first, as in the editor.",
+          )}
+        </div>
+      )}
+      {TS_STYLE_LANGUAGES.has(lang.id) && (
+        <div className={styles.note}>
+          {tx(
+            "The TypeScript server applies Spaces and Punctuation to Reformat Code and to the code it adds: quick fixes, imports, refactorings and organize imports. Files below a Prettier, Biome or oxfmt configuration are formatted by that tool. A .editorconfig's quote_type and ij_* properties come first. TSX files use the TypeScript settings, JSX files the JavaScript ones.",
           )}
         </div>
       )}
@@ -412,6 +505,9 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
           : []),
         ...(lang.id === "php" ? ["Alignment", "Align key-value pairs", "Align consecutive assignments"] : []),
         ...(lang.id === "sql" ? [CASE.label, ...CASE.keywords, "Do not change"] : []),
+        ...(TS_STYLE_LANGUAGES.has(lang.id)
+          ? [SPACES, PUNCTUATION].flatMap(({ label, keywords }) => [label, ...keywords])
+          : []),
       ],
       component: () => <LanguageStyle lang={lang} />,
     }));

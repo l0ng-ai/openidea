@@ -134,3 +134,68 @@ it("shows the header title in a language chosen while the window is open", () =>
     act(() => useI18n.setState({ texts: before }));
   }
 });
+
+it("skips hidden and inert focus targets when activating a tool window", () => {
+  vi.useFakeTimers();
+  const dispose = registerToolWindow({
+    id: "hidden-inputs",
+    title: "Hidden Inputs",
+    icon: "file",
+    anchor: "right",
+    requiresProject: false,
+    component: () => (
+      <div>
+        <input type="file" aria-label="Hidden file" style={{ display: "none" }} />
+        <input type="hidden" value="secret" />
+        <div hidden>
+          <input aria-label="In hidden panel" data-autofocus="" />
+        </div>
+        <div inert>
+          <input aria-label="In inert container" />
+        </div>
+        <div style={{ display: "none" }}>
+          <input aria-label="In display-none wrapper" />
+        </div>
+        <textarea aria-label="Visible composer" />
+      </div>
+    ),
+  });
+  try {
+    render(<ToolWindowLayout editor={<input aria-label="Editor" />} />);
+    screen.getByRole("textbox", { name: "Editor" }).focus();
+    act(() => showToolWindow("hidden-inputs", true));
+    act(() => vi.runAllTimers());
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Visible composer" }));
+  } finally {
+    dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("falls back to the tool window body when only hidden focus targets exist", () => {
+  vi.useFakeTimers();
+  const dispose = registerToolWindow({
+    id: "only-hidden",
+    title: "Only Hidden",
+    icon: "file",
+    anchor: "right",
+    requiresProject: false,
+    component: () => (
+      <div>
+        <input type="file" aria-label="Hidden file" style={{ display: "none" }} />
+        <button type="button">Action</button>
+      </div>
+    ),
+  });
+  try {
+    render(<ToolWindowLayout editor={<input aria-label="Editor" />} />);
+    screen.getByRole("textbox", { name: "Editor" }).focus();
+    act(() => showToolWindow("only-hidden", true));
+    act(() => vi.runAllTimers());
+    const body = document.querySelector<HTMLElement>('[data-toolwindow="only-hidden"] [data-toolwindow-body]')!;
+    expect(document.activeElement).toBe(body);
+  } finally {
+    dispose();
+    vi.useRealTimers();
+  }
+});

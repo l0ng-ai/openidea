@@ -38,6 +38,7 @@ import {
   rerunSession,
   resizeTerminal,
   runSelectedTests,
+  toggleRerunAutomatically,
   runtime,
   sendStdin,
   setPendingInput,
@@ -50,7 +51,7 @@ import {
   pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
-import { formatDuration, nodeOutput } from "./testing";
+import { formatDuration, frameworkFor, nodeOutput } from "./testing";
 import { TestStatusBar, TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { ThreadDumpPanel } from "./threadDump/ThreadDumpPanel";
@@ -143,6 +144,7 @@ export function SessionPanel({
     if (hasTests) testSplit.current?.setLayout(testLayouts.current[testOrientation]);
   }, [hasTests, testOrientation]);
   const running = isLive(session);
+  const testsRunning = testsRun(session, rt?.tests) === "running";
   const cwd = runDirectory(session.config.cwd);
   const baseConfig = useRun(() => baseConfigOf(session));
   // Test results mutate in place; their version refreshes the selection.
@@ -211,7 +213,7 @@ export function SessionPanel({
 
   const consoleColumn = (
     <div className={styles.consoleColumn}>
-      {rt.tests && <TestStatusBar results={rt.tests} version={version} running={running} />}
+      {rt.tests && <TestStatusBar results={rt.tests} version={version} running={testsRunning} />}
       {rt.console.dropped > 0 && !testModel && (
         <div className={styles.notice}>{tx`${rt.console.dropped.toLocaleString()} earlier lines were discarded`}</div>
       )}
@@ -411,7 +413,7 @@ export function SessionPanel({
                 results={rt.tests}
                 version={version}
                 cwd={cwd}
-                running={running}
+                running={testsRunning}
                 name={session.config.name}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
@@ -419,6 +421,11 @@ export function SessionPanel({
                 onUpdateSnapshots={(ids) => void updateSnapshots(session.id, ids)}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
                 onRunTests={(ids, debug) => void runSelectedTests(session.id, ids, debug)}
+                rerunAutomatically={
+                  frameworkFor(session.config) === "js"
+                    ? { on: !!session.watching && running, toggle: () => toggleRerunAutomatically(session.id) }
+                    : undefined
+                }
               />
             </SplitPanel>
             <SplitHandle />
@@ -432,6 +439,14 @@ export function SessionPanel({
       </div>
     </div>
   );
+}
+
+/**
+ * Whether a session's tests still run: a watch run's are done at the end of each cycle, like a
+ * finished run (status, Sort by Duration, Select First Failed).
+ */
+export function testsRun(session: RunSession, tests: { finished: boolean } | null | undefined): "running" | "done" {
+  return isLive(session) && !(session.watching && tests?.finished) ? "running" : "done";
 }
 
 function sessionItems(sessions: readonly RunSession[], targets: readonly RunTargetValid[]): TabItem[] {

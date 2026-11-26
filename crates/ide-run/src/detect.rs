@@ -235,15 +235,22 @@ pub(crate) fn is_test_script(name: &str) -> bool {
 }
 
 /// The test runner a `package.json` script starts, when its output and test selection differ
-/// from Jest / Vitest's: `playwright test`, `mocha`, or `node --test` (`tsx --test`) with Node's own
+/// from Jest / Vitest's: `playwright test`, `cypress run`, `mocha`, or `node --test` (`tsx --test`) with Node's own
 /// reporters (the IDE adds its reporter next to them, which a reporter chosen here would clash with).
 fn script_test_runner(script: &str) -> Option<&'static str> {
     let tokens: Vec<&str> = script.split(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | ';')).collect();
     if tokens.windows(2).any(|w| w[0] == "playwright" && w[1] == "test") {
         return Some("playwright");
     }
+    if tokens.windows(2).any(|w| w[0] == "cypress" && w[1] == "run") {
+        return Some("cypress");
+    }
     if tokens.iter().any(|t| matches!(t.rsplit('/').next(), Some("mocha" | "_mocha"))) {
         return Some("mocha");
+    }
+    // Jasmine too, through the IDE's hook like Mocha.
+    if tokens.iter().any(|t| matches!(t.rsplit('/').next(), Some("jasmine" | "jasmine.js"))) {
+        return Some("jasmine");
     }
     let node = tokens.iter().position(|t| matches!(*t, "node" | "tsx"))?;
     // Node's own options: up to the script (`node server.js --test` passes `--test` to the program).
@@ -269,6 +276,15 @@ const PLAYWRIGHT_CONFIGS: &[&str] = &[
     "playwright.config.mjs",
     "playwright.config.cts",
     "playwright.config.cjs",
+];
+
+const CYPRESS_CONFIGS: &[&str] = &[
+    "cypress.config.ts",
+    "cypress.config.js",
+    "cypress.config.mts",
+    "cypress.config.mjs",
+    "cypress.config.cts",
+    "cypress.config.cjs",
 ];
 
 /// Pushes the package's scripts; returns the test runners they start.
@@ -325,6 +341,29 @@ fn push_playwright(
     out.push(c);
 }
 
+/// `npx cypress run` for a package that depends on Cypress or has its configuration, when no script runs it.
+fn push_cypress(
+    dir: &Path,
+    pkg: &Json,
+    runners: &HashSet<&str>,
+    prefix: Option<&str>,
+    cwd: Option<PathBuf>,
+    out: &mut Vec<RunConfig>,
+) {
+    let depends =
+        ["dependencies", "devDependencies"].iter().any(|k| pkg.get(k).and_then(|d| d.get("cypress")).is_some());
+    if runners.contains("cypress") || !(depends || first_existing(dir, CYPRESS_CONFIGS).is_some()) {
+        return;
+    }
+    let (id, name) = match prefix {
+        Some(p) => (format!("cypress:{p}"), format!("{p}: cypress run")),
+        None => ("cypress".to_owned(), "cypress run".to_owned()),
+    };
+    let mut c = config(id, name, "cypress", "npx", &["cypress", "run"]).in_dir(cwd.clone()).test();
+    c.extras.module = cwd.as_deref().map(ide_core::ipc_path::to_ipc);
+    out.push(c);
+}
+
 fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
     let mut covered = HashSet::new();
     let projects =
@@ -342,7 +381,8 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
         let prefix = (dir != root).then_some(label.as_str());
         let cwd = (dir != root).then_some(rel);
         let runners = push_scripts(&pkg, pm, prefix, cwd.clone(), out);
-        push_playwright(&dir, &runners, prefix, cwd, out);
+        push_playwright(&dir, &runners, prefix, cwd.clone(), out);
+        push_cypress(&dir, &pkg, &runners, prefix, cwd, out);
         for member_dir in ide_core::project_roots::node_workspace_members(&dir) {
             if !covered.insert(member_dir.clone()) {
                 continue;
@@ -356,7 +396,8 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
                 .unwrap_or_else(|| ide_core::ipc_path::to_ipc(&rel));
             let name = if dir == root { name } else { format!("{label}:{name}") };
             let runners = push_scripts(&member, pm, Some(&name), Some(rel.clone()), out);
-            push_playwright(&member_dir, &runners, Some(&name), Some(rel), out);
+            push_playwright(&member_dir, &runners, Some(&name), Some(rel.clone()), out);
+            push_cypress(&member_dir, &member, &runners, Some(&name), Some(rel), out);
         }
     }
 }

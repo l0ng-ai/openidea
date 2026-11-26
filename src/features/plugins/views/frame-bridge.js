@@ -88,6 +88,12 @@
     root.style.zoom = next === 100 ? "" : (next / 100).toFixed(2);
   };
 
+  // Report frame activation to the host so focus tracking and focus-scope highlighting
+  // stay in sync even when switching directly into or between sandboxed plugin frames.
+  const notifyFocus = () => window.parent.postMessage({ tag: TAG, focus: true }, "*");
+  window.addEventListener("focus", notifyFocus);
+  window.addEventListener("pointerdown", notifyFocus, true);
+
   // IDE shortcuts (Save, Close, Find Action…) pressed while the page has focus:
   // the ones the page left alone go to the workbench. Editing keys stay here.
   const EDITING_KEYS = new Set(["a", "c", "v", "x", "z", "y"]);

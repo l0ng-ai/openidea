@@ -1,0 +1,10 @@
+{
+  "indentWidth": 4,
+  "lineWidth": 100,
+  "typescript": { "semiColons": "asi", "quoteStyle": "alwaysSingle" },
+  "excludes": ["**/node_modules"],
+  "plugins": [
+    "https://plugins.dprint.dev/typescript-0.95.0.wasm",
+    "https://plugins.dprint.dev/json-0.20.0.wasm"
+  ]
+}

@@ -47,6 +47,7 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { CONTRIBUTED_HOVER, contributedAtAll, type ContributedHover } from "@/editor/api";
 import { navigationModifierHeld, onNavigationModifier, pointerTarget } from "@/platform/navigationModifier";
 import { languageSemantics } from "./semantic";
+import { cssVariableHover } from "./cssVariables";
 import { tooltipBounds } from "@/editor/core/cm/setup";
 
 let hoverRequest: RequestId | null = null;
@@ -71,6 +72,9 @@ export async function requestHover(view: EditorView, pos: number): Promise<Hover
       contents: { kind: "markdown", value: construct.markdown },
       range: { start: offsetToPos(view.state.doc, construct.from), end: offsetToPos(view.state.doc, construct.to) },
     };
+  // The server would describe the property the `var(--x)` is the value of, from this file only.
+  const variable = await cssVariableHover(view, pos);
+  if (variable) return variable;
   if (hoverRequest !== null && isTauri()) void commands.cancelRequest(hoverRequest);
   const id = (hoverRequest = nextRequestId());
   try {

@@ -254,6 +254,25 @@ export function editorsFor(path: string): TextEditorHandle[] {
   return [...useEditorRegistry.getState().editors].filter((e) => e.ctx.path === path);
 }
 
+/**
+ * While a cell editor of a custom editor (a notebook) has focus, it stands in for the
+ * active editor's view: the notebook publishes the editor context keys for it and
+ * editor actions resolve to it, like a text tab's view. The owner keeps this current
+ * on focus changes (see `_setFocusedCellEditor`); editor/core re-reads it whenever it
+ * republishes contexts, so actions never fall back to the last text tab.
+ */
+let focusedCell: EditorView | null = null;
+
+/** The focused cell editor standing in for the active editor's view, if any. */
+export function focusedCellEditor(): EditorView | null {
+  return focusedCell;
+}
+
+/** Published by the custom editor owning the cell editors (a notebook); `null` once none has focus. */
+export function _setFocusedCellEditor(view: EditorView | null) {
+  focusedCell = view;
+}
+
 // --- called by editor/core only ---------------------------------------------
 
 export function _setActiveEditor(handle: TextEditorHandle | null) {
@@ -614,8 +633,10 @@ export interface NavigationLocation {
   col: number;
   /** `Date.now()` when the location was last visited. */
   time: number;
-  /** A place that is a tab rather than a text position (a diff), opened with this input on Back. */
+  /** A place that is a tab rather than a text position (diff, agent chat, terminal tab…), opened with this input on Back. */
   input?: EditorInput;
+  /** Split pane holding the editor tab when recorded, so Back/Forward returns to the same split when it still exists. */
+  paneId?: string;
 }
 
 export interface NavigationHistorySnapshot {

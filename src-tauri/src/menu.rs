@@ -849,6 +849,7 @@ mod tests {
                 "window.toggleFullScreen",
                 "view.toggleTheme",
                 "editor.toggleZen",
+                "view.toggleZenMode",
                 "view.toggleToolbar",
                 "view.toggleToolWindowBars",
                 "view.toggleStatusBar",
