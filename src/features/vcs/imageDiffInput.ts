@@ -5,7 +5,6 @@ import { maybeEditorService } from "@/workbench/contributions";
 import { stagedDocumentAtPath } from "./stagedDocument";
 import { isIndex, type DiffData, type DiffSide } from "./diffInput";
 
-/** Only route file-backed images; a patch, review thread or line range needs the text viewer. */
 export function imageDiffKind(data: DiffData): "svg" | "raster" | null {
   if (data.stagingRange || data.line !== undefined || data.context || data.annotations?.length || data.annotateLeft)
     return null;

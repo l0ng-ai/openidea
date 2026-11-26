@@ -652,7 +652,6 @@ pub async fn vcs_image_at(host: &Host, window: &str, path: PathBuf, rev: String)
             .ok_or_else(|| ide_core::IdeError::invalid(format!("{} is not a supported image", path.display())))?;
         let read = |repo: &Repo| repo.file_bytes_at_bounded(&path, &rev, ide_vfs::MAX_IMAGE_SIZE as usize);
         let bytes = if let Some(project) = project {
-            // Repository lookup can canonicalize the path. Avoid contacting an unopened Windows share.
             if !ide_vfs::on_local_drive(&path)
                 && external.is_none()
                 && !project.repos().all().iter().any(|repo| ide_vfs::same_share(repo.root(), &path))

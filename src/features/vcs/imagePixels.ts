@@ -14,12 +14,10 @@ export function imageBounds(sizes: readonly ImageSize[]): ImageSize {
   };
 }
 
-// A 4K screenshot fits. Check the enclosing rectangle before allocating any canvas or RGBA buffers.
 export function canComparePixels({ width, height }: ImageSize): boolean {
   return width > 0 && height > 0 && width <= 16384 && height <= 16384 && width * height <= 8_388_608;
 }
 
-// Comparing four RGBA bytes as one word is independent of the machine's byte order.
 function rgbaWords(frame: PixelImage | null) {
   const data = frame?.data;
   return data && new Uint32Array(data.buffer, data.byteOffset, data.length / 4);
@@ -38,7 +36,6 @@ export function paintPixelDifference(before: PixelImage | null, after: PixelImag
       const right = after && x < after.width && y < after.height ? y * after.width + x : -1;
       if (left < 0 && right < 0) continue;
       if (after && a?.[left] === b?.[right]) {
-        // Muted monochrome keeps image detail visible without competing with the highlight.
         const offset = 4 * right;
         const rgba = after.data;
         const luminance = (rgba[offset]! + 2 * rgba[offset + 1]! + rgba[offset + 2]!) / 4;

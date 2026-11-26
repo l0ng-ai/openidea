@@ -9,7 +9,6 @@ export type ImageFrame =
   | { kind: "ready"; image: HTMLImageElement; intrinsic: ImageSize; size: ImageSize }
   | Unavailable;
 
-/** ViewBox-only assets use their own coordinate system at 1:1. */
 export function svgIntrinsicSize(svg: SVGSVGElement): ImageSize {
   const box = parseViewBoxSize(svg.getAttribute("viewBox"));
   const w = parseLengthPx(svg.style.width || svg.getAttribute("width"));

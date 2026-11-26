@@ -69,7 +69,6 @@ export function ImageDiffHost({
   }, [navigator]);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    // A repository refresh can replace the request while the viewer is still focused.
     if (root.current?.contains(document.activeElement)) {
       setFocusedDiffNavigator(navigator);
       setContext("diffEditorFocus", true);
