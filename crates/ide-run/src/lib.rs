@@ -10,6 +10,7 @@ pub mod gradle_jvm;
 pub mod import;
 pub mod java_agent;
 pub mod java_cmdline;
+pub mod java_hotswap;
 pub mod junit;
 mod process;
 pub mod python_path;

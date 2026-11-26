@@ -46,18 +46,26 @@ fn main() {
     #[cfg(unix)]
     if args.first().is_some_and(|a| a == "--attach") {
         let Some(project_path) = args.get(1).filter(|p| !p.is_empty()) else {
-            eprintln!("usage: openidea-server --attach <project-path>");
+            eprintln!("usage: openidea-server --attach <project-path> [--replace]");
             std::process::exit(2);
         };
+        // `--replace`: stop another build's backend that still holds the project.
+        let replace = args.get(2).is_some_and(|a| a == "--replace");
         let home = dirs::home_dir().unwrap_or_default();
-        let code =
-            match ide_host::daemon::attach(&base, &home, project_path, std::io::stdin(), std::io::stdout().lock()) {
-                Ok(()) => 0,
-                Err(e) => {
-                    eprintln!("{e}");
-                    1
-                }
-            };
+        let code = match ide_host::daemon::attach(
+            &base,
+            &home,
+            project_path,
+            replace,
+            std::io::stdin(),
+            std::io::stdout().lock(),
+        ) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
         std::process::exit(code);
     }
     let mode = match args.as_slice() {

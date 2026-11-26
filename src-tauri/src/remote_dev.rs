@@ -673,6 +673,7 @@ pub async fn remote_connect(
     state: State<'_, AppState>,
     target: RemoteTarget,
     mut path: String,
+    replace: bool,
     on_progress: Channel<RemoteProgress>,
 ) -> IdeResult<RemoteProject> {
     let progress: Arc<Progress> = Arc::new(move |stage, fraction| {
@@ -704,9 +705,10 @@ pub async fn remote_connect(
             let attach_arg = if path.trim().is_empty() { "~" } else { path.trim() };
             let stream = session
                 .exec_stream(&format!(
-                    "{} --attach {} 2>&1",
+                    "{} --attach {}{} 2>&1",
                     ide_ssh::shell::tilde_quote(&bin),
                     ide_ssh::shell::quote(attach_arg),
+                    if replace { " --replace" } else { "" },
                 ))
                 .await
                 .map_err(|e| IdeError::unavailable(format!("cannot start openidea-server: {e}")))?;
@@ -723,12 +725,12 @@ pub async fn remote_connect(
             let bin = crate::remote_wsl::ensure_server(&state, distro, progress.clone()).await?;
             progress(RemoteStage::Starting, None);
             let attach_arg = if path.trim().is_empty() { "~" } else { path.trim() };
-            let peer = crate::remote_wsl::spawn(distro, &bin, attach_arg, handler, &tail)?;
+            let peer = crate::remote_wsl::spawn(distro, &bin, attach_arg, replace, handler, &tail)?;
             (peer, None, distro.clone(), format!("WSL: {distro}"))
         }
         RemoteTarget::DevContainer { folder, config } => {
             let (peer, root, run) =
-                crate::remote_container::connect(&state, folder, config, handler, &tail, &progress).await?;
+                crate::remote_container::connect(&state, folder, config, replace, handler, &tail, &progress).await?;
             path = root;
             exec = Some(Arc::new(run));
             let name = std::path::Path::new(folder)
@@ -740,6 +742,11 @@ pub async fn remote_connect(
     // A server that dies on start-up says why on stderr (`wsl.exe` prints its own errors too).
     let with_output = |e: IdeError| match tail.text() {
         t if t.is_empty() => e,
+        // Another build's backend holds the project: the window offers to stop it (#6119).
+        t if t.contains(ide_host::rpc::OTHER_BUILD_BUSY) => IdeError {
+            data: Some(ide_core::error::ErrorData::RemoteBackendBusy),
+            ..IdeError::unavailable(ide_host::rpc::OTHER_BUILD_BUSY)
+        },
         t => IdeError::unavailable(format!("{}: {t}", e.message)),
     };
     let info: ServerInfo = peer

@@ -188,6 +188,7 @@ debug_jvm_thread_dump                        trusted            project_host bin
 debug_listen_for_jvm                         trusted            project_host bindings async
 debug_pause                                  trusted            project_host bindings async
 debug_redefine_classes                       trusted            project_host bindings async
+debug_replace_breakpoints                    trusted            project_host bindings async
 debug_resolve_variable                       trusted            project_host bindings async
 debug_restart_frame                          trusted            project_host bindings async
 debug_resume                                 trusted            project_host bindings async
@@ -428,6 +429,7 @@ menu_configure                               always             desktop      bin
 menu_model                                   always             desktop      bindings sync
 menu_refresh                                 always             desktop      bindings sync
 menu_set_disabled                            always             desktop      bindings sync
+menu_set_remote_recent                       always             desktop      bindings sync
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
 nav_python_stubs                             always             project_host bindings async
