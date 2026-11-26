@@ -39,10 +39,13 @@ use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDea
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+use crate::wit_host::execution_configurations_bindings::exports::openidea::plugin::execution_configurations as wit_exec;
+use crate::wit_host::execution_configurations_bindings::openidea::plugin::launch_configurations as wit_exec_launch;
 use crate::wit_host::launch_configurations_bindings::exports::openidea::plugin::launch_configurations as wit_launch;
 use crate::wit_host::run_configurations_bindings::exports::openidea::plugin::run_configurations as wit_configs;
 use crate::wit_host::test_results_bindings::exports::openidea::plugin::test_results as wit_tests;
 use bindings::openidea::plugin::events as wit_events;
+use bindings::openidea::plugin::run as wit_run;
 use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
 use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
@@ -59,7 +62,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.17";
+pub const API_VERSION: &str = "1.18";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -125,7 +128,7 @@ pub trait HostApi: Send + Sync {
         client: &str,
         config: &str,
         args: Vec<String>,
-        debug: bool,
+        options: crate::PluginRunStartOptions,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError>;
@@ -898,6 +901,7 @@ struct Exports {
     completion_list: Option<wit_cl::Guest>,
     run_configurations: Option<wit_configs::Guest>,
     launch_configurations: Option<wit_launch::Guest>,
+    execution_configurations: Option<wit_exec::Guest>,
     test_results: Option<wit_tests::Guest>,
     mcp: Option<crate::wit_host::mcp_bindings::exports::openidea::plugin::mcp_provider::Guest>,
 }
@@ -1051,6 +1055,7 @@ impl Runtime {
         let completion_list_indices = wit_cl::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
         let launch_indices = wit_launch::GuestIndices::new(&pre).ok();
+        let exec_indices = wit_exec::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
         let validation_indices = wit_rtv::GuestIndices::new(&pre).ok();
         let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
@@ -1063,6 +1068,8 @@ impl Runtime {
             configs_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let launch_configurations =
             launch_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let execution_configurations =
+            exec_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let language_features = lf_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
@@ -1145,6 +1152,7 @@ impl Runtime {
                 completion_list,
                 run_configurations,
                 launch_configurations,
+                execution_configurations,
                 test_results,
                 mcp,
                 file_actions,
@@ -1184,14 +1192,48 @@ impl Runtime {
         .map(|r| r.map_err(|message| clip(message, 4096)))
     }
 
-    /// Complete configurations from the optional API 1.9 export, else the API 1.4 one.
+    /// Complete configurations from the optional API 1.18 export, else API 1.9, else API 1.4.
     pub fn run_configurations(
         &mut self,
         root: String,
         timeout: Duration,
     ) -> Result<Vec<crate::PluginRunConfiguration>, CallError> {
         let invocation = Invocation { workspace_root: Some(root.clone().into()), ..Default::default() };
-        let items: Vec<crate::PluginRunConfiguration> = if self.exports.launch_configurations.is_some() {
+        let items: Vec<crate::PluginRunConfiguration> = if self.exports.execution_configurations.is_some() {
+            let items = self.call(invocation, timeout, |e, store| {
+                e.execution_configurations.as_ref().unwrap().call_configurations(store, &root)
+            })?;
+            if items.len() > 1000 {
+                return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
+            }
+            items
+                .into_iter()
+                .map(|c| crate::PluginRunConfiguration {
+                    id: c.id,
+                    name: c.name,
+                    program: c.program,
+                    args: c.args,
+                    cwd: c.cwd,
+                    test: c.test,
+                    framework: c.framework,
+                    env: c.env,
+                    debugger: match c.debugger {
+                        Some(wit_exec_launch::Debugger::Launch(language)) => {
+                            Some(crate::PluginDebugger::Launch { language })
+                        }
+                        Some(wit_exec_launch::Debugger::AttachChild(a)) => Some(crate::PluginDebugger::AttachChild {
+                            kind: a.kind,
+                            command_contains: a.command_contains,
+                        }),
+                        Some(wit_exec_launch::Debugger::Other(_)) | None => None,
+                    },
+                    output_mode: match c.output_mode {
+                        wit_run::OutputMode::Pipes => crate::PluginOutputMode::Pipes,
+                        wit_run::OutputMode::Pty => crate::PluginOutputMode::Pty,
+                    },
+                })
+                .collect()
+        } else if self.exports.launch_configurations.is_some() {
             let items = self.call(invocation, timeout, |e, store| {
                 e.launch_configurations.as_ref().unwrap().call_configurations(store, &root)
             })?;
@@ -1219,6 +1261,7 @@ impl Runtime {
                         }),
                         Some(wit_launch::Debugger::Other(_)) | None => None,
                     },
+                    output_mode: crate::PluginOutputMode::Pipes,
                 })
                 .collect()
         } else if self.exports.run_configurations.is_some() {
