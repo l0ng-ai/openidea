@@ -154,6 +154,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.shrinkSelection": ["Ctrl+Shift+Meta+Left"],
   "code.duplicateLine": ["Alt+Shift+Down"],
   "code.duplicateEntireLines": [],
+  "editor.selectLine": [],
+  "editor.swapSelectionBoundaries": [],
   "code.deleteLine": ["Meta+Shift+K"],
   "code.deleteToLineStart": [],
   "code.deleteToLineEnd": [],

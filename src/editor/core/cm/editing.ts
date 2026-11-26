@@ -184,6 +184,41 @@ function duplicateSpans(view: EditorView, spans: Array<{ from: number; to: numbe
   return true;
 }
 
+/**
+ * IDEA's Select Line at Caret: every caret selects its line and the line's break; a selection
+ * grows to the whole lines it touches and keeps its direction. A line the selection only ends
+ * at its start is left out, so running the action again leaves the selection as it is.
+ */
+export const selectLineAtCaret: Command = (view) => {
+  const { state } = view;
+  const ranges = state.selection.ranges.map((r) => {
+    const last = r.to > r.from && state.doc.lineAt(r.to).from === r.to ? r.to - 1 : r.to;
+    const span = visualLineSpan(state, r.from, last);
+    // Include the last line's break, as IDEA does; the last line of the document has none.
+    const to = span.to < state.doc.length ? span.to + 1 : span.to;
+    return r.anchor <= r.head ? EditorSelection.range(span.from, to) : EditorSelection.range(to, span.from);
+  });
+  view.dispatch({
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+};
+
+/** IDEA's Swap Selection Boundaries: each selection's caret moves to its other end; plain carets stay. */
+export const swapSelectionBoundaries: Command = (view) => {
+  const { state } = view;
+  if (state.selection.ranges.every((r) => r.empty)) return false;
+  const ranges = state.selection.ranges.map((r) => (r.empty ? r : EditorSelection.range(r.head, r.anchor)));
+  view.dispatch({
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+};
+
 /** ⌘⌫: Delete Line — on a folded region's line, every line of the folded block. */
 export const deleteLine: Command = (view) => {
   if (!deleteLines(view)) return false;

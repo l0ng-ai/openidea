@@ -999,6 +999,8 @@
   "Comment with Block Comment": "使用块注释",
   "Duplicate Line or Selection": "复制行或选区",
   "Duplicate Entire Lines": "复制整行",
+  "Select Line at Caret": "选中当前行",
+  "Swap Selection Boundaries": "交换选区边界",
   "Delete Line": "删除行",
   "Delete to Line Start": "删除到行首",
   "Delete to Line End": "删除到行尾",

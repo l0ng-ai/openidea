@@ -2,7 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { history, insertNewlineAndIndent, redo, undo } from "@codemirror/commands";
-import { indentOnInput, indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
+import {
+  codeFolding,
+  foldEffect,
+  indentOnInput,
+  indentService,
+  indentUnit,
+  ensureSyntaxTree,
+} from "@codemirror/language";
 import {
   addCaretsToLineEnds,
   commentLine,
@@ -11,8 +18,10 @@ import {
   deleteLine,
   duplicateEntireLines,
   joinLines,
+  selectLineAtCaret,
   startNewLine,
   startNewLineBefore,
+  swapSelectionBoundaries,
   toggleCase,
   unselectOccurrence,
 } from "./editing";
@@ -773,5 +782,84 @@ describe("comment toggle regressions", () => {
     const v = make("[/* a /* b */ c */]", ext);
     expect(commentBlock(v)).toBe(true);
     expect(v.state.doc.toString()).toBe("a /* b */ c");
+  });
+});
+
+describe("select line at caret", () => {
+  it("selects the line and its break, or to the end of the text on the last line", () => {
+    const v = make("aa\n|bb\ncc");
+    expect(selectLineAtCaret(v)).toBe(true);
+    expect(v.state.selection.main).toMatchObject({ anchor: 3, head: 6 });
+
+    const last = make("aa\n|bb");
+    selectLineAtCaret(last);
+    expect(last.state.selection.main).toMatchObject({ anchor: 3, head: 5 });
+  });
+
+  it("grows a selection to the whole lines it touches and keeps its direction", () => {
+    const v = make("[b]b\ncc");
+    selectLineAtCaret(v);
+    expect(v.state.selection.main).toMatchObject({ anchor: 0, head: 3 });
+
+    const back = make("aa\nbb\ncc");
+    back.dispatch({ selection: { anchor: 4, head: 1 } });
+    selectLineAtCaret(back);
+    expect(back.state.selection.main).toMatchObject({ anchor: 6, head: 0 });
+  });
+
+  it("changes nothing when run again on the selected lines", () => {
+    const v = make("aa\n|bb\ncc");
+    selectLineAtCaret(v);
+    const once = { anchor: v.state.selection.main.anchor, head: v.state.selection.main.head };
+    selectLineAtCaret(v);
+    expect(v.state.selection.main).toMatchObject(once);
+  });
+
+  it("selects the lines of a folded block with the line it is shown on", () => {
+    const v = make("x\nf() {\n  a;\n}\ny", [codeFolding()]);
+    v.dispatch({ effects: foldEffect.of({ from: 7, to: 13 }), selection: { anchor: 3 } });
+    selectLineAtCaret(v);
+    expect(v.state.selection.main).toMatchObject({ anchor: 2, head: 15 });
+  });
+
+  it("selects one line for several carets on it and works in a read-only editor", () => {
+    const same = make("a|a|");
+    selectLineAtCaret(same);
+    expect(same.state.selection.ranges).toHaveLength(1);
+    expect(same.state.selection.main).toMatchObject({ anchor: 0, head: 2 });
+
+    const ro = make("aa|\nbb", EditorState.readOnly.of(true));
+    expect(selectLineAtCaret(ro)).toBe(true);
+    expect(ro.state.selection.main).toMatchObject({ anchor: 0, head: 3 });
+  });
+});
+
+describe("swap selection boundaries", () => {
+  it("moves the caret to the other end and back", () => {
+    const v = make("[prices]");
+    expect(swapSelectionBoundaries(v)).toBe(true);
+    expect(v.state.selection.main).toMatchObject({ anchor: 6, head: 0 });
+    swapSelectionBoundaries(v);
+    expect(v.state.selection.main).toMatchObject({ anchor: 0, head: 6 });
+  });
+
+  it("leaves plain carets alone and keeps the primary selection primary", () => {
+    const v = make("[ab]c|");
+    swapSelectionBoundaries(v);
+    expect(v.state.selection.ranges).toHaveLength(2);
+    expect(v.state.selection.main).toMatchObject({ anchor: 2, head: 0 });
+    expect(v.state.selection.ranges[1]).toMatchObject({ anchor: 3, head: 3 });
+  });
+
+  it("does nothing without a selection", () => {
+    const v = make("a|b");
+    expect(swapSelectionBoundaries(v)).toBe(false);
+    expect(v.state.selection.main).toMatchObject({ anchor: 1, head: 1 });
+  });
+
+  it("works in a read-only editor", () => {
+    const v = make("[ab]", EditorState.readOnly.of(true));
+    expect(swapSelectionBoundaries(v)).toBe(true);
+    expect(v.state.selection.main).toMatchObject({ anchor: 2, head: 0 });
   });
 });

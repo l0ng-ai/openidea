@@ -101,6 +101,8 @@ export const intellijMacos: Record<string, string[]> = {
   "code.shrinkSelection": ["Alt+Down"],
   "code.duplicateLine": ["Meta+D"],
   "code.duplicateEntireLines": [],
+  "editor.selectLine": [],
+  "editor.swapSelectionBoundaries": [],
   "code.deleteLine": ["Meta+Backspace"],
   "code.deleteToLineStart": [],
   "code.deleteToLineEnd": [],

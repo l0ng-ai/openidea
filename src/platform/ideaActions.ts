@@ -54,6 +54,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   EditorSelectWord: "code.extendSelection",
   EditorUnSelectWord: "code.shrinkSelection",
   EditorDuplicateLines: "code.duplicateEntireLines",
+  EditorSelectLine: "editor.selectLine",
+  EditorSwapSelectionBoundaries: "editor.swapSelectionBoundaries",
   EditorDeleteToLineStart: "code.deleteToLineStart",
   EditorDeleteToLineEnd: "code.deleteToLineEnd",
   EditorCutLineEnd: "code.cutLineEnd",

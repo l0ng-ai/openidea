@@ -24,8 +24,10 @@ import {
   moveStatementUp,
   nextOccurrence,
   selectAllOccurrences,
+  selectLineAtCaret,
   startNewLine,
   startNewLineBefore,
+  swapSelectionBoundaries,
   toggleCase,
   unselectOccurrence,
 } from "./cm/editing";
@@ -892,6 +894,14 @@ export function registerEditorActions(): () => void {
     edit("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
     edit("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
     edit("code.duplicateEntireLines", "Duplicate Entire Lines", (v) => duplicateEntireLines(v)),
+    caret("editor.selectLine", "Select Line at Caret", (v) => selectLineAtCaret(v), {
+      category: "Editor Actions",
+      keywords: ["select line", "whole line"],
+    }),
+    caret("editor.swapSelectionBoundaries", "Swap Selection Boundaries", (v) => swapSelectionBoundaries(v), {
+      category: "Editor Actions",
+      keywords: ["selection", "caret", "anchor", "other end"],
+    }),
     edit("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
     // Their keys (⌃K, ⇧⌘⌦) also edit a popup's text field, so they run only in a focused editor.
     edit("code.deleteToLineStart", "Delete to Line Start", (v) => deleteToLogicalLineStart(v), {

@@ -102,6 +102,8 @@ export const intellijWindows: Record<string, string[]> = {
   "code.shrinkSelection": ["Ctrl+Shift+W"],
   "code.duplicateLine": ["Ctrl+D"],
   "code.duplicateEntireLines": [],
+  "editor.selectLine": [],
+  "editor.swapSelectionBoundaries": [],
   "code.deleteLine": ["Ctrl+Y"],
   "code.deleteToLineStart": [],
   "code.deleteToLineEnd": [],
