@@ -20,6 +20,7 @@ import {
   _provideNavigationHistory,
   _provideOpenEditorPaths,
   _setActiveEditor,
+  focusedCellEditor,
   shownLine,
   type NavigationLocation,
 } from "@/editor/api";
@@ -1110,6 +1111,9 @@ export class EditorController implements SlotHost {
     const slot = this.activeSlot;
     const meta = slot?.model.getMeta();
     const s = useTabs.getState();
+    // A focused notebook cell editor stands in for the active text editor (the notebook
+    // publishes the editor context keys for it): republishing on tab churn keeps them on.
+    const cell = focusedCellEditor();
     setContext("editorPath", slot?.model.path ?? null);
     setContext("editorLangId", meta?.language ?? null);
     setContext("editorReadOnly", !!meta?.readOnly);
@@ -1119,8 +1123,8 @@ export class EditorController implements SlotHost {
       Object.values(s.panes).some((p) => p.tabs.length > 0),
     );
     setContext("editorSplit", paneIds(s).length > 1);
-    setContext("editorTextFocus", !!slot?.view?.hasFocus);
-    setContext("textEditorActive", !!slot);
+    setContext("editorTextFocus", cell ? cell.hasFocus : !!slot?.view?.hasFocus);
+    setContext("textEditorActive", !!slot || !!cell);
   }
 
   // --- navigation history --------------------------------------------------------------
