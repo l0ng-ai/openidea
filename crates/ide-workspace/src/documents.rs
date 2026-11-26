@@ -628,11 +628,15 @@ impl Documents {
         let defaults = self.file_defaults();
         let mut doc = Document::new("");
         doc.set_line_ending(defaults.line_ending);
+        let untitled_file =
+            name.and_then(|n| n.strip_prefix("untitled:")).map(Path::new).filter(|p| p.extension().is_some());
+        let language = untitled_file.map(|p| (self.detect_language)(p, None)).unwrap_or_else(LanguageId::plain_text);
+        let ui_mode = untitled_file.and_then(|p| (self.detect_ui_mode)(p, &language));
         let state = DocState {
             path: key.clone(),
             doc,
-            language: LanguageId::plain_text(),
-            ui_mode: None,
+            language,
+            ui_mode,
             encoding: defaults.encoding.clone(),
             has_bom: defaults.encoding == "utf-8" && defaults.utf8_bom,
             native_to_ascii: false,

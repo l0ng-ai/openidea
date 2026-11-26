@@ -1310,11 +1310,28 @@ export class EditorController implements SlotHost {
   }
 
   /** File › New File: an editable untitled buffer; Save asks for a path. */
-  async openUntitled(o: OpenOptions = {}): Promise<void> {
+  async openUntitled(o: OpenOptions & { extension?: string } = {}): Promise<void> {
     const generation = this.openingGeneration(o);
     await this.projectTransition;
     this.checkOpening(generation);
-    const info = await this.manager.backend.openUntitled(null);
+    const ext = o.extension?.replace(/^\./, "").trim();
+    let requested: string | null = null;
+    if (ext) {
+      const openKeys = new Set(
+        Object.values(useTabs.getState().panes)
+          .flatMap((p) => p.tabs)
+          .map((t) => t.input.path ?? t.input.key),
+      );
+      let n = 1;
+      while (
+        openKeys.has(`untitled:Untitled-${n}.${ext}`) ||
+        this.manager.get(`untitled:Untitled-${n}.${ext}`) !== undefined
+      ) {
+        n += 1;
+      }
+      requested = `untitled:Untitled-${n}.${ext}`;
+    }
+    const info = await this.manager.backend.openUntitled(requested);
     this.checkOpening(generation);
     this.manager.adopt(info);
     await this.admitInput(untitledInput(info.path), o, generation);

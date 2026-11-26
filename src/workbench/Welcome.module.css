@@ -2,13 +2,44 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--bg-island);
+  background: transparent;
 }
 .main {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.statusBar {
+  height: var(--h-statusbar);
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-chrome);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.statusLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: 0 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.statusSpacer {
+  flex: 1;
+  min-width: 8px;
+}
+.statusRight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 .fallback {
   flex: 1;

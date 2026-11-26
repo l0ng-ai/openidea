@@ -96,6 +96,10 @@
   flex: none;
   color: var(--fg-muted);
 }
+.homeIcon {
+  flex: none;
+  color: var(--fg-secondary);
+}
 .avatar {
   flex: none;
   width: 20px;

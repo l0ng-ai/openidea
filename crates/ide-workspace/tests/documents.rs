@@ -48,6 +48,7 @@ fn fixture() -> Fixture {
         sink,
         Box::new(|p: &Path, _: Option<&str>| match p.extension().and_then(|e| e.to_str()) {
             Some("rs") => LanguageId::new("rust"),
+            Some("md") => LanguageId::new("markdown"),
             _ => LanguageId::plain_text(),
         }),
     );
@@ -1285,6 +1286,17 @@ fn untitled_buffers_take_file_defaults_and_refuse_encoding_reloads() {
     f.docs.sync_after_disk_change();
     assert!(f.docs.is_dirty(info.id).unwrap());
     assert_eq!(f.docs.snapshot(info.id).unwrap().text, "draft");
+}
+
+#[test]
+fn untitled_buffers_detect_language_when_given_an_extension() {
+    let f = fixture();
+    let plain = f.docs.open_untitled(None).unwrap();
+    assert_eq!(plain.language, LanguageId::plain_text());
+
+    let md = f.docs.open_untitled(Some("untitled:Untitled-1.md")).unwrap();
+    assert_eq!(md.path, PathBuf::from("untitled:Untitled-1.md"));
+    assert_eq!(md.language, LanguageId::new("markdown"));
 }
 
 /// Previews and diffs show a file in the language opening it gives: from the hashbang of

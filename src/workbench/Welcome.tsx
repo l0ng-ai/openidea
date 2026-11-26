@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { executeAction } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
-import { Button, Spinner, T } from "@/ui";
+import { Button, Icon, Spinner, T } from "@/ui";
 import { useWorkbenchSlots } from "./contributions";
 import { ErrorBoundary, Slot } from "./ErrorBoundary";
 import { usePlatform } from "@/platform/platformInfo";
+import { StatusInfo, TaskStatus } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import styles from "./Welcome.module.css";
 
@@ -49,12 +51,30 @@ function WelcomeFallback() {
   );
 }
 
+function HomeStatusBar() {
+  return (
+    <footer className={styles.statusBar} aria-label={tx("Status bar")}>
+      <div className={styles.statusLeft}>
+        <Icon name="home" size={14} />
+        <span>
+          <T>OpenIDEA Home</T>
+        </span>
+      </div>
+      <div className={styles.statusSpacer} />
+      <div className={styles.statusRight}>
+        <StatusInfo />
+        <TaskStatus />
+      </div>
+    </footer>
+  );
+}
+
 /** Shown while no project is open; a feature can replace the content via `provideWelcomeView`. */
 export function Welcome() {
   const Provided = useWorkbenchSlots((s) => s.welcome);
   return (
     <div className={styles.root}>
-      <TitleBar minimal title="Welcome to OpenIDEA" />
+      <TitleBar home />
       <main className={styles.main}>
         {Provided ? (
           <ErrorBoundary name="welcome view" fallback={<WelcomeFallback />}>
@@ -64,6 +84,7 @@ export function Welcome() {
           <WelcomeFallback />
         )}
       </main>
+      <HomeStatusBar />
     </div>
   );
 }

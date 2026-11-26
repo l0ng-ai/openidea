@@ -216,4 +216,17 @@ describe("untitled editor input", () => {
     expect(tabs).toHaveLength(2);
     expect(ctrl!.slotFor(tabs[0]!.id)!.model).toBe(ctrl!.slotFor(tabs[1]!.id)!.model);
   });
+
+  it("opens typed untitled buffers (e.g. Markdown) with incrementing names and detected language", async () => {
+    await ctrl!.openUntitled({ focus: false, extension: "md" });
+    const first = activeTab();
+    expect(first.input).toEqual({ kind: "untitled", key: "untitled:Untitled-1.md", path: "untitled:Untitled-1.md" });
+    expect(ctrl!.slotFor(first.id)!.model.ctx()).toMatchObject({
+      path: "untitled:Untitled-1.md",
+      language: "markdown",
+    });
+
+    await ctrl!.openUntitled({ focus: false, extension: "md" });
+    expect(activeTab().input.path).toBe("untitled:Untitled-2.md");
+  });
 });

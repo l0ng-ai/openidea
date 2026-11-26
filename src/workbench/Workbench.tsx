@@ -23,7 +23,7 @@ import { useApplyTheme } from "./theme";
 import { ToolWindowLayout } from "./toolwindows/ToolWindows";
 import { Welcome } from "./Welcome";
 import { WindowResizeHandles } from "./WindowResizeHandles";
-import { useContributions, useStandaloneEditor } from "./contributions";
+import { useContributions, useStandaloneEditor, maybeEditorService } from "./contributions";
 import styles from "./Workbench.module.css";
 
 /** View › Appearance switches (`appearance.showMainToolbar`, `appearance.showStatusBar`), shown by default. */
@@ -42,9 +42,11 @@ function useNavigationBarPosition(): NavigationBarPosition {
 /** LightEdit: editor tabs only; no tool windows, toolbar widgets or project status items. */
 function LightEditFrame({ title }: { title?: string }) {
   const path = useEditorRegistry((s) => s.active?.ctx.path);
+  const activeKind = maybeEditorService()?.activeInput?.()?.kind;
   const distractionFree = useDistractionFree((s) => s.active);
   const statusBar = useAppearanceFlag("showStatusBar");
-  const name = path ? (isUntitledUri(path) ? untitledTitle(path) : basename(path)) : "LightEdit";
+  const fallbackTitle = activeKind === "cli" ? "Terminal" : "LightEdit";
+  const name = path ? (isUntitledUri(path) ? untitledTitle(path) : basename(path)) : fallbackTitle;
   return (
     <>
       <TitleBar lightEdit compact={distractionFree} title={title ?? name} />
@@ -93,7 +95,7 @@ export function Workbench() {
   const mainToolbar = useAppearanceFlag("showMainToolbar");
   const statusBar = useAppearanceFlag("showStatusBar");
   const navBarPosition = useNavigationBarPosition();
-  const frame = project ? styles.framed : lightEdit || standaloneTitle ? styles.lightEditFrame : undefined;
+  const frame = project ? styles.framed : styles.lightEditFrame;
   const tintName = openingPath ? basename(openingPath) || openingPath : project?.name;
   const tintRoot = openingPath ?? root;
 

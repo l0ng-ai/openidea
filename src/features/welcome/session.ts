@@ -48,11 +48,6 @@ export const useSession = create<{ reopenPref: boolean; reopening: string | null
   reopening: null,
 }));
 
-export function setReopenPreference(on: boolean) {
-  write(PREF_KEY, on ? "true" : "false");
-  useSession.setState({ reopenPref: on });
-}
-
 /** `general.reopenLastProject` from settings when present, else the local preference. */
 export function reopenEnabled(settings: Settings | null | undefined, pref: boolean): boolean {
   const general = (settings as { general?: { reopenLastProject?: unknown } } | null | undefined)?.general;

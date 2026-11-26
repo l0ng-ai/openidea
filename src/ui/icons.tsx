@@ -367,6 +367,7 @@ const ICONS = {
   archive: "openidea/general/archive",
   minimize: "general/openInToolWindow",
   "main-menu": "openidea/general/mainMenu",
+  home: "openidea/general/home",
   "window-minimize": "openidea/general/windowMinimize",
   "window-maximize": "openidea/general/windowMaximize",
   "window-restore": "openidea/general/windowRestore",

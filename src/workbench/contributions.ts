@@ -783,7 +783,7 @@ export interface EditorService {
    */
   openInWindow?(input: EditorInput): Promise<string>;
   /** File › New File: an editable untitled buffer; Save asks for a path. */
-  openUntitled?(options?: OpenOptions): Promise<void>;
+  openUntitled?(options?: OpenOptions & { extension?: string }): Promise<void>;
   /** Path of the focused text editor, if any. */
   activePath(): string | null;
   /** Doc id + cursor of the focused text editor. */

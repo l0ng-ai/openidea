@@ -235,10 +235,27 @@ export async function moveEditorToTerminal(keyOrInput?: string | EditorInput, ta
   requestAnimationFrame(() => requestAnimationFrame(() => rt.activeSession()?.focus()));
 }
 
+/** Opens a standalone terminal session tab in the editor area (used from Home without a project). */
+export async function openStandaloneTerminal(cwd: string) {
+  const rt = await loadTerminalRuntime();
+  const openNames =
+    maybeEditorService()
+      ?.openTabs?.()
+      .flatMap((t) => (t.input.kind === CLI_KIND ? [cliData(t.input)?.name ?? t.title] : [])) ?? [];
+  const name = rt.nextTabName(
+    [...rt.useTerminals.getState().tabs.map((t) => t.name), ...openNames],
+    workflowSettings().terminal.tabName,
+  );
+  const input = cliInput(name, "", cwd);
+  rt.startCli(input.key, cwd, "", cwd);
+  trackCliTerminalId(input);
+  await editorService().openInput(input, { focus: true });
+}
+
 /** Starts the session of a restored tab: its Start button. */
 export async function startTab(input: EditorInput) {
   const data = cliData(input);
-  const root = useProject.getState().project?.root;
+  const root = useProject.getState().project?.root ?? data?.cwd;
   if (!data || !root) return;
   const rt = await loadTerminalRuntime();
   rt.startCli(input.key, data.cwd ?? root, data.command, root);
