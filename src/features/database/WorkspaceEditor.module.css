@@ -24,6 +24,16 @@
 .toolbar {
   gap: var(--space-0-5);
 }
+.context {
+  min-width: 0;
+  max-width: calc(100% - 32px);
+  margin-inline-start: auto;
+}
+.context > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .firstRun,
 .running {
   color: var(--fg-muted);
@@ -44,6 +54,14 @@
 .settings p {
   margin: 0;
   color: var(--fg-muted);
+}
+.aliases > summary {
+  cursor: pointer;
+}
+.aliasFields {
+  display: grid;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
 }
 .field {
   display: grid;

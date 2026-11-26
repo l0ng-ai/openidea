@@ -4,6 +4,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { baseExtensions, compartments } from "@/editor/core/cm/setup";
+import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import {
@@ -16,7 +17,7 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { Button, Dialog, IconButton, Select, Spinner, T, Toolbar } from "@/ui";
+import { Button, Dialog, IconButton, Input, Select, Spinner, T, Toolbar } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { Grid } from "./Grid";
 import { jdbcProfileOption, JdbcDriverProfiles, useJdbcDrivers } from "./JdbcDriverProfiles";
@@ -26,14 +27,24 @@ import { quoteIdent } from "./sql/complete";
 import { identName, inLiteral, lex } from "./sql/lexer";
 import { loadCompletion, loadSources, useDatabase } from "./store";
 import { DUCKDB_JDBC_CLASS, vendorOf } from "./vendors";
-import { workspaceJoinQuery, workspaceSourceNames, workspaceSourceSide } from "./workspaceQuery";
+import {
+  workspaceJoinQuery,
+  workspaceSourceAliasError,
+  workspaceSourceNames,
+  workspaceSourceSide,
+} from "./workspaceQuery";
 import styles from "./WorkspaceEditor.module.css";
 
 const PAGE_SIZE = 500;
 const sides = ["left", "right"] as const;
 type Side = (typeof sides)[number];
 type Selections = Record<Side, string>;
-type Configuration = Selections & { profile: string };
+type Configuration = Selections & { profile: string; sourceAliases: Record<string, string> };
+type SourceReferences = { names: Selections; aliases: Selections; labels: Selections };
+
+function preferredName({ names, aliases }: SourceReferences, side: Side): string {
+  return aliases[side].trim() || names[side];
+}
 
 function sourcePrefix(name: string) {
   return "#" + (name === "left" || name === "right" ? name : quoteIdent(name, "postgres"));
@@ -80,7 +91,7 @@ function eligible(source: DataSource): source is DataSource & { id: string } {
   );
 }
 
-function complete(bindings: () => { config: Configuration; names: Selections }): CompletionSource {
+function complete(bindings: () => { config: Configuration; references: SourceReferences }): CompletionSource {
   return async (context) => {
     const sql = context.state.sliceDoc(0, context.pos);
     const parsed = lex(sql, "postgres");
@@ -93,32 +104,46 @@ function complete(bindings: () => { config: Configuration; names: Selections }):
     const from = parsed.tokens[hash]!.from;
     const prefix = sql.slice(from);
     if (/\s$/.test(prefix) && state !== "quoted") return null;
-    const { config, names } = bindings();
+    const { config, references } = bindings();
+    const { names, aliases, labels } = references;
     if (tokens.length < 2) {
+      const typed = tokens[0]?.text.toLowerCase() ?? "";
       return {
         from,
         options: sides
           .filter((side) => config[side])
-          .flatMap((side) => [
-            { label: sourcePrefix(names[side]), type: "namespace", boost: 5 },
-            ...(names[side] === side ? [] : [{ label: sourcePrefix(side), type: "namespace" }]),
-          ]),
+          .flatMap((side) => {
+            const preferred = preferredName(references, side);
+            const detail = labels[side] !== preferred ? labels[side] : undefined;
+            const option = { label: sourcePrefix(preferred), type: "namespace", detail, boost: 5 };
+            return typed && preferred !== side && side.startsWith(typed)
+              ? [option, { label: sourcePrefix(side), type: "namespace", detail: labels[side] }]
+              : [option];
+          }),
       };
     }
     const name = tokens[0]!.kind === "quoted" ? identName(tokens[0]!) : tokens[0]!.text.toLowerCase();
-    const side = workspaceSourceSide(name, names);
+    const side = workspaceSourceSide(name, names, aliases);
     if (!side || tokens[1]!.text !== "." || !config[side]) return null;
     const current = projectRequest();
     const id = config[side];
     const catalog = useDatabase.getState().completion[id] ?? (await loadCompletion(id));
-    if (!current() || context.aborted || bindings().config[side] !== id || !catalog) return null;
+    const latest = bindings();
+    if (
+      !current() ||
+      context.aborted ||
+      latest.config[side] !== id ||
+      !catalog ||
+      workspaceSourceSide(name, latest.references.names, latest.references.aliases) !== side
+    )
+      return null;
     const options = [];
     for (const table of catalog.tables) {
       if (table.kind !== "table") continue;
       const label =
         sourcePrefix(name) + "." + quoteIdent(table.schema, "postgres") + "." + quoteIdent(table.name, "postgres");
       if (label.toLowerCase().startsWith(prefix.toLowerCase())) {
-        options.push({ label, type: "class", detail: table.kind });
+        options.push({ label, type: "class", detail: name === labels[side] ? table.kind : labels[side] });
         if (options.length === 100) break;
       }
     }
@@ -138,6 +163,11 @@ function readDraft(key: string) {
     left: typeof value.left === "string" ? value.left : "",
     right: typeof value.right === "string" ? value.right : "",
     profile: typeof value.profile === "string" ? value.profile : "",
+    sourceAliases: Object.fromEntries(
+      value.sourceAliases && typeof value.sourceAliases === "object"
+        ? Object.entries(value.sourceAliases).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+        : [],
+    ),
     sql: typeof value.sql === "string" ? value.sql : "",
   };
 }
@@ -148,7 +178,12 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
   const [draft] = useState(() => readDraft(storageKey));
   const sources = useDatabase((state) => state.sources);
   const registry = useJdbcDrivers();
-  const [config, setConfig] = useState<Configuration>({ left: draft.left, right: draft.right, profile: draft.profile });
+  const [config, setConfig] = useState<Configuration>({
+    left: draft.left,
+    right: draft.right,
+    profile: draft.profile,
+    sourceAliases: draft.sourceAliases,
+  });
   const [settings, setSettings] = useState<Configuration | null>(null);
   const settingsRequested = useDatabase((state) => state.workspaceSettingsRequest === input.key);
   const [manage, setManage] = useState(false);
@@ -166,9 +201,25 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
   const sourceFor = (id: string) => candidates.find((source) => source.id === id);
   const configured = (value: Configuration) =>
     !!driverFor(value.profile) && sides.every((side) => sourceFor(value[side])) && value.left !== value.right;
-  const ready = configured(config);
-  const names = workspaceSourceNames(sourceFor(config.left)?.name ?? "", sourceFor(config.right)?.name ?? "");
-  const current = useRef({ config, names, execute: () => {} });
+  const referencesFor = (value: Configuration): SourceReferences => {
+    const labels = { left: sourceFor(value.left)?.name ?? "", right: sourceFor(value.right)?.name ?? "" };
+    return {
+      labels,
+      names: workspaceSourceNames(labels.left, labels.right),
+      aliases: {
+        left: Object.hasOwn(value.sourceAliases, value.left) ? value.sourceAliases[value.left]! : "",
+        right: Object.hasOwn(value.sourceAliases, value.right) ? value.sourceAliases[value.right]! : "",
+      },
+    };
+  };
+  const references = referencesFor(config);
+  const aliasError = workspaceSourceAliasError(references.names, references.aliases);
+  const ready = configured(config) && !aliasError;
+  const settingsReferences = settings ? referencesFor(settings) : null;
+  const settingsError = settingsReferences
+    ? workspaceSourceAliasError(settingsReferences.names, settingsReferences.aliases)
+    : null;
+  const current = useRef({ config, references, execute: () => {} });
 
   useEffect(() => {
     if (!settingsRequested || busy) return;
@@ -199,7 +250,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     setPage(0);
     setBusy(true);
     try {
-      const [a, b] = workspaceJoinQuery(sql, names);
+      const [a, b] = workspaceJoinQuery(sql, references.names, references.aliases);
       const table = (ref: typeof a) => {
         const source = sourceFor(config[ref.source])!;
         return {
@@ -223,7 +274,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     }
   };
   useLayoutEffect(() => {
-    current.current = { config, names, execute: () => void execute() };
+    current.current = { config, references, execute: () => void execute() };
   });
 
   useEffect(() => {
@@ -264,6 +315,10 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
       }),
     });
     view.current = editor;
+    const panel = editor.dom.closest("[data-editor-focus]");
+    const focusEditor = () => editor.focus();
+    panel?.addEventListener("focus", focusEditor);
+    if (panel) focusEditor();
     const save = () => {
       try {
         localStorage.setItem(
@@ -287,13 +342,18 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
       if (pending !== null) void commands.cancelRequest(pending);
       save();
       editor.dom.removeEventListener("focusout", save);
+      panel?.removeEventListener("focus", focusEditor);
       window.removeEventListener("pagehide", save);
       view.current = null;
       editor.destroy();
     };
   }, [draft, storageKey]);
 
-  const template = joinTemplate(names);
+  const template = joinTemplate(
+    ready
+      ? { left: preferredName(references, "left"), right: preferredName(references, "right") }
+      : { left: "accounts", right: "events" },
+  );
   const insertJoin = () => {
     const editor = view.current;
     if (!editor || editor.state.doc.length) return;
@@ -301,17 +361,46 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     editor.focus();
   };
   const applySettings = () => {
-    if (!settings || !configured(settings)) return;
-    const next = { ...settings, profile: driverFor(settings.profile)!.id };
-    if (next.left !== config.left || next.right !== config.right || next.profile !== config.profile) {
+    if (!settings || !configured(settings) || settingsError) return;
+    const next = {
+      ...settings,
+      profile: driverFor(settings.profile)!.id,
+      sourceAliases: Object.fromEntries(
+        Object.entries(settings.sourceAliases)
+          .map(([id, alias]) => [id, alias.trim()])
+          .filter(([, alias]) => alias),
+      ),
+    };
+    if (
+      next.left !== config.left ||
+      next.right !== config.right ||
+      next.profile !== config.profile ||
+      JSON.stringify(next.sourceAliases) !== JSON.stringify(config.sourceAliases)
+    ) {
       setConfig(next);
       setResult(null);
       setError("");
       setPage(0);
     }
     setSettings(null);
+    const editor = view.current;
+    requestAnimationFrame(() => {
+      if (view.current === editor) editor?.focus();
+    });
   };
   const start = page * PAGE_SIZE;
+  const configureLabel = t("Configure Sources…");
+  const connectionContext = ready
+    ? [
+        configureLabel,
+        ...sides.map((side) => {
+          const source = sourceFor(config[side])!;
+          return `${source.name || source.id} (${vendorOf({ driver: source.driver }).label})`;
+        }),
+        driverFor(config.profile)!.name,
+      ].join(" · ")
+    : configureLabel;
+  const newSource = () => void executeAction("db.newDataSource");
   return (
     <section className={styles.workspace} aria-label={t("Query Workspace")}>
       <Toolbar className={styles.toolbar} aria-label="Workspace actions">
@@ -333,12 +422,24 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
             onClick={() => void execute()}
           />
         )}
-        <IconButton icon="settings" title="Configure Sources…" disabled={busy} onClick={() => setSettings(config)} />
         {busy && (
           <span className={styles.running}>
             <Spinner label={t("Running query")} /> <T>Running query</T>
           </span>
         )}
+        <Button
+          variant="ghost"
+          size="small"
+          className={styles.context}
+          aria-label={connectionContext}
+          title={connectionContext}
+          disabled={busy}
+          onClick={() => setSettings(config)}
+        >
+          <span>
+            {ready ? `${preferredName(references, "left")} ↔ ${preferredName(references, "right")}` : configureLabel}
+          </span>
+        </Button>
       </Toolbar>
       <div className={styles.query} data-result={result ? "" : undefined}>
         <div className={styles.editor} ref={host} />
@@ -346,16 +447,23 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
           <div className={styles.firstRun}>
             {ready ? (
               <T>Use qualified table names to join the selected sources.</T>
+            ) : candidates.length < 2 ? (
+              <T>Save two PostgreSQL or ClickHouse data sources first.</T>
             ) : (
               <T>Choose two saved data sources and a DuckDB JDBC driver.</T>
             )}
             <JoinExample template={template} />
             <div className={styles.firstRunActions}>
-              <Button variant="secondary" size="small" onClick={insertJoin}>
-                <T>Insert JOIN</T>
-              </Button>
-              {!ready && (
-                <Button variant="ghost" size="small" onClick={() => setSettings(config)}>
+              {ready ? (
+                <Button variant="secondary" size="small" onClick={insertJoin}>
+                  <T>Insert JOIN</T>
+                </Button>
+              ) : candidates.length < 2 ? (
+                <Button variant="primary" size="small" onClick={newSource}>
+                  <T>New Data Source…</T>
+                </Button>
+              ) : (
+                <Button variant="primary" size="small" onClick={() => setSettings(config)}>
                   <T>Configure Sources…</T>
                 </Button>
               )}
@@ -413,7 +521,12 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
           }}
           buttons={[
             { label: "Cancel", role: "cancel" },
-            { label: "OK", role: "default", disabled: !configured(settings), onClick: applySettings },
+            {
+              label: "OK",
+              role: "default",
+              disabled: !configured(settings) || !!settingsError,
+              onClick: applySettings,
+            },
           ]}
         >
           <div className={styles.settings}>
@@ -462,11 +575,48 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
                 </Button>
               )}
             </div>
+            {settingsReferences && (
+              <details className={styles.aliases}>
+                <summary>
+                  <T>SQL aliases</T>
+                </summary>
+                <div className={styles.aliasFields}>
+                  <p>
+                    <T>Use a short SQL name for a source. Leave it blank to use the connection name.</T>
+                  </p>
+                  {sides.map((side) => (
+                    <label key={side} className={styles.field}>
+                      <span>{t(side === "left" ? "Left SQL alias" : "Right SQL alias")}</span>
+                      <Input
+                        aria-label={t(side === "left" ? "Left SQL alias" : "Right SQL alias")}
+                        disabled={!sourceFor(settings[side])}
+                        mono
+                        invalid={!!settingsError}
+                        value={settingsReferences.aliases[side]}
+                        placeholder={settingsReferences.labels[side]}
+                        onChange={(event) =>
+                          setSettings({
+                            ...settings,
+                            sourceAliases: { ...settings.sourceAliases, [settings[side]]: event.target.value },
+                          })
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+              </details>
+            )}
+            {settingsError && <p role="alert">{settingsError}</p>}
             {registry.error && <div role="alert">{registry.error}</div>}
             {candidates.length < 2 && (
-              <p>
-                <T>Save two PostgreSQL or ClickHouse data sources first.</T>
-              </p>
+              <div className={styles.settingsActions}>
+                <p>
+                  <T>Save two PostgreSQL or ClickHouse data sources first.</T>
+                </p>
+                <Button variant="secondary" size="small" onClick={newSource}>
+                  <T>New Data Source…</T>
+                </Button>
+              </div>
             )}
             {sides.some((side) => settings[side] && !sourceFor(settings[side])) && (
               <p role="alert">
