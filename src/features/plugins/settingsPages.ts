@@ -50,6 +50,7 @@ const VIEW_ONLY_POINTS: ReadonlyArray<[string, string]> = [
   ["editorPanels", "Editor Panels"],
   ["overlays", "Overlays"],
   ["dialogs", "Dialogs"],
+  ["runAnything", "Run Anything"],
   ["markerIcons", "Marker Icons"],
   ["fileIcons", "File Icons"],
   ["commitChecks", "Commit Checks"],

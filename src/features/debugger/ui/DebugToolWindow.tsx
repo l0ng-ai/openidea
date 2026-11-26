@@ -160,6 +160,7 @@ export function DebugTabs() {
     id: String(s.id),
     label: child ? tx`${s.name} (child)` : s.name,
     text: s.name,
+    verbatim: true,
     icon: "debug",
     italic: s.status === "terminated",
     closable: true,
