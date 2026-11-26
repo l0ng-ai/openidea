@@ -164,8 +164,7 @@ struct ShutdownWork {
     notebooks: Vec<Arc<notebook::NotebookService>>,
     bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
     lsp: Option<Arc<ide_lsp::LspManager>>,
-    /// Debug sessions detached when the close began (pending starts were already cancelled).
-    debug: Option<(Arc<ide_dap::DebugManager>, Vec<ide_core::DebugSessionId>)>,
+    debug: Option<(Arc<ide_dap::DebugManager>, String, Option<std::path::PathBuf>)>,
     agents: Vec<Arc<ide_agent::AgentManager>>,
     terminals: Option<ide_terminal::DetachedTerminals>,
     processes: Option<ide_run::DetachedProcessKills>,
@@ -438,20 +437,17 @@ impl Host {
         project.devtools.stop();
         project.widget_preview.stop();
         project.notebooks.stop_admission();
-        // Detach runs, terminals and debug sessions synchronously so a new project opened in the
-        // same window never collides with them, then terminate them and shut down agents on the
-        // background thread.
+        // Detach runs and terminals synchronously so a new project opened in the same window
+        // never collides with them, then terminate them and shut down agents on the background thread.
         let processes = self.processes.detach_project_kills(&project.root);
         let terminals = self.terminals.detach_key(self.owner_window(window));
-        // Debug sessions under the root belong to windows: a project served without one starts none.
-        let debug_root = (!background).then_some(project.root.as_path());
-        let debug_sessions = self.debugger.session_ids_for_close(Some(self.owner_window(window)), debug_root);
         let root = (!project.light).then(|| project.root.clone());
         let handle = self.spawn_project_shutdown(ShutdownWork {
             notebooks: vec![project.notebooks.clone()],
             bridges: project.kotlin_bridge.iter().cloned().collect(),
             lsp: Some(project.lsp.clone()),
-            debug: Some((self.debugger.clone(), debug_sessions)),
+            // Debug sessions under the root belong to windows: a project served without one starts none.
+            debug: Some((self.debugger.clone(), window.to_owned(), (!background).then(|| project.root.clone()))),
             agents: vec![project.agents.clone()],
             terminals: Some(terminals),
             processes: Some(processes),
@@ -500,11 +496,10 @@ impl Host {
                 if let Some(lsp) = work.lsp {
                     lsp.shutdown_all().await;
                 }
-                if let Some((debug, sessions)) = work.debug {
-                    for id in sessions {
-                        if let Err(e) = debug.stop(id).await {
-                            tracing::debug!("debug session {id:?} did not stop: {e}");
-                        }
+                if let Some((debug, key, root)) = work.debug {
+                    debug.stop_key(&key).await;
+                    if let Some(root) = root {
+                        debug.stop_under(&root).await;
                     }
                 }
             });
@@ -916,16 +911,7 @@ mod tests {
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
-        host.close_project_detached("main");
-
-        // Opening another project in the same window while the detached close runs must not
-        // cancel or stop the new project's debug session.
-        let root_c = base.join("proj-c");
-        std::fs::create_dir(&root_c).unwrap();
-        host.open_project("main", &root_c).unwrap();
-        host.set_project_trust(&root_c, true, false).await.unwrap();
-        let c_id = ops::debug::debug_start(&host, "main", launch_cfg(&root_c)).await.unwrap();
-        host.wait_detached_closes();
+        host.close_project("main");
         release.notify_waiters();
 
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), start_a).await.unwrap().unwrap();
@@ -934,18 +920,13 @@ mod tests {
             Err(ide_core::error::ErrorKind::Cancelled),
             "debug_start should fail as cancelled when project closes mid-launch, got {result:?}"
         );
-        assert_eq!(
-            host.debugger.sessions(Some("main")).into_iter().map(|s| s.id).collect::<Vec<_>>(),
-            vec![c_id],
-            "only the newly opened project's session may remain live in main"
-        );
+        assert!(host.debugger.sessions(Some("main")).is_empty(), "closed window must have no live debug sessions");
         assert_eq!(
             host.debugger.sessions(Some("other")).into_iter().map(|s| s.id).collect::<Vec<_>>(),
             vec![other_id],
             "other window's debug session must remain alive"
         );
 
-        host.close_project("main");
         host.close_project("other");
     }
 

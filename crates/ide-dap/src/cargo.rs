@@ -70,6 +70,8 @@ pub async fn build(
         .kill_on_drop(true);
     on_output(format!("> cargo {}\n", args.join(" ")));
     let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to run cargo: {e}")))?;
+    #[cfg(windows)]
+    let job = child.id().and_then(ide_core::process::Job::for_pid);
     let stderr = child.stderr.take().ok_or_else(|| IdeError::internal("cargo stderr unavailable"))?;
     let stdout = child.stdout.take().ok_or_else(|| IdeError::internal("cargo stdout unavailable"))?;
     let on_output = std::sync::Arc::new(on_output);
@@ -106,7 +108,15 @@ pub async fn build(
         None => {
             err_task.abort();
             if let Some(pid) = child.id() {
-                let _ = tokio::task::spawn_blocking(move || ide_core::process::kill_tree_of(pid)).await;
+                let _ = tokio::task::spawn_blocking(move || {
+                    #[cfg(windows)]
+                    if let Some(job) = job {
+                        job.terminate();
+                        return;
+                    }
+                    ide_core::process::kill_tree_of(pid);
+                })
+                .await;
             }
             let _ = child.kill().await;
             Err(IdeError::cancelled())

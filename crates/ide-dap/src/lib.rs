@@ -2347,18 +2347,6 @@ impl DebugManager {
         })
     }
 
-    /// Live sessions of `key` and (when set) under `root`, in start order.
-    pub fn session_ids_for_close(&self, key: Option<&str>, root: Option<&Path>) -> Vec<DebugSessionId> {
-        let sessions = self.sessions.lock();
-        self.order
-            .lock()
-            .iter()
-            .filter_map(|id| sessions.get(id))
-            .filter(|s| key.is_some_and(|k| s.owner.key == k) || root.is_some_and(|r| s.spec.cwd.starts_with(r)))
-            .map(|s| s.id)
-            .collect()
-    }
-
     /// Stops every session `key` started: the window that opened the project is closing.
     pub async fn stop_key(&self, key: &str) {
         let ids: Vec<DebugSessionId> = self.sessions(Some(key)).into_iter().map(|s| s.id).collect();
