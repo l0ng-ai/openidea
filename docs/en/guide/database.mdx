@@ -141,6 +141,17 @@ Statements are split on `;`, respecting strings, comments and PostgreSQL dollar 
 
 SQL completion knows the connected schema: tables after `FROM`/`JOIN` (with join conditions from foreign keys), columns in scope, and each dialect's keywords and functions. Unresolved tables and columns are flagged, and Go to Declaration, Quick Documentation and Reformat Code work in the console. See [SQL](/en/languages/sql) for SQL files in general.
 
+In a DuckDB console, syntax highlighting, completion, and formatting understand DuckDB SQL, including `FROM`-first queries, `QUALIFY`, and star modifiers such as `EXCLUDE`.
+
+Attach an existing DuckDB file in the console to browse it on the current connection:
+
+```sql
+ATTACH '/path/to/archive.duckdb' AS sales_archive (READ_ONLY);
+FROM sales_archive.main.orders;
+```
+
+The **Database** tree lists each attached catalog with its schemas, tables, and views. Complete a qualified table name as `catalog.schema.table`, use **Go to Declaration** on it to reveal the table, or double-click a table in the tree to preview its rows. Preview tabs keep the catalog in their title so equally named tables are distinct. Attachments stay with the connection and disappear when disconnected.
+
 ## Results and data editing
 
 Results appear in the **Services** tool window under the **Database** tab: an **Output** tab logs every statement, and each result set gets a **Result N** tab (up to 12, pinned tabs excepted).
