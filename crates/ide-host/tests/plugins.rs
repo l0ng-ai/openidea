@@ -2274,6 +2274,45 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     assert_eq!(launch(), (plain, vec![]));
 }
 
+/// A Java agent bound to an executor (`executor = "Hot Reload"`, API 1.18): the plugin's
+/// "Run/Debug with Hot Reload" launches get it, plain launches don't, and the same grant
+/// and jar pin apply.
+#[test]
+fn an_executor_bound_java_agent_loads_only_through_its_executor() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("java-agent");
+    copy_dir(&sample("java-agent"), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    let manifest = manifest
+        .replace("^1.10", "^1.18")
+        .replace("args = \"mode=test\"", "args = \"mode=test\"\nexecutor = \"Hot Reload\"");
+    std::fs::write(pkg.join("plugin.toml"), manifest).unwrap();
+
+    let info = f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    assert!(info.contributions.iter().any(|c| c.label == "fixture agent.jar=mode=test (Run with Hot Reload)"));
+    let agent = info.java_agent.expect("agent metadata");
+    assert_eq!(agent.executor.as_deref(), Some("Hot Reload"));
+    assert!(!agent.approved);
+    let source = f.host.java_agents();
+    let ungranted = ide_run::java_agent::for_executor(&source.agents(), None, Some("java-agent"));
+    assert!(ungranted.options.is_empty());
+    assert!(ungranted.notes[0].contains("needs the java.agent permission"), "{:?}", ungranted.notes);
+
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    let jar = dunce::canonicalize(f.installed("java-agent").join("agent/fixture agent.jar")).unwrap();
+    let option = format!("-javaagent:{}=mode=test", jar.display());
+    let plain = ide_run::java_agent::for_executor(&source.agents(), None, None);
+    assert_eq!(plain, ide_run::java_agent::Agents::default(), "a plain Run leaves it out");
+    let through = ide_run::java_agent::for_executor(&source.agents(), None, Some("java-agent"));
+    assert_eq!(through.options, [option]);
+    assert!(through.notes.is_empty());
+
+    f.host.set_enabled("java-agent", false).unwrap();
+    let gone = ide_run::java_agent::for_executor(&source.agents(), None, Some("java-agent"));
+    assert!(gone.options.is_empty() && gone.notes.len() == 1);
+}
+
 /// Compiled components are cached across runs (keyed by module and
 /// engine), so a cold activation only deserializes.
 #[test]
