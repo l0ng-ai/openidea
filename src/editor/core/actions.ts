@@ -24,8 +24,10 @@ import {
   moveStatementUp,
   nextOccurrence,
   selectAllOccurrences,
+  selectLineAtCaret,
   startNewLine,
   startNewLineBefore,
+  swapSelectionBoundaries,
   toggleCase,
   unselectOccurrence,
 } from "./cm/editing";
@@ -73,6 +75,8 @@ import {
   cursorMatchBrace,
   cursorPageBottom,
   cursorPageTop,
+  cursorParagraphBackward,
+  cursorParagraphForward,
   scrollDown,
   scrollToBottom,
   scrollToCenter,
@@ -82,6 +86,8 @@ import {
   selectCodeBlockStart,
   selectPageBottom,
   selectPageTop,
+  selectParagraphBackward,
+  selectParagraphForward,
   splitLine,
 } from "./cm/caretCommands";
 import { isOverwrite, toggleOverwrite } from "./cm/overwrite";
@@ -1057,6 +1063,24 @@ export function registerEditorActions(): () => void {
         category: "Editor Actions",
       },
     ),
+    caret("editor.paragraphForward", "Move Caret Forward a Paragraph", (v) => cursorParagraphForward(v), {
+      category: "Editor Actions",
+    }),
+    caret("editor.paragraphBackward", "Move Caret Backward a Paragraph", (v) => cursorParagraphBackward(v), {
+      category: "Editor Actions",
+    }),
+    caret(
+      "editor.paragraphForwardWithSelection",
+      "Move Caret Forward a Paragraph with Selection",
+      (v) => selectParagraphForward(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.paragraphBackwardWithSelection",
+      "Move Caret Backward a Paragraph with Selection",
+      (v) => selectParagraphBackward(v),
+      { category: "Editor Actions" },
+    ),
     text("editor.contextInfo", "Context Info", (v) => showContextInfo(v), {
       category: "View",
       keywords: ["enclosing method", "enclosing class", "where am I"],
@@ -1121,6 +1145,11 @@ export function registerEditorActions(): () => void {
     caret("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
       category: "Edit",
     }),
+    caret("editor.swapSelectionBoundaries", "Swap Selection Boundaries", (v) => swapSelectionBoundaries(v), {
+      category: "Editor Actions",
+      keywords: ["anchor", "exchange point and mark"],
+    }),
+    caret("editor.selectLine", "Select Line at Caret", (v) => selectLineAtCaret(v), { category: "Editor Actions" }),
     occurrence("code.unselectOccurrence", "Unselect Occurrence", unselectOccurrence),
     text("code.pasteFromHistory", "Paste from History…", (v) => pasteFromHistory(v), {
       category: "Edit",

@@ -79,6 +79,10 @@ describe("IDEA keymap parity", () => {
     ["code.deleteToLineStart", [], []],
     ["code.deleteToLineEnd", [], []],
     ["code.hungryBackspace", [], []],
+    // EditorSwapSelectionBoundaries has no shortcut.
+    ["editor.swapSelectionBoundaries", [], []],
+    // EditorSelectLine has no shortcut.
+    ["editor.selectLine", [], []],
     // CopyAsPlainText / CopyAsRichText have no shortcut.
     ["code.copyAsPlainText", [], []],
     ["code.copyAsRichText", [], []],
@@ -92,6 +96,11 @@ describe("IDEA keymap parity", () => {
     // Back / Forward also carry the mouse side buttons (`<mouse-shortcut keystroke="button4"/>`).
     ["editor.codeBlockStartWithSelection", ["Meta+Alt+Shift+["], ["Ctrl+Shift+["]],
     ["editor.codeBlockEndWithSelection", ["Meta+Alt+Shift+]"], ["Ctrl+Shift+]"]],
+    // EditorForwardParagraph / EditorBackwardParagraph (and with Selection) have no shortcut.
+    ["editor.paragraphForward", [], []],
+    ["editor.paragraphBackward", [], []],
+    ["editor.paragraphForwardWithSelection", [], []],
+    ["editor.paragraphBackwardWithSelection", [], []],
     ["code.collapseBlock", ["Meta+Shift+."], ["Ctrl+Shift+."]],
     ["code.autoIndentLines", ["Ctrl+Alt+I"], ["Ctrl+Alt+I"]],
     ["code.showErrorDescription", ["Meta+F1"], ["Ctrl+F1"]],
