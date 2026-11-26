@@ -23,7 +23,7 @@ test("file tab actions are grouped around the tab the menu was opened from", asy
     }
     return groups;
   });
-  expect(groups.slice(0, 4)).toEqual([
+  expect(groups.slice(0, 5)).toEqual([
     [
       "Close",
       "Close Other Tabs",
@@ -32,6 +32,7 @@ test("file tab actions are grouped around the tab the menu was opened from", asy
       "Close Tabs to the Left",
       "Close Tabs to the Right",
     ],
+    ["File Color"],
     ["Copy Path/Reference…"],
     ["Split Right", "Split and Move Right", "Split Down", "Split and Move Down"],
     ["Pin Tab", "Open in New Window", "Configure Editor Tabs…"],
