@@ -2,14 +2,7 @@
  * One DocModel per open backend document (shared by every tab / split
  * showing the file) and the manager that opens, saves and closes them.
  */
-import {
-  ChangeSet,
-  Transaction,
-  type Annotation,
-  type EditorState,
-  type StateEffect,
-  type Text,
-} from "@codemirror/state";
+import { ChangeSet, Transaction, type Annotation, type EditorState, type StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { LanguageDescription, LanguageSupport } from "@codemirror/language";
 import { create } from "zustand";
@@ -154,8 +147,6 @@ export const useDocMeta = create<Record<string, DocMeta>>(() => ({}));
 export const useOutline = create<Record<string, OutlineItem[]>>(() => ({}));
 
 const REFRESH_DELAY = 450;
-// Live Markdown highlighting measures normalized UTF-8 text, independent of disk encoding.
-const MARKDOWN_HIGHLIGHT_BYTES = 5 * 1024 * 1024;
 /**
  * Languages whose stream mode works from word lists, so the grammar's highlights are drawn
  * over it: Kotlin declaration roles, Shell commands, function names and `local`.
@@ -310,11 +301,8 @@ export class DocModel {
   editorconfig: EditorConfigProps | null = null;
   desc: LanguageDescription | null;
   language: LanguageSupport | null;
-  private readonly largeAtOpen: boolean;
-  /** Too large to enable the CodeMirror language. */
+  /** Too large for language support (no CodeMirror language, backend highlighting only). */
   private large: boolean;
-  private markdownSize: { text: Text; bytes: number } | undefined;
-  private languageUpdateQueued = false;
   /** The backend's mode for this file over its language's (an Angular project's templates). */
   private ownUiMode: string | null;
   lastFocused: EditorSlot | null = null;
@@ -342,7 +330,7 @@ export class DocModel {
     this.editorconfig = info.editorconfig ?? null;
     // `large`: the backend skips LSP and syntax trees for it; heavy UI features follow.
     const large = !!info.large || info.text.length > HEAVY_LIMIT;
-    this.largeAtOpen = this.large = large;
+    this.large = large;
     // The document's own mode (an Angular project's templates) wins over the language's.
     this.ownUiMode = info.uiMode ?? null;
     const uiMode = this.ownUiMode ?? this.info?.uiMode ?? null;
@@ -502,7 +490,6 @@ export class DocModel {
     for (const a of this.attachments)
       if (a !== origin) a.applyExternal(changes, [mirroredChange.of(true), Transaction.addToHistory.of(false)]);
     if (!this.meta.dirty) this.setMeta({ dirty: true });
-    this.updateMarkdownHighlighting(changes);
     this.scheduleRefresh();
   }
 
@@ -518,37 +505,7 @@ export class DocModel {
       a.applyExternal(cs, [remoteChange.of(true), Transaction.addToHistory.of(first)]);
       first = false;
     }
-    this.updateMarkdownHighlighting(cs);
     this.scheduleRefresh();
-  }
-
-  private updateMarkdownHighlighting(changes: ChangeSet) {
-    if (!this.largeAtOpen || this.meta.language !== "markdown") return;
-    if (this.meta.readOnly) {
-      this.markdownSize = undefined;
-      return;
-    }
-    const text = this.sync.localText;
-    const limit = MARKDOWN_HIGHLIGHT_BYTES;
-    let large = text.length > limit;
-    if (large || text.length * 3 <= limit) {
-      this.markdownSize = undefined;
-    } else {
-      const prev = this.markdownSize;
-      const bytes = prev ? prev.bytes + utf8SizeChange(prev.text, text, changes) : utf8Size(text, 0, text.length);
-      this.markdownSize = { text, bytes };
-      large = bytes > limit;
-    }
-    if (large === this.large) return;
-    this.large = large;
-
-    // The edit can come from a CodeMirror update listener.
-    if (this.languageUpdateQueued) return;
-    this.languageUpdateQueued = true;
-    queueMicrotask(() => {
-      this.languageUpdateQueued = false;
-      if (!this.closed) this.configureLanguage(this.meta.language);
-    });
   }
 
   /**
@@ -559,31 +516,24 @@ export class DocModel {
     if (this.closed || (language === this.meta.language && ownUiMode === this.ownUiMode)) return;
     this.info = languageInfo(language);
     this.ownUiMode = ownUiMode;
-    if (language !== this.meta.language) {
-      this.large = this.largeAtOpen;
-      this.markdownSize = undefined;
-    }
-    this.configureLanguage(language);
-    for (const slot of this.slots) slot.syncContributions(true);
-    this.applySettings();
-    this.scheduleRefresh(0);
-  }
-
-  private configureLanguage(language: string) {
-    const uiMode = this.ownUiMode ?? this.info?.uiMode ?? null;
+    const uiMode = ownUiMode ?? this.info?.uiMode ?? null;
     this.desc = this.large ? null : findLanguageDescription(uiMode, this.path);
     this.language = loadedSupport(this.desc);
     this.highlights = null;
     this.setMeta({ language, uiMode: uiMode ?? this.desc?.name ?? null });
-    for (const slot of this.slots) slot.reconfigure([compartments.language.reconfigure(this.language ?? [])]);
+    for (const s of this.slots) {
+      s.reconfigure([compartments.language.reconfigure(this.language ?? [])]);
+      s.syncContributions(true);
+    }
+    this.applySettings();
     if (this.desc && !this.language) void this.loadLanguage();
+    this.scheduleRefresh(0);
   }
 
   async loadLanguage() {
-    const desc = this.desc;
-    if (!desc) return;
-    const support = await loadSupport(desc);
-    if (!support || this.closed || this.desc !== desc || this.language === support) return;
+    if (!this.desc) return;
+    const support = await loadSupport(this.desc);
+    if (!support || this.closed || this.language === support) return;
     this.language = support;
     for (const s of this.slots) s.reconfigure([compartments.language.reconfigure(support)]);
   }
@@ -904,38 +854,6 @@ export class DocModel {
     clearTimeout(this.refreshTimer);
     this.sync.dispose();
   }
-}
-
-function utf8SizeChange(before: Text, after: Text, changes: ChangeSet): number {
-  let size = 0;
-  changes.iterChangedRanges((fromA, toA, fromB, toB) => {
-    size += utf8Size(after, fromB, toB) - utf8Size(before, fromA, toA);
-    // A surrogate pair split across a change boundary counts as six bytes in separate slices
-    // and four bytes in the full text.
-    size += joinedSurrogateBytes(before, fromA) - joinedSurrogateBytes(after, fromB);
-    if (toA !== fromA) size += joinedSurrogateBytes(before, toA);
-    if (toB !== fromB) size -= joinedSurrogateBytes(after, toB);
-  });
-  return size;
-}
-
-function joinedSurrogateBytes(text: Text, offset: number): number {
-  if (offset === 0 || offset === text.length) return 0;
-  const pair = text.sliceString(offset - 1, offset + 1);
-  const high = pair.charCodeAt(0);
-  const low = pair.charCodeAt(1);
-  return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff ? 2 : 0;
-}
-
-function utf8Size(text: Text, from: number, to: number): number {
-  let size = 0;
-  for (const part of text.iterRange(from, to)) {
-    for (const char of part) {
-      const code = char.codePointAt(0)!;
-      size += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
-    }
-  }
-  return size;
 }
 
 export interface ManagerHost {

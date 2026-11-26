@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChangeSet, EditorState, StateEffect } from "@codemirror/state";
 import { showTooltip, type Tooltip } from "@codemirror/view";
-import { isolateHistory, redo, undo } from "@codemirror/commands";
 import { foldedRanges, indentUnit, language as languageFacet } from "@codemirror/language";
 import { HEAVY_LIMIT, onEditorEvent, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
@@ -594,73 +593,6 @@ describe("DocumentManager + slots", () => {
     await settle();
     expect(backend.docs.size).toBe(0);
     expect(manager.get("/p/a.txt")).toBeUndefined();
-  });
-
-  it("highlights the shortened large Markdown buffer and keeps its edit undoable", async () => {
-    const path = "/p/paper.md";
-    const destination = "data:image/jpeg;base64," + "A".repeat(65_536);
-    const source = "# Paper\n\n" + `![](${destination})\n\n`.repeat(90);
-    const { backend, manager } = setup({ [path]: source });
-    const open = backend.open.bind(backend);
-    vi.spyOn(backend, "open").mockImplementation(async (path) => ({ ...(await open(path)), large: true }));
-    const model = await manager.acquire(path);
-    const slot = new EditorSlot(model, "t1", host);
-    const mirror = new EditorSlot(model, "t2", host);
-    const syntax = () => slot.currentState().facet(languageFacet)?.name;
-    try {
-      expect(syntax()).toBeUndefined();
-      slot.dispatchLocal({ selection: { anchor: 3 } });
-      slot.dispatchLocal({
-        changes: [...source.matchAll(/data:image\/jpeg;base64,A+/g)].map((m) => ({
-          from: m.index,
-          to: m.index + m[0].length,
-          insert: "paper-images/image.jpg",
-        })),
-        annotations: isolateHistory.of("full"),
-      });
-      await vi.waitFor(() => expect(syntax()).toBe("markdown"));
-      expect(mirror.currentState().facet(languageFacet)?.name).toBe("markdown");
-      expect(slot.currentState().selection.main.anchor).toBe(3);
-      expect(model.getMeta().dirty).toBe(true);
-
-      const history = () => ({ state: slot.currentState(), dispatch: slot.dispatchLocal.bind(slot) });
-      expect(undo(history())).toBe(true);
-      await vi.waitFor(() => expect(syntax()).toBeUndefined());
-      expect(slot.currentState().doc.toString()).toBe(source);
-      expect(redo(history())).toBe(true);
-      await vi.waitFor(() => expect(syntax()).toBe("markdown"));
-      expect(slot.currentState().doc.toString()).toBe("# Paper\n\n" + "![](paper-images/image.jpg)\n\n".repeat(90));
-    } finally {
-      slot.dispose();
-      mirror.dispose();
-      manager.stop();
-    }
-  });
-
-  it("uses UTF-8 bytes around the Markdown limit even when an edit splits a surrogate pair", async () => {
-    const path = "/p/unicode.md";
-    const limit = 5 * 1024 * 1024;
-    const source = "# P\n" + "é".repeat((limit - 8) / 2) + "😀!";
-    expect(new TextEncoder().encode(source).length).toBe(limit + 1);
-    const { backend, manager } = setup({ [path]: source });
-    const open = backend.open.bind(backend);
-    vi.spyOn(backend, "open").mockImplementation(async (path) => ({ ...(await open(path)), large: true }));
-    const model = await manager.acquire(path);
-    const slot = new EditorSlot(model, "t", host);
-    try {
-      const syntax = () => slot.currentState().facet(languageFacet)?.name;
-      expect(syntax()).toBeUndefined();
-      slot.dispatchLocal({ changes: { from: source.length - 1, to: source.length } });
-      await vi.waitFor(() => expect(syntax()).toBe("markdown"));
-      const middle = source.length - 2;
-      slot.dispatchLocal({ changes: { from: middle, insert: "!" } });
-      await vi.waitFor(() => expect(syntax()).toBeUndefined());
-      slot.dispatchLocal({ changes: { from: middle, to: middle + 1 } });
-      await vi.waitFor(() => expect(syntax()).toBe("markdown"));
-    } finally {
-      slot.dispose();
-      manager.stop();
-    }
   });
 
   it("loads the document's own mode over its language's (Angular templates)", async () => {
