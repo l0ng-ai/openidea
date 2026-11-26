@@ -16,6 +16,7 @@ import {
 } from "./contributions";
 import { installBrowserGuards } from "./browserGuards";
 import { installDistractionFree } from "./distractionFree";
+import { installZenMode } from "./zenMode";
 import { installNarrowWindow } from "./narrowWindow";
 import { installFileDrop } from "./fileDrop";
 import { installFocusTracking } from "./focus";
@@ -78,6 +79,7 @@ export function activateWorkbench(): () => void {
     installToolWindowActions(),
     installToolWindowLayoutSync(),
     installDistractionFree(),
+    installZenMode(),
     installNarrowWindow(),
     installFocusTracking(setFocusedToolWindow),
     installFocusScopeTracking(),

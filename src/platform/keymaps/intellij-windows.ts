@@ -286,6 +286,8 @@ export const intellijWindows: Record<string, string[]> = {
   "toolwindow.hideSide": [],
   "toolwindow.focusEditor": ["Escape"],
   "editor.toggleZen": [],
+  // ToggleZenMode has no default.
+  "view.toggleZenMode": [],
   "editor.toggleLineNumbers": [],
   "editor.toggleIndentGuides": [],
   "editor.toggleStickyLines": [],

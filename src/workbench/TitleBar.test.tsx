@@ -44,7 +44,11 @@ describe("title bar gear menu", () => {
     expect(keymap.map((i) => i.label)).toContain("Mine");
     expect(keymap.filter((i) => i.checked).map((i) => i.label)).toEqual(["macOS"]);
     // View Mode only switches the existing modes.
-    expect((items[7] as Sub).submenu.map((i) => i.action)).toEqual(["editor.toggleZen", "window.toggleFullScreen"]);
+    expect((items[7] as Sub).submenu.map((i) => i.action)).toEqual([
+      "editor.toggleZen",
+      "view.toggleZenMode",
+      "window.toggleFullScreen",
+    ]);
   });
 
   it("lists every widget with a checkbox in Customize Main Toolbar", () => {

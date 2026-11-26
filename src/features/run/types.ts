@@ -31,6 +31,7 @@ import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
 import { pythonType } from "./pythonTypes";
 import { phpunitType } from "./phpunitTypes";
+import { cypressType } from "./cypressType";
 import { UNITY_CONFIG_KIND } from "./unity";
 
 export const COMPOUND = "compound";
@@ -570,6 +571,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   npm,
   node,
   bun,
+  cypressType,
   gradle,
   maven,
   godot,
@@ -637,7 +639,8 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet" && config.beforeLaunch === undefined
       ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
       : {}),
-    ...(config.kind === "dotnet-test" ||
+    ...(config.kind === "cypress" ||
+    config.kind === "dotnet-test" ||
     config.kind === "django-test" ||
     config.kind === "phpunit" ||
     config.kind === "junit" ||

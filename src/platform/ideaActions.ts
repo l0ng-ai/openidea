@@ -117,6 +117,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   MoveTabDown: "editor.splitAndMoveDown",
   Unsplit: "editor.unsplit",
   ToggleDistractionFreeMode: "editor.toggleZen",
+  ToggleZenMode: "view.toggleZenMode",
   EditorScrollUp: "editor.scrollUp",
   EditorScrollDown: "editor.scrollDown",
   EditorScrollTop: "editor.scrollToTop",

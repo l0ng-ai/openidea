@@ -47,6 +47,11 @@ export interface LanguageCodeStyle {
   /** SQL › Case: Reformat Code's case for keywords and unquoted identifiers. */
   keywordCase?: SqlWordCase;
   identifierCase?: SqlWordCase;
+  /** JavaScript / TypeScript › Punctuation (unset: tsserver's default, `ignore` / `auto`). */
+  semicolons?: "ignore" | "insert" | "remove";
+  quotes?: "auto" | "single" | "double";
+  /** JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+  spaces?: Record<string, boolean>;
 }
 
 /** IDEA's SQL word case: To upper / To lower / Do not change. */

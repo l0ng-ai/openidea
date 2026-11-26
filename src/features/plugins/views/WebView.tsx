@@ -23,6 +23,7 @@ import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
 import { editorService, registerFontZoomSurface } from "@/workbench/contributions";
+import { notifyFocusElement } from "@/workbench/focus";
 import { ToolWindowCornerActions, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
@@ -548,9 +549,13 @@ export function WebView({
         op?: unknown;
         args?: unknown;
         key?: unknown;
+        focus?: unknown;
       } | null;
       if (m?.tag !== FRAME_TAG) return;
-      if (m.key && typeof m.key === "object") {
+      if (m.focus === true) {
+        const host = frame.current.ownerDocument;
+        if (host.activeElement === frame.current && host.hasFocus()) notifyFocusElement(frame.current);
+      } else if (m.key && typeof m.key === "object") {
         // A shortcut the page didn't handle: as if pressed on the frame, for the IDE's keymap. The
         // page can post one at any time and can take the focus, but it cannot fake the user's own
         // input, so it counts only right after the user pressed a key or clicked in the frame.

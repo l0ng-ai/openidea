@@ -190,6 +190,7 @@
   "menu.editor.splitDown": "Разделить вниз",
   "menu.editor.splitRight": "Разделить вправо",
   "menu.editor.toggleZen": "{distractionFree, select, on {Выйти из режима без отвлекающих факторов} other {Войти в режим без отвлекающих факторов}}",
+  "menu.view.toggleZenMode": "{zenMode, select, on {Выйти из режима Zen} other {Войти в режим Zen}}",
   "menu.editor.unsplit": "Убрать разделение",
   "menu.file": "Файл",
   "menu.fileProperties": "Свойства файла",

@@ -107,7 +107,7 @@ export const commands = {
 	 *  Reads the ACP registry's install state for every provider from disk, so it runs on the
 	 *  blocking pool.
 	 */
-	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	agentProviders: () => typedError<AgentProvider_Serialize[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
 	agentRefreshModels: (provider: string, force: boolean, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force, model })),
 	/**
@@ -144,6 +144,8 @@ export const commands = {
 "lastTurn" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
 	/**  Sends a queued message now, interrupting the current turn. */
 	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
+	/**  Sets additional launch arguments for a built-in ACP agent; an empty list resets them. */
+	agentSetAdditionalArgs: (id: string, args: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_additional_args", { id, args })),
 	/**
 	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
@@ -2292,6 +2294,11 @@ export const commands = {
 	vcsWritePatch: (path: string, patch: string, encoding: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch, encoding })),
 	/**  The browsers installed on this machine. */
 	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
+	/**
+	 *  Custom properties declared in `doc` (from its current text, first) and in the project's
+	 *  other stylesheets (from the index, so kept up to date as files change).
+	 */
+	webCssVariables: (doc: DocId) => typedError<CssVariable[], IdeError>(__TAURI_INVOKE("web_css_variables", { doc })),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
 	webGoto: (doc: DocId, pos: Pos) => typedError<{
 	reference: WebReference,
@@ -2968,7 +2975,9 @@ export type AgentPrompt = {
 	images: AgentImage[],
 };
 
-export type AgentProvider = {
+export type AgentProvider = AgentProvider_Serialize | AgentProvider_Deserialize;
+
+export type AgentProvider_Deserialize = {
 	id: string,
 	name: string,
 	/**  The command line that starts its ACP server. */
@@ -2976,6 +2985,8 @@ export type AgentProvider = {
 	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
 	program: string,
 	args: string[],
+	/**  Settings-managed suffix of `args`; absent for launches that cannot be edited. */
+	additionalArgs?: string[] | null,
 	defaultProgram: string | null,
 	defaultArgs: string[],
 	loginHint: string | null,
@@ -2992,6 +3003,37 @@ export type AgentProvider = {
 	config: AgentConfigOption[],
 	/**  Thinking-level options by model value; absent models have not reported their levels. */
 	thoughtLevels?: { [key in string]: AgentConfigOption[] },
+	/**  Slash commands it offered last time. */
+	commands: AgentCommand[],
+	source: AgentSource,
+};
+
+export type AgentProvider_Serialize = {
+	id: string,
+	name: string,
+	/**  The command line that starts its ACP server. */
+	command: string,
+	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
+	program: string,
+	args: string[],
+	/**  Settings-managed suffix of `args`; absent for launches that cannot be edited. */
+	additionalArgs?: string[] | null,
+	defaultProgram: string | null,
+	defaultArgs: string[],
+	loginHint: string | null,
+	commandOverridden: boolean,
+	commandEditable: boolean,
+	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
+	/**  Whether the command was found (on `PATH`). */
+	installed: boolean,
+	/**  The built-in command can be owned by a global npm package. */
+	canCheckCliUpdate: boolean,
+	/**  Environment variables it starts with (from its agent file). */
+	env: { [key in string]: string },
+	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
+	config: AgentConfigOption[],
+	/**  Thinking-level options by model value; absent models have not reported their levels. */
+	thoughtLevels: { [key in string]: AgentConfigOption[] },
 	/**  Slash commands it offered last time. */
 	commands: AgentCommand[],
 	source: AgentSource,
@@ -4974,6 +5016,14 @@ export type CreateRequest = {
 	name: string,
 	git: boolean,
 	values: { [key in string]: string },
+};
+
+/**  A custom property declaration (`--accent: #3b82f6`), for `var(--…)` completion and hover. */
+export type CssVariable = {
+	name: string,
+	/**  The declared value, whitespace collapsed. */
+	value: string | null,
+	location: Location,
 };
 
 /**
@@ -6999,11 +7049,11 @@ export type ExternalDiffSide = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff" | "black";
+export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "dprint" | "ruff" | "black";
 
-/**  An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Biome, dprint, Ruff, Black) and the languages it formats. */
 export type ExternalFormatterSettings = {
-	/**  Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH. */
+	/**  Empty path: project node_modules (Prettier/oxfmt/Biome/dprint), managed installation, then PATH. */
 	path?: string,
 	/**  Ruff only: directory containing its configuration, or a configuration file. */
 	configurationDirectory?: string,
@@ -9090,6 +9140,12 @@ export type LanguageCodeStyle_Deserialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
+	semicolons?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
+	quotes?: string | null,
+	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+	spaces?: { [key in string]: boolean },
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -9114,6 +9170,12 @@ export type LanguageCodeStyle_Serialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
+	semicolons?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
+	quotes?: string | null,
+	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+	spaces?: { [key in string]: boolean },
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -9258,6 +9320,8 @@ export type LanguagesSettings = {
 	prettier?: ExternalFormatterSettings,
 	oxfmt?: ExternalFormatterSettings,
 	biome?: ExternalFormatterSettings,
+	/**  dprint formats every file its configuration covers: `languages` is unused. */
+	dprint?: ExternalFormatterSettings,
 	ruff?: ExternalFormatterSettings,
 	black?: ExternalFormatterSettings,
 	java?: JavaSettings,
@@ -14212,6 +14276,11 @@ export type TypeScriptSettings = {
 	 *  vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
 	 */
 	tsserverMaxMemory?: number,
+	/**
+	 *  Problems › TypeScript project errors: the project's own `tsc --watch` per root
+	 *  `tsconfig.json` reports the errors of files that are not open.
+	 */
+	watchProblems?: boolean,
 };
 
 /**  A misspelt word. */

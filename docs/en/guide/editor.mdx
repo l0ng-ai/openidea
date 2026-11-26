@@ -108,7 +108,7 @@ All folding commands are also in **Code › Folding**. Fold regions come from th
 | **Auto-Indent Lines** | `⌃⌥I`  | `Ctrl+Alt+I`       |
 | **Optimize Imports**  | `⌃⌥O`  | `Ctrl+Alt+O`       |
 
-**Reformat Code** formats the selection, or the whole file when nothing is selected, as one undo step. The formatting comes from the file's language server or from the formatter the language is configured with (for example Ruff for Python, Prettier, oxfmt or Biome for web languages; find their commands as **Reformat with …** in Find Action). **Reformat File…** also lets you choose the scope and optimize imports.
+**Reformat Code** formats the selection, or the whole file when nothing is selected, as one undo step. The formatting comes from the file's language server or from the formatter the language is configured with (for example Ruff for Python, Prettier, oxfmt or Biome for web languages, dprint in dprint projects; find their commands as **Reformat with …** in Find Action). **Reformat File…** also lets you choose the scope and optimize imports.
 
 Indentation and other style options are under **Settings › Editor › Code Style**, with a page per language. `.editorconfig` files in the project are read too.
 
@@ -158,6 +158,7 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 - **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
 - **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.
 - **View › Appearance › Enter Distraction Free Mode** hides tool windows, tabs, the status bar and the gutter and centres the text. Run the same command again to leave.
+- **View › Appearance › Enter Zen Mode** turns on Distraction Free Mode and full screen together; **Exit Zen Mode** turns both off.
 - **Show Line Numbers**, **Show Indent Guides**, **Show Sticky Lines** and **Show Whitespaces** turn these on or off in every editor. Run them from Find Action, or right-click the gutter and open **Appearance**.
 - Line numbers, whitespace, indent guides, caret style and the intention bulb are in **Settings › Editor › General › Appearance**. Breadcrumbs and sticky lines (the enclosing declarations pinned at the top while you scroll) have their own pages under **Settings › Editor › General**.
 

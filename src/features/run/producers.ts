@@ -38,6 +38,7 @@ import {
   goFuzzConfig,
   targetConfig,
   targetLanguage,
+  specsInSpecDirectory,
   testsInTestDirectory,
   zigTargets,
   type RunTarget,
@@ -1153,7 +1154,13 @@ export function fileTargets(
       (t) => t.kind === "main" && (!t.className || /\.(java|kt)$/.test(input.path)),
     );
   }
-  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs), testsInTestDirectory(input.configs));
+  const targets = detectRunTargets(
+    content,
+    s.rel,
+    hasDjangoTests(input.configs),
+    testsInTestDirectory(input.configs),
+    specsInSpecDirectory(input.configs),
+  );
   return /\.java$/.test(input.path) ? [...targets, ...inheritedRunTargets(input.path, content)] : targets;
 }
 
