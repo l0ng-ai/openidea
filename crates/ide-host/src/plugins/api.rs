@@ -697,6 +697,7 @@ pub(super) struct Shared {
     pub subscriptions: Mutex<super::event_paths::Subscriptions>,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
+    project_generations: Mutex<HashMap<PathBuf, u64>>,
     pub secrets: RwLock<Arc<dyn SecretStore>>,
     /// (plugin, `process:` capability) → the approved program.
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
@@ -774,8 +775,31 @@ impl Shared {
             closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
             diagnostics: Mutex::default(),
+            project_generations: Mutex::default(),
             log_tabs: Mutex::default(),
         })
+    }
+
+    pub(super) fn project_generation(&self, root: &Path) -> Result<u64, HostError> {
+        let workspace = self.workspace().ok_or(HostError::Cancelled)?;
+        if !workspace.projects().iter().any(|r| r == root) {
+            return Err(HostError::NotFound("project is not open".into()));
+        }
+        let mut gens = self.project_generations.lock();
+        Ok(*gens.entry(root.to_path_buf()).or_insert(1))
+    }
+
+    pub(super) fn bump_project_generation(&self, root: &Path) -> u64 {
+        let mut gens = self.project_generations.lock();
+        let cur = gens.entry(root.to_path_buf()).or_insert(1);
+        *cur = cur.saturating_add(1);
+        *cur
+    }
+
+    /// Moves a closed project's generation on rather than forgetting it, so a handle
+    /// taken before the close stays stale if the project is opened again.
+    pub(super) fn close_project_generation(&self, root: &Path) {
+        self.bump_project_generation(root);
     }
 
     pub(super) fn workspace(&self) -> Option<Arc<dyn PluginWorkspace>> {
@@ -1561,8 +1585,13 @@ impl HostApi for PluginApi {
         }
     }
 
-    fn register_run_target(&self, root: &Path, target: ide_plugin::PluginRunTarget) -> Result<(), HostError> {
-        self.register_target(root, target)
+    fn register_run_target(
+        &self,
+        root: &Path,
+        target: ide_plugin::PluginRunTarget,
+        generation: Option<u64>,
+    ) -> Result<(), HostError> {
+        self.register_target(root, target, generation)
     }
     fn unregister_run_target(&self, root: &Path, id: &str) {
         self.unregister_target(root, id);
@@ -2935,12 +2964,30 @@ impl HostApi for PluginApi {
         }
     }
 
-    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
-        let filter = super::event_paths::PathFilter::new(kind, globs)?;
+    fn subscribe_paths_with_options(
+        &self,
+        kind: &str,
+        globs: Vec<String>,
+        debounce_ms: Option<u32>,
+    ) -> Result<(), HostError> {
+        let debounce = match debounce_ms {
+            Some(ms) if ms > 60_000 => return Err(HostError::Invalid("debounce must not exceed 60000 ms".into())),
+            Some(ms) => Some(Duration::from_millis(ms as u64)),
+            None => None,
+        };
+        let filter = super::event_paths::PathFilter::with_debounce(kind, globs, debounce)?;
         if self.shared.subscriptions.lock().set_paths(self.id(), kind, filter) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
         Ok(())
+    }
+
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        self.subscribe_paths_with_options(kind, globs, None)
+    }
+
+    fn project_generation(&self, root: &Path) -> Result<u64, HostError> {
+        self.shared.project_generation(root)
     }
 
     fn unsubscribe(&self, kind: &str) {
