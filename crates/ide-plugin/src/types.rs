@@ -943,6 +943,9 @@ pub enum ViewEvent {
     Sort { column: u32, descending: bool },
     TableSelect { row: u32 },
     TableActivate { row: u32 },
+    // A plugin dialog closed (API 1.18): its close button, Escape or its page.
+    // Leaves as an `other` view-event, kind `closed`.
+    Closed,
 }
 
 /// A plugin's HTTP route declaration in a project.

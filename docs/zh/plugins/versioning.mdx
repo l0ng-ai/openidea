@@ -29,7 +29,7 @@ description: "engines.openidea、插件 API 从 1.0 到 1.13 的各个版本，�
 | 1.15.0 | `main` 上开发中 | `caret-moved` 事件；声明式 `[[contributes.skills]]`（`path = "skills/<name>/SKILL.md"`），在插件包中打包代理技能                                                                                                                                                                                                                       |
 | 1.16.0 | OpenIDEA 0.1.52 | 可选 `completion-list-provider` 导出：标记为不完整的补全在继续输入时再次询问，不会重新询问语言服务器和其他插件；`decorations.set-markdown`：悬停显示 Markdown 卡片的行尾装饰                                                                                                                                                           |
 | 1.17.0 | OpenIDEA 0.1.53 | `decorations.set-styled`：自带 `#rrggbb` / `#rrggbbaa` 前景色和背景色的编辑器装饰，用于主题调色板之外的颜色                                                                                                                                                                                                                            |
-| 1.18.0 | `main` 上开发中 | `[[contributes.overlays]]`：悬浮在工作台上方、从不抢占键盘焦点的插件网页，可通过 `openidea.overlay` 移动和调整大小                                                                                                                                                                                                                     |
+| 1.18.0 | `main` 上开发中 | `[[contributes.overlays]]`：悬浮在工作台上方、从不抢占键盘焦点的插件网页，可通过 `openidea.overlay` 移动和调整大小；`[[contributes.dialogs]]`：插件网页显示在可调整大小的模态对话框中，用 `views.reveal` 打开，关闭时发 `closed` 视图事件，页面可调用 `openidea.dialog.close()`                                                        |
 
 每个版本新增内容的完整列表见 [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md)。
 

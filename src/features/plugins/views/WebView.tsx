@@ -170,6 +170,13 @@ export const MAX_HIGHLIGHT_LINES = 2000;
 export const EDITOR_PANEL_QUERY = "openidea=editor-panel";
 /** The query that gives an overlay's page `openidea.overlay` (frame-bridge.js). */
 export const OVERLAY_QUERY = "openidea=overlay";
+/** The query that gives a plugin dialog's page `openidea.dialog` (frame-bridge.js). */
+export const DIALOG_QUERY = "openidea=dialog";
+
+/** A plugin dialog's frame: its page can close the dialog (`openidea.dialog.close()`). */
+export interface FrameDialog {
+  close(): void;
+}
 
 /** Where an overlay floats: one of nine anchors of the window, and its size in pixels. */
 export interface OverlayPlacement {
@@ -281,6 +288,8 @@ export interface WebViewProps {
   editor?: FrameEditor | null;
   /** An overlay's placement: the frame shows nothing until its page loads and never takes the focus. */
   overlay?: FrameOverlay | null;
+  /** A plugin dialog's page: it can close the dialog, and Escape there closes it. */
+  pluginDialog?: FrameDialog | null;
 }
 
 export function WebView({
@@ -293,6 +302,7 @@ export function WebView({
   binaryPath,
   editor = null,
   overlay = null,
+  pluginDialog = null,
 }: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
@@ -497,6 +507,11 @@ export function WebView({
           if (to - from > MAX_HIGHLIGHT_LINES) throw new Error(`at most ${MAX_HIGHLIGHT_LINES} lines at a time`);
           return [op === "editor.wrapped" ? editor.wrapped(from, to) : editor.highlights(from, to)];
         }
+        case "dialog.close": {
+          if (!pluginDialog) throw new Error("this view is not a dialog");
+          pluginDialog.close();
+          return [null];
+        }
         case "overlay.get":
         case "overlay.place": {
           if (!overlay) throw new Error("this view is not an overlay");
@@ -577,7 +592,7 @@ export function WebView({
       window.removeEventListener("pagehide", onUnload);
       currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, eventEditor, editor, overlay, hasCode, post, page]);
+  }, [pluginId, view, document, doc, eventEditor, editor, overlay, pluginDialog, hasCode, post, page]);
 
   // An overlay floats over the workbench: no spinner or error card in its place.
   if (overlay && (!page || "error" in page)) return null;
@@ -593,7 +608,7 @@ export function WebView({
         {page.error}
       </EmptyState>
     );
-  const frameQuery = editor ? EDITOR_PANEL_QUERY : overlay ? OVERLAY_QUERY : null;
+  const frameQuery = editor ? EDITOR_PANEL_QUERY : overlay ? OVERLAY_QUERY : pluginDialog ? DIALOG_QUERY : null;
   // No `allow-same-origin`: an opaque origin without access to the IDE. `onLoad` sends the theme.
   const iframe = (
     <iframe

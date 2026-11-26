@@ -53,6 +53,13 @@
 //! when = "plugin.<id>.showing"     # optional
 //! interactive = true               # optional; false lets every click through to the IDE
 //!
+//! [[contributes.dialogs]]
+//! id = "preview"
+//! title = "SQL Preview"            # the dialog's title bar
+//! web = "web/preview.html"         # modal, resizable; opened by `views.reveal("preview")` (API 1.18)
+//! width = 900                      # pixels, 320–1600
+//! height = 600                     # pixels, 200–1200
+//!
 //! [[contributes.fileIcons]]
 //! id = "drawing"
 //! patterns = ["*.excalidraw"]
@@ -92,8 +99,9 @@ pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const EDITOR_PANELS: &str = "editorPanels";
 pub const OVERLAYS: &str = "overlays";
+pub const DIALOGS: &str = "dialogs";
 /// The points whose declarations can name a `web` page (served, messaged, sent view events).
-pub const WEB_POINTS: [&str; 4] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS, OVERLAYS];
+pub const WEB_POINTS: [&str; 5] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS, OVERLAYS, DIALOGS];
 pub const FILE_ICONS: &str = "fileIcons";
 pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
@@ -960,6 +968,46 @@ pub(super) fn overlay(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String
     Ok(out)
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DialogDecl {
+    id: String,
+    title: String,
+    web: String,
+    width: u32,
+    height: u32,
+}
+
+const DIALOG_WIDTH: std::ops::RangeInclusive<u32> = 320..=1600;
+const DIALOG_HEIGHT: std::ops::RangeInclusive<u32> = 200..=1200;
+
+/// `[[contributes.dialogs]]` (API 1.18): a package web page in a modal, resizable IDE
+/// dialog with a title bar, opened by the plugin's code with `views.reveal(id)` in the
+/// invoking window. Like a web view it sees nothing of the IDE beyond its messages, so
+/// it needs no capability.
+pub(super) fn dialog(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: DialogDecl = decode(DIALOGS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{DIALOGS}"), 18)?;
+    validate_item_id(&d.id, "dialog id")?;
+    let what = format!("dialog {:?}", d.id);
+    // `views.reveal(id)` opens it, so it can't share an id with a tool window.
+    if pkg.manifest.declarations(VIEWS).iter().any(|v| v.get("id").and_then(|i| i.as_str()) == Some(&d.id)) {
+        return Err(format!("{what}: a view has the same id"));
+    }
+    if d.title.trim().is_empty() || d.title.len() > 256 {
+        return Err(format!("{what}: `title` is 1–256 bytes"));
+    }
+    for (name, value, range) in [("width", d.width, DIALOG_WIDTH), ("height", d.height, DIALOG_HEIGHT)] {
+        if !range.contains(&value) {
+            return Err(format!("{what}: `{name}` is {}–{} pixels", range.start(), range.end()));
+        }
+    }
+    let files = super::web::web_files(pkg, &d.web, &what)?;
+    let mut out = UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?);
+    out.files = files;
+    Ok(out)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FileIconDecl {
@@ -1632,6 +1680,57 @@ web = "web/view.html"
             (source.replace("web/index.html", "index.html"), "directory of its own"),
             (source.replace("web/index.html", "web/missing.html"), "no such file"),
             (source.replace(r#"id = "probe""#, r#"id = "Pro Be""#), "id"),
+        ] {
+            let err = check(&bad).unwrap_err();
+            assert!(err.contains(error), "{bad}\n→ {err}");
+        }
+    }
+
+    #[test]
+    fn dialogs_validate_api_title_size_id_and_page() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("web")).unwrap();
+        std::fs::write(dir.path().join("web/preview.html"), "<p>SQL</p>").unwrap();
+        let source = r#"id = "sql"
+name = "SQL"
+version = "0.1.0"
+engines.openidea = "^1.18"
+
+[[contributes.dialogs]]
+id = "preview"
+title = "SQL Preview"
+web = "web/preview.html"
+width = 900
+height = 600
+"#;
+        let check = |source: &str| {
+            let manifest = ide_extension::Manifest::parse(source)?;
+            let decl = manifest.declarations(DIALOGS).into_iter().next().unwrap();
+            dialog(&Package::new(manifest, dir.path().to_path_buf()), decl)
+        };
+        let valid = check(source).unwrap();
+        assert_eq!((valid.key.as_str(), valid.label.as_str()), ("preview", "SQL Preview"));
+        assert_eq!(
+            valid.json,
+            serde_json::json!({"id": "preview", "title": "SQL Preview", "web": "web/preview.html", "width": 900, "height": 600})
+        );
+        assert_eq!(valid.files, [PathBuf::from("web/preview.html")]);
+        for (bad, error) in [
+            (source.replace("^1.18", "^1.17"), "1.18"),
+            (source.replace("width = 900", "width = 319"), "320–1600"),
+            (source.replace("height = 600", "height = 1201"), "`height`"),
+            (source.replace(r#"title = "SQL Preview""#, r#"title = " ""#), "title"),
+            (
+                source.replace(
+                    "height = 600",
+                    "height = 600
+modal = false",
+                ),
+                "modal",
+            ),
+            (source.replace("web/preview.html", "web/missing.html"), "no such file"),
+            (source.replace(r#"id = "preview""#, r#"id = "Pre View""#), "id"),
+            (format!("{source}\n[[contributes.views]]\nid = \"preview\"\ntitle = \"P\"\n"), "same id"),
         ] {
             let err = check(&bad).unwrap_err();
             assert!(err.contains(error), "{bad}\n→ {err}");
