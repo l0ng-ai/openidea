@@ -206,6 +206,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "refactor.move": [],
   "refactor.safeDelete": [],
   "refactor.extractInterface": [],
+  "refactor.extractTypeAlias": [],
   "refactor.pullMembersUp": [],
   "refactor.pushMembersDown": [],
 

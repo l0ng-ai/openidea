@@ -45,6 +45,14 @@ describe("introducedName", () => {
     expect(introducedName(before, after)?.name).toBe("fun_name");
   });
 
+  it("finds tsserver's extracted type alias and interface", () => {
+    const before = "function f(p: { a: string; b: number }) {}\n";
+    const alias = "type NewType = { a: string; b: number };\n\nfunction f(p: NewType) {}\n";
+    expect(spansText(alias, introducedName(before, alias)!.spans)).toEqual(["NewType", "NewType"]);
+    const iface = "interface NewType {\n    a: string;\n    b: number;\n}\n\nfunction f(p: NewType) {}\n";
+    expect(introducedName(before, iface)?.name).toBe("NewType");
+  });
+
   it("is null without a new name used twice", () => {
     expect(introducedName("a + b", "(a + b)")).toBeNull();
     expect(introducedName("x", "x")).toBeNull();

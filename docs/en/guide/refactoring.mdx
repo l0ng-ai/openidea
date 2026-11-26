@@ -24,7 +24,8 @@ The **Refactor** menu has IntelliJ IDEA's refactorings with their usual shortcut
 | **Introduce Field…**     | `⌥⌘F` | `Ctrl+Alt+F`    | Language server                                        |
 | **Introduce Parameter…** | `⌥⌘P` | `Ctrl+Alt+P`    | Language server                                        |
 | **Extract Method…**      | `⌥⌘M` | `Ctrl+Alt+M`    | Language server                                        |
-| **Extract Interface…**   | —     | —               | Java                                                   |
+| **Extract Interface…**   | —     | —               | Java (dialog); TypeScript: language server             |
+| **Extract Type Alias…**  | —     | —               | TypeScript, JavaScript (`@typedef`): language server   |
 | **Inline…**              | `⌥⌘N` | `Ctrl+Alt+N`    | Language server                                        |
 | **Move…**                | `F6`  | `F6`            | Language server (symbols); the IDE (files and folders) |
 | **Safe Delete…**         | `⌘⌦`  | `Alt+Delete`    | The IDE, using the server's references                 |
@@ -86,6 +87,8 @@ These move fields and methods between a class and its superclasses or subclasses
 ## Extract Interface
 
 In Java, **Refactor › Extract Interface…** creates an interface from the class of the current file. In the dialog, enter the interface name, choose its package and check the methods (and constants) it should declare. **Refactor** creates the interface, makes the class implement it, replaces the class with the interface wherever that is possible, and opens the new file; **Preview** lists the changes first.
+
+In TypeScript, select an object type literal (for example `{ name: string; age: number }`) and choose **Refactor › Extract Interface…**: the language server declares an `interface` for it and uses it in its place. **Refactor › Extract Type Alias…** does the same with a `type` declaration for any selected type, and in JavaScript adds a JSDoc `@typedef`. Afterwards the new name is renamed in place, as after **Introduce Variable…**. When the server has nothing to extract at the selection, the editor says so.
 
 ## Change Signature
 

@@ -9292,7 +9292,6 @@
   "Interface name should differ from the class name": "Имя интерфейса должно отличаться от имени класса",
   "Select the members to form the interface": "Выберите члены для формирования интерфейса",
   "The class has no members to form an interface": "В классе нет членов для формирования интерфейса",
-  "Caret should be inside a class": "Каретка должна находиться внутри класса",
   "Extract Interface from '{name}'": "Извлечь интерфейс из '{name}'",
   "The interface could not be extracted": "Не удалось извлечь интерфейс",
   "Extract Interface is not supported for {name}": "Извлечение интерфейса не поддерживается для {name}",

@@ -8752,7 +8752,6 @@
   "Interface name should differ from the class name": "介面名稱應與類別名稱不同",
   "Select the members to form the interface": "選擇形成介面的成員",
   "The class has no members to form an interface": "該類別沒有可形成介面的成員",
-  "Caret should be inside a class": "游標應位於類別中",
   "Extract Interface from '{name}'": "從 '{name}' 提取介面",
   "The interface could not be extracted": "無法提取介面",
   "Extract Interface is not supported for {name}": "{name} 不支援提取介面",

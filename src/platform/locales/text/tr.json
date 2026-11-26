@@ -2304,7 +2304,6 @@
   "Interface name should differ from the class name": "Arayüz adı sınıf adından farklı olmalıdır",
   "Select the members to form the interface": "Arayüzü oluşturacak üyeleri seçin",
   "The class has no members to form an interface": "Sınıfta arayüz oluşturacak üye bulunmuyor",
-  "Caret should be inside a class": "İmleç bir sınıfın içinde olmalıdır",
   "Extract Interface from '{name}'": "'{name}' Sınıfından Arayüz Çıkar",
   "The interface could not be extracted": "Arayüz çıkarılamadı",
   "Extract Interface is not supported for {name}": "{name} için Arayüz Çıkar desteklenmiyor",

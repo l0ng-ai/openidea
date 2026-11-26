@@ -609,6 +609,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("refactor.extractParameter", "Introduce Parameter…"),
             act("refactor.extractMethod", "Extract Method…"),
             act("refactor.extractInterface", "Extract Interface…"),
+            act("refactor.extractTypeAlias", "Extract Type Alias…"),
             act("refactor.inline", "Inline…"),
             SEP,
             act("refactor.pullMembersUp", "Pull Members Up…"),
