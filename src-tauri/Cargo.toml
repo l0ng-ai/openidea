@@ -68,6 +68,7 @@ ide-extension = { path = "../crates/ide-extension" }
 ide-docker = { path = "../crates/ide-docker" }
 ide-android = { path = "../crates/ide-android" }
 ide-github = { path = "../crates/ide-github" }
+reqwest.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
