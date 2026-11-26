@@ -726,20 +726,6 @@ async fn spawn_adapter(
         .kill_on_drop(true);
     let mut child =
         cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to start {}: {e}", binary.display())))?;
-    // If the launch future is cancelled while waiting for a TCP adapter to listen,
-    // `kill_on_drop` stops only the adapter itself; kill its process group too on Unix.
-    #[cfg(unix)]
-    struct KillGroupOnDrop(Option<u32>);
-    #[cfg(unix)]
-    impl Drop for KillGroupOnDrop {
-        fn drop(&mut self) {
-            if let Some(pid) = self.0 {
-                ide_core::process::kill_tree_of(pid);
-            }
-        }
-    }
-    #[cfg(unix)]
-    let mut kill_group = KillGroupOnDrop(child.id());
     let (program_sink, program_output) = if SHARES_STDIO.contains(&spec.adapter.as_str()) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (Some(tx), Some(rx))
@@ -753,10 +739,6 @@ async fn spawn_adapter(
         None => {
             let stdin = child.stdin.take().ok_or_else(|| IdeError::internal("adapter stdin unavailable"))?;
             let stdout = child.stdout.take().ok_or_else(|| IdeError::internal("adapter stdout unavailable"))?;
-            #[cfg(unix)]
-            {
-                kill_group.0 = None;
-            }
             Ok(AdapterIo {
                 launch_after_configuration: false,
                 reader: Box::new(stdout),
@@ -789,10 +771,6 @@ async fn spawn_adapter(
                 }
             };
             let (r, w) = stream.into_split();
-            #[cfg(unix)]
-            {
-                kill_group.0 = None;
-            }
             Ok(AdapterIo {
                 launch_after_configuration: false,
                 reader: Box::new(r),

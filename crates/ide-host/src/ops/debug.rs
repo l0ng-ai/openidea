@@ -157,14 +157,8 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     host.require_trust(window)?;
     let server_port = debug_server_port(&config);
     let exception_classes = server_port.and_then(|port| exception_class_backend(host, window, port));
-    let result = host.debugger.start_with_cancel(config, owner, custom, exception_classes, cancel.clone()).await;
+    let result = host.debugger.start_with_cancel(config, owner, custom, exception_classes, cancel).await;
     flush_output();
-    if let Ok(id) = &result
-        && cancel.is_cancelled()
-    {
-        let _ = host.debugger.stop(*id).await;
-        return Err(ide_core::IdeError::cancelled());
-    }
     if let Ok(id) = &result {
         let sink = host.window_sink(label);
         for note in &agents.notes {

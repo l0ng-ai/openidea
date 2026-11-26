@@ -337,32 +337,10 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Redefining many classes in a large JVM can take a while.
 const HOT_SWAP_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// An in-flight start not yet registered in [`DebugManager::sessions`] (pre-launch build or
-/// adapter spawn), so closing a project or window cancels it before it can register a session.
-struct PendingStart {
-    owner: String,
-    cwd: PathBuf,
-    parent: Option<DebugSessionId>,
-    cancel: ide_core::CancellationToken,
-}
-
-struct StartingGuard<'a> {
-    manager: &'a DebugManager,
-    id: DebugSessionId,
-}
-
-impl Drop for StartingGuard<'_> {
-    fn drop(&mut self) {
-        self.manager.starting.lock().remove(&self.id);
-    }
-}
-
 pub struct DebugManager {
     languages: Arc<LanguageRegistry>,
     launcher: Arc<dyn AdapterLauncher>,
     me: Weak<DebugManager>,
-    /// Starts still in build or adapter launch. Lock order across the manager: `starting` → `sessions` → `order`.
-    starting: Mutex<HashMap<DebugSessionId, PendingStart>>,
     sessions: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
     /// Session start order, for "the first session" semantics.
     order: Mutex<Vec<DebugSessionId>>,
@@ -841,7 +819,6 @@ impl DebugManager {
             languages,
             launcher,
             me: me.clone(),
-            starting: Mutex::default(),
             sessions: Mutex::default(),
             order: Mutex::default(),
             breakpoints: Mutex::default(),
@@ -1004,11 +981,6 @@ impl DebugManager {
             }
         }
         let id = DebugSessionId::next();
-        self.starting.lock().insert(
-            id,
-            PendingStart { owner: owner.key.clone(), cwd: cwd.clone(), parent: None, cancel: cancel.clone() },
-        );
-        let _starting = StartingGuard { manager: self, id };
         let debug_server = take_debug_server(&mut arguments)?;
         if let Some(server) = &debug_server {
             spec.server_host = server.host.clone();
@@ -1113,9 +1085,6 @@ impl DebugManager {
         request: String,
         configuration: Value,
     ) -> IdeResult<()> {
-        if parent.startup_cancel.is_cancelled() || parent.ended.is_cancelled() {
-            return Err(IdeError::cancelled());
-        }
         let name = child_name(&configuration, &parent.name);
         let mut configuration = configuration;
         if let Some(obj) = configuration.as_object_mut() {
@@ -1128,20 +1097,8 @@ impl DebugManager {
                 None => (parent.spec.clone(), None),
             },
         };
-        let id = DebugSessionId::next();
-        let cancel = parent.ended.child_token();
-        self.starting.lock().insert(
-            id,
-            PendingStart {
-                owner: parent.owner.key.clone(),
-                cwd: spec.cwd.clone(),
-                parent: Some(parent.id),
-                cancel: cancel.clone(),
-            },
-        );
-        let _starting = StartingGuard { manager: self, id };
         self.start_session(
-            id,
+            DebugSessionId::next(),
             parent.owner.clone(),
             name,
             parent.adapter.clone(),
@@ -1151,7 +1108,7 @@ impl DebugManager {
             spec,
             port,
             None,
-            cancel,
+            ide_core::CancellationToken::new(),
         )
         .await
         .map(|_| ())
@@ -1183,15 +1140,6 @@ impl DebugManager {
             _ = cancel.cancelled() => return Err(IdeError::cancelled()),
             io = self.launcher.launch(spec.clone(), reuse_port) => io?,
         };
-        if cancel.is_cancelled() {
-            if let Some(mut child) = io.child {
-                if let Some(pid) = child.id() {
-                    let _ = tokio::task::spawn_blocking(move || ide_core::process::kill_tree_of(pid)).await;
-                }
-                let _ = child.kill().await;
-            }
-            return Err(IdeError::cancelled());
-        }
         let launch_after_configuration = io.launch_after_configuration && request == "launch";
         let stderr = io.stderr.clone();
         let (conn, incoming) = {
@@ -1213,12 +1161,8 @@ impl DebugManager {
             session.debuggee_pid.store(i64::from(pid), Ordering::Release);
         }
         let cancelled = {
-            let mut starting = self.starting.lock();
             let mut sessions = self.sessions.lock();
-            starting.remove(&id);
-            if cancel.is_cancelled()
-                || parent.is_some_and(|p| !sessions.get(&p).is_some_and(|s| !s.startup_cancel.is_cancelled()))
-            {
+            if cancel.is_cancelled() {
                 true
             } else {
                 sessions.insert(id, session.clone());
@@ -2403,15 +2347,8 @@ impl DebugManager {
         })
     }
 
-    /// Cancels every pending start and returns the live sessions of `key` and (when set) under
-    /// `root`, under one lock so nothing starting can slip into `sessions` unseen.
-    pub fn detach_for_close(&self, key: Option<&str>, root: Option<&Path>) -> Vec<DebugSessionId> {
-        let starting = self.starting.lock();
-        for pending in starting.values() {
-            if key.is_some_and(|k| pending.owner == k) || root.is_some_and(|r| pending.cwd.starts_with(r)) {
-                pending.cancel.cancel();
-            }
-        }
+    /// Live sessions of `key` and (when set) under `root`, in start order.
+    pub fn session_ids_for_close(&self, key: Option<&str>, root: Option<&Path>) -> Vec<DebugSessionId> {
         let sessions = self.sessions.lock();
         self.order
             .lock()
@@ -2422,10 +2359,9 @@ impl DebugManager {
             .collect()
     }
 
-    /// Stops every session `key` started (and cancels any still building or launching): the window
-    /// that opened the project is closing or lost trust.
+    /// Stops every session `key` started: the window that opened the project is closing.
     pub async fn stop_key(&self, key: &str) {
-        let ids = self.detach_for_close(Some(key), None);
+        let ids: Vec<DebugSessionId> = self.sessions(Some(key)).into_iter().map(|s| s.id).collect();
         for id in ids {
             if let Err(e) = self.stop(id).await {
                 tracing::debug!("debug session {id:?} did not stop: {e}");
@@ -2433,11 +2369,12 @@ impl DebugManager {
         }
     }
 
-    /// Stops every debug session started from `root` or below (and cancels any still building or
-    /// launching) — closing a project stops the programs it launched even when the session's owner
-    /// key does not name the window doing the closing (window groups, auxiliary windows).
+    /// Stops every debug session started from `root` or below — closing a project stops the
+    /// programs it launched even when the session's owner key does not name the window doing
+    /// the closing (window groups, auxiliary windows).
     pub async fn stop_under(&self, root: &Path) {
-        let ids = self.detach_for_close(None, Some(root));
+        let ids: Vec<DebugSessionId> =
+            self.live_sessions().into_iter().filter(|s| s.spec.cwd.starts_with(root)).map(|s| s.id).collect();
         tracing::info!(root = %root.display(), sessions = ids.len(), "closing project: stopping debug sessions");
         for id in ids {
             if let Err(e) = self.stop(id).await {
@@ -2465,22 +2402,8 @@ impl DebugManager {
 
     async fn stop_tree(&self, session: Arc<Session>) -> IdeResult<()> {
         session.startup_cancel.cancel();
-        let children: Vec<Arc<Session>> = {
-            let starting = self.starting.lock();
-            for pending in starting.values() {
-                if pending.parent == Some(session.id) {
-                    pending.cancel.cancel();
-                }
-            }
-            let sessions = self.sessions.lock();
-            self.order
-                .lock()
-                .iter()
-                .filter_map(|id| sessions.get(id))
-                .filter(|c| c.parent == Some(session.id))
-                .cloned()
-                .collect()
-        };
+        let children: Vec<Arc<Session>> =
+            self.live_sessions().into_iter().filter(|c| c.parent == Some(session.id)).collect();
         for child in children {
             child.startup_cancel.cancel();
             self.shutdown(&child, true).await;
